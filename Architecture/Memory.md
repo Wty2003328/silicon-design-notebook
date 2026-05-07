@@ -1043,3 +1043,518 @@ Without E, a write to a clean exclusive line (only copy) would require a bus tra
 ### Q15: What determines the access time of an SRAM memory macro?
 
 **A:** Access time (clock-to-Q for read data) has these components: (1) Clock distribution to the wordline drivers and sense amplifiers (~10-15% of total). (2) Wordline driver + wordline RC delay (depends on memory width: wider memory = longer WL). (3) Bitcell access time (current through access + pull-down creating BL differential). (4) Bitline RC delay + sense amplifier input development (depends on memory depth: deeper = longer BL, smaller signal). (5) Sense amplifier detection + amplification (~20% of total). (6) Output driver + data mux (column mux, output register). For a typical 1K×32 SRAM in 28nm: total access time ≈ 1.0 ns. Doubling depth roughly adds 0.3-0.5 ns (longer bitlines). Doubling width adds less (~0.1-0.2 ns, longer wordlines). The mux factor trades depth for width: mux=4 reads 4× as many columns but only delivers one, making the memory shorter (fewer rows) but wider. This reduces BL delay but increases column MUX delay.
+
+---
+
+## 9. Multi-Port SRAM Design
+
+### Port Configurations and Cell Topologies
+
+Multi-port SRAM extends the basic 6T/8T cell by adding additional access transistors for independent read and write operations within a single cycle. The number and type of ports fundamentally determine the cell structure, area, and timing characteristics.
+
+**1R1W (Single-Port, one read + one write, time-multiplexed):**
+
+The simplest configuration. A standard 6T cell with a single pair of access transistors (M5, M6) and a single wordline. Read and write share the same port and cannot occur simultaneously. One complete memory access (read or write) occupies one clock cycle. The bitline pair (BL, BL_bar) is shared between read and write operations.
+
+```
+6T cell with single port:
+  1 wordline (WL)
+  1 bitline pair (BL, BL_bar)
+  6 transistors total
+  Area: ~0.05 um^2 (7nm reference)
+```
+
+**2R1W (Two independent reads + one write):**
+
+Requires separate read and write access paths. The write port uses the standard M5/M6 access transistors with WL_write. The two read ports each add a dedicated 2T read stack (similar to the 8T read port), with independent read wordlines (RWL0, RWL1) and read bitlines (RBL0, RBL1).
+
+```
+2R1W cell topology:
+  Write: M5, M6 + WL_write, BL/BL_bar (from 6T core)
+  Read port 0: M7, M8 + RWL0, RBL0
+  Read port 1: M9, M10 + RWL1, RBL1
+  Total: 10 transistors
+  Area: ~0.08 um^2 (7nm)
+```
+
+The read ports are read-decoupled: they do not disturb the storage nodes Q and Q_bar, so read stability equals the hold SNM regardless of how many read ports are active simultaneously.
+
+**2R2W (Full dual-port):**
+
+Two completely independent ports, each capable of reading or writing. This requires two full write paths and two full read paths. The cell has two write wordlines (WL_A, WL_B) and two write bitline pairs (BLA/BLA_bar, BLB/BLB_bar), plus two read wordlines and two read bitlines if read-decoupled ports are used.
+
+```
+Full dual-port (8T cell variant):
+  Port A write: WL_A, BLA, BLA_bar (M5, M6)
+  Port B write: WL_B, BLB, BLB_bar (M5b, M6b)
+  Read port A: RWL_A, RBL_A (2T)
+  Read port B: RWL_B, RBL_B (2T)
+  Total: 10-12 transistors
+  Area: ~0.10 um^2 (7nm)
+```
+
+Concurrent write conflict: if both ports write to the same address in the same cycle, the result is indeterminate. A multi-port SRAM controller must implement write-conflict detection (compare addresses of both write ports) and arbitration logic.
+
+### Port Scaling Analysis
+
+Area scales quadratically with the number of ports. Each port adds one wordline (horizontal wire spanning the full row width) and one or two bitlines (vertical wires spanning the full column height). The transistor count per cell increases linearly, but the routing congestion for the additional wordlines and bitlines forces the cell to grow in both dimensions.
+
+$$A_{cell}(P) \approx A_{6T} \cdot \left(1 + \alpha \cdot P^2\right)$$
+
+where $P$ is the total port count and $\alpha \approx 0.05$--$0.10$ depends on the process node and layout style. The quadratic term arises because each new port requires both a new horizontal wire (wordline) and vertical wires (bitlines), and these must route through the cell without overlapping existing metal traces.
+
+**Practical limits:** Beyond 8--12 ports, the cell area and wire delay become prohibitive. A 16-port SRAM cell in 7nm would be approximately 8--10x the area of a single-port cell, and the resistive-capacitive (RC) delay on the long wordlines and heavily loaded bitlines would push access time beyond 2--3 ns, negating the benefit of parallel access.
+
+```mermaid
+flowchart TD
+    A["Port Requirement"] --> B{"Port count P"}
+    B -->|"P <= 2"| C["Single/bank SRAM: 6T-10T cell, direct implementation"]
+    B -->|"2 < P <= 6"| D["Banked multi-port SRAM: 2-4 banks, crossbar interconnect"]
+    B -->|"6 < P <= 12"| E["Heavily banked SRAM: 8+ banks, multi-cycle arbitration"]
+    B -->|"P > 12"| F["Register file via flip-flops or distributed register clusters"]
+    C --> G["Area: 1x baseline, Access: 0.5-1.0 ns"]
+    D --> H["Area: 2-4x baseline, Access: 0.8-1.5 ns"]
+    E --> I["Area: 4-8x baseline, Access: 1.5-3.0 ns, Bank conflict possible"]
+    F --> J["Area: 10-50x equivalent SRAM, Access: 0.2-0.5 ns per bank"]
+```
+
+### Column Multiplexing
+
+Column multiplexing reduces the number of sense amplifiers by sharing one sense amplifier across multiple adjacent columns. A column mux ratio of $M$ means $M$ cells in a row share a single sense amplifier.
+
+```
+Column mux = 4:
+  Physical columns: 128 (128 bitcells per row)
+  Logical words: 32 bits (128 / 4 = 32 words per row, each 32 bits wide)
+  Sense amplifiers: 128 / 4 = 32
+
+  Read: WL asserted, all 128 bitlines develop differential,
+        4:1 MUX selects one of every 4 bitlines for each sense amplifier
+
+  Address: extra 2 bits (log2(4)) in column address select which
+           of the 4 bitlines routes to the sense amplifier
+```
+
+Column multiplexing trades sense amplifier area for taller memory (more rows for the same capacity). Common mux ratios: 2, 4, 8, 16. Higher mux ratios produce physically narrower and taller memories, which can improve floorplan fit in some SoC layouts but increase bitline length and access time.
+
+### GPU Register File Application
+
+GPU shader cores require register files with very high port counts. A typical GPU thread in a warp/wavefront issues multiple operands per cycle, requiring simultaneous reads of several source registers.
+
+```
+Example: 4-wide GPU SIMD lane, 3-source instruction format
+  Per-cycle register access: 4 threads x 3 sources = 12 reads
+  Plus results: 4 threads x 1 result = 4 writes
+  Total: 12R + 4W = 16 ports (if implemented as monolithic SRAM)
+```
+
+This is far beyond practical SRAM port limits. The solution is **banking**: divide the register file into $B$ banks, each with $P/B$ ports. A 16-bank register file with 1R1W per bank can service up to 16 reads and 16 writes per cycle, provided no two accesses target the same bank (bank conflict). The compiler or hardware scheduler inserts bank-conflict avoidance by assigning registers to banks in a round-robin or conflict-free pattern.
+
+---
+
+## 10. Register File Design
+
+### Multi-Port Register File for Superscalar CPUs
+
+A superscalar processor with issue width $W$ needs to read $W$ source operands and write back up to $W/2$ results per cycle (assuming roughly half the instructions produce results). The architectural register file therefore requires at least $W$ read ports and $W/2$ write ports.
+
+```
+Port count derivation for a 4-wide out-of-order machine:
+  Instructions per cycle: up to 4 (integer + FP mix)
+  Source operands per instruction: 2 (typical RISC: src1, src2)
+  Total read ports: 4 instructions x 2 sources = 8R
+  Result ports: up to 4 results = 4W (some instructions do not write back)
+  Total: 8R + 4W = 12 ports on the architectural register file
+```
+
+For a physical register file with register renaming (typical in modern OoO cores), the file is larger because all committed and in-flight destination registers occupy physical entries.
+
+```
+Physical register file parameters (example: ARM Cortex-A78 class):
+  Entry count: 128-160 physical registers (32 arch + 96-128 rename buffers)
+  Data width: 64 bits per entry
+  Read ports: 8-10 (for 4-5 issue width, 2 sources each)
+  Write ports: 4-6 (for execution unit writebacks)
+  Total ports: 12-16
+```
+
+### Register File Banking
+
+To avoid the area and delay explosion of a monolithic 12+ port SRAM, the register file is split into multiple banks with fewer ports each. The key trade-off is port count reduction versus bank-conflict stalls.
+
+```
+Monolithic: 128 entries x 8R4W, 12 ports
+  Area (7nm): ~0.015 mm^2
+  Access time: ~1.5 ns (heavily loaded bitlines)
+
+2-bank: 2 x 64 entries x 4R2W, 6 ports per bank
+  Area (7nm): ~0.010 mm^2 total (2 banks x 0.005)
+  Access time: ~0.9 ns
+  Bank conflict rate: ~15% (requires both sources in same bank)
+
+4-bank: 4 x 32 entries x 2R1W, 3 ports per bank
+  Area (7nm): ~0.008 mm^2 total
+  Access time: ~0.6 ns
+  Bank conflict rate: ~35% (higher because fewer banks to distribute across)
+```
+
+The optimal banking factor balances area savings against the performance loss from bank conflicts. Most out-of-order cores use 2--4 banks for the integer register file and 2 banks for the floating-point/SIMD register file.
+
+### Read Port Optimization: Bypass (Forwarding)
+
+When a write and a read target the same register in the same cycle, the read does not need to wait for the write to complete and propagate through the SRAM. Instead, a **bypass network** (also called forwarding or write-through) compares the read address against all pending write addresses. If a match is found, the write data is forwarded directly to the read port, saving one cycle of latency.
+
+```
+Bypass logic per read port:
+  For each read address R_addr[i]:
+    For each write port j (0 to W-1):
+      if (R_addr[i] == W_addr[j]) && W_enable[j]:
+        R_data[i] = W_data[j]    // bypass: use write data directly
+      else:
+        R_data[i] = SRAM_read[i]  // normal: read from register file
+
+  Hardware: W comparators per read port, W:1 MUX
+  Total for 8R4W: 8 x 4 = 32 comparators + 8 four-input MUXes
+```
+
+Bypass reduces the effective read latency from 2 cycles (1 write + 1 read) to 1 cycle, which is critical for back-to-back dependent instruction execution in pipelines.
+
+### SRAM vs Flip-Flop Register File
+
+The choice between SRAM-based and flip-flop-based register files depends on the entry count and target frequency.
+
+| Parameter | Flip-Flop RF (32 entries) | SRAM RF (128+ entries) |
+|-----------|--------------------------|------------------------|
+| Read latency | 1 gate delay (~50 ps) | 1-2 clock cycles (~500 ps - 1 ns) |
+| Write latency | 1 gate delay | 1 cycle (setup to clock edge) |
+| Area per bit (7nm) | ~0.5 um^2 | ~0.05 um^2 (100x denser) |
+| Total area (8R4W) | ~0.15 mm^2 (32x64b) | ~0.015 mm^2 (128x64b) |
+| Power (active) | Very high (clocked FFs) | Lower (only accessed rows consume) |
+| Multi-port | Easy (just wire to all FF outputs) | Expensive (adds ports to SRAM cell) |
+
+Small register files (16--32 entries) with high port counts are almost always implemented as flip-flop arrays because the read latency advantage outweighs the area penalty. Large register files (64+ entries) use SRAM because the area and power of flip-flops scale linearly with entry count while SRAM scales much more favorably.
+
+**Area calculation example: 32-entry 8R4W register file in 7nm**
+
+```
+Flip-flop approach:
+  32 entries x 64 bits = 2048 flip-flops
+  Each DFF in 7nm: ~0.25 um^2 (with clock gating)
+  8 read ports: 8 x 64-bit 32:1 MUX per port = 8 x 64 x 32 x ~0.01 um^2
+  4 write ports: 4 x 64-bit decoder + enable logic
+  Total estimate: ~0.01-0.02 mm^2
+
+SRAM approach (for comparison):
+  32-entry x 64-bit x 12-port (8R4W) custom SRAM
+  Cell area: ~0.3 um^2 per bit (12-port cell is very large)
+  Total cell array: 32 x 64 x 0.3 = 614 um^2
+  Plus periphery (decoders, sense amps, MUXes): ~3x cell area
+  Total estimate: ~0.002 mm^2 (smaller but much slower than FF)
+```
+
+---
+
+## 11. Error Correction Codes for Memory
+
+### SECDED -- Hamming Code
+
+Single Error Correction, Double Error Detection (SECDED) is the most common ECC scheme for SRAM caches and register files. It is built on Hamming codes with an additional overall parity bit.
+
+**Hamming(72,64): 8 check bits for 64 data bits**
+
+The code word structure places check bits at power-of-2 positions ($2^0, 2^1, 2^2, \ldots, 2^7$) within a 72-bit code word. Data bits fill the remaining 64 positions.
+
+```
+Bit positions (1-indexed):
+  Check bits:  1,  2,  4,  8, 16, 32, 64  (7 Hamming check bits)
+  Parity bit:  0 (overall parity, position 0 or appended at MSB)
+  Data bits:   all other positions (3,5,6,7,9,10,11,12,13,...)
+
+  Total: 64 data + 7 Hamming check + 1 overall parity = 72 bits
+```
+
+**Syndrome computation:**
+
+Each check bit $C_i$ covers all data bit positions whose binary representation has a 1 in bit position $i$. On read, the syndrome is computed by XORing the received check bits against the check bits recomputed from the received data.
+
+$$S = C_{received} \oplus C_{computed}$$
+
+The syndrome $S$ is a 7-bit value (8-bit if including overall parity $P$):
+
+- $S = 0$, $P = 0$: No error detected
+- $S \neq 0$, $P = 1$: Single-bit error. $S$ gives the bit position; flip that bit to correct
+- $S \neq 0$, $P = 0$: Double-bit error detected. Cannot correct; must flag as uncorrectable error
+- $S = 0$, $P = 1$: Error in the overall parity bit only; correct by flipping $P$
+
+**Single-bit error correction example:**
+
+```
+Stored code word (64 data + 8 check/parity):
+  [P C1 C2 D3 C4 D5 D6 D7 C8 D9 D10 ... D64]
+
+Suppose bit 13 (data bit) flips during storage.
+
+Readback:
+  Syndrome S = 13 in binary = 0001101
+  Overall parity P = 1 (parity changed by the single-bit flip)
+
+  Interpretation: S = 13 != 0, P = 1 => single-bit error at position 13
+  Correction: flip bit 13
+```
+
+```mermaid
+flowchart TD
+    A["Read code word from memory"] --> B["Compute syndrome S from received data"]
+    B --> C{"S == 0?"}
+    C -->|"Yes"| D{"Overall parity P OK?"}
+    D -->|"Yes"| E["No error -- use data"]
+    D -->|"No"| F["Parity bit error only -- correct P"]
+    C -->|"No"| G{"P == 1 (odd parity)?"}
+    G -->|"Yes"| H["Single-bit error at position S: flip bit S to correct"]
+    G -->|"No"| I["Double-bit or multi-bit error: cannot correct, flag SDC"]
+```
+
+### ECC Overhead in SRAM Caches
+
+For a 64-bit data path with SECDED, 8 check bits are stored alongside each 64-bit word. This represents a 12.5% storage overhead.
+
+```
+L1 data cache (32KB, 64B lines):
+  Per line: 64 bytes = 512 bits data
+  ECC: 512/64 x 8 = 64 check bits = 8 bytes per line
+  Total storage per line: 72 bytes (12.5% overhead)
+  Total cache: 32KB x 1.125 = 36 KB physical SRAM
+
+  Note: L1 caches sometimes omit ECC for latency reasons,
+  relying on parity (1-bit error detect only) for speed.
+
+L2 cache (256KB, 64B lines):
+  Same 12.5% ECC overhead
+  256KB x 1.125 = 288 KB physical SRAM
+
+  Some L2/L3 caches use longer code words (e.g., 128+8 or 256+9)
+  to reduce the overhead percentage at the cost of more complex decode.
+```
+
+### BCH Codes for Multi-Bit Correction
+
+Bose--Chaudhuri--Hocquenghem (BCH) codes generalize Hamming codes to correct $t$ bit errors, where $t > 1$. The number of check bits grows as $m \cdot t$ where $m = \lceil \log_2(n) \rceil$ and $n$ is the code word length.
+
+```
+BCH(511, 484) for t=2 (double-bit correction):
+  Data bits: 484
+  Check bits: 511 - 484 = 27
+  Overhead: 27/511 = 5.3%
+
+BCH(511, 457) for t=3 (triple-bit correction):
+  Data bits: 457
+  Check bits: 511 - 457 = 54
+  Overhead: 54/511 = 10.6%
+```
+
+BCH codes are used in NAND flash memory (where multi-bit errors are common due to program/erase cycling and retention loss) and in large server-class SRAM caches where silent data corruption from multi-bit soft errors is unacceptable. The decode latency is significantly higher than Hamming (requires solving a polynomial equation over a Galois field), typically 3--10 cycles.
+
+### Scrubbing
+
+Soft errors (caused by alpha particles, cosmic rays, or neutron strikes) can flip bits in SRAM. If left uncorrected, multiple single-bit errors can accumulate in the same code word, eventually exceeding the correction capability of the ECC.
+
+**Scrubbing** periodically reads every memory location, checks the ECC, and corrects any single-bit errors before a second error can accumulate in the same code word.
+
+```
+Scrubbing rate calculation:
+  Soft error rate (SER): 100 FIT per Mb (Failures In Time = errors per 10^9 device-hours)
+
+  For a 32 MB L3 cache:
+    Total bits: 32 x 10^6 x 8 = 256 Mbits (data)
+    With ECC: 256 x 1.125 = 288 Mbits (total)
+
+    Expected errors: 288 Mbits x 100 FIT / 10^9 = 0.0288 errors/hour
+                     = 1 error every ~34.7 hours
+
+  For SECDED to work, we need to scrub fast enough that the
+  probability of TWO errors in the same 72-bit word between
+  scrubs is negligibly small.
+
+  With full scrub every 24 hours:
+    Mean errors between scrubs: 0.0288 x 24 = 0.69 errors (across ALL 4M words)
+    Probability of any double error: ~10^-7 per scrub cycle (very safe)
+```
+
+Hardware scrubbers walk through the cache or SRAM array during idle cycles, reading each line, checking the syndrome, and writing back corrected data if a single-bit error is found. This is transparent to software and has no performance impact if scheduled during idle periods.
+
+### Silent Data Corruption (SDC)
+
+When the ECC detects an error but cannot correct it (multi-bit error exceeding the correction capability), the system must decide how to respond. The worst outcome is **silent data corruption**: the error is not detected at all, and corrupted data propagates to the processor and potentially to persistent storage.
+
+```
+SDC scenarios:
+  No ECC: any single or multi-bit error is SDC
+  Parity only: single-bit error detected, multi-bit may be SDC (even number of flips)
+  SECDED: single-bit corrected, double-bit detected (CE), triple+ may be SDC
+  BCH(t=3): up to 3-bit corrected, 4-bit detected, 5+ may be SDC
+
+  SDC rate target for server processors: < 1 SDC per 10^17 device-hours
+  (roughly 1 SDC per 10 million server-years)
+```
+
+Mitigation strategies for SDC include: chipkill (distributing each memory word across multiple DRAM chips so a single-chip failure causes at most 1 bit per code word), end-to-end data integrity (CRC/ECC checked at every transfer point from DRAM to cache to register file), and lockstep execution (two cores execute the same code and compare results).
+
+---
+
+## 12. Content-Addressable Memory (CAM/TCAM)
+
+### CAM Cell Design
+
+A CAM cell stores a data bit and compares it against an input search bit in parallel across all entries. The basic binary CAM cell is built from a standard 6T SRAM cell with an additional 4T comparison circuit.
+
+```
+10T CAM cell (6T SRAM core + 4T compare):
+
+  Storage: M1-M6 (standard 6T cross-coupled inverters + access)
+           Stores bit value Q and Q_bar
+
+  Compare circuit:
+           Search line SL ---- gate of M9 (NMOS)
+           Search line_bar SL_bar ---- gate of M10 (NMOS)
+
+           M9 drain ---- M7 (NMOS, gate = Q_bar) ---- Match line (ML)
+           M10 drain -- M8 (NMOS, gate = Q) ----------- Match line (ML)
+
+           M7, M9 series: conducts when Q_bar=1 AND SL=1 (mismatch)
+           M8, M10 series: conducts when Q=1 AND SL_bar=1 (mismatch)
+
+  Match line (ML): precharged to VDD
+    If stored bit == search bit: neither path conducts, ML stays HIGH (match)
+    If stored bit != search bit: one path conducts, ML discharges (mismatch)
+```
+
+For an $N$-entry CAM, the match line spans all $N$ entries. If ANY entry has a mismatch, its discharge path pulls the shared match line LOW. Only if ALL bits in ALL positions of an entry match does the match line remain HIGH.
+
+### Binary CAM vs Ternary CAM
+
+**Binary CAM:** Each cell stores 0 or 1 and matches only the exact same value. Used for exact-match lookups: MAC address tables, ARP caches, TLB tag comparisons.
+
+**Ternary CAM (TCAM):** Each cell stores one of three states -- 0, 1, or X (don't care). The X state matches any input value. TCAM is implemented with two storage bits per cell, encoding the three states.
+
+```
+TCAM cell encoding (2 storage bits per cell):
+  Stored value  | Bit_A | Bit_B | Matches
+  ------------- | ----- | ----- | ----------
+  0             |   0   |   1   | search = 0 only
+  1             |   1   |   0   | search = 1 only
+  X (don't care)|   0   |   0   | search = 0 or 1 (always match)
+  (invalid)     |   1   |   1   | not used
+
+TCAM cell: 12T-16T (two SRAM storage cells + compare logic)
+  Area: ~2x binary CAM cell
+```
+
+### TCAM Application: IP Routing (Longest Prefix Match)
+
+IP routing tables store destination prefixes of varying lengths. A prefix 192.168.0.0/16 means "match the first 16 bits exactly, ignore the last 16 bits." This maps directly to TCAM: the first 16 bits are stored as 0/1 values, and the remaining 16 bits are stored as X (don't care).
+
+```
+Routing table example:
+  Entry 0: 10.0.0.0/8     -> Port A  (8-bit prefix, 24 X's)
+  Entry 1: 10.1.0.0/16    -> Port B  (16-bit prefix, 16 X's)
+  Entry 2: 10.1.2.0/24    -> Port C  (24-bit prefix, 8 X's)
+  Entry 3: 0.0.0.0/0      -> Port D  (0-bit prefix, 32 X's = default route)
+
+Search for 10.1.2.5:
+  Entry 0 matches (10.x.x.x matches 10.0.0.0/8)
+  Entry 1 matches (10.1.x.x matches 10.1.0.0/16)
+  Entry 2 matches (10.1.2.x matches 10.1.2.0/24)  <- longest prefix
+  Entry 3 matches (default route)
+
+  Result: Entry 2 wins (longest prefix = most specific match)
+  Priority encoder selects the highest-priority (lowest-index) matching entry
+  where entries are ordered by prefix length (longest prefix = highest priority)
+```
+
+```mermaid
+flowchart TD
+    A["Incoming packet: Destination IP 10.1.2.5"] --> B["TCAM Search: broadcast search key to all entries"]
+    B --> C["Parallel compare across all entries"]
+    C --> D["Match lines: Entry 0 MATCH, Entry 1 MATCH, Entry 2 MATCH, Entry 3 MATCH"]
+    D --> E["Priority Encoder: select longest prefix, highest priority match"]
+    E --> F["Output: Entry 2, Next hop Port C"]
+```
+
+### TCAM Power Consumption
+
+TCAM is extremely power-hungry because every entry compares its stored value against the search key simultaneously. All match lines are precharged every cycle, and mismatching entries discharge their match lines through the comparison transistors.
+
+```
+Power comparison (per bit, same process node):
+  SRAM read (1 port):  1x (reference)
+  Binary CAM search:   5-8x
+  TCAM search:         10-20x
+
+Reason for high TCAM power:
+  1. All N entries are active every search cycle (SRAM activates 1 row)
+  2. Match line precharge: N x C_ML x VDD^2 per search
+  3. Search line capacitance: each SL drives N gates per column
+  4. Comparison transistors: switching activity in mismatching entries
+```
+
+**Power reduction techniques:**
+
+- **Selective precharge:** Only precharge entries in a subset of the TCAM bank per cycle, trading throughput for power. Common in low-power networking chips (2--4 searches per routing decision instead of 1).
+- **Partitioned TCAM:** Divide the TCAM into blocks by prefix length. Only search the relevant block(s) based on the first few bits of the key. Reduces active entries by 50--80%.
+- **Search line gating:** Disable search lines for columns that are "don't care" in all entries of a block, reducing switching capacitance.
+
+### TCAM Sizing in Networking Chips
+
+```
+Typical TCAM allocations in a datacenter switch ASIC (2024 generation):
+  IPv4 routing table:     128K entries x 32-bit key = 4 Mb
+  IPv6 routing table:     32K entries x 128-bit key = 4 Mb
+  ACL rules:              64K entries x 144-bit key (with metadata) = 9 Mb
+  QoS classification:     16K entries x 80-bit key = 1.3 Mb
+  Total TCAM:             ~18 Mb
+
+  At 10-20x SRAM power per bit:
+  18 Mb TCAM power at 1 GHz search rate = 5-15 W (significant portion of chip TDP)
+
+  Physical area (7nm): ~18 Mb x 0.2 um^2/bit = ~3.6 mm^2 (TCAM cell area)
+  With periphery: ~8-10 mm^2 total
+```
+
+### Alternative: Hash-Based Lookup in SRAM
+
+For applications where exact match suffices (or where multiple hash probes are acceptable), SRAM with hash-based lookup offers much lower power at the cost of variable lookup latency.
+
+```
+Hash lookup vs TCAM comparison:
+
+  TCAM:
+    Latency: 1 cycle (deterministic, parallel compare)
+    Power: very high (all entries active)
+    Area: 2-3x SRAM per bit
+    Supports prefix match: yes (via don't-care bits)
+
+  SRAM hash table:
+    Latency: 2-5 cycles (hash compute + SRAM read + chain/probe)
+    Power: low (only accessed SRAM rows consume energy)
+    Area: standard SRAM density
+    Supports prefix match: no (exact match only, or limited via multiple tables)
+
+  Hybrid approach:
+    Use TCAM for prefix matching (routing, ACLs)
+    Use SRAM hash for exact match (MAC tables, flow caches)
+    Typical split in switch ASICs: 30% TCAM, 70% SRAM hash tables
+```
+
+### Interview-Style Questions
+
+**Q: Why does CAM cell area scale poorly with port count compared to SRAM?**
+
+**A:** SRAM ports add wordlines and bitlines, which increase cell area quadratically. CAM adds search lines (analogous to bitlines for comparison) and match lines (analogous to wordlines for output). Each additional search dimension requires its own comparison transistor stack per cell, and each additional match dimension requires another match line. Since CAM is already 10T-16T per cell (versus 6T for SRAM), adding multi-search capability quickly makes the cell impractically large. This is why TCAM is almost always single-search (one lookup per cycle per bank) whereas SRAM supports multi-port access.
+
+**Q: Calculate the storage overhead for protecting a 64-byte cache line with SECDED ECC.**
+
+**A:** A 64-byte line contains 512 data bits. With Hamming-based SECDED, the number of check bits $r$ satisfies $2^r \geq 512 + r + 1$. For $r = 10$: $2^{10} = 1024 \geq 523$. So 10 check bits per 512-bit code word. In practice, the line is divided into eight 64-bit sub-words, each protected by its own Hamming(72,64) code: $8 \times 8 = 64$ check bits = 8 bytes per 64-byte line. Overhead: 8/64 = 12.5%. Each sub-word is independently correctable, so up to 8 single-bit errors per line can be corrected (one per sub-word).
+
+**Q: Why does a 4-wide OoO processor need 8 read ports on the physical register file even though it only has 4 source operands per cycle?**
+
+**A:** The physical register file serves both the rename stage (which reads architectural register mappings) and the issue stage (which reads source operand values). In many designs, the wakeup/select logic reads the register file speculatively. Additionally, some instructions (like conditional moves or fused multiply-add) read 3 source operands. Accounting for these cases: 4 instructions x 2--3 sources = 8--12 read ports. Conservative designs allocate 8R for a 4-wide machine. Some processors reduce this by using operand caching (cache recently-read values at the issue queue) to avoid re-reading the register file for dependent instructions.

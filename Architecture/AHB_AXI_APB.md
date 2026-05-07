@@ -12,6 +12,9 @@
 9. Bus Bridge Design (AXI-to-APB, AHB-to-AXI)
 10. Performance Analysis and Bandwidth Calculations
 11. Interview Q&A (20+ Questions)
+12. Clock Domain Crossing for AXI Bridges
+13. TrustZone Security Attributes
+14. AXI Atomic Operations (ATOP)
 
 ---
 
@@ -1336,3 +1339,502 @@ one wider port (512-bit) or higher frequency.
 ### Q20: What signal integrity concerns exist in high-frequency AXI interfaces?
 
 **A:** At 500MHz+ AXI: (1) The VALID-to-READY combinational path (if READY depends on VALID) creates a long timing path across the interconnect -- insert register slices to break timing. Register slices add 1 cycle latency but enable higher frequency. (2) Wide data buses (512-bit) have high capacitance and crosstalk -- careful routing with shielding. (3) ID width expansion increases wire count -- consider ID remapping to keep widths manageable. (4) AXI protocol bridges (clock/width conversion) must handle handshake timing carefully across clock domains. (5) For chiplet or die-to-die AXI (e.g., UCIe), serialization and retiming add significant complexity.
+
+---
+
+## 12. Clock Domain Crossing for AXI Bridges
+
+### 12.1 The Problem
+
+In a typical SoC, a 500 MHz CPU core issues AXI transactions that must reach a 200 MHz peripheral subsystem. The master and slave operate in different clock domains. Directly connecting AXI signals across domains causes metastability: a signal sampled near its transition edge may resolve to an unpredictable voltage level, corrupting data or locking up the handshake state machines.
+
+```mermaid
+flowchart TD
+    A[CPU Core<br>500 MHz AXI Master] --> B[Async AXI Bridge<br>CDC Logic]
+    B --> C[Peripheral Subsystem<br>200 MHz AXI Slave]
+    D[CPU Clock Domain<br>clk_cpu = 500 MHz] --> A
+    E[Peripheral Clock Domain<br>clk_periph = 200 MHz] --> C
+    B -.->|Gray-code pointer crossing| F[Async FIFO]
+    D -.-> F
+    E -.-> F
+```
+
+### 12.2 Async FIFO Between Domains
+
+The standard technique for crossing multi-bit data between clock domains is an asynchronous (async) FIFO. Data is written in the source clock domain and read in the destination clock domain.
+
+**Gray code pointer crossing.** The write pointer increments in the source domain. To pass it safely into the destination domain, the pointer is converted to Gray code (only one bit changes per increment). Each Gray-coded pointer bit is synchronized through a two-flop synchronizer in the opposite domain:
+
+$$
+\text{Gray}(n) = n \oplus \lfloor n / 2 \rfloor
+$$
+
+Because only one bit toggles per increment, a synchronizer capturing the pointer mid-transition will resolve to either the current or previous value -- never an invalid intermediate state.
+
+```mermaid
+flowchart LR
+    subgraph Write Domain
+        WCLK[wclk] --> WINC[Write Increment]
+        WDATA[wdata] --> FIFO_MEM[FIFO Memory Array]
+        WPTR_BIN[wptr binary] --> W2G[Binary to Gray]
+    end
+    W2G -->|Gray pointer| SYNC_WR_TO_RD[2-Flop Synchronizer]
+    SYNC_WR_TO_RD --> RPTR_G[rdptr gray, synced]
+    RPTR_G --> G2B_RD[Gray to Binary]
+    G2B_RD --> RD_LOGIC[Full/Empty Logic]
+    subgraph Read Domain
+        RCLK[rclk] --> RINC[Read Increment]
+        FIFO_MEM --> RDATA[rdata]
+        RPTR_BIN[rptr binary] --> R2G[Binary to Gray]
+    end
+    R2G -->|Gray pointer| SYNC_RD_TO_WR[2-Flop Synchronizer]
+    SYNC_RD_TO_WR --> WPTR_G[wrptr gray, synced]
+    WPTR_G --> G2B_WR[Gray to Binary]
+    G2B_WR --> WR_LOGIC[Full/Empty Logic]
+```
+
+### 12.3 Two-Flop Synchronizer and MTBF
+
+Each bit of the Gray-coded pointer passes through a two-flop synchronizer:
+
+```
+clk_dest domain:
+  flop1: sampled from clk_src domain (may be metastable)
+  flop2: resolves metastability with one additional clock cycle
+
+Output of flop2 is stable with very high probability.
+```
+
+The mean time between failures (MTBF) quantifies reliability:
+
+$$
+\text{MTBF} = \frac{e^{t_s / \tau}}{W \cdot f_{\text{src}} \cdot f_{\text{dest}}}
+$$
+
+Where $t_s$ is the available settling time (one destination clock period minus setup/hold), $\tau$ and $W$ are technology-dependent metastability constants, $f_{\text{src}}$ is the source clock frequency, and $f_{\text{dest}}$ is the destination clock frequency.
+
+For a 500 MHz to 200 MHz crossing in a 7 nm process:
+
+$$
+t_s = 5.0\,\text{ns} - 0.05\,\text{ns} \approx 5.0\,\text{ns}
+$$
+
+$$
+\text{MTBF} \approx \frac{e^{5.0 / 0.02}}{10^{-7} \cdot 5 \times 10^8 \cdot 2 \times 10^8} \approx 10^{25}\,\text{years}
+$$
+
+This is why a two-flop synchronizer is sufficient for most SoC clock crossings. A three-flop synchronizer is only needed when $t_s$ is extremely short (very high-frequency domains with tight setup margins).
+
+### 12.4 AXI Register Slice with Handshake Synchronizers
+
+An AXI register slice inserts a pipeline register stage on each channel. When combined with async handshake synchronizers, it becomes a clock domain crossing bridge:
+
+```mermaid
+flowchart LR
+    subgraph Source Domain
+        S_VALID[src_valid] --> SYNC_V[Sync valid<br>into dest domain]
+        S_PAYLOAD[src payload] --> REG_P[Register Stage]
+    end
+    SYNC_V -->|dest_valid| AND1{AND}
+    REG_P -->|dest_payload| DEST[Destination]
+    DEST -->|dest_ready| SYNC_R[Sync ready<br>into src domain]
+    SYNC_R -->|src_ready_sync| AND1
+    AND1 -->|Capture into register| REG_P
+```
+
+For a full AXI channel crossing, the pattern repeats for all five channels (AW, W, B, AR, R). Each channel has its own async FIFO or handshake synchronizer. The key insight: VALID and data cross from source to destination domain; READY crosses from destination back to source domain.
+
+### 12.5 AXI Data Width Conversion: Downsizer Bridge
+
+A 128-bit master connected to a 32-bit slave requires a downsizer bridge. A single 128-bit beat produces four 32-bit beats on the narrow side.
+
+```
+Master side (128-bit):       Slave side (32-bit):
+  AWADDR = 0x1000, AWLEN=3    AWADDR = 0x1000, AWLEN=15
+  WDATA[127:0], WSTRB[15:0]   Beat 0: WDATA[31:0],  WSTRB[3:0],  AWADDR=0x1000
+                                Beat 1: WDATA[63:32], WSTRB[7:4],  AWADDR=0x1004
+                                Beat 2: WDATA[95:64], WSTRB[11:8], AWADDR=0x1008
+                                Beat 3: WDATA[127:96],WSTRB[15:12],AWADDR=0x100C
+
+The bridge:
+  - Accepts one 128-bit write beat
+  - Issues 4 sequential 32-bit write beats on the narrow side
+  - Generates incremented addresses
+  - Narrows WSTRB accordingly
+  - Accumulates errors from all sub-beats into a single BRESP
+  - For reads: collects 4 x 32-bit beats and assembles into 128-bit RDATA
+```
+
+### 12.6 Verilog Module: Async AXI Bridge
+
+```verilog
+module axi_async_bridge #(
+    parameter ADDR_W  = 32,
+    parameter DATA_W  = 64,
+    parameter ID_W    = 4,
+    parameter USER_W  = 8,
+    parameter FIFO_DEPTH = 16       // must be power of 2
+)(
+    // Source clock domain (fast side)
+    input  wire                      s_aclk,
+    input  wire                      s_aresetn,
+
+    // Slave interface (source domain)
+    input  wire [ID_W-1:0]           s_awid,
+    input  wire [ADDR_W-1:0]         s_awaddr,
+    input  wire [7:0]                s_awlen,
+    input  wire [2:0]                s_awsize,
+    input  wire [1:0]                s_awburst,
+    input  wire [3:0]                s_awcache,
+    input  wire [2:0]                s_awprot,
+    input  wire [3:0]                s_awqos,
+    input  wire                      s_awvalid,
+    output wire                      s_awready,
+
+    input  wire [DATA_W-1:0]         s_wdata,
+    input  wire [DATA_W/8-1:0]       s_wstrb,
+    input  wire                      s_wlast,
+    input  wire                      s_wvalid,
+    output wire                      s_wready,
+
+    output wire [ID_W-1:0]           s_bid,
+    output wire [1:0]                s_bresp,
+    output wire                      s_bvalid,
+    input  wire                      s_bready,
+
+    input  wire [ID_W-1:0]           s_arid,
+    input  wire [ADDR_W-1:0]         s_araddr,
+    input  wire [7:0]                s_arlen,
+    input  wire [2:0]                s_arsize,
+    input  wire [1:0]                s_arburst,
+    input  wire                      s_arvalid,
+    output wire                      s_arready,
+
+    output wire [ID_W-1:0]           s_rid,
+    output wire [DATA_W-1:0]         s_rdata,
+    output wire [1:0]                s_rresp,
+    output wire                      s_rlast,
+    output wire                      s_rvalid,
+    input  wire                      s_rready,
+
+    // Destination clock domain (slow side)
+    input  wire                      d_aclk,
+    input  wire                      d_aresetn,
+
+    // Master interface (destination domain)
+    output wire [ID_W-1:0]           m_awid,
+    output wire [ADDR_W-1:0]         m_awaddr,
+    output wire [7:0]                m_awlen,
+    output wire [2:0]                m_awsize,
+    output wire [1:0]                m_awburst,
+    output wire                      m_awvalid,
+    input  wire                      m_awready,
+
+    output wire [DATA_W-1:0]         m_wdata,
+    output wire [DATA_W/8-1:0]       m_wstrb,
+    output wire                      m_wlast,
+    output wire                      m_wvalid,
+    input  wire                      m_wready,
+
+    input  wire [ID_W-1:0]           m_bid,
+    input  wire [1:0]                m_bresp,
+    input  wire                      m_bvalid,
+    output wire                      m_bready,
+
+    output wire [ID_W-1:0]           m_arid,
+    output wire [ADDR_W-1:0]         m_araddr,
+    output wire [7:0]                m_arlen,
+    output wire [2:0]                m_arsize,
+    output wire [1:0]                m_arburst,
+    output wire                      m_arvalid,
+    input  wire                      m_arready,
+
+    input  wire [ID_W-1:0]           m_rid,
+    input  wire [DATA_W-1:0]         m_rdata,
+    input  wire [1:0]                m_rresp,
+    input  wire                      m_rlast,
+    input  wire                      m_rvalid,
+    output wire                      m_rready
+);
+
+    // Each channel instantiates an async FIFO:
+    //   AW channel FIFO: carries {awid, awaddr, awlen, awsize, awburst, awcache, awprot, awqos}
+    //   W  channel FIFO: carries {wdata, wstrb, wlast}
+    //   B  channel FIFO: carries {bid, bresp}         (reverse direction: dest -> src)
+    //   AR channel FIFO: carries {arid, araddr, arlen, arsize, arburst}
+    //   R  channel FIFO: carries {rid, rdata, rresp, rlast}  (reverse direction: dest -> src)
+    //
+    // READY signals derive from FIFO full/empty status.
+    // VALID signals derive from FIFO push/pop logic.
+    // FIFO pointers cross domains via Gray code + two-flop synchronizers.
+
+    // Implementation uses parameterized async FIFO IP or hand-written Gray-code FIFOs.
+    // Each FIFO's write side runs in the source clock domain,
+    // read side runs in the destination clock domain.
+
+endmodule
+```
+
+---
+
+## 13. TrustZone Security Attributes
+
+### 13.1 AxPROT Signal Encoding
+
+ARM TrustZone partitions the system into a Secure world and a Non-secure world. The partitioning is enforced through the AxPROT signal that accompanies every AXI transaction.
+
+| AxPROT Bit | Name          | 0 (Deasserted)      | 1 (Asserted)        |
+|------------|---------------|----------------------|---------------------|
+| [0]        | Privilege     | Privileged access    | Unprivileged access |
+| [1]        | Security      | Secure access        | Non-secure access   |
+| [2]        | Data/Instr    | Data access          | Instruction access  |
+
+**ARPROT** applies to read address transactions. **AWPROT** applies to write address transactions. These are separate signals, so a single master can issue both secure reads and non-secure writes if its security state changes.
+
+```mermaid
+flowchart TD
+    MASTER[AXI Master] -->|AxPROT[1]=0<br>Secure Transaction| INTERCONNECT[AXI Interconnect]
+    MASTER2[AXI Master] -->|AxPROT[1]=1<br>Non-secure Transaction| INTERCONNECT
+    INTERCONNECT -->|Filter by AxPROT| TZC[TrustZone Controller]
+    TZC -->|Secure region access<br>granted or denied| DRAM[DRAM]
+    INTERCONNECT -->|Non-secure peripheral<br>access granted| PERIPH[Peripheral Slave]
+    INTERCONNECT -->|Secure-only peripheral<br>access denied if NS| SEC_PERIPH[Secure Peripheral]
+```
+
+### 13.2 Secure vs Non-secure Masters
+
+A secure master (AxPROT[1] = 0) runs code in the Secure world. It can access both secure and non-secure address regions:
+
+```
+Secure master:
+  - Can issue AxPROT[1]=0 (secure) transactions -> access secure peripherals, secure DRAM
+  - Can issue AxPROT[1]=1 (non-secure) transactions -> access non-secure peripherals, normal DRAM
+  - Dynamically switches between secure and non-secure mode based on software execution state
+
+Non-secure master (AxPROT[1] = 1 always):
+  - Can ONLY issue AxPROT[1]=1 transactions
+  - Hardware prevents this master from ever asserting AxPROT[1]=0
+  - Any attempt to access a secure-address region returns SLVERR or DECERR
+```
+
+### 13.3 TrustZone Controller (TZC)
+
+The TZC sits between the AXI interconnect and DRAM. It acts as a security firewall:
+
+```
+TZC configuration (programmed by secure firmware at boot):
+  Region 0: 0x0000_0000 - 0x0FFF_FFFF  -> Secure-only
+  Region 1: 0x1000_0000 - 0x2FFF_FFFF  -> Non-secure
+  Region 2: 0x3000_0000 - 0x3FFF_FFFF  -> Secure-only
+  Region 3: 0x4000_0000 - 0x7FFF_FFFF  -> Both secure and non-secure
+
+Filtering rules:
+  Transaction with AxPROT[1]=1 (non-secure) to Region 0 -> DENIED (SLVERR)
+  Transaction with AxPROT[1]=0 (secure)    to Region 0 -> GRANTED
+  Transaction with AxPROT[1]=1 (non-secure) to Region 1 -> GRANTED
+  Transaction with AxPROT[1]=0 (secure)    to Region 1 -> GRANTED
+```
+
+The TZC checks AxPROT[1] against its region table on every transaction. A denied transaction triggers a BRESP/RRESP = SLVERR and raises a security violation interrupt to the secure interrupt controller.
+
+```mermaid
+flowchart TD
+    AXI_TXN[Incoming AXI Transaction<br>with AxPROT] --> CHECK_ADDR{Address matches<br>which TZC region?}
+    CHECK_ADDR -->|Region marked<br>Secure-only| CHECK_NS{AxPROT[1] == ?}
+    CHECK_NS -->|AxPROT[1]=0 Secure| GRANT[Grant Access<br>Pass to DRAM]
+    CHECK_NS -->|AxPROT[1]=1 Non-secure| DENY[Deny Access<br>Return SLVERR<br>Raise IRQ]
+    CHECK_ADDR -->|Region marked<br>Non-secure| GRANT2[Grant Access]
+    CHECK_ADDR -->|No matching region| DENY2[Deny Access<br>Return DECERR]
+```
+
+### 13.4 Use Case: Secure Boot and Rich OS
+
+```
+Boot sequence:
+  1. ROM (secure) executes first -> verifies bootloader signature
+  2. Secure bootloader runs in Secure world (AxPROT[1]=0)
+     - Initializes TZC region map
+     - Locks secure peripherals (crypto engine, OTP key storage)
+     - Sets up secure monitor (ARM TrustZone monitor mode / EL3)
+  3. Rich OS (Linux, Android) boots in Non-secure world (AxPROT[1]=1)
+     - Cannot read secure DRAM regions
+     - Cannot access secure peripherals
+     - Cannot read OTP/encryption keys
+  4. Secure services (payment, DRM, biometric) run in Secure world
+     - Rich OS requests service via SMC (Secure Monitor Call)
+     - Monitor transitions CPU to secure state, changes AxPROT[1]=0
+     - Service completes, monitor returns to non-secure state
+```
+
+### 13.5 Debug Security
+
+Debug access is also partitioned by TrustZone:
+
+```
+Debug authentication levels:
+  Level 0: No debug access (production device, fuses blown)
+  Level 1: Non-secure debug only (can debug rich OS, not secure world)
+  Level 2: Secure debug requires authentication token
+           - External debugger must present a signed certificate
+           - Token is validated by a debug authentication module
+           - Grants access to secure memory and registers
+  Level 3: Full debug access (development only, never shipped)
+
+SP (Security Policy) block controls:
+  - JTAG/SWD access filtered by authentication level
+  - Trace outputs filtered (secure world traces suppressed on production devices)
+  - Breakpoint and watchpoint access restricted by security state
+```
+
+---
+
+## 14. AXI Atomic Operations (ATOP)
+
+### 14.1 Overview: ATOP in AXI5
+
+AXI5 introduces atomic operations via the AxATOP signal, eliminating the need for the two-phase exclusive access pattern (LDREX + STREX). A single AXI transaction can perform a read-modify-write at the target slave in one round trip.
+
+```mermaid
+flowchart TD
+    A[AXI5 Master<br>issues AxATOP != 0] --> B{ATOP Type?}
+    B -->|AtomicLoad<br>AxATOP[5]=0| C[Slave reads old value<br>Modifies per operation<br>Returns old data on R channel]
+    B -->|AtomicStore<br>AxATOP[5]=1, AxATOP[0]=0| D[Slave reads value<br>Modifies per operation<br>Writes back new value<br>No data return]
+    B -->|AtomicSwap<br>AxATOP=0x10| E[Slave writes WDATA<br>Returns old value on R channel]
+    B -->|AtomicCompare<br>AxATOP=0x14| F{Stored value ==<br>compare value?}
+    F -->|Yes| G[Write WDATA<br>Return old value]
+    F -->|No| H[No write<br>Return old value]
+    C --> I[Response on R channel]
+    D --> J[Response on B channel only]
+    E --> I
+    G --> I
+    H --> I
+```
+
+### 14.2 ATOP Operation Categories
+
+**AtomicLoad operations** (AxATOP[5] = 0): read the target location, apply an operation, write the result back, and return the original value on the R channel.
+
+| AxATOP[5:0] | Operation | Description |
+|-------------|-----------|-------------|
+| 0x00        | AtomicLoad ADD | Return old value, write (old + WDATA) |
+| 0x01        | AtomicLoad CLR | Return old value, write (old AND NOT WDATA) |
+| 0x02        | AtomicLoad EOR | Return old value, write (old XOR WDATA) |
+| 0x03        | AtomicLoad SET | Return old value, write (old OR WDATA) |
+| 0x04        | AtomicLoad SMAX | Return old value, write max(old, WDATA) signed |
+| 0x05        | AtomicLoad SMIN | Return old value, write min(old, WDATA) signed |
+| 0x06        | AtomicLoad UMAX | Return old value, write max(old, WDATA) unsigned |
+| 0x07        | AtomicLoad UMIN | Return old value, write min(old, WDATA) unsigned |
+
+**AtomicStore operations** (AxATOP[5] = 1, AxATOP[0] = 0): read, modify, write back, but do NOT return data. Only a B channel response is generated.
+
+| AxATOP[5:0] | Operation | Description |
+|-------------|-----------|-------------|
+| 0x10        | AtomicSwap | Write WDATA to location, return old value on R channel |
+| 0x14        | AtomicCompare | CAS: if stored == compare value, write WDATA; return old value |
+| 0x20        | AtomicStore ADD | Write (old + WDATA), no data return |
+| 0x21        | AtomicStore CLR | Write (old AND NOT WDATA), no data return |
+| 0x22        | AtomicStore EOR | Write (old XOR WDATA), no data return |
+| 0x23        | AtomicStore SET | Write (old OR WDATA), no data return |
+
+### 14.3 Advantage Over AXI4 Exclusive Access
+
+```
+AXI4 exclusive access (LDREX + STREX):
+  Phase 1: Exclusive read (ARLOCK=1) -> returns value V     [1 round trip]
+           Master computes new value locally
+  Phase 2: Exclusive write (AWLOCK=1) -> BRESP=EXOKAY/OKAY [1 round trip]
+  Total: 2 round trips, plus master-side computation between them
+  If EXOKAY fails (another writer intervened), must retry BOTH phases
+
+AXI5 ATOP (single transaction):
+  Phase 1: Write with AxATOP -> slave performs operation internally -> response
+  Total: 1 round trip
+  No retry loop needed: the operation is indivisible at the slave
+```
+
+Latency comparison for a counter increment at DDR:
+
+$$
+T_{\text{exclusive}} = 2 \times t_{\text{round\_trip}} + t_{\text{compute}} + p_{\text{retry}} \times 2 \times t_{\text{round\_trip}}
+$$
+
+$$
+T_{\text{ATOP}} = 1 \times t_{\text{round\_trip}}
+$$
+
+Where $p_{\text{retry}}$ is the probability of exclusive access failure under contention. Under high contention (many cores), $p_{\text{retry}}$ approaches 1.0, making ATOP significantly faster.
+
+### 14.4 AtomicCompare (CAS) Detail
+
+The compare-and-swap operation is the foundation of lock-free data structures:
+
+```
+AtomicCompare (AxATOP = 0x14):
+  W channel carries two values:
+    WDATA = new value to write if comparison succeeds
+    Additional compare value (convention: upper bits of a wider WDATA,
+    or a separate sideband signal depending on implementation)
+
+  At the slave:
+    old_value = memory[AWADDR]
+    if (old_value == compare_value) then
+        memory[AWADDR] = WDATA    // write new value
+    end if
+    R channel returns old_value   // master checks: if old == compare, CAS succeeded
+
+  This is the hardware primitive for:
+    - Lock-free stacks and queues
+    - RC11 memory model atomic operations
+    - Linux kernel atomic_cmpxchg()
+```
+
+### 14.5 Restrictions and Compatibility
+
+```
+ATOP is only defined in AXI5 (AMBA 5):
+  - AXI4-Lite: does NOT support ATOP (no AxATOP signal)
+  - AXI4-Stream: not applicable (no address/data write model)
+  - AXI4: no AxATOP signal; must use exclusive access (AxLOCK) instead
+  - AXI5: full support
+
+Interconnect behavior with mixed AXI4/AXI5:
+  - If an AXI5 master issues AxATOP != 0 to an AXI4 slave:
+    The interconnect must either:
+      (a) Return SLVERR (ATOP not supported at this slave)
+      (b) Convert ATOP to an internal exclusive access sequence (complex)
+
+  - Best practice: only issue ATOP to known AXI5-capable slaves.
+    Use a discovery mechanism or static system configuration to identify
+    which slaves support ATOP.
+
+  - AxATOP signal defaults to 0 for AXI4 masters, ensuring backward
+    compatibility. An AXI4 master connected to an AXI5 interconnect
+    simply never asserts AxATOP.
+```
+
+### 14.6 ATOP and Transaction Ordering
+
+```
+An ATOP transaction has special ordering implications:
+
+  1. An AtomicLoad/AtomicSwap/AtomicCompare uses BOTH the AW channel
+     (to send address and operation) AND the R channel (to return data).
+     This means it occupies both a write and a read "slot" simultaneously.
+
+  2. The transaction ID on AW and R must match (same AxID == RID).
+
+  3. Ordering rules:
+     - ATOP transactions are ordered with respect to other writes
+       with the same ID (same as normal write ordering).
+     - The R channel response is ordered with respect to other
+       reads with the same ID.
+     - No ordering guarantee between ATOP and normal reads of the
+       same address unless they share the same ID.
+
+  4. A slave must not merge or combine ATOP transactions:
+     each must execute as an indivisible operation.
+
+  5. Outstanding depth consideration: an ATOP consumes one outstanding
+     entry on both the write and read sides of the master's tracking logic.
+     Master must account for this when managing outstanding limits.
+```

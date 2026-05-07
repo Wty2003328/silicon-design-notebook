@@ -1208,3 +1208,524 @@ Processor A is faster despite lower frequency!
 ### Q20: Design considerations for a 4-wide superscalar processor. What are the bottlenecks?
 
 **A:** Key bottlenecks: (1) **Fetch bandwidth**: need I-cache with 4+ instruction fetch per cycle, must handle branches within the fetch group (branch in position 2 means positions 3-4 are potentially wrong-path). (2) **Decode**: 4 decoders in parallel, each handling different instruction formats. x86 is particularly complex (variable-length instructions). (3) **Rename**: 4 rename operations per cycle, each reading 2 source mappings and writing 1 destination mapping to the RAT. Need 8-read, 4-write port RAT. (4) **Issue**: check 4 new instructions against all in-flight instructions for dependencies (O(4*N) comparisons where N is the issue queue depth). (5) **Execution**: need multiple FUs (2-4 ALUs, 1-2 FPU, 2 load/store). (6) **Commit**: 4 entries from ROB head per cycle. Register file needs many ports: practical limit is 6-8 wide issue before the register file becomes the area/power bottleneck.
+
+---
+
+## 12. Fetch Unit Microarchitecture
+
+### 12.1 Fetch Target Queue (FTQ)
+
+The FTQ is a small FIFO structure sitting between the branch predictor and the
+I-cache. It decouples prediction throughput from cache latency so the predictor
+can run ahead of the cache without stalling.
+
+```
+FTQ entry fields:
+  { predicted_PC,          -- next fetch address (from BPU)
+    fall_through_PC,       -- PC + fetch_width (sequential fallback)
+    btb_hit,               -- was there a BTB hit for this prediction?
+    bht_direction,         -- taken / not-taken from the 2-bit counter
+    cond_branch_mask,      -- which instruction positions contain branches
+    pred_target            -- predicted branch target address
+  }
+```
+
+Each cycle the BPU pushes one FTQ entry; the I-cache pops entries at its own
+rate. On a misprediction the FTQ is flushed and refilled from the corrected PC.
+
+### 12.2 Fetch Pipeline Stages
+
+The fetch pipeline typically spans 3--5 stages in a modern out-of-order core.
+The key dataflow is:
+
+```mermaid
+flowchart TD
+    A[BPU predicts next PC] --> B[FTQ Entry Allocated]
+    B --> C[I-Cache Tag + Data Lookup]
+    C -->|Hit| D[Instruction Bytes Returned]
+    C -->|Miss| E[Line-Fill Buffer Allocated]
+    E --> F[Critical-Word-First Fill from L2]
+    F --> D
+    D --> G[Pre-Decoder: scan for branches]
+    G --> H[Decode Queue -- feeds rename/decode]
+    H --> I[Rename Stage]
+```
+
+Stage-by-stage breakdown:
+
+| Stage | Latency | Action |
+|-------|---------|--------|
+| BPU + FTQ | 1 cycle | Generate predicted PC, enqueue in FTQ |
+| I-cache lookup | 1--4 cycles | Tag compare + data RAM read in parallel |
+| I-cache miss | 10--20 cycles | Line-fill from L2, stall fetch pipe |
+| Pre-decode | 1 cycle | Identify branches, compute targets |
+| Decode queue | buffer | Decouple fetch from rename bandwidth |
+
+### 12.3 I-Cache Miss Handling
+
+When the I-cache misses the fetch unit must wait for the line to arrive from
+the next cache level. The key mechanisms are:
+
+1. **Line-fill buffer** -- holds the incoming cache line while it is being
+   written into the I-cache data array. One or two fill buffers allow
+   overlapping misses (one being filled while another waits for L2).
+
+2. **Critical-word-first** -- the first 16--32 bytes that contain the
+   requested PC are forwarded to the pre-decoder immediately; the rest of the
+   line arrives over subsequent bus beats. This reduces the visible stall by
+   roughly $\lceil B/w \rceil - 1$ cycles, where $B$ is the cache-line size
+   and $w$ is the bus width per beat.
+
+3. **Fetch stall + FTQ drain** -- the FTQ continues to drain entries that hit
+   in the I-cache, but no new FTQ entries are pushed until the miss resolves.
+   In practice the BPU also stalls to avoid polluting the FTQ with
+   predictions for addresses that cannot yet be fetched.
+
+4. **Streaming / prefetch** -- some designs (e.g., Apple M-series) employ a
+   next-line prefetcher that initiates an L2 request for the sequential line
+   in parallel with the current I-cache access, hiding most of the miss
+   penalty for straight-line code.
+
+### 12.4 Fetch Bandwidth Constraints
+
+Fetch bandwidth is measured in instructions per cycle (IPC$_{\text{fetch}}$):
+
+$$
+\text{IPC}_{\text{fetch}} = \min\!\left(\frac{\text{I-cache line size}}{\text{avg instruction width}},\;\text{decode width}\right)
+$$
+
+For a fixed-length ISA (RISC-V, ARM):
+- I-cache line = 64 bytes, instruction = 4 bytes $\Rightarrow$ up to 16
+  instructions per line.
+- Practical fetch width limited to 4--8 instructions per cycle by the
+  pre-decoder and branch-prediction check within the fetch group.
+
+For a variable-length ISA (x86):
+- Instructions range from 1--15 bytes.
+- Pre-decode must find instruction boundaries, so 4--6 instructions per cycle
+  is typical; Intel calls this the "MOP cache" problem and uses a decoded
+  instruction cache (DSB / MOP cache) to bypass the pre-decoder.
+
+Alignment penalty: if the fetch PC is not aligned to the start of a cache line,
+only the remaining bytes in the line are usable. The fetch unit issues a second
+I-cache access in the next cycle for the remainder, costing one cycle.
+
+### 12.5 Pre-Decode
+
+The pre-decoder scans raw instruction bytes for lightweight hints that are
+used by later pipeline stages:
+
+- **Branch detection** -- identify conditional and unconditional branch opcodes
+  so the BTB and BHT can be updated early.
+- **Branch target computation** -- for direct branches the target is encoded
+  in the immediate field; the pre-decoder extracts it in parallel with decode.
+- **Instruction length** -- for variable-length ISAs the pre-decoder marks byte
+  boundaries, enabling the decoder to slice the fetch group into individual
+  instructions.
+- **Call/return identification** -- mark CALL and RET instructions so the
+  Return Address Stack (RAS) can be updated speculatively at fetch time.
+
+Pre-decode results are stored alongside each instruction in the decode queue
+and forwarded to the BPU update path on commit, completing the prediction
+feedback loop.
+
+---
+
+## 13. RISC-V Instruction Examples
+
+### 13.1 RV64I Base Instruction Formats
+
+RISC-V uses six base encoding formats, all fixed at 32 bits. The opcode always
+occupies bits [6:0], which makes early decode straightforward.
+
+| Format | Fields (bit ranges) |
+|--------|---------------------|
+| R-type | funct7[31:25] rs2[24:20] rs1[19:15] funct3[14:12] rd[11:7] opcode[6:0] |
+| I-type | imm[31:20] rs1[19:15] funct3[14:12] rd[11:7] opcode[6:0] |
+| S-type | imm[31:25] rs2[24:20] rs1[19:15] funct3[14:12] imm[4:0][11:7] opcode[6:0] |
+| B-type | imm[12\|10:5] rs2[24:20] rs1[19:15] funct3[14:12] imm[4:1\|11][11:7] opcode[6:0] |
+| U-type | imm[31:12] rd[11:7] opcode[6:0] |
+| J-type | imm[20\|10:1\|11\|19:12] rd[11:7] opcode[6:0] |
+
+### 13.2 R-Type Example: ADD x5, x6, x7
+
+```
+ADD x5, x6, x7
+  funct7 = 0000000
+  rs2    = 00111   (x7)
+  rs1    = 00110   (x6)
+  funct3 = 000
+  rd     = 00101   (x5)
+  opcode = 0110011 (OP)
+
+Machine code: 0000000_00111_00110_000_00101_0110011
+Hex: 0x007302B3
+```
+
+### 13.3 I-Type Example: ADDI x5, x6, -1
+
+```
+ADDI x5, x6, -1
+  imm    = 111111111111  (-1, sign-extended 12-bit = 0xFFF)
+  rs1    = 00110   (x6)
+  funct3 = 000
+  rd     = 00101   (x5)
+  opcode = 0010011 (OP-IMM)
+
+Machine code: 111111111111_00110_000_00101_0010011
+Hex: 0xFFF30293
+```
+
+### 13.4 Load Example: LD x5, 8(x6)
+
+```
+LD x5, 8(x6)
+  imm    = 000000001000  (8)
+  rs1    = 00110   (x6)
+  funct3 = 011     (doubleword = 64-bit load)
+  rd     = 00101   (x5)
+  opcode = 0000011 (LOAD)
+
+Machine code: 000000001000_00110_011_00101_0000011
+Hex: 0x00831283
+```
+
+### 13.5 Store Example: SD x5, 8(x6)
+
+```
+SD x5, 8(x6)
+  imm[11:5] = 0000000   (upper immediate bits)
+  rs2       = 00101     (x5, data to store)
+  rs1       = 00110     (x6, base address)
+  funct3    = 011       (doubleword = 64-bit store)
+  imm[4:0]  = 01000     (lower immediate bits = 8)
+  opcode    = 0100011   (STORE)
+
+Machine code: 0000000_00101_00110_011_01000_0100011
+Hex: 0x00531423
+```
+
+### 13.6 Branch Example: BEQ x5, x6, offset
+
+The B-type immediate is the most complex encoding in RISC-V. For a branch
+offset of +4 (i.e., skip one instruction forward), the immediate is 4:
+
+```
+offset = +4 decimal = 0x004 = 0000000000100 binary (13-bit signed)
+
+B-type immediate layout (scattered):
+  imm[12]    = bit 31    = 0
+  imm[10:5]  = bits 30:25 = 000000
+  imm[4:1]   = bits 11:8  = 0010
+  imm[11]    = bit 7      = 0
+
+BEQ x5, x6, +4
+  imm[12|10:5] = 0_000000
+  rs2          = 00101  (x5)
+  rs1          = 00110  (x6)
+  funct3       = 000    (BEQ)
+  imm[4:1|11]  = 0010_0
+  opcode       = 1100011 (BRANCH)
+
+Machine code: 0_000000_00101_00110_000_0010_0_1100011
+Hex: 0x00531463
+```
+
+The scattered immediate was an intentional design choice: it keeps the
+rs1/rs2/opcode fields in the same bit positions as other formats, simplifying
+decode hardware. The reassembly logic is:
+
+$$
+\text{offset} = \text{sign-ext}\!\left(\text{imm}[12] \,\|\, \text{imm}[11] \,\|\, \text{imm}[10{:}5] \,\|\, \text{imm}[4{:}1] \,\|\, 0\right)
+$$
+
+### 13.7 MIPS vs. RISC-V Quick Comparison
+
+| Feature | MIPS (MIPS32/64) | RISC-V (RV64I) |
+|---------|-------------------|-----------------|
+| Register naming | $0--$31 (dollar prefix) | x0--x31 (or abi names: zero, ra, sp, ...) |
+| x0 / $0 | Always zero | Always zero |
+| Instruction count (base ISA) | ~150 (MIPS32r5) | ~40 (RV64I) |
+| Encoding length | Fixed 32-bit | Fixed 32-bit (base); RVC extension adds 16-bit |
+| Immediate encoding | Contiguous bit field | Scattered in B/J-types (for decode regularity) |
+| Branch delay slot | Yes (1 slot, mandatory) | No (speculative execution preferred) |
+| Conditional move | MOVZ/MOVN (separate) | Not in base ISA; added via Zicond or Zicsr |
+| Multiply / divide | Optional DSP or MSA | M extension (standardized) |
+| Privilege levels | Kernel / User (2) | M / S / U (3 levels, matches modern OS needs) |
+| Page table format | Fixed 2-level | Sv39 / Sv48 / Sv57 (configurable) |
+| CSR access | CP0 registers (coproc 0) | Dedicated CSR instructions (CSRRW, CSRRS, CSRRC) |
+| Atomic operations | LL/SC (load-linked / store-conditional) | LR/SC + AMO (load-reserved / store-conditional + atomic memory ops) |
+| Endianness | Big-endian (original) / bi-endian | Little-endian (base), bi-endian extension available |
+| Commercial license | Proprietary (was MIPS Technologies) | Open (no license fee, governed by RISC-V International) |
+
+Key design philosophy difference: MIPS accumulated instructions over decades
+(backward-compatible additions), while RISC-V was designed with a small
+frozen base ISA and modular extensions (M, A, F, D, C, V, ...) to keep
+hardware minimal.
+
+---
+
+## 14. SMT Resource Partitioning
+
+### 14.1 Simultaneous Multithreading Overview
+
+Simultaneous Multithreading (SMT), commercially known as Intel Hyper-Threading,
+allows two (or more) hardware threads to share a single out-of-order core.
+Each thread has its own architectural state but competes for the same physical
+resources. The goal is to improve utilization: when one thread stalls on a
+long-latency event (cache miss, branch misprediction), the other thread can
+consume the otherwise-idle execution units.
+
+SMT throughput is typically:
+
+$$
+\text{SMT}_{\text{speedup}} = 1 + \alpha \cdot (n - 1)
+$$
+
+where $n$ is the number of threads and $\alpha$ is the per-thread resource
+overlap factor ($\alpha \approx 0.2$--$0.4$ in practice). A 2-thread SMT core
+delivers 1.2--1.4x the throughput of a single-threaded core, not 2x.
+
+### 14.2 Resource Partitioning Table
+
+The table below classifies every major microarchitectural structure by its
+sharing policy in a typical 2-thread SMT design:
+
+| Structure | Policy | Rationale |
+|-----------|--------|-----------|
+| L1 I-Cache | Fully shared | Code often shares libraries; capacity benefits both threads |
+| L1 D-Cache | Fully shared | Data working sets overlap less, but L1 is fast enough to interleave |
+| L2 Cache | Fully shared | Large enough for two working sets; partitioning would waste capacity |
+| ROB | Dynamically partitioned | Each thread gets a guaranteed minimum (e.g., 50/50 split of 224 entries) but can borrow unused slots |
+| Issue Queue (IQ) | Dynamically partitioned | Thread ID tagged on each entry; partitions rebalance each cycle |
+| Physical Register File (PRF) | Dynamically partitioned | Free-list reserves floor per thread; excess distributed on demand |
+| Load/Store Queue (LSQ) | Dynamically partitioned | Each thread's addresses are independent; partition prevents one thread from monopolizing entries |
+| Common Data Bus (CDB) | Fully shared, arbitrated | Both threads' results multiplex onto the bus; priority alternates to ensure fairness |
+| Front-end (fetch unit) | Time-multiplexed | Fetch alternates between threads each cycle (round-robin) or fetches from the thread with fewer in-flight instructions |
+| Register Alias Table (RAT) | Replicated (one per thread) | Each thread has its own mapping of arch regs to physical regs |
+| Program Counter (PC) | Replicated | Independent fetch PCs |
+| Return Address Stack (RAS) | Replicated | Call/return prediction is per-thread |
+| Branch Predictor (BHT / BTB) | Shared or partitioned BHT | BTB is shared (tag includes thread ID); BHT may be statically partitioned to reduce cross-thread interference |
+| Next-Page Predictor / ITLB | Shared | ASID tagging distinguishes threads |
+| Reorder Buffer commit port | Shared, round-robin | Alternate which thread's head entry commits each cycle |
+
+### 14.3 Partitioning Policies in Detail
+
+**Statically partitioned** (fixed split):
+- Each thread is guaranteed a fixed number of entries (e.g., 112 ROB entries
+  each in a 224-entry ROB).
+- Advantage: predictable per-thread performance; no starvation.
+- Disadvantage: if one thread is stalled, its unused entries cannot be
+  reallocated to the other thread, leaving resources idle.
+
+**Dynamically shared** (competitive):
+- Both threads draw from a common pool up to a per-thread cap.
+- Example: ROB has 224 entries, each thread can use up to 180, but combined
+  cannot exceed 224. When Thread A has only 44 entries in use, Thread B can
+  consume the remaining 180.
+- Advantage: higher aggregate throughput when one thread is bottleneck-bound.
+- Disadvantage: one aggressive thread can starve the other; requires fairness
+  counters.
+
+**Flush-and-reallocate policy**:
+- On a long-latency event (L2 miss, TLB miss) detected for Thread A, the core
+  reduces Thread A's resource cap to its minimum and grants the excess to
+  Thread B. When Thread A's miss returns, the caps are rebalanced.
+- This is analogous to a "resource loan" and is used in Intel's microarchitectures
+  since Skylake.
+
+### 14.4 SMT Interaction with the Memory Hierarchy
+
+When both threads generate cache misses simultaneously:
+
+1. **L1 D-cache contention** -- each thread competes for MSHRs (Miss Status
+   Holding Registers). A typical core has 10--16 MSHRs; with two threads the
+   effective per-thread miss bandwidth is halved.
+
+2. **L2 / L3 bandwidth** -- the prefetcher may service both threads' streams,
+   potentially interfering. Some designs implement per-thread prefetcher state.
+
+3. **Memory-level parallelism (MLP)** -- SMT can actually *improve* MLP because
+   two threads' misses are naturally independent and can be serviced concurrently
+   by the memory controller's open-page policy.
+
+4. **Store forwarding** -- each thread's stores only forward to its own loads
+   (checked via thread ID tag on the store queue), so no cross-thread
+   forwarding hazards exist.
+
+---
+
+## 15. Exception Pipeline in Out-of-Order Execution
+
+### 15.1 Precise Exception Guarantee
+
+A precise exception means that when an exception is delivered to the handler,
+the architectural state (register file, PC, memory) reflects exactly the state
+as if all instructions before the faulting instruction had completed and no
+instruction after it has modified state.
+
+In an out-of-order core the ROB enforces this by committing results in program
+order. Even though instruction execution may complete out of order, no
+architectural state is updated until the instruction reaches the ROB head and
+is committed.
+
+$$
+\text{Architectural State}_{\text{at exception}} = \text{State after committing ROB}[0..i-1] \;\;\text{where } i \text{ is the faulting instruction}
+$$
+
+### 15.2 Exception Flow in the OoO Pipeline
+
+```mermaid
+flowchart TD
+    A[Instruction executes on FU] --> B{Exception detected?}
+    B -->|No| C[Write result to ROB entry, set Done=1]
+    B -->|Yes| D[Write exception code to ROB entry, set Exception=1, Done=1]
+    C --> E[ROB commit: check head entry]
+    D --> E
+    E --> F{Exception bit set?}
+    F -->|No| G[Commit: update arch register file / D-cache]
+    F -->|Yes| H[Flush all ROB entries from faulting entry to tail]
+    H --> I[Save faulting PC to mepc / sepc]
+    I --> J[Set mcause / scause to exception code]
+    J --> K[Set mtval / stval to faulting address or instruction]
+    K --> L[PC = mtvec / stvec -- jump to trap vector]
+    L --> M[Trap handler executes in M-mode or S-mode]
+```
+
+Step-by-step walk of the flow:
+
+1. **Execute stage** -- the functional unit detects the exception (e.g., page
+   fault on a load address). Instead of writing a normal result, it writes an
+   exception code (e.g., `CAUSE_LOAD_PAGE_FAULT = 0xD`) into the ROB entry's
+   exception field and sets the exception bit.
+
+2. **ROB commit** -- the commit logic examines the head entry every cycle. If
+   the head entry has `Done=1` and `Exception=1`, the core raises the
+   exception. No instruction after the faulting one has committed because the
+   ROB is in-order, so architectural state is already precise.
+
+3. **Pipeline flush** -- all ROB entries from the faulting instruction to the
+   tail are discarded. The RAT is restored to the committed state (using ROB
+   snapshots or a checkpoint RAT). The issue queue, load/store queue, and
+   reservation stations are cleared.
+
+4. **Trap vector delivery** -- the PC is set to the trap vector base address
+   (stored in `mtvec` for machine mode or `stvec` for supervisor mode). The
+   hardware sets:
+   - `mepc` / `sepc` = PC of the faulting instruction
+   - `mcause` / `scause` = exception code identifying the cause
+   - `mtval` / `stval` = auxiliary information (faulting virtual address for
+     page faults, or the faulting instruction encoding for illegal instruction)
+
+5. **Return from handler** -- the software handler executes `MRET` or `SRET`,
+   which restores PC from `mepc`/`sepc` and resumes execution.
+
+### 15.3 Synchronous Exceptions
+
+Synchronous exceptions are caused directly by an instruction and are detected
+during the execute or memory stage:
+
+| Exception | Cause | Detection Point |
+|-----------|-------|-----------------|
+| ECALL | Environment call (system call) | Execute (recognized by opcode) |
+| EBREAK | Software breakpoint | Execute (recognized by opcode) |
+| Load page fault | Load accesses unmapped or protected page | Memory stage (after TLB / page table walk) |
+| Store page fault | Store accesses unmapped or protected page | Memory stage |
+| Load access fault | Misaligned load or device access error | Memory stage |
+| Store access fault | Misaligned store or device access error | Memory stage |
+| Illegal instruction | Opcode or encoding not supported | Decode stage (can be detected early, written to ROB) |
+| Instruction page fault | Fetch from unmapped page | Fetch stage (handled before entering the OoO pipeline) |
+| Instruction access fault | Misaligned fetch or fetch from I/O region | Fetch stage |
+| Breakpoint | Trigger match (hardware breakpoint) | Execute stage |
+
+Synchronous exceptions are *precise* in an OoO core because they are always
+attributed to a specific instruction and the ROB ensures that instruction
+appears to execute in program order.
+
+### 15.4 Asynchronous Exceptions (Interrupts)
+
+Asynchronous exceptions (interrupts) originate from external events and are not
+tied to a specific instruction. They are **checked at commit boundaries**, not
+at execute:
+
+| Interrupt | Source | Timing |
+|-----------|--------|--------|
+| Timer interrupt |_mtime_ register exceeds _mtimecmp_ | Checked at commit boundary |
+| External interrupt | Platform-level interrupt controller (PLIC) | Checked at commit boundary |
+| Software interrupt | Inter-processor interrupt (IPI) via CLINT | Checked at commit boundary |
+| Performance counter overflow | Hardware performance monitor | Checked at commit boundary |
+
+**Why check at commit, not at execute?** Consider this scenario:
+
+```
+I1: ADD  x5, x6, x7     -- committed
+I2: LD   x8, 0(x9)      -- executing, L2 miss in flight
+I3: ADD  x10, x11, x12   -- executed out of order, result ready
+IRQ --> arrives during cycle when I3 finishes
+```
+
+If the interrupt were taken immediately (at I3's completion), the handler
+would see a state where I1 has committed but I2 and I3 have not. This is
+correct. However, if I3 were *before* I2 in program order, the handler
+must see a state where I2 has NOT committed (I2 is older). The ROB ensures
+this by only servicing interrupts at the commit boundary, when the
+architectural state is unambiguous.
+
+### 15.5 Interrupt vs. Exception Timing Diagram
+
+```
+Cycle:         1    2    3    4    5    6    7    8    9    10
+I1 (ADD)      IF   ID   EX  MEM  WB(commit)                  <- commits at cycle 5
+I2 (LD)            IF   ID   EX  MEM  MEM  MEM  MEM  MEM  WB <- L2 miss, 10-cycle MEM
+I3 (ADD)                IF   ID   EX  MEM  WB(done)          <- finishes early (OoO)
+I4 (SUB)                     IF   ID   EX  MEM  WB(done)     <- finishes early (OoO)
+
+Scenario A: I2 causes a load page fault (synchronous exception)
+  - Detected at cycle 6 (MEM stage of I2)
+  - Exception code written to I2's ROB entry
+  - I3 and I4 cannot commit until I2 commits (ROB is in-order)
+  - At I2's commit (cycle 10): exception bit checked -> flush pipeline
+  - Handler sees state as if only I1 executed
+
+Scenario B: Timer interrupt arrives at cycle 7 (asynchronous)
+  - Not serviced immediately -- checked only at commit boundary
+  - I1 already committed; I2 is next to commit (but not done)
+  - Interrupt is pending, waits for I2 to reach commit
+  - If I2 finishes at cycle 10: interrupt is taken BEFORE I2 commits
+  - Handler sees state where only I1 has committed
+  - After handler returns, I2 re-executes (it was flushed)
+```
+
+### 15.6 Exception Priority and Delegation
+
+When multiple exceptions are pending simultaneously, hardware resolves them
+in a defined priority order (RISC-V privileged spec):
+
+| Priority | Exception / Interrupt |
+|----------|----------------------|
+| 1 (highest) | Instruction access fault |
+| 2 | Instruction page fault (fetch) |
+| 3 | Illegal instruction |
+| 4 | Breakpoint |
+| 5 | Load access fault |
+| 6 | Load page fault |
+| 7 | Store access fault |
+| 8 | Store page fault |
+| 9 | ECALL from U-mode |
+| 10 | ECALL from S-mode |
+| 11 | ECALL from M-mode |
+| 12 | -- (reserved) |
+| 13 | Timer interrupt |
+| 14 | External interrupt (PLIC) |
+
+In RISC-V, exceptions can be *delegated* from M-mode to S-mode using the
+`medeleg` and `mideleg` CSRs. For example, setting bit 13 in `mideleg` causes
+timer interrupts to be delivered to the S-mode trap vector (`stvec`) instead of
+the M-mode vector (`mtvec`). This allows the OS (running in S-mode) to handle
+common exceptions without trapping into the firmware/hypervisor (M-mode),
+reducing trap latency.
+
+The delegation model is a key difference from MIPS, where all exceptions go to
+a single exception level and the OS must determine the cause from the
+exception code. RISC-V's separate trap vectors for M-mode and S-mode reduce
+the number of privilege transitions on a typical syscall or page fault.
