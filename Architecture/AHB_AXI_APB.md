@@ -1372,8 +1372,9 @@ $$
 Because only one bit toggles per increment, a synchronizer capturing the pointer mid-transition will resolve to either the current or previous value -- never an invalid intermediate state.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Write Domain
+        direction TB
         WCLK[wclk] --> WINC[Write Increment]
         WDATA[wdata] --> FIFO_MEM[FIFO Memory Array]
         WPTR_BIN[wptr binary] --> W2G[Binary to Gray]
@@ -1383,6 +1384,7 @@ flowchart LR
     RPTR_G --> G2B_RD[Gray to Binary]
     G2B_RD --> RD_LOGIC[Full/Empty Logic]
     subgraph Read Domain
+        direction TB
         RCLK[rclk] --> RINC[Read Increment]
         FIFO_MEM --> RDATA[rdata]
         RPTR_BIN[rptr binary] --> R2G[Binary to Gray]
@@ -1430,14 +1432,15 @@ This is why a two-flop synchronizer is sufficient for most SoC clock crossings. 
 An AXI register slice inserts a pipeline register stage on each channel. When combined with async handshake synchronizers, it becomes a clock domain crossing bridge:
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Source Domain
-        S_VALID[src_valid] --> SYNC_V[Sync valid<br>into dest domain]
+        direction TB
+        S_VALID[src_valid] --> SYNC_V[Sync valid<br/>into dest domain]
         S_PAYLOAD[src payload] --> REG_P[Register Stage]
     end
     SYNC_V -->|dest_valid| AND1{AND}
     REG_P -->|dest_payload| DEST[Destination]
-    DEST -->|dest_ready| SYNC_R[Sync ready<br>into src domain]
+    DEST -->|dest_ready| SYNC_R[Sync ready<br/>into src domain]
     SYNC_R -->|src_ready_sync| AND1
     AND1 -->|Capture into register| REG_P
 ```

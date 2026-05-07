@@ -334,14 +334,16 @@ The LSQ enforces memory ordering -- it ensures that loads and stores appear to e
 The LSQ is split into two sub-queues:
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph LSQ_Structure["LSQ"]
-        LQ["Load Queue (LQ)\n32-64 entries"]
-        SQ["Store Queue (SQ)\n24-48 entries"]
+        direction LR
+        LQ["Load Queue (LQ)<br/>32-64 entries"]
+        SQ["Store Queue (SQ)<br/>24-48 entries"]
     end
-    LQ -->|Address Match| SQ
-    SQ -->|Forward Data| LQ
-    SQ -->|Commit Write| DCACHE["D-Cache"]
+    LSQ_Structure --> DCACHE["D-Cache"]
+    LQ -.->|Address Match| SQ
+    SQ -.->|Forward Data| LQ
+    SQ -->|Commit Write| DCACHE
 ```
 
 **Load Queue (LQ) entry:**
