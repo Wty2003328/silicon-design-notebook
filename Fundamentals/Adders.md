@@ -90,6 +90,63 @@ For the rest of this document, we use the following gate delay model (representa
 
 ---
 
+## Subtractor and Overflow Detection
+
+### Subtractor
+
+To compute A - B using an adder, exploit 2's complement: A - B = A + (~B) + 1.
+
+**Implementation:** Invert all bits of B (NOT gate per bit) and set the carry-in of the LSB full adder to 1. The carry-in = 1 completes the 2's complement negation of B.
+
+```
+    A[N-1:0]   ~B[N-1:0]
+       |           |
+     [  Adder, Cin = 1  ]
+       |
+     S[N-1:0] = A - B
+```
+
+A combined adder/subtractor uses a MUX on each B bit (select B or ~B) and sets Cin accordingly:
+
+```verilog
+wire [N-1:0] b_effective = sub ? ~b : b;
+wire         cin_effective = sub;
+assign {cout, sum} = a + b_effective + cin_effective;
+```
+
+### Overflow Detection for 2's Complement Signed Addition
+
+Overflow occurs when two same-sign numbers produce a different-sign result.
+
+**Method 1 — Carry XOR:**
+```
+Overflow = carry_in[MSB] XOR carry_out[MSB]
+```
+
+Why: carry_in[MSB] and carry_out[MSB] disagree exactly when the sign of the result is wrong. If both are 1, the MSB propagated a carry correctly. If both are 0, no carry was involved. Only when they differ did a carry appear or disappear in a way that flipped the sign unexpectedly.
+
+**Method 2 — Sign check:**
+```
+Overflow = (A[MSB] == B[MSB]) AND (Sum[MSB] != A[MSB])
+```
+
+This directly encodes the definition: same-sign inputs, different-sign output.
+
+**Worked example (4-bit):** 0111 (7) + 0011 (3) = 1010 (-6 in 4-bit 2's complement).
+- carry_in[MSB] = 1 (carry propagated into bit 3)
+- carry_out[MSB] = 0 (no carry out of bit 3)
+- Overflow = 1 XOR 0 = 1 -- overflow detected correctly.
+
+### Magnitude Comparator
+
+To compare A and B: compute A - B and examine the carry-out of the subtractor.
+
+- If cout = 1: no borrow occurred, so A >= B.
+- If cout = 0: borrow occurred, so A < B.
+- Equality: A == B iff the subtractor result is zero (use a NOR tree on all sum bits).
+
+---
+
 ## Ripple Carry Adder (RCA)
 
 ### Architecture
@@ -538,6 +595,46 @@ Wire tracks: much lower than Kogge-Stone
 
 **Brent-Kung trade-off:** Nearly half the depth is "wasted" on the inverse tree (propagating prefix results from even to odd positions). But the total node count is O(N) instead of O(N*log N), making it dramatically cheaper in area and wiring.
 
+### 8-bit Sklansky — Fan-Out Doubling Scheme
+
+The Sklansky adder uses a fan-out doubling scheme: at level i, prefix results from row i-1 are broadcast to all higher rows.
+
+```
+Bit position:    7      6      5      4      3      2      1      0
+                 |      |      |      |      |      |      |      |
+Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
+                 |      |      |      |      |      |      |      |
+Level 1:       [7:6]  [6:5]  [5:4]  [4:3]  [3:2]  [2:1]  [1:0]  [0]
+  (span 1)       [o]    [o]    [o]    [o]    [o]    [o]   (combine with 1 left)
+                 |      |      |      |      |      |      |      |
+Level 2:       [7:4]  [6:3]  [5:2]  [4:1]  [3:0]  [2:1]  [1:0]  [0]
+  (span 2)       [o]    [o]    [o]    [o]
+                 ↑ fan-out from level 1 = 2 per node
+                 |      |      |      |      |      |      |      |
+Level 3:       [7:0]  [6:3]  [5:2]  [4:1]  [3:0]  [2:1]  [1:0]  [0]
+  (span 4)       [o]
+                 ↑ fan-out from level 2 = 4 per node
+```
+
+**Key difference from Kogge-Stone:** Kogge-Stone replicates nodes to keep fan-out = 1 at every level. Sklansky accepts doubling fan-out instead: a node at level i drives 2^i downstream nodes. At the last level (level 3 for 8-bit), fan-out reaches N/2 = 4.
+
+- Area: O(N log N) -- fewer nodes than Kogge-Stone.
+- Wire: O(N log N) -- less wiring than Kogge-Stone.
+- Fan-out: up to N/2 at the last level -- this is the weakness. High fan-out increases electrical delay (capacitive loading) at later levels.
+- Delay: log2(N) prefix levels (same depth as Kogge-Stone), but the large fan-out degrades the electrical delay at later levels.
+
+### Knowles [l,k,m] Parameterization
+
+The Knowles parameterization generalizes prefix adders by specifying the maximum fan-out at each level of the prefix tree. The notation [l, k, m, ...] gives the fan-out limit at each level from the top down:
+
+| Adder         | Knowles parameter | Fan-out per level        | Notes                        |
+|---------------|--------------------|--------------------------|------------------------------|
+| Kogge-Stone   | [1, 1, 1, ...]    | Fan-out 1 at every level | Maximum replication, minimum fan-out |
+| Sklansky      | [N/2, N/4, ...]   | Maximum fan-out          | Minimum replication, maximum fan-out |
+| Brent-Kung    | Intermediate       | Moderate fan-out         | Inverse tree for propagation |
+
+This framework lets designers explore the trade-off between wiring complexity (Kogge-Stone) and fan-out loading (Sklansky) to find the optimal point for a given technology node and bit width.
+
 ### Prefix Adder Comparison — Quantitative
 
 For N = 32:
@@ -629,6 +726,44 @@ module kogge_stone_16 (
     assign cout = g4[15];
 endmodule
 ```
+
+---
+
+## Carry-Save Adder (CSA)
+
+### 3:2 CSA — A Full Adder Repurposed
+
+A 3:2 CSA (carry-save adder) is simply a full adder used differently: it takes 3 input bits at the same bit position and produces 2 output bits (Sum and Carry). The critical property: **the carry is NOT propagated to the next column** -- it is "saved" and shifted left by 1 position (its weight is 2x).
+
+```
+Inputs:  A[i], B[i], C_in[i]
+Outputs: Sum[i], Carry[i-1]  (Carry has weight of position i+1)
+
+Sum[i]   = A[i] XOR B[i] XOR C_in[i]
+Carry[i] = (A[i] AND B[i]) OR (C_in[i] AND (A[i] XOR B[i]))
+```
+
+Because there is no carry chain, a 3:2 CSA has **O(1) delay regardless of bit width**.
+
+### Multi-Operand Reduction
+
+To reduce N operands to 2 operands (Sum vector + Carry vector), use a tree of 3:2 CSAs:
+
+- Each CSA layer reduces the operand count by 1 (3 inputs -> 2 outputs, net reduction of 1).
+- Total layers needed: N - 2.
+
+The final Sum and Carry vectors must be added by a carry-propagate adder (CPA) to produce a single result.
+
+### CSA vs CPA
+
+| Property        | CSA (3:2)           | CPA (e.g., RCA, CLA)          |
+|-----------------|----------------------|--------------------------------|
+| Delay           | O(1) per layer       | O(N) or O(log N)              |
+| Outputs         | 2 vectors (Sum, Carry) | 1 vector (result)           |
+| Use case        | Multi-operand reduction | Final summation of 2 operands |
+| Carry chain     | None                 | Yes (this is the bottleneck)  |
+
+CSA trees are the backbone of multipliers (Wallace/Dadda trees), dot-product units, and FIR filter accumulators. The CPA at the end of the tree is the only stage with carry propagation.
 
 ---
 
@@ -876,3 +1011,25 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 ### Q15: Explain the difference between P = A XOR B and P = A OR B for propagate.
 
 **A:** Both work for carry computation: C_{i+1} = G + P*C_i. With P = A OR B, when A=B=1, P=1, but G=1, and G + P*C = 1 + 1*C = 1, which is correct (the G term dominates). So P = A OR B gives the same carry as P = A XOR B. However, for SUM: S_i = P_i XOR C_i requires the XOR definition. Some implementations use P_OR = A|B for carry computation (slightly faster, since OR is simpler than XOR) and compute sum separately using P_XOR = A^B. The Kogge-Stone tree uses P_OR (or equivalently, the kill signal K = ~A & ~B) internally, and P_XOR only at the final sum stage.
+
+---
+
+## Numbers to Memorize
+
+| Quantity | Value |
+|---|---|
+| RCA delay (28nm) | 4.0 + 1.5(N-1) gate delays |
+| CLA delay (28nm) | ~4 gate delays (any width) |
+| Kogge-Stone delay | log2(N) prefix levels |
+| Kogge-Stone area | O(N log^2 N) |
+| Sklansky delay | log2(N) levels + fan-out penalty |
+| Sklansky area | O(N log N) |
+| Brent-Kung delay | 2 log2(N) - 1 levels |
+| Carry-select optimal block | sqrt(N) |
+| Carry-skip optimal block | sqrt(N/2) |
+| 32-bit RCA delay (28nm) | ~50 gate delays |
+| 32-bit CLA delay (28nm) | ~4 gate delays |
+| 32-bit Kogge-Stone delay (28nm) | ~6 gate delays |
+| FA area (28nm) | ~20-30 gate equivalents |
+| 32-bit RCA area (28nm) | ~640-960 GE |
+| 32-bit Kogge-Stone area (28nm) | ~3000-5000 GE |

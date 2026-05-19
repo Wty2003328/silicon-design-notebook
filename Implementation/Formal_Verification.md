@@ -10,7 +10,8 @@
 7. Connectivity and X-Propagation Formal
 8. Formal in the ASIC Design Flow
 9. Tools Comparison
-10. Interview Q&A (25+ Questions)
+10. Numbers to Memorize
+11. Interview Q&A (25+ Questions)
 
 ---
 
@@ -97,6 +98,157 @@ function DPLL(formula, assignment):
     return DPLL(formula ∧ ¬var, assignment ∪ {var=FALSE})
 ```
 
+### 2.1.1 CDCL Worked Example
+
+Walk through CDCL on a concrete problem to see conflict analysis, clause learning,
+non-chronological backtracking, and pruning in action.
+
+**Problem (5 variables, 6 clauses):**
+```
+C1: ( x1 ∨  x2 ∨  x3)
+C2: ( x1 ∨ ¬x2 ∨  x4)
+C3: (¬x1 ∨  x3 ∨  x5)
+C4: (¬x3 ∨ ¬x4)
+C5: (¬x3 ∨ ¬x5)
+C6: ( x2 ∨  x4 ∨  x5)
+```
+
+We track: current assignment, decision level (DL), implication graph (each literal
+annotated with the clause that forced it during BCP, or "d" for decision).
+
+---
+
+**DL 0 — No unit clauses at the start, so no BCP possible.**
+
+---
+
+**DL 1 — Decision: x1 = 0**
+```
+BCP (unit propagation from x1=0):
+  C1: (x1 ∨ x2 ∨ x3)   → only x2, x3 remain. Not unit yet.
+  C2: (x1 ∨ ¬x2 ∨ x4)  → only ¬x2, x4 remain. Not unit yet.
+  C3: (¬x1 ∨ x3 ∨ x5)  → clause satisfied (¬x1 = 1). Remove from watch.
+
+  No forced assignments. Assignment so far: {¬x1}
+```
+
+**DL 2 — Decision: x3 = 1**
+```
+BCP from x3=1:
+  C4: (¬x3 ∨ ¬x4)  → only ¬x4 remains → unit! Force x4 = 0   [reason: C4]
+  C5: (¬x3 ∨ ¬x5)  → only ¬x5 remains → unit! Force x5 = 0   [reason: C5]
+  C6: (x2 ∨ x4 ∨ x5) → with x4=0, x5=0, only x2 remains → unit! Force x2 = 1  [reason: C6]
+
+  Assignment: {¬x1, x3, ¬x4, ¬x5, x2}
+  All variables assigned. Check all clauses:
+    C1: (0 ∨ 1 ∨ 1) = 1 ✓    C2: (0 ∨ 0 ∨ 0) = 0 ✗ CONFLICT!
+```
+
+**Conflict on C2 under assignment {¬x1, x3, ¬x4, ¬x5, x2}:**
+
+Build the implication graph. Nodes are literals with their reason clauses:
+```
+  ¬x1 [d, DL1]
+        \
+  x3 [d, DL2] ──→ ¬x4 [C4, DL2] ──→ ¬x2 must be true for C2 ──┐
+     │                                                           │
+     ├──→ ¬x5 [C5, DL2] ──────────────────────────┐              │
+     │                                             │              │
+     └──→ x2 [C6, DL2] ← (x4=0, x5=0 forced x2)  ▼              ▼
+                                    CONFLICT at C2: (x1 ∨ ¬x2 ∨ x4)
+                                    needs 1 but ¬x1, x2, ¬x4 all contradict
+```
+
+**Conflict analysis (1-UIP scheme):**
+
+Starting from the conflicting clause C2 = (x1 ∨ ¬x2 ∨ x4), resolve backwards.
+The Unique Implication Point (UIP) is the closest decision-made literal on the
+conflict side that "dominates" the conflict in the implication graph.
+
+```
+Resolve C2 with the reason for x2 (= C6):
+  C2:  (x1 ∨ ¬x2 ∨  x4)
+  C6:  (x2 ∨  x4 ∨  x5)    ← reason x2 was forced (x4=0, x5=0 left x2 unit)
+  Resolvent: (x1 ∨ x4 ∨ x5)
+
+This resolvent only involves literals from DL ≤ 2, and x4, x5 were implied at DL2.
+The 1-UIP is x3 (the decision at DL2 that caused the implications).
+
+Resolve further — the resolvent (x1 ∨ x4 ∨ x5) already has no DL2 decision literal
+(x3) in it, but all of x4, x5 were implied from x3. The asserting clause is:
+
+  LEARNED CLAUSE: (x1 ∨ x4 ∨ x5)
+  This says: if x1=0 and (x4=0 ∨ x5=0) is forced, the solver will never
+  need to explore this branch again.
+```
+
+A more precise analysis (resolving until we reach the asserting literal):
+```
+Actually, (x1 ∨ x4 ∨ x5) still has two implied literals from DL2.
+Continue resolving to simplify:
+
+  Resolve (x1 ∨ x4 ∨ x5) with reason for ¬x4 (= C4):
+    (x1 ∨  x4 ∨ x5)
+    (¬x3 ∨ ¬x4)        ← reason ¬x4 was forced by x3=1
+    Resolvent: (x1 ∨ x5 ∨ ¬x3)
+
+  Resolve (x1 ∨ x5 ∨ ¬x3) with reason for ¬x5 (= C5):
+    (x1 ∨  x5 ∨ ¬x3)
+    (¬x3 ∨ ¬x5)        ← reason ¬x5 was forced by x3=1
+    Resolvent: (x1 ∨ ¬x3)
+
+  LEARNED CLAUSE (refined): (x1 ∨ ¬x3)
+  This is the asserting clause — it is unit at DL1 (x1=0 is the DL1 decision).
+```
+
+**Non-chronological backtrack to DL1 and apply learned clause:**
+```
+Backtrack to DL1 (where x1 = 0 was decided).
+Learned clause (x1 ∨ ¬x3) is now unit: x1=0 forces ¬x3.
+  → x3 = 0   [reason: learned clause, DL1]
+
+Assignment: {¬x1, ¬x3}
+```
+
+**BCP after learning:**
+```
+C1: (x1 ∨ x2 ∨ x3)  → with ¬x1, ¬x3: only x2 remains → unit! Force x2 = 1  [C1]
+C6: (x2 ∨ x4 ∨ x5)  → satisfied by x2=1.
+
+Assignment: {¬x1, ¬x3, x2}
+Check remaining open clauses:
+  C2: (x1 ∨ ¬x2 ∨ x4) = (0 ∨ 0 ∨ x4) → only x4 → unit! Force x4 = 1  [C2]
+  C3: (¬x1 ∨ x3 ∨ x5) = (1 ∨ ...) → satisfied by ¬x1.
+
+Assignment: {¬x1, ¬x3, x2, x4}
+C4: (¬x3 ∨ ¬x4) = (1 ∨ 0) = 1 ✓ (satisfied by ¬x3)
+C5: (¬x3 ∨ ¬x5) = (1 ∨ ...) ✓
+
+x5 is unassigned. All clauses containing x5:
+  C3: satisfied, C5: satisfied, C6: satisfied.
+  x5 can be either value. Set x5 = 0 (arbitrary).
+
+FINAL ASSIGNMENT: {¬x1, ¬x3, x2, x4, ¬x5}
+Verify: C1=✓ C2=✓ C3=✓ C4=✓ C5=✓ C6=✓  → SAT
+```
+
+**How the learned clause (x1 ∨ ¬x3) prunes future search:**
+```
+Without the learned clause, if the solver later tried:
+  DL1: x1=0, DL2: x3=1 → same conflict → wasted work.
+
+With the learned clause:
+  DL1: x1=0 → learned clause (x1 ∨ ¬x3) becomes unit → ¬x3 forced immediately.
+  The solver never explores x1=0 ∧ x3=1 again.
+
+In industrial problems with millions of clauses, CDCL learns tens of thousands
+of clauses. Each one prunes a subtree of the search space that would otherwise
+cause repeated conflicts. This is why CDCL solves problems in seconds that would
+take DPLL longer than the age of the universe.
+```
+
+---
+
 **Modern CDCL Solvers (Conflict-Driven Clause Learning):**
 
 CDCL extends DPLL with:
@@ -170,6 +322,170 @@ Restrict(f, xi=v)  | O(|f|)            — cofactor
 Compose(f, xi, g)  | O(|f|^2 × |g|^2)
 Satisfying count   | O(|f|)            — traverse, accumulate
 Equivalence check  | O(1)              — just compare root pointers!
+```
+
+### 2.2.1 BDD Worked Example — Building, Ordering, and Conjunction
+
+**Function: f(a,b,c) = (a ∧ b) ∨ (¬a ∧ c)**
+
+Truth table:
+```
+a b c | a∧b | ¬a∧c | f
+  0 0 0|  0  |  0   | 0
+  0 0 1|  0  |  1   | 1
+  0 1 0|  0  |  0   | 0
+  0 1 1|  0  |  1   | 1
+  1 0 0|  0  |  0   | 0
+  1 0 1|  0  |  0   | 0
+  1 1 0|  1  |  0   | 1
+  1 1 1|  1  |  0   | 1
+```
+
+**Building the ROBDD with ordering a < b < c:**
+
+Start with a full binary tree, then apply reduction rules:
+(R1) Eliminate redundant nodes where both children are identical.
+(R2) Merge identical subtrees (share nodes).
+
+```
+Unreduced tree:                  After reduction (ROBDD):
+
+        a                              a
+       / \                            / \
+      b   b                          b   b
+     / \ / \                        / \ / \
+    c  c c  c                      c  1 0  c
+   /\ /\ /\ /\                    / \      / \
+  0 1 0 1 0 0 1 1                0  1     0   1
+
+Applying R1: b-node with c→0, c→0 → merge. c-nodes with same children → merge.
+```
+
+**Step-by-step reduction:**
+```
+Level c (leaf parents):
+  Node c₀: children (0, 1) — from b-left, c-left
+  Node c₁: children (0, 1) — from b-left, c-right   → same as c₀, MERGE
+  Node c₂: children (0, 0) — from b-right, c-left   → REDUNDANT (both 0), eliminate → terminal 0
+  Node c₃: children (1, 1) — from b-right, c-right  → REDUNDANT (both 1), eliminate → terminal 1
+
+After c-level reduction:
+  Only two distinct c-nodes: c₀ (0/1 children) and terminals 0, 1.
+
+Level b:
+  b-left:  0-child → c₀,  1-child → c₀   → REDUNDANT? No — wait, b-left's
+           0-branch and 1-branch both go to c₀? Let me recount.
+
+Actually, from the truth table with ordering a < b < c:
+
+  When a=0: f = c (independent of b). So b-node on the a=0 branch is REDUNDANT.
+  When a=1: f = b (independent of c). So c-node on the a=1 branch is REDUNDANT.
+
+Final ROBDD (ordering a < b < c):
+
+          a
+         / \
+        /   \
+       c     b       ← a=0 skips b (b is irrelevant), a=1 skips c
+      / \   / \
+     0   1 0   1
+
+  Size: 3 non-terminal nodes (a, c, b). Very compact!
+```
+
+**Impact of variable ordering — swap to ordering b < a < c:**
+
+```
+With b < a < c, the function f = (a∧b) ∨ (¬a∧c):
+
+When b=0: f = (a∧0) ∨ (¬a∧c) = ¬a∧c = f depends on a and c
+When b=1: f = (a∧1) ∨ (¬a∧c) = a ∨ (¬a∧c) = a ∨ c
+
+        b
+       / \
+      a    a          ← can these be merged? No — different subfunctions.
+     / \  / \
+    c  c  1  c        ← a-left(b=0,a=0) and a-right(b=1) share c-node? Partially.
+   /\  /\    /\
+  0  1 1 0  0  1
+
+After reduction: still need separate a-nodes because their 0-children differ.
+Final size: 4 non-terminal nodes (b, a₀, a₁, c).
+
+Worse than the a < b < c ordering (3 nodes vs 4 nodes).
+```
+
+**Scaling example — why ordering matters for large functions:**
+```
+Function: f = (x₁∧y₁) ∨ (x₂∧y₂) ∨ (x₃∧y₃)
+
+Ordering 1: x₁, y₁, x₂, y₂, x₃, y₃
+  Each xi-yi pair is local. ROBDD "remembers" only the current pair.
+  Size: O(n) — 2n + constant nodes for n pairs.
+
+Ordering 2: x₁, x₂, x₃, y₁, y₂, y₃
+  After deciding x₁, x₂, x₃, the BDD must "remember" ALL x values
+  because each xi needs its corresponding yi. The number of distinct
+  subfunctions that need to be represented DOUBLES with each new x.
+  Size: O(2ⁿ) — exponential blowup.
+
+For n=20:  Ordering 1 → ~40 nodes.  Ordering 2 → ~1,048,576 nodes.
+```
+
+**BDD Conjunction — combining two BDDs:**
+
+Given f(a,b) = a ∧ b and g(a,b) = ¬a ∨ b, compute h = f ∧ g = (a∧b) ∧ (¬a∨b):
+
+```
+BDD for f = a∧b (ordering a < b):       BDD for g = ¬a∨b (ordering a < b):
+        a                                      a
+       / \                                    / \
+      0   b                                  1   b
+         / \                                    / \
+        0   1                                  0   1
+
+BDD AND operation (Apply algorithm):
+  Start at roots of both BDDs. For each pair (f_node, g_node):
+    If both terminals: return terminal(f_val AND g_val)
+    If same variable:  recurse on (f_lo, g_lo) and (f_hi, g_hi)
+    If different vars: recurse on the higher-variable node with both branches
+                       of the lower-variable node.
+
+  Pair (a_f, a_g): same variable
+    (a=0 branch): f→0, g→1 → terminal 0∧1 = 0
+    (a=1 branch): f→b_f, g→b_g
+      (b=0): f→0, g→0 → 0∧0 = 0
+      (b=1): f→1, g→1 → 1∧1 = 1
+
+  Result BDD for h:
+        a
+       / \
+      0   b
+         / \
+        0   1
+
+  h = a ∧ b, which makes sense: (a∧b) ∧ (¬a∨b) = a∧b∧¬a ∨ a∧b∧b = 0 ∨ a∧b = a∧b.
+
+  Complexity: O(|f| × |g|) node pairs visited. For large BDDs, this product
+  can be expensive — but with good variable ordering, individual BDD sizes
+  stay small and the product remains tractable.
+```
+
+**When to prefer BDDs over SAT:**
+```
+Use BDDs when:
+  - Circuit is small-to-medium (< 10K state variables)
+  - You need equivalence checking (BDD: O(1) pointer comparison!)
+  - You need to COUNT solutions (SAT only gives one or proves none)
+  - The function has good variable ordering (compact BDD)
+  - You need an explicit representation of the state set (not just SAT/UNSAT)
+
+Use SAT when:
+  - Problem is large (> 100K variables)
+  - BDD blows up regardless of ordering (many interdependent variables)
+  - You only need one counterexample (not the full state set)
+  - Bounded model checking (unroll K cycles → solve once)
+  - The problem structure has "local" conflicts that CDCL exploits well
 ```
 
 **Symbolic Model Checking with BDDs:**
@@ -714,7 +1030,168 @@ CDC Formal (functional):
    - Full/empty generation is safe
 ```
 
-### 6.3 CDC Formal Tools
+### 6.3 What CDC Formal Actually Proves
+
+CDC formal verification addresses three fundamental questions for every signal
+crossing a clock domain boundary:
+
+```
+1. STABILITY: Is the data signal stable for long enough in the source domain
+   that the destination domain can sample a consistent value?
+   - For a 2-FF synchronizer: formal proves the signal is stable for at least
+     1.5 destination clock cycles (covers both edges of the source clock).
+   - For a MUX-based synchronizer: proves the select signal transitions
+     only when data is stable.
+
+2. NO DATA LOSS: Does the synchronization scheme guarantee that every
+   meaningful data transition is captured by the destination domain?
+   - For gray-code pointers: proves only one bit changes per increment,
+     so the destination never reads a partially-updated value.
+   - For handshake protocols: proves every REQ is eventually acknowledged
+     before the source changes the data.
+
+3. NO METASTABILITY PROPAGATION: If metastability occurs (which it will),
+   is it contained to the synchronizer and never reaches functional logic?
+   - Formal models metastability as an unknown (X) value at the first
+     synchronizer flop output.
+   - Proves that after the second flop, the value resolves deterministically
+     for all legal input transitions.
+   - Proves no downstream logic receives X.
+```
+
+### 6.4 CDC Formal vs Simulation-Based CDC Checks
+
+```
+                    | CDC Formal              | CDC Simulation (with metastability injection)
+--------------------|--------------------------|-----------------------------------------------
+Exhaustiveness      | Proves for ALL input    | Tests sampled sequences; may miss rare
+                    | sequences and timings    | corner-case violations
+                    |                          |
+Coverage metric     | 100% of CDC paths,      | Depends on test plan coverage of clock
+                    | 100% of property space   | ratio combinations and data patterns
+                    |                          |
+Metastability model | Mathematical: models     | Simulated: injects X or random values at
+                    | all possible resolved    | specific injection points; limited to
+                    | values simultaneously    | simulated scenarios
+                    |                          |
+Clock relationship  | Explores ALL phase       | Tests specific phase relationships;
+                    | relationships between    | corner cases may be missed if not
+                    | domains (ratio + skew)   | explicitly targeted
+                    |                          |
+Multi-cycle paths   | Proves stability window  | Checks stability in simulated cycles;
+                    | is sufficient for ALL    | may miss the one cycle where data
+                    | possible timing combos   | changes during the sampling window
+                    |                          |
+Reconvergence       | Proves all reconvergent  | Only catches if the injected metastable
+                    | paths produce consistent  values happen to cause divergence
+                    | values for any resolve   in the simulated test
+                    |                          |
+False paths         | Can prove a crossing is  | Cannot prove safety — absence of failure
+                    | safe (no bug exists)     | in simulation ≠ proof of correctness
+                    |                          |
+Runtime             | Minutes to hours per     | Seconds per test; weeks for comprehensive
+                    | block                    | regression
+                    |                          |
+Scalability         | State explosion for      | Handles full-chip with no state issues;
+                    | large CDC path count     | but coverage gaps grow with complexity
+```
+
+### 6.5 Common CDC Patterns — Formal Verification Targets
+
+**Pattern 1: 2-Flop Synchronizer (single-bit)**
+```
+Source Domain          Destination Domain
+  ────→ FF1 ──→ FF2 ────→
+        clk_a    clk_b
+
+What formal proves:
+  - FF1 and FF2 are clocked by the destination clock (clk_b), not source.
+  - No combinational logic between FF1 and FF2 (direct connection only).
+  - The output of FF2 is used consistently (not fed back without re-synchronization).
+  - MTBF is acceptable given clock frequencies and metastability parameters.
+
+Typical property:
+  // The synchronizer chain is exactly 2 flops with no combinational logic
+  assert property (@(posedge clk_b)
+      $changed(sync_in) |-> ##2 sync_out == $past(sync_in, 2));
+```
+
+**Pattern 2: MUX-Based Synchronizer (multi-bit, controlled crossing)**
+```
+Source Domain                Destination Domain
+  data_bus[7:0]───→ MUX ────→ data_out[7:0]
+                     ↑
+  select ──→ 2-FF sync ──→ sel_sync
+
+What formal proves:
+  - data_bus is stable during the entire window when sel_sync transitions.
+  - select is properly synchronized through a 2-FF chain before use.
+  - Data is only sampled when sel_sync indicates a valid transfer.
+  - No data change occurs between sel_sync assertion and consumption.
+```
+
+**Pattern 3: Asynchronous FIFO (multi-bit, gray-code pointers)**
+```
+Write Domain (clk_w)          Read Domain (clk_r)
+  wr_ptr ──→ gray_enc ──→ 2-FF sync ──→ gray_dec ──→ rd_side_wr_ptr
+  rd_ptr_gray ──→ 2-FF sync ──→ wr_side_rd_ptr
+  full  = (wr_ptr_gray == {¬rd_ptr_gray[MSB], rd_ptr_gray[MSB-1:0]})
+  empty = (rd_ptr_gray == wr_ptr_gray_synced)
+
+What formal proves:
+  - Gray encoding: wr_ptr and rd_ptr produce gray codes where exactly 1 bit
+    changes per increment.
+  - Full flag never deasserts falsely (safe pessimism): the synchronized
+    read pointer may be stale, but the full calculation is conservative.
+  - Empty flag never deasserts falsely: same argument for write pointer.
+  - No data overwrite: write index is never equal to the (synchronized) read
+    index when full, and read index is never equal to write when empty.
+  - Data integrity: each read returns the value written to that location.
+```
+
+**Pattern 4: Handshake Synchronizer (req/ack)**
+```
+Source Domain              Destination Domain
+  data ────────────────────→ data_out
+  req ──→ 2-FF sync ──→ req_sync
+  ack ←── 2-FF sync ←── ack_dom
+
+What formal proves:
+  - data is held stable from req assertion until ack is received.
+  - req is not deasserted until ack_sync is seen in the source domain.
+  - ack is not asserted until req_sync is seen in the destination domain.
+  - No data is lost: every req eventually gets an ack (liveness with fairness).
+  - No spurious ack: ack only follows req, never self-generated.
+```
+
+### 6.6 What Formal CDC Can Prove That Simulation Cannot
+
+```
+1. COVERAGE COMPLETENESS
+   Simulation: "We tested with clk_a:clk_b ratios of 1:1, 2:1, 3:1, 1:2"
+   Formal: "We proved correctness for ALL possible clock ratios and ALL
+   phase alignments." No ratio is untested.
+
+2. METASTABILITY CORRECTNESS
+   Simulation: Injects X on one signal at a time; tests N scenarios.
+   Formal: Simultaneously considers ALL possible metastable resolutions
+   for ALL synchronized signals. Proves no resolution combination causes
+   a protocol violation.
+
+3. RECONVERGENCE SAFETY
+   Simulation: Rarely catches the case where two synchronized versions of
+   the same signal (taken through different synchronizer depths) cause
+   functional errors — it depends on which metastable values were injected.
+   Formal: Proves that for ALL possible metastable resolutions at ALL
+   synchronizers, reconvergent logic produces consistent results.
+
+4. ABSENCE OF BUGS
+   Simulation: Can only show bugs ARE found, never that they are ABSENT.
+   Formal: Proves no bug exists for the checked property. A PROVEN CDC
+   property means the crossing is correct for all time, all inputs, all phases.
+```
+
+### 6.7 CDC Formal Tools
 
 ```
 | Tool                    | Vendor    | Type          |
@@ -864,7 +1341,167 @@ Property management:
 
 ---
 
-## 10. Interview Q&A
+## 10. Numbers to Memorize
+
+### 10.1 SAT Solver Capacity
+
+```
+Variables:         1M–100M+ variables per instance
+Clauses:           5M–500M+ clauses per instance
+Runtime:           Seconds to hours (varies wildly; industrial instances are hard to predict)
+Memory:            1–50 GB for large instances
+Learned clauses:   100K–10M during a single solve (clause deletion manages this)
+
+MiniSat (open-source):    Handles ~1M variable instances in minutes
+CryptoMiniSat:             ~10M variables with XOR reasoning and Gaussian elimination
+CaDiCaL (used in ABC):     State-of-the-art competition winner, ~100M variables
+```
+
+### 10.2 LEC Runtime and Capacity
+
+```
+Design size:       100K–50M+ gates per block
+Compare points:    10K–1M+ per design
+Runtime scaling:   O(n log n) for well-structured designs (hierarchical LEC)
+                    O(n²) worst-case for flat LEC with many optimization changes
+Typical runtime:   Minutes (single block, clean synthesis)
+                    Hours (full chip, many ECOs, retiming)
+Typical pass rate:  >99% on first run with correct setup
+Common failures:    Unmapped points, retiming, register merging
+Tool capacity:      Formality and Conformal both handle 50M+ gates
+```
+
+### 10.3 Model Checking State Space
+
+```
+Practical limit:   ~10⁶–10⁸ reachable states for BDD-based model checking
+                    (depends heavily on variable ordering and function structure)
+
+BMC depth:         10–100 cycles typical for bug finding
+                    1000+ cycles for deep pipelines (rare, requires abstraction)
+                    Completeness threshold: design-specific, often 20–200 cycles
+
+IC3/PDR:           No explicit state enumeration; handles designs where BDD fails
+                    Practical limit: ~10⁴–10⁵ state variables for unbounded proofs
+
+k-induction:       k = 1–20 typical (most properties are 1-inductive or need k < 10)
+                    k > 50 usually indicates the property needs strengthening lemmas
+```
+
+### 10.4 Formal Verification Coverage and Properties
+
+```
+Coverage target:    100% of properties proven (unbounded preferred, bounded accepted)
+                     Unlike simulation: no "percentage coverage" concept — either
+                     proven for ALL cases or not.
+
+Property count:     100–10,000 SVA assertions per block (depending on complexity)
+                     Small block (FIFO, arbiter): 50–200 properties
+                     Medium block (cache controller): 200–1,000 properties
+                     Large block (CPU pipeline): 1,000–10,000 properties
+
+Property categories:
+  - Safety (no bad state): 70–80% of all properties
+  - Liveness (good thing happens): 10–20%
+  - Covers (reachability): 10–15%
+
+Assumption count:   Typically 20–50% of assertion count
+Vacuity check:      Every formal run must verify all covers are reachable
+```
+
+### 10.5 CDC Metastability MTBF
+
+```
+MTBF formula:  MTBF = (e^(t_r / τ)) / (W × f_clk_src × f_clk_dst × f_data)
+
+Where:
+  t_r         = Resolution time available (seconds)
+                = destination clock period - setup time - clk-to-Q of FF1
+  τ           = Metastability time constant (seconds, technology-dependent)
+                Typically: 20–100 ps for modern processes
+  W           = Metastability window (seconds)
+                Typically: 10–100 ps (portion of clock period vulnerable to metastability)
+  f_clk_src   = Source domain clock frequency (Hz)
+  f_clk_dst   = Destination domain clock frequency (Hz)
+  f_data      = Data toggle rate (Hz)
+
+Typical values for 28nm process:
+  τ  ≈ 50 ps
+  W  ≈ 30 ps
+  2-FF synchronizer with f_clk = 500 MHz, f_data = 100 MHz:
+    t_r ≈ 2 ns (one full destination clock period for resolution)
+    MTBF ≈ e^(2000/50) / (30e-12 × 500e6 × 500e6 × 100e6)
+         ≈ e^40 / 7.5e-7 ≈ 2.35 × 10^17 / 7.5e-7 ≈ 3.1 × 10^23 seconds
+         ≈ 10^16 years (effectively never fails)
+
+  With 1-FF synchronizer (half the resolution time):
+    t_r ≈ 1 ns
+    MTBF ≈ e^(1000/50) / 7.5e-7 ≈ e^20 / 7.5e-7 ≈ 7.2 × 10^12 seconds
+         ≈ 228,000 years (may not be sufficient for high-reliability)
+
+Rules of thumb:
+  - 2-FF synchronizer: MTBF > 10^10 years for most clock frequencies
+  - 3-FF synchronizer: needed when f_clk > 500 MHz or t_r < 1 ns
+  - Always use 2-FF minimum; never rely on 1-FF in production
+```
+
+### 10.6 Formal Tool Landscape
+
+```
+Property Verification (FPV):
+  JasperGold (Cadence)   — Strongest formal app ecosystem; multiple engines
+  VC Formal (Synopsys)   — Tight VCS integration; good for Synopsys flows
+  OneSpin (Siemens)      — Strong assertion-based verification
+  Ifram (Intel, internal) — Used within Intel for processor verification
+
+Equivalence Checking (LEC):
+  Formality (Synopsys)   — Paired with Design Compiler
+  Conformal LEC (Cadence) — Paired with Genus/Innovus
+  Hector (Synopsys)      — Sequential equivalence checking
+
+CDC Verification:
+  SpyGlass CDC (Synopsys) — Structural lint + formal
+  JasperGold CDC (Cadence) — Full formal CDC analysis
+  Meridian CDC (Cadence)   — Structural lint
+  Questa CDC (Siemens)     — Lint + formal
+
+Connectivity / X-Prop:
+  JasperGold Connectivity App
+  VC Formal Connectivity App
+  SpyGlass CDC (also handles some connectivity)
+
+Open-Source / Academic:
+  ABC (UC Berkeley)       — Synthesis and verification framework (SAT-based)
+  MiniSat                 — Minimalist SAT solver (educational baseline)
+  Pono (Stanford)         — Modern open-source model checker
+  AIGER format            — Standard for circuit verification benchmarks
+```
+
+### 10.7 Quick Reference — Key Numbers for Interviews
+
+```
+| Metric                              | Value / Range                    |
+|-------------------------------------|----------------------------------|
+| SAT solver capacity                 | 1M–100M+ variables               |
+| SAT clauses per instance            | 5M–500M+                         |
+| BDD practical state limit           | 10⁶–10⁸ reachable states         |
+| BMC typical depth                   | 10–100 cycles                    |
+| k-induction typical k               | 1–20                             |
+| LEC design capacity                 | 50M+ gates                       |
+| LEC runtime scaling                 | O(n log n) to O(n²)              |
+| Property count per block            | 100–10,000 SVA assertions        |
+| Formal coverage target              | 100% of properties proven        |
+| 2-FF synchronizer MTBF (28nm)      | > 10^10 years                    |
+| Metastability τ (28nm)             | 20–100 ps                        |
+| Metastability window W (28nm)      | 10–100 ps                        |
+| Resolution time for 2-FF (500 MHz) | ~2 ns                            |
+| Compare points per LEC run          | 10K–1M+                          |
+| CDCL learned clauses per solve      | 100K–10M                         |
+```
+
+---
+
+## 11. Interview Q&A
 
 **Q1: What is the difference between simulation and formal verification?**
 

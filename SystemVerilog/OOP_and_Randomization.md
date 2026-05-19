@@ -2,6 +2,88 @@
 
 ---
 
+## UVM Class Hierarchy -- Complete Reference
+
+### The Two Branches: uvm_object and uvm_component
+
+```
+uvm_void (abstract root)
+├── uvm_object (data containers -- no hierarchy, no phasing)
+│   ├── uvm_transaction (deprecated, use uvm_sequence_item)
+│   │   └── uvm_sequence_item (THE base class for transactions)
+│   │       └── your_packet (user-defined transaction)
+│   ├── uvm_sequence #(REQ, RSP) (generates sequence_items)
+│   │   └── your_sequence
+│   ├── uvm_reg (register model objects)
+│   ├── uvm_reg_field
+│   ├── uvm_reg_map
+│   └── uvm_pool, uvm_queue, uvm_event (utility classes)
+│
+└── uvm_component (hierarchical, phased, permanent during simulation)
+    ├── uvm_test (top-level test class)
+    │   └── your_test
+    ├── uvm_env (encapsulates the verification environment)
+    │   └── your_env
+    ├── uvm_agent (bundles driver, monitor, sequencer, coverage)
+    │   └── your_agent
+    ├── uvm_driver #(REQ, RSP) (drives signals to DUT)
+    │   └── your_driver
+    ├── uvm_monitor (observes DUT signals, creates transactions)
+    │   └── your_monitor
+    ├── uvm_sequencer #(REQ, RSP) (arbitrates between sequences)
+    │   └── your_sequencer
+    ├── uvm_scoreboard (compares expected vs actual)
+    │   └── your_scoreboard
+    ├── uvm_subscriber #(T) (analysis port consumer)
+    │   ├── your_coverage_collector
+    │   └── your_logger
+    ├── uvm_reg_block (register block)
+    └── uvm_phase (phase management)
+```
+
+### How the Hierarchy Relates -- Data Flow
+
+```
+uvm_test
+  └── uvm_env
+        ├── uvm_agent (ACTIVE mode: drives stimulus)
+        │     ├── uvm_sequencer
+        │     │     └── uvm_sequence
+        │     │           └── creates uvm_sequence_item objects
+        │     │                 (these are uvm_object, NOT uvm_component)
+        │     ├── uvm_driver
+        │     │     └── receives uvm_sequence_item from sequencer
+        │     │           drives DUT pins via virtual interface
+        │     └── uvm_monitor
+        │           └── observes DUT pins, creates uvm_sequence_item
+        │                 publishes to analysis port
+        │
+        ├── uvm_agent (PASSIVE mode: observation only)
+        │     └── uvm_monitor only (no driver, no sequencer)
+        │
+        ├── uvm_scoreboard
+        │     └── subscribes to monitors via analysis ports
+        │           compares expected vs actual transactions
+        │
+        └── uvm_subscriber (coverage collector)
+              └── subscribes to monitors
+                    collects functional coverage on transactions
+
+Key relationships:
+  uvm_sequence IS-A uvm_object (created dynamically, garbage collected)
+  uvm_sequence_item IS-A uvm_object (created/destroyed per transaction)
+  uvm_driver IS-A uvm_component (exists for entire simulation)
+  uvm_sequencer IS-A uvm_component (exists for entire simulation)
+  
+  The sequencer is the bridge between the two branches:
+    - Sequencer is a component (permanent, phased)
+    - It holds a queue of uvm_sequence_item objects (temporary)
+    - Driver requests items from sequencer via get_next_item()
+    - Sequencer runs sequences which produce items
+```
+
+---
+
 ## Class Fundamentals
 
 ### Handle vs Object -- The #1 Source of Confusion
@@ -693,6 +775,261 @@ class axi_txn;
             ((addr % 4096) + ((burst_len + 1) * (1 << burst_size))) <= 4096;
     }
 endclass
+```
+
+---
+
+## Constraint Solving Worked Example
+
+### A Class With 5 Constraint Types -- Step by Step
+
+```systemverilog
+class axi_burst_txn;
+    rand bit [1:0]  burst;     // 00=FIXED, 01=INCR, 10=WRAP
+    rand bit [7:0]  len;       // 0-255 (beats = len+1)
+    rand bit [2:0]  size;      // bytes per beat = 2^size
+    rand bit [31:0] addr;
+    rand bit        is_cacheable;
+
+    // Constraint 1: RANGE constraint
+    constraint c_size_range {
+        size inside {[0:4]};  // 1, 2, 4, 8, or 16 bytes per beat
+    }
+
+    // Constraint 2: IMPLICATION constraint
+    constraint c_wrap_len {
+        // WRAP burst: len must be power-of-2 minus 1
+        (burst == 2'b10) -> (len inside {1, 3, 7, 15});
+    }
+
+    // Constraint 3: SET MEMBERSHIP constraint
+    constraint c_burst_type {
+        burst inside {2'b00, 2'b01, 2'b10};  // exclude reserved 2'b11
+    }
+
+    // Constraint 4: SOFT constraint (can be overridden)
+    constraint c_default_addr {
+        soft addr[3:0] == 4'b0000;  // Default: aligned to 16 bytes
+    }
+
+    // Constraint 5: SOLVE-BEFORE constraint
+    constraint c_solve_order {
+        solve burst before len;  // Pick burst type first, then solve len
+    }
+endclass
+```
+
+**Step-by-step solver walkthrough:**
+
+```
+1. SOLVE-BEFORE: solver picks burst first
+   Available: {00, 01, 10} (constraint 3 excludes 11)
+   Probability: 1/3 each
+   Let's say solver picks burst = 10 (WRAP)
+
+2. RANGE constraint (c_size_range): 
+   size must be in {0, 1, 2, 3, 4}
+   Solver picks size = 2 (4 bytes per beat), probability 1/5
+
+3. IMPLICATION constraint (c_wrap_len):
+   burst == 10 -> len must be in {1, 3, 7, 15}
+   Available: {1, 3, 7, 15} (4 values)
+   Solver picks len = 7 (8-beat burst), probability 1/4
+
+4. SOFT constraint (c_default_addr):
+   addr[3:0] == 4'b0000 (default: aligned)
+   Since no hard constraint overrides it, addr[3:0] = 0
+   addr[31:4] = random (any value)
+   
+   Result: addr is aligned to 16-byte boundary
+
+5. Remaining unconstrained variables:
+   is_cacheable: random (50% each)
+
+Sample output:
+  burst = 10 (WRAP)
+  len = 7 (8 beats)
+  size = 2 (4 bytes/beat)
+  addr = 32'h0001_0010 (16-byte aligned)
+  is_cacheable = 1
+```
+
+**Overriding the soft constraint:**
+```systemverilog
+initial begin
+    axi_burst_txn txn = new();
+    
+    // Override soft addr alignment with hard constraint
+    txn.randomize() with {
+        addr inside {[32'h1000_0000:32'h1000_FFFF]};
+    };
+    // addr[3:0] is now random (soft constraint yields to hard inline constraint)
+    // addr is in range 0x10000000-0x1000FFFF
+    // burst, len, size still follow their hard constraints
+    
+    // If we try to violate a hard constraint:
+    // txn.randomize() with { burst == 2'b11; };  // FAILS! Returns 0.
+end
+```
+
+---
+
+## Coverage-Driven Verification -- Complete Reference
+
+### Covergroup Definition and Sampling
+
+```systemverilog
+class axi_coverage extends uvm_subscriber #(axi_burst_txn);
+    `uvm_component_utils(axi_coverage)
+
+    axi_burst_txn txn;
+
+    covergroup cg_axi @(posedge vif.clk);
+        // Coverpoint 1: Auto bins (each value gets its own bin)
+        cp_burst: coverpoint txn.burst {
+            bins fixed = {2'b00};
+            bins incr  = {2'b01};
+            bins wrap  = {2'b10};
+            bins reserved = {2'b11};  // Should never hit!
+        }
+
+        // Coverpoint 2: Explicit range bins
+        cp_len: coverpoint txn.len {
+            bins single    = {0};           // 1 beat
+            bins short_bst = {[1:3]};       // 2-4 beats
+            bins med_bst   = {[4:15]};      // 5-16 beats
+            bins long_bst  = {[16:255]};     // 17-256 beats
+        }
+
+        // Coverpoint 3: Transition bins (state machine coverage)
+        cp_burst_trans: coverpoint txn.burst {
+            bins fixed_to_incr = (2'b00 => 2'b01);
+            bins incr_to_wrap  = (2'b01 => 2'b10);
+            bins wrap_to_fixed = (2'b10 => 2'b00);
+            bins same_burst    = (2'b00 => 2'b00), (2'b01 => 2'b01), (2'b10 => 2'b10);
+        }
+
+        // Coverpoint 4: Cross coverage (combinatorial explosion management)
+        cp_size: coverpoint txn.size {
+            bins byte_1  = {0};
+            bins byte_2  = {1};
+            bins byte_4  = {2};
+            bins byte_8  = {3};
+            bins byte_16 = {4};
+        }
+
+        // Cross: burst type x length category
+        cx_burst_len: cross cp_burst, cp_len {
+            // WRAP burst only has specific lengths (from AXI spec)
+            ignore_bins wrap_short = binsof(cp_burst.wrap) && 
+                                     binsof(cp_len) intersect {0};
+        }
+
+        // Cross: burst type x size x cacheable
+        cp_cacheable: coverpoint txn.is_cacheable;
+        cx_burst_size_cache: cross cp_burst, cp_size, cp_cacheable {
+            // Non-cacheable FIXED burst is common; cacheable FIXED is unusual
+            // Still legal, so no ignore_bins, but coverage target is lower
+        }
+
+        // Options
+        option.per_instance = 1;
+        option.at_least = 3;  // Each bin needs 3 hits for coverage credit
+        option.goal = 95;     // 95% coverage target
+    endgroup
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+        cg_axi = new();
+    endfunction
+
+    function void write(axi_burst_txn t);
+        txn = t;
+        cg_axi.sample();
+    endfunction
+
+    function void report_phase(uvm_phase phase);
+        $display("AXI Coverage: %.1f%%", cg_axi.get_coverage());
+    endfunction
+endclass
+```
+
+### Functional Coverage vs Code Coverage
+
+```
+                    What it measures           How it's collected
+Functional coverage: "Did we test all        Covergroups + coverpoints
+                     SPECIFIED behaviors?"     explicitly written by the
+                                               verification engineer
+
+Code coverage:       "Did we execute all      Automatically extracted by
+                     lines/branches/FSM         the simulator from RTL source
+                     states/conditions?"
+                     
+Types of code coverage:
+  Line coverage:     Did each line of RTL execute?
+  Toggle coverage:   Did each net toggle 0->1 and 1->0?
+  Branch coverage:   Did each if-else branch execute?
+  FSM coverage:      Did each state transition occur?
+  Condition coverage: Did each Boolean sub-expression evaluate to both T and F?
+  Expression coverage: Did each logical expression hit all input combinations?
+
+Relationship:
+  100% code coverage ≠ correct design (can execute all code but miss scenarios)
+  100% functional coverage ≠ all bugs found (spec may be incomplete)
+  
+  Example where code coverage is misleading:
+    A 32-bit counter counts from 0 to 2^32-1
+    Code coverage: 100% (all lines execute)
+    Functional coverage: FAIL (did we test overflow? wrap-around? specific values?)
+
+  Example where functional coverage is misleading:
+    A FIFO is tested with all read/write/empty/full combinations
+    Functional coverage: 100%
+    But: the RTL has a typo where data is inverted on even clock cycles
+    Neither coverage catches this (no functional spec says "data must be non-inverted")
+
+Best practice: use BOTH. Code coverage as baseline floor, functional coverage for
+spec-specific scenarios. Coverage closure = both metrics above threshold.
+```
+
+### Coverage Closure Methodology
+
+```
+Phase 1: Define coverage model from specification
+  - Extract all functional requirements from the design spec
+  - For each requirement, define coverpoints and cross coverage
+  - Set coverage goals (typically 95% for functional, 100% for code)
+  - Estimate total bin count (watch for cross coverage explosion)
+
+Phase 2: Run initial regression with random stimulus
+  - Use constrained-random sequences (UVM factory + sequences)
+  - Collect coverage database (.ucdb for Questa, .covr for VCS)
+  - Check initial coverage: typically 40-70% after first run
+
+Phase 3: Analyze coverage holes
+  - Identify uncovered bins (which scenarios weren't hit?)
+  - For each hole, determine: is it a test gap or an impossible scenario?
+  - Impossible scenarios: add ignore_bins
+  - Test gaps: add directed sequences or adjust constraints
+
+Phase 4: Targeted stimulus for coverage closure
+  - Write directed sequences for specific uncovered bins
+  - Adjust random constraints to steer stimulus toward holes
+  - Use coverage feedback to guide regression (coverage-driven closure)
+  - Run multiple seeds to increase random coverage
+
+Phase 5: Coverage merge and final regression
+  - Merge coverage from all tests and seeds:
+    vcover merge total.ucdb seed1.ucdb seed2.ucdb ... seedN.ucdb
+  - Verify total coverage meets signoff threshold
+  - Document any remaining holes with justification
+
+Signoff criteria:
+  - Functional coverage: >= 95% (with documented exceptions)
+  - Code coverage: >= 100% line, >= 95% branch, >= 90% condition
+  - All illegal_bins: zero hits
+  - Coverage model reviewed by design and verification leads
 ```
 
 ---

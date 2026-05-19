@@ -144,6 +144,25 @@ contention, since they share the command bus on most DIMM configurations).
 
 ---
 
+### 1.5 DFI (DDR PHY Interface)
+
+The DFI protocol connects the DDR controller to the PHY (physical layer). It defines signals for clock, command/address, write data, read data, and training control. This boundary is where controller timing ends and analog PHY timing begins.
+
+**Key signal groups:**
+
+| Signal Group | Direction | Function |
+|-------------|-----------|----------|
+| dfi_address, dfi_cs_n, dfi_cke | Controller -> PHY | Command/address forwarding |
+| dfi_wrdata_en, dfi_wrdata | Controller -> PHY | Write data path enable + data |
+| dfi_rddata_en, dfi_rddata | PHY -> Controller | Read data path enable + data |
+| dfi_ctrlupd_req/ack | Both | PHY update handshake |
+
+**DFI timing:** The controller sends commands with a programmable latency (DFI frequency ratio). The PHY handles signal integrity (ODT, drive strength, termination). The DFI frequency ratio accommodates cases where the controller and PHY run at different clock frequencies (e.g., controller at 1/2 or 1/4 the PHY frequency).
+
+**Why it matters:** Debugging DDR issues often requires tracing across the DFI boundary. The controller issues a READ command on DFI; the PHY translates this to DRAM-specific timing. If read data returns corrupted, the question is whether the controller sent the wrong timing, the PHY misaligned the capture point, or the DRAM itself produced bad data.
+
+---
+
 ## 2. DDR Commands in Detail
 
 ### 2.1 ACTIVATE (ACT)
@@ -236,6 +255,39 @@ DDR5 extends to MR0-MR7 plus additional control registers.
 
 ---
 
+## 2.7 DRAM Initialization Sequence (DDR4)
+
+After power-on or reset, the DDR controller must initialize the DRAM through a strict sequence before normal operation can begin.
+
+1. **Apply stable power and clock.** Wait $t_{\text{INIT1}}$ (minimum stable power time).
+2. **Deassert RESET_n.** Wait $t_{\text{INIT3}}$ (500 $\mu$s).
+3. **Assert CKE high.** Wait $t_{\text{INIT5}}$.
+4. **Issue MRS commands** to configure mode registers:
+   - MR0: burst length, CAS latency, read burst type
+   - MR1: DLL enable, output drive strength, ODT
+   - MR2: CRC, write leveling
+   - MR3: MPR (Multi-Purpose Register)
+   - MR4: $t_{\text{REFI}}$ mode
+   - MR5: CA parity latency
+   - MR6: $t_{\text{CCD\_L}}$, VrefDQ training
+5. **Issue ZQCL** (ZQ Calibration Long). Wait $t_{\text{ZQinit}}$ (640 $\mu$s).
+6. **Perform read/write training** (write leveling, read leveling -- see below).
+7. **Transition to normal operation.**
+
+The entire initialization sequence takes 1--10 ms depending on the training algorithms used. During this time, the memory controller cannot service any requests.
+
+### Read/Write Training Algorithms
+
+**Write leveling:** Adjust the DQS delay per byte lane so that DQS edges align with the clock at the DRAM. The controller sweeps DQS delay; the DRAM reports alignment via a feedback mode register. This compensates for PCB trace length differences between CK and DQS.
+
+**Read leveling:** Adjust the DQS capture delay per byte lane to center the sampling point in the data eye. The controller sweeps delay, finds the left and right edges of the eye, then sets the delay to the midpoint.
+
+**MPR training:** DDR4's dedicated Multi-Purpose Register provides a known training pattern (e.g., a repeating 0101... sequence). This enables eye-width measurement without normal traffic, giving more accurate calibration.
+
+**Typical training time:** 5--50 ms per channel, depending on algorithm and board complexity. More sophisticated algorithms (sweeping both edges, measuring eye height as well as width) take longer but produce more robust timing margins.
+
+---
+
 ## 3. Timing Parameters with Derivations
 
 ### 3.1 Core Timing Parameters
@@ -248,6 +300,19 @@ all bitlines, and the sense amplifiers to fully latch the row data.
 tRCD = t_wordline_assert + t_charge_sharing + t_sense_amp_latch
 
 Typical: 12-18 ns (DDR4-3200: ~13.75 ns = 22 tCK at 1600 MHz)
+```
+
+**tCL (CAS Latency):** Number of clock cycles from READ command to first data appearing
+on DQ. This includes column decode, sense amplifier output driver, and data path to pins.
+
+```
+tCL (CAS Latency, in clock cycles):
+  DDR4-3200 CL22: 22 tCK = 13.75 ns
+  DDR5-5600 CL30: 30 tCK = 10.71 ns
+
+Note: tCL is specified in clock cycles (tCK), not nanoseconds.
+  The actual latency in ns depends on the clock frequency.
+  DDR5 has lower ns latency despite higher CL in tCK (faster clock).
 ```
 
 **tRP (Row Precharge Time):** Time from PRECHARGE to when the bank can accept a new
@@ -277,6 +342,80 @@ Derivation: ACT(row A) -> wait tRAS -> PRE(row A) -> wait tRP -> ACT(row B)
 Total time from first ACT to second ACT on the same bank: tRAS + tRP = tRC
 
 Typical: 45-55 ns
+```
+
+**tCCD (Column-to-Column Delay):** Minimum time between two column commands (READ or
+WRITE) to the same bank group or different bank groups.
+
+```
+tCCD_L (Long, same bank group): 8 tCK (DDR4), 8 tCK (DDR5)
+tCCD_S (Short, different bank group): 4 tCK (DDR4), 4 tCK (DDR5)
+
+Purpose: limits column command rate to what the internal DRAM core can sustain.
+Same bank group is slower because the internal data path is shared within a BG.
+```
+
+**tFAW (Four Activate Window):** No more than 4 ACTIVATE commands in any tFAW window.
+
+```
+tFAW typical: 16-40 ns
+Sliding window constraint: 4 ACTs in tFAW ns, then must wait.
+
+Purpose: limits peak current from VDD supply during row activation.
+Each ACT charges ~8K bitlines simultaneously (~10 mA per ACT).
+4 simultaneous ACTs = ~40 mA spike on VDD.
+```
+
+**tRRD (Row-to-Row Delay):** Minimum time between ACTIVATE commands to different banks.
+
+```
+tRRD_L (same bank group): ~6 ns
+tRRD_S (different bank group): ~4 ns
+
+Purpose: stagger ACTIVATE commands to spread current draw over time.
+```
+
+#### Complete Timing Diagram: ACT -> READ -> PRE -> ACT on the Same Bank
+
+```
+DDR4-3200 (tCK = 0.625 ns), Bank 0
+tRCD = 13.75 ns (22 tCK), tCL = 13.75 ns (22 tCK), tRP = 13.75 ns (22 tCK)
+tRAS = 35 ns (56 tCK), tRC = 48.75 ns (78 tCK)
+
+                |<--- tRCD (22 tCK) --->|<-- tCL (22 tCK) -->|
+                |                        |                     |
+Time (tCK):  0  2  4  ...  20  22  24  ...  42  44  46  ...  54  56  58  ...  76  78
+             |                       |                        |                   |        |
+CMD:         ACT                     READ                     ---                 PRE      ACT
+             B0,row5                 B0,col10                                     B0       B0,row7
+
+DQ:          ----                    ---------<D0,D0,D0,D0,D0,D0,D0,D0>-----------
+                                                             ^                   
+                                                    Data appears at tCK = 22+22 = 44
+                                                    BL8: 8 transfers over 4 tCK
+
+Constraints verified:
+  ACT -> READ:   22 - 0  = 22 tCK >= tRCD(22)    ✓  row must be open tRCD before READ
+  ACT -> PRE:    56 - 0  = 56 tCK >= tRAS(56)    ✓  row active at least tRAS
+  PRE -> ACT:    78 - 56 = 22 tCK >= tRP(22)      ✓  bank precharged tRP before new ACT
+  ACT -> ACT:    78 - 0  = 78 tCK >= tRC(78)      ✓  same-bank cycle time = tRAS + tRP
+
+  Data return:   tCK 44 to 48 (4 tCK for BL8 at DDR)
+
+Total time for one read of row5 + precharge + activate row7:
+  78 tCK = 48.75 ns
+
+If row7 were already open (row hit), the PRE and second ACT are not needed:
+  ACT -> READ -> data = 0 + 22 + 22 + 4 = 48 tCK = 30 ns
+
+Row miss penalty: 48.75 - 30 = 18.75 ns (the PRE+ACT overhead)
+
+Summary of labeled intervals:
+  tRCD = ACT to READ delay (row opens, sense amps latch)
+  tCL  = READ to first data (column decode + data path to pins)
+  tRP  = PRE to next ACT (bitline equalization + wordline deassert)
+  tRAS = minimum ACT to PRE (sense amp restore cell charge)
+  tRC  = minimum ACT to ACT on same bank = tRAS + tRP
 ```
 
 ### 3.2 Refresh Timing
@@ -413,6 +552,58 @@ Disadvantages:
 
 **Adaptive policy (most modern controllers):**
 
+#### Open-Page vs Close-Page — Hit Rate Modeling with Numerical Examples
+
+```
+Access latency model:
+  Row hit:   tCAS = 13.75 ns (DDR4-3200)
+  Row miss:  tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
+  Row empty: tRCD + tCAS = 13.75 + 13.75 = 27.5 ns (no precharge needed)
+
+Scenario 1: Sequential access to 8 KB row (128 cache lines of 64 B)
+  Open-page:  first access = row miss (27.5 ns), next 127 = row hits (13.75 ns each)
+  Close-page: every access = row empty (27.5 ns)
+  Open-page avg: (27.5 + 127*13.75) / 128 = 13.86 ns -> 99.2% hit rate
+  Close-page avg: 27.5 ns -> 0% hit rate (by definition)
+  Open-page wins by 2x for sequential access.
+
+Scenario 2: Random access to 16 different rows in the same bank
+  Open-page:  P(hit) = 1/16 = 6.25% (only hit if same row as last access)
+  Close-page: P(hit) = 0%
+  Open-page avg: 0.0625*13.75 + 0.9375*41.25 = 39.53 ns
+  Close-page avg: 27.5 ns (always row empty, no tRP needed)
+  Close-page wins by 30%! (open-page wastes time on mispredicted row hits)
+
+Scenario 3: Strided access with stride = 256 B (4 cache lines)
+  Row size = 8 KB = 128 cache lines
+  Lines per row before row change: 128/4 = 32 hits, then miss
+  Open-page hit rate: 31/32 = 96.9%
+  Open-page avg: 0.969*13.75 + 0.031*41.25 = 14.6 ns
+  Close-page avg: 27.5 ns
+  Open-page wins.
+
+Break-even hit rate where open-page = close-page:
+  h*13.75 + (1-h)*41.25 = 27.5
+  13.75h + 41.25 - 41.25h = 27.5
+  -27.5h = -13.75
+  h = 0.50
+
+  If hit rate > 50%: open-page is faster.
+  If hit rate < 50%: close-page is faster.
+  At exactly 50%: equal.
+```
+
+**Practical hit rates by workload:**
+
+| Workload | Access Pattern | Row Hit Rate | Best Policy |
+|----------|---------------|-------------|-------------|
+| memcpy / streaming | Sequential, unit stride | >95% | Open-page |
+| Matrix multiply (row-major) | Sequential within row | >90% | Open-page |
+| Database index scan | Semi-random, some locality | 40-60% | Adaptive |
+| Graph traversal (BFS) | Random, no locality | 10-25% | Close-page |
+| Pointer chasing (linked list) | Fully random | <10% | Close-page |
+| Mixed (server) | Combination of above | 30-50% | Adaptive |
+
 ```
 Track per-bank access history:
   - If the last N accesses to a bank all hit the same row -> keep open
@@ -427,6 +618,44 @@ Threshold-based:
   - Count consecutive row hits in the current open row
   - If count > threshold: high locality detected, keep open
   - If count == 0 (miss): precharge immediately (close-page behavior)
+```
+
+#### Row Buffer Hit Rate Modeling
+
+```
+For a workload with uniform random access to B banks, R rows per bank,
+and a working set of W rows:
+
+If W <= R (working set fits in one row per bank):
+  P(hit) ≈ 1 - (1/B) for each access after warmup
+  (High hit rate: most accesses go to the already-open row)
+
+If W >> R (working set much larger than rows per bank):
+  P(hit) ≈ 1/W (each access equally likely to hit any row)
+  Open-page: P(hit) ≈ 1/W ≈ 0 for large W
+  Close-page: P(hit) = 0 by definition
+
+For streaming access (sequential cache lines within the same row):
+  Row size = 8 KB, cache line = 64 B
+  Lines per row = 8192 / 64 = 128 consecutive hits before row change
+  P(hit) = 127/128 ≈ 99.2%
+
+For strided access with stride S bytes:
+  If S <= row_size: P(hit) = row_size / S (until row boundary)
+  If S > row_size:  P(hit) = 0 (every access is a new row)
+
+Average access time model:
+  t_avg = P(hit) * tCAS + (1 - P(hit)) * (tRP + tRCD + tCAS)
+
+Numerical (DDR4-3200):
+  P(hit) = 0.50: t_avg = 0.5*13.75 + 0.5*(13.75+13.75+13.75) = 27.5 ns
+  P(hit) = 0.00: t_avg = 41.25 ns (always miss)
+  P(hit) = 0.99: t_avg = 13.89 ns (almost always hit)
+
+Break-even hit rate where open-page beats close-page:
+  tCAS < (tRP + tRCD + tCAS) always
+  So open-page always wins if P(hit) > 0
+  But open-page wastes energy at P(hit) < ~10%
 ```
 
 ---
@@ -838,7 +1067,7 @@ DDR5 DIMM:
   2x 40-bit subchannels (32 data + 8 ECC each)
   Controller sees two independent 40-bit ports
   Each subchannel has its own:
-    - Bank state machine (16 banks)
+    - Bank state machine (16 banks in 4 bank groups)
     - Row buffer per bank
     - Timing constraints
     - Refresh scheduling
@@ -848,6 +1077,36 @@ Impact on controller design:
   - Scheduler has 2x the banks to exploit for parallelism
   - C/A bus arbitration between subchannels (if shared C/A)
   - Separate read/write data paths for each subchannel
+```
+
+#### DDR5 Dual Subchannel — Scheduler Impact
+
+```
+With 32 banks (2x16), the FR-FCFS scheduler can keep more requests in flight:
+
+DDR4 scheduling example (16 banks, open-page):
+  Banks 0-15: B0=row5 open, B1=row2 open, B2-B15=idle
+  Pending: READ B0 col10 (hit), READ B2 row8 (miss), WRITE B3 row1 (miss)
+  Schedule: B0 hit (tCAS), then B2 miss (tRP+tRCD+tCAS), then B3 miss
+
+DDR5 scheduling example (32 banks across 2 subchannels):
+  Subchannel A (B0-B15): B0=row5, B2=row3, B4-B7 idle, B8-B15 idle
+  Subchannel B (B16-B31): B16=row7, B18=row1, rest idle
+  Pending: READ B0 col10 (hit, subch A), READ B16 col20 (hit, subch B)
+  Schedule: Both can issue READ simultaneously (different subchannels!)
+  Effective throughput: 2x for row-hit requests
+
+The key advantage: two independent row buffers mean two simultaneous row hits.
+DDR4 can only hit one row per bank at a time. DDR5 can hit two (one per subchannel).
+
+Command bus contention:
+  Standard DIMMs share the C/A bus between subchannels.
+  Only one command per clock cycle. Controller must time-multiplex:
+    Cycle 0: ACT subchannel A
+    Cycle 1: READ subchannel B
+    Cycle 2: NOP (timing wait)
+    Cycle 3: READ subchannel A
+  Premium DIMMs with dual C/A buses eliminate this bottleneck.
 ```
 
 ### 10.2 Decision Feedback Equalization (DFE)
@@ -867,6 +1126,76 @@ where:
 
 DFE is implemented in the DDR5 PHY (receiver side).
 Requires per-lane training (DDR5 read/write training is more complex than DDR4).
+```
+
+### 10.3 DDR5 Same-Bank Refresh (SBR) -- Detailed
+
+DDR5 introduces **Same-Bank Refresh (SBR)**, which refreshes the same bank number
+across all bank groups simultaneously. This is fundamentally different from DDR4's
+all-bank refresh (which blocks ALL banks).
+
+```
+DDR5 bank structure (per subchannel):
+  4 bank groups (BG0-BG3), 4 banks each = 16 banks
+
+Same-Bank Refresh:
+  Refreshes bank 0 of BG0, BG1, BG2, BG3 at the same time
+  Banks 1, 2, 3 in each BG remain available for normal access
+
+  tRFC_sb (same-bank refresh time): ~200-300 ns
+  Compare: tRFC (all-bank): ~450-550 ns
+
+  Refresh scheduling:
+    16 SBR commands needed per refresh cycle (one per bank number: 0-3 x 4 BGs)
+    But each SBR covers 4 banks (one per BG), so only 4 SBR rounds needed
+    for bank 0, then 4 for bank 1, etc.
+
+  Effective overhead:
+    4 bank numbers x tRFC_sb per bank / tREFI
+    = 4 x 250 ns / 7812 ns = 12.8% for the specific bank being refreshed
+    But 3/4 of banks remain available, so system-level overhead is much lower
+
+  Impact on controller:
+    - Must track which bank number is being refreshed
+    - Cannot issue commands to bank N of ANY bank group during SBR of bank N
+    - Can issue commands to banks 0, 1, 2, 3 of the non-refreshing bank numbers
+    - Requires more complex bank state tracking (per-bank-number state machine)
+```
+
+### 10.4 DDR5 On-Die ECC -- Detailed
+
+```
+DDR5 adds internal ECC within each DRAM chip (not visible to the controller):
+
+  Internal word: 128 data bits + 8 ECC bits per 136-bit internal code word
+  The 8-bit ECC uses a modified Hamming code (SECDED for the internal word)
+
+  Write path:
+    Controller sends 32-bit data word (x4 device sends 4 bits per DQ per burst)
+    DRAM chip internally computes 8-bit ECC from the 128-bit accumulated word
+    Stores 136 bits (128 data + 8 ECC) in the cell array
+
+  Read path:
+    DRAM reads 136 bits from cell array
+    Internally checks ECC, corrects single-bit errors
+    Sends corrected 32-bit data word to controller (ECC bits NOT sent)
+    Controller sees only clean data (or detects multi-bit failure via sideband)
+
+  Why on-die ECC does NOT replace system-level ECC:
+    - On-die ECC protects against cell-level failures (charge loss, fabrication)
+    - System ECC protects against chip-level failures (entire DRAM chip dies)
+    - On-die ECC cannot correct an entire chip failure (all 4 or 8 bits corrupted)
+    - They are complementary, not redundant
+
+  Area overhead:
+    ~6.25% extra cell area (8 ECC bits per 128 data bits)
+    Plus ECC computation logic (~0.5% of die area)
+    Total die area increase: ~7% (justified by yield improvement at smaller nodes)
+
+  Latency impact:
+    Write: +1-2 ns (ECC computation before writing to array)
+    Read:  +1-2 ns (ECC check after reading from array)
+    Mostly hidden by pipelining in the DRAM chip
 ```
 
 ### 10.3 PMIC on DIMM
@@ -901,6 +1230,193 @@ Impact on refresh:
   Almost 9% of bandwidth lost to refresh!
   Same-bank refresh (SBR) becomes critical to maintain usable bandwidth.
 ```
+
+---
+
+## 10.5 LPDDR4/LPDDR5/LPDDR5X Detailed Comparison
+
+LPDDR (Low-Power DDR) targets mobile and embedded systems where power efficiency is paramount. LPDDR uses lower voltage (1.1 V for LPDDR4, 1.05 V for LPDDR5) and smaller I/O swings compared to standard DDR.
+
+**Key differences from standard DDR:**
+
+- **Bidirectional DQ bus:** LPDDR uses a shared read/write data path at the command level (not separate read/write data paths). This halves the pin count but requires careful bus turnaround scheduling.
+- **Separate CA (command/address) bus:** LPDDR4/5 has a dedicated CA bus shared between the two channels, reducing pin count compared to the full-width command bus in DDR4/5.
+- **LPDDR5 DVFS:** The DRAM can switch between two operating frequencies (e.g., 3200 and 6400 Mbps) without full re-initialization, using DVFSC (DVFS Set-C) commands. This enables rapid power-performance adaptation.
+- **Bank group architecture:** LPDDR5 supports 8 banks in BG mode, 16 banks in 16B mode. More banks provide more bank-level parallelism, allowing the controller to keep more requests in flight.
+
+### LPDDR5 WCK Clock (Double Data Rate Clock)
+
+LPDDR5 introduces a separate WCK (Write Clock) that runs at 2x the command clock:
+
+```
+CK (command clock):  used for command/address sampling
+WCK (write clock):   used for data synchronization, runs at 2x CK frequency
+
+LPDDR5-6400:
+  CK = 1600 MHz (command clock)
+  WCK = 3200 MHz (data clock)
+  Data rate = 6400 MT/s (DDR on WCK = 2 x WCK_freq)
+
+Why WCK matters:
+  - Separate clock allows independent frequency scaling
+  - WCK can be disabled during idle periods (power saving)
+  - WCK training is separate from CK training (simpler calibration)
+
+WCK-to-CK ratio:
+  LPDDR5:  WCK/CK = 2:1 or 4:1 (configurable)
+  LPDDR5X: WCK/CK = 4:1 standard (higher data rates require more internal pipelining)
+```
+
+#### LPDDR5X WCK Training — Detailed Sequence
+
+```
+WCK training aligns the WCK clock at the DRAM receiver:
+
+1. Controller sends WCK toggle pattern (alternating 0/1 on WCK).
+2. DRAM samples WCK at multiple delay taps using an internal delay line.
+3. DRAM reports which tap gives the best alignment (via mode register readback).
+4. Controller adjusts WCK delay to center the sampling point.
+
+WCK frequency ratio training (LPDDR5X):
+  At 4:1 ratio, the DRAM internally divides WCK by 4 to recover the data phase.
+  Training determines the correct phase relationship between WCK and CK.
+  This is more complex than DDR5's DQS training because WCK is a continuous
+  clock (not a strobe that toggles only during data bursts).
+
+Power advantage of WCK gating:
+  During idle periods, WCK is driven to a static level (no toggling).
+  WCK driver power = C_load * V_swing^2 * f_WCK
+  At 3200 MHz with 5 pF load and 0.4V swing: ~25 mW per pin
+  Gating WCK saves this power during idle (30-50% of DRAM I/O power).
+  DDR5 DQS toggles on every burst, consuming power even at low utilization.
+```
+
+#### LPDDR5X Masked Writes (Write-X) — Detailed Operation
+
+```
+Standard DDR5 WRITE:
+  Controller issues WRITE with full burst data.
+  All bytes in the burst are written to the selected columns.
+  To update a single byte: must READ the row, modify in controller, WRITE back.
+  Cost: 1 READ + 1 WRITE = 2 commands for a partial update.
+
+LPDDR5X Write-X (Masked Write):
+  Controller issues WRITE with data + byte mask (DBI pins repurposed).
+  DRAM internally reads the current column value.
+  DRAM merges: for each byte, if mask=1, keep existing value; if mask=0, write new.
+  DRAM writes the merged result back.
+  Cost: 1 command for a partial update.
+
+Signal mapping during Write-X:
+  DQ[7:0]:  new data (driven by controller)
+  DM[7:0]:  byte mask (0=write new data, 1=keep existing)
+
+Example: Update bytes 2-3 of an 8-byte column, keep bytes 0-1 and 4-7:
+  DQ = [XX, XX, 0x42, 0x85, XX, XX, XX, XX]
+  DM = [ 1,   1,   0,     0,     1,   1,   1,   1  ]
+  Result in DRAM: bytes 0-1 unchanged, bytes 2-3 = 0x42, 0x85, bytes 4-7 unchanged.
+
+Use case: GPU rendering partially updating a framebuffer pixel.
+  Without Write-X: 50% of writes to framebuffer are partial (only alpha channel changed).
+  Each partial write needs read-modify-write: 2x the bandwidth.
+  With Write-X: 1x bandwidth, 50% reduction in DRAM bus utilization for this workload.
+```
+
+#### LPDDR5X DBI (Data Bus Inversion) — Power Saving Detail
+
+```
+DBI reduces I/O power by minimizing the number of transitions on the DQ bus:
+
+Write DBI (controller -> DRAM):
+  For each byte of write data:
+    Count number of '0' bits.
+    If count > 4 (more zeros than ones): invert the byte, set DBI_n=0.
+    If count <= 4: send as-is, set DBI_n=1.
+  DRAM receives: if DBI_n=0, invert the byte back before writing.
+
+Read DBI (DRAM -> controller):
+  Same logic applied by the DRAM before transmitting.
+  Controller checks DBI_n and inverts if needed.
+
+Power saving analysis (per byte lane):
+  Without DBI: average 4 transitions per byte (50% of 8 bits toggle).
+  With DBI:    average 3 transitions per byte (at most 4 zeros, after inversion).
+
+  I/O dynamic power per pin: P = C * V_swing^2 * f * transition_rate
+  LPDDR5X at 8533 MT/s, 5 pF load, 0.3V swing:
+    Without DBI: P = 5e-12 * 0.09 * 4266e6 * 0.5 = 0.96 mW/pin
+    With DBI:    P = 5e-12 * 0.09 * 4266e6 * 0.375 = 0.72 mW/pin
+    Saving: 0.24 mW/pin * 16 pins (x16 device) = 3.84 mW per device
+
+  For a 4-device LPDDR5X package: ~15 mW savings from DBI alone.
+  Combined with WCK gating and lower VDD (0.9V vs 1.1V for DDR5):
+    LPDDR5X total I/O power: ~60-80 mW per channel
+    DDR5 total I/O power: ~120-180 mW per channel
+    LPDDR5X uses ~50% less I/O power at equivalent data rates.
+```
+
+### LPDDR5X Specific Features
+
+```
+LPDDR5X extends LPDDR5 with higher data rates (up to 8533 MT/s) and
+improved power efficiency:
+
+1. Variable Refresh (VR):
+   - Standard refresh: 8192 commands per 64 ms (fixed rate)
+   - Variable refresh: refresh rate adjusted based on temperature
+     At low temperature (< 45C): refresh rate can be reduced by 2-4x
+     At high temperature (> 85C): refresh rate increased (standard rate)
+   - Saves power at room temperature (most mobile devices operate here)
+
+2. Write-X (Masked Write):
+   - Allows partial byte writes within a burst without read-modify-write
+   - DM (Data Mask) pins indicate which bytes to write and which to skip
+   - Eliminates the need for the controller to read the row first
+   - Saves one READ + one WRITE per partial update (huge for mobile workloads
+     with frequent small updates like UI rendering)
+
+3. Read/Write DBI (Data Bus Inversion):
+   - DBI reduces power consumption on the DQ bus by inverting data when
+     it would reduce the number of bit transitions
+   - Write DBI: if > 50% of bits in a byte are '0', invert the byte and
+     set the DBI flag. Fewer '0' bits = less current on the bus.
+   - Read DBI: same principle on read data. DRAM can invert before sending.
+   - Power saving: 10-20% reduction in I/O power (significant in mobile)
+
+4. Adaptive Refresh Management:
+   - Monitors row access patterns for RowHammer protection
+   - Implements targeted refresh for frequently accessed rows
+   - Managed internally by the DRAM (less controller overhead)
+
+5. How LPDDR Achieves Lower Power Than Standard DDR:
+
+   | Source | LPDDR5 Advantage | Power Saving |
+   |--------|-------------------|-------------|
+   | Voltage | 1.05 V vs 1.1 V (DDR5) | ~10% dynamic power |
+   | I/O swing | Smaller voltage swing on DQ | ~15-20% I/O power |
+   | DVFS | Frequency scaling without re-init | 40-60% at low freq |
+   | WCK gating | Disable WCK during idle | ~30% idle power |
+   | DBI | Data bus inversion | ~10-20% I/O power |
+   | CA bus sharing | Shared CA between channels | Fewer pins, less capacitance |
+   | No ODT | Simpler termination | Less static power |
+
+   Combined: LPDDR5 uses 30-50% less power than DDR5 at equivalent data rates,
+   but with narrower channels (16-bit vs 32-bit subchannel) and lower peak bandwidth.
+```
+
+**LPDDR4/5/5X vs DDR4/5 comparison:**
+
+| Attribute | DDR5 | LPDDR5 | LPDDR5X |
+|-----------|------|---------|---------|
+| Voltage | 1.1 V | 1.05 V | 0.9-1.05 V (DVFS) |
+| Max data rate | 6400+ MT/s | 6400 MT/s | 8533 MT/s |
+| Channel width | 2 x 32-bit | 2 x 16-bit | 2 x 16-bit |
+| Banks | 32 (16 per subchannel) | 16 per channel (8 BG or 16B mode) | 16 per channel |
+| DVFS | No | Yes (DVFSC) | Yes (enhanced) |
+| WCK clock | No | Yes (2:1 or 4:1) | Yes (4:1) |
+| Write-X | No | No | Yes |
+| DBI | Optional | Read + Write | Read + Write |
+| Target | Servers, desktops | Mobile, embedded | Mobile, AI/ML edge |
 
 ---
 

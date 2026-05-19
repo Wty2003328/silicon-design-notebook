@@ -135,7 +135,76 @@ Design parameters:
   MTBF = exp(1945/18) / 2e4 = exp(108) / 2e4 ~ 10^43 years
 ```
 
-### 1.5 When to Use 3-FF Synchronizers
+### 1.5 MTBF Worked Calculation for 28nm (Interview-Ready Numbers)
+
+```
+Technology parameters (28nm CMOS):
+  tau  = 50 ps    (metastability time constant, characterized by foundry)
+  T_0  = 100 fs   (intrinsic metastability window)
+
+Design scenario:
+  f_clk  = 200 MHz (destination domain, e.g., AHB bus)
+  f_data = 50 MHz  (source domain, e.g., peripheral clock)
+  T_clk  = 5 ns
+
+2-FF synchronizer:
+  t_c2q   = 80 ps (first FF, typical at 28nm)
+  t_setup = 60 ps (second FF)
+  t_r = T_clk - t_c2q - t_setup = 5000 - 80 - 60 = 4860 ps
+
+  MTBF = exp(t_r / tau) / (f_clk * f_data * T_0)
+       = exp(4860 / 50) / (200e6 * 50e6 * 100e-15)
+       = exp(97.2) / (1e15 * 1e-13)
+       = exp(97.2) / 100
+
+  exp(97.2) ~ 3.5 * 10^42
+
+  MTBF = 3.5e42 / 100 = 3.5e40 seconds ~ 1.1 * 10^33 years
+
+  This is extremely safe -- a 2-FF synchronizer at 200 MHz in 28nm is
+  more than adequate for any practical application.
+
+What if we need to determine synchronizer stages for a TARGET MTBF?
+  Target MTBF = 10^9 years = 3.15 * 10^16 seconds
+
+  For N-stage synchronizer: t_r = (N-1) * T_clk - t_c2q - t_setup
+
+  Required: exp(t_r / tau) / (f_clk * f_data * T_0) >= 3.15e16
+  exp(t_r / tau) >= 3.15e16 * f_clk * f_data * T_0
+  exp(t_r / tau) >= 3.15e16 * 200e6 * 50e6 * 100e-15
+  exp(t_r / tau) >= 3.15e16 * 1000 = 3.15e19
+
+  t_r / tau >= ln(3.15e19) = 44.98
+  t_r >= 44.98 * 50 ps = 2249 ps
+
+  With 2-FF: t_r = 4860 ps >> 2249 ps → 2 stages sufficient (by huge margin)
+
+  More interesting scenario: f_clk = 2 GHz, f_data = 1 GHz (28nm)
+    T_clk = 500 ps
+    t_r = 500 - 80 - 60 = 360 ps
+    MTBF = exp(360/50) / (2e9 * 1e9 * 100e-15)
+         = exp(7.2) / (200)
+         = 1339 / 200 = 6.7 seconds!
+
+    At 2 GHz, 2-FF is completely inadequate.
+    Need 3-FF: t_r = 2*500 - 80 - 60 = 860 ps
+    MTBF = exp(860/50) / 200 = exp(17.2) / 200 = 2.95e7 / 200 = 1.47e5 seconds
+    Still only ~1.7 days. Need 4-FF!
+
+    4-FF: t_r = 3*500 - 80 - 60 = 1360 ps
+    MTBF = exp(1360/50) / 200 = exp(27.2) / 200 = 6.5e11 / 200 = 3.25e9 seconds
+    3.25e9 seconds ~ 103 years. Meets the 10^9 year target? No.
+    
+    5-FF: t_r = 4*500 - 80 - 60 = 1860 ps
+    MTBF = exp(1860/50) / 200 = exp(37.2) / 200 = 1.5e16 / 200 = 7.5e13 seconds
+    7.5e13 seconds ~ 2.4 million years. PASS!
+
+  Conclusion: At 2 GHz with tau=50ps (28nm), you need 5 FF stages
+  to meet 10^9 year MTBF. This is why high-frequency CDC is hard
+  at older nodes with larger tau.
+```
+
+### 1.6 When to Use 3-FF Synchronizers
 
 ```
 3-FF needed when:
@@ -944,44 +1013,140 @@ module async_fifo #(
 endmodule
 ```
 
-### 5.6 Timing Diagram: Write Pointer Catching Read Pointer (Full Scenario)
+### 5.6 Depth=8 FIFO Worked Example: All Pointer States
 
 ```
-Assume ADDR_W=2 (depth=4), PTR_W=3
+FIFO configuration:
+  DATA_W = 8 (8-bit data)
+  ADDR_W = 3  (depth = 2^3 = 8 entries)
+  PTR_W  = 4  (ADDR_W + 1 = 4-bit pointers with wrap bit)
 
-Initial: wr_bin=000, rd_bin=000, Gray: wr=000, rd=000 -> EMPTY
+  Memory indices: 0..7 (3-bit address)
+  Pointers range: 0..15 (4-bit, wrap at 16)
 
-Write 4 entries (no reads):
-  wr_bin: 000 -> 001 -> 010 -> 011 -> 100
-  wr_gray: 000 -> 001 -> 011 -> 010 -> 110
+  Full Gray code table for 4-bit pointers (0..15):
+  ┌───────┬──────────┬─────────────────────────────────────────┐
+  │ Binary│  Gray    │  Note                                   │
+  ├───────┼──────────┼─────────────────────────────────────────┤
+  │ 0000  │  0000    │  Empty (initial state)                   │
+  │ 0001  │  0001    │  1 entry written                         │
+  │ 0010  │  0011    │  2 entries                               │
+  │ 0011  │  0010    │  3 entries                               │
+  │ 0100  │  0110    │  4 entries (half full)                   │
+  │ 0101  │  0111    │  5 entries                               │
+  │ 0110  │  0101    │  6 entries                               │
+  │ 0111  │  0100    │  7 entries                               │
+  │ 1000  │  1100    │  8 entries = FULL (wrapped)              │
+  │ 1001  │  1101    │  7 entries (read 1)                      │
+  │ 1010  │  1111    │  6 entries                               │
+  │ 1011  │  1110    │  5 entries                               │
+  │ 1100  │  1010    │  4 entries                               │
+  │ 1101  │  1011    │  3 entries                               │
+  │ 1110  │  1001    │  2 entries                               │
+  │ 1111  │  1000    │  1 entry (read 7 of 8)                   │
+  │ 0000  │  0000    │  EMPTY again (full wrap)                 │
+  └───────┴──────────┴─────────────────────────────────────────┘
 
-  rd_bin stays at 000, rd_gray stays at 000
+  FULL detection (in write domain):
+    wr_gray[3:2] != rd_gray_sync[3:2]  AND  wr_gray[1:0] == rd_gray_sync[1:0]
+    Check: top 2 bits differ, bottom 2 bits same.
 
-  After 4 writes: wr_gray=110, rd_gray_sync=000
-    MSB:   1 != 0  CHECK
-    MSB-1: 1 != 0  CHECK
-    LSB:   0 == 0  CHECK
-  -> FULL!
+  EMPTY detection (in read domain):
+    rd_gray_next == wr_gray_sync
 
-Read 2 entries:
-  rd_bin: 000 -> 001 -> 010
-  rd_gray: 000 -> 001 -> 011
+  Fill level (approximate, in write domain):
+    fill = wr_bin - rd_bin_in_wrclk (mod 16)
+    Range: 0 (empty) to 8 (full). Values 9-15 indicate wrap + partial.
 
-  Now: wr_gray=110, rd_gray_sync (after 2 cycles) = 011
-    MSB:   1 != 0  CHECK
-    MSB-1: 1 != 1  FAIL
-  -> NOT full anymore (2 entries available)
+  Step-by-step walkthrough (8 writes, 3 reads, 2 writes):
+  ──────────────────────────────────────────────────────────────
 
-Write 2 more entries:
-  wr_bin: 100 -> 101 -> 110
-  wr_gray: 110 -> 111 -> 101
+  State 0: EMPTY
+    wr_bin=0000, wr_gray=0000, rd_bin=0000, rd_gray=0000
+    rd_gray_sync(wr clk) = 0000
+    Full check: 0000 vs 0000 -> top 2 same -> NOT full
+    Empty check: 0000 == 0000 -> EMPTY!
 
-  rd_gray_sync (still 011, takes time to sync):
-    wr_gray=101, rd_gray_sync=011
-    MSB:   1 != 0  CHECK
-    MSB-1: 0 != 1  CHECK
-    LSB:   1 == 1  CHECK
-  -> FULL again!
+  State 1: Write A (addr 0)
+    wr_bin=0001, wr_gray=0001
+    rd unchanged: rd_gray=0000
+    Full check: 0001 vs 0000 -> bit3:0!=0, bit2:0!=0 -> same top2 -> NOT full
+    Empty check: 0001 != 0000 -> NOT empty
+    mem[0] = A, fill = 1
+
+  State 2: Write B (addr 1)
+    wr_bin=0010, wr_gray=0011
+    Full check: 0011 vs 0000 -> bit3:0==0, bit2:0==0 -> NOT full
+    mem[1] = B, fill = 2
+
+  State 3: Write C (addr 2)
+    wr_bin=0011, wr_gray=0010
+    mem[2] = C, fill = 3
+
+  State 4: Write D (addr 3)
+    wr_bin=0100, wr_gray=0110
+    mem[3] = D, fill = 4
+
+  State 5: Write E (addr 4)
+    wr_bin=0101, wr_gray=0111
+    mem[4] = E, fill = 5
+
+  State 6: Write F (addr 5)
+    wr_bin=0110, wr_gray=0101
+    mem[5] = F, fill = 6
+
+  State 7: Write G (addr 6)
+    wr_bin=0111, wr_gray=0100
+    mem[6] = G, fill = 7
+
+  State 8: Write H (addr 7) -> FULL
+    wr_bin=1000, wr_gray=1100
+    rd_gray_sync = 0000 (no reads)
+    Full check: 1100 vs 0000
+      bit3: 1 != 0 ✓   bit2: 1 != 0 ✓   (top 2 differ)
+      bit1: 0 == 0 ✓   bit0: 0 == 0 ✓   (bottom 2 same)
+    -> FULL! Correct.
+    mem[7] = H, fill = 8
+
+  State 9: Read A (rd reads mem[0])
+    rd_bin=0001, rd_gray=0001
+    After sync (2 wr_clk cycles): rd_gray_sync(wr) = 0001
+    Full check in wr domain: 1100 vs 0001
+      bit3: 1 != 0 ✓   bit2: 1 != 0 ✓
+      bit1: 0 == 0 ✓   bit0: 0 != 1 ✗ (bottom bits differ)
+    -> NOT full. fill = 7
+
+  State 10: Read B
+    rd_bin=0010, rd_gray=0011
+    Full check: 1100 vs 0011 -> bottom 2: 00 != 11 -> NOT full. fill = 6
+
+  State 11: Read C
+    rd_bin=0011, rd_gray=0010
+    Full check: 1100 vs 0010 -> bottom 2: 00 != 10 -> NOT full. fill = 5
+
+  State 12: Write I (addr 0, wraps to beginning)
+    wr_bin=1001, wr_gray=1101
+    rd_gray_sync = 0010
+    Full check: 1101 vs 0010
+      bit3: 1 != 0 ✓   bit2: 1 != 0 ✓
+      bit1: 0 != 1 ✗  -> NOT full. fill = 6
+
+  State 13: Write J (addr 1)
+    wr_bin=1010, wr_gray=1111
+    rd_gray_sync = 0010
+    Full check: 1111 vs 0010
+      bit3: 1 != 0 ✓   bit2: 1 != 0 ✓
+      bit1: 1 != 1 ✗  -> NOT full. fill = 7
+
+  Pointer width calculation for any depth:
+    PTR_W = ceil(log2(DEPTH)) + 1
+    For DEPTH=8:   PTR_W = 3 + 1 = 4 bits
+    For DEPTH=16:  PTR_W = 4 + 1 = 5 bits
+    For DEPTH=32:  PTR_W = 5 + 1 = 6 bits
+    For DEPTH=64:  PTR_W = 6 + 1 = 7 bits
+
+    The extra bit is MANDATORY -- without it, the full and empty
+    conditions would be indistinguishable (both pointers equal).
 ```
 
 ### 5.7 Reset Handling in Async FIFO
@@ -1202,7 +1367,99 @@ Only 2 transitions per transfer (vs 4 for 4-phase).
 Higher throughput but more complex (edge detection logic).
 ```
 
-### 8.2 Throughput Comparison
+**Detailed 2-Phase (Toggle) Signaling Waveform:**
+
+```
+            Transfer 1              Transfer 2              Transfer 3
+            ─────────               ─────────               ─────────
+CLK_src:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
+DATA:     ---<D0>--------------<D1>--------------<D2>------------
+REQ:      _____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______________________|‾‾‾
+                ^toggle              ^toggle                 ^toggle
+                (0→1)                (1→0)                   (0→1)
+CLK_dst:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
+REQ_sync: _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______________|‾‾‾‾‾‾
+ACK:      ________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________|‾‾‾‾‾‾‾
+                            ^toggle                     ^toggle
+                            (0→1)                       (1→0)
+ACK_sync: ______________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________
+
+Protocol:
+  Phase 1: Source toggles REQ, places new data on bus
+  Phase 2: Destination detects REQ edge (via XOR with delayed version),
+           captures data, toggles ACK
+  Phase 3: Source detects ACK edge, can immediately start next transfer
+           (no return-to-zero needed!)
+
+Key: REQ and ACK never return to zero -- each toggle is a new event.
+     The "meaning" of REQ=1 vs REQ=0 depends on the previous state.
+```
+
+**Detailed 4-Phase (Return-to-Zero) Signaling Waveform:**
+
+```
+            Transfer 1                         Transfer 2
+            ─────────                          ─────────
+CLK_src:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
+DATA:     ---<D0>-----------------------------<D1>------------------
+REQ:      _____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___
+               Phase 1: assert      Phase 3:   Phase 1: assert
+               (data valid)         deassert    (data valid)
+                                    Phase 4:
+                                    clean slate
+CLK_dst:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
+REQ_sync: _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___________|‾‾‾‾‾‾‾‾‾‾‾‾|___
+ACK:      ________________|‾‾‾‾‾‾‾‾‾|___________________|‾‾‾‾‾‾‾‾
+                       Phase 2:     Phase 4:
+                       assert ACK   deassert ACK
+                       (data taken) (ready for next)
+ACK_sync: _____________________|‾‾‾‾‾‾‾‾‾|___________________
+
+Protocol (4 phases per transfer):
+  Phase 1: Source asserts REQ (high), data is valid on bus
+  Phase 2: Destination sees REQ_sync high, captures data,
+           asserts ACK (high)
+  Phase 3: Source sees ACK_sync high, deasserts REQ (low)
+  Phase 4: Destination sees REQ_sync low, deasserts ACK (low)
+           -> Both back to zero, ready for next transfer
+
+Key: Each signal must return to zero before the next transfer begins.
+     This costs 2 extra synchronization crossings per transfer compared
+     to 2-phase, but is simpler to implement (level-sensitive logic).
+```
+
+**Comparison Table:**
+
+```
+  ┌───────────────────┬───────────────────────┬───────────────────────┐
+  │ Property           │ 2-Phase (Toggle)      │ 4-Phase (RTZ)         │
+  ├───────────────────┼───────────────────────┼───────────────────────┤
+  │ Transfers/protocol │ 2 signal transitions  │ 4 signal transitions  │
+  │ Sync crossings     │ 2 per transfer        │ 4 per transfer        │
+  │ Throughput         │ ~2x higher            │ Baseline              │
+  │ Latency            │ Lower                 │ Higher                │
+  │ Implementation     │ Edge detection (XOR)  │ Level detection       │
+  │                    │ More complex           │ Simpler               │
+  │ Bus stability      │ Data must be stable   │ Data stable from      │
+  │                    │ from REQ toggle until  │ REQ assert to ACK     │
+  │                    │ ACK toggle received    │ deassert              │
+  │ Reset behavior     │ Must initialize both  │ Both signals at 0,    │
+  │                    │ sides to same level    │ naturally safe        │
+  │ When to use        │ High-throughput CDC    │ Most CDC applications,│
+  │                    │ where latency matters  │ simpler verification, │
+  │                    │ (e.g., high-speed      │ general-purpose       │
+  │                    │  interconnect)         │ (e.g., peripheral     │
+  │                    │                        │  bus crossings)       │
+  └───────────────────┴───────────────────────┴───────────────────────┘
+
+  Throughput at f_src = f_dst = 500 MHz:
+    4-phase: ~4 sync crossings * 2 cycles each = ~8 cycles/transfer
+             Throughput ≈ 500 MHz / 8 = 62.5 M transfers/sec
+    2-phase: ~2 sync crossings * 2 cycles each = ~4 cycles/transfer
+             Throughput ≈ 500 MHz / 4 = 125 M transfers/sec
+    Async FIFO: 1 transfer per write cycle (sustained)
+             Throughput = 500 M transfers/sec (8x better than 4-phase)
+```
 
 ```
 4-phase handshake:
@@ -1302,6 +1559,64 @@ Formal CDC catches bugs that simulation CANNOT:
   - Race conditions that require precise clock alignment (rare in sim)
   - Reconvergence issues that depend on metastable resolution direction
   - Protocol violations that only occur under specific timing relationships
+```
+
+### 9.4 What Simulation Alone Cannot Catch
+
+```
+CDC bugs that are invisible to simulation:
+
+1. Low-probability metastability events
+   - Simulation models resolve to deterministic values (0 or 1)
+   - Real metastable FFs can resolve to ANY value, or stay
+     metastable long enough to propagate through multiple gates
+   - MTBF calculations show failure rates of once per years/centuries
+   - A sim running at 1 kHz effective rate for 1 hour covers 3.6M cycles
+     Real chip at 1 GHz covers 3.6M cycles in 3.6 ms
+   - Sim coverage of metastability space: essentially 0%
+
+2. Precise clock edge alignment
+   - Two async clocks may produce a specific phase relationship only
+     once every 10^6 cycles (depending on frequency ratio)
+   - Sim with integer clock ratios NEVER explores all phase alignments
+   - Irrational frequency ratios (e.g., f1/f2 = sqrt(2)) help but
+     still don't cover the worst-case metastability window
+
+3. Multi-bit CDC coherency under metastability
+   - When a bus is sampled across a CDC boundary, sim sees
+     clean transitions (all bits switch together)
+   - In silicon, individual bits may resolve at different cycles
+   - This produces intermediate values that NEVER occur in sim
+
+4. Glitch propagation through combinational logic before synchronizer
+   - Sim computes Boolean logic cleanly -- no hazards
+   - In silicon, different path delays through a gate can produce
+     narrow glitches that the synchronizer captures as valid transitions
+   - Example: a AND b where a transitions 0→1 while b transitions
+     1→0 with different delays can produce a glitch spike on the AND output
+
+5. Voltage/temperature-induced timing shifts
+   - Sim assumes a single PVT corner
+   - Silicon varies across the die (OCV), across temperature cycles,
+     and across voltage droop events (IR drop)
+   - A synchronizer path that meets timing at TT may fail at SS
+
+This is why formal CDC tools (SpyGlass, Meridian) are MANDATORY for
+tapeout signoff -- they provide exhaustive proof that no CDC protocol
+violation exists, regardless of timing alignment or probability.
+Simulation complements formal by verifying functional correctness of
+the CDC logic (does the FIFO actually transfer data correctly?) but
+cannot prove the absence of metastability-related failures.
+
+CDC Verification Checklist (mandatory for tapeout):
+  1. Formal CDC analysis clean (0 errors, all waivers justified)
+  2. Structural CDC checks clean (synchronizers on all crossings)
+  3. Protocol checks clean (handshake/FIFO protocol compliance)
+  4. CDC-aware simulation with randomized clock phases (functional test)
+  5. STA clean on all synchronizer-internal paths (FF1→FF2 timing met)
+  6. SDC correctly declares all async clock relationships
+  7. Review all waivers: every waived crossing must have a documented
+     reason (e.g., "static config register, only written at boot")
 ```
 
 ### 9.4 CDC Sign-Off Checklist

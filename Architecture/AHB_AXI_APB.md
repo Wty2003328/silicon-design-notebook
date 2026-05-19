@@ -130,6 +130,80 @@ PREADY:  _________|___|___|‾‾‾‾‾‾‾|_______
 State:      IDLE SETUP ----ACCESS----- IDLE
 ```
 
+### 2.3.1 APB Signal Timing — PSEL/PENABLE/PWRITE/PREADY Relationship
+
+The APB protocol's timing is defined by four key signals. Understanding their exact
+relationship is critical for both bridge design and interview questions.
+
+**Signal rules (strict, from AMBA spec):**
+
+```
+1. PSEL:   Asserted by the address decoder when a transfer targets this slave.
+           PSEL must be stable before PENABLE rises (setup in SETUP phase).
+           Deasserted only after the transfer completes (PREADY=1 in ACCESS).
+
+2. PENABLE: Always transitions 0->1 exactly one cycle after PSEL is asserted.
+            The SETUP->ACCESS transition is unconditional and takes exactly 1 cycle.
+            PENABLE stays high during any wait states (PREADY=0 extends ACCESS).
+            PENABLE deasserts only when the transfer completes.
+
+3. PWRITE:  Must be valid during SETUP and ACCESS phases.
+            Indicates direction: 1=write (PWDATA driven), 0=read (PRDATA expected).
+            Must not change during a transfer (stable from SETUP through ACCESS).
+
+4. PREADY:  Driven by the slave. Only sampled when PENABLE=1 (ACCESS phase).
+            PREADY=1: transfer completes this cycle.
+            PREADY=0: slave inserts a wait state; all signals held stable.
+            PREADY may be combinational (depends on PENABLE for timing closure) or
+            registered (adds 1 cycle latency but breaks critical path).
+```
+
+**Timing diagram — all four signals for a write with 1 wait state:**
+
+```
+           Cycle 1      Cycle 2      Cycle 3      Cycle 4
+           (IDLE)       (SETUP)      (ACCESS ws)  (ACCESS done)
+PCLK:    _|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___
+PSEL:    ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___
+PENABLE: ______________|‾‾‾‾‾‾‾‾‾‾‾‾‾|___
+PWRITE:  ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___     (high = write)
+PADDR:   ---<  ADDR  >--------------------------
+PWDATA:  ---<  DATA  >--------------------------
+PREADY:  ______________|_______|‾‾‾‾‾‾‾|___
+                               ^       ^
+                          wait state  transfer done
+State:      IDLE  SETUP  ACCESS(ws)  IDLE
+
+Key observations:
+  - PADDR and PWDATA are valid from SETUP through ACCESS (held during wait state).
+  - PENABLE is high for the entire ACCESS phase (both wait and done cycles).
+  - PREADY only matters when PENABLE=1 (not sampled in SETUP or IDLE).
+  - The minimum APB transfer is 2 cycles: SETUP (PSEL=1, PENABLE=0) + ACCESS (PSEL=1, PENABLE=1, PREADY=1).
+```
+
+**Common interview question: Can PREADY be combinational from PENABLE?**
+
+```
+Answer: Yes, but with caution.
+
+Legal: PREADY = PENABLE  (slave always ready when in ACCESS phase)
+  This is the simplest slave: no wait states, PREADY tied to PENABLE.
+  Transfer always completes in 2 cycles.
+
+Legal: PREADY = 1  (slave always ready, regardless of PENABLE)
+  Also valid. PREADY is not sampled until PENABLE=1 anyway.
+  Used by simple register files with fixed read/write timing.
+
+NOT legal: PREADY depends on PSEL without PENABLE
+  The spec requires PREADY to be stable and meaningful only during ACCESS.
+  A slave that deasserts PREADY when PSEL=0 and PENABLE=0 (IDLE) is legal
+  (PREADY is a "don't care" in IDLE/SETUP) but the master must not sample it.
+
+Timing hazard: If PREADY is combinational from PENABLE and PREADY feeds back
+  into logic that generates PENABLE, a combinational loop forms. This is why
+  most real slaves register PREADY (adding 1 wait state but breaking the loop).
+```
+
 **Write with PSLVERR:**
 
 ```
@@ -143,7 +217,53 @@ PREADY:   _________|‾‾‾‾‾‾‾|_______
   (ignore, retry, interrupt, etc.). APB does NOT define error recovery.
 ```
 
-### 2.4 APB Bridge Design (from AXI/AHB)
+### 2.4 APB Detailed Handshake Protocol
+
+The APB protocol uses exactly three signals for flow control: `PSEL`, `PENABLE`, and
+`PREADY`. The `PWRITE` signal determines direction. Understanding the exact timing
+relationship is critical for bridge design and interview questions.
+
+**Signal behavior across phases:**
+
+```
+Phase      PSEL  PENABLE  PWRITE  PADDR  PWDATA/PRDATA  PREADY
+-----------------------------------------------------------------------
+IDLE       0     0        X       X      X               X
+SETUP      1     0        valid   valid  valid (if W)    X (not sampled)
+ACCESS     1     1        valid   valid  valid (if W)    sampled
+ACCESS(ws) 1     1        valid   valid  valid (if W)    0 (wait)
+COMPLETE   1     1        valid   valid  valid           1 (transfer done)
+```
+
+**Critical timing rule: PSEL and PENABLE must NEVER be asserted simultaneously
+unless in the ACCESS phase.** The transition from SETUP to ACCESS is always exactly
+one cycle (PENABLE goes high on the clock edge following SETUP). Only PREADY can
+extend the ACCESS phase.
+
+**Data validity rules:**
+- Write data (`PWDATA`) must be stable during SETUP and ACCESS phases.
+- Read data (`PRDATA`) is sampled on the rising clock edge when `PENABLE=1` and `PREADY=1`.
+- `PSLVERR` is sampled alongside `PREADY` -- it is only valid when `PENABLE=1 && PREADY=1`.
+
+**Back-to-back transfers (no IDLE cycle between):**
+
+```
+Cycle:      1         2         3         4         5
+PCLK:    _|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___
+PSEL:    ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___
+PENABLE: _________|‾‾‾|_________|‾‾‾|_________|‾‾‾|___
+PADDR:   ---<  A0  >----<  A1  >----<  A2  >--------
+PWRITE:  ___|‾‾‾‾‾‾‾‾|___|‾‾‾‾‾‾‾‾|___|‾‾‾‾‾‾‾‾|___
+PWDATA:  ---<  D0  >----<  D1  >----<  D2  >--------
+PREADY:  ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ (always ready)
+State:      IDLE SETUP A0  SETUP A1  SETUP A2
+
+Note: PENABLE has a distinctive "staircase" pattern -- it pulses high for
+exactly one cycle per transfer (during ACCESS), then drops low for SETUP
+of the next transfer. PSEL stays high throughout the back-to-back sequence.
+```
+
+### 2.5 APB Bridge Design (from AXI/AHB)
 
 ```
                     ┌─────────────────────────┐
@@ -585,6 +705,264 @@ Beat at address 0x1004 (upper 4 bytes):
 The slave uses WSTRB to determine which bytes to write.
 ```
 
+#### AXI Narrow Transfer — Cycle-by-Cycle on 128-bit Bus
+
+```
+Scenario: Master writes 32 bits (AWSIZE=2) to a 128-bit (16-byte) slave bus.
+INCR4 burst starting at address 0x1000.
+
+Byte lanes on 128-bit bus:
+  Lane  0: addr[3:0] = 0x0   Lane  4: addr[3:0] = 0x4
+  Lane  1: addr[3:0] = 0x1   Lane  5: addr[3:0] = 0x5
+  Lane  2: addr[3:0] = 0x2   Lane  6: addr[3:0] = 0x6
+  Lane  3: addr[3:0] = 0x3   Lane  7: addr[3:0] = 0x7
+  Lane  8: addr[3:0] = 0x8   Lane 12: addr[3:0] = 0xC
+  Lane  9: addr[3:0] = 0x9   Lane 13: addr[3:0] = 0xD
+  Lane 10: addr[3:0] = 0xA   Lane 14: addr[3:0] = 0xE
+  Lane 11: addr[3:0] = 0xB   Lane 15: addr[3:0] = 0xF
+
+Beat 0: Address = 0x1000 (narrow, 4 bytes at offset 0x0)
+  Only lanes 0-3 carry valid data:
+  WSTRB = 16'h000F (bits [3:0] = 1)
+  WDATA[31:0] = write_data, WDATA[127:32] = don't care
+
+Beat 1: Address = 0x1004 (4 bytes at offset 0x4)
+  Only lanes 4-7 carry valid data:
+  WSTRB = 16'h00F0 (bits [7:4] = 1)
+  WDATA[63:32] = write_data, rest = don't care
+
+Beat 2: Address = 0x1008 (4 bytes at offset 0x8)
+  Only lanes 8-11 carry valid data:
+  WSTRB = 16'h0F00 (bits [11:8] = 1)
+
+Beat 3: Address = 0x100C (4 bytes at offset 0xC)
+  Only lanes 12-15 carry valid data:
+  WSTRB = 16'hF000 (bits [15:12] = 1)
+
+Total: 4 beats x 4 bytes = 16 bytes transferred across 128-bit bus.
+Without narrow transfers, the master would need 4 separate single-beat transactions.
+With INCR4 narrow burst, the single AW channel transaction covers all 4 beats.
+```
+
+#### AXI Unaligned Transfer — Detailed Example
+
+```
+Scenario: Write 16 bytes starting at unaligned address 0x1003 on a 64-bit (8-byte) bus.
+AWSIZE=3 (8 bytes per beat), ARLEN=2 (3 beats), INCR burst.
+
+The AXI spec requires the master to:
+  1. Calculate each beat address as Start + N * 2^AWSIZE (aligned to bus width)
+  2. Use WSTRB to indicate which byte lanes are actually valid
+
+Beat 0: Calculated address = 0x1000 (bus-aligned from 0x1003 rounded down)
+  Start at 0x1003 = byte lane 3 within this 8-byte aligned beat
+  Valid bytes: lanes 3,4,5,6,7 (5 bytes: 0x1003 through 0x1007)
+  WSTRB = 8'hF8 (bits [7:3] = 1, bits [2:0] = 0 for invalid)
+  WDATA = {32'hXXXX_XXXX, 8'hXX, byte@0x1003, byte@0x1004, byte@0x1005,
+            byte@0x1006, byte@0x1007}
+
+Beat 1: Address = 0x1008 (next 8-byte aligned boundary)
+  All 8 bytes valid: WSTRB = 8'hFF
+  WDATA = bytes 0x1008 through 0x100F
+
+Beat 2: Address = 0x1010
+  Remaining 3 bytes: 0x1010, 0x1011, 0x1012
+  WSTRB = 8'h07 (bits [2:0] = 1, rest = 0)
+  WDATA = {byte@0x1010, byte@0x1011, byte@0x1012, 40'hXXXXXX}
+
+Total data: 5 + 8 + 3 = 16 bytes across 3 beats (correct).
+WSTRB ensures only the intended bytes are written; unused lanes are ignored by the slave.
+```
+
+#### Unaligned Address Handling
+
+When the start address is not aligned to AWSIZE, the first beat may have fewer
+valid bytes than AWSIZE would suggest. The spec requires that the address of each
+beat is calculated as if the burst were fully aligned, and WSTRB indicates which
+bytes are valid:
+
+```
+Example: INCR4 write burst, AWSIZE=3 (8 bytes/beat), 64-bit bus,
+         unaligned start address 0x1004
+
+The data bus is 64 bits (8 bytes), aligned to 8-byte boundaries.
+Address 0x1004 is NOT aligned to 8 bytes (0x1004 % 8 = 4).
+
+Beat 0: Address = 0x1004 (unaligned start)
+  WSTRB = 8'b1111_1000  (bytes 4-7 are at positions 0-3 of this beat?
+  No -- let's recalculate properly)
+
+  For a 64-bit bus, byte lanes are:
+    Lane 0: address bits [2:0] = 000
+    Lane 1: address bits [2:0] = 001
+    ...
+    Lane 7: address bits [2:0] = 111
+
+  Beat 0 covers address range 0x1000-0x1007 (8 bytes aligned to bus width)
+  But the transfer starts at 0x1004, so only bytes at 0x1004-0x1007 are valid:
+    Lane 0 (0x1000): invalid -> WSTRB[0] = 0
+    Lane 1 (0x1001): invalid -> WSTRB[1] = 0
+    Lane 2 (0x1002): invalid -> WSTRB[2] = 0
+    Lane 3 (0x1003): invalid -> WSTRB[3] = 0
+    Lane 4 (0x1004): VALID   -> WSTRB[4] = 1
+    Lane 5 (0x1005): VALID   -> WSTRB[5] = 1
+    Lane 6 (0x1006): VALID   -> WSTRB[6] = 1
+    Lane 7 (0x1007): VALID   -> WSTRB[7] = 1
+  WSTRB = 8'b1111_0000
+
+Beat 1: Address = 0x100C (next aligned address after 0x1004 + 8)
+  All 8 bytes valid: WSTRB = 8'b1111_1111
+
+Beat 2: Address = 0x1014
+  All 8 bytes valid: WSTRB = 8'b1111_1111
+
+Beat 3: Address = 0x101C
+  All 8 bytes valid: WSTRB = 8'b1111_1111
+```
+
+#### WSTRB for WRAP Bursts with Unaligned Start
+
+```
+WRAP4 burst, AWSIZE=3 (8 bytes), ARADDR=0x1004, 64-bit bus:
+  Wrap boundary = 0x1000 (aligned to 4 * 8 = 32 bytes)
+  Wrap range: 0x1000-0x101F
+
+Beat 0: 0x1004, WSTRB = 8'b1111_0000 (first 4 bytes skipped)
+Beat 1: 0x100C, WSTRB = 8'b1111_1111
+Beat 2: 0x1014, WSTRB = 8'b1111_1111
+Beat 3: 0x101C, WSTRB = 8'b1111_1111
+  Note: bytes 0x1000-0x1003 are NOT transferred (outside start-to-end range)
+```
+
+### 4.7 Complete AXI4 Transaction Walkthrough with Timing Diagram
+
+This section shows a full write burst and read burst on a 64-bit AXI4 bus at 200 MHz,
+with all five channels and exact cycle-by-cycle behavior.
+
+#### Write Burst: INCR4, 64-bit data, start address 0x1000
+
+```
+AW Channel:
+  AWADDR=0x1000, AWLEN=3 (4 beats), AWSIZE=3 (8 B/beat),
+  AWBURST=01 (INCR), AWID=0, AWVALID, AWQOS=0x8
+
+W Channel:
+  WDATA[63:0], WSTRB=8'hFF, WLAST (on last beat)
+
+B Channel:
+  BID=0, BRESP=00 (OKAY)
+
+Timing (clock cycles):
+
+CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
+         -------------------------------------------------------------------
+AWVALID: |  1  |  1  |  1  |     |     |     |     |     |     |     |
+AWREADY: |  0  |  0  |  1  |     |     |     |     |     |     |     |
+AWADDR:  |1000 |1000 |1000 |     |     |     |     |     |     |     |
+         |     |     | ^   |     |     |     |     |     |     |     |
+         |     |     | AW  |     |     |     |     |     |     |     |
+         |     |     |hand |shake|     |     |     |     |     |     |
+
+WVALID:  |     |  1  |  1  |  1  |  1  |  1  |     |     |     |     |
+WREADY:  |     |  0  |  1  |  1  |  0  |  1  |     |     |     |     |
+WDATA:   |     | D0  | D0  | D1  | D2  | D2  |     |     |     |     |
+WSTRB:   |     | FF  | FF  | FF  | FF  | FF  |     |     |     |     |
+WLAST:   |     |  0  |  0  |  0  |  0  |  1  |     |     |     |     |
+         |     |     | ^   | ^   |     | ^   |     |     |     |     |
+         |     |     | W0  | W1  |     | W2  |     |     |     |     |
+         |     |     |     |     | wait|     |     |     |     |     |
+
+Note: W2 wait state (WREADY=0 at cycle 4). WVALID stays high (cannot deassert).
+      W2 transfers at cycle 5 when WREADY goes high.
+
+Wait -- let me redo with proper beat tracking:
+
+CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
+         -------------------------------------------------------------------
+AWVALID: |  1  |  1  |     |     |     |     |     |     |     |     |
+AWREADY: |  0  |  1  |     |     |     |     |     |     |     |     |
+AWADDR:  |1000 |1000 |     |     |     |     |     |     |     |     |
+         |     |  ^AW |hske |     |     |     |     |     |     |     |
+
+WVALID:  |     |  1  |  1  |  1  |  1  |     |     |     |     |     |
+WREADY:  |     |  1  |  1  |  0  |  1  |     |     |     |     |     |
+WDATA:   |     | D0  | D1  | D2  | D2  |     |     |     |     |     |
+WSTRB:   |     | FF  | FF  | FF  | FF  |     |     |     |     |     |
+WLAST:   |     |  0  |  0  |  0  |  1  |     |     |     |     |     |
+         |     | ^W0 | ^W1 | wait| ^W3 |     |     |     |     |     |
+         |     |     |     |(W2) |(last|     |     |     |     |     |
+
+Wait: cycle 4 has WREADY=0. WVALID stays high, data stable.
+      W2 transfers at cycle 5.
+
+Actually -- the slave inserted a wait state for beat 2 (cycle 4).
+  W0 transfers at cycle 2 (both VALID and READY high)
+  W1 transfers at cycle 3
+  W2: WVALID=1 but WREADY=0 at cycle 4 -> wait state
+  W2 transfers at cycle 5 (WREADY goes high)
+  W3 (WLAST=1) would need another cycle:
+
+CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
+         -------------------------------------------------------------------
+AWVALID: |  1  |  1  |     |     |     |     |     |     |     |     |
+AWREADY: |  0  |  1  |     |     |     |     |     |     |     |     |
+
+WVALID:  |     |  1  |  1  |  1  |  1  |  1  |     |     |     |     |
+WREADY:  |     |  1  |  1  |  0  |  1  |  1  |     |     |     |     |
+WDATA:   |     | D0  | D1  | D2  | D2  | D3  |     |     |     |     |
+WSTRB:   |     | FF  | FF  | FF  | FF  | FF  |     |     |     |     |
+WLAST:   |     |  0  |  0  |  0  |  0  |  1  |     |     |     |     |
+         |     | ^W0 | ^W1 |stall| ^W2 | ^W3 |     |     |     |     |
+
+BVALID:  |     |     |     |     |     |     |  1  |  1  |     |     |
+BREADY:  |     |     |     |     |     |     |  0  |  1  |     |     |
+BRESP:   |     |     |     |     |     |     | 00  | 00  |     |     |
+         |     |     |     |     |     |     |wait | ^B  |     |     |
+
+Summary:
+  AW handshake: cycle 2 (1 wait state on AW)
+  W0 handshake: cycle 2
+  W1 handshake: cycle 3
+  W2 handshake: cycle 5 (1 wait state on W at cycle 4)
+  W3 handshake: cycle 6 (last beat)
+  B handshake:  cycle 8 (1 wait state on B at cycle 7)
+  Total: 8 cycles for 4-beat write burst (32 bytes) with 3 wait states
+```
+
+#### Read Burst: INCR4, 64-bit data, start address 0x2000
+
+```
+AR Channel:
+  ARADDR=0x2000, ARLEN=3, ARSIZE=3, ARBURST=01, ARID=1
+
+R Channel:
+  RDATA[63:0], RRESP=00, RLAST (on last beat)
+
+CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
+         -------------------------------------------------------------------
+ARVALID: |  1  |     |     |     |     |     |     |     |     |     |
+ARREADY: |  1  |     |     |     |     |     |     |     |     |     |
+ARADDR:  |2000 |     |     |     |     |     |     |     |     |     |
+         | ^AR |     |     |     |     |     |     |     |     |     |
+         |hske |     |     |     |     |     |     |     |     |     |
+
+RVALID:  |     |     |  1  |  1  |  1  |  1  |     |     |     |     |
+RREADY:  |     |     |  1  |  1  |  1  |  1  |     |     |     |     |
+RDATA:   |     |     | D0  | D1  | D2  | D3  |     |     |     |     |
+RRESP:   |     |     | 00  | 00  | 00  | 00  |     |     |     |     |
+RLAST:   |     |     |  0  |  0  |  0  |  1  |     |     |     |     |
+RID:     |     |     |  1  |  1  |  1  |  1  |     |     |     |     |
+         |     |     | ^R0 | ^R1 | ^R2 | ^R3 |     |     |     |     |
+
+Summary:
+  AR handshake: cycle 1 (zero wait states)
+  R0-3: cycles 3-6 (2-cycle read latency, zero wait states on R)
+  Total: 6 cycles for 4-beat read burst (32 bytes), no wait states
+
+  Read latency from AR handshake to first R data: 2 cycles (cycles 1 to 3)
+  This represents the slave's internal access time (2 clock cycles at 200 MHz = 10 ns)
+```
+
 ### 4.7 Exclusive Access (Atomic Operations)
 
 Exclusive access implements atomic read-modify-write operations (like CAS, LL/SC):
@@ -629,6 +1007,37 @@ Typical assignments:
 Dynamic QoS: Some masters adjust QoS based on buffer fill level:
   If display FIFO is nearly empty -> raise QoS to 0xF (urgent!)
   If display FIFO is full -> lower QoS to 0x4 (not urgent)
+```
+
+#### AXI QoS Arbitration — Worked Example
+
+```
+Scenario: 3 masters competing for a shared DDR controller through an AXI interconnect.
+
+Request queue (arrival order):
+  M0: AWADDR=0x1000, AWQOS=0x4 (DMA, background copy)
+  M1: ARADDR=0x2000, ARQOS=0xC (display controller, scanline read)
+  M2: ARADDR=0x3000, ARQOS=0x8 (CPU data cache miss)
+
+Arbiter selects by QoS (highest first):
+  Slot 1: M1 (QoS=0xC) -> display read dispatched to DDR
+  Slot 2: M2 (QoS=0x8) -> CPU read dispatched
+  Slot 3: M0 (QoS=0x4) -> DMA write dispatched last
+
+Dynamic QoS adjustment (display controller):
+  Display has a 4-scanline FIFO. At 1920x1080 @60Hz:
+    Scanline time = 1/60/1080 = 15.4 us
+    Data per scanline = 1920 * 4 bytes (RGBX) = 7680 bytes
+    Bandwidth needed = 7680 / 15.4 us = 499 MB/s
+
+  FIFO fill levels and QoS adjustment:
+    FIFO > 75% full:  ARQOS = 0x4 (plenty of data, yield to others)
+    FIFO 25-75%:      ARQOS = 0x8 (normal)
+    FIFO < 25%:       ARQOS = 0xF (URGENT! About to underflow!)
+    FIFO = 0 (underflow): screen tears -- must NEVER happen
+
+  This dynamic adjustment gives other masters bandwidth when the display
+  doesn't need it, but guarantees display gets priority when it's critical.
 ```
 
 ---
@@ -1691,9 +2100,201 @@ SP (Security Policy) block controls:
 
 ---
 
-## 14. AXI Atomic Operations (ATOP)
+## 14. AXI Region Identifiers
 
-### 14.1 Overview: ATOP in AXI5
+### 14.1 ARREGION / AWREGION (4 bits)
+
+Each AXI address channel carries a 4-bit Region identifier (`ARREGION` for reads,
+`AWREGION` for writes). The region field allows a single slave to expose up to 16
+independent address spaces without requiring the master to know the full decoded address.
+
+**Key properties:**
+
+- The region value is a hint from the interconnect to the slave -- it does NOT modify the
+  address. The slave sees both the full address (`AxADDR`) and the region index.
+- A slave that decodes region must use the region index to select its internal address map.
+  A slave that ignores region treats all accesses through a single unified address space.
+- The interconnect is responsible for driving `AxREGION` based on the system address map.
+
+### 14.2 Use Case: PCIe Address Space Mapping
+
+PCIe devices expose multiple independent address spaces (Memory, I/O, Configuration,
+Message) through a single AXI slave interface. Region identifiers map naturally:
+
+```
+PCIe TLP Type          AXI Region   AXI Address Space
+-------------------------------------------------------
+Memory Read/Write      0x0          Memory-mapped BAR space
+I/O Read/Write         0x1          I/O BAR space (legacy)
+Configuration Type 0   0x2          Config space (local bus)
+Configuration Type 1   0x3          Config space (hierarchical)
+Message                0x4          Message TLPs
+Message (Vendor)       0x5          Vendor-specific messages
+
+Without regions:
+  The PCIe bridge must decode address ranges within a contiguous address map
+  to distinguish Memory vs I/O vs Config. This wastes address space and requires
+  the CPU to use different address windows for each space.
+
+With regions:
+  CPU issues a single address (e.g., 0x1000) with AxREGION = 2 for config space.
+  The PCIe bridge uses AxREGION to construct the correct TLP type, and AxADDR
+  as the offset within that TLP type's address space.
+  No address aliasing or window management needed.
+```
+
+### 14.3 Region vs Address Decoding
+
+```
+Scenario: An AXI interconnect with one slave port serving a complex peripheral.
+
+Without regions:
+  Interconnect decodes address:
+    0x0000_0000 - 0x0FFF_FFFF -> Slave 0, Data registers
+    0x1000_0000 - 0x1FFF_FFFF -> Slave 0, Control registers
+    0x2000_0000 - 0x2FFF_FFFF -> Slave 0, DMA descriptors
+  Slave 0 sees three non-contiguous address windows and must internally
+  decode which subsystem is targeted based on the full address.
+
+With regions:
+  Interconnect routes ALL three address ranges to Slave 0 with:
+    AxREGION = 0 for Data registers
+    AxREGION = 1 for Control registers
+    AxREGION = 2 for DMA descriptors
+  Slave 0 uses AxREGION to index a register bank select, no address decoding.
+  Simpler slave design, lower latency.
+```
+
+### 14.4 Implementation Notes
+
+```
+1. AxREGION is driven by the interconnect, not the master. Masters typically
+   tie AxREGION = 0 (or leave it unconnected).
+
+2. Slaves that do not support regions must ignore AxREGION and treat all
+   accesses through a single address space. This is backward compatible.
+
+3. The region index can change between beats of a burst. Each beat of an
+   INCR burst may have a different AxREGION if the interconnect remaps
+   the address. However, for most practical designs, AxREGION is constant
+   within a burst.
+
+4. In PCIe root complexes, the region field is typically used to encode
+   the TLP type. The AXI-to-PCIe bridge examines AxREGION to determine
+   whether to generate a Memory Read TLP, a Config Read TLP, etc.
+```
+
+---
+
+## 15. AXI5 New Features vs AXI4
+
+### 15.1 Summary of AXI5 Additions
+
+| Feature | AXI4 | AXI5 | Benefit |
+|---------|------|------|---------|
+| AtomicLoad (ADD, CLR, EOR, SET, MAX, MIN) | Not supported | AxATOP[5:0] | Single-round-trip atomic RMW |
+| AtomicStore (ADD, CLR, EOR, SET) | Not supported | AxATOP[5]=1, no R data | Atomic without return data |
+| AtomicSwap | Not supported | AxATOP = 0x10 | Unconditional swap |
+| AtomicCompare (CAS) | Not supported | AxATOP = 0x14 | Lock-free data structures |
+| Posted writes | Not supported (B channel always required) | Optional (AxATOP can suppress B) | Lower latency for fire-and-forget |
+| Multiple outstanding atomics | N/A | Up to design depth | Higher concurrency |
+| Enhanced exclusive access | AxLOCK only | AxLOCK retained + ATOP | Backward compatible |
+| WSTRB on reads | Not supported | ARSIDEBAND (optional) | Partial read masks |
+
+#### AXI5 vs AXI4 Atomic Operations — Detailed Comparison
+
+```
+AXI4 mechanism: Exclusive access (ARLOCK/AWLOCK)
+  1. Master issues exclusive read (ARLOCK=1) -> gets value V
+  2. Master computes new value locally (ADD, XOR, etc.)
+  3. Master issues exclusive write (AWLOCK=1) with computed value
+  4. Slave's exclusive monitor checks: was V overwritten by another master?
+     If no: write succeeds, BRESP = EXOKAY
+     If yes: write fails, BRESP = OKAY, master retries from step 1
+
+  Round trips per operation: 2 (read + write)
+  Under contention: retries multiply cost (p_retry * 2 additional round trips)
+  Master-side computation: ALL atomic logic is in the master (CPU core)
+
+AXI5 mechanism: Atomic operations (AxATOP)
+  1. Master issues single write with AxATOP encoding the operation
+  2. Slave performs read-modify-write internally:
+     old_value = memory[AWADDR]
+     new_value = old_value <op> WDATA  (op = ADD, CLR, EOR, SET, MAX, MIN, SWAP, CAS)
+     memory[AWADDR] = new_value
+  3. For AtomicLoad: R channel returns old_value
+     For AtomicStore: B channel acknowledges (no data return)
+     For AtomicSwap: R channel returns old_value
+     For AtomicCompare: R channel returns old_value, write only if match
+
+  Round trips per operation: 1
+  Under contention: serialization at slave, no retries needed
+  Master-side computation: NONE (all done at slave)
+
+Latency comparison for atomic counter increment:
+  AXI4 exclusive: 2 * t_round_trip + t_CPU_compute + p_retry * 2 * t_round_trip
+  AXI5 ATOP:     1 * t_round_trip
+
+  For DDR with 80 ns round trip, no contention:
+    AXI4: 160 ns + 2 ns (CPU ADD) = 162 ns
+    AXI5: 80 ns (2x faster)
+
+  Under 50% contention (p_retry = 0.5):
+    AXI4: 160 + 0.5*160 = 240 ns average (with retries)
+    AXI5: 80 ns (no retries, slave serializes)
+
+  Under 90% contention (p_retry = 0.9):
+    AXI4: 160 + 0.9*160 = 304 ns average (many retries)
+    AXI5: 80 ns (still 1 round trip, serialized at slave)
+    ATOP is 3-4x faster under high contention.
+```
+
+### 15.2 Posted Writes in Detail
+
+In AXI4, every write transaction must receive a B channel response confirming completion.
+For some writes (e.g., flushing a write buffer to memory, writing to a FIFO), the master
+does not need confirmation -- it just wants the data to arrive eventually.
+
+AXI5 allows a master to indicate that a write does not require a B channel response
+(this is encoded via the ATOP mechanism for AtomicStore operations, where only a B
+response is generated and no R channel data). For non-atomic posted writes, the
+interconnect can optionally suppress B channel responses for designated transactions.
+
+**Impact on ordering:** Posted writes relax the ordering guarantee. The master must not
+assume the write has reached its final destination until a subsequent non-posted
+transaction to the same address completes. This is similar to PCIe posted writes
+(write transactions that do not generate a completion TLP).
+
+### 15.3 AtomicLoad Operations -- Worked Example
+
+```
+Scenario: 4 cores share a counter at address 0x5000. Each core increments it once.
+
+AXI4 (exclusive access):
+  Core 0: LDREX 0x5000 -> reads 0
+           ADD R1, R0, #1 -> computes 1
+           STREX 0x5000, R1 -> BRESP=EXOKAY (success), memory = 1
+  Core 1: LDREX 0x5000 -> reads 1
+           ADD R1, R0, #1 -> computes 2
+           STREX 0x5000, R1 -> BRESP=EXOKAY, memory = 2
+  Total: 4 round trips (2 per core), no contention
+
+AXI5 (AtomicLoad ADD):
+  Core 0: ATOMIC_ADD 0x5000, value=1 -> R data = 0 (old value), memory = 1
+  Core 1: ATOMIC_ADD 0x5000, value=1 -> R data = 1 (old value), memory = 2
+  Total: 2 round trips (1 per core), simpler master logic
+
+Under contention (all 4 cores issue simultaneously):
+  AXI4 exclusive: likely 2-3 retries per core, 8-12 round trips total
+  AXI5 ATOP: serializes at the slave, 4 round trips, no retries
+  ATOP is 2-3x faster under contention
+```
+
+---
+
+## 16. AXI Atomic Operations (ATOP)
+
+### 16.1 Overview: ATOP in AXI5
 
 AXI5 introduces atomic operations via the AxATOP signal, eliminating the need for the two-phase exclusive access pattern (LDREX + STREX). A single AXI transaction can perform a read-modify-write at the target slave in one round trip.
 
@@ -1713,7 +2314,7 @@ flowchart TD
     H --> I
 ```
 
-### 14.2 ATOP Operation Categories
+### 16.2 ATOP Operation Categories
 
 **AtomicLoad operations** (AxATOP[5] = 0): read the target location, apply an operation, write the result back, and return the original value on the R channel.
 
@@ -1739,7 +2340,7 @@ flowchart TD
 | 0x22        | AtomicStore EOR | Write (old XOR WDATA), no data return |
 | 0x23        | AtomicStore SET | Write (old OR WDATA), no data return |
 
-### 14.3 Advantage Over AXI4 Exclusive Access
+### 16.3 Advantage Over AXI4 Exclusive Access
 
 ```
 AXI4 exclusive access (LDREX + STREX):
@@ -1767,7 +2368,7 @@ $$
 
 Where $p_{\text{retry}}$ is the probability of exclusive access failure under contention. Under high contention (many cores), $p_{\text{retry}}$ approaches 1.0, making ATOP significantly faster.
 
-### 14.4 AtomicCompare (CAS) Detail
+### 16.4 AtomicCompare (CAS) Detail
 
 The compare-and-swap operation is the foundation of lock-free data structures:
 

@@ -212,6 +212,124 @@ The prefix tree computes carries for A + (~B) + 1 (which is A - B). Simultaneous
 
 ---
 
+## FP Multiplication — Detailed Pipeline
+
+### Step-by-Step Pipeline
+
+**Stage 1: Sign computation**
+```
+s_result = s_A XOR s_B
+```
+Single XOR gate. Trivial delay.
+
+**Stage 2: Exponent addition**
+```
+e_result = e_A + e_B - bias
+```
+The bias subtraction compensates for double-counting: each input already has bias added, so adding both exponents counts bias twice. For FP32: e_result = e_A + e_B - 127.
+
+**Stage 3: Mantissa multiplication**
+```
+m_result = m_A * m_B    (m_A, m_B in [1, 2), with implicit 1)
+```
+Product is in [1, 4). This is the critical path -- implemented via a Wallace/Dadda tree followed by a CPA. For FP32, this is a 24x24-bit unsigned multiply.
+
+**Stage 4: Normalization**
+- If product >= 2 (i.e., both inputs >= sqrt(2)): shift mantissa right by 1, increment exponent by 1.
+- If product < 1 (can only happen for denormal inputs): shift mantissa left, decrement exponent.
+
+**Stage 5: Rounding**
+Apply the rounding mode using GRS bits from the multiplication. This may cause a second normalization if rounding increments the mantissa to 10.000...0.
+
+**Stage 6: Special case handling**
+```
+0 * anything  = 0 (with appropriate sign per XOR rule)
+inf * finite  = inf
+NaN * anything = NaN
+inf * 0       = NaN (invalid operation)
+```
+
+### Typical FP32 Pipeline Stages
+
+| Stage | Operation | Notes |
+|-------|-----------|-------|
+| 1 | Booth encode + partial products | Generate N/2 partial products |
+| 2 | Wallace tree reduction | Reduce to 2 vectors (Sum, Carry) |
+| 3 | CPA + normalization | Final add, shift, exponent adjust |
+| 4 | Rounding + special cases | Apply GRS, handle NaN/inf/zero |
+
+Total: 4-5 cycles at ~1 GHz in modern processes.
+
+### Worked Example: 1.5 * 3.0 in FP32
+
+```
+A = 0 01111111 10000000000000000000000  (= 1.5)
+B = 0 10000000 10000000000000000000000  (= 3.0)
+
+Sign:  0 XOR 0 = 0
+
+Exponent: 127 + 128 - 127 = 128 (biased) = +1 (unbiased)
+
+Mantissa: 1.100...0 * 1.100...0
+  = 1.1 * 1.1 (binary multiplication)
+  = 10.01 (binary) = 2.25 (decimal)
+  Full precision: 10.010000000000000000000000 (= 4.5 in [1,4))
+
+Normalize: product >= 2, shift right 1
+  1.0010000000000000000000000
+  Exponent: 128 + 1 = 129 (biased) = +2 (unbiased)
+
+Result: 0 10000001 00100000000000000000000
+  = 1.125 * 2^2 = 4.5  ✓
+```
+
+---
+
+## FP-to-Integer and Integer-to-FP Conversion
+
+### FP to Integer
+
+**Algorithm:** Round toward zero, extract the integer part of the mantissa (shift by the exponent). If the exponent indicates a value with a fractional part, the fractional bits are discarded (after rounding).
+
+**Key cases:**
+- If |x| > INT_MAX: result is INT_MAX (saturated) or undefined behavior (C standard, implementation-defined).
+- NaN -> 0 or INT_MAX (implementation-defined).
+- inf -> INT_MAX (or INT_MIN for -inf).
+
+**Critical subtlety:** The rounding must happen BEFORE the conversion, not after. Otherwise double-rounding errors occur: rounding the FP result to nearest-even, then truncating to integer, can produce a different value than directly rounding the FP result to nearest-integer.
+
+### Integer to FP
+
+**Algorithm:** Convert the integer magnitude to an FP mantissa (place the leading 1 at the MSB), set the exponent based on the position of the leading 1, and round if the mantissa is too wide for the target format.
+
+**Precision loss for large integers:**
+- INT32 has 31 bits of magnitude + sign.
+- FP32 mantissa is only 24 bits (23 stored + 1 implicit).
+- Integers > 2^24 cannot all be represented exactly in FP32.
+
+**Worked example:**
+```
+int 16777217 = 2^24 + 1
+
+FP32 representation:
+  Mantissa must fit in 24 bits, but 2^24 + 1 requires 25 bits.
+  Rounded to nearest-even: 2^24 = 16777216.
+  The +1 is lost -- it falls beyond the 24-bit mantissa precision.
+
+Verify: 16777217 -> FP32 -> back to int = 16777216.
+```
+
+### RISC-V FCVT Instruction
+
+RISC-V provides dedicated conversion instructions:
+- `FCVT.W.S` / `FCVT.WU.S`: FP32 to signed/unsigned 32-bit integer.
+- `FCVT.S.W` / `FCVT.S.WU`: signed/unsigned 32-bit integer to FP32.
+- Uses the `frm` (floating-point rounding mode) field in the FP control register.
+- Out-of-range conversions saturate to INT_MAX/INT_MIN.
+- NaN-to-integer conversions produce INT_MAX.
+
+---
+
 ## Rounding — GRS Bits Sufficiency Proof
 
 ### Claim
@@ -1684,3 +1802,36 @@ This is why AI chips report massive TOPS/TFLOPS for lower precisions.
 ### Q25: What considerations apply when choosing FP precision for an ASIC?
 
 **A:** The choice depends on the application's numerical requirements versus silicon budget: (1) **Dynamic range:** If the algorithm's values span many orders of magnitude, sufficient exponent bits are needed to avoid overflow/underflow. bfloat16 and FP32 both have 8-bit exponents (range ~1e-38 to ~3.4e38). FP16 has only 5-bit exponent (range ~6e-5 to ~65504) — inadequate for many training algorithms without loss scaling. (2) **Precision:** The mantissa width determines how many significant digits are preserved. For iterative algorithms (solvers, optimization), insufficient precision causes convergence failure or error accumulation. Rule of thumb: if the algorithm needs k decimal digits of accuracy, you need at least ceil(k / log10(2)) mantissa bits. (3) **Area and power:** FP multiplier area scales as O(p^2) where p is mantissa width. Power scales similarly. A bfloat16 MAC unit is ~9x smaller and uses ~9x less energy than FP32. (4) **Memory bandwidth:** Smaller formats reduce off-chip bandwidth requirements, which is often the bottleneck in data-intensive workloads (ML training, signal processing). (5) **Mixed precision:** Many designs use different precisions at different stages — e.g., FP8 for matrix multiply, FP32 for accumulation, FP16 for storage. This requires format conversion logic between stages.
+
+---
+
+## Numbers to Memorize
+
+| Quantity | Value |
+|---|---|
+| FP32 bias | 127 |
+| FP32 exponent range | -126 to +127 |
+| FP32 mantissa bits | 23 (+1 implicit) |
+| FP32 precision | ~7 decimal digits |
+| FP32 max value | (2-2^-23) * 2^127 ~ 3.4 * 10^38 |
+| FP32 smallest normal | 2^-126 ~ 1.18 * 10^-38 |
+| FP32 smallest denorm | 2^-149 ~ 1.4 * 10^-45 |
+| FP64 bias | 1023 |
+| FP64 mantissa bits | 52 (+1 implicit) |
+| FP64 precision | ~15-16 decimal digits |
+| BF16 bias | 127 (same as FP32) |
+| BF16 mantissa bits | 7 (+1 implicit) |
+| BF16 range | Same as FP32 |
+| BF16 precision | ~3 decimal digits |
+| FP16 bias | 15 |
+| FP16 exponent range | -14 to +15 |
+| FP16 mantissa bits | 10 (+1 implicit) |
+| FP8 E4M3 range | +/-448 |
+| FP8 E5M2 range | +/-57344 |
+| FP32 add latency (typical) | 3-5 cycles |
+| FP32 multiply latency (typical) | 4-5 cycles |
+| FP32 FMA latency (typical) | 4-7 cycles |
+| FP32 divide latency (typical) | 14-28 cycles |
+| FP32 sqrt latency (typical) | 14-28 cycles |
+| Denorm gap (FP32) | 2^-149 = smallest ULP |
+| Subthreshold swing for denorm support | ~60 mV/decade per bit of mantissa |

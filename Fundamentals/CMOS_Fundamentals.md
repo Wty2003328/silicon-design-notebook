@@ -11,6 +11,11 @@
 8. FinFET and Advanced Nodes
 9. Process Variations and DTCO
 10. Interview Q&A (25+ Questions)
+11. Elmore Delay Model
+12. Logical Effort
+13. 6T SRAM Cell
+14. Leakage Current Breakdown
+15. Numbers to Memorize
 
 ---
 
@@ -241,8 +246,8 @@ For a symmetric CMOS inverter (kn = kp, Vthn = |Vthp| = Vt):
 ```
 VIL ≈ (2*Vout + Vin - Vt) / (solving dVout/dVin = -1)
 
-For symmetric inverter (approximation):
-  VIL ≈ (3*VDD + 2*Vt) / 8    (for short-channel)
+For symmetric inverter (long-channel approximation, from region-by-region VTC analysis):
+  VIL ≈ (3*VDD + 2*Vt) / 8
   VIH ≈ (5*VDD - 2*Vt) / 8
 
   NMH = VDD - VIH = VDD - (5*VDD - 2*Vt)/8 = (3*VDD + 2*Vt)/8
@@ -1077,3 +1082,369 @@ is non-uniform, CMP causes thickness variation — dense regions polish faster (
 sparse regions stay thick. This affects: wire resistance (thinner wire = higher R),
 capacitance, and timing. Design rules require metal density to stay within bounds
 (typically 20-80%), achieved by inserting dummy metal fill in sparse regions.
+
+---
+
+## 11. Elmore Delay Model
+
+### 11.1 RC Tree Delay
+
+For a series of $N$ inverters each driving a wire segment with resistance $R_w$ and
+capacitance $C_w$, plus gate capacitance $C_g$, the Elmore delay through the chain is:
+
+$$t_{\text{Elmore}} = \sum_{i=1}^{N} R_i \cdot C_{\text{downstream},i}$$
+
+where $C_{\text{downstream},i}$ is the total capacitance seen from node $i$ to ground
+through all downstream paths. The Elmore model treats each wire segment as a lumped RC
+element and sums the product of each resistance with all capacitance it drives — a
+first-order upper bound on the 50% step-response delay.
+
+### 11.2 Single Inverter with Wire Load
+
+For an inverter with on-resistance $R_p$ driving a wire of length $L$ (per-unit-length
+$r$ and $c$) into a load capacitance $C_L$:
+
+$$t_{\text{Elmore}} = 0.38 \cdot R_p \cdot C_{\text{wire}} + 0.5 \cdot R_{\text{wire}} \cdot C_{\text{wire}} + R_{\text{wire}} \cdot C_L + R_p \cdot C_L$$
+
+where $R_{\text{wire}} = r \cdot L$, $C_{\text{wire}} = c \cdot L$. The 0.38 and 0.5
+coefficients come from the distributed RC nature of the wire (pi-model approximation).
+The four terms capture: gate driving wire capacitance, wire driving its own capacitance,
+wire driving load, and gate driving load.
+
+### 11.3 Worked Example
+
+A 7nm inverter ($R_p = 10\,\text{k}\Omega$) drives a 1mm metal-4 wire
+($r = 0.2\,\Omega/\mu\text{m} = 200\,\Omega/\text{mm}$, $c = 0.2\,\text{fF}/\mu\text{m}$)
+into a fanout of 4 ($C_L = 4 \times 0.5\,\text{fF} = 2\,\text{fF}$).
+
+```
+Rwire = 0.2 Ω/μm × 1000 μm = 200 Ω
+Cwire = 0.2 fF/μm × 1000 μm = 200 fF = 0.2 pF
+
+t = 0.38 × 10k × 0.2pF + 0.5 × 200 × 0.2pF + 200 × 2fF + 10k × 2fF
+  = 0.76ps + 20fs + 0.4fs + 20fs
+  ≈ 0.80 ps
+```
+
+The gate resistance dominates; the wire contribution is negligible at 1mm but grows
+quadratically with length ($RC \propto L^2$), making wire delay dominant beyond ~5mm.
+
+---
+
+## 12. Logical Effort
+
+### 12.1 Methodology
+
+Logical effort provides a quick delay estimation without full SPICE simulation. Define:
+
+- $g$ (logical effort): how much worse a gate's input capacitance is vs an inverter for
+  the same output current. $g_{\text{inv}} = 1$.
+- $h = C_{\text{out}} / C_{\text{in}}$ (electrical effort or fanout)
+- $p$ (parasitic delay): delay due to the gate's own parasitic capacitance
+- $d = g \cdot h + p$ (normalized delay in units of $\tau$, the delay of a
+  fanout-of-1 inverter)
+
+### 12.2 Logical Effort Values for Common Gates
+
+| Gate | $g$ (rising) | $g$ (falling) | $g$ (average) | $p$ |
+|------|------|------|------|------|
+| Inverter | 1 | 1 | 1 | 1 |
+| 2-input NAND | 4/3 | 4/3 | 4/3 | 2 |
+| 3-input NAND | 5/3 | 5/3 | 5/3 | 3 |
+| 2-input NOR | 5/3 | 5/3 | 5/3 | 2 |
+| 3-input NOR | 7/3 | 7/3 | 7/3 | 3 |
+| 2-input XOR | 4 | 4 | 4 | 4 |
+| MUX (2:1) | 2 | 2 | 2 | 2 |
+
+Derivation for NAND2: the series PMOS stack needs 2× width to match the inverter's
+pull-up current, giving input cap = 2 (P) + 2 (N) = 4 vs inverter's 2 (P) + 1 (N) = 3.
+$g = 4/3$.
+
+### 12.3 Path Delay Optimization
+
+For a path of $N$ stages:
+
+$$D = \sum_{i=1}^{N} (g_i \cdot h_i + p_i) = G \cdot H \cdot \prod h_i^{g_i} + P$$
+
+where $G = \prod g_i$, $H = C_{\text{load}} / C_{\text{in}}$ (path electrical effort),
+$P = \sum p_i$.
+
+Optimal stage effort: $f^* = (G \cdot H)^{1/N}$, giving minimum delay
+$D^* = N \cdot f^* + P$.
+
+The key insight: minimum delay occurs when every stage bears equal effort $f^*$,
+regardless of gate type. This determines optimal gate sizes via
+$C_{\text{in},i} = g_i \cdot C_{\text{out},i} / f^*$.
+
+### 12.4 Worked Example
+
+Design a path from a flip-flop output through a NAND2 and an inverter to drive a load
+of 20 unit inverters. Input capacitance budget: 1 unit inverter.
+
+```
+G = g_NAND2 × g_inv = (4/3) × 1 = 4/3
+H = 20 / 1 = 20  (no branching)
+N = 2,  P = 2 + 1 = 3
+
+Optimal per-stage effort:
+  f* = √(G × H) = √(4/3 × 20) = √26.67 ≈ 5.16
+
+Minimum path delay:
+  D* = 2 × 5.16 + 3 = 13.32τ
+
+Gate sizing:
+  C_in,NAND2 = 1  (given, fixed by FF output drive strength)
+  C_in,inv = g_NAND2 × C_in,NAND2 / f* = (4/3 × 1) / 5.16 ≈ 0.259 unit caps
+
+Verification:
+  h_NAND2 = C_in,inv / C_in,NAND2 = 0.259 / 1 = 0.259
+  h_inv   = C_load / C_in,inv = 20 / 0.259 ≈ 77.2
+
+Per-stage delays:
+  d_NAND2 = g_NAND2 × h_NAND2 + p_NAND2 = (4/3)(0.259) + 2 = 2.35τ
+  d_inv   = g_inv × h_inv + p_inv = (1)(77.2) + 1 = 78.2τ
+  D_total = 2.35 + 78.2 = 80.5τ
+
+This is far above D* = 13.32τ because H = 20 is too large for only 2 stages.
+The problem needs more stages. Adding 2 more inverters (N = 4):
+
+  G = (4/3) × 1 × 1 × 1 = 4/3
+  H = 20
+  f* = (G × H)^(1/4) = (4/3 × 20)^(0.25) = (26.67)^0.25 ≈ 2.27
+  P = 2 + 1 + 1 + 1 = 5
+  D* = 4 × 2.27 + 5 = 14.08τ
+
+Gate sizes (working backwards from load):
+  C_in,inv3 = g_inv × C_load / f* = 1 × 20 / 2.27 = 8.81
+  C_in,inv2 = g_inv × C_in,inv3 / f* = 1 × 8.81 / 2.27 = 3.88
+  C_in,inv1 = g_inv × C_in,inv2 / f* = 1 × 3.88 / 2.27 = 1.71
+  C_in,NAND2 = g_NAND2 × C_in,inv1 / f* = (4/3) × 1.71 / 2.27 = 1.01 ≈ 1 ✓
+
+D_total = 4 × (g_i × h_i) + P = 4 × 2.27 + 5 = 14.08τ  (matches D*)
+```
+
+The delay of 13.32τ is the theoretical minimum for this path topology; any other sizing
+(unequal stage efforts) yields higher total delay.
+
+---
+
+## 13. 6T SRAM Cell
+
+### 13.1 Cell Schematic
+
+The 6-transistor SRAM cell is the fundamental building block of on-chip SRAM arrays.
+
+```
+          VDD                VDD
+           |                  |
+        ┌──┤ M1 (PMOS)    ┌──┤ M3 (PMOS)
+        │  ├─┐            │  ├─┐
+        │  │ Q  ──────────│──│ Qb   Cross-coupled inverters
+        │  └─┘            │  └─┘     (M1/M2 and M3/M4)
+        └──┤ M2 (NMOS)    └──┤ M4 (NMOS)
+           │                  │
+        ┌──┤ M5 (access)   ┌──┤ M6 (access)
+        │  │                │  │
+        BL                  BLB
+           WL (wordline, gates of M5 and M6)
+```
+
+- M1/M2: first inverter (Q drives Qb)
+- M3/M4: second inverter (Qb drives Q)
+- M5/M6: access transistors gated by wordline WL, connecting storage nodes Q/Qb to
+  bitlines BL/BLB
+
+### 13.2 Read Operation
+
+```
+1. Precharge: BL and BLB are charged to VDD (precharge transistors ON)
+2. Assert WL: M5 and M6 turn on
+3. One bitline discharges through the access transistor and the "0" side:
+   - If Q = 0, Qb = 1: BL discharges through M5 (access) and M2 (pull-down)
+     BLB stays high (M6 connects to Qb = 1 = VDD)
+   - Differential voltage ΔV = V(BL) - V(BLB) develops
+4. Sense amplifier detects ΔV and amplifies to full-rail output
+   - Sense amp offset ≈ 10-30 mV (determines minimum detectable ΔV)
+5. WL deasserted, bitlines precharged for next access
+
+Read time: t_read ≈ C_BL × ΔV / I_cell
+  where C_BL ≈ 1-5 pF (for 256-row array), I_cell = read current through M5+M2
+```
+
+### 13.3 Write Operation
+
+```
+1. Drive bitlines: set BL and BLB to opposite values
+   - To write Q = 0: BL → 0, BLB → VDD
+   - To write Q = 1: BL → VDD, BLB → 0
+2. Assert WL: M5 and M6 turn on
+3. Access transistors must overpower the cross-coupled inverters to flip the state
+   - The access transistor connected to the "1" side pulls it toward 0
+   - Once the "1" node drops below the inverter trip point, positive feedback
+     completes the flip
+4. WL deasserted, new state is latched
+
+Write margin: depends on relative strength of access transistors vs pull-up PMOS
+  - Write requires: I(M5 or M6) > I(M1 or M3)
+  - Stronger access transistors improve write margin
+```
+
+### 13.4 Static Noise Margin (SNM)
+
+SNM is the maximum noise voltage tolerated without flipping the cell.
+
+```
+Graphically: the largest square that fits inside the "butterfly curves"
+  (superimposed VTC of the two cross-coupled inverters, one plotted normally
+   and one with axes swapped)
+
+SNM values (typical):
+  Hold SNM  ≈ 0.4 × VDD   (WL = 0, cell isolated from bitlines)
+  Read SNM  ≈ 0.2 × VDD   (WL = 1, access transistors degrade stability)
+  Write margin ≈ 0.3 × VDD
+
+Read SNM is lower than hold because the access transistor creates a voltage
+divider with the pull-down NMOS, raising the "0" node voltage during read.
+```
+
+### 13.5 Read Stability vs Write Margin Tradeoff
+
+```
+This is the fundamental sizing tension in 6T SRAM:
+
+  Access transistor strength (M5/M6):
+    ↑ stronger → better write margin (can overpower inverters more easily)
+    ↑ stronger → worse read stability (more disturbance of stored "0" during read)
+
+  Pull-down NMOS strength (M2/M4):
+    ↑ stronger → better read stability (holds "0" against access transistor)
+    ↑ stronger → worse write margin (harder to flip)
+
+  Pull-up PMOS strength (M1/M3):
+    ↑ stronger → worse write margin (fights access transistor pulling "1" to "0")
+    ↑ stronger → better hold SNM
+
+Typical sizing ratio (β-ratio):  β = (W/L)_pull-down / (W/L)_access ≈ 1.5-3.0
+  - Higher β → better read stability but harder writes
+  - This ratio is the primary design knob for SRAM cell stability
+```
+
+### 13.6 Key Numbers
+
+```
+6T cell area:         ≈ 0.04-0.08 μm² at N5
+Bitline capacitance:  ≈ 1-5 pF for 256-row array
+Sense amplifier offset: ≈ 10-30 mV
+Minimum supply (data retention): ≈ 0.3-0.4V (VDD_min for hold)
+Array efficiency:     ≈ 60-70% (cell area / total SRAM area)
+Typical array size:    128-512 rows × 64-256 columns per subarray
+```
+
+---
+
+## 14. Leakage Current Breakdown
+
+### 14.1 Four Leakage Components
+
+```
+Total leakage: I_total = I_sub + I_gate + I_junc + I_GIDL
+
+At advanced nodes (N5): total ≈ 10-100 nA/μm per device
+```
+
+### 14.2 Subthreshold Leakage
+
+```
+I_sub = I0 × exp[(VGS - Vth) / (n × Vt)] × [1 - exp(-VDS / Vt)]
+
+where:
+  I0 = μ0 × Cox × (W/L) × Vt² × exp(-Vth / (n × Vt))  (off-current prefactor)
+  n  = 1 + Cd/Cox  (subthreshold slope factor, ≈ 1.3-1.6)
+  Vt = kT/q ≈ 26 mV at 300K  (thermal voltage)
+
+Dominant at advanced nodes: ~60-80% of total leakage
+  - Increases exponentially as Vth decreases
+  - Increases with temperature (Vth decreases with T)
+  - DIBL makes it worse: effective Vth drops at high VDS
+
+Mitigation: high-Vth transistors (HVT), power gating (sleep transistors),
+  body biasing (reverse bias increases Vth)
+```
+
+### 14.3 Gate Oxide Leakage
+
+```
+I_gate = A × (Vox / t_ox)² × exp(-B × t_ox / Vox)
+
+where:
+  A, B: process-dependent constants (material-dependent)
+  Vox: voltage across oxide
+  t_ox: oxide thickness (or EOT for high-k)
+
+Mechanism: quantum mechanical tunneling through thin gate dielectric
+  - Direct tunneling dominant when t_ox < 3 nm
+  - Fowler-Nordheim tunneling at thicker oxides / higher fields
+
+High-k dielectrics (HfO2, k ≈ 20-25) reduce I_gate by allowing thicker
+physical thickness for the same EOT:
+  EOT = t_physical × (k_SiO2 / k_highk) = t_physical × (3.9 / 25)
+  Example: 1.5 nm physical HfO2 → EOT = 1.5 × 3.9/25 ≈ 0.23 nm
+
+Now ~5-10% of total leakage (was > 50% before high-k adoption at 45nm)
+```
+
+### 14.4 Junction (Reverse-Bias Diode) Leakage
+
+```
+I_junc = Js × A_junction × [exp(qV / kT) - 1]
+
+where:
+  Js: reverse saturation current density (material and doping dependent)
+  A_junction: junction area (source/drain diffusion area)
+
+Always present when source or drain junction is reverse-biased relative to body.
+  - In normal operation, at least one junction is always reverse-biased
+  - Band-to-band tunneling (BTBT) adds to junction leakage at high doping
+
+~5-10% of total leakage
+```
+
+### 14.5 GIDL (Gate-Induced Drain Leakage)
+
+```
+I_GIDL ∝ exp(-B × Eg / (VDD - Vth))
+
+where:
+  Eg: silicon bandgap (≈ 1.12 eV at 300K)
+  B: process-dependent constant
+
+Mechanism: occurs in the gate-drain overlap region where high vertical field
+  causes band-to-band tunneling. The gate creates a deep depletion region at
+  the drain edge, and if the field is strong enough, valence band electrons
+  tunnel to the conduction band.
+
+Increases at higher VDD (higher field in overlap region).
+~5-10% of total leakage
+
+Mitigation: careful overlap engineering, lower VDD, LDD (lightly-doped drain) structures
+```
+
+---
+
+## 15. Numbers to Memorize
+
+| Quantity | Value | Why it matters |
+|----------|-------|----------------|
+| VDD at N5/N3 | 0.65-0.7V | Supply voltage for advanced nodes |
+| Vth (typical) | 0.3-0.5V | Threshold voltage range |
+| Electron mobility (bulk Si) | ~400 cm²/Vs | NMOS drive current reference |
+| Hole mobility (bulk Si) | ~180 cm²/Vs | PMOS ~2.2x weaker |
+| Subthreshold swing (60°C) | ~63 mV/decade | Minimum theoretical at room temp: 60 mV/dec |
+| FO4 delay at N5 | ~12-15 ps | Gate delay normalization unit |
+| EOT at N5 | ~0.8-1.0 nm | Equivalent oxide thickness |
+| Fin pitch (N5) | ~25 nm | FinFET minimum feature |
+| Fin height (N5) | ~50-60 nm | Determines drive current per fin |
+| CMOS inverter gain (mid-region) | -gm × (ron‖rop) | Peak voltage gain |
+| Noise margin (typical) | ~0.4 × VDD | Approximate for symmetrical inverter |
+| 6T SRAM cell area (N5) | 0.04-0.08 μm² | Memory density driver |
+| Subthreshold leakage (N5, per μm) | 10-100 nA/μm | Leakage power budget |

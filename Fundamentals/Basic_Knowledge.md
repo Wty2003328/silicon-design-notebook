@@ -1,5 +1,8 @@
 # Basic Knowledge for Digital Design — Senior Engineer Level
 
+> **Prerequisites:** [CMOS_Fundamentals](CMOS_Fundamentals.md) (transistor-level latch/flip-flop)
+> **See also:** [Adders](Adders.md) (comparator circuits), [Floating_Point](Floating_Point.md) (priority encoder / LZA)
+
 ## Multiplexer (MUX) — Deep Dive
 
 ### Shannon Expansion: Proof and Application
@@ -581,76 +584,33 @@ B(i)   = ...0 1 1 ... 1 (bits j, j-1, ..., 0)
 B(i+1) = ...1 0 0 ... 0 (carry propagates through j ones, flips the zero)
 ```
 
-Now compute G(i) XOR G(i+1):
-```
-G(i) XOR G(i+1) = [i XOR (i>>1)] XOR [(i+1) XOR ((i+1)>>1)]
-                = [i XOR (i+1)] XOR [(i>>1) XOR ((i+1)>>1)]
-```
+**Proof by direct bit analysis:**
 
-From the binary addition pattern:
-```
-i XOR (i+1) = 0...0 1 1 1 ... 1  (ones in positions 0 through j)
-```
+The Gray code bit at position k is defined as g_k = b_k XOR b_{k+1}, where b_k are bits of the binary representation. We examine how each Gray code bit changes between i and i+1.
 
-And:
+When adding 1 to i, let j be the position of the lowest 0-bit in i. The binary addition flips bits 0 through j:
 ```
-(i>>1) XOR ((i+1)>>1) = 0...0 1 1 ... 1 0  (ones in positions 1 through j)
+B(i)   = ...b_{j+1} 0 1 1 ... 1  (bit j = 0, bits j-1 through 0 = all 1s)
+B(i+1) = ...b_{j+1} 1 0 0 ... 0  (carry propagates through j ones, flips the zero)
 ```
 
-XOR these two:
+**Bit j (the flipping zero):** B(i)_j = 0, B(i+1)_j = 1. Bit j+1 is unchanged (b_{j+1}).
 ```
-G(i) XOR G(i+1) = 0...0 0 0 0 ... 0 1  (only bit 0... wait)
-```
-
-Actually, let's be more careful. Let i = ...a 0 1^j (bit j+1 = some bit a, bit j = 0, bits j-1 through 0 = all 1s).
-
-Then i+1 = ...a 1 0^j.
-
-```
-i XOR (i+1):      0...0 1 1...1 (bits j down to 0 are all 1, rest are 0)
-(i>>1) XOR ((i+1)>>1): 0...0 1 1...1 0 (bits j down to 1 are 1, bit 0 is 0, rest are 0)
+G(i)_j   = 0 XOR b_{j+1}
+G(i+1)_j = 1 XOR b_{j+1}
+→ G(i)_j differs from G(i+1)_j  (this bit FLIPS)
 ```
 
-XOR:
+**Bit j-1 (if j > 0):** Both B_{j-1} and B_j change (1→0 and 0→1 respectively).
 ```
-result = 0...0 0 0...0 1  → only bit 0 is set
-```
-
-Wait — that gives a single bit difference, but always at position 0, which is wrong. The actual position varies. Let me redo this correctly.
-
-Actually the key insight is simpler. Note that:
-```
-G(i) XOR G(i+1) = i XOR (i>>1) XOR (i+1) XOR ((i+1)>>1)
-```
-
-Let d = i XOR (i+1) = 2^{j+1} - 1 (a run of j+1 ones from bit 0).
-
-Then (i>>1) XOR ((i+1)>>1). Consider that (i>>1) and ((i+1)>>1) differ only when i and i+1 differ in the bits that contribute to the shift. This equals floor(d/2) XOR ... Actually, this gets complicated.
-
-**Simpler proof by direct bit analysis:**
-
-G(i)_k = B(i)_k XOR B(i)_{k+1}
-
-For the bit at position j (the lowest 0 in i):
-- B(i)_j = 0, B(i+1)_j = 1  → changes
-- B(i)_{j+1} = unchanged     → same
-
-So G(i)_j = 0 XOR B(i)_{j+1}, G(i+1)_j = 1 XOR B(i+1)_{j+1} = 1 XOR B(i)_{j+1}
-→ G(i)_j XOR G(i+1)_j = 1  (this bit FLIPS)
-
-For position j-1 (if j > 0):
-- B(i)_{j-1} = 1, B(i+1)_{j-1} = 0 → changes
-- B(i)_j = 0, B(i+1)_j = 1         → changes
-
 G(i)_{j-1}   = 1 XOR 0 = 1
 G(i+1)_{j-1} = 0 XOR 1 = 1
-→ Same! (both XOR terms flip, canceling out)
+→ Same! (both XOR inputs flip, canceling out)
+```
 
-Similarly, for any position k < j-1:
-- Both B(i)_k and B(i)_{k+1} flip → XOR is unchanged.
+**Any position k < j-1:** Both B_k and B_{k+1} flip (all trailing bits flip). The XOR of two flipped bits is unchanged.
 
-For position k > j:
-- Neither B(i)_k nor B(i)_{k+1} changes → XOR is unchanged.
+**Any position k > j:** Neither B_k nor B_{k+1} changes. The XOR is unchanged.
 
 **Therefore, exactly one Gray code bit changes: bit position j (the position of the lowest 0-bit in i).** QED.
 
@@ -997,3 +957,25 @@ Depth_async = next_power_of_2(Depth_min + 3)
 ### Q15: How do you verify a glitch-free clock MUX in simulation?
 
 **A:** (1) Write assertions that check for minimum pulse width on clk_out — any pulse shorter than the minimum of the two input clock half-periods is a violation. (2) Use `$width` or SystemVerilog assertions: `assert property (@(posedge clk_out) $rose(clk_out) |-> ##[min_half_period] $fell(clk_out))`. (3) Test all switching scenarios: A-to-B, B-to-A, rapid toggling of sel, sel changing at all phase relationships between clk_a and clk_b. (4) Test with both clocks running, one clock stopped, neither clock running. (5) Check that during dead-time (both enables low), no downstream logic misbehaves — it should see a steady low clock. (6) Measure switching latency and verify it meets spec. In formal verification, prove that en_a and en_b are never simultaneously high (mutual exclusion property).
+
+---
+
+## Numbers to Memorize
+
+| Quantity | Value | Why it matters |
+|---|---|---|
+| Setup time (typical DFF, N5) | 30-60 ps | Determines max frequency |
+| Hold time (typical DFF, N5) | 20-40 ps | Determines min path delay |
+| Metastability tau (N5) | 8-12 ps | Resolves at ~63 mV/decade |
+| MTBF target | >10,000 years | Safety threshold |
+| 2-FF synchronizer latency | 2-3 clock cycles | CDC overhead |
+| Async FIFO depth formula | Bdiff + 2 * fclk * (t_sync1 + t_sync2) | Guarantees no overflow |
+| Gray code property | Adjacent values differ by 1 bit | Safe CDC pointer encoding |
+| MUX propagation delay (N5) | ~15-25 ps | Critical path component |
+| DFF CLK-to-Q (N5) | ~20-40 ps | Pipeline stage overhead |
+| Maximum clock frequency (N5, simple) | 1-3 GHz | Depends on logic depth |
+| Clock skew budget | 5-10% of clock period | Limits frequency scaling |
+| FIFO almost-full offset | Typically 2-4 entries | Safety margin for synchronizer delay |
+| 2:1 MUX transistor count | 4 (TG) or 6 (gate) | Area benchmark |
+| DFF transistor count | 24-28 (traditional) | Area benchmark |
+| Clock gating cell (ICG) | ~8 transistors + latch | Power saving primitive |

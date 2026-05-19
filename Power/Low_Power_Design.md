@@ -416,7 +416,99 @@ Power WITH gating (gated 70%, active 30%):
 Savings = 5.12 - 1.546 = 3.574 mW = 70% savings!
 ```
 
-### 4.4 Fine-Grain vs Coarse-Grain Clock Gating
+### 4.4 AND-Type vs OR-Type ICG Cells
+
+```
+AND-type ICG (clock gating for active-high enables, INDUSTRY STANDARD):
+  
+  GCLK = CLK & EN_latched
+  
+  The latch captures EN on the NEGATIVE phase (transparent when CLK=0).
+  During CLK=1: latch is opaque, EN_latched is stable.
+  AND gate: GCLK is HIGH only when both CLK=1 AND EN_latched=1.
+  
+  Use when: gating signal is active-HIGH enable (1 = clock enabled).
+  This is the default for 95%+ of clock gating in digital designs.
+  When EN=0: GCLK is stuck LOW -> flip-flops see no rising edge.
+
+OR-type ICG (clock gating for active-low enables):
+  
+  GCLK = CLK | EN_latched_n
+  
+  The latch captures EN on the POSITIVE phase (transparent when CLK=1).
+  During CLK=0: latch is opaque, EN_latched is stable.
+  OR gate: GCLK is LOW only when both CLK=0 AND EN_latched_n=0.
+  
+  Use when: gating signal is active-LOW (0 = clock enabled).
+  When EN=1: GCLK is stuck HIGH -> flip-flops see no rising edge.
+  
+  Rare in practice -- most designs use AND-type with inverted enable if needed.
+
+When to use each:
+  - AND-type: standard register file gating, pipeline stage gating, module gating
+  - OR-type: rarely needed; some negative-edge-triggered designs use it
+  - Most synthesis tools only insert AND-type ICG cells
+
+Timing of enable relative to clock:
+  AND-type: EN must be stable by FALLING edge of CLK (setup to negedge)
+  OR-type:  EN must be stable by RISING edge of CLK (setup to posedge)
+  
+  The setup requirement is to the INACTIVE edge, not the active edge.
+  This gives a full half-cycle for enable to propagate from launching FF.
+```
+
+### 4.4B Clock Gating Enable Generation from RTL
+
+```
+The synthesis tool infers ICG from these RTL patterns:
+
+Pattern 1: if-else with clocked assignment (MOST COMMON)
+  always @(posedge clk)
+    if (enable)           // <-- ICG inferred here
+      q <= d;
+
+  Tool actions:
+    1. Extracts "enable" as the gating signal
+    2. Inserts ICG cell on the clock path
+    3. Removes the mux on D input (saves combinational logic)
+    
+  Without clock gating: tool implements D-input mux
+    always @(posedge clk)
+      q <= enable ? d : q;  // mux on D, clock always toggles
+
+Pattern 2: Explicit clock gating (manual)
+  wire gated_clk;
+  ICG_CELL u_icg (.CLK(clk), .EN(enable), .GCLK(gated_clk));
+  always @(posedge gated_clk)
+    q <= d;
+
+Pattern 3: Module-level gating (coarse-grain)
+  // In the power management controller:
+  always @(posedge clk) begin
+    if (module_active)
+      module_clk_en <= 1;
+    else
+      module_clk_en <= 0;
+  end
+  // ICG for entire module inserted at clock entry point
+
+Module-level vs gate-level clock gating:
+  Module-level: one ICG for entire module (1 cell for 10K FFs)
+    - Controlled by software/firmware
+    - Gating efficiency depends on module idle time
+    - Very low area overhead
+  
+  Gate-level (RTL-inferred): one ICG per 4-64 FFs
+    - Controlled by data path enables
+    - Gating efficiency depends on data-dependent activity
+    - Higher area overhead (many ICG cells)
+    - Typical: 5-8% area increase, 20-40% power reduction
+  
+  Best practice: use BOTH. Module-level for sleep modes,
+  gate-level for dynamic activity reduction during active operation.
+```
+
+### 4.4C Fine-Grain vs Coarse-Grain Clock Gating
 
 | Aspect | Fine-Grain | Coarse-Grain |
 |--------|-----------|--------------|
@@ -505,6 +597,116 @@ WHY this order matters:
     at the old (low) voltage -> timing violations -> functional failure
   - If you decrease voltage before frequency: same problem, gates too slow
     for the current (high) frequency
+```
+
+### 5.2B Voltage-Frequency Curve Derivation
+
+For a gate with delay T_d proportional to Vdd / (Vdd - Vth)^alpha:
+
+```
+For constant delay (same performance): Vdd must scale with frequency
+  If f doubles: T_d halves -> need Vdd to increase
+  Roughly: Vdd proportional to f for constant delay
+  (at Vdd >> Vth: T_d ~ Vdd / Vdd^alpha = 1/Vdd^(alpha-1), 
+   so Vdd ~ f^(1/(alpha-1)))
+
+For alpha = 1.3: Vdd ~ f^(1/0.3) = f^3.33
+  If f increases 20%: Vdd must increase ~80%
+  This is why small frequency increases cost enormous power!
+```
+
+**Detailed operating points table with derivation:**
+
+```
+Assume: 7nm FinFET, Vth = 0.25V, alpha = 1.3
+Base design at 0.75V, 2.0 GHz
+
+| OPP     | Vdd(V) | F(GHz) | Vdd-Vth | Relative T_d | Relative P_dyn | Use Case         |
+|---------|--------|--------|---------|-------------|----------------|-------------------|
+| Turbo   | 0.95   | 2.8    | 0.70    | 0.72x (fast)| 1.78x          | Peak burst        |
+| Nominal | 0.80   | 2.0    | 0.55    | 1.00x (ref) | 1.00x          | Sustained         |
+| SVS     | 0.70   | 1.4    | 0.45    | 1.33x       | 0.64x          | Light load        |
+| Low     | 0.60   | 0.8    | 0.35    | 1.90x       | 0.34x          | Background        |
+| Min     | 0.50   | 0.4    | 0.25    | 2.98x       | 0.14x          | Always-on sensor  |
+
+Relative P_dyn = (Vdd/Vdd_ref)^2 * (f/f_ref)
+  Turbo:  (0.95/0.80)^2 * (2.8/2.0) = 1.41 * 1.40 = 1.97 (close to 1.78 with rounding)
+  SVS:    (0.70/0.80)^2 * (1.4/2.0) = 0.766 * 0.70  = 0.54
+  Low:    (0.60/0.80)^2 * (0.8/2.0) = 0.563 * 0.40  = 0.23
+  Min:    (0.50/0.80)^2 * (0.4/2.0) = 0.391 * 0.20  = 0.08
+
+Power at Turbo = 1.97x the nominal -> thermal throttling kicks in within seconds.
+Power at Min   = 0.08x nominal -> 92% dynamic power reduction for background tasks.
+```
+
+### 5.2C DVFS Controller Decision Logic
+
+```
+How the DVFS controller decides V/F level:
+
+Method 1: Utilization-based (most common in mobile SoCs)
+  1. Hardware performance counters track:
+     - Instructions per cycle (IPC)
+     - Cache miss rate
+     - Pipeline stall cycles
+     - Memory bandwidth utilization
+  2. OS governor samples counters every 10-100 ms
+  3. Decision algorithm:
+     utilization = busy_cycles / total_cycles
+     
+     if utilization > 80%: scale UP to next OPP
+     if utilization < 30%: scale DOWN to lower OPP
+     if 30% < utilization < 80%: maintain current OPP
+  4. Hysteresis: require N consecutive samples above/below threshold
+     to prevent oscillation (typically N=3 samples at 50ms each = 150ms)
+
+Method 2: Workload prediction (used in modern CPUs)
+  - Track workload history (last 10-100 ms)
+  - Predict next interval's demand using moving average
+  - Preemptively adjust V/F before the workload arrives
+  - Reduces response latency for bursty workloads
+
+Method 3: Critical path monitor (hardware AVS)
+  - On-die ring oscillators or replica delay lines
+  - Measure actual silicon speed in real-time
+  - If replica path is faster than needed -> reduce Vdd
+  - If replica path is too slow -> increase Vdd
+  - Per-chip optimization: fast silicon saves 50-100 mV
+```
+
+### 5.2D Voltage Regulator Response Time
+
+```
+How fast can you change Vdd?
+
+External PMIC (Power Management IC):
+  - Buck converter on the PCB
+  - Voltage change: 10-50 us settling time
+  - Step size: 6.25 mV or 12.5 mV resolution
+  - Limited by output inductor and capacitor
+  - Most mobile SoCs use this (external PMIC)
+
+On-die LDO (Low Dropout Regulator):
+  - Analog LDO on the same die as the logic
+  - Voltage change: 0.5-5 us settling time
+  - Much faster than external PMIC
+  - But LDO efficiency = Vout/Vin (at 0.6V out / 1.0V in = 60% efficient)
+  - Used for fine-grain DVFS with fast transitions
+
+DVFS transition overhead:
+  Scale up:   10-50 us (wait for PMIC) + 5-20 us (PLL relock) = 15-70 us total
+  Scale down: 5-20 us (PLL relock) + 10-50 us (voltage settles) = 15-70 us total
+  
+  During transition: logic continues at old V/F (safe but suboptimal)
+  
+  Energy wasted during transition:
+    E_transition = P_old * T_transition / 2 (roughly, average of old and new)
+    For a 50 us transition at 1W average: E = 25 uJ
+    
+  Minimum DVFS interval: transition cost must be amortized
+    If saving 500 mW by switching down for T_idle:
+    Break-even: 500mW * T_idle > 25 uJ -> T_idle > 50 us
+    Practical minimum: 1-10 ms between DVFS transitions
 ```
 
 ### 5.3 DVFS Operating Points -- Real-World Example
@@ -702,6 +904,109 @@ Critical ordering rules:
   Leakage overhead: shadow latch leakage on always-on rail
 ```
 
+### 6.6B Retention Register Detailed Design (Balloon Register)
+
+```
+Schematic of a retention flip-flop with balloon (shadow) latch:
+
+  Switchable VDD (VVDD)                    Always-On VDD (VDD_AO)
+  ┌────────────────────────────┐           ┌──────────────────────┐
+  │                            │           │                      │
+  │  D ──[TG1]── Master ──[TG2]── Slave ──│── Q                  │
+  │       ↑        Latch       ↑   Latch   │                      │
+  │      CLK1                 CLK2         │                      │
+  │                            │           │   Shadow Latch       │
+  │                      [TG3]─┤───────────│──[TG4]── Retain ─────│
+  │                       ↑    │           │   ↑     Latch        │
+  │                     SAVE   │           │ RESTORE               │
+  └────────────────────────────┘           └──────────────────────┘
+  
+  TG1/TG2: Transmission gates (clocked by CLK, powered by VVDD)
+  TG3:     SAVE transmission gate (powered by VVDD for input, VDD_AO for output)
+  TG4:     RESTORE transmission gate (powered by VDD_AO)
+  
+  Normal operation (VVDD = ON):
+    Master-slave operates as normal FF
+    Shadow latch is idle (SAVE=0, RESTORE=0)
+    
+  SAVE sequence (before power-down):
+    1. Clock is stopped (no active edge)
+    2. SAVE is pulsed HIGH: TG3 opens, Slave output -> Shadow input
+    3. Shadow latch captures the bit on VDD_AO supply
+    4. SAVE goes LOW: TG3 closes, Shadow holds the bit
+    
+  Power-down:
+    VVDD ramps to 0V. Master and Slave lose all state.
+    Shadow latch retains on VDD_AO. Only ~4-6 transistors draw leakage.
+    
+  RESTORE sequence (after power-up):
+    1. VVDD is stable at target voltage
+    2. Master/Slave are in unknown state (random)
+    3. RESTORE is pulsed HIGH: TG4 opens, Shadow output -> Master input
+    4. Master captures the saved bit from Shadow
+    5. RESTORE goes LOW
+    6. Next clock edge: Slave captures from Master -> Q has saved value
+    
+Area overhead: ~30-50% larger than standard FF
+  Standard D-FF: ~16-20 transistors
+  Retention D-FF: ~26-34 transistors (shadow latch + TG3/TG4 + control logic)
+  
+Leakage overhead: only the shadow latch leaks on the always-on rail
+  Shadow latch: ~4-6 transistors, ~2-5 nA at 25C
+  For 10K retention FFs: 10,000 * 5nA * 0.9V = 45 uW always-on leakage
+  This is the cost of fast wake-up (vs. full re-initialization)
+```
+
+### 6.6C Power-Up Sequence with In-Rush Current Management
+
+```
+Detailed power-up sequence with timing:
+
+  t0: Wake-up event (interrupt, timer)
+  t1: PMU asserts SLEEP_N deassertion (start turning on header switches)
+      - Daisy-chain: group 0 turns on first
+      - Each group delayed by ~200 ns from the previous
+      - With 10 groups: total ramp time = 10 * 200 ns = 2 us
+      - In-rush current limited to: I_domain / N_groups
+        = 100 mA / 10 = 10 mA per group (manageable)
+        
+      Without daisy-chain:
+        I_rush = C_domain * VDD / T_ramp_uncontrolled
+               = 10 nF * 0.8V / 1 ns (instantaneous switch)
+               = 8A !! (catastrophic Ldi/dt, package bondwire fuse risk)
+        
+  t2: VVDD reaches 90% of VDD (after ~2 us)
+      Voltage detector signals "power good"
+      
+  t3: PMU asserts RESET to domain (1 us minimum pulse width)
+      All FFs go to known state (0)
+      
+  t4: PMU asserts RESTORE to retention FFs (1 us minimum pulse width)
+      Shadow latches write back to master/slave
+      
+  t5: PMU deasserts RESET (synchronous to clock!)
+      Domain FFs now have restored values
+      
+  t6: PMU deasserts ISOLATION
+      Domain outputs go from clamped values to live logic
+      
+  t7: PMU enables clocks (via clock gating deassertion)
+      First functional clock edge
+      
+  t8: Domain is fully operational
+      Total wake-up time: ~5-15 us (domain dependent)
+
+Critical ordering violations and their consequences:
+  ISOLATION deasserted before VVDD stable:
+    -> Outputs are undefined (random) -> corrupt always-on domain
+  RESTORE before VVDD stable:
+    -> Shadow latch data transfers incorrectly -> silent data corruption
+  Clock enabled before RESET deasserted:
+    -> FFs clock in garbage data for 1+ cycles
+  RESET deasserted asynchronously:
+    -> Recovery/removal violation on FFs -> metastability
+```
+
 ### 6.7 Isolation Cells
 
 | Type | Output When Isolated | Use Case |
@@ -817,6 +1122,100 @@ Phase 4: Post-route leakage recovery
   - Process paths from most slack to least slack
 
 Result: Typically 70-85% HVT, 10-20% SVT, 5-10% LVT
+```
+
+### 7.2B Multi-Vt Synthesis Flow in Detail
+
+```
+Step-by-step multi-Vt optimization in Synopsys Design Compiler:
+
+Phase 0: Library preparation
+  - Foundry provides 4-6 Vt flavors per cell (ULVT, LVT, SVT, HVT, UHVT)
+  - Each has same function, different Vth implant / work function metal
+  - Liberty files: nangate_7nm_UHVT.lib, nangate_7nm_HVT.lib, etc.
+  
+Phase 1: Initial compile (all HVT for minimum leakage)
+  set_link_library "* 7nm_hvt.db 7nm_svt.db 7nm_lvt.db 7nm_ulvt.db"
+  compile_ultra -scan
+  
+Phase 2: Vt assignment (swap up for timing closure)
+  optimize_netlist -area -power
+  # DC swaps cells from HVT -> SVT -> LVT on critical paths
+  # Each swap: ~15-25% faster, ~4-5x more leakage
+  
+Phase 3: Leakage recovery (swap down for non-critical paths)
+  # After timing closure, find cells with positive slack
+  # Swap LVT -> SVT -> HVT if timing still meets
+  # Priority: swap the highest-leakage cells first
+  
+Phase 4: Constraint-driven Vt limits
+  set_multi_vth_constraint -lvth_percentage 10 -type soft
+  # Limit LVT+ULVT to 10% of total cell count
+  # Soft constraint: may be violated if timing requires
+  
+Phase 5: Report and verify
+  report_threshold_voltage_group
+  report_power -breakdown {vth}
+  
+Typical result for a well-optimized CPU core at 7nm:
+  UHVT:  1%  (absolute critical paths only)
+  HVT:  60%  (vast majority of non-critical logic)
+  SVT:  28%  (moderately timing-critical)
+  LVT:  10%  (near-critical paths)
+  ULVT:  1%  (rarely needed, only for the most critical gates)
+  
+  Leakage breakdown by Vt:
+    1% ULVT -> 25% of total leakage (each cell leaks 20-80x more than HVT!)
+    10% LVT -> 35% of total leakage
+    28% SVT -> 25% of total leakage  
+    60% HVT -> 15% of total leakage
+    
+  This shows the Pareto: a few LVT/ULVT cells dominate total leakage.
+  Aggressive leakage recovery on even 1% of LVT cells can save 5-10% total power.
+```
+
+### 7.2C Multi-Vt Leakage Reduction Quantified
+
+```
+Worked example: 5M gate design, 7nm FinFET
+
+All-SVT baseline:
+  Leakage per SVT gate = 10 nA (at 25C)
+  Total leakage = 5e6 * 10e-9 * 0.75V = 37.5 mW
+
+After multi-Vt optimization (60% HVT, 28% SVT, 10% LVT, 2% ULVT):
+  HVT leakage:  3.0M * 10nA * 0.20x = 6.0 mA * 0.75 = 4.5 mW
+  SVT leakage:  1.4M * 10nA * 1.00x = 14.0 mA * 0.75 = 10.5 mW
+  LVT leakage:  0.5M * 10nA * 5.00x = 25.0 mA * 0.75 = 18.8 mW
+  ULVT leakage: 0.1M * 10nA * 20.0x = 20.0 mA * 0.75 = 15.0 mW
+  Total: 65 mA * 0.75V = 48.8 mW
+
+Wait -- that's MORE than all-SVT! Why?
+
+The issue: LVT/ULVT cells on critical paths add enormous leakage.
+But these cells were NECESSARY to meet timing -- without them, the
+design would need to run at lower frequency or higher voltage.
+
+Compare at constant performance:
+  All-SVT at 0.85V (higher voltage to meet timing):
+    Dynamic: 5e6 * 0.15 * 1.2fF * 0.85^2 * 2GHz = 1.3 W
+    Leakage:  37.5 mW (at 0.85V, slightly less due to lower Vds DIBL)
+    Total: ~1.34 W
+    
+  Multi-Vt at 0.75V (lower voltage thanks to LVT on critical paths):
+    Dynamic: 5e6 * 0.15 * 1.2fF * 0.75^2 * 2GHz = 1.01 W
+    Leakage: 48.8 mW
+    Total: ~1.06 W
+    
+  Net savings: 1.34 - 1.06 = 280 mW (21% reduction!)
+  
+The key insight: multi-Vt enables lower Vdd operation by speeding up
+critical paths with LVT, which saves dynamic power quadratically.
+The leakage increase from LVT is small compared to V^2 dynamic savings.
+
+Typical industry result: multi-Vt optimization saves 2-5x total leakage
+vs an all-LVT design (which would meet timing trivially but leak terribly),
+and 20-30% total power vs all-SVT at higher voltage.
 ```
 
 ### 7.3 Vt vs Cell Sizing Trade-off

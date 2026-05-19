@@ -16,6 +16,7 @@
 7. [Timing Signoff](#7-timing-signoff)
 8. [Advanced Topics](#8-advanced-topics)
 9. [Interview Q&A](#9-interview-qa)
+10. [AI/ML-Assisted Physical Design](#10-aiml-assisted-physical-design)
 
 ---
 
@@ -378,7 +379,7 @@ Example M9 strap:
 
 ### 3.1 Global Placement
 
-**Objective function — Quadratic Wirelength:**
+**Objective function -- Quadratic Wirelength:**
 
 ```
 The placement problem minimizes:
@@ -386,7 +387,7 @@ The placement problem minimizes:
   W = Sum over all nets [ Sum over all pin pairs (i,j) in net ]
       of ( (xi - xj)^2 + (yi - yj)^2 )
 
-This is a quadratic function → solvable via linear system:
+This is a quadratic function -> solvable via linear system:
   dW/dx_i = 0  for all cells i
   
 This produces a system of linear equations:
@@ -396,13 +397,82 @@ This produces a system of linear equations:
 Where Q is a connectivity matrix (Laplacian of the hypergraph).
 ```
 
-**Modern placers use a hybrid approach:**
-1. Quadratic/analytical placement produces an initial spread
-2. Force-directed methods push cells apart to reduce overlap
-3. Partitioning-based refinement (FM/KL algorithms) for further optimization
-4. ePlace (Cadence) and SimPL (Synopsys) use electrostatics analogy: cells = charged particles, density = potential field
+**Quadratic Placement (Force-Directed):**
 
-**Numerical Example — HPWL Calculation:**
+```
+  Interpretation: connected cells exert "forces" pulling them together.
+  The force between cells i and j connected by a net is proportional to
+  their distance (like a spring: F = k * d, where k = connectivity weight).
+
+  Algorithm:
+  1. Build the Laplacian matrix Q:
+     Q[i][i] = sum of all net weights connected to cell i
+     Q[i][j] = -(sum of net weights between cells i and j)
+     
+  2. Solve Q * x = b_x and Q * y = b_y
+     - b_x, b_y encode fixed pin positions (pads, macros)
+     - Solution: x = Q^(-1) * b (direct solve via Cholesky factorization)
+     - For 2M cells: sparse matrix, O(n * sqrt(n)) with good preconditioner
+
+  3. Problem: cells overlap (no density constraint in pure quadratic)
+     Fix: add spreading forces (density penalty)
+
+  4. Spread and re-solve iteratively:
+     - After solving, compute density per bin
+     - Add pseudo-nets pulling cells from dense bins to sparse bins
+     - Re-solve with updated forces
+     - Converge over 20-50 iterations (temperature schedule controls force magnitude)
+
+  ePlace (Cadence GigaPlace) uses electrostatic analogy:
+    - Cells = positive charges
+    - Density target = background negative charge
+    - Electric potential = placement quality
+    - Electric field = forces for cell movement
+    - Solves Poisson's equation at each iteration (FFT-based, O(n log n))
+```
+
+**Simulated Annealing Placement:**
+
+```
+  Used in older tools and for detailed placement refinement.
+  Still relevant conceptually for understanding placement trade-offs.
+
+  Algorithm:
+  1. Start with an initial placement (from quadratic or random)
+  2. Temperature schedule: T = T_start * alpha^k (alpha = 0.95, k = iteration)
+     T_start: large enough to accept most moves (e.g., T_start = 10x average cost change)
+     T_end: small enough to accept only improving moves (e.g., T_end = 0.001 * T_start)
+  
+  3. Move generation (randomly choose one):
+     a. Swap two cells
+     b. Move a cell to a random position
+     c. Mirror/rotate a cell
+     d. Swap two cells in the same row (preserve row alignment)
+  
+  4. Cost function (evaluate after each move):
+     Cost = w_wire * HPWL + w_overlap * overlap_area + w_congestion * overflow
+     
+     HPWL: Half-Perimeter Wirelength (primary objective)
+     Overlap: penalizes cells occupying the same area
+     Congestion: penalizes regions with routing demand > supply
+     Timing: optionally add negative-slack path length penalty
+  
+  5. Acceptance criterion (Metropolis):
+     If Cost_new < Cost_old: accept
+     Else: accept with probability exp(-(Cost_new - Cost_old) / T)
+  
+  6. At each temperature, attempt N_moves = 10 * N_cells moves
+  
+  Example timeline:
+     Iter 1:  T=100, accept 95% of moves (exploring broadly)
+     Iter 20: T=10,  accept 60% (narrowing)
+     Iter 50: T=0.1, accept 5%  (only improving moves, "freezing")
+  
+  Typical runtime: O(N^1.5) to O(N^2) -- slower than analytical methods
+  for large designs, but produces very high quality for small blocks.
+```
+
+**Numerical Example -- HPWL Calculation:**
 
 ```
 Given a net with 4 pins at coordinates:
@@ -421,6 +491,68 @@ Actual routed wirelength is typically 1.0-1.5x HPWL.
 ```
 
 ### 3.2 Detailed Placement (Legalization)
+
+After global placement, cells overlap and are not aligned to rows:
+
+```
+  Before Legalization:          After Legalization:
+  
+  Row 4: | A  [C]  B    |      Row 4: | A   C   B       |
+  Row 3: |   [D E]      |      Row 3: |   D   E         |
+  Row 2: |  [F] G    H  |  ->   Row 2: |  F   G      H   |
+  Row 1: | I    J  [K]  |      Row 1: | I    J    K     |
+  
+  [overlapping cells]           All cells snapped to rows, no overlap
+```
+
+**Legalization algorithms:**
+
+```
+  Minimum Perturbation Legalization (most common):
+  ──────────────────────────────────────────────────
+  Goal: move cells as LITTLE as possible to achieve a legal placement.
+  
+  Algorithm (single-row legalization):
+  1. Sort cells in each row by their global-placement x-coordinate
+  2. Process cells left-to-right
+  3. For each cell, place it at the nearest legal x-position that:
+     - Does not overlap with the previously placed cell
+     - Satisfies minimum spacing rules
+     - Is on a legal site (quantized to site width)
+  4. If a cell cannot fit in the current row, move to the next row
+  5. After all cells are placed, run a "window-based" refinement that
+     swaps cells within a small window (5-10 cells) to reduce total
+     displacement from the global placement positions
+
+  Tetris-style Legalization:
+  ────────────────────────────
+  1. Sort all cells by x-coordinate (left to right)
+  2. Place each cell in the first available legal position:
+     a. Try the same row as the global placement position
+     b. If no space, try adjacent rows (up/down)
+     c. Place at the nearest legal x-position
+  3. This is fast O(n log n) but can produce sub-optimal results
+     (cells pushed far from their ideal positions)
+  
+  Optimal legalization for a single row:
+  ──────────────────────────────────────
+  Dynamic programming approach:
+  1. For N cells in a row, each with target position x_i:
+  2. State: dp[i][j] = minimum total displacement for first i cells,
+     with the i-th cell placed at legal position j
+  3. Transition: dp[i][j] = |x_i - pos[j]| + min over k (dp[i-1][k])
+     where k < j and pos[k] + spacing <= pos[j]
+  4. Result: O(N * M) where M = number of legal positions in the row
+     Typically M = row_width / site_width (manageable)
+  5. Finds the globally optimal placement for that row with minimum
+     total displacement from global placement targets
+```
+
+**Legalization rules:**
+- Cells must be on legal row sites (quantized x positions based on site width)
+- No overlap between cells
+- Minimum spacing rules between cells
+- Power rail alignment: cells must alternate orientation (N/S flip) for shared VDD/VSS rails
 
 After global placement, cells overlap and are not aligned to rows:
 
@@ -660,7 +792,7 @@ Step 1: Start with sink locations
   FF_A(10,20), FF_B(50,20), FF_C(30,60), FF_D(70,60)
 
 Step 2: Pair sinks and find merge point
-  Pair (A,B): merge at (30, 20) — equidistant in Manhattan distance
+  Pair (A,B): merge at (30, 20) -- equidistant in Manhattan distance
   Pair (C,D): merge at (50, 60)
 
 Step 3: Merge the merged points
@@ -674,6 +806,167 @@ Step 4: Insert buffers at merge points
         (30,20) buf1    (50,60) buf2
          /    \          /    \
       FF_A   FF_B    FF_C   FF_D
+```
+
+**Method of Means and Medians (MMM):**
+
+```
+  A top-down approach for clock tree construction:
+  
+  1. Given N sinks, compute the center of mass (mean):
+     x_mean = sum(x_i) / N,  y_mean = sum(y_i) / N
+  
+  2. Find the median splitting line through (x_mean, y_mean):
+     - Sort sinks by x-coordinate (or y)
+     - Split into two equal groups at the median
+     - This balances the number of sinks in each subtree
+  
+  3. Recursively apply to each half until each group has 1 sink
+  
+  Example: 8 sinks at positions:
+    (0,0), (2,3), (5,1), (6,5), (10,2), (12,4), (15,1), (18,3)
+    
+    Mean x = (0+2+5+6+10+12+15+18)/8 = 8.5
+    Median x = 8 (between 6 and 10)
+    
+    Left group: (0,0), (2,3), (5,1), (6,5)   -> recurse
+    Right group: (10,2), (12,4), (15,1), (18,3) -> recurse
+    
+    Left group mean x = 3.25, median x = 3.5
+      Left-Left: (0,0), (2,3) -> merge point (1, 1.5)
+      Left-Right: (5,1), (6,5) -> merge point (5.5, 3)
+    
+    Continue until all groups are single sinks.
+  
+  4. Insert buffers at each internal node of the tree
+  
+  Pros: simple, fast O(N log N), good for uniform sink distributions
+  Cons: does not minimize wirelength or skew -- suboptimal for
+        non-uniform distributions. Used as starting point for DME refinement.
+```
+
+**Geometric Matching (Top-Down Merging):**
+
+```
+  A bottom-up approach that pairs sinks to minimize total wirelength:
+  
+  1. Compute pairwise Manhattan distances between all sinks (O(N^2))
+  
+  2. Find minimum-cost perfect matching (or near-perfect if N is odd):
+     - Pair sinks that are closest together
+     - For each pair (a, b), the merge point is at the Manhattan midpoint:
+       merge_x = (x_a + x_b) / 2,  merge_y = (y_a + y_b) / 2
+     - This ensures zero skew between the paired sinks (equal wire length)
+  
+  3. Each pair produces a "super-sink" at the merge point.
+     The super-sink's load capacitance = sum of the two sinks' caps
+     + wire capacitance to both sinks.
+  
+  4. Repeat matching on the set of super-sinks until one root remains.
+  
+  5. Insert buffers at each merge point, sized to drive the combined load.
+  
+  Example with 4 sinks:
+    A(0,0), B(10,0), C(0,10), D(10,10)
+    
+    Round 1 matching: A-B (dist=10), C-D (dist=10)
+      Merge AB at (5,0), merge CD at (5,10)
+    
+    Round 2 matching: AB-CD (dist=10)
+      Merge ABCD at (5,5) -- the root buffer
+    
+    Total wirelength: 10 + 10 + 10 = 30
+    Skew: 0 (all paths from root to sink are equal length: 5+5=10 each)
+  
+  Complexity: O(N^3) for matching at each level, O(N^3 * log N) total
+  Better skew than MMM because matching explicitly minimizes wirelength.
+  Greedy approximation: O(N^2) per level, used in practice for large designs.
+```
+
+**DME (Deferred Merge Embedding) -- Zero-Skew Merge Point Computation:**
+
+```
+  DME is the industry-standard CTS algorithm. Key idea: defer the exact
+  placement of merge points until the entire tree topology is known,
+  then embed them optimally bottom-up.
+
+  Phase 1 (Bottom-Up: Compute Merge Segments):
+  ─────────────────────────────────────────────
+  For each pair of sub-trees (left, right) with known sink sets:
+
+  Given:
+    - Left subtree has total wire capacitance C_left, wire resistance R_left
+    - Right subtree has C_right, R_right
+    - The sink loading capacitances are known
+    - Merge point must be on the Manhattan arc between left and right roots
+    - We use Elmore delay model: T = R * C_downstream
+
+  Zero-skew condition:
+    T_left = T_right  (delay from merge point to all sinks in each subtree)
+
+  Let the merge point be at a fraction alpha along the wire from left to right:
+    Wire to left subtree:  length = alpha * L,   R = alpha * r_w, C = alpha * c_w
+    Wire to right subtree: length = (1-alpha)*L, R = (1-alpha)*r_w, C = (1-alpha)*c_w
+
+  Elmore delay balance:
+    alpha * r_w * (alpha * c_w / 2 + C_left) = 
+    (1-alpha) * r_w * ((1-alpha) * c_w / 2 + C_right)
+
+  Solving for alpha:
+    alpha = (C_right + c_w * L / 2 - C_left) / (c_w * L)
+
+    where L = Manhattan distance between left and right subtree roots
+          r_w, c_w = per-unit-length wire resistance and capacitance
+
+  Special cases:
+    If alpha < 0: left subtree needs MORE delay -> wire snaking on left side
+    If alpha > 1: right subtree needs MORE delay -> wire snaking on right side
+    If 0 <= alpha <= 1: merge point is on the line segment (ideal)
+
+  Phase 2 (Top-Down: Embed Merge Points):
+  ───────────────────────────────────────
+  1. Root merge point can be placed anywhere on its merging segment
+     (typically placed at the clock source or closest buffer)
+  2. Once root is placed, the positions of children are determined by
+     the alpha values computed in Phase 1
+  3. Recurse down the tree, placing each merge point
+  4. Insert buffers at each merge point, choosing the appropriate drive
+     strength based on downstream load capacitance
+
+  Example (2 sinks):
+    Sink A at (0,0), load cap = 30 fF
+    Sink B at (100,0), load cap = 70 fF  (heavier load)
+    Wire: r_w = 0.1 ohm/um, c_w = 0.2 fF/um, L = 100 um
+
+    Total wire cap = c_w * L = 20 fF
+    alpha = (70 + 20/2 - 30) / 20 = (70 + 10 - 30) / 20 = 50/20 = 2.5
+    
+    alpha > 1 -> merge point is to the LEFT of sink A
+    This means sink B's heavier load requires a longer wire to balance.
+    
+    Recompute with snaking:
+    Required extra wire on B side to balance: solve for alpha that gives
+    equal Elmore delay. The merge point is placed at (0,0) (at sink A),
+    and a wire of length L_snake runs from (0,0) to (100,0).
+    
+    Balance: r_w * L_snake * (c_w * L_snake / 2 + C_B) = r_w * 0 * C_A
+    Actually: the snaking wire adds delay to the B path.
+    T_B = r_w * 100 * (c_w * 100/2 + 70) = 10 * (10 + 70) = 800
+    T_A = 0 * 30 = 0  (merge at sink A, zero wire to A)
+    
+    Need to add wire to A side: wire from merge toward A and back.
+    In practice, the tool inserts a delay buffer instead of snaking.
+
+  Multi-corner CTS handling:
+  ──────────────────────────
+  1. Run DME for each corner (SS, TT, FF) independently
+  2. The merge point alpha values differ per corner (different r_w, c_w)
+  3. Choose the buffer sizes and wire lengths that satisfy skew targets
+     at ALL corners simultaneously
+  4. This is formulated as a multi-objective optimization:
+     minimize max_skew_across_corners + insertion_delay
+  5. Practical approach: optimize for the worst-corner skew, verify
+     at all other corners, iterate if any corner exceeds the target
 ```
 
 ### 4.5 Clock Tree Cells
@@ -816,11 +1109,97 @@ For clock mesh designs:
   |      |      |      |      |   GCells for each net (coarse grid)
   +------+------+------+------+
   
-  Net A: GC00 → GC01 → GC11    (L-shaped route)
-  Net B: GC00 → GC10 → GC11    (another L-shape)
+  Net A: GC00 -> GC01 -> GC11    (L-shaped route)
+  Net B: GC00 -> GC10 -> GC11    (another L-shape)
   
   Congestion = demand / supply per GCell edge
-  If demand > supply → overflow → must detour or promote to higher metal
+  If demand > supply -> overflow -> must detour or promote to higher metal
+```
+
+**Congestion Estimation:**
+
+```
+  For each GCell boundary edge, compute:
+    Demand = number of nets that must cross this edge
+    Supply = number of available routing tracks on this edge
+    Overflow = max(0, Demand - Supply)
+
+  Estimation methods:
+  1. Probabilistic: for a 2-pin net spanning (dx, dy) GCells,
+     probability of using each horizontal edge = 1/dx, vertical = 1/dy
+     Sum over all nets -> expected demand per edge
+
+  2. Routability-driven: after global placement, run fast trial routing
+     on a coarse grid. The resulting overflow map directly identifies
+     congestion hotspots. Feed back to placement for correction.
+
+  3. ML-based: recent tools (Synopsys, Cadence) train CNN/GNN models
+     on placement features to predict routing congestion before routing
+     runs. ~85-90% accuracy, much faster than trial routing.
+```
+
+**Maze Routing (Lee's Algorithm / BFS):**
+
+```
+  For a 2-pin net that must be routed through the GCell grid:
+
+  1. Start from source GCell (S), label it 0
+  2. BFS expansion: label all neighbors of 0 as 1, then neighbors of 1 as 2, etc.
+  3. Continue until the target GCell (T) is reached
+  4. Trace back from T to S following decreasing labels -> shortest path
+
+  Example (5x5 grid, S=(0,0), T=(4,3), obstacles marked X):
+  
+    S  1  2  3  4
+    1  2  X  4  5
+    2  3  X  5  6
+    3  4  5  6  T(7)
+    4  X  6  7  8
+
+  Path: S->1->2->3->4->5->6->T (Manhattan distance = 4+3 = 7)
+  The X obstacles force detours.
+
+  Complexity: O(W * H) per net (W, H = grid dimensions)
+  Guaranteed to find the shortest path (BFS property).
+  
+  Problem: very slow for millions of nets (each BFS touches many cells).
+  Solution: A* routing (see below) reduces search space by 5-20x.
+```
+
+**A*-Based Routing:**
+
+```
+  A* uses a priority queue with cost function:
+    f(n) = g(n) + h(n)
+  
+  g(n) = actual cost from source to current GCell n
+  h(n) = heuristic (lower bound) cost from n to target
+       = Manhattan distance from n to target (admissible heuristic)
+
+  Priority queue processes cells in order of f(n) (lowest first).
+  
+  Properties:
+  - With admissible h(n), A* finds the optimal (shortest) path
+  - h(n) prunes the search: cells far from the target are explored last
+  - Typical speedup over Lee's: 5-20x (depends on grid size and obstacles)
+
+  Multi-net global routing with rip-up and reroute (RRR):
+  ──────────────────────────────────────────────────────
+  1. Order nets by criticality (timing-critical first, then by HPWL)
+  2. Route each net using A* through the GCell grid
+  3. If routing causes overflow on any GCell edge:
+     a. Increase the cost of using that edge (congestion penalty)
+     b. Identify the net(s) causing the worst overflow
+     c. Rip up (remove) those nets
+     d. Re-route them with the updated costs
+  4. Iterate until all overflow is resolved or iteration limit reached
+
+  Negotiation-based routing (PathFinder):
+  ──────────────────────────────────────
+  - Each edge has a cost that increases with historical congestion
+  - Nets compete for edges; loser pays higher cost next iteration
+  - Converges to a global optimum (or near-optimal) solution
+  - Used in FPGA routing (VPR) and adapted for ASIC global routing
 ```
 
 ### 5.2 Track Assignment
@@ -835,7 +1214,79 @@ Intermediate step between global and detail routing:
 Creates actual geometric shapes (rectangles on metal layers, vias):
 - Must satisfy ALL DRC rules: minimum width, spacing, enclosure, end-of-line, etc.
 - Rip-up and reroute (RRR): when conflicts arise, remove conflicting segment, find alternative
-- Negotiation-based routing: PathFinder algorithm — all nets compete for tracks, penalty increases for over-used resources
+- Negotiation-based routing: PathFinder algorithm -- all nets compete for tracks, penalty increases for over-used resources
+
+**Design Rules Enforced by Detail Router:**
+
+```
+  Minimum Width:
+    Each metal layer has a minimum feature width (e.g., M1: 28nm at 7nm)
+    Wire must be at least this wide along its entire length
+
+  Minimum Spacing:
+    Two wires on the same layer must be separated by at least the
+    minimum spacing for that layer (e.g., M1: 28nm)
+    Spacing can depend on: wire width (wider wires need more space),
+    wire length (long parallel runs may need more), and voltage
+
+  Via Rules:
+    - Minimum via size (single-cut: 20x20nm at 7nm)
+    - Minimum via enclosure (metal overlap around via on each layer)
+    - Minimum via spacing (distance between via cuts)
+    - Maximum via resistance constraints
+    - Preferred via direction (column vs row alignment)
+    - Via array rules: multi-cut vias must fit within enclosure constraints
+
+  End-of-Line (EOL) Spacing:
+    ┌───┐
+    │   │ <- line end
+    └───┘
+       ↕ EOL spacing zone (typically 1.5-2x normal spacing)
+    ┌───┐
+    │   │ <- adjacent line end or parallel run
+    └───┘
+    The router must check EOL spacing within a defined "EOL window"
+    (e.g., within 50nm of the line end). This prevents lithography
+    artifacts at wire corners and tips.
+
+  Minimum Area:
+    Each metal shape must have area >= A_min (e.g., 0.003 um^2 at 7nm)
+    This is checked after all DRC fixes; small jog segments may violate.
+
+  Cut Spacing (for via layers):
+    Via cuts on the same cut layer must maintain minimum spacing.
+    For SADP via layers, cuts may need to be on a fixed grid.
+```
+
+**Antenna Rule Checking:**
+
+```
+  Antenna ratio = (total metal area on a specific layer that is connected
+                   to a gate oxide, with no connection to higher layers)
+                  / (gate oxide area)
+
+  During routing, the tool tracks for each net:
+    - Which metal layers are used
+    - The area of metal on each layer that connects to gate terminals
+    - Whether any connection to upper metal exists (breaks antenna path)
+
+  Example calculation:
+    Net connects: M1 segment (area 0.5 um^2) -> M2 segment (area 2.0 um^2)
+                  -> gate (area 0.001 um^2)
+    
+    After M1 processing: antenna ratio = 0.5 / 0.001 = 500
+    After M2 processing: antenna ratio = (0.5 + 2.0) / 0.001 = 2500
+    
+    If M2 limit = 2000 -> VIOLATION!
+    Fix: insert antenna diode near the gate, or jump from M1 to M3
+    before routing the long M2 segment (M3 is processed later, breaking
+    the charge accumulation path during M2 processing).
+
+  The router fixes antenna violations automatically by:
+    1. Inserting antenna diode cells (preferred, if placement space exists)
+    2. Breaking long wires with layer jumps (changes routing topology)
+    3. Re-routing to shorten the wire on the violating layer
+```
 
 ### 5.4 Routing Layer Usage
 
@@ -1150,36 +1601,191 @@ Given:
 | M8          | 2.0 MA/cm^2          | 200nm      | ~400 uA          |
 | M12 (thick) | 3.0 MA/cm^2          | 2000nm     | ~30 mA           |
 
-### 6.6 IR Drop Analysis
+### 6.6 IR Drop Analysis -- Detailed
+
+**Power Grid Modeling (Resistance Network):**
+
+```
+  The power delivery network is modeled as a resistive mesh:
+
+  VDD pad ──[R_bump]──┬──[R_M10]──┬──[R_M10]──┬── ... (top metal grid)
+                       |           |           |
+                    [R_via]     [R_via]     [R_via]
+                       |           |           |
+                    [R_M8]────[R_M8]────[R_M8]── ... (intermediate grid)
+                       |           |           |
+                    [R_via]     [R_via]     [R_via]
+                       |           |           |
+                    [R_M5]────[R_M5]────[R_M5]── ... (lower grid)
+                       |           |           |
+                    cell_i      cell_j      cell_k  (current sinks)
+
+  Each R value is computed from:
+    R = rho * L / (W * T)  = R_sheet * (L / W)
+    
+    where R_sheet = sheet resistance (ohm/square)
+    
+  Typical R_sheet values (7nm):
+    M1:   ~100 mohm/sq   (thin, narrow)
+    M4:   ~50 mohm/sq
+    M6:   ~20 mohm/sq
+    M8:   ~5 mohm/sq
+    M10:  ~1 mohm/sq     (thick, wide)
+
+  Via resistance per cut:
+    V1 (M1-M2): ~5 ohm
+    V4 (M4-M5): ~2 ohm
+    V8 (M8-M9): ~0.5 ohm
+    Multi-cut: R_eff = R_via / N_cuts
+
+  The grid has millions of nodes (one per intersection).
+  Static IR drop solves: V = V_source - R_matrix * I_vector
+  where R_matrix is the full resistance network and I_vector is the
+  current drawn at each node. Solved via sparse matrix techniques
+  (conjugate gradient, multigrid) in tools like RedHawk/Voltus.
+```
 
 **Static IR Drop:**
 ```
-Average current consumption → DC voltage drop across power grid.
+  Average current consumption -> DC voltage drop across power grid.
 
-V_drop = I_avg * R_grid
+  V_drop = I_avg * R_grid
 
-Measured at every node of the power grid.
-Output: voltage contour map showing drop from supply to each cell.
+  Measured at every node of the power grid.
+  Output: voltage contour map showing drop from supply to each cell.
 
-Target: V_drop < 3-5% of VDD
-  At VDD = 0.75V: max drop = 22.5-37.5 mV
+  Target: V_drop < 3-5% of VDD
+    At VDD = 0.75V: max drop = 22.5-37.5 mV
+
+  Current calculation per cell:
+    I_avg = P_avg / VDD = (C_total * VDD^2 * f * alpha) / VDD
+          = C_total * VDD * f * alpha
+
+    where:
+      C_total = total switched capacitance (cell + wire)
+      f = clock frequency
+      alpha = activity factor (toggle rate)
+
+  Example for a clock buffer driving 50 FFs:
+    C_load = 50 * 2 fF = 100 fF (cell input caps)
+    C_wire = 200 fF (clock tree wire)
+    C_total = 300 fF
+    VDD = 0.75V, f = 1 GHz, alpha = 1.0 (clock toggles every cycle)
+    I_avg = 300e-15 * 0.75 * 1e9 * 1.0 = 0.225 mA
+    
+    If this buffer is 5 squares from the power pad on M8 (R_sheet = 5 mohm/sq):
+    R_path = 5 * 0.005 = 0.025 ohm
+    V_drop_static = 0.225e-3 * 0.025 = 5.6 uV (negligible for one buffer)
+    
+    But 10,000 such buffers: I_total = 2.25 A
+    R_grid_effective ≈ 0.05 ohm (parallel paths)
+    V_drop = 2.25 * 0.05 = 112.5 mV (15% of VDD -- WAY over budget!)
+    -> Need more power straps or additional grid layers.
 ```
 
 **Dynamic IR Drop:**
 ```
-Considers simultaneous switching of many cells (worst-case transient).
+  Considers simultaneous switching of many cells (worst-case transient).
 
-V_drop_dynamic = L * di/dt + R * i(t)
+  V_drop_dynamic = L * di/dt + R * i(t)
 
-The di/dt term (inductance) causes supply bounce (Ldi/dt noise).
-Much worse than static IR drop — can be 2-5x larger.
+  The di/dt term (inductance) causes supply bounce (Ldi/dt noise).
+  Much worse than static IR drop -- can be 2-5x larger.
 
-Analysis requires:
-  1. VCD (Value Change Dump) from simulation for switching activity
-  2. Power grid model (R, L, C network)
-  3. Transient simulation of power grid
+  Analysis requires:
+    1. VCD (Value Change Dump) from simulation for switching activity
+    2. Power grid model (R, L, C network)
+    3. Transient simulation of power grid
+    4. Package model (bond wire / bump inductance, typically 0.1-1 nH)
 
-Output: time-varying voltage map, identify hotspots and worst-case time windows.
+  Dynamic IR drop scenario (worst case):
+    - All clock tree buffers switch simultaneously at the clock edge
+    - Clock tree power: 30% of total dynamic power
+    - At 1 GHz: di/dt peak ≈ 10-50 A/ns
+    - With L_package = 0.5 nH: V_bounce = 0.5e-9 * 30e9 = 15V !! 
+      (This is clearly unrealistic -- the on-die decap absorbs most of this)
+    
+    With sufficient on-die decoupling capacitance (C_decap):
+    - C_decap provides local charge: delta_V = I * dt / C_decap
+    - Need: C_decap > I_peak * t_switch / delta_V_budget
+    - For I_peak = 5A, t_switch = 100ps, delta_V = 50mV:
+      C_decap > 5 * 100e-12 / 0.05 = 10 nF
+
+  Output: time-varying voltage map, identify hotspots and worst-case time windows.
+```
+
+**Electromigration Limits:**
+
+```
+  For each power grid segment and via:
+    J = I / A  (current density)
+
+  where A = cross-sectional area of the wire or via
+
+  EM limits (typical, 7nm Cu):
+    DC:  J_max = 1-3 MA/cm^2 (depends on layer, temperature, lifetime target)
+    AC (RMS): J_max_rms = 5-15 MA/cm^2 (self-healing extends limit)
+
+  Checking methodology:
+  1. Compute average current per power grid segment (from activity-aware
+     power analysis -- requires VCD or SAIF switching activity data)
+  2. For each wire segment: J = I_avg / (width * thickness)
+  3. For each via: J = I_avg / (N_cuts * via_area)
+  4. Compare J against J_max for that layer and temperature
+  5. Flag any segment where J > J_max
+
+  Example (M4 power strap, 7nm):
+    Width = 0.2 um, thickness = 0.08 um
+    Area = 0.2 * 0.08 = 0.016 um^2 = 1.6e-9 cm^2
+    I_segment = 2 mA (from power analysis)
+    J = 2e-3 / 1.6e-9 = 1.25 MA/cm^2
+    J_max (M4 DC, 105C, 10yr) = 1.0 MA/cm^2
+    -> VIOLATION: need wider strap or additional parallel straps
+    
+  Fix: increase strap width to 0.3 um:
+    J = 2e-3 / (0.3 * 0.08 * 1e-8) = 0.83 MA/cm^2 -> PASS
+
+  Via EM check:
+    V4 via: area per cut = 0.04 * 0.04 = 1600 nm^2 = 1.6e-10 cm^2
+    I_via = 0.5 mA, N_cuts = 2 (double-cut via)
+    J_via = 0.5e-3 / (2 * 1.6e-10) = 1.56 MA/cm^2
+    J_max_via = 2.0 MA/cm^2 -> PASS
+```
+
+**Typical Power Grid Design Parameters:**
+
+```
+  Mesh density (for a 10mm x 10mm die, 7nm, 2W total power):
+  
+  M10 (top metal):  stripes every 20 um, width 5 um
+    -> 500 stripes per direction, each 10mm long
+    -> R per stripe = R_sheet * L/W = 0.001 * (10000/5) = 2 ohm
+    -> 500 parallel: R_eff = 2/500 = 4 milliohm
+    -> IR drop from M10 alone: 2.67A * 0.004 = 10.7 mV (manageable)
+
+  M8: stripes every 10 um, width 2 um
+    -> 1000 stripes per direction
+    -> R per stripe = 0.005 * (10000/2) = 25 ohm
+    -> 1000 parallel: R_eff = 25 milliohm
+
+  M6: stripes every 5 um, width 1 um
+    -> Finer grid for local distribution
+
+  Via arrays at intersections: 4x4 array of V8-V9 vias
+    -> R_via_array = R_via / 16 ≈ 0.03 ohm (negligible)
+
+  Decap cells: fill 10% of whitespace
+    -> Typical: 0.5-1 nF per mm^2 of decap density
+    -> For 100 mm^2 die: 50-100 nF total on-die decap
+
+  Total IR drop budget allocation:
+    Package + bumps:  10 mV
+    M10-M9 mesh:      10 mV
+    M8-M6 stripes:    10 mV
+    M5-M1 rails:       5 mV
+    Dynamic (Ldi/dt):  5 mV (after decap)
+    ─────────────────────
+    Total:            40 mV (5.3% of 0.75V, within budget)
 ```
 
 **IR Drop Map (ASCII representation):**
@@ -1188,7 +1794,7 @@ Output: time-varying voltage map, identify hotspots and worst-case time windows.
   | 15mV | 20mV | 25mV | 18mV |   Voltage drop values at grid nodes
   +------+------+------+------+
   | 22mV | 30mV | 38mV!| 28mV |   38mV exceeds 37.5mV budget!
-  +------+------+------+------+   → Need more power straps or
+  +------+------+------+------+   -> Need more power straps or
   | 18mV | 25mV | 32mV | 22mV |     decap cells in that region
   +------+------+------+------+
   | 10mV | 15mV | 20mV | 12mV |
@@ -1914,6 +2520,104 @@ Types of ECOs:
    Metal-only ECO: $1-3M (only metal layer masks changed)
    → Huge cost savings if ECO can be done in metal layers only
 ```
+
+---
+
+## 10. AI/ML-Assisted Physical Design
+
+### 10.1 Google Circuit Training (Nature 2021)
+
+Google published a reinforcement learning approach to chip floorplanning that produces production-quality TPU floorplans.
+
+**Problem formulation as RL:**
+- State: current canvas with partially placed macros, netlist connectivity graph.
+- action: place one macro at a specific grid coordinate on the canvas.
+- reward: weighted sum of wirelength (HPWL), routing congestion, and placement density — measured after all macros are placed.
+- Episode: sequentially place all macros, receive reward at the end.
+
+**Architecture:**
+- A graph neural network (GNN) encodes the netlist hypergraph (nodes = modules, edges = nets), producing an embedding that captures connectivity patterns.
+- The GNN embedding feeds into a policy network (feedforward) that outputs a probability distribution over placement coordinates.
+- Trained with Proximal Policy Optimization (PPO) over thousands of chip floorplanning episodes.
+
+**Results:**
+- Generates floorplans in ~6 hours (including training) that match or exceed human expert designs requiring weeks of iteration.
+- Used in production for Google TPU chip generations since 2020.
+- Key insight: the RL agent discovers non-regular macro arrangements (asymmetric, non-grid-aligned) that human designers would not consider but that happen to be near-optimal for the specific netlist topology.
+
+### 10.2 DREAMPlace (UT Austin / NVIDIA, DAC 2020)
+
+DREAMPlace reformulates analytical placement as a differentiable optimization problem that runs on GPUs.
+
+**Approach:**
+- Replaces the traditional force-directed or simulated-annealing placement engine with gradient descent on a smooth approximation of the wirelength objective (weighted average of HPWL approximations).
+- Uses PyTorch as the computation backend — placement optimization becomes a sequence of GPU-accelerated dense tensor operations (matrix multiply, element-wise ops).
+- Density penalty is modeled as an electrostatic potential (electric field analogy from ePlace), also differentiable.
+
+**Performance:**
+- 30-40x speedup over CPU-based analytical placers (e.g., RePlAce) with comparable or better placement quality (HPWL within 1-2%).
+- Scales to designs with millions of placeable objects — a single GPU iteration processes the full placement problem.
+- GPU memory: placement of 10M+ cells fits in 16-32 GB GPU memory.
+
+### 10.3 Other AI/ML Tools in Physical Design
+
+**NVIDIA cuLitho (GTC 2023):**
+- GPU-accelerated computational lithography. Transfers the full lithography simulation pipeline (OPC, lithographic process checking) onto NVIDIA GPUs.
+- NVIDIA claims 40x speedup over CPU-based lithography — reducing computation that previously took weeks on CPU clusters to hours on GPU clusters.
+- Adopted by TSMC, Samsung, and Synopsys for production mask preparation at 4nm and below.
+
+**Synopsys DSO.ai:**
+- Applies reinforcement learning to design space optimization: automatically searches over synthesis parameters, cell sizing options, routing configurations, and PPA trade-off strategies.
+- Treats the EDA tool flow as an environment, PPA outcomes as reward, and knob settings as actions.
+- Reduces the number of design iterations from hundreds (manual exploration) to tens (ML-guided).
+
+**Cadence Cerebrus:**
+- ML-driven logic optimization across synthesis and place-and-route. Automatically tunes parameters (effort levels, optimization focus, cell selection) across multiple iterative runs.
+- Reported 5-15% power reduction or 10-20% performance improvement over manually tuned flows, depending on the optimization target.
+
+**Routing congestion prediction:**
+- ML models (CNNs, GNNs) trained on placement features predict routing congestion before the expensive routing step runs.
+- Enables early floorplan/placement feedback loops — identify congestion hotspots and adjust placement without waiting for a full routing iteration.
+
+### 10.4 Industry Adoption Status
+
+| Stage | Tool / Approach | Adoption |
+|-------|-----------------|----------|
+| Floorplanning | Google RL floorplanner | Production use at Google (TPU). Other companies in evaluation. |
+| Placement | DREAMPlace-style GPU acceleration | Being integrated into commercial EDA tools. Academic adoption widespread. |
+| Lithography | NVIDIA cuLitho | Adopted by TSMC, Samsung, Synopsys for advanced-node mask preparation. |
+| Design space exploration | Synopsys DSO.ai, Cadence Cerebrus | Shipping products with growing customer adoption at major semiconductor companies. |
+| Congestion prediction | Research models + early commercial integration | Used internally by some EDA vendors; not yet a standard step in all flows. |
+
+**The overall trend:** ML does not replace EDA engineers — it accelerates the exploration-exploitation tradeoff in the design space. Instead of manually running hundreds of parameter sweeps, ML agents explore the space systematically and converge on near-optimal configurations in 10-50x fewer iterations. The human engineer sets objectives, constraints, and validates results; the ML handles the combinatorial search.
+
+---
+
+## Numbers to Memorize -- Physical Design Quick Reference
+
+| Quantity | Value | Why it matters |
+|----------|-------|----------------|
+| Standard cell height (N5, 7.5T) | ~0.27 um | Defines row height; determines routing track count per cell |
+| Standard cell width (1 fin, N5) | ~0.054 um | Minimum placement unit; sets grid granularity for legalization |
+| Minimum metal pitch (M1, N5) | ~28 nm | Finest routing pitch; limits local interconnect density |
+| Minimum metal pitch (M4, N5) | ~40 nm | First general-purpose routing layer; drives local congestion |
+| Minimum metal pitch (M8, N5) | ~80 nm | Semi-global routing; preferred for clock and long data routes |
+| Typical die size (mobile SoC) | 80-120 mm^2 | Sets power budget, package cost, and yield expectations |
+| Typical die size (AI accelerator) | 400-800 mm^2 | Approaches reticle limit; yield drops sharply with area |
+| Reticle limit | 858 mm^2 (standard), 429 mm^2 (High-NA EUV) | Hard lithography limit; larger dies require stitching or chiplets |
+| Placement density target | 70-85% (standard cells) | Below 70% wastes area; above 85% causes routing congestion |
+| Routing congestion threshold | >90% utilization = problematic | Above this, detours and DRC violations increase sharply |
+| CTS buffer insertion | 5-15% of total cells | More buffers improve skew but increase clock power |
+| IR drop limit (static) | <=5% VDD | Exceeding this causes timing degradation across the die |
+| IR drop limit (dynamic) | <=10% VDD | Transient droop at clock edges; fixed with decap insertion |
+| EM current limit | 1-3 mA/um at 105C/10yr (per Black's equation) | Exceeding this causes wire opens/shorts over product lifetime |
+| DRC violation target | 0 for tapeout | Any DRC violation is a potential yield or functionality risk |
+| LVS check | Must be clean (0 errors) | Mismatch between layout and schematic means wrong silicon |
+| Antenna ratio limit | 100-400 (process-dependent) | Exceeding this damages gate oxide during plasma etching |
+| FinFET fin pitch (N5) | ~25 nm | Fixed by process; determines cell height quantization |
+| FinFET fin count per device | 1-4 fins (typically 2) | Drive strength is quantized; coarser than planar CMOS sizing |
+| Placement blockage margin | 10-20% for routing channels | Insufficient channels cause routing congestion near macros |
+| Utilization vs routability | >80% utilization needs careful routing | Above 80%, routing becomes the primary bottleneck for closure |
 
 ---
 

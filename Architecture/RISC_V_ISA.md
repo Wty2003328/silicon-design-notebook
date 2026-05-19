@@ -99,8 +99,9 @@ imm[20] imm[10:1]    imm[11]   imm[19:12]    rd      opcode
 The J-type immediate encodes a signed 21-bit offset (multiplied by 2). Bits are
 reordered: `imm[20|10:1|11|19:12]`.
 
-All immediates are sign-extended from their highest bit (bit 31 of the instruction
-for R-type it is funct7, but immediates use bit 31 as sign).
+All immediates are sign-extended from their highest bit within the instruction word
+(bit 31 for I/S/B/U/J types). R-type instructions have no immediate field -- bits
+31:25 are occupied by funct7 instead.
 
 ### 1.3 Arithmetic and Logical Instructions
 
@@ -897,7 +898,436 @@ page). For a process with $N$ pages of virtual memory:
 
 ---
 
-## 8. Instruction Encoding Reference Table
+## 8. V Extension (Vector)
+
+The V extension adds variable-length vector processing to RISC-V. Unlike fixed-width
+SIMD (ARM NEON, x86 AVX), RISC-V vectors are length-agnostic: the same binary runs
+on hardware with different vector register lengths. This is critical for AI
+accelerators and DSP workloads where the implementer chooses the hardware parallelism.
+
+### 8.1 Core Parameters
+
+| Parameter | Meaning | Typical Values |
+|-----------|---------|---------------|
+| VLEN | Vector register width in bits | 128, 256, 512, 1024+ |
+| ELEN | Maximum element width in bits | 32 (int/fp), 64 (double) |
+| SLEN | Strip width (must equal VLEN in v1.0) | = VLEN |
+| LMUL | Vector register group multiplier | 1, 2, 4, 8, fractional: 1/2, 1/4, 1/8 |
+| VTA | Vector tail agnostic policy | 0 = undisturbed, 1 = agnostic |
+| VMA | Vector mask agnostic policy | 0 = undisturbed, 1 = agnostic |
+
+**LMUL** controls how many vector registers are grouped into a single operand. `LMUL=4`
+with `VLEN=256` gives an effective vector length of 1024 bits per operand, using 4
+consecutive vector registers (e.g., v2-v5). Fractional LMUL (`LMUL=1/4`) lets a
+128-bit VLEN machine process elements as if VLEN were 16, reducing active lanes.
+
+### 8.2 Vector Registers
+
+The V extension adds 32 vector registers **v0-v31**, each VLEN bits wide. These are
+separate from both the integer register file (x0-x31) and the FP register file
+(f0-f31). Key points:
+
+- **v0 is special:** it serves as the mask register when masking is enabled. Only
+  v0 can be used as a mask operand.
+- When `LMUL > 1`, registers are grouped: `v2` with `LMUL=2` means the operand spans
+  `v2` and `v3`. Software must avoid overlapping source and destination groups.
+- The `vtype` CSR (set by `vsetvli` / `vsetvl`) controls the current SEW (selected
+  element width), LMUL, and tail/mask policies.
+- Vector FP operations use the same rounding mode and exception flags as the scalar
+  F/D extensions.
+
+### 8.3 Configuration CSRs
+
+| CSR | Address | Purpose |
+|-----|---------|---------|
+| vstart | 0x008 | Element index to resume after a trap (hardware sets, software clears) |
+| vtype | 0x0C7 | VILL, SEW, LMUL, VTA, VMA (written only by vsetvli/vsetvl) |
+| vl | 0xC20 | Actual vector length returned by vsetvli (<= VLMAX) |
+| vlenb | 0xC22 | VLEN in bytes (read-only, for software discovery) |
+
+### 8.4 Key Instruction Categories
+
+**Element width (SEW) is implicit from vtype, not encoded in the instruction name.**
+The assembler suffixes `.v`, `.vv`, `.vx`, `.vf`, `.wv`, etc. indicate operand types.
+
+**Load/Store (unit-stride, strided, indexed):**
+
+| Instruction | Pattern | Description |
+|-------------|---------|-------------|
+| vle8.v / vle16.v / vle32.v / vle64.v | vleSEW.v vd, (rs1) | Unit-stride load (contiguous) |
+| vse8.v / vse16.v / vse32.v / vse64.v | vseSEW.v vs3, (rs1) | Unit-stride store |
+| vlse32.v | Strided: vd, (rs1), rs2 | Load with byte stride in rs2 |
+| vsse32.v | Strided: vs3, (rs1), rs2 | Store with byte stride in rs2 |
+| vluxei32.v | Indexed: vd, (rs1), vs2 | Gather-load (unordered) |
+| vsoxei32.v | Indexed: vs3, (rs1), vs2 | Scatter-store (unordered) |
+
+**Arithmetic (OPIVV / OPIVX / OPIVI):**
+
+| Instruction | Operation | Notes |
+|-------------|-----------|-------|
+| vadd.vv | vd = vs1 + vs2 | Vector-vector add |
+| vadd.vx | vd = vs1 + x[rs1] | Vector-scalar add |
+| vsub.vv | vd = vs2 - vs1 | Vector-vector subtract |
+| vmul.vv | vd = vs2 * vs1 | Integer multiply (lower half) |
+| vmulh.vv | vd = (vs2 * vs1) >> SEW | Signed multiply high |
+| vdiv.vv | vd = vs2 / vs1 | Integer divide |
+| vmerge.vvm | vd = v0 ? vs1 : vs2 | Merge under mask (if-else per element) |
+| vand.vv / vor.vv / vxor.vv | Bitwise logic | AND, OR, XOR |
+| vsll.vv / vsrl.vv / vsra.vv | Shifts | Left, right logical, right arithmetic |
+
+**Reduction:**
+
+| Instruction | Operation | Notes |
+|-------------|-----------|-------|
+| vredsum.vs | vd[0] = sum(vs1[0..vl-1]) + vs2[0] | Sum reduction |
+| vredmax.vs | vd[0] = max(vs1[0..vl-1], vs2[0]) | Max reduction |
+| vredmin.vs | vd[0] = min(vs1[0..vl-1], vs2[0]) | Min reduction |
+| vredand.vs | vd[0] = AND of all elements | AND reduction |
+
+The result of a reduction is placed in element 0 of `vd`; remaining elements are
+set according to the tail policy (undisturbed or agnostic).
+
+**Masking:**
+
+Most vector instructions accept an optional mask operand (always v0). A masked
+instruction operates only on elements where the corresponding bit in v0 is 1:
+
+```
+vadd.vv v2, v4, v6, v0.t    # add only where v0[i] = 1
+```
+
+The `.t` suffix is the default (true-mask). The inverse (`.f`) does not exist as
+a separate encoding -- use `vmnot` to invert the mask first.
+
+### 8.5 Stripmining Loop Pattern
+
+The fundamental software pattern for processing arrays longer than VLMAX is
+**stripmining**: each iteration processes `vl` elements, where `vl` is set by
+`vsetvli`.
+
+```asm
+# a0 = element count, a1 = src pointer, a2 = dst pointer
+loop:
+    vsetvli  t0, a0, e32, m1    # SEW=32, LMUL=1, t0 = min(a0, VLMAX)
+    vle32.v  v1, (a1)           # load vl elements
+    vadd.vv  v2, v1, v1         # double each element
+    vse32.v  v2, (a2)           # store vl elements
+    sub      a0, a0, t0         # remaining -= vl
+    slli     t0, t0, 2          # byte offset = vl * 4
+    add      a1, a1, t0         # advance src pointer
+    add      a2, a2, t0         # advance dst pointer
+    bnez     a0, loop           # loop if elements remain
+```
+
+**Key invariant:** `vsetvli` returns `vl = min(requested_avl, VLMAX)`. When
+`requested_avl <= VLMAX`, the entire operation completes in one iteration. When
+`requested_avl > VLMAX`, the loop processes VLMAX elements per iteration.
+
+### 8.6 Why V Matters for AI Accelerators
+
+**Vectorized matrix multiply (GEMM):** The inner product of a row-column pair is a
+multiply-accumulate across a vector dimension. With SEW=32 and LMUL=8, a single
+`vfmacc.vf` instruction multiplies 8 FP32 elements by a scalar and accumulates --
+the core of a weight-stationary dataflow.
+
+**SoftMax:** The three phases (exp, sum-reduce, divide) map directly to vector
+operations:
+1. `vfsub.vv` to subtract the max (numerical stability).
+2. `vexp.v` (if available) or a polynomial approximation with `vfmul.vv` + `vfadd.vv`.
+3. `vredsum.vs` for the denominator.
+4. `vfdiv.vf` to normalize.
+
+**Attention score computation (Q * K^T):** Each query vector is broadcast with
+`vfmul.vv` against a key vector, reduced with `vredsum.vs`. The V extension's
+masking enables variable-length sequence handling without padding.
+
+The length-agnostic design means a model compiled for VLEN=256 runs unchanged on
+VLEN=4096 (the `vsetvli` auto-negotiates vl). This eliminates the ISA re-encode
+pain that x86/ARM face when moving from SSE to AVX-256 to AVX-512.
+
+---
+
+## 9. B Extension (Bitmanip)
+
+The B extension accelerates bit-level operations that are pervasive in cryptography,
+hash tables, error-correcting codes, and bioinformatics. It is divided into
+sub-extensions that can be implemented independently.
+
+### 9.1 Sub-Extensions
+
+| Sub-extension | Name | Scope |
+|---------------|------|-------|
+| Zba | Bitmanip address generation | Accelerates address computation (shift + add) |
+| Zbb | Basic bit manipulation | Count, reverse, OR-combine, boolean ops |
+| Zbc | Carry-less multiply | Galois-field multiplication (CRC, GCM) |
+| Zbs | Single-bit operations | Set/clear/toggle/extract individual bits |
+
+Most implementations provide Zba+Zbb+Zbs; Zbc is optional and primarily targets
+crypto workloads.
+
+### 9.2 Key Instructions
+
+**Zbb -- Basic bit manipulation:**
+
+| Instruction | Operation | Why it matters |
+|-------------|-----------|---------------|
+| clz rd, rs | Count leading zeros | Priority encoding, finding MSB, normalization |
+| ctz rd, rs | Count trailing zeros | De Bruijn sequences, finding LSB, ffs() |
+| cpop rd, rs | Population count (hamming weight) | Hamming distance, bloom filters, parity |
+| rol rd, rs1, rs2 | Rotate left | Cryptographic rounds (SHA, AES key schedule) |
+| ror rd, rs1, rs2 | Rotate right | Same, complement direction |
+| rori rd, rs1, imm | Rotate right by immediate | Constant rotations in crypto |
+| rev8 rd, rs | Byte-reverse | Endianness conversion (big/little endian) |
+| orc.b rd, rs | OR-combine bytes: each byte = OR of its bits | String length, strlen() acceleration |
+| sext.b / sext.h | Sign-extend byte/halfword | Replaces shift-left + shift-right-arithmetic pair |
+| min / max | Signed minimum/maximum | Branch-free min/max (compare + select) |
+| minu / maxu | Unsigned minimum/maximum | Same for unsigned |
+
+**Example -- population count without B extension vs. with:**
+
+Without B:
+```asm
+# Classic Hamming weight: shift-xor-tree, ~15 instructions
+li    a1, 0x5555555555555555
+and   a2, a0, a1
+srli  a3, a0, 1
+and   a3, a3, a1
+add   a0, a2, a3
+# ... 4 more rounds of parallel prefix ...
+```
+
+With B:
+```asm
+cpop  a0, a0     # 1 instruction, 1 cycle on most implementations
+```
+
+**Zba -- Address generation:**
+
+| Instruction | Operation | Use case |
+|-------------|-----------|----------|
+| sh1add rd, rs1, rs2 | rd = rs1 << 1 + rs2 | Array indexing (2-byte elements) |
+| sh2add rd, rs1, rs2 | rd = rs1 << 2 + rs2 | Array indexing (4-byte elements: int/float) |
+| sh3add rd, rs1, rs2 | rd = rs1 << 3 + rs2 | Array indexing (8-byte elements: double/pointer) |
+
+These replace the common `slli + add` pattern in indexed array access. On a
+single-ALU machine they save one instruction; on a superscalar machine they
+consume one fewer issue slot and reduce register pressure.
+
+**Zbc -- Carry-less multiply:**
+
+| Instruction | Operation | Use case |
+|-------------|-----------|----------|
+| clmul rd, rs1, rs2 | Carry-less multiply (low 64 bits) | CRC-32, GCM/GHASH, Reed-Solomon |
+| clmulh rd, rs1, rs2 | Carry-less multiply (high 64 bits) | Same, upper product |
+| clmulr rd, rs1, rs2 | Carry-less multiply (middle 64 bits) | CRC with bit reversal |
+
+Carry-less multiplication operates in GF(2) -- there is no carry propagation
+between bit positions. This is the core primitive for CRC computation: a CRC-32
+over a 64-bit word is `clmul(data, polynomial)` followed by a 32-bit XOR reduction.
+Without Zbc, CRC-32 requires a table lookup per byte (~8 loads + 8 XORs per word).
+
+**Zbs -- Single-bit operations:**
+
+| Instruction | Operation | Use case |
+|-------------|-----------|----------|
+| bext rd, rs1, rs2 | Extract single bit: rd = (rs1 >> rs2) & 1 | Bit-field extraction |
+| bdep rd, rs1, rs2 | Deposit single bit: rd[rs2] = rs1[0] | Bit-field insertion |
+| bset rd, rs1, rs2 | Set single bit: rd = rs1 OR (1 << rs2) | Bitmask construction |
+| bclr rd, rs1, rs2 | Clear single bit: rd = rs1 AND ~(1 << rs2) | Flag manipulation |
+| binv rd, rs1, rs2 | Invert single bit: rd = rs1 XOR (1 << rs2) | Toggle flags |
+
+All have immediate variants (bseti, bclri, binvi, bexti).
+
+### 9.3 Why Bitmanip Matters
+
+**Cryptography:** AES mixcolumns, SHA rotate-xor rounds, CRC integrity checks,
+and GCM authentication all decompose into the instructions above. A 10x speedup
+on CRC via clmul is typical.
+
+**Hash tables:** `cpop` + `ror` implement Fibonacci hashing; `clmul` gives
+universal hash functions. Hash table throughput is often limited by the hash
+function, not the lookup.
+
+**Bioinformatics:** DNA sequence alignment operates on 2-bit encoded bases.
+Population count, bit extraction, and carry-less XOR are the hot inner-loop
+operations in seed-and-extend aligners (BWA-MEM2, minimap2).
+
+**Compilers:** GCC and LLVM automatically emit B-extension instructions when
+targeting a B-capable core. No source changes required -- the existing `__builtin_clz`,
+`__builtin_popcount`, and `std::rotl` intrinsics map 1:1.
+
+---
+
+## 10. PLIC and CLINT
+
+A RISC-V SoC needs two interrupt controllers: the **CLINT** (Core Local Interruptor)
+for timer and software interrupts, and the **PLIC** (Platform-Level Interrupt
+Controller) for external device interrupts. Both are memory-mapped devices, not
+CSR-based.
+
+### 10.1 CLINT (Core Local Interruptor)
+
+The CLINT generates two types of interrupts per hart:
+
+| Interrupt | mcause | Trigger | Use |
+|-----------|--------|---------|-----|
+| Machine Software Interrupt (MSI) | 3 | Write to msip[hart] | Inter-processor interrupt (IPI) |
+| Machine Timer Interrupt (MTI) | 7 | mtime >= mtimecmp[hart] | Timer, scheduler tick |
+
+**Memory map (typical, QEMU / SiFive):**
+
+| Address | Width | Register |
+|---------|-------|----------|
+| 0x0200_0000 | 4 bytes | msip (bit 0 = SW interrupt for hart 0) |
+| 0x0200_0004 | 4 bytes | msip for hart 1 (if present) |
+| ... | ... | ... |
+| 0x0200_4000 | 8 bytes | mtimecmp for hart 0 |
+| 0x0200_4008 | 8 bytes | mtimecmp for hart 1 |
+| ... | ... | ... |
+| 0x0200_BFF8 | 8 bytes | mtime (shared counter, all harts read same value) |
+
+**Timer interrupt generation:**
+
+```
+mtime increments at a fixed frequency (e.g., 10 MHz on SiFive, ~1 GHz on fast SoCs).
+When mtime >= mtimecmp[hart], the timer interrupt pending bit is set in mip.MTIP (bit 7).
+The interrupt fires if mie.MTIE (bit 7) = 1 and mstatus.MIE = 1.
+```
+
+To schedule a timer interrupt 1 ms from now on a 10 MHz clock:
+
+```c
+uint64_t delta = 10000; // 10 MHz * 0.001 s
+*(uint64_t*)MTIMECMP = *(uint64_t*)MTIME + delta;
+```
+
+The timer interrupt is level-triggered: it remains pending until software writes a
+new `mtimecmp` value that is strictly greater than `mtime`. Forgetting to update
+`mtimecmp` in the handler causes an interrupt storm.
+
+**Software interrupt (IPI):**
+
+Writing 1 to `msip[hart]` sets `mip.MSIP` (bit 3) for that hart. The handler must
+clear the interrupt by writing 0 to `msip`. Used for:
+- Booting secondary harts (SBI sends IPI to wake them).
+- TLB shootdown: hart 0 sends IPI to hart 1 to flush its TLB.
+
+### 10.2 PLIC (Platform-Level Interrupt Controller)
+
+The PLIC manages external interrupts from devices (UART, disk, network, GPIO, etc.)
+and routes them to harts. It supports up to 1023 interrupt sources (source 0 is
+reserved), each with configurable priority.
+
+**Memory map (typical SiFive-style PLIC):**
+
+| Address Range | Register | Description |
+|---------------|----------|-------------|
+| 0x0C00_0000 - 0x0C00_0FFC | Priority[n] | 1 word per source: priority 0-7 (0 = disabled) |
+| 0x0C00_1000 - 0x0C00_107F | Pending[n] | 1 bit per source: 1 = interrupt pending |
+| 0x0C00_2000 - 0x0C00_207F | Enable[ctx][n] | Per-context enable bits (ctx = hart * modes) |
+| 0x0C20_0000 + ctx*0x1000 | Threshold[ctx] | Per-context priority threshold |
+| 0x0C20_0004 + ctx*0x1000 | Claim/Complete[ctx] | Read = claim, Write = complete |
+
+**Context numbering:** On a 2-hart system with M-mode and S-mode:
+- Context 0 = Hart 0, M-mode
+- Context 1 = Hart 0, S-mode
+- Context 2 = Hart 1, M-mode
+- Context 3 = Hart 1, S-mode
+
+**Interrupt processing flow:**
+
+```
+1. Device asserts interrupt source N.
+2. PLIC sets Pending[N] = 1.
+3. If Enable[ctx][N] = 1 and Priority[N] > Threshold[ctx],
+   PLIC signals the hart via the external interrupt line.
+4. Hart traps to mtvec/stvec. mcause = 11 (MEI) or scause = 9 (SEI).
+5. Handler reads Claim[ctx]: returns the highest-priority pending source ID.
+   Side effect: PLIC clears Pending[ID] for that source.
+6. Handler services the device (read UART data, acknowledge DMA, etc.).
+7. Handler writes the source ID back to Complete[ctx].
+8. PLIC can now re-signal the same source.
+```
+
+**Priority arbitration:** When multiple sources are pending and enabled, the PLIC
+presents the one with the highest priority. Ties are broken by the lowest source ID.
+Only one interrupt per context is serviced at a time; the handler must claim-complete
+in a loop until claim returns 0 (no more pending interrupts).
+
+**Threshold filtering:** If `Threshold[ctx] = 5`, only interrupts with priority > 5
+reach the hart. Setting threshold to 7 effectively disables all PLIC interrupts for
+that context (since max priority is 7). Setting threshold to 0 allows all enabled
+interrupts.
+
+### 10.3 PLIC/CLINT and the Trap Handling Flow
+
+The interrupt path through the CSR state machine:
+
+```mermaid
+flowchart TD
+    A["Device / Timer / Software event"] --> B{"Which controller?"}
+    B -- "CLINT timer" --> C["Set mip.MTIP (bit 7)"]
+    B -- "CLINT software" --> D["Set mip.MSIP (bit 3)"]
+    B -- "PLIC external" --> E["Set mip.MEIP (bit 11)"]
+    C --> F{"mie.MTIE = 1 AND mstatus.MIE = 1?"}
+    D --> G{"mie.MSIE = 1 AND mstatus.MIE = 1?"}
+    E --> H{"mie.MEIE = 1 AND mstatus.MIE = 1?"}
+    F -- Yes --> I["Trap to mtvec, mcause = 0x80000007"]
+    G -- Yes --> J["Trap to mtvec, mcause = 0x80000003"]
+    H -- Yes --> K["Trap to mtvec, mcause = 0x8000000B"]
+    I --> L["Handler: read mtimecmp, set next deadline, clear MTIP"]
+    J --> M["Handler: clear msip"]
+    K --> N["Handler: PLIC claim, service, complete"]
+```
+
+If interrupts are delegated via `mideleg`, MEI and SEI trap to S-mode instead:
+- `mideleg` bit 11 = 1: external interrupts go to S-mode (scause = 9, SEI).
+- `mideleg` bit 7 = 1: timer interrupts go to S-mode (scause = 5, STI).
+- `mideleg` bit 3 = 1: software interrupts go to S-mode (scause = 1, SSI).
+
+**mcause interrupt values (bit 63 = 1 for interrupts):**
+
+| Source | M-mode mcause | S-mode scause |
+|--------|--------------|---------------|
+| Software (MSI/SSI) | 0x8000_0003 | 0x8000_0001 |
+| Timer (MTI/STI) | 0x8000_0007 | 0x8000_0005 |
+| External (MEI/SEI) | 0x8000_000B | 0x8000_0009 |
+
+**mie / sip layout (same bit positions for both):**
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 3 | MSIE / SSIE | Software interrupt enable / pending |
+| 7 | MTIE / STIE | Timer interrupt enable / pending |
+| 11 | MEIE / SEIE | External interrupt enable / pending |
+
+### 10.4 Typical Initialization Sequence
+
+```c
+// 1. Set up trap vector
+mtvec = (uint64_t)trap_handler;     // direct mode
+
+// 2. Configure CLINT timer
+mtimecmp = mtime + TICK_INTERVAL;
+
+// 3. Configure PLIC
+for (int i = 1; i <= MAX_SRC; i++)
+    plic_priority[i] = 0;           // disable all priorities
+for (int i = 0; i < NCONTEXTS; i++)
+    plic_threshold[i] = 7;          // block all interrupts
+
+plic_priority[UART_IRQ] = 5;        // UART = priority 5
+plic_enable[MY_CTX][UART_IRQ / 32] |= (1 << (UART_IRQ % 32));
+plic_threshold[MY_CTX] = 0;         // allow all priorities
+
+// 4. Enable interrupts in CSRs
+mie = (1 << 7) | (1 << 11);         // MTIE | MEIE
+mstatus |= (1 << 3);                // MIE = 1
+```
+
+---
+
+## 11. Instruction Encoding Reference Table
 
 The table below shows the complete 32-bit encoding for representative
 instructions across all major extensions. Fields are listed from most
@@ -954,50 +1384,77 @@ significant bit to least significant bit.
 
 ---
 
-## 9. Numbers to Memorize
+## 12. Numbers to Memorize
 
 | Quantity                              | Value                   |
 |---------------------------------------|-------------------------|
 | Integer registers (x)                 | 32                      |
 | FP registers (f)                      | 32                      |
+| Vector registers (v)                  | 32                      |
 | Register width (RV64)                 | 64 bits                 |
+| Privilege levels                      | 3 standard: U=0, S=1, M=3; HS=2 in hypervisor extension |
+| Privilege encodings (binary)          | U=00, S=01, M=11        |
+| Default XLEN (RV32)                   | 32 bits                 |
+| Default XLEN (RV64)                   | 64 bits                 |
+| Default XLEN (RV128)                  | 128 bits                |
 | Base instruction length               | 32 bits                 |
-| Compressed instruction length         | 16 bits                 |
+| Compressed instruction length (C ext) | 16 bits                 |
+| Extended instruction length (proposed)| 48 bits                 |
 | Page size (base)                      | 4 KB                    |
 | Superpage sizes                       | 2 MB, 1 GB              |
 | Sv39 virtual address width            | 39 bits                 |
 | Sv39 physical address width           | 56 bits                 |
+| Sv39 page table levels                | 3                       |
 | Sv48 virtual address width            | 48 bits                 |
+| Sv48 page table levels                | 4                       |
 | PTE size                              | 8 bytes (64 bits)       |
 | Page table entries per page           | 512                     |
-| Sv39 page table levels                | 3                       |
-| Sv48 page table levels                | 4                       |
 | VPN bits per level                    | 9                       |
 | Page offset bits                      | 12                      |
 | ASID width (satp)                     | 16 bits                 |
+| CSR address space                     | 12 bits (0x000 - 0xFFF) |
+| CSR range: User                       | 0x000 - 0x0FF           |
+| CSR range: Supervisor                 | 0x100 - 0x1FF           |
+| CSR range: Hypervisor                 | 0x200 - 0x2FF           |
+| CSR range: Machine                    | 0x300 - 0x3FF           |
+| CSR range: Debug/Custom               | 0x7C0 - 0x7FF, 0xFC0 - 0xFFF |
 | B-type branch range                   | +/- 4 KiB               |
 | J-type jump range                     | +/- 1 MiB               |
 | I-type immediate width                | 12 bits (sign-extended) |
 | U-type immediate width                | 20 bits (upper)         |
-| CSR address width                     | 12 bits                 |
 | mstatus CSR address                   | 0x300                   |
 | mepc CSR address                      | 0x341                   |
 | mcause CSR address                    | 0x342                   |
 | mtvec CSR address                     | 0x305                   |
+| mtval CSR address                     | 0x343                   |
 | medeleg CSR address                   | 0x302                   |
 | mideleg CSR address                   | 0x303                   |
+| mie CSR address                       | 0x304                   |
+| mip CSR address                       | 0x344                   |
 | sstatus CSR address                   | 0x100                   |
 | sepc CSR address                      | 0x141                   |
 | scause CSR address                    | 0x142                   |
 | stvec CSR address                     | 0x105                   |
+| stval CSR address                     | 0x143                   |
 | satp CSR address                      | 0x180                   |
 | fcsr CSR address                      | 0x003                   |
 | fflags CSR address                    | 0x001                   |
 | frm CSR address                       | 0x002                   |
+| vstart CSR address                    | 0x008                   |
+| vtype CSR address                     | 0x0C7                   |
+| vl CSR address                        | 0xC20                   |
+| vlenb CSR address                     | 0xC22                   |
+| CLINT base (typical)                  | 0x0200_0000             |
+| PLIC base (typical)                   | 0x0C00_0000             |
+| PLIC max interrupt sources            | 1023 (source 0 reserved)|
+| PLIC priority levels                  | 0-7 (0 = disabled)      |
+| MEI mcause (M-mode)                   | 0x8000_000B (bit63 + 11)|
+| MTI mcause (M-mode)                   | 0x8000_0007 (bit63 + 7) |
+| MSI mcause (M-mode)                   | 0x8000_0003 (bit63 + 3) |
 
 ---
 
-## 10. Worked Problems
+## 13. Worked Problems
 
 ### Problem 1: Decode Instruction 0x005100B3
 

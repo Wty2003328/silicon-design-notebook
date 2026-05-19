@@ -15,8 +15,12 @@
 6. [Logic BIST](#6-logic-bist)
 7. [Memory BIST](#7-memory-bist)
 8. [JTAG / Boundary Scan (IEEE 1149.1)](#8-jtag--boundary-scan-ieee-11491)
-9. [DFT in Low-Power Designs](#9-dft-in-low-power-designs)
-10. [Interview Q&A](#10-interview-qa)
+9. [On-Chip Clocking (OCC)](#9-on-chip-clocking-occ)
+10. [IJTAG (IEEE 1687)](#10-ijtag-ieee-1687)
+11. [Hierarchical DFT](#11-hierarchical-dft)
+12. [DFT in Low-Power Designs](#12-dft-in-low-power-designs)
+13. [Numbers to Memorize](#13-numbers-to-memorize)
+14. [Interview Q&A](#14-interview-qa)
 
 ---
 
@@ -509,90 +513,186 @@ a **5-valued logic system**: {0, 1, D, D', X}.
 4. **Backtrack:** If a conflict arises, undo the last decision and try
    alternatives.
 
-#### Worked Example: 5-Gate Circuit
+#### Worked Example: 3-Gate Circuit (Successful Detection)
 
 ```
   Circuit:
-                    ┌─────┐
-    a ──────────────┤     │
-                    │ G1  ├──── d ──┐  ┌─────┐
-    b ──────────────┤ AND │         ├──┤     │
-                    └─────┘         │  │ G3  ├── f ──┐
-                    ┌─────┐         │  │ OR  │       │  ┌─────┐
-    c ──────────────┤     ├──── e ──┘  └─────┘       ├──┤     │
-                    │ G2  │                           │  │ G5  ├── h (PO)
-    b ──────────────┤ OR  │    ┌─────┐                │  │ AND │
-                    └─────┘    │     │                │  └─────┘
-    c ─────────────────────────┤ G4  ├──── g ─────────┘
-                               │ NOT │
-    (G4 input = c)             └─────┘
 
-  Fault: d stuck-at-0 (d/SA0)
+    a ──┐
+        ├── G1 (AND) ── d ──┐
+    b ──┘                   ├── G2 (OR) ── e ──┐
+                            │                   ├── G3 (AND) ── Z (PO)
+              c ────────────┘                   │
+                                                │
+              f ────────────────────────────────┘
 
-  Step 1: ACTIVATE fault
-    d must be 1 in good circuit → d = D (1 in good, 0 in faulty)
-    G1 is AND: a=1, b=1 → d=1 → d = D ✓
+  Gates:
+    G1 = AND(a, b)       → d = ab
+    G2 = OR(d, c)        → e = d + c = ab + c
+    G3 = AND(e, f)       → Z = ef = (ab + c)f
 
-  Step 2: PROPAGATE D through G3
-    G3 is OR(d, e):
-    To propagate D, we need e = 0
-    (OR with one input = 0 passes the other through)
-    G3 output f = D
+  Fault target: d/SA0 (output of G1 stuck-at-0)
+  This means: in good circuit d = 1, in faulty circuit d = 0
+  So we want d = D (good=1, faulty=0)
 
-    G2 is OR(c, b): e = c + b
-    We need e = 0, so c = 0 AND b = 0
+  ──────────────────────────────────────────────────
+  Step 1: ACTIVATE the fault
+  ──────────────────────────────────────────────────
+  To create D at d (d must be 1 in good circuit):
+    G1 = AND(a, b) = 1  →  a = 1, b = 1
+    d = D  (good: 1, faulty: 0)   ← D-frontier = {G2}
 
-    But CONFLICT: Step 1 requires b = 1, propagation requires b = 0!
+  ──────────────────────────────────────────────────
+  Step 2: PROPAGATE (D-drive) through G2
+  ──────────────────────────────────────────────────
+  G2 = OR(d, c) = OR(D, c)
+  To propagate D through an OR gate: set all other inputs to 0
+    → c = 0  (non-controlling value for OR)
+  Now: e = D  (good: 1, faulty: 0)   ← D-frontier = {G3}
 
-  BACKTRACK: Try propagating through a different path...
+  IMPLICATION (forward propagate all assignments):
+    a=1, b=1, c=0 → d = 1·1 = 1 → d = D
+    d=D, c=0 → e = D + 0 = D → e = D
+  No conflicts so far.
 
-    Alternative: Since f = D, propagate through G5.
-    G5 is AND(f, g): need g = 1 to propagate D.
-    G4 is NOT(c): g = c' = 1 → c = 0
+  ──────────────────────────────────────────────────
+  Step 3: PROPAGATE through G3 to PO
+  ──────────────────────────────────────────────────
+  G3 = AND(e, f) = AND(D, f)
+  To propagate D through an AND gate: set all other inputs to 1
+    → f = 1  (non-controlling value for AND)
+  Now: Z = D·1 = D  ← D reached a PO!
 
-    Now: e = c + b = 0 + 1 = 1
-    f = d + e = D + 1 = 1 (not D!) -- fault effect masked!
+  IMPLICATION:
+    a=1, b=1, c=0, f=1 → Z = D
+  All assignments consistent. No J-frontier entries.
 
-    Hmm. f = D OR 1 = 1 -- the OR gate with e=1 masks D.
-    
-    Revise: we need e = 0 for propagation through G3.
-    e = c + b, but b = 1 (from activation) → e = 1. Impossible!
+  ──────────────────────────────────────────────────
+  Step 4: JUSTIFY (backtrace to PIs)
+  ──────────────────────────────────────────────────
+  All values are already justified at PIs:
+    a = 1, b = 1, c = 0, f = 1
 
-    So propagation of D through G3 to f is impossible with this activation.
+  TEST VECTOR: (a, b, c, f) = (1, 1, 0, 1)
 
-    Try f directly: f = D + e. If e = 0, f = D. But e = c OR b = c OR 1 = 1.
-    Dead end.
+  ──────────────────────────────────────────────────
+  VERIFICATION
+  ──────────────────────────────────────────────────
+  Good circuit:   d=1, e=1+0=1, Z=1·1=1
+  Faulty circuit: d=0, e=0+0=0, Z=0·1=0
+  Z_good=1 ≠ Z_faulty=0 → fault DETECTED. ✓
 
-    The fault d/SA0 requires a = 1, b = 1 (to activate).
-    e = c OR b = c OR 1 = 1.
-    f = D OR 1 = 1. D is lost.
+  D-algorithm result: d/SA0 is detected by input vector (1,1,0,1).
+```
 
-    This means d/SA0 cannot be observed at h through this topology
-    when b = 1 is required. Let's verify:
+#### Worked Example: Backtracking (Redundant Fault Identification)
 
-    With b=1, a=1: d=D, e=1, f=1, g=c', h = f AND g = 1 AND c' = c'
-    Good circuit: d=1, e=1, f=1, g=c', h=c'
-    Faulty circuit: d=0, e=1, f=1, g=c', h=c'
-    h is the same! Fault is NOT observable at h.
+```
+  Circuit (same topology, different fault target):
 
-    Wait -- let's reconsider. The fault is undetectable at PO h?
-    Actually let me re-examine the circuit...
-    
-    h = f AND g = (d OR e) AND (NOT c)
-      = (ab OR (c+b)) AND c'
-      = ((c+b) OR ab) AND c'
-      = (c + b) AND c'        [since ab is absorbed: if b=1, c+b=1; 
-                                if b=0, c+b=c, and ab=0]
-    Simplify: h = (c+b) * c' = bc'  (since c*c' = 0)
-    
-    h = bc' (independent of a!)
-    
-    Faulty h (d/SA0): d=0, so f = 0 OR e = e = c+b
-    h_faulty = (c+b) * c' = bc'
-    
-    Same as good circuit! The fault d/SA0 is REDUNDANT -- it's undetectable.
-    This proves the logic ab is redundant in the circuit (h = bc' regardless).
-    D-algorithm correctly identifies this after exhaustive backtracking.
+    a ──┐
+        ├── G1 (AND) ── d ──┐
+    b ──┘                   ├── G2 (OR) ── e ──┐
+                            │                   ├── G3 (AND) ── Z (PO)
+              c ────────────┘                   │
+                                                │
+              f ────────────────────────────────┘
+
+  Fault target: e/SA1 (output of G2 stuck-at-1)
+  To activate: e must be 0 in good circuit → e = D' (good=0, faulty=1)
+
+  ──────────────────────────────────────────────────
+  Step 1: ACTIVATE
+  ──────────────────────────────────────────────────
+  e = 0 in good circuit → G2 = OR(d, c) = 0 → d = 0 AND c = 0
+  d = 0 → G1 = AND(a, b) = 0 → at least one of a, b = 0
+
+  Assign: c = 0.  Now e = D'.
+
+  ──────────────────────────────────────────────────
+  Step 2: PROPAGATE D' through G3
+  ──────────────────────────────────────────────────
+  G3 = AND(e, f) = AND(D', f)
+  To propagate D' through AND: need f = 1
+  Now Z = D'·1 = D' ← D' reached PO!
+
+  IMPLICATION: a = ?, b = ?, c = 0, f = 1
+  d = AND(a, b) = 0 (since e=0 requires d=0)
+  At least one of {a, b} must be 0.
+
+  ──────────────────────────────────────────────────
+  Step 3: JUSTIFY
+  ──────────────────────────────────────────────────
+  Pick a = 0, b = 0 (satisfies d=0).
+  All consistent: a=0, b=0, c=0, f=1 → d=0, e=D', Z=D'
+
+  TEST VECTOR: (a, b, c, f) = (0, 0, 0, 1)
+
+  VERIFICATION:
+    Good circuit:   d=0, e=0+0=0, Z=0·1=0
+    Faulty circuit: d=0, e=1 (stuck), Z=1·1=1
+    Z_good=0 ≠ Z_faulty=1 → fault DETECTED. ✓
+
+  No backtracking was needed for this fault.
+```
+
+#### Worked Example: Backtracking Required
+
+```
+  Circuit:
+
+    a ──┐
+        ├── G1 (AND) ── d ──┐
+    b ──┘                   ├── G2 (OR) ── e ──┐
+                            │                   ├── G3 (AND) ── Z (PO)
+              c ────────────┘                   │
+                                                │
+              b ─────────────────── NOT ── g ───┘
+
+  G1 = AND(a, b) → d = ab
+  G2 = OR(d, c)  → e = d + c
+  G4 = NOT(b)    → g = b'
+  G3 = AND(e, g) → Z = e · g = (ab + c) · b'
+
+  Fault target: d/SA0
+
+  ──────────────────────────────────────────────────
+  Step 1: ACTIVATE
+  ──────────────────────────────────────────────────
+  d = D → a = 1, b = 1
+
+  ──────────────────────────────────────────────────
+  Step 2: PROPAGATE through G2
+  ──────────────────────────────────────────────────
+  G2 = OR(d, c): propagate D → c = 0 → e = D
+  So far: a=1, b=1, c=0, e=D
+
+  ──────────────────────────────────────────────────
+  Step 3: PROPAGATE through G3
+  ──────────────────────────────────────────────────
+  G3 = AND(e, g) = AND(D, g): propagate D → need g = 1
+  g = NOT(b) = b' = 1 → b = 0
+
+  ── BACKTRACK ── CONFLICT DETECTED!
+    b = 1 (from Step 1, fault activation) AND b = 0 (from Step 3)
+    → Cannot satisfy both simultaneously.
+
+  Backtrack to Step 3: no alternative propagation path from G3.
+  Backtrack to Step 2: no alternative gate to propagate D from G2
+    (G2's only fanout is G3).
+  Backtrack to Step 1: d/SA0 requires a=1, b=1 -- no alternative.
+
+  Exhaustive search complete: d/SA0 is REDUNDANT.
+
+  Algebraic verification:
+    Z = (ab + c) · b'
+    With b=1: Z = (a + c) · 0 = 0   (always 0!)
+    With b=0: d = a·0 = 0, so d/SA0 makes d=0 in both good and faulty.
+    Fault has NO effect on Z in any input combination → REDUNDANT.
+
+  The D-algorithm correctly proves redundancy through exhaustive backtracking.
+  This also reveals that gate G1 is logically redundant (Z never depends on a
+  when b=1, and d=0 when b=0).
 ```
 
 ### 3.2 PODEM (Path-Oriented Decision Making)
@@ -1545,9 +1645,681 @@ All 16 states:
 
 ---
 
-## 9. DFT in Low-Power Designs
+## 9. On-Chip Clocking (OCC)
 
-### 9.1 Power Gating and Scan
+### 9.1 Why OCC Is Needed
+
+At-speed transition and path-delay testing requires that launch and capture
+clock edges be separated by exactly one functional clock period (e.g., 1 ns at
+1 GHz). The ATE cannot deliver such precise high-frequency clock pairs directly:
+tester channel skew, jitter, and limited frequency range make external at-speed
+clocking unreliable above ~200 MHz. The **On-Chip Clock Controller (OCC)**
+solves this by generating precise, fast clock pulses on-chip while the ATE
+supplies only a slow shift clock.
+
+```
+  Without OCC:
+    ATE must deliver fast launch-capture pair at GHz frequencies
+    → Skew and jitter on tester channels make timing unpredictable
+    → Cannot test at true functional speed
+
+  With OCC:
+    ATE delivers slow shift clock (10-50 MHz)
+    OCC generates fast launch-capture pair internally using PLL
+    → Precise at-speed clock edges with <10 ps skew
+    → True functional-speed testing
+```
+
+### 9.2 OCC Architecture
+
+```
+  OCC Block Diagram
+  =================
+
+                          ┌──────────────────────────────────┐
+                          │          OCC Controller           │
+                          │                                  │
+   ext_clk ──> ┌───────┐  │  ┌──────────┐   ┌─────────────┐ │
+               │  PLL  │──┼─>│  Clock    │   │  Scan       │ │
+               │       │  │  │  Divider  │   │  Enable     │ │
+               │ f_vco  │  │  │  (/N)     │   │  Generator  │ │
+               └───────┘  │  └────┬─────┘   └──────┬──────┘ │
+                          │       │                │        │
+                          │       v                v        │
+                          │  ┌──────────────────────────┐   │
+                          │  │      Clock MUX / Gate     │   │
+                          │  │                          │   │
+                          │  │  sel = 0: slow shift clk │   │
+                          │  │  sel = 1: fast func clk  │   │
+                          │  └──────────┬───────────────┘   │
+                          │             │                    │
+                          │             v                    │
+                          │      clk_out to scan chains     │
+                          └──────────────────────────────────┘
+                                      ^
+                                      │
+                          ate_control (from TAP/ATE)
+                          (shift_start, capture_start, pulse_count)
+```
+
+**Key components:**
+
+| Component | Function |
+|-----------|----------|
+| PLL | Generates VCO-frequency clock (e.g., 2-4 GHz); must be locked before capture |
+| Clock Divider | Divides PLL output to functional frequency (e.g., /2, /4) |
+| Clock MUX/Gate | Selects between slow shift clock and fast functional clock |
+| Scan Enable Generator | Produces SE signal: HIGH during shift, LOW before launch edge |
+| OCC Controller FSM | Sequences shift/capture phases; handshakes with ATE via control signals |
+
+### 9.3 OCC Timing for At-Speed Testing
+
+```
+  OCC Timing: LOC (Launch-Off-Capture) Mode
+  ==========================================
+
+  Phase 1: SHIFT (slow clock, SE=1)
+           ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
+  CLK_s   ┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──
+  SE      ──────────────────────────────────── (HIGH)
+
+  Phase 2: CAPTURE (fast clock, SE=0)
+                                          ┌─┐    ┌─┐
+  CLK_f                                  ┘ └────┘ └──
+                                          ^      ^
+                                       launch  capture
+                                      <── T_func ──>
+                                      (e.g., 1 ns at 1 GHz)
+
+  SE      ──────────────────────────── ──────────── (LOW)
+
+  Phase 3: SHIFT-OUT (slow clock, SE=1)
+                                                       ┌──┐  ┌──┐
+  CLK_s                                                ┘  └──┘  └──
+  SE      ─────────────────────────────────────────── (HIGH)
+
+  Timing annotation:
+    - SE must be LOW before launch edge (met by OCC, not by ATE)
+    - Launch-to-capture = exactly 1 functional clock period
+    - Only 2 fast clock pulses issued (launch + capture)
+    - Clock gated after capture to prevent additional captures
+```
+
+```
+  OCC Timing: LOS (Launch-Off-Shift) Mode
+  =========================================
+
+  Phase 1: SHIFT (slow clock, SE=1)
+           ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
+  CLK_s   ┘  └──┘  └──┘  └──┘  └──┘  └──
+  SE      ────────────────────────────── (HIGH)
+
+  Phase 2: LAUNCH+CAPTURE (fast clock)
+                                      ↑     ┌─┐    ┌─┐
+  SE                                  └─────┘      (goes LOW)
+  CLK_f                                     └────┘ └──
+                                            ^      ^
+                                         launch  capture
+                                        <── T_func ──>
+
+  Note: Last slow shift clock IS the launch event in classic LOS.
+  OCC variant: OCC issues the launch on fast clock, SE goes LOW
+  internally before the fast launch edge (relaxed vs external LOS).
+```
+
+### 9.4 OCC Controller FSM and ATE Handshaking
+
+```
+  OCC Controller States
+  =====================
+
+  ┌──────────┐    shift_start    ┌──────────┐
+  │  IDLE    │────────────────>│  SHIFT    │
+  │          │                  │  (slow    │
+  │          │<────────────────│   clock)  │
+  └──────────┘   shift_done     └─────┬────┘
+       ^          (count = L)          │
+       │                               │ capture_start
+       │                               v
+       │                        ┌──────────────┐
+       │                        │  CAPTURE     │
+       │                        │  (fast clock │
+       │                        │   pulses)    │
+       │                        └──────┬───────┘
+       │                               │ pulse_count reached
+       │                               v
+       │                        ┌──────────────┐
+       └───────────────────────│  DONE        │
+          occ_done             │  (signal to  │
+                               │   ATE)       │
+                               └──────────────┘
+
+  ATE Handshake Protocol:
+    1. ATE asserts shift_start, supplies slow clock externally
+    2. OCC counts shift cycles (= chain length L)
+    3. OCC asserts shift_done (or ATE counts externally)
+    4. ATE asserts capture_start
+    5. OCC gates slow clock off, ungates fast PLL clock
+    6. OCC issues exactly N fast pulses (typically 2: launch + capture)
+    7. OCC gates fast clock off, asserts occ_done
+    8. ATE resumes slow clock for shift-out phase
+
+  Safety: If PLL is not locked, OCC must NOT issue capture pulses.
+  A PLL-lock detector gates the capture enable.
+```
+
+### 9.5 OCC in Production ATPG Flow
+
+```
+  Production Flow Integration:
+  ============================
+
+  1. ATPG tool (TetraMAX/Modus/Tessent) generates patterns in STIL/WGL format
+  2. Patterns include OCC control fields:
+     - shift_cycle_count (chain length)
+     - capture_pulse_count (2 for LOC, 1 for LOS)
+     - clock_domain_select (which PLL domain)
+  3. ATE program interprets OCC fields and sequences handshake signals
+  4. OCC ensures:
+     - Only targeted clock domain receives fast pulses
+     - Cross-domain capture is avoided (or explicitly managed)
+     - Multiple clock domains can be tested sequentially or in parallel
+       with per-domain OCC instances
+
+  Multi-Domain OCC:
+    SoC has 4 clock domains (CPU, GPU, DDR, PCIe)
+    Each domain has its own PLL and OCC instance
+    ATPG pattern targets one domain at a time
+    Non-targeted domains: clock gated off during capture
+    OCC controller for each domain independent
+```
+
+### 9.6 OCC Design Considerations
+
+```
+  Key design points:
+  ─────────────────
+  1. PLL lock time: PLL must be locked before capture phase.
+     If shift phase is long (>100 us), PLL has time to lock.
+     For short chains, a pre-lock phase may be needed.
+
+  2. Clock glitch prevention: MUX switching between slow and fast
+     clocks must be glitch-free. Use a clock-gating cell with
+     enable synchronized to the clock domain.
+
+  3. SE generation: OCC must assert SE=0 before the first fast
+     clock edge. SE timing relative to launch clock is critical.
+     OCC generates SE internally, avoiding ATE skew.
+
+  4. Multiple capture pairs: For multi-cycle at-speed tests,
+     OCC can issue >2 fast pulses (launch, intermediate, capture).
+
+  5. Power: Fast clock pulses cause significant switching.
+     OCC can issue a single capture pair per pattern to limit
+     peak power during at-speed testing.
+```
+
+---
+
+## 10. IJTAG (IEEE 1687) / IEEE 1149.1-2013
+
+### 10.1 Why JTAG (1149.1) Is Not Enough
+
+Classic IEEE 1149.1 JTAG provides a single serial scan chain (TDI-TDO) with
+an instruction register (IR) that selects which data register (DR) is connected.
+For a modern SoC with hundreds of embedded instruments (MBIST controllers, PLLs,
+temperature sensors, voltage monitors, PVT monitors, debug trace blocks), this
+architecture breaks down:
+
+```
+  JTAG Limitation: One DR at a Time
+  ==================================
+  TDI ──> [IR] ──> [selected DR] ──> TDO
+
+  To access MBIST controller (200 bits deep):
+    1. Shift IR = MBIST instruction (e.g., 8 bits)
+    2. Shift 200 bits through DR
+    Total: 208 bits per access
+
+  To access PLL config (50 bits deep):
+    1. Shift IR = PLL instruction
+    2. Shift 50 bits through DR
+    Total: 58 bits per access
+
+  Problem: Switching between instruments requires IR reload every time.
+  With 50 instruments, no way to compose a single DR that includes
+  subsets of instruments. The IR becomes a bottleneck.
+
+  Worse: Every new instrument requires a new IR opcode. With a 32-bit IR,
+  you have at most 32 instructions (minus mandatory ones). Real SoCs
+  need hundreds.
+```
+
+### 10.2 IJTAG Architecture
+
+IJTAG (IEEE 1687) replaces the fixed IR-selected DR model with a
+**reconfigurable scan network**. Instruments are connected via
+**Segment Insertion Bits (SIBs)** that dynamically include or exclude
+scan segments from the serial chain.
+
+```
+  IJTAG Scan Network
+  ==================
+
+  TDI ──> [SIB_1] ──> [SIB_2] ──> ... ──> [SIB_N] ──> TDO
+            │            │                    │
+            │ closed      │ closed             │ closed
+            v             v                    v
+        [Instrument_1] [Instrument_2]    [Instrument_N]
+        [200 bits]     [50 bits]         [100 bits]
+
+  When SIB_1 is OPEN (bit = 1):
+    Chain = TDI → SIB_1 → Instrument_1 (200 bits) → SIB_2 → ... → TDO
+    Chain length increases by 200 bits (instrument inserted)
+
+  When SIB_1 is CLOSED (bit = 0):
+    Chain = TDI → SIB_1 → SIB_2 → ... → TDO
+    Instrument_1 is bypassed (0 extra bits)
+```
+
+### 10.3 SIB (Segment Insertion Bit) Operation
+
+A SIB is a 1-bit scan element that acts as a dynamic multiplexer in the scan
+path. When the SIB is **closed** (default), the instrument segment is removed
+from the chain. When **opened**, the segment is inserted.
+
+```
+  SIB Internal Structure
+  ======================
+
+                   To next SIB in network
+                        ^
+                        │
+  From previous SIB     │     ┌─────────────────────┐
+       │                │     │  Segment (instrument)│
+       │    ┌───────┐   │     │  [scan cells ...]    │
+       ├───>│  SIB  ├───┤<──>│                      │
+       │    │  MUX  │   │     │                      │
+       │    └───┬───┘   │     └─────────────────────┘
+       │        │       │
+       └────────┘       │
+       (when closed:    │
+        bypass segment) │
+                        v
+                     To next SIB
+
+  SIB state bit stored in a capture-update FF pair:
+    Update-DR: if SIB_bit = 1 → open → insert segment into chain
+    Update-DR: if SIB_bit = 0 → closed → segment bypassed
+
+  Opening a SIB (2-pass operation):
+    Pass 1: Shift 1 into SIB position, update → segment now in chain
+    Pass 2: Shift through the newly inserted segment to access instrument
+
+  Closing a SIB (1-pass operation):
+    Shift 0 into SIB position, update → segment removed from chain
+```
+
+**SIB chaining example:**
+
+```
+  Opening SIB_1, SIB_2, accessing both instruments:
+
+  Initial state (all SIBs closed):
+    TDI → [SIB_1:0] → [SIB_2:0] → TDO    (2-bit chain)
+
+  Pass 1: Open SIB_1
+    Shift: TDI → 1 → 0 → TDO    (shift '1' into SIB_1, '0' into SIB_2)
+    Update: SIB_1 opens, Instrument_1 inserted
+    Chain: TDI → [SIB_1] → [Inst_1: 200 bits] → [SIB_2:0] → TDO  (202 bits)
+
+  Pass 2: Access Instrument_1 AND open SIB_2
+    Shift: 202 bits through chain
+      - SIB_1 position: don't care (keep open → shift 1)
+      - Instrument_1 positions: command/data for instrument
+      - SIB_2 position: 1 (to open SIB_2)
+    Update: Instrument_1 loaded, SIB_2 opens
+    Chain: TDI → [SIB_1] → [Inst_1: 200] → [SIB_2] → [Inst_2: 50] → TDO
+           (252 bits)
+
+  Pass 3: Access both instruments simultaneously
+    Shift: 252 bits (200 for Inst_1 + 50 for Inst_2 + 2 SIB bits)
+```
+
+### 10.4 Network Description Language (NCL)
+
+IJTAG defines a **Network Description Language** (NCL, also called ICL --
+Instrument Connectivity Language) and **Procedure Language** (Procedural
+Description Language, PDL) to describe instrument connectivity and access
+sequences in a vendor-neutral format.
+
+```
+  ICL (Instrument Connectivity Language):
+    - Describes the scan network topology
+    - Defines instruments, SIBs, and their bit widths
+    - Maps signal names to scan segment positions
+    - Hierarchical: a sub-network can be instantiated multiple times
+
+  PDL (Procedural Description Language):
+    - Describes the SEQUENCE of operations to access instruments
+    - Defines procedures: iReset, iScan, iWrite, iRead
+    - Includes pre/post conditions (e.g., "PLL must be locked before read")
+    - Portable across EDA tools and ATE platforms
+
+  Example PDL pseudocode:
+    Procedure configure_pll:
+      iWrite pll_sib 1          // open PLL SIB
+      iWrite pll_config 0x1A3F  // write configuration
+      iWrite pll_ctrl.enable 1  // enable PLL
+      iWait 100us               // wait for lock
+      iRead pll_status.locked   // verify lock
+```
+
+### 10.5 JTAG vs IJTAG Comparison
+
+```
+  ┌────────────────────────┬──────────────────────┬──────────────────────────┐
+  │ Feature                │ JTAG (1149.1)        │ IJTAG (1687)             │
+  ├────────────────────────┼──────────────────────┼──────────────────────────┤
+  │ Instrument selection   │ IR opcode (fixed)    │ SIB-based (dynamic)      │
+  │                        │                      │                          │
+  │ Max instruments        │ Limited by IR width  │ Unlimited (SIB nesting)  │
+  │                        │ (typically <32)      │                          │
+  │                        │                      │                          │
+  │ Access granularity     │ Entire DR only       │ Per-instrument or subset │
+  │                        │                      │                          │
+  │ Network reconfig.      │ No (fixed topology)  │ Yes (SIBs open/close)    │
+  │                        │                      │                          │
+  │ Scan chain length      │ Fixed (longest DR)   │ Variable (only open SIBs)│
+  │                        │                      │                          │
+  │ Access latency         │ Always shift full DR │ Shift only active segs   │
+  │                        │                      │                          │
+  │ Instrument reuse       │ Manual integration   │ NCL/ICL portability      │
+  │                        │                      │                          │
+  │ Vendor neutrality      │ Limited              │ Standardized description │
+  │                        │                      │ (ICL + PDL)             │
+  │                        │                      │                          │
+  │ Hierarchy support      │ Flat                 │ Hierarchical (nested SIB)│
+  │                        │                      │                          │
+  │ Backward compat.       │ N/A                  │ Compatible with 1149.1   │
+  │                        │                      │ TAP (uses same TDI/TDO)  │
+  │                        │                      │                          │
+  │ Standard               │ IEEE 1149.1-2001/    │ IEEE 1687-2014 /         │
+  │                        │ 1149.1-2013          │ 1149.1-2013 (merged)     │
+  └────────────────────────┴──────────────────────┴──────────────────────────┘
+```
+
+### 10.6 IJTAG Use Cases
+
+```
+  1. MBIST Access:
+     - Open MBIST controller SIB
+     - Load march algorithm configuration
+     - Start MBIST, read pass/fail status
+     - Read failing address and data for debug
+     - Close SIB (MBIST runs autonomously)
+
+  2. PLL Configuration:
+     - Open PLL SIB, write divider ratio and enable
+     - Read lock status via SIB
+     - Multiple PLLs: each has its own SIB, access independently
+
+  3. Sensor Readout:
+     - Temperature sensors, voltage monitors, PVT monitors
+     - Open sensor SIB, trigger measurement, read result
+     - Periodic monitoring during production test
+
+  4. Debug Trace:
+     - Open trace buffer SIB, read captured trace data
+     - Configure trace triggers via SIB-accessible registers
+
+  5. Fuse/OTP Access:
+     - Read fuse values for trim, calibration, security keys
+     - Write fuse values during production programming
+```
+
+---
+
+## 11. Hierarchical DFT
+
+### 11.1 Why Flat DFT Doesn't Scale
+
+In a flat (top-level) DFT flow, all scan flip-flops across the entire SoC are
+stitched into chains and ATPG is run on the full flattened netlist. This approach
+breaks down for large designs:
+
+```
+  Flat DFT Problems (50M-gate SoC example):
+  ──────────────────────────────────────────
+  1. Chain length: 50M FFs / 500 chains = 100K FFs per chain
+     → Shift time per pattern: 100K / 20MHz = 5 ms
+     → 10K patterns x 5 ms = 50 seconds just for shift
+     → Exceeds test time budget (1-3 sec target)
+
+  2. Pattern count explosion:
+     Flat ATPG sees all faults in all blocks simultaneously
+     → Pattern interaction between unrelated blocks wastes patterns
+     → 500K+ patterns for full-chip stuck-at (vs 10K per block)
+
+  3. ATPG runtime:
+     Flat ATPG on 50M-gate netlist: days to weeks on a single machine
+     Memory: netlist + fault list can exceed 100 GB RAM
+
+  4. No IP reuse:
+     Third-party IP (CPU core, DDR PHY, PCIe controller) must be
+     re-characterized at top level every time it's instantiated
+     → Wasted effort, IP provider can't pre-verify test quality
+
+  5. Design concurrency:
+     Block-level teams cannot finalize DFT until full-chip integration
+     → Schedule bottleneck
+```
+
+### 11.2 Hierarchical Test Approach: IEEE 1500 Wrappers
+
+The hierarchical approach wraps each IP block with a **test wrapper** (IEEE
+1500 for embedded cores, conceptually similar to 1149.1 boundary scan but for
+internal blocks). The wrapper isolates the block for individual testing and
+provides controlled access to its internal scan chains.
+
+```
+  IEEE 1500 Wrapper Around an IP Block
+  =====================================
+
+                    Wrapper Boundary
+                  ┌─────────────────────────────────────┐
+                  │                                     │
+  functional_in ──>│ WBR_in    ┌──────────────┐  WBR_out │──> functional_out
+                  │──────────>│              │──────────│
+                  │  WIR      │  IP Core     │  WBY     │
+  WSC ──────────>│(Wrapper   │  (internal   │(Bypass   │
+  (Wrapper       │ Instr.    │   scan       │ register │
+   Serial        │ Register) │   chains)    │ 1-bit)   │
+   Control)      │           │              │          │
+                  │  WSP      │              │          │
+  WSI ──────────>│(Wrapper   │              │          │──> WSO
+  (Wrapper       │ Serial    │              │          │    (Wrapper
+   Serial        │ Port)     │              │          │     Serial
+   In)           │           │              │          │     Out)
+                  └─────────────────────────────────────┘
+
+  Key Components:
+    WBR = Wrapper Boundary Register (boundary cells at block ports)
+    WIR = Wrapper Instruction Register (selects test mode)
+    WBY = Wrapper Bypass Register (1-bit, like JTAG BYPASS)
+    WSC = Wrapper Serial Control (clock, control signals)
+    WSI/WSO = Wrapper Serial In/Out (scan data port)
+```
+
+### 11.3 Wrapper Cell Types
+
+```
+  IEEE 1500 defines several wrapper cell types:
+
+  Type 0 (observe-only):
+    Functional_out ──> [Capture FF] ──> WSO (observe during test)
+    No drive capability (input-only observation)
+
+  Type 1 (basic wrapper cell -- most common):
+    Functional_in ──> [MUX] ──> To core     (functional or test data)
+                       ^
+                  WSI / WSO (shift path)
+    Can both drive and observe
+
+  Type 2 (bidirectional):
+    Supports bidirectional pins with direction control
+    Functional I/O + test drive + test observe
+
+  Type 3-6: Variants with different functional/scan muxing for
+  specialized I/O configurations (differential, tri-state, etc.)
+
+  Wrapper Cell = boundary scan cell equivalent for embedded cores
+```
+
+### 11.4 Test Modes in Hierarchical DFT
+
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │                    Hierarchical Test Modes                   │
+  ├──────────────────┬──────────────────────────────────────────┤
+  │ Mode             │ Description                              │
+  ├──────────────────┼──────────────────────────────────────────┤
+  │ Internal Test    │ Test block in isolation:                 │
+  │ (intra-block)    │  - Wrapper isolates block from top-level │
+  │                  │  - Stimulus enters via wrapper cells     │
+  │                  │  - Response exits via wrapper cells      │
+  │                  │  - Internal scan chains active           │
+  │                  │  - Tests: stuck-at, TDF, path delay      │
+  │                  │  within the block                        │
+  ├──────────────────┼──────────────────────────────────────────┤
+  │ External Test    │ Test inter-block wiring:                 │
+  │ (inter-block)    │  - Drive from one block's wrapper output │
+  │                  │  - Capture at adjacent block's wrapper   │
+  │                  │    input                                 │
+  │                  │  - Tests: opens, shorts, bridges on      │
+  │                  │    interconnect between blocks           │
+  ├──────────────────┼──────────────────────────────────────────┤
+  │ Functional Test  │ Normal operation mode:                   │
+  │                  │  - Wrappers transparent                  │
+  │                  │  - Functional signals pass through       │
+  │                  │  - No test overhead in functional path   │
+  ├──────────────────┼──────────────────────────────────────────┤
+  │ Bypass Mode      │ Skip block entirely:                     │
+  │                  │  - WBY (1-bit bypass) active             │
+  │                  │  - Block scan chain not in path          │
+  │                  │  - Used when accessing other blocks      │
+  └──────────────────┴──────────────────────────────────────────┘
+
+  Example: Testing a 4-block SoC
+  ───────────────────────────────
+
+  Block A (CPU)     Block B (GPU)     Block C (DDR)     Block D (PCIe)
+  [wrapper]         [wrapper]         [wrapper]         [wrapper]
+     │                  │                  │                  │
+     └──── interconnect ─┘── interconnect ─┘── interconnect ─┘
+
+  Step 1: Internal test Block A (bypass B, C, D)
+  Step 2: Internal test Block B (bypass A, C, D)
+  Step 3: Internal test Block C (bypass A, B, D)
+  Step 4: Internal test Block D (bypass A, B, C)
+  Step 5: External test A↔B interconnect
+  Step 6: External test B↔C interconnect
+  Step 7: External test C↔D interconnect
+```
+
+### 11.5 Test Compression at Block Level vs Top Level
+
+```
+  Block-Level Compression (Preferred):
+  ────────────────────────────────────
+  ┌────────────────────────────────────┐
+  │  Block A (e.g., CPU core)         │
+  │                                    │
+  │  [Decompressor] → [internal       │ → [Compactor]
+  │                   scan chains]    │
+  │                                    │
+  │  Block-level test data:            │
+  │    - Patterns generated for Block A│
+  │    - Only Block A faults targeted  │
+  │    - Compression ratio: 50-100x    │
+  │    - Pattern count: 5K-20K         │
+  │    - ATPG time: minutes            │
+  └────────────────────────────────────┘
+
+  Benefits:
+    1. Block-level ATPG is fast (smaller fault list)
+    2. Patterns are optimal for the block (no interference)
+    3. IP provider generates and verifies patterns
+    4. Patterns can be retargeted to top level
+
+  Top-Level Compression:
+  ──────────────────────
+  After block-level patterns are generated, they are retargeted
+  to the top-level compression infrastructure:
+
+  Top-level decompressor → Block A wrapper → Block A chains
+                         → Block B wrapper → Block B chains
+                         → Block C wrapper → Block C chains
+                         → Block D wrapper → Block D chains
+                                            → Top-level compactor
+
+  The retargeting process:
+    1. Block patterns specify internal chain values
+    2. Top-level wrapper configurations are prepended
+    3. Top-level decompressor/compactor equations are solved
+    4. Result: compact external test data for ATE
+
+  Additional top-level patterns for external test (interconnect)
+  are generated on the full chip netlist but only target wiring
+  faults between blocks -- much smaller fault list.
+```
+
+### 11.6 Hierarchical ATPG Flow Benefits
+
+```
+  ┌────────────────────────┬───────────────────────┬───────────────────────┐
+  │ Attribute              │ Flat ATPG              │ Hierarchical ATPG     │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ ATPG runtime           │ O(n^3) on full netlist │ O(n_b^3) per block    │
+  │                        │ (days)                 │ (minutes per block)   │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ Pattern count          │ 500K+ (full chip)      │ 10-20K per block,     │
+  │                        │                        │ ~100K total           │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ Parallelism            │ Single monolithic run  │ Each block generated  │
+  │                        │                       │ independently, in     │
+  │                        │                        │ parallel              │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ IP reuse               │ None (re-run each     │ IP provider ships     │
+  │                        │ integration)           │ patterns + models     │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ Design schedule        │ Block DFT blocked by   │ Block teams work      │
+  │                        │ top-level integration  │ independently         │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ Memory requirement     │ 100+ GB RAM            │ 4-16 GB per block     │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ Debug                  │ Full-chip diagnosis    │ Block-level isolation │
+  │                        │ (complex)              │ (simpler)             │
+  ├────────────────────────┼───────────────────────┼───────────────────────┤
+  │ Test quality           │ Pattern interaction    │ Optimal per-block     │
+  │                        │ may reduce coverage    │ coverage              │
+  └────────────────────────┴───────────────────────┴───────────────────────┘
+
+  Production Flow:
+    1. IP provider: generates block-level patterns (stuck-at, TDF)
+    2. SoC integrator: instantiates wrapped blocks
+    3. SoC integrator: generates interconnect patterns (external test)
+    4. EDA tool: retargets block patterns through top-level compression
+    5. EDA tool: merges all patterns into final ATE program
+    6. Total test time: sum of block test times + interconnect time
+       (with parallel block testing, this can be overlapped)
+```
+
+---
+
+## 12. DFT in Low-Power Designs
+
+### 12.1 Power Gating and Scan
 
 ```
   Problem: Power-gated domain is OFF during certain test modes
@@ -1580,7 +2352,7 @@ All 16 states:
      - More complex DFT insertion
 ```
 
-### 9.2 Multi-Voltage Scan
+### 12.2 Multi-Voltage Scan
 
 ```
   Scan chain crossing voltage domains:
@@ -1603,7 +2375,7 @@ All 16 states:
     3. Scan enable (SE) tree is properly level-shifted per domain
 ```
 
-### 9.3 Scan Shift Power Reduction
+### 12.3 Scan Shift Power Reduction
 
 During scan shift, up to 50% of FFs toggle every cycle (random data pattern).
 This can cause:
@@ -1640,7 +2412,89 @@ This can cause:
 
 ---
 
-## 10. Interview Q&A
+## 13. Numbers to Memorize
+
+Key DFT constants and typical values that come up in interviews and production
+planning.
+
+```
+  ┌──────────────────────────────────────┬──────────────────────────────────────┐
+  │ Parameter                            │ Typical Value                        │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Scan chain length                    │ 1,000 – 10,000 flops per chain       │
+  │                                      │ (longer = more test time, shorter    │
+  │                                      │  = more I/O pins needed)             │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Test compression ratio               │ 10x – 100x (modern tools: 100x+)    │
+  │                                      │ (internal chains / external channels)│
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Stuck-at fault coverage target       │ ≥ 98% (production), ≥ 99% (auto)    │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Transition delay fault coverage      │ ≥ 90% (production), ≥ 95% (auto)    │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Stuck-at pattern count               │ 1,000s – 10,000s                     │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Transition delay pattern count       │ 10,000s – 100,000s                   │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Path delay pattern count             │ 100,000s+ (only critical paths)     │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ ATPG runtime scaling (worst case)    │ O(n^3) where n = circuit size        │
+  │                                      │ (practical: much better with FAN +   │
+  │                                      │  learning + parallelism)             │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ JTAG TCK frequency (typical)         │ 10 – 50 MHz                          │
+  │                                      │ (limited by board-level signal       │
+  │                                      │  integrity and cable length)         │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ IEEE 1149.1 instruction register     │ Minimum 2 bits (3 mandatory opcodes  │
+  │ length                               │ needed: BYPASS, EXTEST, SAMPLE;      │
+  │                                      │ 2 bits can encode 4)                 │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ IEEE 1149.1 mandatory instructions   │ BYPASS, EXTEST, SAMPLE/PRELOAD       │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ IEEE 1500 wrapper cell types         │ Type 0: observe-only                 │
+  │                                      │ Type 1: basic drive + observe        │
+  │                                      │ Type 2: bidirectional                │
+  │                                      │ Types 3-6: specialized I/O           │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Typical SoC test time budget         │ 1 – 3 seconds on ATE                 │
+  │                                      │ (cost driver: ATE time ≈ $0.01-0.10  │
+  │                                      │  per second per site)                │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Scan shift clock frequency           │ 10 – 50 MHz (slow to limit power)   │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ At-speed capture clock               │ Functional frequency (100 MHz –      │
+  │                                      │ 5 GHz+, generated by OCC/PLL)        │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Scan mux area overhead               │ 15 – 20% per flip-flop               │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Test point insertion area overhead   │ 2 – 5% of total logic area           │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ MISR aliasing probability            │ 2^(-n) for n-bit MISR                │
+  │                                      │ 32-bit: ≈ 0.23 ppb (negligible)      │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Fault collapsing reduction           │ 50 – 70% (from 2N to ~0.3N-0.5N)    │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ LFSR max sequence length             │ 2^n - 1 (with primitive polynomial)  │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ DPPM target (automotive ASIL-D)      │ < 1 DPPM                             │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ LBIST coverage without test points   │ 80 – 90%                             │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ LBIST coverage with test points      │ ≥ 95%                                │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ IDDQ threshold (180nm)               │ ~1 nA/gate (practical)               │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ IDDQ threshold (7nm)                 │ ~1-10 uA/gate (impractical)          │
+  ├──────────────────────────────────────┼──────────────────────────────────────┤
+  │ Scan enable fanout                    │ Every scan FF in design              │
+  │                                      │ (largest fanout net in chip)         │
+  └──────────────────────────────────────┴──────────────────────────────────────┘
+```
+
+---
+
+## 14. Interview Q&A
 
 ### Q1: What is the purpose of a lockup latch in a scan chain?
 

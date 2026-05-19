@@ -167,15 +167,214 @@ The free list tracks which physical registers are available for allocation. Impl
 
 A bitmap is most common because it supports $O(1)$ allocation (priority encoder finds lowest free bit) and $O(1)$ deallocation (set bit).
 
-### 2.5 Checkpoint-Based RAT for Branch Recovery
+### 2.5 Physical Register Recycling / Reclamation
 
-When a branch is renamed, the processor takes a **snapshot** of the RAT (a *checkpoint*). If the branch later mispredicts, the RAT is restored from the checkpoint in one cycle.
+Knowing **when** to free a physical register is one of the most subtle correctness
+issues in an OoO core. Free too early and a consumer reads garbage; free too late
+and the free list runs dry, stalling dispatch.
 
-**Copy-on-write shadow RAT:** Each checkpoint stores only the entries that changed since the last snapshot. On a 4-wide machine with 2 branches per cycle, a typical design keeps 8-16 checkpoints, each requiring ~32 x 7 bits = 224 bits of storage.
+**When is a physical register safe to free?**
 
-**ROB-walk recovery:** An alternative that walks the ROB backwards from tail to the branch, undoing each rename. This avoids checkpoint storage but takes $O(N_{ROB})$ cycles. Used in area-constrained designs.
+A physical register $P_k$ can be returned to the free list when **all** of the
+following conditions hold:
 
-### 2.6 Rename Bandwidth
+1. $P_k$ is no longer the active mapping in the frontend RAT for any architectural
+   register. (A newer instruction has renamed the same arch reg to a different $P_j$.)
+2. $P_k$ is no longer the committed mapping in the commit RAT. (The instruction that
+   made $P_k$ the committed mapping for some arch reg has been superseded by a newer
+   commit.)
+3. No in-flight instruction still references $P_k$ as a source operand.
+
+Condition 3 is the hard one. Even after $P_k$ is no longer in any RAT, an instruction
+dispatched earlier may have $P_k$ as `src_tag_0` and is still waiting in the issue
+queue for its other source operand.
+
+**"Last consumer" tracking mechanism:**
+
+There are two common approaches:
+
+```
+Approach 1: ROB-based recycling (most common)
+
+  When instruction I commits and its phys_dst_old = P_k:
+    P_k is safe to free ONLY IF no younger (still-in-flight) instruction
+    reads P_k as a source.
+
+  Implementation: Each physical register has a "reference count" or "live bit."
+    - On rename: ref_count[P_src] += 1 for each source operand
+    - On issue (read from PRF): ref_count[P_src] -= 1
+    - On commit of the instruction that overwrote P_k:
+      if ref_count[P_k] == 0: free P_k
+      else: defer free until ref_count reaches 0
+
+  Simpler variant: just wait for commit of the next instruction that writes the
+  same arch register. By the time I_commit+1 commits, all consumers of I_commit's
+  old mapping have long since read their values.
+
+  This is the approach used in MIPS R10000 and most modern cores:
+    At commit of instruction I with phys_dst = P_new, phys_dst_old = P_old:
+      Free P_old unconditionally.
+      Correct because: any instruction that reads P_old must be OLDER than I
+      (I was the last writer of that arch reg). All older instructions have
+      already committed, and their consumers have already read P_old.
+
+Approach 2: Counter-based recycling
+
+  Each physical register has a 3-bit counter initialized to 0.
+    - On rename as source: counter++
+    - On wakeup + issue (source consumed): counter--
+    - On commit of the overwriting instruction: if counter == 0, free; else
+      mark "pending free" and free when counter reaches 0
+
+  This handles the rare case where a long-latency consumer has not yet issued
+  when the overwriter commits.
+```
+
+**How incorrect recycling leads to wrong values:**
+
+```
+Scenario: P_k freed too early
+
+  I1: ADD x1, x2, x3   -> phys_dst = P_k     (new mapping for x1)
+  I2: SUB x4, x1, x5   -> src1 = P_k         (reads x1 = P_k)
+  I3: XOR x1, x6, x7   -> phys_dst = P_m     (overwrites x1 mapping)
+
+  If P_k is freed at I3's rename (before I2 issues):
+    - I2's IQ entry still has src_tag_0 = P_k
+    - P_k is allocated to a new instruction: MUL x9, x10, x11 -> phys_dst = P_k
+    - MUL writes P_k with its result
+    - I2 wakes up, reads P_k from PRF -> gets MUL's result, not ADD's!
+    - WRONG VALUE -> silent data corruption
+
+  Correct behavior: P_k is freed only when I3 commits, at which point I2 has
+  long since read P_k (I2 committed before I3 in program order).
+```
+
+**Register recycling timeline -- concrete cycle-by-cycle example:**
+
+```
+Initial state: RAT[x1] = P5, FreeList = {P20, P21, P22, ...}
+
+Cycle 0 (rename):
+  I1: ADD x1, x2, x3  -> phys_dst = P20 (from free list)
+     RAT[x1] = P20 (old mapping P5 saved in ROB entry for I1)
+  I2: SUB x4, x1, x5  -> reads P20 for x1 (bypassed from I1 rename)
+     I2's IQ entry: src_tag = P20
+
+Cycle 1 (issue + execute):
+  I1 issues to ALU, produces result -> P20 = 42
+
+Cycle 2 (writeback):
+  CDB broadcasts P20=42. IQ wakes up I2 (src_tag match). I2 issues.
+  I2 reads P20 from PRF -> gets 42 (correct!)
+  I2 produces result -> P22 = 42 - x5
+
+Cycle 3 (commit I1):
+  ROB commits I1:
+    commit_RAT[x1] = P20  (architectural state updated)
+    Free P5 (I1's phys_dst_old = P5 returned to free list)
+    -- P5 was the OLD mapping of x1, now nobody reads it
+    -- P20 is the current committed mapping, NOT freed
+
+  Why P5 is safe to free: any instruction that reads P5 must be older than I1
+  (it was the mapping before I1). All older instructions have already committed
+  and their consumers have already read P5.
+
+  At this point: FreeList = {P5, P21, P23, ...}
+
+Cycle 4 (rename I3):
+  I3: XOR x1, x6, x7  -> phys_dst = P23 (from free list)
+     RAT[x1] = P23 (old mapping P20 saved in ROB entry for I3)
+
+Cycle 5+ (I3 executes, produces result)
+
+Cycle 6 (commit I3):
+  Free P20 (I3's phys_dst_old = P20 returned to free list)
+  -- Now P20 is safe because I2 already read it in cycle 2
+  -- and I2 committed in cycle 5 (before I3 in program order)
+
+  At this point: FreeList = {P5, P20, P21, P24, ...}
+
+Key invariant: a physical register is freed exactly when the instruction that
+OVERWROTE its architectural mapping commits. This guarantees all consumers of
+the old physical register have already completed and read the value.
+```
+
+### 2.6 Checkpoint-Based Recovery vs ROB-Walk Recovery
+
+When a branch misprediction is detected, the processor must restore the rename
+table and free list to the state before the branch. Two approaches exist:
+
+**Checkpoint-based recovery (used in Intel, AMD, ARM high-performance cores):**
+
+```
+Mechanism:
+  On branch rename:
+    1. Snapshot the entire frontend RAT (32 entries x 7 bits = 224 bits)
+    2. Store snapshot in a checkpoint register indexed by branch ID
+    3. Each checkpoint also saves the free-list head pointer
+
+  On misprediction at branch B:
+    1. Copy checkpoint[B] back to the active frontend RAT: 1 cycle
+    2. Restore free-list head from checkpoint
+    3. Invalidate all checkpoints younger than B
+    4. Flush IQ, LSQ, and ROB entries after B
+
+  Storage cost:
+    16 checkpoints x 224 bits = 3.5 KB (SRAM)
+    Copy-on-write optimization: store only changed entries, ~50 bits per checkpoint
+
+  Recovery time: 1 cycle for RAT restore + pipeline refill latency
+```
+
+**ROB-walk recovery (used in area-constrained designs, early MIPS R10000):**
+
+```
+Mechanism:
+  Each ROB entry stores the old physical mapping (phys_dst_old) at rename time.
+
+  On misprediction at ROB index B:
+    1. Walk ROB from tail backwards to B:
+       for i = tail-1 down to B+1:
+         RAT[ROB[i].arch_dst] = ROB[i].phys_dst_old   // undo the rename
+         FreeList.push(ROB[i].phys_dst)                // free speculative phys reg
+    2. Takes (tail - B) cycles
+
+  Storage cost: 0 extra (phys_dst_old already in ROB entry)
+
+  Recovery time: O(N_ROB) cycles in the worst case
+    For a 128-entry ROB with 15 wrong-path instructions: 15 cycles
+    For a 256-entry ROB with 50 wrong-path instructions: 50 cycles
+```
+
+**Comparison:**
+
+| Metric | Checkpoint | ROB-walk |
+|--------|-----------|----------|
+| Recovery latency | 1 cycle (RAT) + pipeline refill | O(wrong-path instructions) + pipeline refill |
+| Area | 3.5 KB for 16 checkpoints | 0 extra |
+| Power | Write 224 bits per checkpoint on branch rename | Read/write ROB entries during walk |
+| Correctness risk | Must snapshot *every* branch (or limit checkpoint depth) | Always correct (walks actual history) |
+| Used in | Intel Golden Cove, AMD Zen 4, ARM Cortex-X4 | Area-constrained embedded cores |
+
+**Why checkpoints win in high-performance cores:** The difference between 1-cycle and
+15-cycle recovery is 14 cycles of fetch starvation. At 4 instructions/cycle, that is
+56 lost instruction slots. For a core running at 3% MPKI (mispredictions per 1000
+instructions), the extra recovery cost adds:
+
+$$
+\frac{3}{1000} \times 14 \text{ cycles} = 0.042 \text{ CPI penalty (ROB-walk extra cost)}
+$$
+
+versus near-zero for checkpoints. At high frequency this is significant.
+
+**Fallback for checkpoint exhaustion:** If more branches are in-flight than the
+checkpoint depth (e.g., 20 branches but only 16 checkpoints), the core must either
+(1) stall dispatch until a branch resolves and frees a checkpoint, or (2) fall back
+to ROB-walk for the excess branches. Most implementations choose (1) -- stalling
+dispatch is simpler and the checkpoint depth is sized to make this rare.
+
+### 2.7 Rename Bandwidth
 
 A 4-wide machine must rename 4 instructions per cycle. This requires:
 
@@ -271,32 +470,188 @@ The issue queue (also called the reservation station in some texts) holds instru
 | `age` | 7 bits | Age counter for oldest-first selection |
 | `rob_idx` | 7 bits | ROB index for result writeback |
 
-### 4.2 Wakeup
+### 4.2 Wakeup -- CAM-Based Tag Broadcast and Comparison
 
-Wakeup is the process of marking source operands as ready when a producing instruction writes its result onto the Common Data Bus (CDB).
+Wakeup is the process of marking source operands as ready when a producing
+instruction writes its result onto the Common Data Bus (CDB).
 
-**Mechanism:**
-1. Each CDB line carries the `phys_tag` of the completed instruction.
-2. Every IQ entry compares `src_tag_0` and `src_tag_1` against all CDB tags using Content-Addressable Memory (CAM).
-3. On a match, the corresponding `src_rdy` bit is set to 1.
+**CAM-based wake-up mechanism:**
 
-**Timing constraint:** Wakeup + Select must complete in one cycle for back-to-back scheduling. This means:
-- CAM comparison: $\sim$300-500 ps in a 4 GHz design.
-- Selection logic: $\sim$200-300 ps.
-- Total: fits within a single clock period only for moderate queue sizes (32-64 entries).
+Each IQ entry stores source operand tags (`src_tag_0`, `src_tag_1`, optionally
+`src_tag_2`). Each entry contains a dynamic CAM cell per source that compares
+the stored tag against all CDB broadcast tags simultaneously.
 
-**Speculative wakeup:** When a branch is predicted taken and instructions after it wake up and issue speculatively, those instructions may later need to be flushed. If the branch was mispredicted, all IQ entries with a branch mask matching the mispredicted branch are invalidated. Operands that were speculatively marked ready may need to re-check their producers.
+```
+CAM cell operation (per source operand per IQ entry):
 
-### 4.3 Selection (Oldest-Ready Arbitration)
+  Stored tag: src_tag_i[6:0]    (7-bit physical register tag)
+  CDB broadcast: cdb_tag[6:0]   (one per CDB line, up to W lines)
 
-When multiple instructions are ready, the selection logic picks which ones to issue. The most common policy is **oldest-first** (age-based), which maximizes IPC by prioritizing instructions that have been waiting longest.
+  match_i = (src_tag_i == cdb_tag_0) OR (src_tag_i == cdb_tag_1)
+            OR ... OR (src_tag_i == cdb_tag_{W-1})
 
-**Age-ordered tree:** Entries are sorted by age (time in the queue). A priority encoder scans from oldest to youngest and selects up to $W$ (issue width) ready entries.
+  Implementation: XOR each bit, NOR the results -> match line
+
+  On match: src_rdy_i := 1
+```
+
+For a 64-entry IQ with 4 CDB lines and 2 source operands per entry:
+
+```
+Total CAM comparisons per cycle = 64 entries * 2 sources * 4 CDB lines = 512
+
+Each comparison is a 7-bit XOR + 7-input NOR + OR across CDB lines:
+  XOR delay:  ~1.5 FO4 per bit (dynamic CMOS match line)
+  NOR delay:  ~1 FO4 (dynamic NOR of mismatch lines)
+  OR across CDB: ~0.5 FO4
+
+  Total CAM comparison delay: ~3 FO4
+```
+
+**Wake-up timing budget (at 3 GHz, ~12 FO4 per cycle):**
+
+```
+  CDB tag broadcast driver:     ~1.5 FO4 (wire fanout to N entries)
+  CAM tag comparison:           ~3.0 FO4 (dynamic match-line discharge)
+  Ready OR reduction:           ~1.0 FO4 (combine src_rdy_0, src_rdy_1)
+  Select arbiter input prep:    ~0.5 FO4 (drive ready vector to select)
+
+  Total wakeup:                 ~6.0 FO4  (half the cycle budget)
+```
+
+**Speculative wake-up for back-to-back dependent instructions:**
+
+When instruction $A$ produces result $P_k$ and issues in cycle $T$, instruction $B$
+which depends on $P_k$ can be woken up at the end of cycle $T$ and issue in cycle
+$T+1$ only if the wakeup-select loop closes in one cycle. But what if $A$ is a
+multi-cycle operation (e.g., a 3-cycle multiplier)?
+
+```
+  Cycle T:   MUL issues. Result will be available at end of cycle T+2.
+  Cycle T+1: Consumer of MUL's result should be woken up...
+             but result isn't ready yet!
+
+Solution: Speculative wake-up (latency-aware scheduling)
+  - When MUL issues, the issue logic records that the result will be
+    available at cycle T + latency. A "speculative completion event" is
+    scheduled for cycle T + latency - 1 (one cycle before result arrival).
+  - At cycle T + latency - 1: the dependent instruction's source operand
+    is marked ready (woken up speculatively).
+  - At cycle T + latency: the dependent instruction issues, and MUL's
+    result is available on the CDB in the same cycle.
+  - If MUL completes on schedule: zero bubbles between dependent instructions
+    (back-to-back issue despite multi-cycle latency).
+  - If MUL is delayed (e.g., cache miss on a load turns into a longer
+    latency than predicted): speculatively issued consumers are cancelled
+    and re-issued when the result actually arrives.
+  - Implementation: each IQ entry stores a per-source "expected ready cycle"
+    counter, decremented each cycle. When it reaches zero, the source is
+    speculatively marked ready.
+```
+
+This technique hides the wakeup latency for multi-cycle operations. The risk is
+wasted energy on misspeculated wake-ups, but the IPC benefit outweighs the cost.
+
+**Speculative wake-up cancellation on pipeline flushes:**
+
+When a branch misprediction or memory ordering violation causes a pipeline flush,
+any instructions that were speculatively woken up for future cycles must be
+cancelled. This requires clearing the "expected ready cycle" counters in the IQ
+for all entries younger than the flushing instruction. The implementation uses the
+same branch mask mechanism that tracks which IQ entries belong to which
+speculative branch: on a flush, all IQ entries whose branch mask includes the
+mispredicted branch are invalidated in a single cycle (parallel valid-bit clear).
+Entries with expected-ready-cycle counters that have not yet fired are simply
+discarded -- the counters are not decremented further because the entries are now
+invalid. This is one reason the IQ valid bit is checked early in the CAM match
+path: invalid entries should not consume match-line energy on subsequent CDB
+broadcasts.
+
+### 4.3 Selection -- Oldest-First Arbiter with Leading-Zero Detector
+
+When multiple instructions are ready, the selection logic picks which ones to issue.
+The most common policy is **oldest-first** (age-based), which maximizes IPC by
+prioritizing instructions that have been waiting longest and are most likely to be
+on the critical path.
+
+**Leading-zero detector (LZD) implementation:**
+
+The ready vector is a bitmask where bit $i$ is set if IQ entry $i$ is fully ready
+(all source operands available). Since IQ entries are ordered by age (entry 0 =
+oldest), finding the oldest ready entry is equivalent to finding the first set bit
+-- a leading-one search, implemented as a leading-zero detector on the inverted
+vector.
+
+```
+Ready vector (8-entry IQ example):
+  ready = [0, 1, 0, 0, 1, 1, 0, 1]   (entries 1, 4, 5, 7 are ready)
+
+Leading-one search (oldest ready):
+  First 1 at position 1 -> select entry 1
+
+For W-wide issue, repeat with masking:
+  1. grant_0 = leading_one(ready) = entry 1
+  2. ready' = ready & ~(1 << 1) = [0, 0, 0, 0, 1, 1, 0, 1]
+  3. grant_1 = leading_one(ready') = entry 4
+  4. Check resource availability for each grant (execution port matching)
+
+LZD implementation (priority encoder):
+  Dynamic CMOS: precharge, then evaluate from LSB (oldest) to MSB (youngest)
+  First match discharges the evaluate chain -> grant signal
+
+  Delay: O(log N) using a tree-structured priority encoder
+  For N=64: ~2-3 FO4 for the tree + ~0.5 FO4 for resource check
+```
+
+**Select arbiter with resource constraint checking:**
+
+The select logic must also respect execution unit availability:
+
+```
+Select for W=4 issue, resources: 3 ALU, 1 MUL, 2 AGU, 1 DIV:
+
+  For each ready entry:
+    1. Classify by opcode type (ALU, MUL, AGU, DIV)
+    2. Count available ports per type
+    3. Grant = leading_one(ready & can_issue)
+       where can_issue[i] = ready[i] & port_available[type[i]]
+
+  Arbiter pseudocode:
+    for grant_slot in 0..W-1:
+      for each ready entry (oldest first):
+        if port_count[entry.type] > 0:
+          grant(entry)
+          port_count[entry.type] -= 1
+          mark entry as issued
+          break
+```
+
+**Wake-up -> Select critical path:**
+
+```
+Full wake-up + select timing (FO4 breakdown at 3 GHz):
+
+  CDB tag broadcast:         1.5 FO4
+  CAM tag comparison:        3.0 FO4
+  Ready OR reduction:        1.0 FO4
+  LZD priority encode:       2.0 FO4
+  Resource mask + grant:     1.0 FO4
+  Grant wire to IQ entry:    0.5 FO4
+  ─────────────────────────────────
+  Total:                     9.0 FO4  (out of ~12 FO4 budget)
+
+  Remaining for clock skew + setup + latch overhead: ~3 FO4
+
+  This is why wake-up + select is the frequency-limiting loop.
+  Increasing IQ size beyond 64 entries pushes the CAM and LZD
+  delays past the budget.
+```
 
 Alternative policies:
 - **Round-robin:** Simpler but lower IPC.
 - **Critical-path-aware:** Prioritize instructions on the critical dependency chain.
-- **Resource-aware:** Consider execution unit availability.
+- **Resource-aware:** Consider execution unit availability (combined with oldest-first
+  as shown above).
 
 ### 4.4 Unified vs. Distributed Issue Queues
 
@@ -478,7 +833,7 @@ Where MPKI = Mispredictions Per Kilo Instructions. A typical high-performance co
 
 ---
 
-## 7. Execution Units
+## 7. Execution Units -- Detailed Design
 
 ### 7.1 Integer ALU
 
@@ -489,22 +844,316 @@ The ALU handles all integer arithmetic and logic operations: ADD, SUB, AND, OR, 
 - **Implementation:** Carry-lookahead adder (CLA) or Kogge-Stone adder for 64-bit addition in a single cycle. See [../Fundamentals/Adders](../Fundamentals/Adders.md) for adder design details.
 - **Count:** 2-4 ALUs in a typical 4-wide core to handle the mix of ALU operations and address generation.
 
-### 7.2 Integer Multiplier
+**Fast adder tree for condition flags (SLT, SLTU, branch comparison):**
+
+The ALU computes comparison results as a byproduct of subtraction. For `SLT rd, rs1, rs2`
+(set if less than, signed), the result is 1 if `rs1 - rs2` produces a negative result
+in signed arithmetic:
+
+```
+SLT flag computation:
+  {Carry_out, Sum} = rs1 + ~rs2 + 1   (subtraction via two's complement)
+
+  For signed comparison:
+    result = (rs1[63] XOR rs2[63]) ? rs1[63] : Sum[63]
+    -- If signs differ: negative rs1 means rs1 < rs2
+    -- If signs agree: sign of difference determines ordering
+
+  For unsigned comparison (SLTU):
+    result = ~Carry_out
+    -- Carry_out = 1 means no borrow, rs1 >= rs2
+
+  For branch comparison (BEQ):
+    result = (rs1 XOR rs2 == 0)
+    -- Zero detect across all 64 bits: NOR of XOR outputs
+
+  Implementation: The adder's carry tree produces all bits simultaneously.
+  The flag logic taps off the carry-out and sign bits with ~2 gate levels
+  of additional delay after the adder settles.
+```
+
+**Shift/rotate unit:**
+
+Barrel shifter implemented as a log-stage multiplexer network:
+
+```
+64-bit barrel shifter:
+  Stage 1: shift by 0 or 32 positions (MUX, select = shamt[5])
+  Stage 2: shift by 0 or 16 positions (MUX, select = shamt[4])
+  Stage 3: shift by 0 or 8  positions (MUX, select = shamt[3])
+  Stage 4: shift by 0 or 4  positions (MUX, select = shamt[2])
+  Stage 5: shift by 0 or 2  positions (MUX, select = shamt[1])
+  Stage 6: shift by 0 or 1  positions (MUX, select = shamt[0])
+
+  Delay: 6 stages of 2:1 MUX ~ 3 FO4 total
+  Fits easily within the 1-cycle EX budget alongside the adder.
+```
+
+**Bypassing between ALUs:**
+
+In a multi-ALU design, each ALU's result is immediately available on the result bus
+for the next cycle. Cross-ALU bypass occurs through the CDB: all ALUs write to the
+CDB, and the issue queue CAM picks up the tags for dependent instructions.
+
+### 7.2 Integer Multiplier -- Booth + Wallace Tree + CPA Pipeline
 
 - **Algorithm:** Modified Booth encoding (radix-4) + Wallace tree compressor + CPA (carry-propagate adder).
-- **Encoding:** Radix-4 Booth recoding reduces the number of partial products from 32 to 17 for a 64x64-bit multiply.
-- **Compressor tree:** Wallace or Dadda tree reduces 17 partial products to 2 vectors (sum and carry) in $\lceil \log_{1.5}(17) \rceil = 6$ stages.
 - **Latency:** 3-5 cycles.
 - **Throughput:** Pipelined; can accept a new multiply every 1-2 cycles.
 - **RISC-V M extension:** Produces both `mul` (lower 64 bits) and `mulh` (upper 64 bits) results.
 
-### 7.3 Integer Divider
+**Stage 1: Modified Booth encoding (radix-4)**
 
-- **Algorithm:** SRT (Sweeney-Robertson-Tocher) iterative division, radix-4 or radix-8.
+Booth encoding examines overlapping groups of 3 bits of the multiplier $Y$ to
+determine the multiplicand multiple (0, +X, -X, +2X, -2X) for each partial product:
+
+```
+Booth recoding table (radix-4):
+  Y[i+1:i-1]  |  Action     |  Partial Product
+  -----------  |  ---------- |  ---------------
+    0 0 0      |  0 * X      |  0
+    0 0 1      |  +1 * X     |  X
+    0 1 0      |  +1 * X     |  X
+    0 1 1      |  +2 * X     |  X << 1
+    1 0 0      |  -2 * X     |  -(X << 1)
+    1 0 1      |  -1 * X     |  -X
+    1 1 0      |  -1 * X     |  -X
+    1 1 1      |  0 * X      |  0
+
+For a 64-bit multiplier Y:
+  Modified Booth radix-4 examines overlapping triplets of Y bits:
+    Triplet 0:  Y[1], Y[0], 0       (implicit 0 below LSB)
+    Triplet 1:  Y[3], Y[2], Y[1]
+    Triplet 2:  Y[5], Y[4], Y[3]
+    ...
+    Triplet 31: Y[63], Y[62], Y[61]
+
+  Number of partial products = 64/2 = 32
+
+  Sign extension handling adds 1 correction term in some implementations,
+  giving an effective count of 32 or 33 depending on the sign-extension
+  scheme (Baugh-Wooley vs sign-inject). The widely used "sign-inject"
+  method keeps exactly 32 partial products by augmenting each PP with a
+  leading sign bit and adding a single constant correction term during the
+  compression tree. After compression, the final result is 128 bits wide
+  for a 64x64 multiply.
+```
+
+**Stage 2: Wallace tree compressor**
+
+The Wallace tree reduces 32 partial products to 2 vectors (sum and carry) through
+a cascade of (3:2) carry-save adders (full adders) and (4:2) compressors:
+
+```
+Wallace tree reduction stages (32 PPs):
+  At each stage, group inputs into sets of 3 and apply a (3:2) CSA.
+  Leftover 1 or 2 inputs pass through unmodified.
+
+  Stage 0: 32 partial products
+  Stage 1: 10 CSAs reduce 30 -> 20, plus 2 pass-through -> 22 vectors
+  Stage 2:  7 CSAs reduce 21 -> 14, plus 1 pass-through -> 15 vectors
+  Stage 3:  5 CSAs reduce 15 -> 10 vectors
+  Stage 4:  3 CSAs reduce  9 ->  6, plus 1 pass-through ->  7 vectors
+  Stage 5:  2 CSAs reduce  6 ->  4, plus 1 pass-through ->  5 vectors
+  Stage 6:  1 CSA  reduces  3 ->  2, plus 2 pass-through ->  4 vectors
+  Stage 7:  1 x (4:2) compressor reduces 4 -> 2 vectors (sum + carry)
+
+  Total stages: 7 (using pure (3:2) CSAs) or 6 (mixing (4:2) compressors
+  at stages with 4+ inputs). Modern designs use (4:2) compressors throughout
+  to reduce stage count.
+
+  Each (3:2) CSA delay: ~1.5 FO4 (XOR + MUX)
+  Each (4:2) compressor delay: ~2.0 FO4 (two CSA levels in one gate)
+  Total compressor delay: ~9-12 FO4 -> pipelined into 2-3 stages
+
+Dadda tree alternative:
+  Uses fewer CSAs by only reducing to the minimum needed at each stage
+  (never reducing below Dadda's sequence: 2, 3, 4, 6, 9, 13, 19, 28, 42...).
+  Produces fewer total CSAs and identical depth as Wallace, but the final
+  CPA is wider. Most modern synthesizable designs use Dadda for smaller area.
+```
+
+**Stage 3: Carry-propagate adder (CPA)**
+
+The final sum and carry vectors are added using a fast 128-bit adder (Kogge-Stone
+or Han-Carlson) to produce the 128-bit product:
+
+```
+CPA for 128-bit result:
+  Kogge-Stone adder: O(log N) stages, N=128 -> 7 stages of prefix computation
+  Delay: ~6-8 FO4 for the carry prefix tree + ~2 FO4 for sum generation
+
+  For a 64-bit lower result (MUL instruction): only the lower 64 bits of the
+  CPA are needed, saving ~50% of the adder area.
+
+  For a 128-bit full result (MULH instruction): full CPA required.
+```
+
+**Pipeline example (3-cycle multiplier):**
+
+```
+  Cycle 1: Booth encode + first 3 stages of Wallace tree
+  Cycle 2: Remaining Wallace tree stages + partial CPA
+  Cycle 3: Final CPA + result register
+
+  Bypass: The multiplier result is available on the CDB at the end of cycle 3.
+  A dependent instruction can issue in cycle 4 with speculative wake-up
+  (woken at end of cycle 2 to be ready for cycle 4 issue).
+```
+
+### 7.3 Integer Divider -- SRT Radix-4 and Newton-Raphson
+
 - **Latency:** 10-40 cycles depending on operand size and algorithm radix.
 - **Throughput:** Not pipelined (blocking). Only one division in flight at a time.
-- **Optimization:** Newton-Raphson reciprocal approximation can reduce latency for floating-point division but is rarely used for integer division due to precision requirements.
-- **Implementation note:** Division is rare (~1% of dynamic instructions), so optimizing it has minimal IPC impact. Most designs use a minimal iterative divider.
+- **Implementation note:** Division is rare (~1% of dynamic instructions), so optimizing it has minimal IPC impact.
+
+**SRT radix-4 divider:**
+
+SRT (Sweeney-Robertson-Tocher) division generates 2 quotient bits per iteration,
+converging in $\lceil 64/2 \rceil = 32$ iterations for a 64-bit dividend:
+
+```
+SRT radix-4 iteration:
+  Input:  Partial remainder r_j (64 bits), divisor d
+  Output: 2 quotient bits q_{j+1}, new partial remainder r_{j+1}
+
+  Each iteration:
+    1. r_j is left-shifted by 2 bits: r_j' = r_j << 2
+    2. Quotient digit q_{j+1} is selected from {-2, -1, 0, 1, 2}
+       using a lookup table (PD plot / Robertson diagram) indexed by
+       the top ~4 bits of r_j' and d.
+    3. New partial remainder:
+       r_{j+1} = r_j' - q_{j+1} * d
+
+  Iteration count: ceil(N/2) for N-bit operands = 32 iterations for 64-bit
+  Each iteration: 1 CPA (subtract q*d from shifted remainder) ~ 1 cycle
+  Total latency: 32 cycles for 64-bit, 16 for 32-bit operands
+
+  Radix-8 variant: 3 quotient bits per iteration, ceil(64/3) = 22 iterations
+  but more complex quotient selection (7 values: -3..+3).
+```
+
+**SRT radix-4 quotient selection lookup table (PD plot):**
+
+The quotient digit is selected by inspecting the top 4--6 bits of the shifted partial
+remainder and the top 4--5 bits of the divisor. The following table shows a simplified
+version for normalized divisors ($d \in [0.5, 1.0)$ in fractional representation):
+
+```
+Partial  |  Divisor d (top 4 bits, fractional)
+Remainder|  0.5000  0.6250  0.7500  0.8750  1.0000
+r_j' top |
+---------+-------------------------------------------
+  -2.0   |  -2      -2      -2      -2      -2
+  -1.5   |  -2      -2      -1      -1      -1
+  -1.0   |  -1      -1      -1      -1      -1
+  -0.5   |  -1      -1       0       0       0
+   0.0   |   0       0       0       0       0
+  +0.5   |   0       0       0      +1      +1
+  +1.0   |  +1      +1      +1      +1      +1
+  +1.5   |  +1      +1      +2      +2      +2
+  +2.0   |  +2      +2      +2      +2      +2
+
+  The overlap regions (where two values are valid) provide redundancy that
+  ensures correctness even with truncated remainder/divisor bits. The overlap
+  is the key property of SRT: it allows quotient selection using only the top
+  few bits, avoiding a full-width comparison.
+
+  Hardware: the lookup table is implemented as a small PLA or ROM:
+    Inputs: r_j'[63:58] (6 bits), d[55:52] (4 bits) = 10-bit address
+    Outputs: q_{j+1} in {-2,-1,0,+1,+2}, encoded as 3-bit signed
+    Size: 1024 entries x 3 bits = 3072 bits (trivial)
+    Delay: ~2 FO4 (PLA AND-OR plane)
+
+  On-the-fly quotient conversion:
+    The quotient is accumulated in a redundant representation (two registers,
+    Q and Q-1) to avoid a carry-propagate addition on every iteration:
+      If q = +2: Q_j     = (Q_{j-1} << 2)     + 2
+                 Q_j - 1 = (Q_{j-1} - 1) << 2  + 3
+      If q = +1: Q_j     = (Q_{j-1} << 2)     + 1
+                 Q_j - 1 = (Q_{j-1} - 1) << 2  + 2
+      If q =  0: Q_j     = (Q_{j-1} << 2)     + 0
+                 Q_j - 1 = (Q_{j-1} - 1) << 2  + 1
+      If q = -1: Q_j     = (Q_{j-1} << 2)     - 1  (i.e., +3 in 2's complement)
+                 Q_j - 1 = (Q_{j-1} - 1) << 2  + 0
+      If q = -2: similar
+
+    After all iterations, a single CPA produces the final quotient from Q and Q-1.
+```
+
+**SRT radix-4 worked example (8-bit division, simplified):**
+
+```
+Compute 57 / 7 (dividend = 57 = 0b00111001, divisor = 7 = 0b00000111)
+
+Normalize: d = 7/8 = 0.875 (fractional)
+Initial partial remainder: r_0 = 57/8 = 7.125 (fractional, shifted left 2)
+
+Iteration 1:
+  r_0' = 7.125 << 2 = 28.5
+  Top bits of r_0' = ~3.56 (in half-units)
+  d ~ 0.875
+  Lookup: q_1 = +2
+  r_1 = 28.5 - 2*7 = 14.5
+
+Iteration 2:
+  r_1' = 14.5 << 2 = 58.0
+  Top bits ~ 7.25
+  Lookup: q_2 = +2
+  r_2 = 58.0 - 2*7 = 44.0
+
+  ... (continues for ceil(8/2) = 4 iterations total)
+
+Final quotient Q = +8 (57 / 7 = 8 remainder 1)
+The redundant Q and Q-1 registers are resolved by a final CPA.
+```
+
+**Newton-Raphson reciprocal approximation (used for FP division):**
+
+```
+To compute Q = N/D:
+  1. Compute R = 1/D (reciprocal) using Newton-Raphson:
+     R_{i+1} = R_i * (2 - D * R_i)
+
+     Each iteration doubles the number of correct bits.
+     Starting from a lookup table (R_0 from a 256-entry table, ~8 bits accurate):
+       After 1 iteration: 16 bits accurate
+       After 2 iterations: 32 bits accurate
+       After 3 iterations: 64 bits accurate (double precision)
+
+     Each iteration requires 2 multiplications + 1 subtraction.
+
+  2. Compute Q = N * R
+
+  Total for double-precision: 3 iterations * (2 FMUL + 1 FSUB) + 1 final FMUL
+    = 7 FP operations, pipelined at ~15-20 cycles total latency.
+
+  Not used for integer division because:
+    - Rounding error in the reciprocal makes exact integer quotient difficult
+    - The remainder recovery step (N - Q*D) adds complexity
+    - SRT is simpler and sufficient for rare integer divides
+```
+
+**Bypassing between execution units:**
+
+The CDB serves as the universal bypass network between all execution units. When a
+multiplier or divider completes, its result tag is broadcast on the CDB. Any IQ
+entry waiting for that tag wakes up. For same-unit bypass (back-to-back multiplies),
+the multiplier's pipeline register can forward directly to the Booth encoder input
+in the next cycle, avoiding the round-trip through the CDB and PRF:
+
+```
+Same-unit bypass:
+  MUL issues at cycle T -> result available end of cycle T+2
+  Dependent MUL can issue at cycle T+3 (CDB wake-up in T+2, select in T+3)
+  With internal bypass: the dependent MUL receives its source from the
+  multiplier's output register directly, without waiting for CDB broadcast.
+
+Cross-unit bypass:
+  ALU produces result at end of cycle T
+  Dependent MUL needs it as source -> CDB broadcast at T, MUL issues at T+1
+  No extra bypass path needed; the CDB handles all cross-unit forwarding.
+```
 
 ### 7.4 Floating-Point Unit (FPU)
 
@@ -887,6 +1536,102 @@ IQ is now empty. MUL will complete at Cycle 4.
 CDB broadcasts p21. No IQ entries to wake up. The result is written to the PRF and the ROB entry for the MUL is marked completed.
 
 **Total execution span: 5 cycles** (dispatch at cycle 0, last result at cycle 4) for 4 instructions with a data dependency chain (I0 -> I1 -> I2 -> I3 partially, but I3 only depends on I2, not I1).
+
+---
+
+## 12. Wake-up / Select Critical Path
+
+The wake-up-select loop is the **frequency-limiting path** in a modern OoO processor. After an instruction completes and broadcasts its result on the CDB, the wake-up logic must scan every entry in the issue queue to find instructions whose source operands are now ready. Then the select logic chooses which ready instructions to issue. Both steps must complete in a single cycle at the target frequency -- and the cycle time budget is razor-thin.
+
+### 12.1 Wake-up Complexity
+
+For an issue queue with $N$ entries, each CDB completion event requires checking every entry's source tags against the broadcast tag. Each entry holds up to 3 source operands (two registers plus a predicate or condition in some ISAs), so a single completion event triggers $N \times S$ associative comparisons where $S$ is the number of source operands per entry:
+
+$$C_{wakeup} = N \times S$$
+
+This is an $O(N)$ associative comparison per completion event, done in a single cycle. With $N = 128$ and $S = 3$: **384 comparisons per completion event**. On a 4-wide machine with 4 CDB lines, the wake-up logic performs up to $4 \times 384 = 1536$ CAM comparisons per cycle. Each comparison is a tag match against a 7-bit physical register identifier, implemented as a dynamic CMOS CAM cell with a matched-line discharge.
+
+The energy cost compounds quickly. At 3 GHz with 4 CDB lines, a 128-entry IQ with 3 source operands per entry dissipates:
+
+$$P_{wakeup} \approx 1536 \times 3 \times 10^9 \times E_{CAM} \approx 1\text{--}3 \text{ W}$$
+
+where $E_{CAM} \approx 1\text{--}5$ fJ per 7-bit tag comparison in 7 nm. Wake-up alone can consume 5--10% of a core's total power budget.
+
+### 12.2 Select Complexity
+
+From $R$ ready instructions, the select logic chooses up to $W$ (issue width, typically 4--8) to issue. This requires priority encoding or arbitration -- an $O(R)$ scan from oldest to youngest. The select logic must also respect resource constraints: execution port availability (only 2 ALUs available this cycle? only 1 multiplier?), structural hazards (divide unit busy?), and in some designs, critical-path-aware heuristics. A naive implementation uses a cascading chain of $R$-input priority encoders, one per issue slot. A faster implementation uses a parallel prefix network.
+
+The select logic must resolve all grants in a single cycle. For a 128-entry IQ with $W = 6$, the worst case requires scanning all 128 entries, selecting the 6 oldest ready, checking that execution ports exist for each selected instruction's opcode type, and driving the grant signals -- all within approximately 200--300 ps.
+
+### 12.3 Critical Path Analysis
+
+The loop from **instruction completion $\to$ wake-up $\to$ select $\to$ issue $\to$ execution $\to$ completion** must close in one cycle at the target frequency. At 3 GHz, a single cycle is approximately 333 ps, or roughly **12 FO4 inverter delays** in a modern process. The wake-up and select logic consume **6--8 FO4** of this budget:
+
+| Component | FO4 Delay | Notes |
+|-----------|-----------|-------|
+| CDB tag broadcast | 1--2 | Wire delay across IQ width |
+| CAM tag comparison | 2--3 | Dynamic CAM match-line discharge |
+| Ready OR reduction | 1 | Combine per-source ready bits |
+| Select arbitration | 2--3 | Priority encode from $R$ ready entries |
+
+This leaves only 4--6 FO4 for everything else in the cycle: clock skew, setup/hold time, latch overhead, and wire flight time from the IQ to the execution units. The wake-up-select pair is therefore the dominant determinant of achievable clock frequency in an OoO core.
+
+### 12.4 Techniques to Reduce Critical Path
+
+**(a) Clustered issue queues.** Split the IQ into smaller banks (e.g., two 32-entry queues instead of one 64-entry queue). Wake-up scans $N/2$ entries per bank, reducing CAM delay by roughly $\sqrt{2}\times$. The tradeoff is that dependent instructions may land in different clusters, requiring inter-cluster bypass (adds 1 cycle of latency for cross-cluster dependences).
+
+**(b) Speculative wake-up.** Assume a long-latency instruction (e.g., a load) will complete on a predicted cycle. Wake up consumers speculatively. If the load misses in cache and the prediction was wrong, the speculatively woken instructions are reissued. This decouples the critical path from worst-case latency at the cost of wasted energy on misspeculated wake-ups.
+
+**(c) Pre-computed readiness (CAM-based IQ).** Each IQ entry maintains a count of unready source operands. The CAM match decrements the counter; when it reaches zero, the entry signals ready to the select logic. This replaces the per-source ready-bit OR tree with a simple counter check, slightly reducing the select path delay.
+
+### 12.5 Design Point Example
+
+Consider a concrete design point: a 4-wide OoO core targeting 3 GHz in 5 nm, with a unified 64-entry IQ.
+
+| Parameter | Value |
+|-----------|-------|
+| IQ entries ($N$) | 64 |
+| CDB lines | 4 |
+| Source operands per entry ($S$) | 2 |
+| Issue width ($W$) | 4 |
+| CAM comparisons per cycle | $4 \times 64 \times 2 = 512$ |
+| FO4 budget (3 GHz) | ~12 |
+| Wake-up + select FO4 | ~7 |
+| Remaining for latch/skew/wire | ~5 |
+
+This design is at the edge of feasibility. Increasing $N$ to 128 pushes the CAM comparison delay past the FO4 budget unless the IQ is split into clustered banks. This is precisely why the Intel P-cores (Raptor Cove / Redwood Cove) use distributed INT/FP/MEM issue queues of 20--30 entries each rather than a single unified queue.
+
+---
+
+## 13. Value Prediction
+
+Even with perfect branch prediction, **true data dependencies** (RAW hazards) limit extractable ILP. A load instruction whose address depends on a long-latency L2 miss stalls every instruction that consumes its result. Value prediction breaks this dependency chain by guessing the result before it is computed, allowing dependent instructions to execute speculatively.
+
+### 13.1 Predictor Taxonomy
+
+**Last-value predictor.** Predicts the next result equals the last result produced by that static instruction. Implementation: a direct-mapped table indexed by PC, storing the last result value. Accuracy: **~50--60%** for integer workloads. Area: ~2--4 KB for a 1024-entry table with 64-bit values.
+
+**Stride predictor.** Tracks the difference (stride) between consecutive results for each static instruction and predicts $\text{next} = \text{last} + \text{stride}$. Implementation: table indexed by PC, storing last value (64 bits) and stride (64 bits) plus a confidence counter (2 bits). Accuracy: **~70--80%**. Captures loop induction variables and array traversals that the last-value predictor misses.
+
+**Context-based predictor (FCM -- Finite Context Method).** Uses a value history (sequence of recent results) to index a prediction table, analogous to branch prediction's gshare using branch history. A typical design uses a 4--8 element value history hashed with the PC to index a 4096-entry table. Accuracy: **~80--95%** for integer workloads, but requires large tables (8--16 KB) and suffers from cold-start effects on context switches.
+
+A hybrid predictor combining stride and FCM (analogous to tournament branch predictors) can reach **~90--95%** accuracy on SPEC INT benchmarks but at 16--32 KB of storage -- comparable to an L1 cache way.
+
+### 13.2 Confidence Estimation and Recovery
+
+Each prediction carries a **confidence score** (typically a 2-bit saturating counter). Only high-confidence predictions trigger speculative execution; low-confidence predictions fall back to normal in-order dependency wait. This filters the most damaging mispredictions.
+
+**Misprediction recovery** mirrors branch misprediction: flush the pipeline from the mispredicted instruction onward, restore the RAT from a checkpoint, and re-fetch. The key difference is frequency: **~5--20% of value predictions are wrong** even with confidence filtering, compared to ~1--5% for a good branch predictor. Recovery cost is therefore higher in aggregate. Each value misprediction wastes roughly the same pipeline flush cost as a branch misprediction (12--18 cycles on a modern core), but occurs 2--5x more often than branch mispredictions when confidence thresholds are set aggressively.
+
+To limit damage, most proposals restrict value prediction to a subset of instruction types: loads (most impactful, since cache misses amplify the stall), ALU results that feed long dependency chains, and occasionally address computations. Predicting every instruction's result is neither necessary nor practical.
+
+### 13.3 Current Industry Status
+
+As of 2025, **no major commercial CPU deploys value prediction in production**. Research studies consistently show **5--15% IPC improvement for integer workloads** but **<2% for FP/SIMD** workloads (which already exploit data-level parallelism). Apple and Qualcomm have published patents exploring value prediction, suggesting active investigation. The cost-benefit tradeoff -- large prediction tables (8--32 KB), complex misprediction recovery, and non-trivial power consumption -- has not yet justified deployment.
+
+### 13.4 Why This Matters
+
+Value prediction questions distinguish senior- and staff-level architecture candidates. It demonstrates depth beyond the standard OoO pipeline knowledge (renaming, issue queues, branch prediction) and shows awareness of the fundamental ILP ceiling: even with infinite issue width, perfect branch prediction, and perfect caches, true data dependencies bound performance. Value prediction is one of the few proposed mechanisms to break through this ceiling.
 
 ---
 

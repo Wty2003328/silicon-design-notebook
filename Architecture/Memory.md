@@ -1,6 +1,169 @@
 # Memory Architecture and Design — Senior Engineer Level
 
+> **Prerequisites:** [CMOS_Fundamentals](../Fundamentals/CMOS_Fundamentals.md) (transistor physics, 6T SRAM cell)
+> **See also:** [Cache_Microarchitecture](Cache_Microarchitecture.md), [DDR_Controller](DDR_Controller.md), [Floating_Point](../Fundamentals/Floating_Point.md) (ECC)
+
 ## 6T SRAM Cell — Transistor-Level Deep Dive
+
+### 6T SRAM Bitcell — M1 through M6 Transistor Roles
+
+The 6T SRAM cell uses six transistors organized as two cross-coupled CMOS inverters
+(storage) plus two access transistors (read/write port):
+
+```
+Transistor | Type  | Role
+-----------|-------|--------------------------------------------------
+M1         | NMOS  | Pull-down for INV1. Holds Q=0 when Q_bar=1.
+           |       | Sized STRONG (W/L=2/1) for read stability (high CR).
+M2         | NMOS  | Pull-down for INV2. Holds Q_bar=0 when Q=1.
+           |       | Same sizing as M1.
+M3         | PMOS  | Pull-up for INV1. Drives Q_bar to VDD when Q=0.
+           |       | Sized WEAK (W/L=1/1) to allow write to overpower it (high PR).
+M4         | PMOS  | Pull-up for INV2. Drives Q to VDD when Q_bar=0.
+           |       | Same sizing as M3.
+M5         | NMOS  | Access transistor for BL (connects BL to Q). Gate = WL.
+           |       | Sized INTERMEDIATE (W/L=1.5/1). Must be weaker than M1 (CR > 1)
+           |       | but stronger than M3 (PR > 1).
+M6         | NMOS  | Access transistor for BL_bar (connects BL_bar to Q_bar). Gate = WL.
+           |       | Same sizing as M5.
+```
+
+**Sizing ratio constraints (the "6T triangle"):**
+
+```
+Cell Ratio (CR) = (W/L)_pulldown / (W/L)_access = 2.0 / 1.5 = 1.33
+  CR > 1 required for read stability (M1 must overpower M5 during read)
+  Typical: CR = 1.2 - 2.0
+
+Pull-up Ratio (PR) = (W/L)_access / (W/L)_pullup = 1.5 / 1.0 = 1.5
+  PR > 1 required for write-ability (M5 must overpower M3 during write)
+  Typical: PR = 1.2 - 2.0
+
+Fundamental tension:
+  Increasing access transistor strength (M5/M6) → improves PR (write)
+                                           → degrades CR (read)
+  Must find a sizing that gives adequate margin for BOTH simultaneously.
+  This becomes harder at low VDD where transistor I-V curves compress.
+```
+
+### Read Operation Sequence (Step-by-Step Timing)
+
+Reading a 6T SRAM cell follows this precise sequence. We read from a cell storing Q=0, Q_bar=1:
+
+```
+Step 1: PRECHARGE (t_precharge ~200-500 ps)
+  - Precharge circuit drives both BL and BL_bar to VDD
+  - Equalize transistor (between BL and BL_bar) ensures BL = BL_bar = VDD
+  - WL remains LOW (M5, M6 off)
+
+Step 2: WORD LINE ASSERTION (t_WL_rise ~50-100 ps)
+  - WL goes HIGH, turning on access transistors M5 and M6
+  - BL connects to Q through M5; BL_bar connects to Q_bar through M6
+
+Step 3: BITLINE DEVELOPMENT (t_develop ~100-300 ps)
+  - Cell has Q=0: BL (at VDD) begins to discharge through M5 and M1 toward GND
+  - Cell has Q_bar=1: BL_bar (at VDD) stays near VDD (M6 connects to Q_bar=VDD,
+    so no discharge path)
+  - Differential voltage develops: BL drops, BL_bar stays high
+  - Delta_V grows to ~100-200 mV (enough for sense amplifier)
+
+Step 4: SENSE AMPLIFIER FIRING (t_sense ~100-200 ps)
+  - Sense amplifier enable signal goes HIGH
+  - Cross-coupled latch amplifies the small differential to full rail:
+    BL → 0 (GND), BL_bar → VDD
+  - Positive feedback completes in ~100 ps
+
+Step 5: DATA OUTPUT and WRITE-BACK
+  - Sense amplifier output (BL_bar) is the read data (logic "1" = cell stored Q_bar)
+  - Full-rail voltage on BL/BL_bar is also driven back through M5/M6, reinforcing
+    the cell's stored value (non-destructive read -- cell was already at Q=0)
+  - Column mux selects this bitline pair for output to the read data bus
+
+Step 6: WORD LINE DE-ASSERTION
+  - WL goes LOW, disconnecting cell from bitlines
+  - Precharge circuit re-asserts, preparing for next read
+
+Total read access time: t_precharge + t_WL_rise + t_develop + t_sense ≈ 0.5-1.5 ns
+```
+
+**Critical observation:** The read is non-destructive (unlike DRAM). The cell's cross-coupled
+inverters fight the bitline discharge and maintain their state. But the cell voltage does
+dip slightly during Step 3, which is the source of read-disturb risk at low VDD.
+
+### Write Operation Sequence (Step-by-Step Timing)
+
+Writing a 6T SRAM cell requires overpowering the feedback loop. We write Q=0 to a cell
+currently storing Q=1:
+
+```
+Step 1: DRIVE BITLINES (write driver activation ~50-100 ps)
+  - Write driver forces BL = 0 (GND) for writing "0" to Q
+  - Write driver forces BL_bar = VDD (reinforcing Q_bar = 1)
+  - BL and BL_bar are driven STRONGLY by the write driver (much larger transistors
+    than the cell's pull-up/pull-down)
+
+Step 2: WORD LINE ASSERTION
+  - WL goes HIGH, connecting BL to Q (through M5) and BL_bar to Q_bar (through M6)
+
+Step 3: FLIP Q NODE (t_write ~200-500 ps)
+  - BL = 0 pulls Q down through M5 (access transistor)
+  - M3 (PMOS pull-up, gate = Q_bar = 0 initially, so M3 is ON) fights back,
+    trying to keep Q at VDD
+  - M5 must overpower M3: requires PR = (W/L)_access / (W/L)_pullup > threshold
+  - With PR = 1.5, M5 wins: Q drops below the switching threshold of INV1 (Q_bar inverter)
+  - INV1 input (Q) drops → INV1 output (Q_bar) rises → M3 gate goes HIGH → M3 turns OFF
+  - Feedback is broken: Q continues to drop to 0, Q_bar rises to VDD
+  - Cell has flipped: Q=0, Q_bar=1
+
+Step 4: STABILIZATION
+  - Cross-coupled inverters reinforce the new state
+  - Q_bar = VDD keeps M1 (pull-down) ON, holding Q = 0
+  - Q = 0 keeps M4 (pull-up) ON, holding Q_bar = VDD
+
+Step 5: WORD LINE DE-ASSERTION
+  - WL goes LOW, disconnecting cell from bitlines
+  - Cell retains new state
+
+Total write time: t_drive + t_WL + t_flip ≈ 0.5-2.0 ns
+  (longer than read because of the feedback fight)
+```
+
+**Write margin:** The worst case is writing the opposite state (flipping the cell). If VDD
+is too low, M3 may overpower M5, preventing the flip. Write margin is defined as the
+minimum VDD at which the write succeeds. Typical write margin: 0.5-0.6V (below nominal
+VDD of 0.7-1.0V). Write-assist techniques (boosting WL voltage above VDD, or collapsing
+the cell's VDD during write) can improve this margin.
+
+**Read stability (formal):** During read, the "0" storage node forms a voltage divider
+between M5 (access, in saturation) and M1 (pull-down, in linear region). The node voltage
+rises to:
+
+$$
+V_Q \approx \frac{1}{2 \cdot CR} \cdot (V_{DD} - V_{th})
+$$
+
+For the cell to remain stable, $V_Q$ must be below the switching threshold of the
+feedback inverter ($V_m \approx 0.4 \cdot V_{DD}$). With our sizing:
+
+$$
+V_Q = \frac{1}{2 \times 1.33} \times (1.0 - 0.3) = 0.263\,\text{V} < 0.4\,\text{V} \quad \checkmark
+$$
+
+Read margin $= V_m - V_Q = 0.4 - 0.263 = 0.137\,\text{V}$. At 3-sigma process corner
+(worst-case mismatch), this margin can shrink to 20-50 mV. Below VDD = 0.7V, the margin
+vanishes for the 6T cell, motivating the switch to 8T.
+
+**Write margin (formal):** During write, M5 (access) must overpower M3 (PMOS pull-up)
+to pull the storage node below the inverter switching threshold:
+
+$$
+V_Q = V_{DD} \cdot \frac{R_{M5}}{R_{M5} + R_{M3}}
+$$
+
+For write success: $V_Q < V_m$. This requires $R_{M3} > R_{M5} \cdot \frac{V_{DD} - V_m}{V_m}$,
+which translates to PR > 1. With PR = 1.5, write margin is adequate at nominal VDD.
+Write margin degrades at low VDD because PMOS on-resistance increases faster than
+NMOS as VDD approaches Vth.
 
 ### Transistor Schematic with Sizing
 
@@ -266,6 +429,61 @@ Additional 2T read port:
 
 Adds a differential read port (2 extra transistors on top of 8T, using both Q and Q_bar for read). This provides faster read (differential sensing) with the same read-decoupled advantage. Used in register files where speed is critical.
 
+### SRAM Yield and Repair
+
+Manufacturing defects in SRAM arrays are the primary yield limiter for large SoCs. Because SRAM bitcells use the smallest feature sizes (minimum metal pitch, minimum gate length), they are disproportionately susceptible to random defects.
+
+**Redundancy strategy:** Add spare rows (typically 2--4 per bank) and spare columns (2--8). At wafer test, defective rows/columns are replaced by fusing the address remapping.
+
+- **Laser fuse:** permanent, blown during wafer test. High reliability, no post-fuse modification.
+- **eFUSE:** electrically programmable. Can be done at package test or even in-field (for late-life repair). Smaller area but slightly less reliable than laser.
+
+**Yield model for SRAM with repair:**
+
+$$Y_{\text{repaired}} = \sum_{k=0}^{R} \frac{(D \times A)^k}{k!} \times e^{-D \times A}$$
+
+where $R$ is the number of spares, $D$ is defect density, and $A$ is array area.
+
+**Example:** 1 Mb SRAM at N5, $D = 0.3/\text{cm}^2$, cell area $= 0.05\;\mu\text{m}^2$, array area $\approx 0.05\;\text{mm}^2$. Without repair: $Y = e^{-0.3 \times 0.05} = 98.5\%$. But a large 64 MB L3 cache with 64 banks has much lower yield per bank; aggregate yield without repair can be $< 50\%$. With 4 spare rows per bank, yield recovers to $> 90\%$.
+
+### SRAM Retention Voltage
+
+The retention voltage ($V_{\text{retain}}$) is the minimum VDD at which the 6T cell retains data. Below this voltage, the cross-coupled inverter noise margin collapses and the stored bit can flip.
+
+- **Typical retention voltage:** $0.4$--$0.5 \times V_{\text{DD,nominal}}$ (e.g., 0.3 V for N5 at nominal 0.7 V).
+- **Trade-off:** lower retention voltage reduces leakage but increases susceptibility to soft errors and SNM degradation at high temperature.
+- **Power-gating sequence:** flush pending writes $\to$ assert retention signal $\to$ lower VDD to $V_{\text{retain}}$ $\to$ ... $\to$ raise VDD $\to$ deassert retention $\to$ resume operation. The transition takes 5--50 $\mu$s.
+
+### eDRAM (Embedded DRAM)
+
+The 1T1C cell (one transistor + one capacitor) is much smaller than a 6T SRAM cell: $\sim 0.02\;\mu\text{m}^2$ at N5, roughly 3--4x denser. The trade-off is the need for periodic refresh (every 2--8 ms), consuming bandwidth and power.
+
+| Attribute | SRAM (6T) | eDRAM (1T1C) |
+|-----------|-----------|--------------|
+| Cell area (N5) | ~0.05 $\mu\text{m}^2$ | ~0.02 $\mu\text{m}^2$ |
+| Access latency | 1--3 ns | 5--10 ns |
+| Refresh required | No | Every 2--8 ms |
+
+**Use cases:** IBM POWER L4 caches, Intel server processor eDRAM L4 (Crystalwell). eDRAM is attractive as a last-level cache where density matters more than latency. The access latency is 2--4x slower than SRAM (access + restore cycle), but the much larger capacity per unit area makes it viable for large shared caches.
+
+### HBM (High Bandwidth Memory) and GDDR
+
+**HBM:** 3D-stacked DRAM with a wide interface (1024-bit per stack), 3--8 stacks per GPU. HBM3E delivers 960 GB/s per stack with 36 GB capacity. Connected via TSV interposer. Used in AI accelerators (H100, B200).
+
+**GDDR6X:** 384-bit interface per GPU, 24 Gbps per pin, $\sim$1.15 TB/s. Used in gaming/graphics GPUs (RTX 4090). Much cheaper than HBM but lower bandwidth.
+
+**Key difference:** HBM trades pin count for per-pin speed (wide + slow vs. narrow + fast). HBM per-pin speed: $\sim$6 Gbps. GDDR6X: $\sim$24 Gbps.
+
+### SRAM Soft Error Rate (SER)
+
+Cosmic rays (neutrons) and alpha particles (from packaging materials) can flip SRAM bits. SER $\approx$ 100--1000 FIT/Mb at terrestrial altitude (1 FIT = 1 failure per $10^9$ device-hours).
+
+**Mitigation strategies:**
+
+- **ECC:** SECDED corrects 1-bit, detects 2-bit errors. Overhead: 7+1=8 bits per 64-bit word (12.5% for SECDED). For a 1 MB cache: 128 KB of ECC storage.
+- **Parity with scrubbing:** periodic read-check-correct cycle. Prevents accumulation of single-bit errors that could exceed ECC correction capability.
+- **Physical shielding:** overburden concrete for data centers reduces neutron flux by 2--10x depending on depth.
+
 ---
 
 ## DRAM — Detailed Design
@@ -348,6 +566,353 @@ Only ~45 mV of signal! This is why DRAM needs sensitive sense amplifiers.
 
 **This is a destructive read:** The original charge on Cs is disturbed by charge sharing. The sense amplifier must write the amplified value back to the cell (**restore operation**).
 
+### Sense Amplifier Design -- Voltage-Mode vs Current-Mode
+
+#### Voltage-Mode Sensing (Most Common)
+
+The standard cross-coupled latch sense amplifier described above operates in **voltage
+mode**. It detects the voltage difference between BL and BL_bar after charge sharing.
+
+**Bitline swing time calculation:**
+
+```
+The sense amplifier detects when delta_V >= V_sense_threshold (~10-20 mV).
+
+Bitline development time (voltage-mode):
+  t_dev = C_BL * V_sense_threshold / I_cell
+
+where:
+  C_BL = total bitline capacitance (~200-400 fF for 256-512 rows)
+  I_cell = cell read current through access transistor (~20-50 uA in 7nm)
+  V_sense_threshold = minimum detectable voltage (~15 mV)
+
+t_dev = 300 fF * 15 mV / 30 uA = 150 ps
+
+But this is only the detection time. Full rail-to-rail amplification:
+  t_amp = C_BL * VDD / I_sense_amp
+
+  I_sense_amp = ~100-200 uA (sense amp transistor drive)
+  t_amp = 300 fF * 1.0V / 150 uA = 2.0 ns
+
+Total sense time = t_dev + t_amp ≈ 150 ps + 2.0 ns ≈ 2.2 ns
+```
+
+**Why differential sensing rejects common-mode noise:**
+
+BL and BL_bar are routed as a tightly-coupled differential pair on the same metal layer,
+with matched parasitic capacitance and resistance. Any external noise source (power
+supply ripple, capacitive coupling from adjacent bitlines, substrate noise) couples
+equally into both BL and BL_bar, appearing as a common-mode shift. The sense amplifier
+responds only to the **difference** between BL and BL_bar, rejecting the common-mode
+component. This is why DRAM can detect a ~45 mV signal in a noisy array environment:
+
+```
+BL signal:      VDD/2 + 45 mV + noise
+BL_bar signal:  VDD/2 - 45 mV + noise
+Difference:     90 mV (noise cancels!)
+
+Common-mode rejection ratio (CMRR) of cross-coupled sense amp:
+  CMRR ≈ gm * R_load ≈ 30-40 dB (voltage ratio of 30-100x)
+  A 100 mV common-mode noise appears as only 1-3 mV differential error
+```
+
+#### Current-Mode Sensing
+
+An alternative that detects current flow rather than voltage swing:
+
+```
+Instead of waiting for bitline voltage to develop:
+  Current-mode sense amp measures the difference in discharge current
+  between BL and BL_bar.
+
+  I_BL  (stored "1") = C_s * VDD / (C_s + C_BL) * (discharge rate)
+  I_BL_bar (stored "0") ≈ 0
+
+  The current difference appears in ~50-100 ps (much faster than voltage-mode).
+
+Advantages:
+  - Faster detection: 50-100 ps vs 150+ ps for voltage-mode
+  - Less bitline swing required (lower power)
+
+Disadvantages:
+  - More complex circuit (requires matched current mirrors)
+  - Higher offset sensitivity (transistor mismatch affects current more)
+  - Typically used only in fast SRAM (register files) not DRAM
+
+Most DRAM uses voltage-mode due to simplicity and robustness.
+Fast SRAM register files may use current-mode for sub-ns read latency.
+```
+
+### Multi-Port Register File Design -- Detailed Implementation
+
+#### How Multiple Read Ports Are Implemented
+
+Each additional read port requires a **separate pair of bitlines** (or a separate 2T
+read stack) for every bitcell in the array. The bitcell physically grows to accommodate
+the additional bitline routing and access transistors.
+
+**1R1W register file (6T cell):**
+
+```
+                   VDD
+                ┌──┴──┐
+        BL ──── M5    M6 ──── BL_bar
+                │  ╳  │     (cross-coupled inverters M1-M4)
+                └──┬──┘
+               GND (via pull-down)
+        WL ──── gates of M5, M6
+
+1 read port (shared with write via BL/BL_bar)
+1 write port (same access transistors)
+6 transistors, 1 wordline, 1 bitline pair
+```
+
+**3R2W register file (16T cell):**
+
+```
+Write ports: 2 independent write paths
+  Write Port A: WLA, BLA/BLA_bar (access transistors M5a, M6a)
+  Write Port B: WLB, BLB/BLB_bar (access transistors M5b, M6b)
+
+Read ports: 3 independent read-only paths (8T-style read-decoupled)
+  Read Port 0: RWL0, RBL0 (transistors M7a, M8a -- gated by Q_bar)
+  Read Port 1: RWL1, RBL1 (transistors M7b, M8b -- gated by Q_bar)
+  Read Port 2: RWL2, RBL2 (transistors M7c, M8c -- gated by Q_bar)
+
+Total transistors: 6 (storage) + 2x2 (write ports) + 3x2 (read ports) = 16T
+Total wordlines: 2 write + 3 read = 5
+Total bitlines: 2 write pairs + 3 read singles = 7
+
+Area per cell ≈ 16T/6T * 0.05 um^2 ≈ 0.13 um^2 (in 7nm)
+```
+
+#### Write Conflict Resolution
+
+When two write ports target the same address simultaneously, the result is undefined
+without arbitration. A multi-port register file controller must implement:
+
+```
+Write conflict detection:
+  For all pairs of write ports (i, j):
+    if (W_addr[i] == W_addr[j]) && W_enable[i] && W_enable[j]:
+      // CONFLICT! Resolve by priority
+      if (W_priority[i] > W_priority[j]):
+        W_enable[j] = 0   // suppress port j
+      else:
+        W_enable[i] = 0   // suppress port i
+
+In an OoO processor:
+  Port priorities are assigned by the scheduler (e.g., older instruction wins)
+  The scheduler knows both write addresses before issue, so conflicts are
+  resolved before the write reaches the register file
+
+Alternative: some designs allow simultaneous writes to the same address
+  only if they write non-overlapping byte lanes (checked via WSTRB comparison)
+```
+
+#### Area Scaling With Ports
+
+```
+Cell area scales approximately as O(Ports^2):
+  Each port adds 1 wordline (horizontal) + 1-2 bitlines (vertical)
+  Cell must grow in BOTH dimensions to route the additional wires
+
+  A(P) ≈ A_6T * (1 + k * P)^2  where k ≈ 0.1-0.15
+
+  P=1 (1R1W):  A ≈ 0.05 um^2 (6T)
+  P=2 (1R1W):  A ≈ 0.07 um^2 (8T)
+  P=3 (2R1W):  A ≈ 0.10 um^2 (10T)
+  P=5 (3R2W):  A ≈ 0.13 um^2 (16T)
+  P=6 (4R2W):  A ≈ 0.18 um^2 (18T)
+  P=8 (6R2W):  A ≈ 0.25 um^2 (22T)
+  P=12 (8R4W): A ≈ 0.40 um^2 (30T) -- extremely large
+
+Access time also scales poorly with ports:
+  Each additional bitline adds capacitance to the sense node
+  Each additional wordline adds gate loading to the decoder
+  P=2:  ~0.5 ns access
+  P=6:  ~0.8 ns access
+  P=12: ~1.5 ns access (often multi-cycle)
+
+Typical OoO CPU configurations:
+  ARM Cortex-A78:  128-entry x 64b, 4R2W (banked 2x2R1W)
+  Apple M1:       ~350-entry x 64b, estimated 6R3W (banked)
+  AMD Zen 4:      ~180-entry x 64b, estimated 4R2W (banked)
+  Intel Golden Cove: ~280-entry x 64b, estimated 6R4W (banked)
+```
+
+### DRAM Read and Write Operation Sequences
+
+#### DRAM Read Sequence (Step-by-Step)
+
+```
+Step 1: PRECHARGE (tRP ~13.75 ns for DDR4-3200)
+  - Bitlines BL and BL_bar are equalized to VDD/2 by precharge circuit
+  - All sense amplifiers in the bank are reset
+
+Step 2: ACTIVATE (wordline assertion)
+  - Controller issues ACT command with row address
+  - Wordline for the selected row goes HIGH
+  - All access transistors in the row turn on simultaneously
+  - Charge sharing begins between each cell capacitor (Cs) and its bitline (C_BL)
+  - For a stored "1": BL rises above VDD/2 by delta_V ≈ 45 mV
+  - For a stored "0": BL drops below VDD/2 by delta_V ≈ 45 mV
+  - Sense amplifier detects the differential: BL vs BL_bar diverge
+
+Step 3: SENSE AND RESTORE (tRCD includes this)
+  - Sense amplifier fires, amplifying the ~45 mV signal to full rail
+  - Full-rail voltage is driven back through the access transistor into the cell
+    capacitor, RESTORING the charge (destructive read requires restore)
+  - The entire row is now latched in the sense amplifier array (row buffer)
+
+Step 4: COLUMN READ (tCL ~13.75 ns)
+  - Controller issues READ command with column address
+  - Column decoder selects the appropriate sense amplifier output
+  - Selected data is driven onto the DQ pins through the I/O gating and output driver
+  - Burst of 8 data transfers (BL8) on both clock edges over 4 clock cycles
+
+Step 5: PRECHARGE (if closing the row)
+  - Controller issues PRECHARGE command
+  - Wordline goes LOW, disconnecting cells
+  - Bitlines equalized back to VDD/2
+  - Row buffer data is lost (cells have been restored in Step 3)
+
+Total read latency (row miss): tRP + tRCD + tCL = ~41 ns (DDR4-3200)
+Total read latency (row hit):  tCL only = ~13.75 ns
+```
+
+#### DRAM Write Sequence (Step-by-Step)
+
+```
+Step 1: ACTIVATE (same as read)
+  - Open the row, sense amplifiers latch row data
+
+Step 2: COLUMN WRITE (tCWL ~12 ns)
+  - Controller issues WRITE command with column address
+  - Write driver forces the selected bitline pair to the new data value
+  - The sense amplifier for the selected column is overridden by the write driver
+  - The cell capacitor is charged/discharged to the new value through the access transistor
+
+Step 3: WRITE RECOVERY (tWR ~15 ns)
+  - After the write burst completes, the written cell needs time to fully charge
+    the capacitor to the correct voltage level
+  - The sense amplifier must hold the written value during this time
+  - The row must remain open for tWR before precharge
+
+Step 4: PRECHARGE
+  - After tWR has elapsed, controller can issue PRECHARGE
+  - Row buffer data (with the updated column) is written back to all cells in the row
+
+Total write latency (row miss): tRP + tRCD + tCWL + tWR = ~54 ns
+```
+
+### DRAM Refresh -- Detailed Mechanism
+
+#### Charge Leakage
+
+A DRAM cell stores a bit as charge on a capacitor (Cs ≈ 25-30 fF). This charge leaks
+away through several paths:
+
+```
+Leakage current sources:
+  1. Subthreshold leakage through the access transistor (NMOS gate = off, but
+     small Ids flows): I_sub ≈ 1-10 fA per cell (temperature dependent)
+
+  2. Gate leakage through the access transistor dielectric: I_gate ≈ 0.1-1 fA
+     (reduced in high-k metal gate processes)
+
+  3. Junction leakage at the drain of the access transistor: I_junc ≈ 0.5-5 fA
+
+  4. Capacitor dielectric leakage (tunneling through the capacitor dielectric):
+     I_cap ≈ 0.1-2 fA (worse with thinner dielectrics for higher density)
+
+Total leakage: I_total ≈ 2-20 fA per cell (at 85°C)
+
+Time to lose 50% of charge (from VDD to VDD/2):
+  t_leak = Cs * (VDD/2) / I_total
+         = 25 fF * 0.5V / 10 fA
+         = 12.5 fC / 10 fA
+         = 1.25 seconds (at room temperature)
+
+But the sense amplifier threshold is much tighter than 50%:
+  The cell must retain enough charge for the sense amplifier to distinguish
+  "1" from "0" reliably. If delta_V < V_sense_min (~15 mV), the cell is "lost."
+
+  Effective retention time: ~64 ms at 85°C (JEDEC standard)
+  At 45°C: retention time is ~2-4x longer (lower leakage)
+  At 105°C: retention time is ~2-4x shorter (higher leakage)
+```
+
+#### Refresh Commands
+
+```
+1. All-Bank Refresh (RAS-only refresh):
+   Command: CS_n=0, RAS_n=0, CAS_n=0, WE_n=0, A10=1
+   All banks must be precharged (idle) before refresh
+   Duration: tRFC (all-bank refresh cycle time)
+   During tRFC: NO commands can be issued to ANY bank
+
+   tRFC values by density:
+   | Density | tRFC (ns) | Rows refreshed per command |
+   |---------|-----------|---------------------------|
+   | 4 Gb    | 260       | ~8                        |
+   | 8 Gb    | 350       | ~8                        |
+   | 16 Gb   | 550       | ~8                        |
+   | 24 Gb   | 650       | ~8                        |
+
+2. Per-Bank Refresh (DDR4 optional):
+   Only one bank is refreshed at a time
+   Other 15 banks remain available for read/write
+   tRFC_pb ≈ 140 ns (much shorter than all-bank)
+   16 per-bank refreshes needed to cover all banks
+
+3. Auto-Refresh:
+   Controller issues REFRESH command, DRAM internally manages row counter
+   Row counter increments automatically after each refresh
+   8192 refresh commands per tREFW (64 ms)
+   tREFI = 64 ms / 8192 = 7.8125 us average interval
+
+4. Self-Refresh:
+   DRAM enters low-power mode, internal oscillator generates refreshes
+   No controller involvement needed
+   Used in sleep/standby modes
+   tCKE must be low for at least tCKESR before self-refresh is entered
+   Exit latency: tXSR (self-refresh exit time, ~100-200 ns)
+
+5. Fine Granularity Refresh (FGR, DDR4):
+   1x mode: 8192 commands per 64 ms (standard, tREFI = 7.8 us)
+   2x mode: 16384 commands per 64 ms (tREFI = 3.9 us, more frequent)
+   4x mode: 32768 commands per 64 ms (tREFI = 1.95 us, even more frequent)
+   Higher modes reduce tRFC (fewer rows per command) but increase total
+   refresh overhead. Used at high temperature to prevent data loss.
+```
+
+#### Refresh Overhead at Different Densities
+
+```
+Refresh overhead = tRFC / tREFI (fraction of time DRAM is unavailable)
+
+| Density | tRFC (ns) | tREFI (us) | Overhead | Bandwidth Lost |
+|---------|-----------|------------|----------|----------------|
+| 4 Gb    | 260       | 7.8125     | 3.3%     | ~0.85 GB/s per 25.6 GB/s channel |
+| 8 Gb    | 350       | 7.8125     | 4.5%     | ~1.15 GB/s |
+| 16 Gb   | 550       | 7.8125     | 7.0%     | ~1.80 GB/s |
+| 24 Gb   | 650       | 7.8125     | 8.3%     | ~2.13 GB/s |
+| 32 Gb*  | 800       | 7.8125     | 10.2%    | ~2.62 GB/s |
+
+* Projected for future DDR5 densities
+
+At 16 Gb density, 7% of total bandwidth is consumed by refresh.
+For a DDR5-5600 channel (44.8 GB/s peak):
+  Refresh overhead = 44.8 * 0.07 = 3.14 GB/s lost to refresh
+  That's equivalent to ~49,000 cache line misses per second that cannot be served
+
+Same-bank refresh (DDR5) mitigates this:
+  Refresh bank 0 of all bank groups simultaneously
+  Banks 1-3 in each bank group remain available
+  Effective overhead: tRFC_sb / tREFI ≈ 200ns / 7.8us ≈ 2.6% (much lower)
+```
+
 ### Refresh Requirements and Power Impact
 
 ```
@@ -367,6 +932,73 @@ Refresh bandwidth overhead:
 - **Per-bank refresh:** Only one bank is being refreshed at a time; other banks can be accessed
 - **Targeted refresh:** Only refresh rows near a frequently-accessed row (rowhammer defense)
 - **Temperature-compensated refresh:** Reduce refresh rate at low temperature (retention time is longer)
+
+#### DRAM Refresh Bandwidth Overhead — Worked Calculation
+
+```
+For DDR4-3200 single channel (25.6 GB/s peak) with 16 Gb chips:
+
+Refresh parameters:
+  tREFW = 64 ms (refresh window)
+  8192 refresh commands required per tREFW
+  tRFC = 550 ns (16 Gb, all-bank refresh)
+  tREFI = 7.8125 us (average interval)
+
+Time spent in refresh per 64 ms window:
+  Total refresh time = 8192 * 550 ns = 4,505,600 ns = 4.506 ms
+  Overhead = 4.506 / 64.0 = 7.04%
+
+Bandwidth lost to refresh:
+  25.6 GB/s * 0.0704 = 1.80 GB/s lost
+
+  In terms of cache lines (64 B) not served:
+    1.80 GB/s / 64 B = 28.1 million cache lines per second that cannot be served
+
+For DDR5-5600 (44.8 GB/s peak) with 24 Gb chips:
+  tRFC = ~700 ns (projected for 24 Gb)
+  Overhead = 8192 * 700 ns / 64 ms = 8.96%
+  Bandwidth lost: 44.8 * 0.0896 = 4.01 GB/s
+
+With same-bank refresh (DDR5 SBR):
+  tRFC_sb = ~250 ns
+  Only 4 bank numbers x tRFC_sb per refresh round (not all banks)
+  Banks 1-3 remain available during each SBR
+  Effective overhead: ~2.5-3% (much better than all-bank 8.96%)
+```
+
+#### Auto-Refresh vs Self-Refresh — Detailed Comparison
+
+```
+Auto-refresh (controller-managed):
+  Controller issues REFRESH command every tREFI (7.8 us average).
+  DRAM internally increments a row counter and refreshes the next set of rows.
+  Controller must track timing: can postpone up to 8x tREFI, but must catch up.
+  DRAM is fully operational between refreshes (commands to other banks allowed).
+
+  Pros: Controller controls when refresh happens (can schedule during idle).
+  Cons: Controller complexity; must guarantee all refreshes within tREFW.
+
+Self-refresh (DRAM-managed):
+  Controller asserts CKE low and issues SELFREF command.
+  DRAM enters low-power mode with internal oscillator.
+  Internal refresh counter generates refreshes autonomously.
+  No controller involvement; all I/O pins are quiescent (maximum power savings).
+  Exit latency: tXSR = 100-200 ns (must complete any in-progress refresh before exit).
+
+  Pros: Maximum power saving; no controller overhead during sleep.
+  Cons: Long exit latency; no external access during self-refresh.
+
+Power comparison:
+  Active idle (CKE high, no commands):  ~80 mW per x8 device (DDR4-3200)
+  Auto-refresh (periodic REF):          ~65 mW average (refresh spikes to ~200 mW)
+  Self-refresh (CKE low):               ~15-30 mW (DRAM handles refresh internally)
+  Power-down (CKE low, no refresh):     ~5 mW (data lost! Only for deep sleep)
+
+Typical mobile use:
+  Active → auto-refresh during normal operation
+  Screen off → enter self-refresh (DRAM retains data, minimal power)
+  Deep sleep → power-down (DRAM data lost, restore from flash on wake)
+```
 
 ---
 

@@ -403,7 +403,7 @@ Peripheral register)"]
 
 ### 5.3 CHI Channels
 
-CHI uses four logical channels, each with dedicated REQ/ACK signaling:
+CHI uses four logical channels, each with dedicated credit-based flow control:
 
 | Channel | Direction         | Purpose                                          | Key Fields                       |
 |---------|-------------------|--------------------------------------------------|----------------------------------|
@@ -413,15 +413,18 @@ CHI uses four logical channels, each with dedicated REQ/ACK signaling:
 | DAT     | SN -> HN, HN -> RN | Data transfer (cache lines, write data)          | SrcID, TgtID, Data, BE, CC       |
 
 ```
-Each channel uses a valid/ready handshake (similar to AXI):
-  TXREQFLITV / TXREQFLITREADY  -- REQ channel valid/ready
-  TXSNPFLITV / TXSNPFLITREADY  -- SNP channel valid/ready
-  TXRSPFLITV / TXRSPFLITREADY  -- RSP channel valid/ready
-  TXDATFLITV / TXDATFLITREADY  -- DAT channel valid/ready
-
 A "flit" (flow control unit) is one packet on a channel.
 CHI packets are wider than AXI signals (typically 128-256 bits per flit)
 and carry all fields in a single cycle (single-flit packets for most ops).
+
+Flow control is credit-based (not valid/ready like AXI). The receiver
+allocates credits to the sender at link init. Each flit consumes one
+credit. The sender may only transmit when it has credits available.
+The receiver returns credits after consuming the flit. See Section 5.7
+for full details.
+
+Note: CHI Issue A used valid/ready (TXREQFLITV/TXREQFLITREADY, etc.)
+but this was replaced by credit-based flow control from Issue B onward.
 ```
 
 ### 5.4 CHI Transaction Types
@@ -504,6 +507,320 @@ If RN1 had M state instead of S:
   RN1 returns dirty data via DAT channel (cache-to-cache transfer)
   HN-F forwards data to RN0 and writes back to memory
   No separate memory read needed -- saves latency and bandwidth.
+```
+
+### 5.7 CHI Credit-Based Flow Control
+
+CHI uses credit-based flow control instead of AXI-style valid/ready
+handshakes. This is a fundamental architectural difference with important
+implications for latency, buffering, and deadlock avoidance.
+
+```
+Why credits instead of valid/ready?
+
+  AXI valid/ready: sender and sender must both be ready in the same cycle.
+  If the receiver stalls (READY=0), the sender is blocked on that channel.
+  This works fine on a shared bus where both sides are clocked together.
+
+  CHI: connects nodes across a NoC (Network-on-Chip) with multiple hops.
+  The sender and receiver are not on the same bus segment. Propagating
+  a READY signal back through multiple router hops adds latency and
+  requires per-hop stall buffers. Credits decouple the sender from
+  receiver timing: the sender can transmit whenever it has credits,
+  without waiting for a round-trip signal.
+
+  Credit model:
+    1. At link initialization, receiver tells sender: "you have N credits"
+    2. Sender decrements its credit count for each flit transmitted
+    3. Receiver processes the flit and sends a credit return message
+    4. Sender increments its credit count on credit return
+
+  This is a sliding-window protocol with window size = credit count.
+```
+
+**Credit Types and Typical Values:**
+
+| Credit Signal       | Channel | Meaning                                         | Typical RN-F Allocation |
+|---------------------|---------|-------------------------------------------------|-------------------------|
+| TXDATFLIT (send)    | DAT     | Sender transmits a data flit (consumes credit)  | --                      |
+| RXDATFLIT (receive) | DAT     | Receiver gets a data flit                       | --                      |
+| TXDATLCRDV          | DAT     | Credit return: receiver returns a DAT credit     | --                      |
+| TXREQFLIT (send)    | REQ     | Sender transmits a request flit                  | --                      |
+| RXREQFLIT (receive) | REQ     | Receiver gets a request flit                     | --                      |
+| TXREQLCRDV          | REQ     | Credit return: receiver returns a REQ credit     | --                      |
+
+```
+Typical credit allocations for an RN-F (CPU core):
+
+  REQ credits (from RN-F to HN-F):  2-4 credits
+    - Limits how many outstanding requests the core can have
+      before the HN-F's request buffer fills up
+    - 4 credits means 4 REQ flits in flight before backpressure
+
+  RSP credits (from RN-F to HN-F):  2-4 credits
+    - For snoop responses and acknowledgments going back to HN-F
+
+  DAT credits (from RN-F to HN-F):  4-8 credits
+    - For write-back data, snoop data responses
+    - More DAT credits because data flits are larger and
+      take longer to drain through the NoC
+
+  SNP credits (from HN-F to RN-F):  2-4 credits
+    - How many snoops the HN-F can send to this RN-F
+    - Must be large enough to avoid starving the coherence protocol
+
+  Total per RN-F link: ~12-20 credits across all channels
+```
+
+**Credit Starvation and Deadlock:**
+
+```
+Credit starvation scenario:
+  1. RN-F has 4 DAT credits, sends 4 write-back data flits to HN-F
+  2. HN-F is congested processing snoops, doesn't drain DAT buffer
+  3. HN-F doesn't return credits (LCRDV) because it hasn't consumed
+     the flits yet
+  4. RN-F has 0 DAT credits -> cannot send any more data
+  5. If RN-F needs to send data to make forward progress (e.g., snoop
+     response that the HN-F is waiting for), deadlock can occur
+
+Deadlock prevention in CHI:
+  - Protocol-level deadlock freedom: CHI defines a message dependency
+    graph. Messages are partitioned into independent classes that
+    cannot block each other. REQ/RSP/DAT/SNP each have separate
+    credit pools and virtual channels.
+  - Separate credit pools per channel prevent a flood on one channel
+    from starving another.
+  - The interconnect must guarantee that credit returns are never
+    blocked by data flits (they travel in a separate class).
+  - Implementation rule: the receiver must return credits promptly.
+    The spec requires that a credit is returned within a bounded
+    number of cycles after the flit is consumed.
+
+  Deadlock freedom is ensured by the CHI protocol layer specification,
+  not by individual node implementations. ARM mandates a specific
+  message dependency ordering that eliminates circular wait.
+```
+
+**Comparison with AXI Ready/Valid:**
+
+| Property              | AXI Ready/Valid                  | CHI Credit-Based                    |
+|-----------------------|----------------------------------|-------------------------------------|
+| Backpressure signal   | READY per channel, same cycle    | Credit return, separate message     |
+| Sender knows state    | Immediately (combinational)      | Lagged (credit return latency)      |
+| Multi-hop support     | Poor (READY must propagate back) | Natural (credits are messages)      |
+| Buffer sizing         | Implicit (stall until READY)     | Explicit (credit count = buffer depth) |
+| deadlock avoidance    | Simpler (per-channel stall)      | Requires protocol-level guarantees  |
+| Typical credit count  | N/A (no credits)                 | 4-8 per channel per link            |
+| Throughput impact     | Full throughput when both ready  | Full throughput while credits > 0   |
+
+### 5.8 CHI Retry Mechanism
+
+When an HN-F cannot immediately service a request (directory entry busy,
+MSHR full, resource contention), it does not simply stall the requester.
+Instead, it actively sends back a **RetryAck**, telling the requester to
+hold off and retry later. This prevents head-of-line blocking in the
+interconnect.
+
+```
+Why retry instead of stalling?
+
+  In AXI: if a slave is busy, it holds READY=0 on the AW/AR channel.
+  The master is stuck. No other transaction from that master can pass
+  the blocked one (for the same ID). This is head-of-line blocking.
+
+  In CHI: the HN-F has a limited number of MSHRs (transaction tracking
+  entries) and directory ports. With 64+ RN-Fs all issuing requests,
+  contention is common. If the HN-F just stopped accepting flits
+  (stopped returning credits), ALL RN-Fs would be blocked, even those
+  whose requests could be served.
+
+  Retry solves this:
+    1. HN-F accepts the REQ flit (consumes a credit)
+    2. HN-F immediately sends RetryAck back to the RN-F
+    3. HN-F's REQ buffer is freed for other requests
+    4. RN-F retries the request later when resources are available
+```
+
+**Retry Flow:**
+
+```
+Step 1: RN-F sends a request
+  RN0 -> HN:  REQ {Opcode=ReadShared, Addr=X, SrcID=RN0, TgtID=HN0,
+                DBID=unassigned, ReturnNID=RN0}
+  HN receives the REQ, allocates an MSHR entry... but all MSHRs are full.
+
+Step 2: HN sends RetryAck
+  HN -> RN0:  RSP {Opcode=RetryAck, TgtID=RN0, SrcID=HN0,
+                     RetryPCrdType=1 (credit type to return)}
+
+  RetryAck contains:
+    - The credit type that the RN-F must return before retrying
+    - No DBID is allocated (the request was not accepted)
+
+Step 3: RN-F returns a Protocol Credit (PCrdReturn)
+  RN0 -> HN:  RSP {Opcode=PCrdReturn, SrcID=RN0, PCrdType=1}
+
+  This is the "I'm ready to retry" signal. The RN-F returns the
+  specific protocol credit that was indicated in the RetryAck.
+
+Step 4: HN sends PCrdGrant (when resources are available)
+  HN -> RN0:  RSP {Opcode=PCrdGrant, TgtID=RN0, PCrdType=1}
+
+  "Resources are now available, you may retry your request."
+
+Step 5: RN-F re-sends the original request
+  RN0 -> HN:  REQ {Opcode=ReadShared, Addr=X, ...}
+  This time the HN-F has resources and processes the request normally.
+```
+
+**Retry Ordering Guarantees:**
+
+```
+CHI guarantees about retry ordering:
+
+  1. Once an RN-F receives PCrdGrant, it MUST retry the same request
+     (same opcode, address, size). It cannot substitute a different request.
+
+  2. The retried request must be the oldest pending request of that
+     credit type at the RN-F. This prevents starvation.
+
+  3. An HN-F may issue multiple RetryAcks to the same RN-F if
+     resources remain unavailable. The RN-F must not retry until
+     it receives PCrdGrant.
+
+  4. PCrdGrant is sent in order per RN-F. The HN-F will not skip
+     ahead to a different RN-F's retry indefinitely (fairness).
+
+  5. The RN-F must not send any new requests of the same credit
+     type between RetryAck and PCrdGrant. This prevents the retry
+     queue from growing unboundedly.
+
+Credit types for retry:
+  - PCrdType values correspond to different resource classes
+    (e.g., request MSHRs, snoop MSHRs, data buffers)
+  - This allows the HN-F to manage contention per resource type
+```
+
+**Comparison with AXI:**
+
+| Property              | AXI Stall                        | CHI Retry                          |
+|-----------------------|----------------------------------|-------------------------------------|
+| Blocking scope        | Blocks entire master port        | Only the specific credit type       |
+| Other transactions    | Blocked (head-of-line)           | Can proceed (different credit type) |
+| Interconnect impact   | Buffer fills up, backpressure    | Buffer freed immediately            |
+| Latency penalty       | Until slave is ready             | Round-trip of RetryAck + PCrdReturn + PCrdGrant |
+| Complexity            | Simple (just wait)               | Complex (credit tracking, ordering) |
+| Scalability           | Poor for many masters            | Designed for 64+ nodes              |
+
+### 5.9 DCT (Direct Cache Transfer) / Direct Data Transfer
+
+In a standard CHI transaction, data flows through the HN-F (Home Node)
+even when the data is available in another RN-F's cache. DCT allows
+data to be sent directly from one RN-F to another without going through
+the HN-F or memory, reducing latency and interconnect bandwidth.
+
+```
+Standard path (non-DCT):
+  RN0 wants cache line X, RN1 has X in Modified state
+  RN1 -> HN-F -> SN-F (writeback to memory)
+  SN-F -> HN-F -> RN0 (read from memory)
+  Latency: 2 interconnect traversals + memory access
+
+DCT path:
+  RN0 wants cache line X, RN1 has X in Modified state
+  HN-F sends snoop to RN1, RN1 forwards data directly to RN0
+  RN1 -> RN0 (direct data transfer, bypassing HN-F and memory)
+  Latency: 1 snoop + 1 direct data transfer
+```
+
+**How DCT Works in the Protocol:**
+
+```
+Step 1: RN0 sends request
+  RN0 -> HN:  REQ {Opcode=ReadShared, Addr=X, SrcID=RN0}
+
+Step 2: HN checks directory, finds RN1 has X in Modified state
+  HN -> RN1:  SNP {Opcode=SnpSharedFwd, Addr=X, TgtID=RN1,
+                     FwdNID=RN0}
+  FwdNID tells RN1 to forward data directly to RN0 (not back to HN).
+
+Step 3: RN1 responds with forwarded data
+  RN1 -> HN:  RSP {Opcode=SnpRespFwded, SrcID=RN1,
+                     FwdState=Shared, Resp=Data}
+  "I am forwarding the data directly to the requester."
+
+  RN1 -> RN0: DAT {Opcode=SnpRespDataPtl, Data=X_cache_line,
+                     FwdNID=RN0, DBID=non-zero}
+  The data goes directly from RN1 to RN0. The non-zero DBID
+  indicates this is a DCT transfer, not a normal response.
+
+Step 4: RN0 receives data
+  RN0 gets the cache line directly from RN1.
+  RN0 -> HN:  RSP {Opcode=CompAck, SrcID=RN0}
+  "I received the data, transaction complete."
+
+Key protocol signals for DCT:
+  - SnpSharedFwd / SnpUniqueFwd: snoop opcodes that tell the target
+    RN-F to forward data to a third party (not back to the HN)
+  - FwdNID in the snoop: identifies where to send the data
+  - SnpRespFwded: tells HN that data was forwarded directly
+  - Non-zero DBID in the forwarded DAT: DCT indicator
+```
+
+**Snoop Filter Implications:**
+
+```
+The Snoop Filter (SF) in the HN-F must track ownership even during DCT:
+
+  1. Before DCT: SF shows RN1 has X in Modified state
+  2. After DCT: SF must be updated to show:
+     - RN1 no longer has X in Modified (downgraded to Shared or Invalid)
+     - RN0 now has X (in Shared or Unique state depending on opcode)
+  3. The SF update happens when the HN-F receives SnpRespFwded from RN1.
+     The HN-F knows data was forwarded and updates the directory.
+
+  Critical invariant: the SF must never lose track of who has the data.
+  Even though the data bypasses the HN-F, the coherence metadata
+  still flows through the HN-F via the SnpRespFwded response.
+
+  Without proper SF tracking:
+    - A subsequent ReadUnique to RN0 would not be snooped
+    - The line could be in two caches without the HN knowing
+    - Coherence violation -> silent data corruption
+```
+
+**When DCT Is Used:**
+
+| Scenario                         | DCT Used? | Reason                                      |
+|----------------------------------|-----------|---------------------------------------------|
+| RN1 has M, RN0 wants Shared     | Yes       | Avoid memory round-trip, fastest path       |
+| RN1 has E/S, RN0 wants Shared   | Yes       | Cache-to-cache faster than memory           |
+| RN1 has M, RN0 wants Unique     | Yes       | Dirty data forwarded directly               |
+| No cached copy (memory only)    | No        | No RN-F to forward from                    |
+| Write-back eviction              | No        | Data goes to memory, not another cache      |
+| RN-I (IO coherent) requester    | No        | RN-I cannot receive SNP/DAT directly        |
+
+**DCT vs Non-DCT Comparison:**
+
+```
+Metric                  Non-DCT                    DCT
+--------------------    -----------------------    --------------------------
+Latency (typical)       40-80 ns                   15-30 ns
+                        (memory read +              (one snoop + direct
+                         2 NoC hops)                 data transfer)
+Interconnect traffic    Data traverses HN-F twice  Data bypasses HN-F
+                        (in from RN1, out to RN0)   (direct RN1 -> RN0)
+Memory bandwidth        Consumed (read + optional   Not consumed
+                        writeback)                  (data stays in cache)
+HN-F buffer usage       Data buffered in HN-F       HN-F only tracks metadata
+Power                   Higher (memory access)      Lower (SRAM-to-SRAM only)
+
+DCT savings estimate for a 64-core server:
+  - Cache-to-cache sharing rate: ~20-30% of coherence misses
+  - DCT eliminates ~50% of memory bandwidth for those misses
+  - Net memory bandwidth saving: ~10-15% of total coherence traffic
+  - Latency improvement: 2-3x for cache-hot data
 ```
 
 ---
@@ -695,17 +1012,25 @@ For SoC design:
 
 | Parameter                                  | Value                           | Notes                                  |
 |--------------------------------------------|---------------------------------|----------------------------------------|
+| AXI4 max burst length                      | 256 beats (AXI4), 16 (AXI3)    | Per transaction; unlimited outstanding with different IDs |
+| AXI4 data width options                    | 32, 64, 128, 256, 512, 1024    | Powers of 2 from 32 to 1024 bits       |
 | ACE additional channels                    | 3 (AC, CR, CD) + 2 (RACK, WACK)| On top of AXI4's 5 channels            |
 | ACE max practical core count               | ~8                              | Snoop bandwidth scales O(N^2)          |
 | ACE snoop latency (typical)                | 2--4 cycles                     | AC -> CR/CD round-trip                  |
+| ACE snoop response types                   | Shared, Clean, Data             | CR channel encodes hit/miss + state    |
 | ACE cache line size (typical)              | 64 bytes                        | Matches ARM L1$ line size              |
-| CHI channels                               | 4 (REQ, SNP, RSP, DAT)         | Each with valid/ready handshake        |
+| ACE/CHI typical frequency range            | 800 MHz -- 2 GHz                | Interconnect fabric clock; cores run faster |
+| CHI channels                               | 4 (REQ, SNP, RSP, DAT)         | Credit-based flow control (Issue B+)   |
+| CHI link width (typical data)              | 128 bits + sidebands            | Sidebands: valid, poison, parity, etc. |
+| CHI flit types                             | REQ, RSP, SNP, DAT             | Each has dedicated credit pool         |
 | CHI max core count                         | 64--128+                        | Directory scales better than snoop     |
 | CHI flit width (typical)                   | 128--256 bits                   | Wider than AXI signal groups           |
 | CHI hop latency (mesh, typical)            | 2--3 cycles per hop             | Depends on topology and router depth   |
-| Directory entry size (per line, 64-core)   | ~72 bits                        | 64-bit sharer vector + state + tag     |
+| CHI credits per RN-F (typical)             | 4-8 DAT, 2-4 REQ, 2-4 RSP      | Per-channel, per-link allocation       |
+| Directory entry size (per line, 64-core)   | ~70 bits                        | 64-bit sharer vector + 3b state + valid; no tag (indexed by addr) |
 | Snoop filter entry size (4-core)           | ~24 bits                        | 4-bit sharer + 20-bit tag (partial)    |
 | TrustZone TZC-400 max regions              | 9                               | Configurable Secure/Non-secure         |
+| TrustZone NS bit position                  | AxPROT[1]                       | 0=Secure, 1=Non-secure                 |
 | ATOP operation count                       | 16                              | 8 AtomicLoad + 8 AtomicStore variants  |
 | AXI5 AxATOP width                          | 2 bits                          | 00=Normal, 01=Store, 10=Load, 11=CAS   |
 | DMB/DSB barrier cost (typical)             | 10--50 cycles                   | Depends on outstanding traffic         |

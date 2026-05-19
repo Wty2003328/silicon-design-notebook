@@ -769,6 +769,607 @@ endsequence
 
 ---
 
+## Complete SVA Property Operator Reference
+
+One worked example per operator -- the cheat sheet you need in an interview.
+
+### $rose / $fell / $stable
+
+```systemverilog
+// $rose(sig): true when sampled value changed from 0→1 since previous clock edge
+// $fell(sig): true when sampled value changed from 1→0
+// $stable(sig): true when sampled value is same as previous clock edge
+
+// Example: req must stay high until ack (both edges are meaningful)
+property p_req_holds;
+    @(posedge clk) $rose(req) |-> req throughout ##[1:20] $fell(req);
+endproperty
+// When req rises, it must stay 1 until it eventually falls
+
+// Example: data must be stable when valid is high
+property p_data_stable_with_valid;
+    @(posedge clk) valid |-> $stable(data);
+endproperty
+```
+
+### $past
+
+```systemverilog
+// $past(expr, N, gate, clk): value of expr N clock ticks ago
+// Default N=1, gate=1 (ungated), clock = current clock
+
+// Example: counter should increment by 1
+property p_cnt_incr;
+    @(posedge clk) disable iff (!rst_n)
+    cnt == $past(cnt) + 1;
+endproperty
+
+// Example with gating: check data matches what was on bus when en was asserted
+property p_gated_past;
+    @(posedge clk)
+    $rose(ready) |-> data == $past(wr_data, 1, wr_en, @(posedge clk));
+endproperty
+// Returns value of wr_data from the last cycle where wr_en was 1
+```
+
+### $onehot / $onehot0 / $countones / $isunknown
+
+```systemverilog
+// $onehot(expr): exactly one bit is 1
+// $onehot0(expr): at most one bit is 1 (zero or one)
+// $countones(expr): number of 1 bits
+// $isunknown(expr): any bit is X or Z
+
+// Example: arbiter one-hot grant with X detection
+property p_grant_valid;
+    @(posedge clk) disable iff (!rst_n)
+    |grant |-> $onehot(grant) && !$isunknown(grant);
+endproperty
+
+// Example: bus ownership -- at most one master active
+property p_bus_owner;
+    @(posedge clk) $onehot0(bus_req);
+endproperty
+```
+
+### ##N (fixed delay) and ##[M:N] (range delay)
+
+```systemverilog
+// ##N: exact N cycles later
+// ##[M:N]: between M and N cycles later (creates N-M+1 threads)
+// ##[0:$]: zero or more cycles (unbounded)
+
+// Example: pipeline with known latency of 3 cycles
+property p_pipe_latency;
+    @(posedge clk) $rose(issue) |-> ##3 $rose(done);
+endproperty
+
+// Example: interrupt must be serviced within 10-100 cycles
+property p_irq_service;
+    @(posedge clk) $rose(irq) |-> ##[1:100] $rose(irq_ack);
+endproperty
+```
+
+### [*N] (consecutive repetition) and [*M:N]
+
+```systemverilog
+// expr[*N]: expr true for N consecutive cycles
+// expr[*M:N]: expr true for M to N consecutive cycles
+// expr[*0]: empty match (matches immediately, zero-length)
+
+// Example: reset must be held low for at least 5 cycles
+sequence s_reset_duration;
+    !rst_n[*5];
+endsequence
+
+// Example: backoff period -- bus idle for 3-8 cycles between transactions
+property p_backoff;
+    @(posedge clk) $fell(bus_valid) |=> !bus_valid[*3:8] ##1 bus_valid;
+endproperty
+```
+
+### [->N] (goto repetition)
+
+```systemverilog
+// expr[->N]: expr becomes true for the Nth time (non-consecutive OK)
+// Match point IS at the Nth occurrence.
+// Equivalent to: (!expr[*0:$] ##1 expr) repeated N times
+
+// Example: receive exactly 4 data beats, then assert last
+property p_rx_4_beats;
+    @(posedge clk) $rose(rx_start) |-> data_valid[->4] ##1 rx_last;
+endproperty
+// Matches: rx_start → (eventually data_valid 4 separate times) → then rx_last
+```
+
+### [=N] (non-consecutive repetition)
+
+```systemverilog
+// expr[=N]: expr has been true N times (non-consecutive)
+// Unlike [->N], match continues AFTER the Nth occurrence
+// Allows trailing cycles where expr is 0
+
+// Example: monitor that at least 3 errors occurred before system halt
+property p_3_err_then_halt;
+    @(posedge clk) $rose(monitor_start) |-> error[=3] ##1 halt;
+endproperty
+// After 3 errors, halt can come on any subsequent cycle (not necessarily
+// the cycle right after the 3rd error)
+```
+
+### |-> (overlapping implication) and |=> (non-overlapping)
+
+```systemverilog
+// |-> : consequent evaluated SAME cycle as antecedent match
+// |=> : consequent evaluated NEXT cycle after antecedent match
+// |=> B  is equivalent to  |-> ##1 B
+
+// Example (|->): grant must be one-hot in the same cycle as any grant
+property p_grant_onehot;
+    @(posedge clk) |grant |-> $onehot(grant);
+endproperty
+
+// Example (|=>): after write, data appears in SRAM one cycle later
+property p_sram_write;
+    @(posedge clk) wr_en |=> (sram[$past(addr)] == $past(wr_data));
+endproperty
+```
+
+### throughout
+
+```systemverilog
+// expr1 throughout sequence2: expr1 must hold continuously for the
+// entire duration of sequence2
+
+// Example: burst transfer -- burst_active must stay high for entire burst
+property p_burst_active;
+    @(posedge clk)
+    $rose(burst_start) |-> burst_active throughout (data_valid[->4] ##1 burst_end);
+endproperty
+// burst_active must be true from burst_start through the 4th data_valid and burst_end
+```
+
+### intersect
+
+```systemverilog
+// seq1 intersect seq2: both sequences must start AND end at the same time
+// Both must match over the SAME number of cycles
+
+// Example: verify that a read completes in exactly 5 cycles AND
+// the bus is continuously owned during those 5 cycles
+sequence s_read_takes_5;
+    ##[5:5] read_done;  // exactly 5 cycles
+endsequence
+
+sequence s_bus_owned;
+    bus_owned[*5];  // bus_owned for 5 consecutive cycles
+endsequence
+
+property p_read_5_with_bus;
+    @(posedge clk) $rose(read_req) |-> s_read_takes_5 intersect s_bus_owned;
+endproperty
+```
+
+### within
+
+```systemverilog
+// seq1 within seq2: seq1 must complete entirely during seq2
+// seq1 can start AFTER seq2 starts and end BEFORE seq2 ends
+
+// Example: NACK must occur somewhere within a transaction window
+property p_nack_in_window;
+    @(posedge clk)
+    $rose(txn_start) |-> (nack within (txn_start ##[1:50] txn_end));
+endproperty
+// nack must occur somewhere between txn_start and txn_end
+```
+
+### first_match
+
+```systemverilog
+// first_match(seq): only the first matching thread of seq is kept
+// Critical for performance when ranges create many threads
+
+// Example: only care about first ack after req, ignore redundant matches
+property p_first_ack;
+    @(posedge clk) req |-> first_match(##[1:100] ack);
+endproperty
+// Without first_match, 100 threads would be spawned
+// With first_match, only the first ack match survives
+```
+
+### ended
+
+```systemverilog
+// seq.ended: true at the clock tick where sequence seq completes
+// Useful for checking that one sequence ended when another event occurs
+
+// Example: verify that a training sequence has completed before data transfer
+sequence s_training;
+    txd ##1 txd ##1 txd;  // 3 training words
+endsequence
+
+property p_data_after_training;
+    @(posedge clk) data_valid |-> s_training.ended;
+endproperty
+// data_valid is only allowed after the training sequence has completed
+```
+
+---
+
+## Worked AXI4 Write Channel Protocol Assertion
+
+This is the single most common protocol assertion asked in interviews. It exercises multiple SVA features simultaneously.
+
+### Protocol Requirements
+
+```
+AXI4 Write Address (AW) channel:
+  AWVALID, AWREADY, AWADDR, AWLEN, AWSIZE, AWBURST
+
+AXI4 Write Data (W) channel:
+  WVALID, WREADY, WDATA, WSTRB, WLAST
+
+AXI4 Write Response (B) channel:
+  BVALID, BREADY, BRESP
+
+Rules to check:
+  1. AW→W→B ordering: write address before or with write data; response last
+  2. WLAST must be asserted on the last W beat
+  3. BVALID must not assert until after WLAST handshake completes
+  4. Number of W transfers must equal AWLEN + 1
+  5. Once VALID asserted, it must stay high until READY handshake
+  6. Payload must be stable while VALID is high and READY is low
+```
+
+### Complete Assertion Module
+
+```systemverilog
+module axi4_write_protocol_checker #(
+    parameter ADDR_WIDTH = 32,
+    parameter DATA_WIDTH = 64,
+    parameter ID_WIDTH   = 4
+)(
+    input logic                  ACLK,
+    input logic                  ARESETn,
+    // AW channel
+    input logic                  AWVALID,
+    input logic                  AWREADY,
+    input logic [ADDR_WIDTH-1:0] AWADDR,
+    input logic [7:0]            AWLEN,    // burst length - 1
+    input logic [2:0]            AWSIZE,
+    input logic [1:0]            AWBURST,
+    input logic [ID_WIDTH-1:0]   AWID,
+    // W channel
+    input logic                  WVALID,
+    input logic                  WREADY,
+    input logic [DATA_WIDTH-1:0] WDATA,
+    input logic [DATA_WIDTH/8-1:0] WSTRB,
+    input logic                  WLAST,
+    // B channel
+    input logic                  BVALID,
+    input logic                  BREADY,
+    input logic [1:0]            BRESP,
+    input logic [ID_WIDTH-1:0]   BID
+);
+
+    // -------------------------------------------------------
+    // Rule 1: VALID must stay asserted until READY handshake
+    // -------------------------------------------------------
+    property p_valid_stable(valid, ready);
+        @(posedge ACLK) disable iff (!ARESETn)
+        valid && !ready |=> valid;
+    endproperty
+
+    assert property (p_valid_stable(AWVALID, AWREADY))
+        else $error("AWVALID deasserted before AWREADY at T=%0t", $time);
+    assert property (p_valid_stable(WVALID, WREADY))
+        else $error("WVALID deasserted before WREADY at T=%0t", $time);
+    assert property (p_valid_stable(BVALID, BREADY))
+        else $error("BVALID deasserted before BREADY at T=%0t", $time);
+
+    // -------------------------------------------------------
+    // Rule 2: Payload stability while VALID && !READY
+    // -------------------------------------------------------
+    property p_payload_stable(valid, ready, payload);
+        @(posedge ACLK) disable iff (!ARESETn)
+        valid && !ready |=> $stable(payload);
+    endproperty
+
+    assert property (p_payload_stable(AWVALID, AWREADY, {AWADDR, AWLEN, AWSIZE, AWBURST, AWID}))
+        else $error("AW payload changed before handshake at T=%0t", $time);
+    assert property (p_payload_stable(WVALID, WREADY, {WDATA, WSTRB}))
+        else $error("W payload changed before handshake at T=%0t", $time);
+
+    // -------------------------------------------------------
+    // Rule 3: WLAST must be 0 for all beats except the last
+    // -------------------------------------------------------
+    // Count W handshakes per burst using a reference model
+    logic [7:0] w_beat_count;
+    logic       aw_captured;
+    logic [7:0] expected_len;
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            w_beat_count  <= 8'd0;
+            aw_captured   <= 1'b0;
+            expected_len  <= 8'd0;
+        end else begin
+            // Capture AWLEN on AW handshake
+            if (AWVALID && AWREADY) begin
+                aw_captured  <= 1'b1;
+                expected_len <= AWLEN;
+            end
+
+            // Count W handshakes
+            if (WVALID && WREADY) begin
+                if (WLAST) begin
+                    // Verify beat count matches AWLEN + 1
+                    assert (w_beat_count == expected_len)
+                        else $error("W beat count mismatch: expected %0d transfers, got %0d at T=%0t",
+                                    expected_len + 1, w_beat_count + 1, $time);
+                    w_beat_count <= 8'd0;
+                    aw_captured  <= 1'b0;
+                end else begin
+                    // WLAST must be 0 for non-final beats
+                    assert (!WLAST)
+                        else $error("WLAST=0 expected on non-final beat at T=%0t", $time);
+                    w_beat_count <= w_beat_count + 8'd1;
+                end
+            end
+        end
+    end
+
+    // -------------------------------------------------------
+    // Rule 4: BVALID must not appear before WLAST handshake
+    // -------------------------------------------------------
+    sequence s_wlast_handshake;
+        WVALID && WREADY && WLAST;
+    endsequence
+
+    property p_b_after_wlast;
+        @(posedge ACLK) disable iff (!ARESETn)
+        !BVALID throughout (first_match(s_wlast_handshake)) |=> 1;
+        // Before WLAST handshake, BVALID must be 0
+    endproperty
+
+    // Alternative (simpler) using $past:
+    property p_b_after_wlast_alt;
+        @(posedge ACLK) disable iff (!ARESETn)
+        BVALID |-> $past(WVALID && WREADY && WLAST, 1, 1, @(posedge ACLK))
+               || $past(WVALID && WREADY && WLAST, 2, 1, @(posedge ACLK))
+               || $past(WVALID && WREADY && WLAST, 3, 1, @(posedge ACLK));
+        // BVALID can appear 1-3 cycles after WLAST handshake (pipelining allowed)
+    endproperty
+
+    // -------------------------------------------------------
+    // Rule 5: BRESP must be OKAY (0) or SLVERR (2) or DECERR (3)
+    // Never undefined
+    // -------------------------------------------------------
+    property p_bresp_valid;
+        @(posedge ACLK) disable iff (!ARESETn)
+        BVALID |-> BRESP inside {2'b00, 2'b10, 2'b11};
+    endproperty
+    assert property (p_bresp_valid)
+        else $error("BRESP undefined value: %b at T=%0t", BRESP, $time);
+
+    // -------------------------------------------------------
+    // Rule 6: EXOKAY (2'b01) not allowed on BRESP for non-exclusive
+    // -------------------------------------------------------
+    property p_no_exokay;
+        @(posedge ACLK) disable iff (!ARESETn)
+        BVALID |-> BRESP != 2'b01;
+    endproperty
+    assert property (p_no_exokay)
+        else $error("EXOKAY on BRESP without exclusive access at T=%0t", $time);
+
+    // -------------------------------------------------------
+    // Rule 7: WLAST must be asserted exactly once per burst
+    // (WLAST can only be 1 when WVALID is 1, and only on the last beat)
+    // -------------------------------------------------------
+    property p_wlast_only_with_valid;
+        @(posedge ACLK) disable iff (!ARESETn)
+        WLAST |-> WVALID;
+    endproperty
+    assert property (p_wlast_only_with_valid)
+        else $error("WLAST asserted without WVALID at T=%0t", $time);
+
+    // -------------------------------------------------------
+    // Coverage: ensure all protocol events are exercised
+    // -------------------------------------------------------
+    cover property (@(posedge ACLK) AWVALID && AWREADY);       // AW handshake
+    cover property (@(posedge ACLK) WVALID  && WREADY);        // W handshake
+    cover property (@(posedge ACLK) WVALID  && WREADY && WLAST); // Last W beat
+    cover property (@(posedge ACLK) BVALID  && BREADY);        // B handshake
+    cover property (@(posedge ACLK) BRESP == 2'b00);           // OKAY response
+    cover property (@(posedge ACLK) BRESP == 2'b10);           // SLVERR response
+
+    // Coverage: back-to-back W beats (full bandwidth)
+    cover property (@(posedge ACLK)
+        (WVALID && WREADY) ##1 (WVALID && WREADY));
+
+    // Coverage: AW and W handshake in same cycle
+    cover property (@(posedge ACLK)
+        (AWVALID && AWREADY) && (WVALID && WREADY));
+
+endmodule
+```
+
+### Key Design Decisions Explained
+
+```
+1. Why reference model for beat counting instead of pure assertions?
+   The number of W transfers depends on AWLEN (runtime variable).
+   Pure SVA cannot express "count exactly AWLEN+1 W handshakes" without
+   auxiliary state. The always block acts as a reference model.
+
+2. Why first_match on s_wlast_handshake?
+   WVALID && WREADY && WLAST could be true for multiple consecutive cycles
+   (if WREADY stays high). first_match ensures we only trigger on the
+   first occurrence.
+
+3. Why p_b_after_wlast_alt uses $past with gating?
+   AXI4 allows pipelining: BVALID can appear several cycles after WLAST
+   handshake, not necessarily the very next cycle. The $past check with
+   gating allows a window of 1-3 cycles.
+
+4. Why cover property on each handshake?
+   Without these covers, the assertions could pass vacuously if the
+   stimulus never exercises the protocol. The covers ensure test quality.
+```
+
+---
+
+## CDC (Clock Domain Crossing) Assertions
+
+### Why You Cannot Assert at the Crossing Point
+
+```
+Signal crossing from clk_a to clk_b:
+
+  clk_a domain          CDC signal (metastable)     clk_b domain
+  ┌──────────┐          ═══════════════════         ┌──────────┐
+  │ source   ├─────────►│ glitch / metastable │────►│ 2-FF     ├─► synchronized
+  │ FF       │          ═════════════════════         │ sync     │   signal
+  └──────────┘                                        └──────────┘
+
+At the crossing point (between source and synchronizer input), the signal
+is METASTABLE. It may be X, it may oscillate, it may settle to the wrong
+value temporarily. You CANNOT write a meaningful assertion here.
+
+The correct place to assert: AFTER the synchronizer, in the destination
+clock domain.
+```
+
+### CDC Assertion Patterns
+
+```systemverilog
+// Pattern 1: Verify synchronizer output is stable (no glitches after sync)
+// After a 2-FF synchronizer, the signal should be clean in clk_b domain
+module cdc_assertions #(
+    parameter SYNC_STAGES = 2
+)(
+    input  logic clk_a,        // source domain
+    input  logic clk_b,        // destination domain
+    input  logic rst_n,
+    input  logic cdc_data_a,   // signal in source domain (before crossing)
+    input  logic cdc_synced_b  // signal after 2-FF synchronizer in clk_b
+);
+
+    // After the synchronizer, the signal should not glitch within a clk_b cycle
+    property p_no_glitch_after_sync;
+        @(posedge clk_b) disable iff (!rst_n)
+        $stable(cdc_synced_b);  // No intra-cycle changes after synchronizer
+    endproperty
+    // Note: this checks sampled stability only; actual glitch detection
+    // requires real-time comparison (not possible in SVA)
+
+    // Pattern 2: Gray-code pointer crossing for async FIFO
+    // After synchronization, the gray-code pointer must differ by at most 1 bit
+    // from its previous value (gray code property: adjacent values differ by 1 bit)
+    property p_gray_code_ptr_stability;
+        @(posedge clk_b) disable iff (!rst_n)
+        $countones(cdc_synced_b ^ $past(cdc_synced_b)) <= 1;
+    endproperty
+    // If this fails, the synchronizer output was corrupted (metastability
+    // caused a multi-bit change, violating gray-code assumption)
+
+    // Pattern 3: Verify data is held stable during crossing (req-ack handshake)
+    // Source must hold data stable until destination acknowledges
+    property p_data_held_during_cross;
+        @(posedge clk_a) disable iff (!rst_n)
+        cdc_req_a && !cdc_ack_a |-> $stable(cdc_data_a);
+    endproperty
+    // In clk_a domain: while req is high and ack has not returned,
+    // data must not change
+
+    // Pattern 4: Verify req-ack handshake completion
+    // After req is asserted, ack must eventually return
+    property p_handshake_completion;
+        @(posedge clk_a) disable iff (!rst_n)
+        $rose(cdc_req_a) |-> ##[1:500] cdc_ack_a;
+    endproperty
+
+    // Pattern 5: Verify ack deasserts after req deasserts
+    property p_ack_follows_req;
+        @(posedge clk_a) disable iff (!rst_n)
+        $fell(cdc_req_a) |-> ##[0:10] !cdc_ack_a;
+    endproperty
+
+endmodule
+```
+
+### Common CDC Mistake: Asserting Before the Synchronizer
+
+```systemverilog
+// WRONG: Asserting on the metastable signal
+property p_bad_cdc;
+    @(posedge clk_b) disable iff (!rst_n)
+    $stable(metastable_signal);  // This WILL fire false failures!
+    // metastable_signal can change mid-cycle due to metastability resolution
+endproperty
+
+// CORRECT: Assert after the synchronizer
+property p_good_cdc;
+    @(posedge clk_b) disable iff (!rst_n)
+    $stable(synchronized_signal);  // Clean, settled signal
+endproperty
+
+// CORRECT: Assert source-side stability (in source domain)
+property p_source_holds;
+    @(posedge clk_a) disable iff (!rst_n)
+    cdc_req && !cdc_ack |-> $stable(cdc_data);
+    // Verify source discipline in source clock domain -- no metastability issues
+endproperty
+```
+
+### Multi-bit CDC Assertion Strategy
+
+```systemverilog
+// For a multi-bit bus crossing clock domains:
+// Option 1: Verify gray-code encoding (async FIFO pointers)
+//   Adjacent gray-code values differ by exactly 1 bit
+//   After synchronization, check single-bit transitions
+
+// Option 2: Verify req-ack handshake discipline
+//   Source holds bus stable from req assertion until ack return
+//   Destination samples bus only when req is high after synchronization
+
+// Option 3: Verify MUX-based synchronization discipline
+//   A control signal (crossed via 2-FF sync) gates the data bus
+//   Data bus is only sampled when control signal is stable (after sync)
+
+// Example: MUX-based CDC bus
+module cdc_bus_checker #(
+    parameter WIDTH = 32
+)(
+    input logic             clk_b,
+    input logic             rst_n,
+    input logic             enable_synced,   // control signal after synchronizer
+    input logic [WIDTH-1:0] data_bus_b,      // data bus in destination domain
+    input logic [WIDTH-1:0] captured_data    // latched data when enable was high
+);
+
+    // Data should only be captured when enable is stable for 2 cycles
+    // (after the synchronizer)
+    property p_capture_only_when_stable;
+        @(posedge clk_b) disable iff (!rst_n)
+        $rose(enable_synced) |=> ##1 $stable(enable_synced);
+        // Enable must be stable for at least 2 cycles (sync latency)
+    endproperty
+
+    // Captured data must be stable
+    property p_captured_data_valid;
+        @(posedge clk_b) disable iff (!rst_n)
+        !enable_synced |-> $stable(captured_data);
+        // When enable is low, captured data must not change
+    endproperty
+
+endmodule
+```
+
+---
+
 ## Assertion Coverage and Action Blocks
 
 ```systemverilog

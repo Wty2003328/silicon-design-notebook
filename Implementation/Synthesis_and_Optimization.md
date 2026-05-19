@@ -237,6 +237,17 @@ create_clock -name asym_clk -period 10.0 -waveform {0 6.0} [get_ports clk2]
 #                                         ^rise at 0, fall at 6ns
 #                                          → 60% duty cycle
 
+# Multi-frequency waveform (e.g., DDR clock with different high/low times)
+# Period = 2.5ns, waveform specifies rise/fall/rise edges explicitly
+# Creates a clock with 0.8ns high, 1.7ns low (non-symmetric)
+create_clock -name ddr_clk -period 2.5 -waveform {0.0 0.8} [get_ports ddr_clk_p]
+
+# Multi-edge clock (e.g., custom waveform with 4 edges per period)
+# For a clock that rises at 0, falls at 1.5, rises at 2.5, falls at 3.0
+# Period = 4ns: two pulses per period (double-pulse clock)
+create_clock -name custom_2pulse -period 4.0 -waveform {0.0 1.5 2.5 3.0} [get_ports clk_custom]
+# The waveform list specifies edge times within one period: {rise fall rise fall ...}
+
 # Virtual clock (no physical source pin -- for IO delay constraints)
 create_clock -name vclk_ext -period 5.0
 # No [get_ports ...] → virtual clock
@@ -404,7 +415,26 @@ set_output_delay -clock sys_clk -min 0.2 [get_ports data_out]
   T_internal_max = T_period - output_delay_max - setup_time - uncertainty
 ```
 
-### 2.6 set_false_path
+### 2.6 set_ideal_network / set_dont_touch
+
+```tcl
+# set_ideal_network: treat a net as having zero delay and infinite drive strength
+# Used pre-CTS for clock networks (before real clock tree is built)
+set_ideal_network [get_ports clk]
+set_ideal_network [get_nets -of_objects [get_pins pll/clk_out]]
+# Effect: no wire RC, no transition degradation, no insertion delay
+# Must be REMOVED after CTS so real delays are propagated
+
+# set_dont_touch: prevent synthesis from modifying a cell, net, or hierarchy
+set_dont_touch [get_cells hardened_ip/*]
+set_dont_touch [get_nets analog_net]
+set_dont_touch [get_designs verified_submodule]
+# Tool will NOT: optimize, buffer, resize, or restructure this object
+# Use for: hand-crafted analog/mixed-signal blocks, pre-verified IP, debug structures
+# WARNING: overuse prevents optimization -- apply only where necessary
+```
+
+### 2.8 set_false_path
 
 ```tcl
 # Between asynchronous clock domains (CDC paths)
@@ -433,7 +463,7 @@ set_false_path -from [get_ports rst_n]
 - Do NOT false-path paths just because they have large slack -- they
   might become critical after optimization.
 
-### 2.7 set_multicycle_path
+### 2.9 set_multicycle_path
 
 This is the **most commonly misunderstood** SDC constraint.
 
@@ -541,7 +571,7 @@ set_multicycle_path 1 -hold -from [get_cells reg_a] -to [get_cells reg_b]
     Without MCP: slack = 2.0 - 0.05 - 0.1 - 4.5 = -2.65 ns ✗ (violation!)
 ```
 
-### 2.8 set_max_delay / set_min_delay
+### 2.10 set_max_delay / set_min_delay
 
 ```tcl
 # For CDC paths where you need bounded delay (not false path)
@@ -564,7 +594,7 @@ set_min_delay 0.5 \
 # Ensures minimum propagation delay (used for pulse-width guarantees, etc.)
 ```
 
-### 2.9 set_clock_groups
+### 2.11 set_clock_groups
 
 ```tcl
 # ──────────────────────────────────────────────────────
@@ -620,7 +650,7 @@ set_clock_groups -logically_exclusive \
   └──────────────────────┴──────────────┴──────────────┴──────────────┘
 ```
 
-### 2.10 set_case_analysis
+### 2.12 set_case_analysis
 
 ```tcl
 # Fix a pin to a constant value for mode-specific analysis
@@ -636,7 +666,7 @@ set_case_analysis 1 [get_ports func_mode_sel]
 # - Setting configuration pins to their functional values
 ```
 
-### 2.11 set_disable_timing
+### 2.13 set_disable_timing
 
 ```tcl
 # Break a timing arc through a cell
@@ -648,7 +678,7 @@ set_disable_timing [get_cells clk_mux] -from S -to Y
 # Warning: can hide real timing problems -- use sparingly
 ```
 
-### 2.12 Design Rule Violation (DRV) Constraints
+### 2.14 Design Rule Violation (DRV) Constraints
 
 ```tcl
 # Maximum transition time (slew) on any net
@@ -670,7 +700,7 @@ set_max_fanout 20 [current_design]
 # report_constraint -all_violators shows DRV violations
 ```
 
-### 2.13 Complete SDC Example: 3-Clock-Domain SoC
+### 2.15 Complete SDC Example: 3-Clock-Domain SoC
 
 ```tcl
 # ================================================================
@@ -862,7 +892,7 @@ The tool can:
     sub: y = b;  (config=0 propagated, dead branch removed)
 ```
 
-### 3.3 Retiming
+### 3.3 Retiming -- Mathematical Formulation and Detailed Analysis
 
 Moving registers across combinational logic to balance path delays.
 
@@ -889,6 +919,67 @@ Moving registers across combinational logic to balance path delays.
     [REG] ──> [Short + Long_part1: 1.75ns] ──> [REG] ──> [Long_part2: 1.75ns] ──> [REG]
 ```
 
+**Mathematical Formulation (Leiserson-Saxe):**
+
+```
+  Given a synchronous circuit modeled as a directed graph G = (V, E):
+    V = set of combinational nodes (gates)
+    E = set of edges, each with weight d(v) = combinational delay of node v
+    r(v) = number of flip-flops on node v (retiming variable, initially 0 or 1)
+
+  Retiming r: V -> Z (integer assignment) moves r(v) - r_original(v)
+  flip-flops from the outputs of v to its inputs.
+
+  The retiming problem: Find r: V -> Z to minimize the clock period P,
+  subject to:
+
+  Constraint 1 (Non-negativity):
+    For every edge (u -> v): r(u) + w(e) - r(v) >= 0
+    where w(e) = number of FFs originally on edge e
+    This ensures no edge ends up with negative FFs (physically impossible).
+
+  Constraint 2 (I/O latency preservation):
+    For every primary input node v: r(v) = 0
+    For every primary output node v: r(v) = 0
+    This ensures the input-to-output latency is preserved.
+
+  Constraint 3 (Period feasibility):
+    For every path p from node u to node v with W(p) = 0 FFs on the path:
+    D(p) = sum of d(node) along p <= P
+    where W(p) = sum of w(e) along p + r(u) - r(v) = 0
+    (paths with zero FFs between them must complete in one cycle)
+
+  The minimum clock period P* is found by binary search:
+    For each candidate period P, check if a valid retiming r exists
+    using a Bellman-Ford-like shortest path formulation.
+
+  Time complexity: O(|V|^3 * log(|V| * D_max)) where D_max = max node delay.
+
+  Practical note: Real synthesis tools use a simplified version that
+  only retimes across combinational logic between known pipeline stages
+  (not the full graph), making it much faster in practice.
+```
+
+**When retiming helps vs. when it doesn't:**
+
+```
+  HELPS:
+  - Pipeline stages with unbalanced combinational delays (1ns + 3ns)
+  - Dataflow paths where FFs can be freely moved
+  - Arithmetic pipelines (adders, multipliers) where partial sums
+    can be retimed across addition boundaries
+  - Feed-forward paths (no feedback loops)
+
+  DOES NOT HELP:
+  - Already-balanced pipeline stages (all stages within 10% of each other)
+  - Paths with feedback loops (retiming changes loop state encoding)
+  - Paths where every combinational segment is shorter than the target period
+  - Designs where all FFs have timing-critical reset/preset logic
+    (moving the FF changes when reset activates)
+  - Logic that depends on exact cycle-by-cycle behavior (FSMs with
+    one-hot encoding where moving FFs changes the state assignment)
+```
+
 **Constraints on retiming:**
 - Cannot retime across I/O boundaries (would change interface timing)
 - Cannot retime across clock domain boundaries
@@ -905,7 +996,107 @@ set_db design:top .retime true
 syn_opt -retime
 ```
 
-### 3.4 Datapath Optimization
+### 3.4 Logical Effort Design Flow -- Worked Example
+
+Logical effort is a method for sizing gates in a combinational path to minimize delay.
+
+```
+  Key Definitions:
+  ────────────────
+  g = logical effort of a gate = ratio of its input capacitance to that
+      of an inverter delivering the same output current
+    INV:  g = 1 (by definition)
+    NAND2: g = 4/3  (PMOS:2 + NMOS:2, vs INV PMOS:2 + NMOS:1 -> 4/3)
+    NAND3: g = 5/3
+    NOR2:  g = 5/3  (PMOS:4 + NMOS:1, vs INV 2+1 -> 5/3)
+    NOR3:  g = 7/3
+
+  h = electrical effort = C_out / C_in  (fanout ratio)
+  p = parasitic delay of a gate (intrinsic, independent of load)
+    INV: p = 1 (by convention, ~1 FO4)
+    NAND2: p = 2
+    NAND3: p = 3
+    NOR2: p = 2
+    NOR3: p = 3
+
+  Stage delay: d = g * h + p
+  Path delay:  D = sum(g_i * h_i + p_i) = G * H / N^N + sum(p_i)
+    where G = product of all g_i, H = product of all h_i, N = number of stages
+
+  Optimal stage effort: f_opt = (G * H)^(1/N) = (F)^(1/N)
+    where F = G * H = path effort
+  Minimum path delay: D_min = N * f_opt + P (where P = sum of parasitic delays)
+```
+
+**Worked Example: Size a 4-stage path**
+
+```
+  Path: INPUT --> NAND2 --> INV --> NAND3 --> NOR2 --> OUTPUT
+
+  Given:
+    C_load (at output) = 200 fF  (capacitance of the next stage)
+    C_in  (at input)   = 10 fF   (input pin capacitance of the first gate)
+
+  Step 1: Compute path logical effort G = product of all g_i
+    G = g_NAND2 * g_INV * g_NAND3 * g_NOR2
+    G = (4/3) * 1 * (5/3) * (5/3)
+    G = (4 * 5 * 5) / (3 * 3 * 3)
+    G = 100 / 27 = 3.704
+
+  Step 2: Compute path electrical effort H = C_load / C_in
+    H = 200 / 10 = 20
+
+  Step 3: Compute path effort F = G * H
+    F = 3.704 * 20 = 74.07
+
+  Step 4: Compute optimal stage effort f_opt = F^(1/N)
+    N = 4 stages
+    f_opt = 74.07^(1/4)
+    74.07^(0.5) = 8.606
+    8.606^(0.5) = 2.934
+    f_opt ≈ 2.93
+
+  Step 5: Compute path parasitic delay P = sum of all p_i
+    P = p_NAND2 + p_INV + p_NAND3 + p_NOR2
+    P = 2 + 1 + 3 + 2 = 8
+
+  Step 6: Compute minimum path delay
+    D_min = N * f_opt + P = 4 * 2.93 + 8 = 11.72 + 8 = 19.72 FO4
+
+  Step 7: Size each gate (working backwards from output)
+
+    Gate 4 (NOR2, drives C_load = 200 fF):
+      g_4 * h_4 = f_opt -> h_4 = f_opt / g_4 = 2.93 / (5/3) = 1.76
+      C_in_4 = C_load / h_4 = 200 / 1.76 = 113.6 fF
+      (NOR2 input cap = 113.6 fF; this is the load for gate 3)
+
+    Gate 3 (NAND3, drives C_in_4 = 113.6 fF):
+      h_3 = f_opt / g_3 = 2.93 / (5/3) = 1.76
+      C_in_3 = 113.6 / 1.76 = 64.5 fF
+
+    Gate 2 (INV, drives C_in_3 = 64.5 fF):
+      h_2 = f_opt / g_2 = 2.93 / 1 = 2.93
+      C_in_2 = 64.5 / 2.93 = 22.0 fF
+
+    Gate 1 (NAND2, drives C_in_2 = 22.0 fF):
+      Verify: h_1 = 22.0 / 10.0 = 2.20
+      g_1 * h_1 = (4/3) * 2.20 = 2.93 = f_opt ✓ (matches!)
+
+  Verification:
+    G * H = (4/3) * 2.20 * 1 * 2.93 * (5/3) * 1.76 * (5/3) * 1.76
+    = (4/3) * (5/3) * (5/3) * 2.20 * 2.93 * 1.76 * 1.76
+    = 3.704 * 2.20 * 2.93 * 1.76 * 1.76
+    = 3.704 * 20.0 = 74.07 ✓
+
+  Total delay: 4 * 2.93 + 8 = 19.72 FO4
+  For a 7nm process at ~12 ps/FO4: D_min ≈ 237 ps
+
+  Key insight: Each stage has the same effective effort (g*h = f_opt).
+  This is the fundamental result of logical effort -- equal effort
+  per stage minimizes total delay for a given path effort.
+```
+
+### 3.5 Datapath Optimization
 
 Synthesis tools recognize arithmetic operations and implement them efficiently.
 
@@ -969,7 +1160,7 @@ set_resource_allocation shared
 compile_ultra  ;# does this automatically
 ```
 
-### 3.5 Compile Strategies
+### 3.6 Compile Strategies
 
 ```tcl
 # ── Strategy 1: Basic compile (fast, lower QoR) ──
@@ -999,7 +1190,7 @@ compile_ultra -spg  ;# Synopsys Physical Guidance
 # Much better correlation with post-P&R timing
 ```
 
-### 3.6 Path Groups
+### 3.7 Path Groups
 
 ```tcl
 # Path groups prioritize optimization effort on specific paths
@@ -1079,28 +1270,67 @@ Standard cell naming conventions:
   each fanout/load scenario.
 ```
 
-### 4.3 Mapping Algorithms
+### 4.3 Mapping Algorithms -- Deep Dive
 
-**DAG Covering:**
+**DAG Covering (FlowMap Algorithm):**
 
 ```
-  Subject graph (Boolean network) is a DAG (directed acyclic graph).
+  Subject graph (Boolean network) is a DAG of 2-input gates.
   Library cells are represented as patterns (sub-DAGs).
   Mapping = covering every node in subject graph with library patterns.
-  
-  Goal: minimize area (or delay) while covering all nodes.
+
+  FlowMap (the industry-standard algorithm):
+  1. Decompose the Boolean network into a subject graph of 2-input NAND
+     gates and inverters (every Boolean function can be so decomposed).
+  2. For each node, compute a "label" = minimum number of library cells
+     needed to reach this node from the primary inputs. This is done by
+     computing the k-feasible cut at each node (a cut is a set of input
+     signals that completely determine the output).
+  3. A k-feasible cut has at most k inputs. The label of a node is
+     the minimum label across all k-feasible cuts.
+  4. After labeling all nodes (forward pass), perform area recovery
+     by re-choosing matches that minimize total area subject to the
+     depth constraint from step 2.
+
+  k is the maximum number of inputs any library cell has (typically 4-6).
 
   Example:
-    Subject: a AND b AND c  (a chain of 2 AND2 gates)
+    Subject: a AND b AND c  (chain of 2 AND2 gates)
     
-    Option A: AND2(a,b) → n1; AND2(n1,c) → out
-              Cost: 2 cells
+    Option A: AND2(a,b) -> n1; AND2(n1,c) -> out
+              Cost: 2 cells, 2 levels of logic
     
-    Option B: AND3(a,b,c) → out  (if AND3 exists in library)
-              Cost: 1 cell, faster (fewer stages)
+    Option B: AND3(a,b,c) -> out  (if AND3 exists in library)
+              Cost: 1 cell, 1 level (fewer stages = faster)
+    
+    FlowMap prefers B because it gives a lower depth label at "out".
 ```
 
-**Boolean Matching (NPN equivalence):**
+**Tree Matching (Pattern Covering):**
+
+```
+  For tree-structured subgraphs (no reconvergent fanout), the mapper
+  performs optimal tree covering using dynamic programming:
+
+  1. Each library cell pattern is stored as a tree pattern:
+     AND2:      AND(A,B)        -> matches tree node with 2 children
+     AOI21:     NOT(AND(A,B)|C) -> matches tree node + child structure
+     OAI22:     NOT((A&B)|(C&D))-> matches 2-level tree
+
+  2. At each leaf node of the subject tree, compute the best match
+     (minimum cost) using all library patterns that match the subtree
+     rooted at this node.
+
+  3. Recursively combine: for internal nodes, try all library patterns
+     that have this gate type at the root, and use the previously computed
+     optimal costs for the children.
+
+  Optimal for trees in O(n * p) where n = subject tree nodes, p = patterns.
+  For general DAGs, the problem is NP-hard; heuristics decompose the DAG
+  into trees at reconvergent fanout points.
+```
+
+**Boolean Matching (Graph Isomorphism for Cells):**
 
 Two functions are NPN-equivalent if one can be transformed to the other by:
 - **N**egation of inputs
@@ -1108,16 +1338,70 @@ Two functions are NPN-equivalent if one can be transformed to the other by:
 - **N**egation of output
 
 ```
+  How Boolean matching works in the mapper:
+  
+  1. Canonical form: For a library cell with n inputs, there are 2^n input
+     combinations. The truth table (column vector of 2^n bits) IS the function.
+  
+  2. NPN canonical form: of all 2^n * n! * 2 possible transformations
+     (negate each subset of inputs, permute inputs, negate output), find
+     the lexicographically smallest truth table. This is the canonical form.
+  
+  3. Two functions are NPN-equivalent iff they have the same canonical form.
+  
+  4. The library is pre-processed into NPN classes. At mapping time, the
+     subject graph sub-function is canonicalized and looked up in O(1).
+  
   Example: NAND2(a,b) = NOT(AND(a,b))
            NOR2(a,b)  = NOT(OR(a,b)) = NOT(AND(NOT(a),NOT(b)))
            
-  NAND2 and NOR2 are NPN-equivalent:
-    NAND2(a,b) → negate both inputs → NOR2(a,b)
-    (DeMorgan's: NAND(a,b) = OR(~a,~b) = NOR after input negation)
+  NAND2 truth table: 0111  (for inputs 00,01,10,11)
+  NOR2 truth table:  1000
+  NOR2 with negated inputs: NAND2 = 0111 -> SAME canonical form!
   
-  This means: if a function matches NAND2 with some input inversions,
-  the tool can use NOR2 + inverters (or vice versa) depending on
-  what's cheaper in the library.
+  The mapper can substitute NOR2 + input inverters for NAND2 (or vice versa)
+  depending on what is cheaper in the actual loading/area context.
+  
+  For complex gates (AOI, OAI families), the same principle applies:
+  compute the truth table, canonicalize, and look up matching library cells.
+  At 7nm, libraries have ~500 cells; NPN grouping reduces this to ~50-80
+  unique classes, making matching very fast.
+```
+
+**Don't-Care Points in Technology Mapping:**
+
+```
+  Don't-care (DC) conditions allow the mapper to simplify functions beyond
+  what the Boolean specification alone permits. Two types:
+
+  1. External Don't-Cares (from fanout context):
+     - If a signal A is only consumed by logic that also requires B=1,
+       then the behavior when B=0 is irrelevant for the sub-function
+       driving A.
+     - The mapper can freely assign output values for the don't-care
+       input combinations, potentially finding matches with simpler
+       (fewer transistor) library cells.
+     - Example: if output F = A & B, and we know B is always 1 in the
+       context where F is used, we can simplify F to just A (use a
+       buffer instead of AND gate).
+
+  2. Satisfiability Don't-Cares (SDC, from unreachable states):
+     - In sequential circuits, some input combinations to a combinational
+       block may never occur because the controlling state machine can
+       never reach the state that produces them.
+     - The mapper detects these unreachable conditions via satisfiability
+       analysis (SAT) on the controller logic, then treats the
+       corresponding function outputs as don't-care.
+     - Example: a 4-bit FSM has 16 possible states but only uses 10.
+       The remaining 6 state encodings produce input combinations to the
+       next-state logic that are SDC -- the mapper can optimize these
+       away, often saving 10-30% of combinational area in control logic.
+
+  Practical impact:
+    Without DC:  mapper finds matches for the exact Boolean function
+    With DC:     mapper optimizes the largest "care set" function that
+                 is a subset of the don't-care superfunction
+    Result:      typically 5-15% area improvement from DC exploitation
 ```
 
 ### 4.4 Multi-Vt Optimization

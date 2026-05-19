@@ -7,11 +7,17 @@
 4. Branch Prediction -- Deep Dive
 5. Tomasulo's Algorithm -- Step-by-Step Execution
 6. Superscalar and Register Renaming
-7. Memory Hierarchy -- AMAT and Cache Design
+7. Memory Hierarchy -- AMAT, Cache Design, Store Buffer, and MLP
 8. Cache Coherence -- MESI with All Transitions
 9. Virtual Memory and TLB
 10. Performance Analysis
 11. Interview Q&A (20+ Questions)
+12. Fetch Unit Microarchitecture
+13. RISC-V Instruction Examples
+14. SMT Resource Partitioning
+15. Exception Pipeline in Out-of-Order Execution
+16. Memory Ordering and Consistency Models
+17. Micro-op Fusion
 
 ---
 
@@ -807,6 +813,863 @@ Reducing each:
   Conflict:   Higher associativity, victim cache
   Coherence:  Better data placement, private vs shared data separation
 ```
+
+### 7.6 Store Buffer and Store-to-Load Forwarding
+
+The store buffer sits between the execution units and the L1 data cache. When a
+store instruction executes, its address and data are written to the store buffer,
+not directly to the cache. The store commits (writes to the D-cache) only when it
+is the oldest completed instruction at the head of the ROB -- this is in-order
+retirement.
+
+**Why stores are buffered:**
+
+1. **Speculation** -- stores from a mispredicted branch must never reach the
+   cache. Buffering lets the core discard them on a pipeline flush.
+2. **Out-of-order execution** -- stores can execute as soon as the address and
+   data are ready, without waiting for older instructions to retire.
+3. **Port decoupling** -- the D-cache write port may be busy (e.g., a line fill
+   from an earlier miss). The store buffer absorbs the write and drains to the
+   cache when the port is free.
+
+**Store-to-load forwarding (SLF):** When a subsequent load executes and its
+address matches a pending store in the store buffer, the load can obtain the data
+directly from the buffer instead of waiting for the store to commit to cache.
+
+```
+Store Buffer (circular, FIFO):
+
+  ┌─────────┬─────────┬─────────┬─────────┐
+  │ Addr=0x │ Addr=0x │ Addr=0x │  empty  │  ... up to N-1 entries
+  │ 1000    │ 1008    │ 2000    │         │
+  │ Data=42 │ Data=7  │ Data=99 │         │
+  └─────────┴─────────┴─────────┴─────────┘
+       ↑ oldest                      ↑ tail (next write)
+
+  Load(addr=0x1008):
+    CAM search matches entry 1 -> Data=7 returned immediately
+    No D-cache access needed.
+```
+
+**Forwarding conditions:**
+
+1. **Exact address match** -- the load's byte range must fall entirely within a
+   single store's byte range. A 4-byte load at 0x1000 matches a store of 4
+   bytes at 0x1000 exactly.
+2. **Data ready** -- the store must have its data value available (the store
+   address may be known before the data in some microarchitectures).
+3. **Partial / overlapping matches** -- if the load spans bytes from multiple
+   pending stores, the hardware must merge bytes from each store (and possibly
+   the cache). Not all designs support this; some require a full stall until the
+   stores commit.
+
+**Store-forwarding hazard (SFX):** When a load depends on a recent store to the
+same address but the forwarding check fails -- the store address is not yet
+computed, or the overlap is partial -- the load must wait. This is a major
+performance limiter. Intel's optimization manual reports SFX stalls account for
+5-10% of cycles in typical integer workloads.
+
+```
+Typical SFX pattern:
+  STORE [rax], rcx          ; address = rax, data = rcx
+  LOAD  rdx, [rax]          ; same address -> must forward
+
+  Best case (address known, data ready): 1 extra cycle (forwarded)
+  Worst case (address unknown):         4-5 cycle stall on Intel
+  Partial overlap (load wider than store): ~15 cycle penalty (store must commit first)
+```
+
+**Store buffer sizing:** Modern CPUs typically have 30-60 entries.
+
+| Microarchitecture | Store Buffer Entries |
+|-------------------|----------------------|
+| Apple M1          | ~40                  |
+| Intel Raptor Lake | ~60                  |
+| AMD Zen 4         | ~48                  |
+| ARM Cortex-X2     | ~32                  |
+
+When the store buffer is full, the processor cannot execute more stores and must
+stall, which can become a bottleneck in write-heavy code (e.g., memcpy, memset).
+
+### 7.7 Load-Store Queue (LSQ) -- Detailed Implementation
+
+The LSQ is the structure that enforces memory ordering in an out-of-order core. It
+is split into two sub-structures with distinct roles:
+
+**Load Queue (LQ) -- 32-64 entries, CAM on address:**
+
+Each LQ entry stores: `{valid, addr[63:0], data[63:0], rob_idx[6:0], completed, size[2:0], va_known}`.
+
+Loads enter the LQ at dispatch time. When the AGU computes the load's virtual
+address, `va_known` is set and the address is broadcast for CAM matching against
+all older SQ entries. The LQ is searched by address on every store commit to detect
+violations (a younger load observed a value before an older store to the same address
+wrote it).
+
+**Store Queue (SQ) -- 24-48 entries, CAM on address:**
+
+Each SQ entry stores: `{valid, addr[63:0], data[63:0], rob_idx[6:0], committed, size[2:0], addr_known}`.
+
+Stores enter the SQ at dispatch. Address computation sets `addr_known`. Data may arrive
+later (out-of-order address/data). Stores write to the D-cache only at ROB commit
+(`committed` flag), ensuring precise exceptions.
+
+**Store coloring / store sets for disambiguation:**
+
+To avoid comparing every load against every store (O(N) per load), many designs use
+store sets. Each load is associated with a "store set" -- a bitmask of stores it has
+previously alias-conflicted with. On dispatch, if any store in the set is still in the
+SQ without a known address, the load stalls. This reduces the number of comparisons
+from O(SQ_size) to O(store_set_size).
+
+An alternative is **store coloring**: a small hash of the store address partitions
+stores into "colors." A load only checks stores of matching colors. This is less
+accurate than store sets but cheaper to implement.
+
+Store coloring works as follows. Each store is assigned a 2--4 bit "color" derived
+from a hash of its virtual address (e.g., `color = addr[5:3]`). A small per-load
+"color mask" tracks which colors the load has previously observed conflicts with.
+On dispatch, the load's color mask is compared against all older stores in the SQ
+whose addresses are not yet known. If any pending store has a color that is in the
+load's conflict set, the load stalls. If no pending store matches, the load issues
+speculatively. The color space is deliberately small (4--16 colors) so the mask
+fits in a few bits per load and the comparison logic is a simple bitwise AND rather
+than a full address CAM. The trade-off is over-conservatism: two addresses that hash
+to the same color but do not actually alias will cause unnecessary stalls. In practice,
+4-bit coloring (16 colors) achieves ~90% of the performance of a full store-set
+predictor at roughly half the area cost, making it attractive for mid-range cores
+where the store-set predictor's SSID table (typically 256--1024 entries x 8--16 bits)
+is too expensive.
+
+**Store-to-load forwarding with age-based priority:**
+
+When a load address is computed, it is compared against all older SQ entries with
+`addr_known=1`:
+
+```
+Forwarding priority:
+  1. Find all SQ entries older than this load (lower SQ index) with matching address
+  2. Among matches, select the YOUNGEST (closest to the load in program order)
+  3. If multiple SQ entries overlap the load's byte range, merge bytes:
+     - Youngest store provides bytes it covers
+     - Next-youngest covers remaining bytes, etc.
+     - Any uncovered bytes come from D-cache
+```
+
+The "youngest older store" rule ensures the load sees the most recent write to each
+byte. If the youngest older store covers the entire load, no D-cache access is needed
+(pure forward). If no older store matches, the load reads from the D-cache.
+
+**Age-priority forwarding in detail:**
+
+Age-based priority is critical for correctness when multiple older stores overlap the
+load's address range. Consider this scenario:
+
+```
+SQ state (program order):
+  SQ[0]: SW x5, addr=0x1000, size=8, data=0xAAAABBBBCCCCDDDD  (oldest)
+  SQ[1]: SW x6, addr=0x1004, size=4, data=0x11223344          (younger)
+  SQ[2]: SW x7, addr=0x1000, size=4, data=0x55667788          (youngest)
+
+Load: LW x8, addr=0x1000, size=8
+  Overlap analysis (little-endian, byte addresses 0x1000..0x1007):
+    SQ[0] covers bytes 0x1000..0x1007 (full 8-byte store)
+    SQ[1] covers bytes 0x1004..0x1007 (upper 4 bytes)
+    SQ[2] covers bytes 0x1000..0x1003 (lower 4 bytes)
+
+  Priority: youngest first
+    Bytes 0x1000..0x1003: SQ[2] is youngest -> use 0x55667788
+    Bytes 0x1004..0x1007: SQ[1] is youngest (SQ[2] doesn't cover these)
+                          -> use 0x11223344
+    Result: x8 = 0x1122334455667788
+```
+
+Hardware implementation: a priority encoder scans the SQ from the youngest entry
+(highest index) to the oldest. For each byte lane of the load, the first SQ entry
+that covers that byte provides the data. This requires a per-byte-byte multiplexer
+tree, which is one reason the SQ data path is wide and power-hungry. In designs that
+do not support partial forwarding, the load is simply stalled until all overlapping
+stores have committed to the D-cache, trading ILP for hardware simplicity.
+
+**Load bypass of earlier stores (when safe):**
+
+A load may execute before an older store whose address is unknown, speculating that
+they do not alias. This is called **load bypass** and is critical for ILP:
+
+```
+Safe to bypass:
+  - Store address is known AND different from load address -> bypass (no alias)
+  - Store address is unknown -> speculate bypass, check later
+
+Must wait:
+  - Store address is known AND matches load address -> forward (no bypass)
+  - Store-set predictor says this load aliases the pending store -> stall
+```
+
+**Memory violation detection and recovery pipeline flush:**
+
+If a load bypassed an older store speculatively, and that store later computes an
+address that aliases the load, a **memory ordering violation** occurs:
+
+```
+Violation detection:
+  1. Store computes address -> SQ entry gets addr_known=1
+  2. SQ address is broadcast to all younger LQ entries
+  3. CAM match: LQ entry has same address AND load already completed
+  4. Violation detected! The load read stale data.
+
+Recovery:
+  1. Identify the violating load's rob_idx
+  2. Flush the ROB from (load's rob_idx + 1) to tail
+     -- the load itself must be re-executed
+  3. Restore RAT from checkpoint at the load's rob_idx
+  4. Re-issue the load (this time it will forward from the store)
+  5. Penalty: typically 10-20 cycles (same as branch misprediction)
+```
+
+Violation frequency: ~0.1-1% of all loads on typical integer workloads. Store-set
+predictors keep this rate low by preventing speculative bypass when history indicates
+aliasing.
+
+### 7.8 Detailed Reorder Buffer (ROB) Implementation
+
+**Circular buffer mechanics:**
+
+The ROB is implemented as a SRAM array with head and tail pointers that wrap modulo
+$N_{ROB}$:
+
+```
+ROB[0]  ROB[1]  ...  ROB[Head]  ROB[Head+1]  ...  ROB[Tail-1]  ROB[Tail]
+                                    |                              |
+                              oldest uncommitted            next free slot
+
+Head pointer: points to the oldest uncommitted instruction
+Tail pointer: points to the next free slot for dispatch
+
+Allocate (dispatch W instructions):
+  for i in 0..W-1:
+    ROB[(tail + i) % N_ROB] = new_entry[i]
+  tail = (tail + W) % N_ROB
+  if (tail + 1) % N_ROB == head: ROB_FULL -> stall dispatch
+
+Commit (retire up to C instructions):
+  for i in 0..C-1:
+    if ROB[(head + i) % N_ROB].completed && !ROB[(head + i) % N_ROB].exception:
+      commit_entry(ROB[(head + i) % N_ROB])
+    else:
+      break
+  head = (head + i) % N_ROB
+
+Occupied count: N = (tail - head) % N_ROB
+  (When tail >= head: N = tail - head. When tail < head: N = tail + N_ROB - head)
+```
+
+The modulo arithmetic is implemented with an adder and a mux: since $N_{ROB}$ is
+always a power of 2, the wrap is a simple bit truncation (keep only $\log_2 N_{ROB}$
+bits). Detecting "full" requires an extra comparison; detecting "empty" is
+`head == tail`.
+
+**Physical register recycling on commit:**
+
+When instruction $I$ commits and its destination architectural register $rd$ maps to
+physical register $P_{new}$, the *previous* physical register $P_{old}$ for that same
+$rd$ is returned to the free list:
+
+```
+At commit:
+  P_old = ROB[head].phys_dst_old    // saved during rename
+  arch_RAT[ROB[head].arch_dst] = ROB[head].phys_dst  // not strictly needed
+                                                      // (commit RAT update)
+  FreeList.push(P_old)
+  head = (head + 1) % N_ROB
+```
+
+Why not free $P_{old}$ immediately when $P_{new}$ is written by the execution unit?
+Because other in-flight instructions may still read $P_{old}$ as a source. Only when
+$I$ commits (guaranteeing no earlier instruction will need $P_{old}$) is it safe to
+recycle.
+
+**Precise exception handling through ROB:**
+
+The ROB enables precise exceptions by serializing all architectural state updates
+through the in-order commit path:
+
+```
+1. Exception detected at any execution stage (e.g., page fault at MEM)
+2. Exception code written to ROB entry's exception field
+3. ROB entry marked completed=1
+4. Commit logic scans from head:
+   - All entries before the faulting one commit normally
+   - When the faulting entry reaches head:
+     a. Flush all entries from (head+1) to tail
+     b. Restore RAT to committed state (all prior commits are correct)
+     c. Redirect PC to trap vector (mtvec/stvec)
+5. Architectural state is now precise:
+   - All instructions before the fault have updated arch state
+   - No instruction after the fault has modified arch state
+   - Memory unchanged (stores commit only at ROB head)
+```
+
+The key invariant: no store reaches the D-cache and no architectural register is
+permanently updated until the instruction reaches the ROB head. This makes rollback
+trivial -- simply discard everything after the faulting instruction.
+
+**ROB walk-back for precise exceptions (step-by-step hardware sequence):**
+
+When a faulting instruction $I_f$ at ROB index $B$ reaches the head, the following
+sequence executes in 2--3 cycles:
+
+```
+Cycle 1: Detection and flush initiation
+  1. ROB commit logic reads head entry (index B)
+  2. Exception field != 0 -> trigger exception pipeline
+  3. Invalidate all ROB entries from B+1 to tail:
+     for i = B+1 to tail-1:
+       ROB[i].valid = 0
+     tail = B + 1 (mod N_ROB)
+  4. Invalidate all IQ entries (branch mask not needed; entire IQ flushed)
+  5. Invalidate all LSQ entries after B (walk LQ and SQ, match rob_idx > B)
+
+Cycle 2: Architectural state restoration
+  1. Restore the frontend RAT from the commit RAT:
+     for arch_reg = 0 to 31:
+       frontend_RAT[arch_reg] = commit_RAT[arch_reg]
+     This is the "snapback" -- the commit RAT reflects all instructions up to
+     but NOT including the faulting instruction.
+  2. Free all physical registers that were allocated by instructions B+1..tail:
+     Walk the invalidated ROB entries and push each phys_dst back to the free list.
+     (Some designs skip this by maintaining a speculative free list pointer that
+     is simply restored.)
+  3. Set exception CSRs:
+     mepc = ROB[B].PC          (address of faulting instruction)
+     mcause = ROB[B].exception  (exception code, e.g., 13 for load page fault)
+     mtval = ROB[B].ldst_addr   (faulting virtual address or instruction encoding)
+
+Cycle 3: Redirect pipeline
+  1. PC = mtvec (trap vector base address)
+  2. mstatus.MIE = 0 (disable interrupts in handler)
+  3. Privilege mode -> M-mode (or S-mode if delegated)
+  4. Frontend begins fetching from trap vector
+```
+
+The critical property: after the walk-back, the frontend RAT exactly matches the
+commit RAT, which reflects only instructions 0 through B-1 (all those that committed
+before the fault). The faulting instruction's physical destination register is NOT
+freed -- it was allocated at rename but never committed, so it simply remains
+allocated. On return from the handler (MRET), the instruction will be re-fetched
+and re-executed, allocating a fresh physical register. The stale phys_dst from the
+original (faulting) execution is returned to the free list during the walk-back.
+
+### 7.9 Detailed Register Renaming Implementation
+
+**RAM-based rename table vs CAM-based:**
+
+| Design | Structure | Read | Update | Power | Latency |
+|--------|-----------|------|--------|-------|---------|
+| RAM-based RAT | SRAM array, 32 entries x 7-bit phys_tag | Direct index (1 cycle) | Write port per rename lane | Low | Fast (O(1) lookup) |
+| CAM-based RAT | 128-entry CAM, match on arch_reg tag | Associative search | Update matched entry | High (every entry compares) | Slower (O(N) compare) |
+| Fusion: RAM for common case, CAM for checkpoint restore | Hybrid | RAM indexed by arch_reg | RAM write + CAM for recovery | Medium | Fast lookup, 1-cycle restore |
+
+RAM-based is universally used for the active (speculative) RAT because the 32
+architectural registers make it a small, fast SRAM. CAM-based rename is used only
+for checkpointing (see below).
+
+**RAM-based RAT implementation details:**
+
+```
+RAT SRAM array (32 entries x 7 bits = 224 bits total):
+
+  Read: arch_reg[4:0] drives the SRAM word-line decoder.
+        1-cycle access (often half-cycle with fast SRAM).
+        For a 4-wide machine: 8 read ports (2 per instruction x 4 instructions).
+        Multi-ported SRAM area scales as O(read_ports x write_ports).
+        8-read, 4-write port SRAM for 32 entries is ~2-3 KB in 7 nm.
+
+  Write: On rename, the new phys_tag is written to RAT[arch_dst].
+         Bypass: if two instructions in the same rename group write the same
+         arch register, the second write wins (the first's phys_dst is still
+         recorded in its ROB entry for recycling).
+
+  Intra-group forwarding: Within a single-cycle rename group of W instructions,
+    instruction i+1 may read an arch register that instruction i just renamed.
+    The rename logic must bypass the new phys_tag from instruction i directly
+    to instruction i+1's source lookup, without waiting for the SRAM write.
+    Implementation: a W x W bypass network (W=4 -> 16 comparisons).
+
+  Port count analysis for 4-wide rename:
+    Read ports:  2 sources * 4 instructions = 8 read ports
+    Write ports: 1 destination * 4 instructions = 4 write ports
+    Total: 12 ports on a 32-entry SRAM
+    Area: ~3 KB in 7 nm (dominated by the crossbar for multi-porting)
+```
+
+**CAM-based RAT implementation details (for checkpoint recovery):**
+
+```
+CAM-based rename table (128 entries x 7-bit phys_tag):
+
+  Each entry stores: {arch_reg[4:0], phys_tag[6:0], valid}
+  CAM match: incoming arch_reg[4:0] compared against all 128 entries in parallel.
+  Only one entry per arch_reg should be valid at a time (invariant).
+
+  Why use CAM at all? For checkpoint-based misprediction recovery:
+    On branch: save a pointer to the current CAM state (or copy 32 valid entries)
+    On misprediction: restore the CAM by re-validating the saved entries
+    No need to walk the ROB backwards -- the CAM IS the history.
+
+  Area cost: 128 entries x (5+7+1) bits x 2 (complement for dynamic CAM) = ~4.5 KB
+  Power cost: every lookup compares against all 128 entries -> 128 * 13-bit comparisons
+  Latency: ~2 FO4 for match-line discharge in dynamic CMOS
+
+  Hybrid approach (most common in modern designs):
+    Active RAT: RAM-based (fast, low power)
+    Checkpoint storage: compact shadow copies of the 32-entry RAM RAT
+    On recovery: copy shadow -> active RAT (1 cycle)
+    No CAM needed for the main rename path
+```
+
+**Free list management -- implementation considerations:**
+
+The free list must support W allocations per cycle (rename) and up to C deallocations
+per cycle (commit). For a 4-wide machine, this means 4 pops and up to 8 pushes per
+cycle (commit is typically wider than dispatch).
+
+```
+Free list FIFO implementation (N = 128 physical registers):
+
+  head_ptr[6:0]: index of next register to allocate
+  tail_ptr[6:0]: index where next freed register is inserted
+  count[7:0]:    number of free registers
+
+  Allocate (rename, 4 per cycle):
+    if count < 4: stall dispatch
+    phys_dst[0] = freelist[head_ptr]
+    phys_dst[1] = freelist[(head_ptr+1) % 128]
+    phys_dst[2] = freelist[(head_ptr+2) % 128]
+    phys_dst[3] = freelist[(head_ptr+3) % 128]
+    head_ptr = (head_ptr + 4) % 128
+    count -= 4
+
+  Free (commit, up to 8 per cycle):
+    for i = 0 to num_committed-1:
+      freelist[tail_ptr] = ROB[head+i].phys_dst_old
+      tail_ptr = (tail_ptr + 1) % 128
+      count += 1
+
+  Critical race: allocate and free in the same cycle.
+    If count is near zero but commit will free registers this cycle:
+      Option A: stall (conservative, simpler)
+      Option B: forward freed registers directly from commit to rename (bypass)
+                Used in Intel P-cores; saves ~2% dispatch stalls
+
+  Storage: 128 entries x 7 bits = 896 bits = 112 bytes (trivial)
+  The head/tail/count registers are the critical state that must be checkpointed
+  along with the RAT on branch rename for misprediction recovery.
+```
+
+**Free list management:**
+
+```
+Free list: circular FIFO of physical register tags
+  head_ptr: next tag to allocate
+  tail_ptr: next slot to return a freed tag
+  count: number of free registers
+
+Allocate (rename stage):
+  if count < W: stall (not enough free regs for W instructions)
+  for i in 0..W-1:
+    phys_dst[i] = freelist[head_ptr]
+    head_ptr = (head_ptr + 1) % N_FREELIST
+    count -= 1
+
+Free (commit stage):
+  for i in 0..C-1:
+    freelist[tail_ptr] = ROB[head].phys_dst_old
+    tail_ptr = (tail_ptr + 1) % N_FREELIST
+    count += 1
+```
+
+Critical invariant: `count >= 0` at all times. A free-list underflow means the core
+dispatched more instructions than it has physical registers to support, which must
+be prevented by stalling dispatch when `count < dispatch_width`.
+
+**Checkpoint vs history buffer for recovery:**
+
+| Mechanism | Storage | Recovery Time | Complexity |
+|-----------|---------|---------------|------------|
+| Checkpoint (copy-on-write shadow RAT) | 8-16 snapshots x 32 x 7 bits = ~3.5 KB | 1 cycle (activate shadow) | Moderate |
+| History buffer (ROB stores old mapping) | 0 extra (old mapping in ROB entry) | O(N_ROB) cycles (walk back) | Low area |
+| Hybrid: checkpoint for branches, ROB-walk for exceptions | 8-16 checkpoints + ROB walk | 1 cycle for branch, O(N) for exception | Moderate |
+
+Checkpoint approach (used in Intel, AMD, ARM high-performance cores):
+```
+On branch rename:
+  Snapshot the active RAT into checkpoint[k]
+  checkpoint[k].valid = 1
+
+On branch misprediction:
+  Restore active RAT from checkpoint[k]
+  Invalidate all checkpoints younger than k
+  Free all physical regs allocated after checkpoint[k]
+```
+
+History buffer approach (used in area-constrained designs):
+```
+On any rename:
+  ROB[tail].phys_dst_old = previous mapping (already stored)
+
+On misprediction at ROB[B]:
+  Walk from tail back to B:
+    RAT[ROB[i].arch_dst] = ROB[i].phys_dst_old  // undo the rename
+    FreeList.push(ROB[i].phys_dst)               // free speculative phys reg
+  Takes (tail - B) cycles
+```
+
+**Architectural vs physical register mapping on commit:**
+
+The processor maintains two RATs:
+
+1. **Frontend (speculative) RAT** -- maps arch regs to the latest physical register,
+   including uncommitted (speculative) instructions. Updated during rename. Used for
+   source operand lookup.
+
+2. **Commit (architectural) RAT** -- maps arch regs to the physical register of the
+   last *committed* instruction. Updated only at commit. Used for exception recovery
+   and precise state.
+
+On commit, the commit RAT is updated: `commit_RAT[rd] = phys_dst`. The old physical
+register `phys_dst_old` is freed. On a pipeline flush (exception or misprediction),
+the frontend RAT is restored from the commit RAT -- all speculative mappings are
+discarded.
+
+### 7.10 Exception/Interrupt Pipeline -- Stage-by-Stage Detection
+
+Each pipeline stage can detect different classes of exceptions. The following table
+shows exactly where each exception type is detected and how it is handled:
+
+| Pipeline Stage | Exception Type | Example (RISC-V) | Detection Mechanism | Handling |
+|---|---|---|---|---|
+| **Fetch (IF)** | Instruction page fault | Access unmapped page in I-TLB miss | I-TLB miss + page walk returns invalid PTE | Abort fetch, write exception to special ROB entry at decode |
+| **Fetch (IF)** | Instruction access fault | Misaligned fetch, fetch from I/O region | PC alignment check + PTE permission check | Same as above |
+| **Decode (ID)** | Illegal instruction | Undefined opcode, reserved encoding | Opcode decoder finds no valid decode | Write exception code to ROB entry at dispatch |
+| **Rename** | None (typically) | -- | -- | Rename does not raise exceptions |
+| **Execute (EX)** | Divide by zero | DIV by zero (RISC-V: no trap, result defined) | Dividend check on divisor operand | Architecture-dependent: some trap, others return sentinel |
+| **Execute (EX)** | Integer overflow | ADD overflow (MIPS: trap; RISC-V: no trap) | ALU overflow flag | Architecture-dependent |
+| **Execute (EX)** | ECALL / EBREAK | System call / breakpoint | Opcode recognized at decode, flagged in ROB | Handled at commit (no "real" execution needed) |
+| **Execute (EX)** | Breakpoint (hardware) | Trigger match on PC or data address | Hardware debug comparator | Written to ROB at execute |
+| **Memory (MEM)** | Load page fault | Load from unmapped/protected page | D-TLB miss + page walk returns invalid PTE | Exception code written to ROB entry |
+| **Memory (MEM)** | Store page fault | Store to read-only/unmapped page | D-TLB miss + permission check | Same as load page fault |
+| **Memory (MEM)** | Load access fault | Misaligned load, device error | Alignment checker + bus error signal | Same |
+| **Memory (MEM)** | Store access fault | Misaligned store | Same | Same |
+| **Writeback (WB)** | **None** | -- | -- | WB is a data movement stage; no new exceptions |
+
+**How each stage's exception detection interacts with the ROB:**
+
+The fundamental principle is: *any exception detected at any stage is recorded in
+the instruction's ROB entry and deferred to commit time*. The instruction is marked
+`completed=1` (the exception IS the "result"), but no architectural state is changed.
+This lazy handling is what makes precise exceptions cheap -- no special fast-flush
+logic is needed at the detection point.
+
+```
+Fetch-stage exception (instruction page fault):
+  Detection: I-TLB miss -> page walk -> PTE not present or no execute permission
+  Action at fetch: the faulting instruction cannot enter the pipeline normally.
+    Instead, the fetch unit creates a "poison" fetch packet containing the PC
+    and the exception code (CAUSE_INSN_PAGE_FAULT = 12). This packet travels
+    through decode and rename like a normal instruction. At dispatch, the ROB
+    entry is created with exception_code = 12 and completed = 1 immediately.
+  ROB interaction: when this entry reaches the head, the normal exception
+    handler fires (flush, restore RAT, redirect to mtvec). No special handling
+    needed -- the ROB doesn't care that the instruction never actually executed.
+
+Decode-stage exception (illegal instruction):
+  Detection: opcode decoder cannot match the encoding to any valid instruction.
+  Action at decode: the instruction is still dispatched to the ROB, but its
+    exception field is set to CAUSE_ILLEGAL_INSTRUCTION = 2 and completed = 1.
+    The instruction does NOT proceed to issue or execute.
+  ROB interaction: identical to fetch-stage. The ROB entry arrives at commit
+    with exception already set. The handler sees mcause=2 and mtval contains
+    the faulting instruction encoding.
+
+Execute-stage exception (e.g., ECALL):
+  Detection: the execution unit recognizes the opcode (ECALL is a "trap"
+    instruction, not a computational one). Some designs detect ECALL at decode
+    and mark the ROB entry immediately, bypassing execute entirely.
+  Action at execute: the functional unit writes exception_code = CAUSE_ECALL_U/S/M
+    (8, 9, or 10 depending on current privilege mode) to the ROB entry via the CDB.
+  ROB interaction: the entry is marked completed=1 with the exception code.
+    When it reaches the head, the pipeline flushes and redirects to mtvec/stvec.
+
+Memory-stage exception (load/store page fault):
+  Detection: D-TLB miss triggers a hardware page table walk. The walk returns a
+    PTE that is not present, or does not permit the required access (e.g., read-
+    only page for a store). Alternatively, the PTE may be present but the
+    privilege check fails (user-mode access to supervisor-only page).
+  Action at memory: the AGU/LSQ pipeline writes exception_code = CAUSE_LOAD_PAGE_FAULT
+    (13) or CAUSE_STORE_PAGE_FAULT (15) to the ROB entry, along with the faulting
+    virtual address in the ldst_addr field.
+  ROB interaction: the store's SQ entry is NOT committed to the D-cache (it never
+    reaches the head). On exception handling, the SQ entry is simply discarded.
+    For loads, the LQ entry is discarded and any data loaded from the wrong page
+    is ignored (it was never written to the PRF because the exception prevented it).
+```
+
+The key insight: because the ROB commits in-order, an exception detected in the
+memory stage of instruction $I_k$ cannot affect architectural state until $I_k$
+reaches the head. All instructions before $I_k$ commit normally, and by the time
+$I_k$ reaches the head, they have already updated the architectural register file
+and D-cache. The handler therefore sees a precise state: everything before $I_k$ is
+committed, nothing after $I_k$ has touched architectural state.
+
+**Precise vs imprecise traps:**
+
+- **Precise trap** (all modern OoO cores): the trap handler sees architectural state
+  as if all instructions before the faulting one completed and none after executed.
+  Guaranteed by the ROB's in-order commit.
+
+- **Imprecise trap** (some older FP architectures, e.g., MIPS R2000 FP exceptions):
+  the faulting instruction may have committed, or later instructions may have
+  modified state. The handler cannot trivially resume. Avoided in modern designs.
+
+**How the ROB enables precise exceptions -- detailed walkthrough:**
+
+```
+Scenario: I3 causes a load page fault
+
+ROB state at fault detection:
+  [I1: ADD  | Done=1 | Exc=0]  <- head, can commit
+  [I2: SUB  | Done=1 | Exc=0]  <- can commit
+  [I3: LD   | Done=1 | Exc=13] <- load page fault detected in MEM stage
+  [I4: ADD  | Done=1 | Exc=0]  <- executed out-of-order, already done
+  [I5: MUL  | Done=0 | Exc=0]  <- still executing
+
+Cycle-by-cycle:
+  Cycle N:   Commit I1, I2 (both done, no exception). Head advances to I3.
+  Cycle N+1: Head = I3, Exc=13 (page fault).
+             -> Do NOT commit I3.
+             -> Flush ROB entries I3..I5 (set valid=0, tail = I3 index)
+             -> Restore RAT to commit_RAT state (I1, I2 committed; I3+ did not)
+             -> Set mepc = I3.PC, mcause = 13, mtval = I3.load_addr
+             -> Redirect PC to mtvec
+
+Result: architectural state = state after I1 and I2 committed, nothing else.
+        This is a precise exception.
+```
+
+### 7.11 Detailed Forwarding Network
+
+**Bypass paths in a 5-stage pipeline:**
+
+```
+                     Forwarding Network
+                     ==================
+
+   EX/MEM                     MEM/WB
+   pipeline reg               pipeline reg
+     |                           |
+     | ALU_result               | result (ALU or MEM data)
+     |                           |
+     v                           v
+   +---+                       +---+
+   |MUX| <-- Forward_A=01      |MUX| <-- Forward_A=10
+   +---+                       +---+
+     ^                           ^
+     |                           |
+     +--- ALU Input A -----------+
+
+   +---+                       +---+
+   |MUX| <-- Forward_B=01      |MUX| <-- Forward_B=10
+   +---+                       +---+
+     ^                           ^
+     |                           |
+     +--- ALU Input B -----------+
+
+   ID/EX.rs1_data --------------+
+   ID/EX.rs2_data --------------+
+
+Bypass paths:
+  EX->EX (Forward=01): result available after EX stage, forwarded to next instruction's EX
+  MEM->EX (Forward=10): result available after MEM stage, forwarded to instruction 2 cycles later
+  WB->EX: NOT needed in a classic 5-stage pipeline with write-first register file
+          (WB writes in first half of cycle, ID reads in second half -> same-cycle)
+
+Note on deeper pipelines and OoO designs:
+  In pipelines with more than 5 stages, a WB->EX (or equivalent late-stage to
+  early-stage) bypass path IS needed. For example, in a 7-stage pipeline where
+  WB occurs in stage 6 and a dependent instruction's EX is in stage 4, the
+  result from WB must be forwarded back 2 stages. In an OoO core this is
+  handled by the Common Data Bus (CDB): when an instruction writes back, its
+  result tag is broadcast to the issue queue's CAM, which wakes up dependent
+  instructions regardless of pipeline distance. The CDB effectively replaces
+  all explicit bypass paths with a single broadcast mechanism.
+```
+
+**Which forwarding is needed to avoid stalls:**
+
+| Dependency Distance | Source Stage | Consumer Stage | Forward Path | Stall? |
+|---|---|---|---|---|
+| 1 cycle apart (back-to-back ALU) | EX/MEM | EX | EX->EX (Forward=01) | No stall |
+| 2 cycles apart (ALU, NOP, ALU) | MEM/WB | EX | MEM->EX (Forward=10) | No stall |
+| Same cycle (WB->ID) | WB | ID | Write-first RF | No stall |
+| Load -> ALU (1 cycle apart) | MEM/WB | EX | MEM->EX after 1 stall | **1 stall cycle** |
+| 3+ cycles apart (deeper pipeline) | WB (or later) | EX | WB->EX bypass (deeper pipelines) or CDB broadcast (OoO) | No stall |
+
+**Worked pipeline timing diagram showing data hazard resolution:**
+
+```
+Instruction sequence:
+  I1: ADD  $1, $2, $3     (writes $1)
+  I2: SUB  $4, $1, $5     (reads $1 -- RAW hazard, distance 1)
+  I3: AND  $6, $1, $7     (reads $1 -- RAW hazard, distance 2)
+  I4: OR   $8, $1, $9     (reads $1 -- RAW hazard, distance 3)
+
+Without forwarding:
+  Cycle:  1    2    3    4    5    6    7    8    9   10   11
+  I1:    IF   ID   EX  MEM  WB
+  I2:         IF   ID  stall stall EX  MEM  WB
+  I3:              IF  stall stall ID   EX  MEM  WB
+  I4:                  stall stall IF   ID   EX  MEM  WB
+  Total: 11 cycles, 4 stall cycles
+
+With forwarding:
+  Cycle:  1    2    3    4    5    6    7    8
+  I1:    IF   ID   EX  MEM  WB
+  I2:         IF   ID   EX  MEM  WB       <- EX->EX forward (EX/MEM.ALU_result -> I2's EX)
+  I3:              IF   ID   EX  MEM  WB  <- MEM->EX forward (MEM/WB.result -> I3's EX)
+  I4:                   IF   ID   EX  MEM WB  <- No forward needed (WB writes, ID reads same cycle)
+  Total: 8 cycles, 0 stall cycles
+
+Forwarding detail for each cycle:
+
+  Cycle 3: I1 in EX, I2 in ID
+    I1's ALU computes $1 = $2 + $3
+    Result available at end of cycle 3 (written to EX/MEM register)
+
+  Cycle 4: I1 in MEM, I2 in EX, I3 in ID
+    Forward A for I2: EX/MEM.Rd=$1 matches I2.Rs1=$1 -> ForwardA=01
+    I2's ALU input A = EX/MEM.ALU_result (forwarded from I1)
+    I2 computes $4 = $1(forwarded) - $5
+
+  Cycle 5: I1 in WB, I2 in MEM, I3 in EX, I4 in ID
+    Forward A for I3: MEM/WB.Rd=$1 matches I3.Rs1=$1 -> ForwardA=10
+    I3's ALU input A = MEM/WB.ALU_result (forwarded from I1)
+    I3 computes $6 = $1(forwarded) & $7
+    I4 reads $1 from register file (I1 wrote $1 in WB first half of cycle 5,
+    I4 reads in ID second half of cycle 5 -- write-first register file)
+
+Load-use hazard (1 stall, unavoidable):
+  I1: LW   $1, 0($2)
+  I2: ADD  $4, $1, $5
+
+  Cycle:  1    2    3    4    5    6    7
+  I1:    IF   ID   EX  MEM  WB
+  I2:         IF   ID  stall EX  MEM  WB        <- 1 stall cycle
+  I3:              IF  stall ID   EX  MEM  WB
+
+  Why 1 stall: I1's data available at end of MEM (cycle 4).
+  I2 needs data at start of EX (cycle 4 originally).
+  After 1 stall, I2's EX is in cycle 5, I1's MEM data is available via MEM->EX forward.
+
+  Forward in cycle 5: MEM/WB.mem_data forwarded to I2's ALU input A.
+```
+
+### 7.12 Memory-Level Parallelism (MLP)
+
+MLP measures how many outstanding cache misses a processor can tolerate
+simultaneously. A processor with MLP $= N$ can have $N$ cache misses in flight
+without stalling the core's independent execution.
+
+**Relationship to AMAT.** With perfect overlap of $N$ independent cache misses,
+each of latency $t_{\text{miss}}$:
+
+$$
+\text{AMAT}_{\text{effective}} = \frac{\text{Total latency}}{\text{Number of misses}} = \frac{t_{\text{miss}}}{N}
+$$
+
+Without overlap the same $N$ misses take $N \cdot t_{\text{miss}}$ cycles. MLP
+converts serial latency into parallel throughput.
+
+**Hardware support for MLP:**
+
+1. **Non-blocking caches with MSHRs** -- a Miss Status Holding Register tracks
+   each outstanding miss. The number of MSHR entries sets the maximum MLP.
+   Typical sizes: 8-16 entries for L1, 32-64 for L2. Each entry records the
+   missed address, the cache line state, and which load instructions are waiting.
+2. **Out-of-order execution** -- the core continues past a cache miss, issuing
+   independent loads that may also miss, naturally generating parallel misses.
+3. **Hardware prefetcher** -- the dominant source of MLP in practice. A stride
+   detector observes consecutive load addresses and generates prefetch requests
+   ahead of the program, converting what would be serial compulsory misses into
+   parallel prefetch hits.
+
+**MLP vs ILP.** MLP is independent of instruction-level parallelism. A processor
+can have low ILP (sequential dependency chain) but high MLP (strided access
+pattern recognized by the prefetcher). The prefetcher detects a constant stride
+$\Delta$ between successive load addresses and issues prefetches for addresses
+$A + \Delta, A + 2\Delta, \ldots$ before the loads execute.
+
+```
+Strided access, no prefetcher:
+  Miss(addr=0x1000) ---- latency 200 cycles ----> data
+                     Miss(addr=0x1040)           ---- 200 cycles ----> data
+                                        Miss(addr=0x1080)  ---- 200 cycles ----> data
+  Total: 600 cycles (serial)
+
+Strided access, with stride prefetcher (MLP ≈ 3):
+  Miss(0x1000)  ----+
+  Pf (0x1040)   ----+---- all three in parallel ----> data arrives
+  Pf (0x1080)   ----+
+  Total: ~200 cycles (parallel, effective latency ≈ 200/3 ≈ 67 cycles per miss)
+```
+
+**MSHR sizing trade-off.** More MSHRs enable higher MLP but increase area and
+power (each entry needs address comparators and state tracking). An L1 with 16
+MSHRs can track 16 concurrent misses -- enough for most prefetch streams but a
+bottleneck for pointer-chasing workloads (graph traversal, sparse matrix) where
+addresses are data-dependent and the prefetcher cannot help.
+
+### 7.13 Decoupled Access/Execute Architecture
+
+A decoupled architecture splits the processor into two semi-independent engines
+connected by an address/data queue:
+
+1. **Access (memory) engine** -- executes address-generation instructions (loads,
+   stores, address arithmetic) and runs ahead of the main instruction stream,
+   prefetching data into the cache.
+2. **Execute (compute) engine** -- consumes data from the queue and performs
+   arithmetic, logic, and control-flow operations.
+
+```
+  Instruction Stream
+        │
+        ├──── Access Engine ──→ L1 D-Cache ──→ Data Queue ──┐
+        │       (runs ahead,                                      │
+        │        prefetches)                                      │
+        │                                                        ▼
+        └──── Execute Engine ◄──────────────────────── compute results
+                 (consumes prefetched data)
+```
+
+The access engine uses address-generation instructions whose inputs are
+independent of the compute engine's results, so it can run arbitrarily far ahead.
+The execute engine then sees a cache hit on nearly every load because the access
+engine has already fetched the data.
+
+**Why it is not mainstream.** General-purpose CPUs (x86, ARM) achieve a similar
+effect through out-of-order execution with a large load/store queue and hardware
+prefetcher. The explicit split adds complexity and restrictive programming
+constraints without a clear advantage over the OoO approach for irregular code.
+
+**Where it is used.** Some DSPs and embedded processors (e.g., ADSP-2100,
+TMS320C6000) employ decoupled access/execute pipelines where deterministic
+memory timing is more valuable than general-purpose flexibility.
+
+**Interview significance.** The access/execute split illustrates the fundamental
+principle that memory latency and compute can be overlapped -- the same principle
+behind GPU warp scheduling (one warp computes while another waits on memory) and
+FlashAttention's tiled computation (load next tile while computing the current
+tile).
 
 ---
 
@@ -1729,3 +2592,203 @@ The delegation model is a key difference from MIPS, where all exceptions go to
 a single exception level and the OS must determine the cause from the
 exception code. RISC-V's separate trap vectors for M-mode and S-mode reduce
 the number of privilege transitions on a typical syscall or page fault.
+
+---
+
+## 16. Memory Ordering and Consistency Models
+
+### 16.1 Why Memory Ordering Matters
+
+In a single-threaded in-order pipeline, memory operations appear to execute in
+program order. Out-of-order execution and compiler optimizations break this
+assumption: a load may execute before an older store to a *different* address,
+and stores may be reordered in the store buffer. A **memory consistency model**
+defines which reorderings are architecturally visible to software. It is a
+contract between hardware and software -- the hardware promises not to violate
+the model, and software must insert explicit synchronization when it needs
+ordering stronger than the default.
+
+### 16.2 Sequential Consistency (SC)
+
+All memory operations from every thread appear to execute in a single global
+order that respects each thread's program order. No reordering of any kind is
+visible. Simplest model to reason about, worst performance: every load must wait
+for all prior stores to become globally visible, and the store buffer cannot
+hide store latency across threads.
+
+No mainstream general-purpose CPU implements SC as its default model.
+
+### 16.3 Total Store Order (TSO / x86)
+
+TSO relaxes exactly one ordering: a load may be reordered before an older store
+to a **different** address (store-load relaxation). All other program-order
+pairs are preserved:
+
+```
+Allowed reorderings under TSO:
+  Store X --> Load Y  (X != Y):  YES  (store-load relaxation)
+  All other pairs:               NO
+
+Prohibited:
+  Load  --> Load     (load-load)
+  Store --> Store    (store-store)
+  Load  --> Store    (load-store)
+```
+
+The store buffer provides this relaxation naturally: when a store is buffered,
+subsequent loads to different addresses can bypass it. Loads to the *same*
+address are satisfied by store-to-load forwarding (Section 7.6).
+
+**Practical consequence:** on x86, `X=1; print(Y)` can observe Y before X=1 is
+visible to other cores. This is not a bug -- it is TSO. Software that needs X=1
+to be visible before reading Y must use `MFENCE`, `LOCK XCHG`, or an atomic
+instruction with implicit full barrier semantics.
+
+### 16.4 Weak Ordering (ARM, RISC-V Default)
+
+Loads and stores can be reordered freely except where constrained by explicit
+fences or acquire/release annotations:
+
+```
+Allowed reorderings under weak ordering:
+  Load  --> Load:   YES
+  Load  --> Store:  YES
+  Store --> Store:  YES
+  Store --> Load:   YES
+```
+
+All reorderings are permitted because the hardware does not enforce any
+ordering by default. Software must insert fences or use annotated operations
+when ordering is required (e.g., between releasing a lock and subsequent
+accesses to protected data).
+
+**RISC-V fencing primitives:**
+
+| Instruction | Semantics |
+|-------------|-----------|
+| `fence r,rw` | Order all loads before subsequent loads and stores (load-load + load-store fence) |
+| `fence rw,rw` | Full fence: order all prior memory operations before all subsequent memory operations |
+| `fence.i` | Instruction-cache synchronization: modifications to code memory become visible to fetch |
+| `sfence.vma` | TLB synchronization: page-table updates become visible to address translation |
+
+### 16.5 Acquire and Release Semantics
+
+Finer-grained ordering primitives that avoid the cost of a full fence:
+
+- **Acquire** (load-acquire, RISC-V `ld.aq`): prevents all subsequent memory
+  operations from being reordered before this load. Used at the entry of a
+  critical section (acquiring a lock).
+
+- **Release** (store-release, RISC-V `st.rl`): prevents all prior memory
+  operations from being reordered after this store. Used at the exit of a
+  critical section (releasing a lock).
+
+```
+Thread 0:                        Thread 1:
+  data = 42                        ld.aq flag_val, flag
+  st.rl flag, 1                    if flag_val == 1:
+                                     print(data)  // guaranteed to see 42
+
+Release on Thread 0 orders "data=42" before "flag=1".
+Acquire on Thread 1 orders "load flag" before "load data".
+Together they guarantee Thread 1 sees data=42 after observing flag==1.
+```
+
+### 16.6 Microarchitectural Implications for OoO
+
+The Load/Store Queue (LSQ) enforces memory-ordering constraints in hardware:
+
+- **On TSO (x86):** the store buffer already provides store-load relaxation.
+  The LSQ must only prevent load-load, store-store, and load-store reordering.
+  The store buffer naturally gives TSO compliance with minimal hardware cost.
+
+- **On weak ordering (ARM/RISC-V):** the LSQ must track fence instructions as
+  ordering barriers. When a `fence` is encountered, the LSQ stalls issue of
+  subsequent memory operations until all prior ones have completed. `ld.aq` and
+  `st.rl` are cheaper: they carry per-instruction ordering bits that the LSQ
+  checks locally without stalling the entire pipeline.
+
+- **Speculation:** both models allow the LSQ to speculate past unresolved
+  stores. On TSO, a load may execute before confirming that no older store to
+  the same address is pending (address match). On weak ordering, loads may
+  speculate past anything unless a fence blocks them. Misprediction recovery
+  requires replaying the load from the ROB.
+
+---
+
+## 17. Micro-op Fusion
+
+### 17.1 Macro-Fusion
+
+Macro-fusion merges two adjacent instructions in the decode stage into a single
+internal micro-operation (uop). The fused pair occupies one ROB entry, consumes
+one issue slot, and traverses the pipeline as a single operation.
+
+**Common fused patterns:**
+
+```
+CMP reg1, reg2    }                          TEST reg1, reg2    }
+JE  target        } --> fused-cmp-branch      JZ  target        } --> fused-test-branch
+
+ADD reg1, 1       }                          SUB reg1, 1       }
+JO  target        } --> fused-add-overflow    JS  target        } --> fused-sub-sign
+```
+
+The decoder recognizes these patterns by checking whether the first instruction
+is a flag-producing ALU operation and the second is a conditional branch that
+tests exactly those flags. If the condition code does not match the produced
+flags (e.g., `ADD` then `JNE` which checks ZF set by a different operation),
+fusion does not occur.
+
+**Benefit:** the fused uop counts as one entry in the ROB, issue queue, and
+reorder logic. This effectively increases ROB capacity and issue width at no
+additional hardware cost. For a 4-wide machine that fuses 5% of dynamic
+instructions, the effective ROB capacity increases by approximately 5%.
+
+### 17.2 Micro-Fusion
+
+Micro-fusion combines the micro-ops produced by decomposing a single complex
+instruction so that they travel through most of the pipeline as one entry.
+
+**Common pattern -- memory operands:**
+
+```
+ADD rax, [rbx]      -- complex instruction with memory operand
+```
+
+This decomposes into two micro-ops: (1) a load uop that reads from [rbx], and
+(2) an ALU uop that adds the loaded value to rax. With micro-fusion, these two
+uops share a single ROB entry and issue-queue entry, splitting only at the
+execution units (load port for uop 1, ALU port for uop 2).
+
+**Other micro-fused patterns:**
+
+| Instruction | Decomposed uops | Fused through |
+|-------------|-----------------|---------------|
+| `ADD rax, [rbx]` | load + add | ROB, issue queue |
+| `CMP rax, [rbx]` | load + compare | ROB, issue queue |
+| `MOV [rbx], rax` | store-addr + store-data | ROB, issue queue |
+
+### 17.3 Quantitative Impact
+
+- **Intel Golden Cove (Alder Lake P-core):** macro-fusion handles ~5--7% of
+  dynamic instructions. Combined with micro-fusion, effective ROB capacity
+  increases by ~8--10% beyond the nominal 512 entries.
+
+- **Apple M1:** extensive macro-fusion (compare+branch, test+branch, and
+  additional patterns) contributes to the M1's very high IPC despite a
+  comparatively moderate ROB size (~600 entries reported).
+
+- **Limitation:** fusion only applies to adjacent instructions in program order.
+  Compiler scheduling can increase fusion opportunities by placing flag-setting
+  instructions immediately before dependent branches, but this is constrained by
+  register pressure and other dependencies.
+
+### 17.4 Interview Significance
+
+Micro-op fusion is relevant in interviews because it explains why a processor's
+effective issue width and ROB capacity can exceed their nominal values. When
+analyzing pipeline throughput, counting fused uops separately would
+underestimate the machine's capability. It also illustrates the interplay
+between ISA complexity (x86's memory-operand instructions generate more
+micro-fusion opportunities) and microarchitectural efficiency.

@@ -1529,3 +1529,192 @@ Actual = what the HW register really holds in RTL. `write()` updates desired, se
 write, and updates mirror on completion. `read()` reads from HW and updates mirror.
 `mirror()` reads from HW and checks against the predicted mirror value -- a mismatch indicates
 a bug. `update()` writes desired to HW only if desired != mirror (conditional write).
+
+---
+
+## Coverage-Driven Verification (CDV) Methodology
+
+### CDV Workflow
+
+Coverage-driven verification closes the loop between stimulus and measurement. The cycle:
+
+1. **Write verification plan** -- decompose every design feature into testable requirements.
+2. **Create coverage model** -- instrument covergroups, coverpoints, and crosses that signal "this feature has been exercised."
+3. **Develop constrained-random stimulus** -- let the generator explore the legal space; use directed tests only for corner cases the randomizer cannot reach.
+4. **Simulate and collect coverage** -- run regressions with multiple seeds; merge coverage databases.
+5. **Analyze coverage holes** -- triage every uncovered bin.
+6. **Add directed tests** -- only after confirming a stimulus gap (not a model gap or dead code).
+7. **Declare closure** -- when functional and code coverage targets are met across all seeds.
+
+Skipping step 5 is the most common mistake: chasing 100% without understanding *why* a bin is uncovered wastes effort on dead-code bins that can never fire.
+
+### Verification Plan -- AXI4 Slave Example
+
+| Feature | Test Type | Coverage Item | Target |
+|---------|-----------|---------------|--------|
+| Single read | CR (constrained random) | `cg_axi_read.bv_addr` | 100% |
+| Burst read (INCR4) | CR | `cg_axi_burst.bv_burst_len` with `len==4` | 100% |
+| Out-of-order completion | CR | `cg_ooo.cp_ordering` | 100% |
+| Error response (SLVERR) | Directed | `cp_slverr` | 100% |
+| Back-to-back transactions | CR | `cg_perf.cp_back2back` | >80% |
+
+The verification plan is the contract between design and verification teams. Each row maps a design feature to a measurable coverage goal -- without this mapping, coverage numbers are meaningless.
+
+### Coverage Closure Methodology
+
+Uncovered bins are triaged into three categories:
+
+- **Stimulus gap** -- the testbench never created the condition. Fix: add constraints or directed tests.
+- **Coverage model gap** -- the condition occurred but was not instrumented. Fix: add or refine coverpoints.
+- **Dead code** -- the condition is architecturally unreachable. Fix: document and exclude from the target.
+
+Coverage regression gates (typical): 95% functional coverage, 100% toggle, 100% FSM state, 100% branch. Run nightly across all seeds; track trend charts. A sudden coverage drop almost always indicates a regression bug in stimulus generation, not a design bug.
+
+---
+
+## Worked Example -- AXI4-Lite Slave Testbench
+
+### DUT Specification
+
+32-bit AXI4-Lite slave with 16 registers at addresses `0x00`--`0x3C` (stride 4). Supports read and write. Returns `SLVERR` for addresses outside `0x00`--`0x3C`. No bursting -- AXI4-Lite has fixed-length transfers.
+
+### Testbench Architecture
+
+```
+Test -> Sequence -> Driver -> DUT -> Monitor -> Scoreboard
+               |                             ^
+               v                             |
+         Coverage Collector <--- (analysis port broadcast)
+```
+
+### Transaction Class
+
+```systemverilog
+class axi_lite_txn extends uvm_sequence_item;
+    `uvm_object_utils(axi_lite_txn)
+
+    rand bit [31:0] addr;
+    rand bit [31:0] data;
+    rand bit        rw;       // 1=write, 0=read
+    rand bit        back2back; // No idle cycles before next txn
+
+    bit [31:0]      rdata;    // Response
+    bit [1:0]       resp;     // 00=OKAY, 10=SLVERR
+
+    constraint c_addr_align { addr[1:0] == 2'b00; }
+    constraint c_legal_addr { addr inside {['h00:'h3C]}; }
+
+    // Factory override in error tests removes c_legal_addr
+    function new(string name = "axi_lite_txn");
+        super.new(name);
+    endfunction
+endclass
+```
+
+### Sequence Library
+
+```systemverilog
+// Sequential write-then-read for every register
+class rw_all_regs_seq extends uvm_sequence #(axi_lite_txn);
+    `uvm_object_utils(rw_all_regs_seq)
+    task body();
+        for (int i = 0; i < 16; i++) begin
+            // Write
+            req = axi_lite_txn::type_id::create("wr");
+            start_item(req); req.randomize() with {rw==1; addr==i*4;}; finish_item(req);
+            // Read back
+            req = axi_lite_txn::type_id::create("rd");
+            start_item(req); req.randomize() with {rw==0; addr==i*4;}; finish_item(req);
+        end
+    endtask
+endclass
+
+// Random read-write mix -- core of CR verification
+class random_rw_seq extends uvm_sequence #(axi_lite_txn);
+    `uvm_object_utils(random_rw_seq)
+    rand int n;
+    constraint c_n { n inside {[50:200]}; }
+    task body();
+        for (int i = 0; i < n; i++) begin
+            req = axi_lite_txn::type_id::create("txn");
+            start_item(req);
+            req.randomize();   // c_legal_addr keeps it in range
+            finish_item(req);
+        end
+    endtask
+endclass
+```
+
+### Coverage Model with Cross Coverage
+
+```systemverilog
+class axi_coverage extends uvm_subscriber #(axi_lite_txn);
+    `uvm_component_utils(axi_coverage)
+
+    axi_lite_txn txn;
+    covergroup cg_axi;
+        cp_addr: coverpoint txn.addr {
+            bins reg_00 = {'h00}; bins reg_04 = {'h04}; bins reg_08 = {'h08};
+            bins reg_0C = {'h0C}; bins reg_10 = {'h10}; bins reg_14 = {'h14};
+            bins reg_18 = {'h18}; bins reg_1C = {'h1C};
+            bins reg_20 = {'h20}; bins reg_24 = {'h24}; bins reg_28 = {'h28};
+            bins reg_2C = {'h2C}; bins reg_30 = {'h30}; bins reg_34 = {'h34};
+            bins reg_38 = {'h38}; bins reg_3C = {'h3C};
+        }
+        cp_rw: coverpoint txn.rw { bins rd = {0}; bins wr = {1}; }
+        cp_resp: coverpoint txn.resp { bins okay = {0}; bins slverr = {2}; }
+        cx_addr_rw: cross cp_addr, cp_rw;        // Every register read AND written
+        cx_rw_resp:  cross cp_rw,  cp_resp;       // Write+OKAY, Read+OKAY, SLVERR
+    endgroup
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+        cg_axi = new();
+    endfunction
+
+    function void write(axi_lite_txn t);
+        txn = t; cg_axi.sample();
+    endfunction
+endclass
+```
+
+### Scoreboard Checking Logic
+
+```systemverilog
+class axi_scoreboard extends uvm_scoreboard;
+    `uvm_component_utils(axi_scoreboard)
+
+    uvm_analysis_imp #(axi_lite_txn, axi_scoreboard) imp;
+    bit [31:0] reg_file [bit[31:0]];   // Reference model: addr -> data
+    int errors;
+
+    function void write(axi_lite_txn txn);
+        if (txn.addr > 'h3C) begin
+            // Illegal address -- expect SLVERR
+            if (txn.resp != 2'b10)
+                `uvm_error("SCB", $sformatf("Missing SLVERR for addr=%0h", txn.addr))
+            return;
+        end
+        if (txn.rw) begin
+            reg_file[txn.addr] = txn.data;
+        end else begin
+            bit [31:0] exp = reg_file.exists(txn.addr) ? reg_file[txn.addr] : '0;
+            if (txn.rdata !== exp) begin
+                errors++;
+                `uvm_error("SCB", $sformatf("Mismatch addr=%0h exp=%h got=%h",
+                          txn.addr, exp, txn.rdata))
+            end
+        end
+    endfunction
+endclass
+```
+
+### Results Interpretation
+
+100% functional coverage proves every register was read and written, every response type occurred, and every cross combination fired. It does **not** prove:
+
+- **Timing compliance** -- AXI handshake timing (AVALID to AWREADY latency) is not captured by functional coverage; protocol checkers (SVA assertions) are needed.
+- **Multi-cycle path correctness** -- cross-clock-domain paths require separate CDC verification.
+- **Analog effects** -- signal integrity, power droop, clock jitter are outside simulation scope.
+
+Functional coverage closure is necessary but not sufficient. Full sign-off requires: functional coverage + code coverage + formal property verification + gate-level timing simulation + silicon validation.

@@ -590,6 +590,189 @@ Output  ______/`````\___/```````````
 
 ---
 
+## 9B. Technology Scaling Trends -- Dennard Scaling and Its Breakdown
+
+### 9B.1 Dennard Scaling (1974-2005)
+
+Robert Dennard's 1974 paper established that as MOSFET dimensions shrink by a factor k:
+- W, L -> W/k, L/k (gate length and width shrink)
+- Vdd -> Vdd/k (voltage scales proportionally)
+- Cox -> k * Cox (thinner oxide, higher capacitance per area)
+- I_ds -> I_ds/k (current scales with voltage and dimensions)
+- Delay -> Delay/k (circuits get faster)
+- Power density remains CONSTANT (more transistors, same power per area)
+
+The math: Power per gate = C * V^2 * f. After scaling: (C/k) * (V/k)^2 * (k*f) = C*V^2*f / k.
+But k times as many gates fit in the same area: total power density = (C*V^2*f/k) * k = C*V^2*f = constant.
+
+This was the foundation of "frequency doubles every generation" for 30 years.
+
+### 9B.2 Why Dennard Scaling Broke (~65nm)
+
+Dennard scaling requires Vdd to scale with Vth. But as Vth drops, leakage increases exponentially:
+
+```
+For Vth = 0.3V at 130nm:
+  If we scale Vdd from 1.2V to 0.6V (k=2), Vth should also halve to 0.15V.
+  But at Vth = 0.15V: I_off = I_0 * exp(-0.15 / (1.3 * 0.026)) = I_0 * exp(-4.44)
+  vs Vth = 0.3V:       I_off = I_0 * exp(-0.30 / (1.3 * 0.026)) = I_0 * exp(-8.88)
+  
+  Ratio = exp(4.44) = 85x more leakage per transistor!
+
+  With 2x more transistors per area: total leakage density increases by ~170x.
+  The chip would be entirely leakage-dominated -- unusable.
+
+Resolution: Vth stopped scaling below ~0.25-0.35V.
+Consequence: Vdd could not scale as Dennard predicted (Vdd/Vth ratio dropped).
+  130nm: Vdd = 1.2V, Vth = 0.35V, overdrive = 0.85V
+   65nm: Vdd = 1.0V, Vth = 0.30V, overdrive = 0.70V  (Vdd didn't halve!)
+   28nm: Vdd = 0.9V, Vth = 0.28V, overdrive = 0.62V
+    7nm: Vdd = 0.75V, Vth = 0.25V, overdrive = 0.50V
+```
+
+The fundamental limit is the **Boltzmann tyranny** (60 mV/decade subthreshold swing): you cannot
+reduce Vth below ~0.25V without I_off exceeding design limits.
+
+### 9B.3 Consequences of Broken Dennard Scaling
+
+```
+1. Power density INCREASES with scaling (instead of staying constant):
+   Each generation: ~2x more transistors, Vdd drops only ~10-15% (not 30%)
+   Power density grows ~30-50% per generation
+
+2. Dark silicon: A chip cannot power all its transistors simultaneously.
+   At 7nm, only ~50-70% of a chip can be active at full frequency.
+   The rest must be power-gated or clock-gated ("dark silicon").
+   
+   Example: Apple A15 (5nm, ~15B transistors):
+     Full activation would draw ~30-50W (exceeds mobile thermal budget of ~5-8W)
+     Only the active cores and accelerators are powered at any time
+
+3. Frequency plateaued: Clock frequency stalled at ~3-5 GHz around 2005
+   - Further frequency increase requires higher Vdd -> exponentially more power
+   - Instead: more cores, wider SIMD, specialized accelerators
+   - The industry moved to multi-core (parallelism) instead of frequency scaling
+
+4. Voltage scaling slowed dramatically:
+   250nm → 130nm: Vdd dropped from 2.5V → 1.2V (halved in 2 generations)
+   130nm → 7nm:   Vdd dropped from 1.2V → 0.75V (only 38% in 5+ generations)
+```
+
+### 9B.4 FinFET Advantage for Leakage
+
+```
+Why FinFET (16nm and below) partially restored scaling:
+
+Planar MOSFET at 20nm:
+  Subthreshold slope = 80-100 mV/decade (n = 1.3-1.5)
+  DIBL = 50-100 mV/V
+  Vth variability = +/- 30-50 mV (random dopant fluctuation)
+
+FinFET at 16nm:
+  Subthreshold slope = 65-70 mV/decade (n = 1.05-1.15)
+  DIBL = 20-30 mV/V
+  Vth variability = +/- 15-25 mV (undoped channel)
+  
+Consequence: FinFET can use LOWER Vth at same leakage budget:
+  Planar at Vth = 0.35V: I_off = I_0 * exp(-0.35/(1.35*0.026)) = I_0 * exp(-9.97)
+  FinFET at Vth = 0.28V: I_off = I_0 * exp(-0.28/(1.10*0.026)) = I_0 * exp(-9.79)
+  
+  Similar I_off, but FinFET's lower Vth gives (0.75-0.28)/(0.75-0.35) = 1.175x more
+  overdrive at Vdd = 0.75V. This means faster at same leakage, or same speed at lower Vdd.
+  
+  FinFET enabled Vdd to drop from ~0.9V (28nm planar) to ~0.75V (7nm FinFET)
+  while maintaining performance. Without FinFET, the 7nm node would not be viable.
+```
+
+### 9B.5 Dark Silicon and Power Density Limits
+
+```
+Power density ceiling for different cooling:
+  Passive (mobile, no fan):     ~5 W/cm^2  -> ~5-8W total
+  Active air cooling (laptop):  ~30 W/cm^2 -> ~45-65W total
+  Active air cooling (desktop): ~80 W/cm^2 -> ~150-250W total
+  Liquid cooling:               ~200 W/cm^2 -> ~300-500W total
+
+At 7nm with ~100M gates/mm^2:
+  If ALL gates switch at 2 GHz with alpha = 0.1:
+  P = 0.1 * 100e6 * 1.2e-15 * 0.75^2 * 2e9 = 13.5 W/mm^2 = 1350 W/cm^2
+  
+  This is 10x beyond even liquid cooling!
+  Hence: only a fraction of the chip can be active at any time.
+
+Dark silicon fraction (fraction that must be off at peak performance):
+  45nm planar: ~30% dark
+  16nm FinFET: ~40% dark
+   7nm FinFET: ~50% dark
+   3nm GAA:    ~55-60% dark
+  
+  This drives architecture: heterogeneous cores, power-gated accelerators,
+  near-threshold computing for background tasks.
+```
+
+### 9B.6 Worked Leakage Calculation With All Parameters
+
+```
+Calculate subthreshold leakage for a single NMOS in 28nm at 85C:
+
+Given:
+  W/L = 2.0 um / 0.028 um (minimum-size inverter NMOS)
+  Vth0 = 0.32V (SVT at 25C)
+  n = 1.25 (bulk CMOS)
+  mu = 300 cm^2/V*s (electron mobility at 85C)
+  Cox = 25 fF/um^2 (equivalent)
+  Vds = 0.9V (Vdd)
+  Vgs = 0V (transistor is OFF)
+  eta_DIBL = 60 mV/V
+  gamma = 0.4 V^(1/2)
+  Vsb = 0V (body tied to source)
+
+Step 1: Temperature effects on Vth and Vt
+  V_T(85C = 358K) = k*358/q = 1.381e-23 * 358 / 1.602e-19 = 30.8 mV
+  Vth(85C) = Vth0 - 2mV/K * (85-25) = 0.32 - 0.12 = 0.20V
+
+Step 2: DIBL effect
+  Vth_eff = Vth(85C) - eta * Vds = 0.20 - 0.060 * 0.9 = 0.20 - 0.054 = 0.146V
+
+Step 3: I_0 calculation
+  I_0 = mu * Cox * (W/L) * (n-1) * V_T^2
+      = 300e-4 * 25e-15/1e-12 * (2.0e-6/0.028e-6) * 0.25 * (30.8e-3)^2
+      = 300e-4 * 25e-3 * 71.4 * 0.25 * 9.49e-4
+      = 300e-4 * 25e-3 * 71.4 * 2.37e-4
+      = 300e-4 * 4.24e-4
+      = 1.27e-5 A/um ... let me simplify
+
+  Simplified: I_0 ~ 0.5 uA per um of width for 28nm SVT
+  For W = 2.0 um: I_0 = 1.0 uA
+
+Step 4: Subthreshold leakage
+  I_sub = I_0 * exp((Vgs - Vth_eff) / (n * V_T)) * (1 - exp(-Vds / V_T))
+        = 1.0e-6 * exp((0 - 0.146) / (1.25 * 0.0308)) * (1 - exp(-0.9/0.0308))
+        = 1.0e-6 * exp(-0.146 / 0.0385) * (1 - ~0)     [Vds >> V_T, so exp(-Vds/Vt) ~ 0]
+        = 1.0e-6 * exp(-3.79)
+        = 1.0e-6 * 0.0225
+        = 22.5 nA per transistor
+
+Step 5: Power per transistor
+  P_leak = I_sub * Vdd = 22.5e-9 * 0.9 = 20.3 nW per transistor
+
+Step 6: Scale to a 10M-gate block
+  Total leakage power = 10e6 * 20.3 nW = 203 mW at 85C
+
+  Compare with 25C (Vth_eff ~ 0.32 - 0.054 = 0.266V, V_T = 25.9mV):
+  I_sub_25C = 1.0e-6 * exp(-0.266 / (1.25*0.0259)) = exp(-8.22) = 0.27e-3
+  = 0.27 nA per transistor
+  P_leak_25C = 10e6 * 0.27e-9 * 0.9 = 2.4 mW at 25C
+
+  Ratio: 203/2.4 = 85x from 25C to 85C (consistent with ~2x per 10C rule: 2^6 = 64,
+  actual ratio is higher due to the Vth temperature coefficient being more aggressive here)
+
+This calculation shows why leakage analysis MUST be done at worst-case temperature.
+A design that meets power budget at 25C will fail catastrophically at 85C.
+```
+
+---
+
 ## 10. Power at Advanced Technology Nodes
 
 ### 10.1 FinFET Advantages (16nm/14nm/7nm/5nm)

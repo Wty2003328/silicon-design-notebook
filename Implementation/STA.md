@@ -13,7 +13,10 @@
 10. Full SDC Walkthrough for a Realistic SoC
 11. Clock Tree Synthesis (CTS)
 12. MCMM and Signoff Methodology
-13. Interview Q&A (25+ Questions)
+13. .lib Format Deep-Dive
+14. SPEF Walkthrough
+15. Clock Gating Checks
+16. Interview Q&A (25+ Questions)
 
 ---
 
@@ -270,9 +273,176 @@ Used in SDF back-annotation for maximum accuracy.
 
 ---
 
-## 3. Setup and Hold -- Transistor-Level Derivation
+## 3. Setup and Hold -- Complete Derivation from Scratch
 
-### 3.1 Inside a Master-Slave Edge-Triggered Flip-Flop
+### 3.1 Deriving Setup and Hold Slack from Path Delays
+
+```
+  Consider a timing path from Launch FF to Capture FF:
+  
+  CLK_SRC ──[clk_path_launch]──> Launch_FF ──[data_path]──> Capture_FF <──[clk_path_capture]── CLK_SRC
+                                       |                          |
+                                    CK -> Q                    D pin
+                                    delay                       input
+
+  Launch path (data arrival):
+  ═════════════════════════════
+  Data arrival time = T_clk_launch + T_c2q + T_combo
+  where:
+    T_clk_launch = delay from clock source to Launch_FF clock pin
+    T_c2q        = clock-to-Q delay of Launch FF
+    T_combo      = combinational logic delay from Q to D
+
+  Capture path (data required for setup):
+  ═══════════════════════════════════════════
+  Data required time = T_clk_capture + T_period - T_setup - T_uncertainty
+  where:
+    T_clk_capture = delay from clock source to Capture_FF clock pin
+    T_period      = clock period
+    T_setup       = setup time requirement of Capture FF
+    T_uncertainty = clock uncertainty (jitter + margin)
+
+  Setup Slack:
+  ══════════
+  Setup_slack = Data_required - Data_arrival
+              = (T_clk_capture + T_period - T_setup - T_uncertainty)
+                - (T_clk_launch + T_c2q + T_combo)
+              = T_period + (T_clk_capture - T_clk_launch) - T_c2q - T_combo - T_setup - T_uncertainty
+              = T_period + T_skew - T_c2q - T_combo - T_setup - T_uncertainty
+
+  where T_skew = T_clk_capture - T_clk_capture (capture clock delay minus launch clock delay)
+
+  Setup slack must be >= 0. If negative, the path violates setup timing.
+
+  Capture path (data required for hold):
+  ══════════════════════════════════════
+  Hold check is against the SAME clock edge (not next edge):
+  Hold data required = T_clk_capture + T_hold
+  Hold data arrival  = T_clk_launch + T_c2q_min + T_combo_min
+
+  Hold Slack:
+  ══════════
+  Hold_slack = Data_arrival_min - Data_required_hold
+             = (T_clk_launch_min + T_c2q_min + T_combo_min)
+               - (T_clk_capture_max + T_hold)
+             = (T_clk_launch_min - T_clk_capture_max) + T_c2q_min + T_combo_min - T_hold
+             = -T_skew_hold + T_c2q_min + T_combo_min - T_hold
+
+  Note: for hold, clock skew works AGAINST you (positive skew helps setup,
+  hurts hold; negative skew helps hold, hurts setup).
+```
+
+### 3.2 Worked Timing Diagram with All Components
+
+```
+  Given:
+    T_period = 1.0 ns (1 GHz)
+    T_clk_launch  = 0.40 ns (max), 0.35 ns (min)
+    T_clk_capture = 0.45 ns (max), 0.38 ns (min)
+    T_c2q         = 0.08 ns (max), 0.05 ns (min)
+    T_combo       = 0.35 ns (max), 0.15 ns (min)
+    T_setup       = 0.05 ns
+    T_hold        = 0.02 ns (positive hold time)
+    T_uncertainty = 0.10 ns (setup), 0.03 ns (hold)
+
+  ─── SETUP ANALYSIS (use MAX delays for data path, skew helps/hurts) ───
+
+  Complete timing diagram (all times in ns):
+
+  CLK_SRC:  0.00                                          1.00
+            ┌──┐                                          ┌──┐
+            │  │                                          │  │
+            └──┘                                          └──┘
+            t=0                                         t=1.0
+
+  Launch clock arrives at Launch_FF (CLK + T_clk_launch_max):
+            ────── 0.40 ──────┐
+                               └──> Launch_FF CK pin
+
+  Launch_FF Q output valid (CLK + T_clk_launch + T_c2q_max):
+            ────── 0.48 ──────┐
+                               └──> data starts propagating
+
+  Data propagates through combo logic (T_combo_max):
+            ────── 0.83 ──────┐
+                               └──> data arrives at Capture_FF D pin
+
+                                    DATA ARRIVAL = 0.83 ns
+
+  Capture clock arrives at Capture_FF (CLK + T_period + T_clk_capture_max):
+            ────── 1.45 ──────┐
+                               └──> Capture_FF CK pin
+                               |<T_setup>|
+                               1.40       1.45
+                               |<T_unc>|
+                               1.35      1.45
+
+  Data required time calculation:
+    Capture clock edge at source = 1.00 ns (next edge)
+    + T_clk_capture_max          = 0.45 ns
+    - T_setup                    = 0.05 ns
+    - T_uncertainty_setup        = 0.10 ns
+    ─────────────────────────────────────
+    Data required                 = 1.30 ns
+
+  Data arrival                   = 0.83 ns
+  Setup slack = 1.30 - 0.83     = 0.47 ns  PASS
+
+  ─── HOLD ANALYSIS (use MIN delays for data, MAX for capture clock) ───
+
+  Hold checks the SAME clock edge (t=0), not the next edge:
+
+  CLK_SRC:  0.00
+            ┌──┐
+            │  │
+            └──┘
+            t=0
+
+  Launch clock arrives (CLK + T_clk_launch_min):
+            ────── 0.35 ──────┐
+                               └──> Launch_FF CK pin
+
+  Launch_FF Q output valid (min delays):
+            ────── 0.40 ──────┐
+                               └──> data starts propagating (0.35+0.05)
+
+  Data through combo logic (min):
+            ────── 0.55 ──────┐
+                               └──> data arrives at Capture_FF D pin
+
+                                    DATA ARRIVAL (min) = 0.55 ns
+
+  Capture clock arrives (CLK + T_clk_capture_max, same edge):
+            ────── 0.45 ──────┐
+                               └──> Capture_FF CK pin
+                               |<-T_hold->|
+                               0.45       0.47
+
+  Data required for hold:
+    Capture clock arrival = T_clk_capture_max = 0.45 ns
+    + T_hold              = 0.02 ns
+    + T_uncertainty_hold  = 0.03 ns
+    ─────────────────────────────────
+    Data required          = 0.50 ns
+
+  Data arrival (min)      = 0.55 ns
+  Hold slack = 0.55 - 0.50 = 0.05 ns  PASS
+
+  Summary:
+    Setup slack = +0.47 ns (comfortable margin)
+    Hold slack  = +0.05 ns (tight but passing)
+
+  Observation: positive skew (capture clock later than launch) HELPS setup
+  (data has more time to arrive) but HURTS hold (data must be stable longer
+  past the later capture edge).
+
+  Common path: the portion of the clock path from source to the divergence
+  point where launch and capture paths split. This shared segment has the
+  SAME delay in reality, but OCV analysis derates it differently for launch
+  and capture -- this is the source of CRPR pessimism (see Section 6).
+```
+
+### 3.3 Inside a Master-Slave Edge-Triggered Flip-Flop
 
 A standard positive-edge-triggered D-FF consists of two transmission-gate latches:
 
@@ -295,7 +465,7 @@ A standard positive-edge-triggered D-FF consists of two transmission-gate latche
 2. TG2 opens (slave becomes transparent, M propagates to Q)
 3. Q settles after Tc2q delay
 
-### 3.2 Setup Time -- Physical Meaning
+### 3.4 Setup Time -- Physical Meaning
 
 **Setup time** is the minimum time D must be stable BEFORE the clock edge so that the internal M_node reaches a voltage level sufficient for correct latching.
 
@@ -324,13 +494,13 @@ Tc2q
       Tsu     "cliff" where Tc2q goes to infinity (metastability)
 ```
 
-### 3.3 Hold Time -- Physical Meaning
+### 3.5 Hold Time -- Physical Meaning
 
 **Hold time** is the minimum time D must remain stable AFTER the clock edge so that TG1 fully disconnects the input from M_node before D changes.
 
 Physically, TG1 does not close instantaneously -- it takes a finite time for the clock to propagate through the local clock inverter and fully turn off the transmission gate. If D changes during this window, the new D value "leaks" into M_node and corrupts the latched data.
 
-### 3.4 Negative Hold Time
+### 3.6 Negative Hold Time
 
 Modern flip-flops in standard cell libraries often have negative hold time (e.g., -20ps). This means D can change BEFORE the clock edge and still be correctly captured. This occurs when:
 
@@ -628,6 +798,86 @@ Adjusted skew = 190.5 - 189 = +1.5ps  (now slightly helps setup)
 CRPR recovered 10ps of pessimism!
 ```
 
+### 6.3 Detailed CRPR Worked Example: Multi-Level Common Path
+
+```
+Consider a clock tree where the launch and capture paths share THREE
+levels of buffers before diverging:
+
+                           CLK_ROOT (t=0)
+                               |
+                          [BUF1] (100ps)
+                               |
+                          [BUF2] (80ps)
+                               |
+                          [BUF3] (60ps)
+                          /          \
+                    [BUF4_L]        [BUF4_C]
+                    (50ps)          (70ps)
+                       |                |
+                  [BUF5_L]          [BUF5_C]
+                  (40ps)            (55ps)
+                       |                |
+                   Launch_FF        Capture_FF
+
+OCV derate: early = 0.93, late = 1.07 (7% derate)
+
+Step 1: Identify common path (CLK_ROOT → BUF1 → BUF2 → BUF3)
+  Common path has 3 buffers: BUF1, BUF2, BUF3
+  Divergence point: output of BUF3
+
+Step 2: Compute launch path (LATE derate = 1.07, worst for data arrival)
+  BUF1: 100 * 1.07 = 107.0 ps
+  BUF2:  80 * 1.07 =  85.6 ps
+  BUF3:  60 * 1.07 =  64.2 ps    ← common path ends here
+  BUF4_L: 50 * 1.07 = 53.5 ps
+  BUF5_L: 40 * 1.07 = 42.8 ps
+  Total launch clock = 107.0 + 85.6 + 64.2 + 53.5 + 42.8 = 353.1 ps
+
+Step 3: Compute capture path (EARLY derate = 0.93, worst for data required)
+  BUF1: 100 * 0.93 =  93.0 ps
+  BUF2:  80 * 0.93 =  74.4 ps
+  BUF3:  60 * 0.93 =  55.8 ps    ← common path ends here
+  BUF4_C: 70 * 0.93 = 65.1 ps
+  BUF5_C: 55 * 0.93 = 51.15 ps
+  Total capture clock = 93.0 + 74.4 + 55.8 + 65.1 + 51.15 = 339.45 ps
+
+Step 4: Compute pessimistic skew (WITHOUT CRPR)
+  Skew = capture - launch = 339.45 - 353.1 = -13.65 ps (hurts setup)
+
+Step 5: Compute CRPR credit
+  Common path with LATE derate: 107.0 + 85.6 + 64.2 = 256.8 ps
+  Common path with EARLY derate: 93.0 + 74.4 + 55.8 = 223.2 ps
+  CRPR = 256.8 - 223.2 = 33.6 ps
+
+Step 6: Apply CRPR
+  Adjusted capture clock = 339.45 + 33.6 = 373.05 ps
+  Adjusted skew = 373.05 - 353.1 = +19.95 ps (HELPS setup!)
+
+  Without CRPR: skew = -13.65 ps (pessimistic, hurts setup by 13.65 ps)
+  With CRPR:    skew = +19.95 ps (realistic, helps setup by 19.95 ps)
+  Total recovered: 33.6 ps of pessimism
+
+  For a 1 GHz clock with 50ps setup time and 0.10ns uncertainty:
+    Without CRPR: available data time = 1000 - 50 - 100 - (-13.65) = 863.65 ps
+    With CRPR:    available data time = 1000 - 50 - 100 + 19.95  = 869.95 ps
+    Net gain:     6.3 ps additional slack
+
+  For a tighter design (500 MHz, 200ps logic path):
+    This 33.6 ps recovery could be the difference between pass and fail!
+```
+
+**CRPR Rules:**
+- CRPR only applies to the COMMON portion of launch and capture clock paths
+- The common path is identified by tracing both paths backward from the
+  endpoints until they diverge
+- CRPR credit = common_path_late - common_path_early
+- For hold analysis: CRPR is applied similarly but with reversed derates
+- CRPR is computed PER PATH PAIR (different path pairs may have different
+  common path lengths and thus different CRPR credits)
+- CRPR is automatically computed by PrimeTime when enabled -- no manual
+  intervention needed
+
 ### 6.3 CRPR in PrimeTime
 
 ```
@@ -712,6 +962,101 @@ Path with 20 cells, each with nominal delay 50ps:
     Late path delay = 1000 * 1.025 = 1025ps  (25ps pessimism)
 
   AOCV saved 25ps of pessimism!
+```
+
+### 7.2.1 OCV / AOCV / POCV Worked Comparison with Identical Path
+
+```
+Consider a specific timing path for setup analysis:
+  15 cells in the data path, each with nominal delay = 40ps
+  Clock period = 1.0 ns (1 GHz)
+  T_c2q = 80ps, T_setup = 50ps, T_uncertainty = 80ps
+  Clock skew = 0ps (ideal for simplicity)
+  Data path nominal delay = 15 * 40 = 600ps
+  Data arrival (nominal) = T_c2q + 600 = 80 + 600 = 680ps
+  Data required = T_period - T_setup - T_uncertainty = 1000 - 50 - 80 = 870ps
+
+  Nominal slack = 870 - 680 = 190ps (comfortable)
+
+─── Method 1: Flat OCV (derate = 5%) ───
+
+  Launch clock (early derate): 80 * 0.95 = 76ps
+  Data path (late derate):     600 * 1.05 = 630ps
+  Capture clock (late derate): assumed 0 for this example
+  Setup time (late derate):    50 * 1.05 = 52.5ps
+  Uncertainty: 80ps
+
+  Data arrival = 76 + 630 = 706ps
+  Data required = 1000 - 52.5 - 80 = 867.5ps
+  OCV slack = 867.5 - 706 = 161.5ps
+
+  Pessimism vs nominal: 190 - 161.5 = 28.5ps consumed by OCV
+
+─── Method 2: AOCV (depth-dependent derate) ───
+
+  Data path has depth=15 cells.
+  From AOCV table (interpolate between depth 10 and 20):
+    Late derate at depth 15 ≈ 1.030 (between 1.035 and 1.025)
+
+  Launch clock (early, depth=1): 80 * 0.92 = 73.6ps
+  Data path (late, depth=15):    600 * 1.030 = 618ps
+  Setup time (late, depth=1):    50 * 1.08 = 54ps
+  Uncertainty: 80ps
+
+  Data arrival = 73.6 + 618 = 691.6ps
+  Data required = 1000 - 54 - 80 = 866ps
+  AOCV slack = 866 - 691.6 = 174.4ps
+
+  AOCV recovered: 174.4 - 161.5 = 12.9ps vs flat OCV
+
+─── Method 3: POCV (sigma = 3ps per cell) ───
+
+  Each cell: mean = 40ps, sigma = 3ps (7.5% of mean)
+  Data path mean  = 15 * 40 = 600ps
+  Data path sigma = sqrt(15 * 3^2) = sqrt(135) = 11.62ps
+  3-sigma data path delay = 600 + 3 * 11.62 = 634.86ps
+
+  Clock path (1 cell): mean = 80ps, sigma = 3ps
+  3-sigma early clock = 80 - 3 * 3 = 71ps (subtract for early)
+
+  Setup time: mean = 50ps, sigma = 2ps
+  3-sigma late setup = 50 + 3 * 2 = 56ps
+
+  Data arrival = 71 + 634.86 = 705.86ps
+  Data required = 1000 - 56 - 80 = 864ps
+  POCV slack = 864 - 705.86 = 158.14ps
+
+  Wait -- POCV looks worse than AOCV? Let's reconsider with proper derates:
+
+  Actually, POCV sigma should be smaller. For a well-characterized 7nm library:
+    sigma per cell ≈ 2% of mean = 0.8ps (not 3ps)
+    Data path sigma = sqrt(15 * 0.64) = sqrt(9.6) = 3.10ps
+    3-sigma data path = 600 + 3 * 3.10 = 609.3ps
+
+    Clock sigma = 0.8ps
+    3-sigma early clock = 80 - 3 * 0.8 = 77.6ps
+
+    Setup sigma = 0.5ps
+    3-sigma late setup = 50 + 3 * 0.5 = 51.5ps
+
+    Data arrival = 77.6 + 609.3 = 686.9ps
+    Data required = 1000 - 51.5 - 80 = 868.5ps
+    POCV slack = 868.5 - 686.9 = 181.6ps
+
+  Comparison:
+    Flat OCV:   161.5 ps slack (28.5ps pessimism vs nominal)
+    AOCV:       174.4 ps slack (15.6ps pessimism)
+    POCV:       181.6 ps slack (8.4ps pessimism)
+
+  POCV recovered: 181.6 - 161.5 = 20.1ps vs flat OCV
+  POCV recovered: 181.6 - 174.4 =  7.2ps vs AOCV
+
+  Key insight: POCV advantage grows with path depth.
+  For depth=50 path (50 * 40ps = 2000ps):
+    Flat OCV:  2000 * 1.05 = 2100ps (100ps pessimism)
+    AOCV:      2000 * 1.015 = 2030ps (30ps pessimism)
+    POCV:      2000 + 3 * sqrt(50 * 0.64) = 2000 + 17ps = 2017ps (17ps)
+    POCV saves 83ps vs flat OCV, 13ps vs AOCV on deep paths!
 ```
 
 ### 7.3 POCV (Parametric OCV) / SOCV (Statistical OCV)
@@ -1187,23 +1532,74 @@ Post-CTS signoff checklist:
 **Modes** = Functional states (functional, scan, sleep, etc.)
 
 ```
-Typical signoff scenario matrix:
+Typical PVT corners for a 7nm design:
 
-| Corner | Process | Voltage | Temp  | Check       |
-|--------|---------|---------|-------|-------------|
-| SS_LV  | Slow    | 0.72V   | 125C  | Setup (max) |
-| SS_LV_LT| Slow   | 0.72V   | -40C  | Setup (inv) |
-| FF_HV  | Fast    | 0.88V   | -40C  | Hold (min)  |
-| FF_HV_HT| Fast   | 0.88V   | 125C  | Hold (inv)  |
-| TT_NV  | Typical | 0.80V   | 25C   | Nominal     |
+Corner           Process   Voltage   Temp     Parasitics   Primary Check
+────────────────────────────────────────────────────────────────────────
+SS_0p72V_125C    Slow-Slow  0.72V    125°C    Cmax/RCmax   Setup (hot)
+SS_0p72V_m40C    Slow-Slow  0.72V    -40°C    Cmax/RCmax   Setup (cold)*
+FF_0p88V_m40C    Fast-Fast  0.88V    -40°C    Cmin/RCmin   Hold (cold)
+FF_0p88V_125C    Fast-Fast  0.88V    125°C    Cmin/RCmin   Hold (hot)*
+TT_0p80V_25C     Typical    0.80V    25°C     Ctyp         Nominal/Power
 
-Modes: functional, scan_shift, scan_capture, sleep, MBIST
+* Temperature inversion corners: at advanced nodes (< 28nm), cold + slow
+  voltage can make cells slower due to Vth increase at low temperature.
+  This is why SS_cold must be checked for setup in addition to SS_hot.
+  Similarly, FF_hot must be checked for hold because hot + fast voltage
+  is no longer automatically the worst hold corner.
 
-Total scenarios = 5 corners x 4 modes = 20 scenarios
-Each scenario has its own .lib, SPEF, and SDC
+Which corner is worst for each check:
+  ────────────────────────────────────
+  Setup (data arrives too late):
+    Worst = slow process + low voltage + high temp (traditional)
+    But at advanced nodes, also check: slow + low voltage + LOW temp
+    Reason: Vth increases at cold → at low Vdd near Vth,
+            increased Vth can dominate mobility improvement → slower cells
+
+  Hold (data arrives too early):
+    Worst = fast process + high voltage + low temp (traditional)
+    But at advanced nodes, also check: fast + high voltage + HIGH temp
+    Reason: at high temp, lower Vth means even faster cells;
+            combined with high voltage, hold may be worse at hot
+
+  Why both BC-WC and MCMM are needed:
+  ────────────────────────────────────
+  BC-WC (Best-Case / Worst-Case): simple 2-corner analysis
+    SS corner for setup, FF corner for hold
+    Fast, but misses temperature inversion effects
+
+  MCMM: exhaustive multi-corner multi-mode analysis
+    All combinations of corners x modes
+    Catches temperature inversion, voltage droop scenarios, mode-specific issues
+    Industry standard for signoff at 7nm and below
+
+  Typical signoff corner combinations (minimum for tapeout):
+    Setup:  SS_0p72V_125C + SS_0p72V_m40C  (2 corners)
+    Hold:   FF_0p88V_m40C + FF_0p88V_125C  (2 corners)
+    DRC:    All corners (max_transition, max_capacitance)
+    Power:  TT_0p80V_25C with real activity (SAIF)
+
+  With extraction corners:
+    Setup:  SS + Cmax (worst capacitance → more delay)
+    Hold:   FF + Cmin (best capacitance → less delay)
+    For wire-dominated paths: also check SS + RCmax (worst R AND C)
+
+  Total signoff scenarios for a complex SoC:
+    4 timing corners x 3 extraction corners x 4 modes = 48 scenarios
+    Each needs: .lib + SPEF + SDC + netlist
+    Runtime: 48 STA runs, each 2-8 hours = 4-16 days on a single machine
+    Parallelized across a compute farm: typically 1-2 day turnaround
+
+Modes (functional scenarios):
+  - func_mode: normal operation, highest frequency
+  - scan_mode: test mode, slower clock, shift/capture constraints
+  - sleep_mode: low power, most clocks gated, leakage focus
+
+MCMM matrix: every corner × every mode = a "scenario"
+Each scenario has its own SDC (constraints), SPEF (parasitics), library
+
+Typical signoff: 10-30 scenarios for a complex SoC
 ```
-
-**Temperature inversion** (at advanced nodes < 28nm): At low temperature, mobility increases (cells should be faster), but threshold voltage also increases due to reduced thermal voltage. At low Vdd (near Vth), the Vth increase dominates, making cells SLOWER at low temperature. This is why we check setup at BOTH high and low temperature.
 
 ### 12.2 Signoff Criteria
 
@@ -1223,7 +1619,584 @@ All of the following must be clean at ALL signoff corners/modes:
 
 ---
 
-## 13. Interview Questions & Answers
+## 13. .lib Format Deep-Dive
+
+### 13.1 Library Structure
+
+```
+A .lib (Liberty) file is the ASCII representation of a standard cell timing library.
+It is the primary interface between the foundry cell library and EDA tools (STA, PnR).
+
+High-level structure:
+
+library (my_library_n5) {
+  /* Library-level attributes */
+  delay_model : table_lookup;          /* NLDM */
+  /* or delay_model : ccs; */          /* CCS  */
+  time_unit : "1ns";
+  voltage_unit : "1V";
+  current_unit : "1mA";
+  capacitive_load_unit (1, pf);        /* 1 pF */
+  pulling_resistance_unit : "1kohm";
+  operating_conditions (ss_0p72v_125c) {
+    process : 1.0;
+    temperature : 125.0;
+    voltage : 0.72;
+  }
+  default_operating_conditions : ss_0p72v_125c;
+
+  /* Lookup table templates (shared by all cells) */
+  lu_table_template (delay_template_7x7) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_cap;
+    index_1 ("0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0");
+    index_2 ("0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5");
+  }
+
+  /* Cell definitions (500-2000 cells in a modern library) */
+  cell (INVX1) { ... }
+  cell (INVX2) { ... }
+  cell (NAND2X1) { ... }
+  cell (DFFRHQX1) { ... }
+  ...
+}
+
+A modern standard cell library (e.g., TSMC N5):
+  ~500-2000 cells total
+  Categories: inverters, buffers, NAND/NOR, AOI/OAI, MUX, FF/latch,
+              clock gating (ICG), fillers, tap cells, antenna diodes
+  Drive strength variants: X1, X2, X4, X8, X16 (5-6 sizes per function)
+  Vt variants: ULVT, LVT, SVT (RVT), HVT, ULHVT (3-5 thresholds per size)
+  Total library permutations: function × drive × Vt = easily 500-2000 unique cells
+```
+
+### 13.2 Cell Definition and Pin Descriptions
+
+```
+A typical combinational cell in .lib:
+
+cell (NAND2X1) {
+  area : 0.8;               /* Cell area in um² */
+  cell_footprint : "nand2";
+
+  /* Leakage power (per state) */
+  cell_leakage_power : 2.5;                       /* average */
+  leakage_power () { when : "!A & !B"; value : 1.2; }
+  leakage_power () { when : "!A & B";  value : 3.8; }
+  leakage_power () { when : "A & !B";  value : 3.6; }
+  leakage_power () { when : "A & B";   value : 1.4; }
+
+  /* Pin definitions */
+  pin (A) {
+    direction : input;
+    capacitance : 0.0012;          /* Input pin cap (pF) */
+    rise_capacitance : 0.0011;
+    fall_capacitance : 0.0013;
+
+    /* Internal power (energy consumed per transition, no load) */
+    internal_power () {
+      related_pin : "A";
+      rise_power (energy_template_7x1) { values("..."); }
+      fall_power (energy_template_7x1) { values("..."); }
+    }
+  }
+
+  pin (B) {
+    direction : input;
+    capacitance : 0.0014;
+    ...
+  }
+
+  pin (Y) {
+    direction : output;
+    max_capacitance : 0.15;       /* Design rule: max load this pin can drive */
+    min_capacitance : 0.0;
+
+    function : "!(A & B)";        /* Boolean function */
+
+    /* Timing arcs: one per related_pin */
+    timing () {
+      related_pin : "A";
+      timing_sense : negative_unate;
+      timing_type : combinational;
+
+      cell_rise (delay_template_7x7) {
+        index_1 ("0.01, 0.05, ...");   /* input slew */
+        index_2 ("0.005, 0.01, ...");  /* output load */
+        values ( ... );
+      }
+      cell_fall (delay_template_7x7) { values ( ... ); }
+      rise_transition (delay_template_7x7) { values ( ... ); }
+      fall_transition (delay_template_7x7) { values ( ... ); }
+    }
+
+    timing () {
+      related_pin : "B";
+      timing_sense : negative_unate;
+      timing_type : combinational;
+      cell_rise (...) { ... };
+      cell_fall (...) { ... };
+      rise_transition (...) { ... };
+      fall_transition (...) { ... };
+    }
+  }
+}
+```
+
+### 13.3 Indexed Lookup Tables and Interpolation
+
+```
+Each timing arc stores delay/slew as a 2D table indexed by:
+  index_1 = input transition time (slew at the input pin)
+  index_2 = output load capacitance (total cap seen at the output pin)
+
+The STA tool performs bilinear interpolation:
+
+  Given input slew S and output load C:
+
+  1. Find bounding indices: S_lo, S_hi, C_lo, C_hi from table indices
+  2. Retrieve four table values:
+     V00 = table[S_lo][C_lo]   V01 = table[S_lo][C_hi]
+     V10 = table[S_hi][C_lo]   V11 = table[S_hi][C_hi]
+  3. Interpolate in slew dimension:
+     V_lo = V00 + (C - C_lo)/(C_hi - C_lo) * (V01 - V00)
+     V_hi = V10 + (C - C_lo)/(C_hi - C_lo) * (V11 - V10)
+  4. Interpolate in load dimension:
+     Result = V_lo + (S - S_lo)/(S_hi - S_lo) * (V_hi - V_lo)
+
+If the input slew or load falls outside the table range, the tool extrapolates
+(uses the two nearest points to extend the table). This is a source of inaccuracy
+and tools warn about out-of-range table lookups.
+
+Table sizes:
+  NLDM: typically 7x7 or 10x10 (49 or 100 entries per timing arc)
+  CCS:  4D tables (slew × load × time × voltage) → much larger
+```
+
+### 13.4 NLDM vs CCS vs ECSM Timing Models
+
+```
+NLDM (Non-Linear Delay Model):
+  - Stores: cell delay (ns) and output slew (ns) as 2D lookup tables
+  - Model: voltage source with fixed rise/fall time driving lumped C load
+  - Accuracy: ±10-15% at 28nm and above
+  - Library size: ~20-100 MB per corner
+  - Adequate for: 180nm to 28nm
+
+CCS (Composite Current Source, Synopsys):
+  - Stores: output current waveform I(t) instead of delay
+  - Model: time-varying current source driving RC interconnect
+  - Also stores: receiver pin capacitance as function of input transition
+  - Captures: Miller effect, multi-stage driver turn-on, waveform shape
+  - Accuracy: ±2-3% at 7nm and below
+  - Library size: ~200-500 MB per corner
+  - Required for: 16nm and below (FinFET)
+  - Runtime: 2-4× slower than NLDM
+
+ECSM (Effective Current Source Model, Cadence):
+  - Cadence's equivalent to CCS
+  - Stores: voltage waveform at output pin (V(t)) instead of current
+  - Equivalent accuracy to CCS (both model waveform shape)
+  - Some tools support both; some are vendor-specific
+
+When to use which:
+  | Node   | Recommended Model |
+  |--------|-------------------|
+  | >= 28nm | NLDM (sufficient) |
+  | 16nm   | CCS or ECSM       |
+  | 7nm    | CCS mandatory     |
+  | 5nm    | CCS mandatory     |
+  | 3nm    | CCS + advanced SI |
+
+Multi-corner libraries:
+  Each PVT corner has its own .lib:
+    ss_0p72v_125c.lib    (slow, setup signoff)
+    ff_0p88v_m40c.lib    (fast, hold signoff)
+    tt_0p80v_25c.lib     (typical, power estimation)
+  Total library data for one design: 10-50 GB across all corners
+```
+
+### 13.5 State-Dependent Timing (when Condition)
+
+```
+Some cells have different timing depending on the logic state of other pins.
+This is modeled with the "when" condition in the timing arc.
+
+Example: A 2:1 MUX (I0, I1 select inputs, S = select)
+
+  timing () {
+    related_pin : "S";
+    when : "!I0 & !I1";         /* Arc active only when both inputs are 0 */
+    timing_sense : non_unate;
+    cell_rise (...) { ... };
+    cell_fall (...) { ... };
+  }
+
+  timing () {
+    related_pin : "S";
+    when : "I0 & I1";           /* Different timing when both inputs are 1 */
+    timing_sense : non_unate;
+    cell_rise (...) { ... };
+    cell_fall (...) { ... };
+  }
+
+The STA tool evaluates ALL "when" conditions and takes the worst-case across
+valid states. For a MUX with N control combinations, there can be N timing arcs
+per related_pin, each with potentially different delay values.
+
+This is also used for:
+  - Tri-state buffers (enable-dependent timing)
+  - Adders (carry-dependent propagation delay)
+  - Clock gating cells (clock + enable state-dependent behavior)
+
+Sequential cells also use state-dependent setup/hold:
+
+  timing () {
+    related_pin : "D";
+    timing_type : setup_rising;
+    when : "!RN";               /* Setup only when reset is deasserted */
+    rise_constraint (...) { ... };
+    fall_constraint (...) { ... };
+  }
+```
+
+---
+
+## 14. SPEF Walkthrough
+
+### 14.1 SPEF Format Header
+
+```
+SPEF (Standard Parasitic Exchange Format, IEEE 1481-1999):
+  The interchange format for extracted parasitic RC data from layout to STA tools.
+
+*SPEF "IEEE 1481-1999"
+*DESIGN "video_proc_top"
+*DATE "2024-03-15 14:30:00"
+*VENDOR "Synopsys StarRC"
+*PROGRAM "StarRC"
+*VERSION "v2023.12"
+*DESIGN_FLOW "PIN_CAP NONE" "NAME_SCOPE LOCAL"
+*DIVIDER /
+*DELIMITER :
+*BUS_DELIMITER [ ]
+
+Units section (must match .lib time/voltage/current units):
+*T_UNIT 1 NS                /* Time in nanoseconds */
+*C_UNIT 1 PF                /* Capacitance in picofarads */
+*R_UNIT 1 OHM               /* Resistance in ohms */
+*L_UNIT 1 HENRY             /* Inductance in henries (rarely used) */
+```
+
+### 14.2 Name Map Section
+
+```
+*NAME_MAP
+*1 u_core/u_alu/g127/Y
+*2 u_core/u_alu/g128/A
+*3 u_core/u_alu/net_n1
+*4 u_core/wb_reg[3]/D
+*5 u_core/u_alu/g127/Z
+...
+
+Name map assigns integer IDs to hierarchical net/instance names.
+Reduces file size dramatically (names are repeated many times in
+large designs with millions of nets).
+
+After name map, all references use *N instead of the full path:
+  *CONN
+  *I *5 O     (instead of *I u_core/u_alu/g127/Z O)
+```
+
+### 14.3 Port Section
+
+```
+*PORTS
+*1 u_core/clk_in I *C 0.0023      /* Input port, cap = 2.3 fF */
+*2 u_core/data_out[0] O *C 0.0015  /* Output port, cap = 1.5 fF */
+*3 u_core/vdd P *C 0.0             /* Power port, no cap */
+*4 u_core/gnd G *C 0.0             /* Ground port, no cap */
+
+Port direction codes:
+  I = input
+  O = output
+  B = bidirectional
+  P = power
+  G = ground
+  X = don't care
+
+The *C value is the port's intrinsic capacitance (from the .lib pin cap).
+```
+
+### 14.4 Net Section (RC Parasitics)
+
+```
+*D_NET *3 0.0523                   /* Net name_map_ref, total_cap = 52.3 fF */
+
+*CONN                              /* Connections to this net */
+*I *5 O                            /* Instance pin: g127/Z (output/driver) */
+*I *2 I *C 0.0087                  /* Instance pin: g128/A (input), pin cap = 8.7 fF */
+*I *4 I *C 0.0078                  /* Instance pin: wb_reg[3]/D (input), pin cap = 7.8 fF */
+
+*CAP                               /* Capacitance entries */
+*1 *5 0.0102                       /* Cap at driver pin: 10.2 fF */
+*2 *2 0.0087                       /* Cap at receiver pin g128/A: 8.7 fF (from .lib) */
+*3 *3 0.0156                       /* Cap at internal node n1: 15.6 fF (wire cap) */
+*4 *4 0.0078                       /* Cap at receiver pin wb_reg[3]/D: 7.8 fF */
+*5 *6 0.0100                       /* Cap at internal node n2: 10.0 fF */
+
+*RES                               /* Resistance entries */
+*1 *5 *3 2.45                      /* R from driver pin to n1: 2.45 ohm */
+*2 *3 *2 1.83                      /* R from n1 to g128/A: 1.83 ohm */
+*3 *3 *6 3.12                      /* R from n1 to n2: 3.12 ohm */
+*4 *6 *4 2.67                      /* R from n2 to wb_reg[3]/D: 2.67 ohm */
+
+*END                               /* End of this net */
+
+RC network interpretation:
+
+          2.45Ω       1.83Ω
+  g127/Z ---[R1]--- n1 ---[R2]--- g128/A
+    |           |                  |
+  10.2fF     15.6fF             8.7fF
+               |
+             [R3] 3.12Ω
+               |
+              n2
+               |
+             [R4] 2.67Ω
+               |
+          wb_reg/D
+               |
+             7.8fF + 10.0fF
+
+Total net capacitance = 10.2 + 8.7 + 15.6 + 7.8 + 10.0 = 52.3 fF (matches *D_NET)
+```
+
+### 14.5 RC Parasitics and the Elmore Delay Model
+
+```
+Elmore delay: sum of (each resistance × downstream capacitance)
+
+For the above RC tree, delay from g127/Z to g128/A:
+
+  T_Elmore = R1 × (C_n1_downstream) + R2 × C_g128
+           = 2.45 × (15.6 + 10.0 + 8.7 + 7.8) + 1.83 × 8.7
+           = 2.45 × 42.1fF + 1.83 × 8.7fF
+           = 103.1 + 15.9
+           = 119.0 fF·Ω = 0.119 ps (units: fF × Ω = 10⁻¹⁵ × 10⁰ = 10⁻¹⁵ s = 1 fs)
+
+  Wait — correct units: fF × Ω = 10⁻¹⁵ F × 10⁰ Ω = 10⁻¹⁵ s = 1 fs
+  So 119 fF·Ω = 0.119 ps... this is tiny for an on-chip net.
+
+  For a longer net (e.g., 1mm wire at 0.2Ω/μm, 0.2fF/μm):
+  R_total = 200 Ω, C_total = 200 fF
+  T_Elmore ≈ 0.38 × R × C = 0.38 × 200 × 200fF = 15.2 ps
+
+Elmore is a first-order upper bound. It overestimates delay because it assumes
+all downstream capacitance is charged through the full resistance path.
+
+More accurate models used in signoff STA:
+  - Arnoldi / AWE (Asymptotic Waveform Evaluation): models multiple poles
+  - PRIMA: passive reduced-order interconnect macromodeling
+  - These capture the non-exponential waveform shape more accurately
+```
+
+### 14.6 Distributed vs Lumped RC
+
+```
+Lumped RC model:
+  Entire wire modeled as a single R and single C.
+  Delay = R × C
+  Accurate only for very short wires (< 50 μm at 7nm).
+
+Distributed RC model (Pi, T, or ladder):
+  Wire broken into multiple RC segments.
+  For N segments: T_Elmore = R × C / (2N) → as N→∞: T = R × C / 2
+
+  Lumped:     T = R × C
+  Distributed: T = 0.38 × R × C (Elmore for uniform RC line, factor = 0.38)
+
+  The 0.38 factor comes from the integral:
+    T_Elmore = ∫₀ᴸ R(x) × C(x,L) dx = RC × L² / 2
+    Normalized to R×C = RC × L², so factor = 0.5 for one segment, 0.38 for continuous.
+
+SPEF represents the distributed RC explicitly (multiple R and C segments).
+The extraction tool (StarRC, Calibre xRC, QRC) determines how many segments
+to use based on wire length, frequency, and accuracy requirements.
+
+For signoff STA: detailed SPEF with coupled RC (includes Cc between adjacent nets).
+For pre-route STA: estimated SPEF from wireload models or virtual route estimation.
+```
+
+---
+
+## 15. Clock Gating Checks
+
+### 15.1 What Are Clock Gating Checks
+
+```
+Clock gating is used extensively to reduce dynamic power by disabling the clock
+to idle modules. The gating element is typically an Integrated Clock Gating (ICG)
+cell: a latch + AND gate combination.
+
+Standard ICG cell (e.g., TLATNTSCAX4):
+                     ┌───────┐
+  CLK ──────────────┤       │
+                     │  AND  ├─── GATED_CLK
+  EN ──┬──────┐     │       │
+       │LATCH │─────┤       │
+       └──────┘     └───────┘
+  (latch transparent when CLK = low)
+
+The latch captures EN while CLK is low and holds it stable when CLK goes high.
+This prevents glitches on the gated clock output.
+
+Clock gating checks ensure the enable signal (EN) is stable during the
+clock's active transition. If EN changes while CLK is transitioning:
+  - A partial pulse (glitch) appears on GATED_CLK
+  - Downstream FFs see a narrow clock pulse
+  - Potential metastability → data corruption → system failure
+
+These are formal timing checks in STA, similar to setup/hold on data FFs.
+```
+
+### 15.2 Clock Gating Setup Check
+
+```
+Setup check: EN must be stable BEFORE the clock rising edge (for positive-edge ICG).
+
+  The latch must capture the final EN value before CLK goes high (latch closes).
+
+  CLK:  ____/‾‾‾‾‾‾‾‾\____
+  EN:  ------\_________/---    ← EN must transition here at latest
+
+  Setup requirement:
+    EN_launch_time + EN_path_delay + ICG_setup < CLK_rising_edge
+
+  In .lib, the ICG cell has a setup arc:
+    timing () {
+      related_pin : "CLK";
+      timing_type : setup_rising;
+      rise_constraint (setup_template) { ... }
+      fall_constraint (setup_template) { ... }
+    }
+
+  Common setup violation: EN arrives too late relative to clock.
+  The enable logic (often a state machine output) has too many levels of logic
+  between the enable register and the ICG cell.
+
+  Fix: pipeline the enable signal, reduce logic depth, or use a faster enable path.
+```
+
+### 15.3 Clock Gating Hold Check
+
+```
+Hold check: EN must remain stable AFTER the clock rising edge.
+
+  After CLK goes high, the latch output must not change. The latch hold time
+  ensures EN does not glitch during the clock transition window.
+
+  CLK:  ____/‾‾‾‾‾‾‾‾\____
+  EN:  ----------------\___  ← EN must remain stable past this point
+
+  Hold requirement:
+    EN_launch_time + EN_path_delay_min > CLK_rising_edge + ICG_hold
+
+  In .lib:
+    timing () {
+      related_pin : "CLK";
+      timing_type : hold_rising;
+      rise_constraint (hold_template) { ... }
+      fall_constraint (hold_template) { ... }
+    }
+
+  Common hold violation: EN glitches due to crosstalk or short path from enable FF.
+  Because the enable path is often short (1-2 gates), hold violations are common
+  when the ICG and enable FF are physically close.
+
+  Fix: add delay buffers on the enable path, increase wire length during routing.
+```
+
+### 15.4 How STA Tools Model Clock Gating Checks
+
+```
+The ICG cell in .lib contains specific timing arcs that trigger clock gating checks:
+
+cell (TLATNTSCAX4) {
+  /* Latch: EN sampled on falling CLK, held through rising CLK */
+  pin (EN) {
+    direction : input;
+    timing () {
+      related_pin : "CLK";
+      timing_type : setup_rising;    /* Triggers gating setup check */
+      rise_constraint (...) { ... }
+      fall_constraint (...) { ... }
+    }
+    timing () {
+      related_pin : "CLK";
+      timing_type : hold_rising;     /* Triggers gating hold check */
+      rise_constraint (...) { ... }
+      fall_constraint (...) { ... }
+    }
+  }
+  pin (CLK) { direction : input; }
+  pin (GATED_CLK) {
+    direction : output;
+    /* Clock propagation: CLK → GATED_CLK with insertion delay */
+    timing () {
+      related_pin : "CLK";
+      timing_type : rising_edge;
+      cell_rise (...) { ... }
+      cell_fall (...) { ... }
+    }
+  }
+}
+
+In PrimeTime reports, clock gating checks appear as:
+
+  Startpoint: u_core/enable_reg/Q  (rising edge-triggered FF clocked by sys_clk)
+  Endpoint:   u_core/u_icg/EN      (clock gating check for rising edge of sys_clk)
+  Check type: clock gating setup
+
+  The tool treats this identically to a FF setup/hold check but with the ICG's
+  constraint values instead of a data FF's setup/hold values.
+```
+
+### 15.5 Why Clock Gating Checks Matter
+
+```
+Glitch on gated clock → metastability → data corruption:
+
+  If EN changes during CLK rise:
+  1. AND gate output produces a narrow pulse (glitch) instead of a full clock edge
+  2. Downstream FF sees a clock pulse narrower than its minimum pulse width
+  3. FF's master latch may partially capture data → metastable output
+  4. Metastable value propagates → corrupted state in pipeline or FSM
+  5. System-level failure: wrong data written, FSM stuck in illegal state
+
+  This is one of the most insidious bugs in silicon:
+    - Rarely triggered (depends on specific enable timing)
+    - Not caught by functional simulation (no timing in RTL sim)
+    - Only visible in STA or on silicon with unlucky process corner
+
+  Real-world example:
+    A mobile SoC had intermittent crashes in the display controller.
+    Root cause: clock gating enable failed hold by 3ps at FF corner.
+    Fix: one buffer added to enable path. Cost: $0. One silicon re-spin: $5M+.
+
+Best practices:
+  1. Always use ICG cells (never hand-instantiated latch + AND)
+  2. Register enable signals as close to the ICG as possible
+  3. Apply max_transition constraint on enable pins (slew affects ICG timing)
+  4. Run clock gating checks at ALL MCMM corners (hold is critical at FF corner)
+  5. In SDC: ensure clock uncertainty covers enable-to-clock relationship
+  6. Use `report_timing -check_type clock_gating` to specifically audit these checks
+```
+
+---
+
+## 16. Interview Questions & Answers
 
 ### Q1: Explain NLDM vs CCS delay models. When do you need CCS?
 
@@ -1339,3 +2312,29 @@ All of the following must be clean at ALL signoff corners/modes:
 13. Electromigration clean on all signal and clock nets
 14. DFT timing clean (scan shift and capture modes)
 15. Formal verification of SDC constraints against design intent
+
+---
+
+## Numbers to Memorize -- STA Quick Reference
+
+| Quantity | Value | Why it matters |
+|----------|-------|----------------|
+| Typical FO4 delay at N5 | ~12-15 ps | Fundamental gate delay yardstick; used to estimate cycle-time budget |
+| Setup time (typical DFF, N5) | 30-60 ps | Data must be stable before clock edge; directly consumes cycle time |
+| Hold time (typical DFF, N5) | 20-40 ps | Data must remain stable after clock edge; negative hold time is a gift from library design |
+| Clock uncertainty (post-CTS) | +/-20-50 ps | Accounts for jitter + residual skew; tightens both setup and hold margins |
+| OCV derate (typical) | +/-5-10% | Flat derate applied to model within-die variation; overly pessimistic for deep paths |
+| AOCV derate range | +/-3-8% (depth/distance-based) | Less pessimistic than flat OCV because variations average over many stages |
+| POCV sigma (typical) | 2-5% per cell | Statistical model; sigma adds in quadrature, so deep paths benefit most |
+| IR drop budget | <=5% VDD | Exceeding this slows cells enough to cause timing failures |
+| Typical metal RC (M4, N5) | ~0.2 ohm/um, ~0.2 fF/um | Local interconnect; dominates short-wire delay at advanced nodes |
+| Typical metal RC (M8, N5) | ~0.05 ohm/um, ~0.3 fF/um | Semi-global interconnect; used for clock and long data routes |
+| Clock tree target skew | <100 ps (moderate designs) | Skew directly erodes timing margin; tighter for high-frequency designs |
+| Clock tree target latency | 0.5-2 ns depending on size | High latency increases susceptibility to jitter and OCV |
+| Setup slack target | >=0 (positive) | Negative setup slack means the path cannot meet frequency |
+| Hold slack target | >=0 (positive, fixed with filler cells/buffering) | Hold failures are silicon killers; they cannot be fixed by slowing the clock |
+| CRPR credit (typical) | 20-40% of clock uncertainty | Recovered pessimism from shared clock path; larger for balanced trees |
+| Typical derate table entries | early/late, data/clock | Four entries cover setup/hold x launch/capture combinations |
+| Multi-corner signoff corners | 3-5 (SS/TT/FF x low/high temp x low/high voltage) | Must cover temperature inversion and process extremes |
+| LIB file cell count | ~500-2000 cells per library | Larger libraries give the optimizer more freedom but increase runtime |
+| Typical design frequency | 500 MHz - 3 GHz (application-dependent) | Sets cycle time; determines how much slack budget is available |

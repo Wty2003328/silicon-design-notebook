@@ -280,6 +280,94 @@ caches these upper-level entries:
 Typical sizes: 16--64 entries, organized as a small fully-associative or 4-way
 set-associative structure.
 
+### 3.5 Multi-Level Page Table Structure -- Why Hierarchy Saves Memory
+
+#### Flat Page Table vs. Hierarchical Page Table
+
+A **flat page table** maps every virtual page directly. For a 39-bit virtual address
+with 4 KB pages (27-bit VPN), the flat table has $2^{27} = 128\text{M}$ entries, each
+8 bytes = **1 GB of memory** just for the page table -- clearly impractical.
+
+A **hierarchical (radix tree) page table** exploits the fact that most virtual address
+spaces are sparse: a process typically uses only a tiny fraction of its virtual address
+space. The radix tree allocates page table pages only for regions that are actually
+mapped.
+
+#### Sv39: 3-Level Radix Tree
+
+```
+Virtual Address (39 bits):
+  [38:30] VPN[2] (9 bits) ── Level 1 index (root table)
+  [29:21] VPN[1] (9 bits) ── Level 2 index
+  [20:12] VPN[0] (9 bits) ── Level 3 index (leaf table)
+  [11:0]  offset  (12 bits)
+
+Each page table page: 4 KB = 512 entries x 8 bytes/entry
+Each entry (PTE): 8 bytes, maps one 4 KB page (at leaf level)
+
+Memory cost per level:
+  Level 1 (root): always present = 1 page = 4 KB
+  Level 2: one page per 512 mapped regions of 1 GB each
+  Level 3: one page per 512 mapped 4 KB pages = 4 KB per 2 MB of mapped memory
+
+For a process using 100 MB of virtual memory (contiguous):
+  Level 1: 1 page = 4 KB
+  Level 2: 1 page = 4 KB (only one 1 GB region is used)
+  Level 3: 100 MB / (512 x 4 KB) = 100 MB / 2 MB = 50 pages = 200 KB
+  Total page table: 4 + 4 + 200 = 208 KB
+
+  Flat table would need: 100 MB / 4 KB x 8 B = 200 MB
+  Savings: 208 KB vs 200 MB = ~1000x reduction!
+```
+
+#### Sv48: 4-Level Radix Tree (RISC-V)
+
+```
+Virtual Address (48 bits):
+  [47:39] VPN[3] (9 bits) ── Level 1 (root)
+  [38:30] VPN[2] (9 bits) ── Level 2
+  [29:21] VPN[1] (9 bits) ── Level 3
+  [20:12] VPN[0] (9 bits) ── Level 4 (leaf)
+  [11:0]  offset  (12 bits)
+
+Adds one more level to support 256 TB virtual address space.
+Page walk depth: 4 memory accesses (3 non-leaf + 1 leaf) for 4 KB pages.
+2 MB superpages found at Level 3 (saves 1 memory access).
+1 GB superpages found at Level 2 (saves 2 memory accesses).
+```
+
+#### Sv57: 5-Level Radix Tree (RISC-V)
+
+```
+Virtual Address (57 bits):
+  [56:48] VPN[4] (9 bits) ── Level 1 (root)
+  [47:39] VPN[3] (9 bits) ── Level 2
+  [38:30] VPN[2] (9 bits) ── Level 3
+  [29:21] VPN[1] (9 bits) ── Level 4
+  [20:12] VPN[0] (9 bits) ── Level 5 (leaf)
+  [11:0]  offset  (12 bits)
+
+Supports 128 PB virtual address space.
+Page walk depth: 5 memory accesses for 4 KB pages.
+Used for extremely sparse address spaces (e.g., memory-mapped files, sandboxes).
+```
+
+#### Memory Cost Comparison Across VA Widths
+
+| VA Scheme | Levels | VA Width | Max VA Space | Walk Depth | PTE Size | Root Table Size |
+|-----------|--------|----------|-------------|------------|----------|-----------------|
+| Sv39 | 3 | 39 bits | 512 GB | 3 | 8 B | 4 KB |
+| Sv48 | 4 | 48 bits | 256 TB | 4 | 8 B | 4 KB |
+| Sv57 | 5 | 57 bits | 128 PB | 5 | 8 B | 4 KB |
+| x86-64 (4-level) | 4 | 48 bits | 256 TB | 4 | 8 B | 4 KB |
+| x86-64 (5-level) | 5 | 57 bits | 128 PB | 5 | 8 B | 4 KB |
+| ARMv8 (4KB granule) | 3-4 | 48-52 bits | 256 TB-4 PB | 3-4 | 8 B | 4 KB |
+
+**Key insight:** Each additional level adds 1 memory access to the page walk (increasing
+TLB miss penalty by 20-40 cycles) but supports a 512x larger address space. The page
+walk cache mitigates this by caching upper-level PTEs, reducing the average walk depth
+to 1-2 memory accesses for hot regions.
+
 ---
 
 ## 4. Software vs. Hardware TLB Miss Handler
@@ -392,129 +480,285 @@ from the TLB just in time to compare against the tags read from the cache way.
          Hit / Miss
 ```
 
-### 5.3 The Size Constraint
+### 5.3 VIPT Worked Example — Why the Index Must Come from Page Offset
 
-For an $W$-way set-associative cache with line size $L$ bytes and page size $P$ bytes:
+The VIPT technique relies on a single fact: the page offset (bottom 12 bits for 4 KB
+pages) is identical in both virtual and physical addresses. Translation only changes the
+page number. Therefore, if all bits used for the cache **index** fall within the page
+offset, the index can be computed from the virtual address before the TLB finishes.
 
-$$
-\text{Index bits} = \log_2\!\left(\frac{\text{Total size}}{W \times L}\right)
-$$
+**Constraint derivation (formal):**
 
-For VIPT to work without aliasing:
-
-$$
-\text{Index bits} \leq \log_2(P)
-$$
-
-which simplifies to:
+The cache index selects a set. For a cache with capacity $C$, associativity $W$, and
+line size $L$:
 
 $$
-\boxed{\text{Total cache size} \leq W \times P}
+\text{Number of sets} = \frac{C}{W \times L}
 $$
 
-### 5.4 Worked Examples
+$$
+\text{Index bits} = \log_2\!\left(\frac{C}{W \times L}\right)
+$$
 
-**Example 1: 4-way, 32 KB cache, 64 B lines, 4 KB pages.**
+These index bits occupy address positions $[\lceil\log_2 L\rceil + \text{index\_bits} - 1 \,:\, \lceil\log_2 L\rceil]$.
+
+For VIPT, the highest index bit position must not exceed the highest page offset bit:
+
+$$
+\lceil\log_2 L\rceil + \log_2\!\left(\frac{C}{W \times L}\right) - 1 \;\leq\; \lceil\log_2 P\rceil - 1
+$$
+
+Simplifying (all values are powers of 2):
+
+$$
+\log_2 L + \log_2 C - \log_2 W - \log_2 L \;\leq\; \log_2 P
+$$
+
+$$
+\boxed{\log_2 C - \log_2 W \;\leq\; \log_2 P \quad\iff\quad C \;\leq\; W \times P}
+$$
+
+**Worked example: L1D cache sizing under VIPT.**
+
+Given: page size $P = 4096$ (12-bit offset), line size $L = 64$ (6-bit block offset).
+
+| Target | Associativity | Max sets = $P/L = 64$ | Max capacity = $W \times P$ | Index bits | Highest index bit | VIPT safe? |
+|--------|:---:|---|---|---|---|---|
+| L1D small | 4-way | 64 | 16 KB | 6 | 6+6-1 = 11 | Yes (11 <= 11) |
+| L1D standard | 4-way | 128 | 32 KB | 7 | 6+7-1 = 11 | Yes (11 <= 11) |
+| L1D large | 8-way | 128 | 64 KB | 7 | 6+7-1 = 11 | Yes (11 <= 11) |
+| L1D too big | 2-way | 512 | 64 KB | 9 | 6+9-1 = 14 | No (14 > 11) |
+
+**Why a 32 KB / 4-way cache works with 4 KB pages:**
+
+The 7 index bits occupy positions [11:5], which are entirely within the page offset [11:0].
+The TLB translates bits [31:12] (the tag) in parallel with the cache indexing. The physical
+tag arrives from the TLB just in time for comparison with the tags read from the SRAM ways.
+
+**Why a 64 KB / 2-way cache fails with 4 KB pages:**
+
+The 9 index bits occupy positions [14:6]. Bits [14:12] are VPN bits that change during
+translation. Two virtual addresses mapping to the same physical page could have different
+bits [14:12], causing the same physical line to be looked up in different cache sets --
+the **synonym problem**.
+
+**Production examples:**
+
+| Processor | L1D Size | Associativity | Line Size | Page Size | VIPT safe? |
+|-----------|----------|:---:|---|---|---|
+| ARM Cortex-A78 | 64 KB | 4-way | 64 B | 4 KB | No (needs 16 KB pages or page coloring) |
+| Apple M1 Firestorm | 128 KB | 8-way | 64 B | 16 KB | Yes (16 KB pages give 14-bit offset) |
+| Intel Golden Cove | 48 KB | 12-way | 64 B | 4 KB | Yes (high associativity keeps index in offset) |
+| RISC-V Boom v3 | 32 KB | 8-way | 64 B | 4 KB | Yes (index bits [11:5] fit in offset) |
+
+Apple's choice of 16 KB pages is directly motivated by VIPT: a 128 KB L1D with 8-way
+associativity needs 8 index bits (positions [13:6]), which fits within a 14-bit page
+offset (16 KB pages) but not a 12-bit offset (4 KB pages).
+
+### 5.4 The VIPT Constraint -- Derivation
+
+For a cache with associativity $W$, line size $L$ bytes, total capacity $C$ bytes,
+and page size $P$ bytes:
+
+The address is decomposed as:
+
+$$
+\text{Address} = [\text{Tag} \mid \text{Index} \mid \text{Block Offset}]
+$$
+
+where Block Offset $= \lceil\log_2 L\rceil$ bits and Index $= \lceil\log_2(C / (W \times L))\rceil$ bits.
+
+The cache index is extracted from address bits $[\lceil\log_2 L\rceil + \text{index\_bits} - 1 : \lceil\log_2 L\rceil]$.
+
+For VIPT to work, all index bits must fall within the page offset (bottom $\lceil\log_2 P\rceil$ bits):
+
+$$
+\lceil\log_2 L\rceil + \text{index\_bits} - 1 \leq \lceil\log_2 P\rceil - 1
+$$
+
+$$
+\text{index\_bits} \leq \lceil\log_2 P\rceil - \lceil\log_2 L\rceil
+$$
+
+Substituting:
+
+$$
+\log_2\!\left(\frac{C}{W \times L}\right) \leq \log_2(P) - \log_2(L)
+$$
+
+$$
+\log_2\!\left(\frac{C}{W \times L}\right) \leq \log_2\!\left(\frac{P}{L}\right)
+$$
+
+$$
+\boxed{\frac{C}{W \times L} \leq \frac{P}{L} \implies C \leq W \times P}
+$$
+
+**This is the VIPT constraint: the total cache capacity must not exceed the associativity
+times the page size.** If violated, the index extends into the VPN, which differs between
+virtual and physical addresses, causing the same physical line to be looked up in
+different sets depending on which virtual address is used (the synonym/alias problem).
+
+### 5.4 Worked Examples -- VIPT Constraint Verification
+
+**Example 1: 4-way, 32 KB, 64 B lines, 4 KB pages (typical L1D).**
 
 $$
 \text{Sets} = \frac{32{,}768}{4 \times 64} = 128 \implies 7 \text{ index bits}
 $$
 
-$$
-7 \leq 12 \quad (\text{page offset bits}) \quad \checkmark
-$$
+```
+Address decomposition:
+  Block offset = log2(64) = 6 bits  -> bits [5:0]
+  Index        = log2(128) = 7 bits -> bits [11:5]
+  Tag          = 32 - 7 - 6 = 19 bits -> bits [31:12]
 
-Cache size $= 32\text{ KB} \leq 4 \times 4\text{ KB} = 16\text{ KB}$? **No!**
-$32\text{ KB} > 16\text{ KB}$, so strictly speaking the constraint is violated.
+Index occupies bits [11:5]. All within page offset [11:0].
 
-Wait -- re-examining: the index bits are derived from bits [11:0] of the address (the
-page offset). With 7 index bits, we use bits [11:5]. All of these are within the
-12-bit page offset. The constraint is actually:
-
-$$
-\text{Index bits} \leq \log_2(P) = 12
-$$
-
-So $7 \leq 12$ is satisfied. The stricter formula $\text{size} \leq W \times P$ is a
-sufficient condition but the real test is whether the index bits fit within the page
-offset. With 7 index bits, they do.
-
-The formula $\text{size} \leq W \times P$ gives the condition under which the index
-bits are guaranteed to fit. Here, $\text{size} = 32\text{ KB}$, $W \times P = 16\text{
-KB}$. The index bits (7) happen to still fit in 12, so it works, but if we increased to
-a 64 KB 4-way cache:
+Precise check: highest index bit = offset_bits + index_bits - 1
+             = 6 + 7 - 1 = 11
+  Page offset top bit = 11
+  11 <= 11 -- fits exactly.
+```
 
 $$
-\text{Sets} = \frac{65{,}536}{4 \times 64} = 256 \implies 8 \text{ index bits}
+\text{VIPT constraint: } \lceil\log_2 L\rceil + \lceil\log_2(\text{Sets})\rceil - 1 \leq \lceil\log_2 P\rceil - 1
 $$
 
-$8 \leq 12$ -- still fits.
-
-An 8-way, 256 KB cache:
-
 $$
-\text{Sets} = \frac{262{,}144}{8 \times 64} = 512 \implies 9 \text{ index bits}
+6 + 7 - 1 = 11 \leq 11 \quad \checkmark
 $$
 
-$9 \leq 12$ -- still fits.
+**This is why real L1D caches at 32KB/4-way/64B/4KB-pages use VIPT successfully.**
+The 7 index bits all fall within the 12-bit page offset. The TLB translates the tag
+bits (which are VPN bits) in parallel with the cache index lookup.
 
-A direct-mapped (1-way), 32 KB cache:
+Note the common confusion: $C = 32\text{ KB} > W \times P = 4 \times 4\text{ KB} = 16\text{ KB}$,
+which seems to violate the simplified constraint $C \leq W \times P$. But the simplified
+constraint is sufficient, not necessary. What actually matters is the bit positions of
+the index, and here all 7 index bits fit within [11:0].
 
-$$
-\text{Sets} = \frac{32{,}768}{1 \times 64} = 512 \implies 9 \text{ index bits}
-$$
-
-$9 \leq 12$ -- fits.
-
-A direct-mapped, 8 KB cache with 4 KB pages:
-
-$$
-\text{Sets} = \frac{8{,}192}{64} = 128 \implies 7 \text{ index bits}
-$$
-
-$7 \leq 12$ -- fits, but note that $\text{size} = 8\text{ KB} > 1 \times 4\text{ KB}$.
-The index bits are 7, still within 12, so it is safe.
-
-### 5.5 Page Coloring
-
-When the index bits extend beyond the page offset (i.e., $\text{index bits} > 12$ for
-4 KB pages), the same virtual page can map to different physical pages that index into
-different cache sets. This creates **aliases**: two virtual addresses mapping to the
-same physical address might reside in different cache sets, causing coherence bugs.
-
-The OS solves this with **page coloring**: it restricts the physical page frame
-allocation so that bits of the physical frame number that overlap the cache index are
-identical to the corresponding virtual bits. Effectively, the OS guarantees that all
-aliases map to the same cache set.
-
-Page coloring reduces the pool of available physical frames for a given allocation,
-potentially increasing external fragmentation. It is only needed when:
+**Example 2: 2-way, 64 KB, 64 B lines, 4 KB pages.**
 
 $$
-\text{Total cache size} > W \times P
+\text{Sets} = \frac{65{,}536}{2 \times 64} = 512 \implies 9 \text{ index bits}
 $$
 
-For example, a 1 MB, 16-way L2 cache with 4 KB pages:
+```
+Index occupies bits [14:6]. Bits 14, 13, 12 are ABOVE the page offset boundary (bit 11).
+
+Precise check: highest index bit = 6 + 9 - 1 = 14
+  Page offset top bit = 11
+  14 > 11 -- VIOLATED by 3 bits.
+```
+
+**VIPT fails.** The index extends 3 bits into the VPN. These bits may differ between
+virtual and physical addresses, causing synonyms. The OS must use page coloring to
+ensure that bits [14:12] of the physical frame number match the corresponding virtual bits.
+
+**Example 3: 8-way, 64 KB, 64 B lines, 4 KB pages.**
 
 $$
-W \times P = 16 \times 4\text{ KB} = 64\text{ KB} \ll 1\text{ MB}
+\text{Sets} = \frac{65{,}536}{8 \times 64} = 128 \implies 7 \text{ index bits}
 $$
 
-This requires $\log_2(1\text{M} / (16 \times 64)) = \log_2(1024) = 10$ index bits.
-Since $10 > 12$ is false, it still fits -- wait, $10 \leq 12$, so no coloring needed.
-But if we had a 4 MB, 16-way L2:
-
 $$
-\text{Sets} = \frac{4{,}194{,}304}{16 \times 64} = 4096 \implies 12 \text{ index bits}
+\text{highest index bit} = 6 + 7 - 1 = 12 > 11 \quad \times
 $$
 
-$12 \leq 12$ -- borderline, exactly equal. If the cache were 8 MB, 16-way:
+**Still fails by 1 bit!** Even doubling the associativity to 8-way does not save a
+64KB cache with 4KB pages. The fundamental constraint is that 64KB needs at least
+$64\text{KB}/64\text{B} = 1024$ total entries, and the page offset provides only
+$4096/64 = 64$ entries worth of index bits. With 8 ways: $1024/8 = 128$ sets needing
+7 index bits, but the page offset provides only $\log_2(64) = 6$ bits beyond the block
+offset. You need 1 more bit than the page offset can provide.
+
+**Example 4: 4-way, 16 KB, 64 B lines, 4 KB pages.**
 
 $$
-\text{Sets} = 8192 \implies 13 \text{ index bits} > 12
+\text{Sets} = \frac{16{,}384}{4 \times 64} = 64 \implies 6 \text{ index bits}
 $$
 
-Now page coloring is required.
+$$
+\text{highest index bit} = 6 + 6 - 1 = 11 \leq 11 \quad \checkmark
+$$
+
+**Fits exactly.** This is the maximum VIPT-safe L1D with 4-way associativity and
+64 B lines under 4 KB pages.
+
+**Example 5: Maximum VIPT-safe cache size formula.**
+
+Given page size $P$, line size $L$, associativity $W$:
+
+$$
+\text{Max } C = W \times \frac{P}{L} \times L = W \times P
+$$
+
+But this is only correct when index bits exactly fill the page offset beyond the block
+offset. More precisely:
+
+$$
+\text{Max sets} = \frac{P}{L} = 2^{\log_2 P - \log_2 L}
+$$
+
+$$
+\text{Max } C = W \times \text{Max sets} \times L = W \times P
+$$
+
+For 4 KB pages, 64 B lines, 4-way: Max $C = 4 \times 4096 = 16$ KB. But Example 1
+showed that 32 KB also works! The discrepancy is because the formula counts sets
+as $P/L = 64$, but the actual index bits are 7 (for 128 sets), still fitting in the
+page offset. The correct formula: max sets $= 2^{(\log_2 P - \log_2 L)} = 2^6 = 64$
+if we strictly use only page offset bits. But the 32 KB cache has 128 sets, using
+7 bits, and all 7 fit in [11:0] because the block offset is only 6 bits, leaving
+bits [11:6] = 6 bits... plus bit 5? No: bits [11:5] = 7 bits, but [11:5] spans
+from bit 5 to bit 11, which is within [11:0]. The subtlety is that the index starts
+immediately above the block offset: the first index bit is bit $\lceil\log_2 L\rceil$,
+and the last index bit is $\lceil\log_2 L\rceil + \lceil\log_2(\text{Sets})\rceil - 1$.
+This last bit must be $\leq \lceil\log_2 P\rceil - 1$.
+
+**Quick reference table (4 KB pages, 64 B lines):**
+
+| Associativity | Sets | Index bits | Highest index bit | VIPT safe? |
+|:---:|:---:|:---:|:---:|:---:|
+| 1 | 512 (32 KB) | 9 | 14 | No |
+| 2 | 256 (32 KB) | 8 | 13 | No |
+| 4 | 128 (32 KB) | 7 | 11 | **Yes** (exact) |
+| 8 | 64 (32 KB) | 6 | 11 | **Yes** (exact) |
+| 4 | 256 (64 KB) | 8 | 13 | No |
+| 8 | 128 (64 KB) | 7 | 12 | No |
+| 16 | 64 (64 KB) | 6 | 11 | **Yes** |
+| 4 | 64 (16 KB) | 6 | 11 | **Yes** (exact) |
+
+### 5.5 Synonym Problem and Page Coloring
+
+When two different virtual addresses map to the same physical address (shared memory,
+mmap with MAP_SHARED), and the VIPT constraint is violated, the two virtual addresses
+may index into different cache sets. The same physical data resides in two different
+cache locations -- this is a **synonym** (also called an alias).
+
+**The synonym problem:** Core 0 writes to VA1 (maps to PA, cached in set 5). Core 1
+reads VA2 (also maps to PA, but indexes set 9). Core 1 gets stale data (or misses
+entirely) because the write went to a different cache set.
+
+**Page coloring** is the OS-level solution: restrict physical page frame allocation so
+that the bits of the physical frame number that overlap the cache index are identical to
+the corresponding virtual bits. Effectively, the OS guarantees that all virtual aliases
+map to the same cache set.
+
+```
+Number of colors = 2^(index_bits - page_offset_bits_per_index)
+For Example 2 (2-way 64KB): colors = 2^(14-12) = 4 colors
+Physical pages are partitioned into 4 color classes:
+  Color 0: PFN[13:12] = 00
+  Color 1: PFN[13:12] = 01
+  Color 2: PFN[13:12] = 10
+  Color 3: PFN[13:12] = 11
+
+The OS allocates a physical page whose color matches the virtual page's color bits.
+This wastes some physical pages (can't use all frames for every allocation) but
+guarantees VIPT correctness.
+```
 
 ---
 
@@ -522,32 +766,221 @@ Now page coloring is required.
 
 ### 6.1 The Coherence Problem
 
-TLBs are per-core structures. When the OS modifies a page-table entry (e.g., changing
-permissions, migrating a page, or unmapping a region), stale entries may reside in the
-TLBs of other cores. These stale entries must be invalidated -- a process called **TLB
-shootdown**.
+TLBs are per-core structures with no hardware coherence. When the OS modifies a
+page-table entry (e.g., changing permissions, migrating a page, or unmapping a region),
+stale entries may reside in the TLBs of other cores. These stale entries must be
+invalidated -- a process called **TLB shootdown**.
 
-### 6.2 IPI-Based Shootdown
+**When shootdown is needed:**
 
-The standard mechanism:
+| Event | Why shootdown is needed |
+|-------|------------------------|
+| `munmap` / `mprotect` | Unmaps or changes permissions; stale TLB entries could allow illegal access |
+| Page migration (NUMA) | Physical page changes; old PPN is wrong |
+| `fork()` (copy-on-write) | Parent's writable entries must be demoted to read-only in child |
+| `madvise(MADV_DONTNEED)` | Pages are discarded; stale entries would point to freed frames |
+| KSM (kernel same-page merging) | Two pages merged into one; one mapping's PPN changes |
+| Process exit | All TLB entries for the process should be flushed (or left to ASID recycle) |
+| Context switch (without ASID) | Entire TLB must be flushed to prevent process A from using process B's translations |
 
-1. The initiating core modifies the page-table entry in memory.
-2. The initiating core sends an **Inter-Processor Interrupt (IPI)** to every other core
-   that might have a stale entry.
-3. Each recipient core enters the shootdown handler, invalidates the relevant TLB
-   entries (or flushes the entire TLB), and acknowledges.
-4. The initiator waits for all acknowledgments before proceeding.
+### 6.2 IPI-Based Shootdown -- Detailed Sequence
 
-The cost of a full shootdown scales with core count. On a 64-core machine, a single
-shootdown may cost thousands of cycles of coordinated stalling.
+The standard mechanism used in Linux and most OS kernels:
 
-### 6.3 Lazy Shootdown
+```
+Step-by-step shootdown on a 4-core system:
 
-An optimization: instead of immediately flushing all cores, the initiator records a
-**generation counter** (or shootdown sequence number) in a shared structure. Each core
-checks this counter on every TLB miss and flushes if stale. This avoids the IPI
-synchronization cost but may allow a few instructions to execute with stale translations
--- acceptable for permission downgrades where the window is small.
+Initiator (Core 0)                           Targets (Cores 1, 2, 3)
+========================                      ========================
+
+1. Acquire mmap_lock (read or write)
+2. Modify the page table entry in memory
+   (PTE = new value, flush from data cache)
+
+3. Record the virtual address range
+   [start, end) that needs invalidation
+
+4. Set shootdown IPI vector
+   with the range parameters
+
+5. Send IPI to Cores 1, 2, 3               ──IPI──>  6. Each target receives IPI
+                                                       Interrupts current execution
+                                                       (saves user context)
+
+                                              7. Target enters shootdown handler:
+                                                 for (addr = start; addr < end; addr += PAGE_SIZE)
+                                                     SFENCE.VMA addr, asid  (or flush all)
+                                                 // Also flush L1 TLB and L2 STLB
+                                                 // entries matching the range
+
+                                              8. Target sends ACK
+                                                   <──ACK──
+
+9. Wait for all ACKs from Cores 1, 2, 3
+   (spin on a shared atomic counter)
+
+10. All ACKs received
+    Resume the operation that triggered shootdown
+
+11. Release mmap_lock
+```
+
+**Timing breakdown (8-core system):**
+
+```
+Phase                           Cycles     Notes
+────────────────────────────── ───────── ───────────────────────
+IPI send latency               50-200     Depends on interconnect
+Interrupt entry overhead       20-50      Pipeline flush, save context
+TLB flush (full, 64 entries)   10-50      SFENCE.VMA execution
+Interrupt exit overhead        10-30      Restore context
+ACK send                       20-50      Atomic write to shared memory
+Initiator spin wait            varies     Until all N-1 cores respond
+────────────────────────────── ─────────
+Total per shootdown            200-1000   On an 8-core system
+
+On a 64-core system:
+  IPI fanout: 63 targets
+  Synchronization: all 63 must respond before initiator resumes
+  Total: 2,000-10,000+ cycles
+  During this time, ALL cores are stalled in the shootdown handler
+```
+
+**Scalability problem:** TLB shootdown cost scales linearly (or worse) with core count.
+On large systems (64-128 cores), shootdowns become a major performance bottleneck for
+workloads with frequent mmap/munmap (databases, JVMs with GC, fork-heavy workloads).
+
+#### TLB Shootdown Scalability — Quantitative Analysis
+
+```
+Shootdown cost model:
+  T_shootdown(N_cores) = T_IPI_send + (N-1) * max(T_flush_per_core) + T_sync
+
+Where:
+  T_IPI_send      = latency to send N-1 inter-processor interrupts (~100-500 ns)
+  T_flush_per_core = local TLB flush cost (~10-50 cycles = 5-25 ns at 2 GHz)
+  T_sync          = barrier synchronization cost (~50-200 ns for atomic ops)
+
+Numerical (2 GHz core, ARM-like TLB):
+  4 cores:   T ≈ 200 + 3*25 + 100 =   475 ns   (~950 cycles)
+  16 cores:  T ≈ 500 + 15*25 + 300 =  1,175 ns  (~2,350 cycles)
+  64 cores:  T ≈ 2000 + 63*25 + 800 = 4,375 ns  (~8,750 cycles)
+  128 cores: T ≈ 5000 + 127*25 + 1500 = 9,675 ns (~19,350 cycles)
+
+During the shootdown, ALL cores are stalled in the interrupt handler.
+Total wasted core-cycles = T_shootdown * N_cores:
+  4 cores:    3,800 cycles wasted
+  64 cores:  560,000 cycles wasted
+  128 cores: 1,237,000 cycles wasted
+
+For a database doing 10,000 munmaps/second on a 64-core machine:
+  Cycles wasted/second = 10,000 * 560,000 = 5.6 * 10^9 cycles
+  At 2 GHz total capacity = 128 * 2 * 10^9 = 256 * 10^9 cycles/second
+  Overhead = 5.6/256 = 2.2% of ALL core cycles wasted on TLB shootdowns
+
+This is why large-scale systems need alternatives to broadcast IPI shootdowns.
+```
+
+#### Alternative Shootdown Mechanisms
+
+```
+1. Directed shootdown (TLB invalidation instruction with target core list):
+   Instead of broadcasting to all N-1 cores, the OS sends invalidate only to
+   cores that might have the stale mapping (tracked by a per-page "likely cached" bit).
+   Cost: O(K) instead of O(N), where K = cores that actually cached the PTE.
+
+2. Deferred shootdown (batch invalidation):
+   Collect a batch of addresses to invalidate, then send a single IPI with the
+   entire batch. The target flushes all of them in one interrupt.
+   Cost: amortized O(1) per address instead of O(N) per address.
+
+3. Hardware-managed TLB (MIPS-style):
+   No shootdown needed -- all TLB entries are tagged with an ASID.
+   When the OS changes a page table, it changes the ASID of the affected process.
+   Old TLB entries with the stale ASID are ignored on lookup.
+   Cost: 0 for shootdown, but ASID space pressure (16-bit ASID = 64K processes max).
+
+4. ASID avoidance (primary Linux optimization):
+   Each process gets a unique ASID. On context switch, the OS writes the new ASID
+   to satp (RISC-V) or TTBR0 (ARM). TLB entries are tagged with the ASID; the
+   hardware only matches entries whose ASID matches the current register.
+   No flush needed on context switch!
+
+   Shootdown is still needed when:
+     - A page table entry changes (munmap, mprotect) for a RUNNING process
+     - The OS must invalidate stale entries on cores that might cache them
+   But context switches are free (just update the ASID register).
+```
+
+#### Lazy TLB Switching for Kernel Threads — Detail
+
+```
+When switching from User Process A to a Kernel Thread:
+  1. The kernel thread has no userspace mappings (it uses the kernel address space).
+  2. Instead of flushing User A's TLB entries, the OS leaves them in place.
+  3. The kernel thread runs with User A's ASID still in satp/TTBR0.
+  4. Any userspace TLB entries from User A are harmless -- the kernel thread
+     only accesses kernel addresses (which use global TLB entries or a separate
+     kernel page table).
+  5. When switching back to User A (or to User B):
+     If back to User A: TLB entries are still valid (ASID matches), no flush.
+     If to User B: update ASID to B's ASID. User A's entries are ignored.
+
+This optimization eliminates TLB flushes for ALL kernel thread switches.
+On a typical Linux system, context switches to kernel threads (idle, kworker,
+softirq) account for 30-60% of all context switches. Saving the TLB flush
+for each of these is a significant performance win.
+```
+
+### 6.3 Lazy TLB Switching Optimization
+
+When a context switch occurs, the old process's TLB entries are potentially stale.
+Instead of flushing the entire TLB immediately, a lazy approach defers the flush:
+
+**ASID-based avoidance (primary optimization):**
+
+```
+Without ASID:
+  Every context switch: full TLB flush (10-50 cycles) + refill (hundreds of cycles)
+  Cost for 1000 switches/second: ~50,000-50,000,000 cycles/second
+
+With ASID:
+  Context switch: update satp.ASID to new process's ASID (0 cycles flush)
+  TLB entries are tagged with ASID; only matching entries are considered
+  No flush needed for context switch at all!
+  Only flush when ASID space exhausted (65,536 switches without recycle)
+```
+
+**Lazy shootdown for kernel threads:**
+
+When switching to a kernel thread (which has no userspace mappings), the old process's
+userspace TLB entries are left in place. The kernel thread uses a special "lazy" ASID.
+When switching back to a userspace process, the TLB entries from the previous userspace
+process are still valid (if the ASID matches). This avoids flushing on kernel thread
+switches entirely.
+
+**Generation counter optimization:**
+
+```
+Shared structure:
+  struct tlb_gen {
+      uint64_t generation;  // monotonically increasing
+      uint64_t reserved;    // reserved ranges
+  } per-mm_struct;
+
+Each core records:
+  uint64_t last_tlb_gen;  // last generation this core has seen
+
+On TLB miss:
+  if (mm->tlb_gen.gen > core->last_tlb_gen)
+      flush_stale_entries();  // only flush what's needed
+  core->last_tlb_gen = mm->tlb_gen.gen;
+
+This avoids IPIs entirely for many cases:
+  - If a core hasn't accessed the stale address since the shootdown,
+    it never needs to flush (the stale entry won't be used).
+  - Only cores that actually hit a stale entry need to do work.
+```
 
 ### 6.4 RISC-V SFENCE.VMA
 
@@ -722,516 +1155,101 @@ bits (768 bytes), or 128 bits per entry yields $64 \times 128 = 8{,}192$ bits (1
 
 ---
 
-### Problem 2: Walk Through an Sv39 Page Table
+### Problem 2: Sv39 Page Table Walk
 
-**Question:** Given `satp = 0x8000000000001000` and virtual address
-`VA = 0x0000003FFFFFFAB0`, walk the Sv39 page table. Compute VPN[2], VPN[1], VPN[0],
-and the physical address of the L1 page-table entry.
+**Question.** A RISC-V Sv39 system has `satp.PPN = 0x80000` (root page table at physical
+address `0x80000000`). A process accesses virtual address `0x0000000080801000`. Each PTE is
+8 bytes. Given the PTE values below, walk all three levels and compute the physical address.
 
-**Solution:**
+**PTE values (given by the examiner):**
 
-**Step 1: Parse satp.**
+| Level | Index | PTE value | Flags (decoded) | Type |
+|-------|-------|-----------|-----------------|------|
+| L2 (root) | VPN[2] = 2 | `0x0800_0001` | V=1, R=0, W=0, X=0 | Non-leaf pointer |
+| L1 | VPN[1] = 4 | `0x0800_4001` | V=1, R=0, W=0, X=0 | Non-leaf pointer |
+| L0 | VPN[0] = 1 | `0x0800_80CF` | V=1, R=1, W=1, X=1, A=1, D=1 | Leaf |
 
-```
-satp = 0x8000_0000_0000_1000
+**Solution.**
 
-  Mode = bits[63:60] = 0x8 (Sv39)
-  ASID = bits[59:44] = 0x0000
-  PPN  = bits[43:0]  = 0x0000_0000_1000
-```
-
-Root page table physical base = `PPN << 12 = 0x0000_0000_1000_0000 = 0x1000_0000`.
-
-**Step 2: Parse virtual address.**
+**Step 0: Verify VA validity.**
 
 ```
-VA = 0x0000_003F_FFFF_FAB0
-
-  In binary (relevant 39 bits, VA[38:0]):
-    VA[38:30] = VPN[2]
-    VA[29:21] = VPN[1]
-    VA[20:12] = VPN[0]
-    VA[11:0]  = offset
-
-  VA = 0x3F_FFFF_FAB0
-  Binary: 0b 11_1111_1111 1111_1111_1111 1111_1010_1011_0000
-
-  VA[38:30] = 0b0_1111_1111 = 0xFF = 255 = VPN[2]
-  VA[29:21] = 0b1_1111_1111 = 0x1FF = 511 = VPN[1]
-  VA[20:12] = 0b1_1111_1010 = 0x1FA = 506 = VPN[0]
-  VA[11:0]  = 0xFAB0        = offset
+VA = 0x0000000080801000
 ```
 
-Let me verify more carefully:
+Sv39 uses 39-bit virtual addresses. Bits [63:39] must equal bit [38] (sign extension).
+VA = `0x80801000` < 2^38, so bit[38] = 0 and bits[63:39] are all 0. **Valid.**
+
+**Step 1: Decompose the virtual address.**
 
 ```
-VA = 0x3F_FFFF_FAB0
+VA = 0x80801000
 
-Hex:  3   F   F   F   F   F   F   A   B   0
-Bin: 0011 1111 1111 1111 1111 1111 1111 1010 1011 0000
-
-Bit positions (from bit 39 down):
-  [38:30]: 0 1111 1111 = 0x0FF = 255
-  [29:21]: 1 1111 1111 = 0x1FF = 511
-  [20:12]: 1 1111 1010 = 0x1FA = 506
-  [11:0] : 1011 0000 0000 -- wait, let me recompute.
+VPN[2] = VA[38:30] = VA >> 30           = 0x002 = 2
+VPN[1] = VA[29:21] = (VA >> 21) & 0x1FF = 0x004 = 4
+VPN[0] = VA[20:12] = (VA >> 12) & 0x1FF = 0x001 = 1
+offset = VA[11:0]  = VA & 0xFFF         = 0x000
 ```
 
-Actually, let me recompute precisely:
+Verification: `(2 << 30) | (4 << 21) | (1 << 12) | 0 = 0x80000000 + 0x800000 + 0x1000 = 0x80801000`.
 
-$$
-\text{VA} = \text{0x3FFFFFFAB0}
-$$
-
-$$
-= 3 \times 16^9 + F \times 16^8 + \cdots
-$$
-
-In binary (40 bits):
+**Step 2: Level 2 (root) walk.**
 
 ```
-0x3F FFF FFA B0
-
-0x3F = 0011 1111
-0xFF = 1111 1111
-0xFF = 1111 1111
-0xFA = 1111 1010
-0xB0 = 1011 0000
+PTE address = (satp.PPN << 12) + VPN[2] * 8
+            = 0x80000000 + 2 * 8
+            = 0x80000000 + 0x10
+            = 0x80000010
 ```
 
-Concatenated: `0011 1111 1111 1111 1111 1111 1111 1010 1011 0000`
+Read PTE `0x08000001` from `0x80000010`:
+- PPN = `0x08000001 >> 10` = `0x20000`
+- V = 1, R = W = X = 0 --> non-leaf (pointer to L1 table)
 
-This is 40 bits. For Sv39, we use VA[38:0], so drop the top bit:
-
-```
-VA[38:0] = 011 1111 1111 1111 1111 1111 1111 1010 1011 0000
-
-VPN[2] = VA[38:30] = 0111 1111 1 = 0xFF? No.
-```
-
-Let me count bits carefully. VA[38:0] is 39 bits:
+**Step 3: Level 1 walk.**
 
 ```
-Position: 38 37 36 35 34 33 32 31 30 | 29 28 27 26 25 24 23 22 21 | 20 19 18 17 16 15 14 13 12 | 11 10 9 8 7 6 5 4 3 2 1 0
+PTE address = (L2_PPN << 12) + VPN[1] * 8
+            = (0x20000 << 12) + 4 * 8
+            = 0x20000000 + 0x20
+            = 0x20000020
 ```
 
-The hex `0x3FFFFFFAB0` in binary:
+Read PTE `0x08004001` from `0x20000020`:
+- PPN = `0x08004001 >> 10` = `0x20010`
+- V = 1, R = W = X = 0 --> non-leaf (pointer to L0 table)
+
+**Step 4: Level 0 walk.**
 
 ```
-0x3 = 0011
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xA = 1010
-0xB = 1011
-0x0 = 0000
+PTE address = (L1_PPN << 12) + VPN[0] * 8
+            = (0x20010 << 12) + 1 * 8
+            = 0x20010000 + 0x08
+            = 0x20010008
 ```
 
-So the full binary (40 bits):
+Read PTE `0x080080CF` from `0x20010008`:
+- PPN = `0x080080CF >> 10` = `0x20020`
+- V = 1, R = 1, W = 1, X = 1, A = 1, D = 1 --> **leaf** (readable, writable, executable)
+
+**Step 5: Compute the physical address.**
 
 ```
-0011 1111 1111 1111 1111 1111 1111 1010 1011 0000
+PA = (leaf_PPN << 12) | offset
+   = (0x20020 << 12) | 0x000
+   = 0x20020000
 ```
 
-For Sv39, sign-extended from bit 38. Taking VA[38:0]:
-
-```
-Bit 38: 1
-Bit 37: 1
-Bit 36: 1
-Bit 35: 1
-Bit 34: 1
-Bit 33: 1
-Bit 32: 1
-Bit 31: 1
-Bit 30: 1
-=> VPN[2] = 111111111 = 0x1FF = 511
-
-Bit 29: 1
-Bit 28: 1
-Bit 27: 1
-Bit 26: 1
-Bit 25: 1
-Bit 24: 1
-Bit 23: 1
-Bit 22: 1
-Bit 21: 1
-=> VPN[1] = 111111111 = 0x1FF = 511
-
-Bit 20: 1
-Bit 19: 1
-Bit 18: 1
-Bit 17: 1
-Bit 16: 0
-Bit 15: 1
-Bit 14: 0
-Bit 13: 1
-Bit 12: 0
-=> VPN[0] = 111101010 = 0x1EA = 490
-
-Wait, let me redo this from the hex.
-```
-
-A cleaner approach:
-
-$$
-\text{VA} = \text{0x0000003FFFFFFAB0}
-$$
-
-$$
-\text{VA}[38:12] = \text{VPN} = \text{0x3FFFFFFAB0} \gg 12 = \text{0x3FFFFFFA} \text{ (lower bits shift)}
-$$
-
-Actually:
-
-$$
-\text{0x3FFFFFFAB0} \gg 12 = \text{0x3FFFFFFAB} \gg 4 = \text{0x3FFFFFFA} \text{ (with remainder B0)}
-$$
-
-Hmm, let me compute directly:
-
-$$
-\text{0x3FFFFFFAB0} = 274{,}877{,}906{,}864
-$$
-
-$$
-\text{Offset} = \text{0xB0} = 176
-$$
-
-$$
-\text{VPN} = \text{0x3FFFFFFAB0} \gg 12 = \lfloor 274{,}877{,}906{,}864 / 4096 \rfloor = 67{,}108{,}863 = \text{0x3FFFFFF}
-$$
-
-Wait: $\text{0x3FFFFFFAB0} \gg 12$:
-
-```
-0x3FFFFFFAB0 = 0x3F_FFF_FFA_B0
-
-Shifting right by 12 (3 hex digits):
-= 0x3F_FFF_FFA_B0 >> 12
-= 0x3F_FFF_FFA (dropping the bottom B0, but B0 is only 8 bits, not 12)
-```
-
-Let me do this properly:
-
-$$
-\text{0x3FFFFFFAB0}_{16} = 3 \cdot 16^{9} + 15 \cdot 16^{8} + 15 \cdot 16^{7} + 15 \cdot 16^{6} + 15 \cdot 16^{5} + 15 \cdot 16^{4} + 15 \cdot 16^{3} + 10 \cdot 16^{2} + 11 \cdot 16^{1} + 0
-$$
-
-$$
-= 3 \cdot 16^{9} + 15 \cdot (16^{8} + 16^{7} + 16^{6} + 16^{5} + 16^{4} + 16^{3}) + 10 \cdot 256 + 176
-$$
-
-This is getting unwieldy. Let me use a direct bit approach. The address is 40 hex digits
-... no, `0x3FFFFFFAB0` is 10 hex digits = 40 bits. For Sv39, the VA is 39 bits
-(sign-extended to 64). Bit 39 is actually part of the sign extension check; we use
-bits [38:0].
-
-```
-0x3 F F F F F F A B 0
-   |---------------|---|
-   VPN[2] VPN[1] VPN[0] offset
-
-Each VPN level is 9 bits = 2.25 hex digits.
-```
-
-Grouping by 9-bit VPN fields:
-
-```
-VA[38:0] (39 bits):
-  VPN[2] = VA[38:30] (9 bits)
-  VPN[1] = VA[29:21] (9 bits)
-  VPN[0] = VA[20:12] (9 bits)
-  offset = VA[11:0]  (12 bits)
-```
-
-Converting `0x3FFFFFFAB0`:
-
-```
-= 0b 0011_1111_1111_1111_1111_1111_1111_1010_1011_0000 (40 bits)
-
-Bits 38:30: 11_1111_111 = 0x1FF = 511  (VPN[2])
-Bits 29:21: 1_1111_111 = 0x0FF = 255? No...
-```
-
-Let me be very explicit:
-
-```
-Position: 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-Binary:     0  0  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1   0  1  0  1  0  1  1  0  0  0  0
-```
-
-```
-VPN[2] = bits[38:30] = 011111111 = 0xFF = 255
-VPN[1] = bits[29:21] = 111111111 = 0x1FF = 511
-VPN[0] = bits[20:12] = 111111010 = 0x1FA = 506
-offset = bits[11:0]  = 101100000000 ... wait
-```
-
-Let me recount. `0xB0` in binary is `1011 0000`. The offset (12 bits) is `VA[11:0]`.
-The last 3 hex digits of the address are `AB0`:
-
-```
-0xA = 1010
-0xB = 1011
-0x0 = 0000
-offset = 0xAB0 = 1010_1011_0000 (12 bits)
-```
-
-So offset = `0xAB0`. But wait, that's only 12 bits? `0xAB0` = `1010 1011 0000` = 12
-bits. Yes, correct.
-
-Now for VPN[0]:
-
-```
-The 9 bits above the offset: these come from the hex digits before AB0.
-The full address: 0x3F_FFF_FFA_B0
-
-In groups of 3 hex digits from bottom:
-  offset: AB0  (bits 11:0)
-  VPN[0]: FFA... no.
-```
-
-Each 9-bit VPN = 2.25 hex digits. So it is easier to work in binary:
-
-```
-0x3FFFFFFAB0 in binary:
-
-0x3 = 0011
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xF = 1111
-0xA = 1010
-0xB = 1011
-0x0 = 0000
-
-Full: 0011 1111 1111 1111 1111 1111 1111 1010 1011 0000
-```
-
-That is 40 bits. For Sv39, bit 39 must equal bit 38 (sign extension). Here bit 39 = 0,
-bit 38 = 0. Valid.
-
-```
-bits[38:30] = 0 1 1 1 1 1 1 1 1 = 0x0FF = 255   (VPN[2])
-bits[29:21] = 1 1 1 1 1 1 1 1 1 = 0x1FF = 511   (VPN[1])
-bits[20:12] = 1 1 1 1 1 0 1 0 1 = 0x1EB = 491   (VPN[0])
-bits[11:0]  = 0 1 1 0 0 0 0 0 0 0 0 0 ... no
-```
-
-Wait, I need to recount. Let me number the 40 bits:
-
-```
-Bit: 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-     0  0  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1   0  1  0  1  0  1  1  0  0  0  0
-```
-
-```
-VPN[2] = bits[38:30] = 0 1 1 1 1 1 1 1 1 = 0xFF = 255
-VPN[1] = bits[29:21] = 1 1 1 1 1 1 1 1 1 = 0x1FF = 511
-VPN[0] = bits[20:12] = 1 1 1 1 1 1 1 0 1 = 0x1FD = 509
-offset = bits[11:0]  = 0 1 0 1 0 1 1 0 0 0 0 0 = 0x5B0
-```
-
-Hmm, let me recheck. The last 12 bits from the binary:
-
-```
-... 1010 1011 0000
-
-bits 11:0: 1010 1011 0000 = 0xAB0 = 2736
-
-bits 20:12: let me count from position 12 upward:
-  bit 12 = 0 (from 1010 1011 0000, bit 12 is the first bit of the 'A' group)
-  Actually the hex A = 1010, and this is at the position just above B0.
-
-  The address bytes from bottom:
-  0xB0 = bits [7:0] = 1011 0000
-  0xA_  = bits [11:8] = 1010
-
-  So bits[11:0] = 0xAB0.
-
-  bits[19:12] = next hex digit (F) = 1111
-  bit 20 = the LSB of the next hex digit (F) = 1
-
-  So bits[20:12] = 1_1111_1010... no.
-```
-
-I am overcomplicating this. Let me compute using hex directly.
-
-$$
-\text{VPN} = \lfloor \text{VA} / 4096 \rfloor
-$$
-
-$$
-\text{0x3FFFFFFAB0} / \text{0x1000} = \text{0x3FFFFFFA.B0}_{16} \text{ (hex division)}
-$$
-
-$$
-\text{VPN} = \text{0x3FFFFFFA}, \quad \text{offset} = \text{0xB0}
-$$
-
-Wait, that is not right either. Let me do it cleanly:
-
-$$
-\text{0x3FFFFFFAB0} = \text{0x3FFFFFFA} \times \text{0x1000} + \text{0xB0}
-$$
-
-Check: $\text{0x3FFFFFFA} \times \text{0x1000} = \text{0x3FFFFFFA000}$... that is too big.
-
-OK. $\text{0x3FFFFFFAB0} \gg 12$:
-
-$$
-= \text{0x3FFFFFFAB0} / 4096
-$$
-
-$$
-\text{0x3FFFFFFAB0} = 274{,}877{,}906{,}864_{10}
-$$
-
-$$
-274{,}877{,}906{,}864 / 4096 = 67{,}108{,}863 = \text{0x3FFFFFF}
-$$
-
-Wait, $67{,}108{,}863 = \text{0x3FFFFFF}$? Let me check: $\text{0x3FFFFFF} = 3 \times 16^6 + 16^6 - 1 = 67{,}108{,}863$. Yes.
-
-So VPN $= \text{0x3FFFFFF}$ and offset $= 274{,}877{,}906{,}864 - 67{,}108{,}863 \times 4096$.
-
-$67{,}108{,}863 \times 4096 = 274{,}877{,}906{,}848$.
-
-$\text{offset} = 274{,}877{,}906{,}864 - 274{,}877{,}906{,}848 = 16 = \text{0x10}$.
-
-Hmm, but $\text{0xB0} = 176$. Something is off. Let me recheck the original hex.
-
-$\text{0x3FFFFFFAB0}$: the last three hex digits are `AB0`, and $\text{0xAB0} = 10 \times 256 + 11 \times 16 + 0 = 2736$.
-
-But $16 \neq 2736$. My division is wrong. Let me redo:
-
-$$
-\text{0x3FFFFFFAB0}_{16} = ?
-$$
-
-Actually, $\text{0x3FFFFFFAB0}$ has 10 hex digits. That is 40 bits. The value:
-
-$$
-= 3 \times 16^9 + 15 \times (16^8 + 16^7 + 16^6 + 16^5 + 16^4 + 16^3) + 10 \times 16^2 + 11 \times 16^1 + 0
-$$
-
-$$
-= 3 \times 16^9 + 15 \times \frac{16^9 - 16^3}{15} + 10 \times 256 + 176
-$$
-
-$$
-= 3 \times 16^9 + 16^9 - 16^3 + 2560 + 176
-$$
-
-$$
-= 4 \times 16^9 - 4096 + 2736
-$$
-
-$$
-= 4 \times 16^9 - 1360
-$$
-
-$$
-= 4 \times 68{,}719{,}476{,}736 - 1360 = 274{,}877{,}906{,}944 - 1360 = 274{,}877{,}905{,}584
-$$
-
-Now $/ 4096$:
-
-$$
-274{,}877{,}905{,}584 / 4096 = 67{,}108{,}863.66796875
-$$
-
-$$
-\lfloor 67{,}108{,}863.668 \rfloor = 67{,}108{,}863 = \text{0x3FFFFFF}
-$$
-
-$$
-\text{offset} = 274{,}877{,}905{,}584 - 67{,}108{,}863 \times 4096 = 274{,}877{,}905{,}584 - 274{,}877{,}906{,}848
-$$
-
-That gives a negative number, so my multiplication is wrong. Let me recompute $67{,}108{,}863 \times 4096$:
-
-$67{,}108{,}863 = \text{0x3FFFFFF}$
-
-$\text{0x3FFFFFF} \times \text{0x1000} = \text{0x3FFFFFF000}$
-
-$\text{0x3FFFFFF000} = 274{,}877{,}906{,}944$
-
-$\text{0x3FFFFFFAB0} = 274{,}877{,}905{,}584$
-
-So $\text{0x3FFFFFFAB0} < \text{0x3FFFFFF000}$. This means VPN $< \text{0x3FFFFFF}$.
-
-The correct VPN: $274{,}877{,}905{,}584 / 4096 = 67{,}108{,}862.668$
-
-$\text{VPN} = 67{,}108{,}862 = \text{0x3FFFFFE}$
-
-$\text{offset} = 274{,}877{,}905{,}584 - 67{,}108{,}862 \times 4096 = 274{,}877{,}905{,}584 - 274{,}877{,}902{,}848 = 2736 = \text{0xAB0}$
-
-So:
-
-$$
-\text{VPN} = \text{0x3FFFFFE}, \quad \text{offset} = \text{0xAB0}
-$$
-
-Now split the VPN into three 9-bit fields:
-
-$$
-\text{VPN} = \text{0x3FFFFFE} = \text{0b 11_1111_1111_1111_1111_1111_1110}
-$$
-
-That is 26 bits. Wait, $67{,}108{,}862$ in binary:
-
-$$
-2^{26} = 67{,}108{,}864 = \text{0x4000000}
-$$
-
-$67{,}108{,}862 = \text{0x4000000} - 2 = \text{0x3FFFFFE}$
-
-In binary (27 bits): $\text{0b 011\_1111\_1111\_1111\_1111\_1111\_1110}$
-
-```
-VPN[2] = bits[26:18] = 011111111 = 0xFF = 255
-VPN[1] = bits[17:9]  = 111111111 = 0x1FF = 511
-VPN[0] = bits[8:0]   = 111111110 = 0x1FE = 510
-```
-
-**Step 3: Level 1 PTE address.**
-
-$$
-\text{PTE}_{L1} \text{ address} = (\text{satp.PPN} \ll 12) + \text{VPN}[2] \times 8
-$$
-
-$$
-= \text{0x1000\_0000} + 255 \times 8 = \text{0x1000\_0000} + \text{0x7F8} = \text{0x1000\_07F8}
-$$
-
-The hardware walker reads the 8-byte PTE at physical address `0x1000_07F8`.
-
-**Step 4: Level 2 PTE address (assuming L1 PTE is a non-leaf pointer).**
-
-If the L1 PTE contains PPN $= X$ (with R=W=X=0, indicating non-leaf):
-
-$$
-\text{PTE}_{L2} \text{ address} = (X \ll 12) + \text{VPN}[1] \times 8 = (X \ll 12) + 511 \times 8 = (X \ll 12) + \text{0xFF8}
-$$
-
-**Step 5: Level 3 PTE address (assuming L2 PTE is also a non-leaf with PPN $= Y$).**
-
-$$
-\text{PTE}_{L3} \text{ address} = (Y \ll 12) + \text{VPN}[0] \times 8 = (Y \ll 12) + 510 \times 8 = (Y \ll 12) + \text{0xFF0}
-$$
-
-The leaf PTE at this address provides the final PPN. The translated physical address:
-
-$$
-\text{PA} = (\text{PTE}_{L3}.\text{PPN} \ll 12) \;|\; \text{0xAB0}
-$$
+$$\boxed{PA = \texttt{0x0000000020020000}}$$
+
+**Summary of the walk:**
+
+| Step | Operation | Address Accessed | PTE Read | PPN Extracted |
+|------|-----------|-----------------|----------|---------------|
+| L2 | `0x80000000 + 2*8` | `0x80000010` | `0x08000001` | `0x20000` |
+| L1 | `0x20000000 + 4*8` | `0x20000020` | `0x08004001` | `0x20010` |
+| L0 | `0x20010000 + 1*8` | `0x20010008` | `0x080080CF` | `0x20020` |
+| Final | `(0x20020 << 12) \| 0x000` | -- | -- | `PA = 0x20020000` |
 
 ---
 
@@ -1252,71 +1270,46 @@ $$
 \text{Index bits} = \log_2(128) = 7
 $$
 
-The index uses bits $\text{VA}[11:5]$ (7 bits starting from bit 5, since the block
-offset uses $\log_2(64) = 6$ bits).
-
-All index bits fall within the 12-bit page offset ($\text{VA}[11:0]$). Since the page
-offset is identical in virtual and physical addresses, the cache can be indexed with
-the virtual address while the TLB translates the VPN in parallel.
+$$
+\text{Block offset bits} = \log_2(64) = 6
+$$
 
 $$
-7 \leq 12 \quad \checkmark \text{ -- VIPT is safe.}
+\text{Highest index bit} = 6 + 7 - 1 = 11
 $$
+
+$$
+\text{Page offset top bit} = \log_2(4096) - 1 = 11
+$$
+
+$$
+11 \leq 11 \quad \checkmark \text{ -- VIPT is safe (exact fit).}
+$$
+
+The index uses bits VA[11:5] (7 bits), all within the 12-bit page offset VA[11:0].
+The TLB translates the VPN bits (VA[31:12]) in parallel with cache index lookup.
 
 **Part B: 2-way, 64 KB, 64 B lines, 4 KB pages.**
 
 $$
-\text{Number of sets} = \frac{65{,}536}{2 \times 64} = 512
+\text{Number of sets} = \frac{65{,}536}{2 \times 64} = 512 \implies 9 \text{ index bits}
 $$
 
 $$
-\text{Index bits} = \log_2(512) = 9
+\text{Highest index bit} = 6 + 9 - 1 = 14 > 11 \quad \times
 $$
 
-The index uses bits $\text{VA}[14:6]$. Bits 14, 13, 12 are **outside** the 12-bit page
-offset -- they come from the VPN and may differ between virtual and physical addresses.
+**VIPT is violated.** The index spans VA[14:6], but bits VA[14:12] are VPN bits that
+may differ between virtual and physical addresses. Two virtual pages mapping to the same
+physical page could index into different cache sets (synonym/alias problem).
 
-$$
-9 > 12 \quad \text{No, wait: } 9 \leq 12 \text{ is true. Let me recheck.}
-$$
-
-Actually $9 \leq 12$, so the index bits **do** fit within the page offset. The VIPT
-constraint is:
-
-$$
-\text{index bits} = 9 \leq \log_2(\text{page size}) = 12 \quad \checkmark
-$$
-
-Wait -- but the index bits span positions [14:6], which includes bits 14, 13, 12 that
-are **above** the page offset boundary (bit 11). Let me reconsider.
-
-The index is computed from the address bits starting just above the block offset:
-
-$$
-\text{block offset} = \log_2(64) = 6 \text{ bits (VA[5:0])}
-$$
-
-$$
-\text{index} = \text{VA}[5+9-1 : 5] = \text{VA}[13:5] \quad \text{(9 bits)}
-$$
-
-Bits VA[11:5] are within the page offset (12 bits, VA[11:0]). Bits VA[13:12] are
-**outside** the page offset. So the index extends 2 bits beyond the page offset.
-
-The correct check is not just the count of index bits, but whether any index bit
-exceeds the page offset:
-
-$$
-\text{highest index bit} = 5 + 9 - 1 = 13 > 11 \quad \times
-$$
-
-So the 2-way, 64 KB cache **violates** the VIPT constraint. Two different virtual
-pages mapping to the same physical page could index into different cache sets, causing
-synonyms.
-
-**Resolution:** The OS must use page coloring to ensure that bits [13:12] of the
+**Resolution:** The OS must use page coloring to ensure that bits [14:12] of the
 physical frame number match the corresponding bits of the VPN, or the cache must be
 made physically indexed (losing the parallel TLB lookup advantage).
+
+**Common interview mistake:** Comparing only the index bit *count* to the page offset
+bit count (9 vs 12) and concluding VIPT is safe. The correct check is the *position*
+of the highest index bit relative to the page offset boundary.
 
 ---
 

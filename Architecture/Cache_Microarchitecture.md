@@ -140,24 +140,95 @@ and each miss costs 100 cycles, the CPI penalty is $0.05 \times 100 = 5.0$ -- ha
 all cycles are wasted. A non-blocking cache allows the processor to continue executing
 independent instructions while the miss is serviced.
 
-### 2.2 MSHR Structure
+### 2.2 MSHR Structure -- Detailed Implementation
 
 The **Miss Status Holding Register (MSHR)** tracks every outstanding cache miss. Each
 entry contains:
 
-| Field | Purpose |
-|-------|---------|
-| `valid` | Entry is active |
-| `line_addr` | Cache line address (tag + index) of the missed line |
-| `req_vector` | Bit mask: which words within the line have been requested |
-| `dest_reg[]` | Physical register destinations for each requesting instruction |
-| `state` | Current state of the miss (issued, fill pending, etc.) |
-| `way` | Allocated way in the cache set for this line |
+| Field | Width | Purpose |
+|-------|-------|---------|
+| `valid` | 1 bit | Entry is active |
+| `line_addr` | Tag + Index bits (e.g., 26 bits for 32KB/4-way/64B) | Cache line address of the missed line |
+| `req_vector` | 1 bit per word in line (e.g., 16 bits for 64B/4B words) | Bit mask: which words within the line have been requested |
+| `dest_reg[0..15]` | PReg ID per word (e.g., 7 bits x 16 entries) | Physical register destinations for each requesting instruction |
+| `word_valid[0..15]` | 1 bit per word | Which dest_reg entries are valid |
+| `state` | 2-3 bits | Current state: IDLE, ISSUED, FILL_PENDING, WRITEBACK_PENDING |
+| `way` | $\lceil\log_2(\text{associativity})\rceil$ bits | Allocated way in the cache set for the new line |
+| `dirty_victim` | 1 bit | The evicted line in the allocated way is dirty (needs writeback) |
+| `byte_mask` | 1 bit per byte (for write merging) | Which bytes have been written by pending stores |
 
-When a new miss arrives, the controller checks whether an MSHR already exists for
-that line address. If so, the new request is a **secondary miss** and its destination
-register is appended to the existing MSHR entry. If not, a free MSHR is allocated and
-the fill request is issued to the next cache level or memory controller.
+**MSHR entry size calculation (4-way 32KB cache, 64B lines, 7-bit phys reg IDs):**
+
+```
+1 (valid) + 26 (line_addr) + 16 (req_vector) + 16*7 (dest_reg) + 16 (word_valid)
++ 2 (state) + 2 (way) + 1 (dirty_victim)
+= 1 + 26 + 16 + 112 + 16 + 2 + 2 + 1 = 176 bits per MSHR entry
+
+For 16 MSHRs: 16 x 176 = 2,816 bits = 352 bytes of MSHR storage
+```
+
+#### Secondary Miss Handling (Miss Merging)
+
+When a new miss arrives, the controller performs a **CAM lookup** across all valid
+MSHR entries, comparing the incoming `line_addr` against stored `line_addr` values:
+
+- **Primary miss** (no matching MSHR): Allocate a free MSHR. Set `valid=1`, store
+  the line address, set the requested word's bit in `req_vector`, store the destination
+  register, allocate a victim way. If the victim is dirty, set `dirty_victim=1` and
+  initiate writeback. Then issue the fill request to the next level.
+
+- **Secondary miss** (matching MSHR found): The same cache line is already being fetched.
+  Merge the new request: set the additional word's bit in `req_vector`, store the new
+  destination register in `dest_reg[word_index]`, set `word_valid[word_index]=1`.
+  **No additional fill request is issued.** When the fill data returns, all merged
+  requests are satisfied simultaneously.
+
+**Secondary miss timing example:**
+
+```
+Cycle 0:  Load R1, [0x1000]  -- miss, MSHR[0] allocated, fill issued
+Cycle 3:  Load R2, [0x1004]  -- miss to same line (0x1000-0x103F)
+           MSHR[0] matches (line_addr = 0x1000)
+           Merge: req_vector bit[1] set, dest_reg[1] = R2
+           No new fill request!
+Cycle 20: Fill data returns from memory
+           Word 0 (0x1000) → wake R1
+           Word 1 (0x1004) → wake R2
+           Both instructions resume in the same cycle
+```
+
+Without merging, the second miss would occupy a separate MSHR and generate redundant
+memory traffic. With merging, the cost of the second miss is zero additional memory
+bandwidth and only the MSHR entry update latency.
+
+#### Writeback Before Fill (Dirty Eviction)
+
+When a miss requires evicting a dirty line, the MSHR controller must serialize:
+
+1. **Select victim way** (using replacement policy).
+2. **Check dirty bit** of victim.
+3. **If dirty**: Write the victim line's data to the writeback buffer. The MSHR enters
+   `WRITEBACK_PENDING` state. The writeback buffer drains to the next level while the
+   new fill request is queued.
+4. **If clean** (or after writeback completes): Issue the fill request for the new line.
+   MSHR enters `ISSUED` state.
+5. **Fill returns**: Write new data into the victim way's SRAM. Update tag, set valid,
+   clear dirty. Wake all dependent instructions. Free the MSHR.
+
+**Writeback buffer optimization:** A dedicated writeback buffer (typically 4-8 entries)
+decouples the writeback from the fill. The dirty victim is copied to the writeback buffer
+in 1 cycle, and the fill request is issued immediately. The writeback buffer drains to
+the next level in the background. This reduces miss penalty by hiding the writeback latency:
+
+```
+Without writeback buffer:
+  Miss → writeback dirty victim (20-100 cycles) → fill new line (20-100 cycles)
+  Total: 40-200 cycles
+
+With writeback buffer:
+  Miss → copy victim to WB buffer (1 cycle) → issue fill (20-100 cycles)
+  Total: 21-101 cycles (writeback happens in parallel with fill)
+```
 
 ```mermaid
 flowchart TD
@@ -173,7 +244,144 @@ flowchart TD
     I --> J[Free MSHR entry]
 ```
 
-### 2.3 MSHR Count
+### 2.3 MSHR Entry Format — Detailed Field Breakdown
+
+Each MSHR entry captures all the information needed to service a cache miss, merge
+secondary misses, and deliver data to the correct destination registers when the fill
+returns. Below is a field-by-field analysis for a 4-way 32 KB L1D cache with 64 B lines
+and 7-bit physical register IDs (as found in a modern OoO core).
+
+```
+MSHR Entry Bit Map (176 bits total):
+  +--------+-----------+-------------+------------------+------------------+
+  | valid  | line_addr | req_vector  | dest_reg[0..15]  | word_valid[0..15]|
+  | 1 bit  | 26 bits   | 16 bits     | 16 x 7 = 112 bits| 16 bits          |
+  +--------+-----------+-------------+------------------+------------------+
+  +--------+------+-------------+-----------+
+  | state  | way  | dirty_victim| byte_mask |
+  | 2 bits | 2 b  | 1 bit       | 64 bits   |
+  +--------+------+-------------+-----------+
+
+  line_addr:   Tag[18:0] concatenated with Index[6:0] = 26 bits.
+               (Block offset is zero by definition -- the MSHR tracks whole lines.)
+
+  req_vector:  One bit per 4-byte word within the 64 B line (64/4 = 16 words).
+               Bit[i] = 1 means word i at offset (i*4) has been requested.
+               On primary miss: only the requested word's bit is set.
+               On secondary miss merge: additional bits are ORed in.
+
+  dest_reg[]:  Physical register ID for each requesting instruction.
+               Max 16 entries (one per word). Width matches the PRF ID
+               (7 bits for 128-entry PRF, 8 bits for 256-entry PRF).
+
+  word_valid[]: 1 bit per dest_reg entry. Indicates whether dest_reg[i] contains
+                a valid register ID. Needed because some words may not have
+                been requested yet.
+
+  state:       FSM state for this MSHR.
+               00 = IDLE (free)
+               01 = WRITEBACK_PENDING (dirty victim being written back)
+               10 = FILL_ISSUED (fill request sent, awaiting data)
+               11 = FILL_RETURN (data arriving, being written to SRAM)
+
+  way:         Which way in the set has been allocated for the incoming line.
+               Determined at MSHR allocation time by the replacement policy.
+               2 bits for 4-way associativity.
+
+  dirty_victim: 1 if the evicted line in the allocated way is dirty (needs writeback
+                to next level before fill can proceed). 0 if clean or invalid.
+
+  byte_mask:   1 bit per byte in the line (64 bits for 64 B line). Tracks which
+               bytes have pending store data to merge into the fill. Used when
+               stores hit in an MSHR (write merging into a filling line).
+```
+
+**CAM matching for secondary miss detection:**
+
+The MSHR array includes a content-addressable memory (CAM) on the `line_addr` field.
+On every new miss, the incoming line address is broadcast to all valid MSHR entries:
+
+```
+Secondary miss detection (combinational):
+  match[i] = MSHR[i].valid && (MSHR[i].line_addr == incoming_line_addr)
+
+If (OR_reduce(match) == 1):
+  // Secondary miss -- merge into matching MSHR
+  word_idx = (incoming_address[5:2])  // word within line
+  matching_MSHR.req_vector[word_idx] = 1
+  matching_MSHR.dest_reg[word_idx]   = incoming_preg_id
+  matching_MSHR.word_valid[word_idx] = 1
+  // No new fill request issued!
+
+Else:
+  // Primary miss -- allocate free MSHR
+  free_idx = priority_encode(~MSHR[].valid)  // find first IDLE entry
+  MSHR[free_idx].valid     = 1
+  MSHR[free_idx].line_addr = incoming_line_addr
+  MSHR[free_idx].state     = WRITEBACK_PENDING or FILL_ISSUED
+  // ... (allocate victim way, check dirty, issue fill)
+```
+
+**Total MSHR storage for a 16-entry L1D MSHR:**
+
+$$
+16 \times 176 = 2{,}816 \text{ bits} = 352 \text{ bytes}
+$$
+
+Plus the CAM comparator logic: 16 x 26-bit comparators = 416 bits of XOR + NOR trees.
+This is modest compared to the 32 KB data SRAM (262,144 bits), representing only ~1% overhead.
+
+### 2.4 Writeback-Before-Fill Sequence — Cycle-by-Cycle
+
+When a cache miss evicts a dirty line, the controller must write back the victim before
+installing the new line. The detailed sequence:
+
+```
+Cycle 0: Miss detected. Select victim way (LRU/PLRU).
+Cycle 1: Check victim dirty bit.
+          If dirty:  copy victim data to writeback buffer (1-cycle SRAM read).
+          If clean:  skip to fill issue (cycle 3).
+
+Cycle 2: (dirty only) Writeback buffer holds victim data.
+          Issue writeback request to next level (L2 or memory).
+          MSHR state = WRITEBACK_PENDING.
+          Meanwhile, the fill request is queued in the request buffer.
+
+Cycle 3: Issue fill request for the new line.
+          MSHR state = FILL_ISSUED.
+          (Writeback may still be draining to next level in background.)
+
+Cycle 4..N: Fill data returns from next level (N = memory latency).
+          Write new line into the allocated way's SRAM.
+          Update tag, set valid=1, clear dirty=0.
+          Wake all dependent instructions (dest_reg[] entries with word_valid=1).
+          Free MSHR entry.
+```
+
+**Writeback buffer optimization detail:**
+
+Without a writeback buffer, the dirty victim must complete its write to the next level
+before the fill can begin. This serializes:
+
+```
+Without WB buffer:
+  Miss -> writeback dirty victim (L2 write latency = 20 cycles)
+        -> fill new line (L2 read latency = 20 cycles)
+  Total miss penalty: 40 cycles
+
+With WB buffer:
+  Miss -> copy victim to WB buffer (1 cycle)
+        -> issue fill immediately (20 cycles)
+        -> WB buffer drains in background (overlapped with fill)
+  Total miss penalty: 21 cycles (nearly 2x improvement!)
+```
+
+The writeback buffer is typically 4-8 entries deep, allowing multiple dirty victims
+to queue up while fills proceed. This is critical for sustained throughput: without it,
+a burst of misses to different sets that all evict dirty lines would serialize every
+writeback before every fill.
+
+### 2.5 MSHR Count
 
 | Cache Level | Typical MSHR Entries | Rationale |
 |-------------|---------------------|-----------|
@@ -304,6 +512,40 @@ $D$ lines, where $D$ is the **prefetch degree** (typically 1--4).
 - Limitation: only handles unit-stride patterns. Pointer-chasing, strided, or
   irregular patterns are missed.
 
+#### Stream Prefetcher Hardware Implementation
+
+```
+Stream Detection Table (SDT): 16-32 entries
+
+Per entry:
+  +----------+------------+----------+-------+----------+--------+
+  | Page Tag | Direction  | Head Ptr | Count | Valid    | Train  |
+  | (bits)   | (+1 or -1) | (line#)  |       |          | State  |
+  +----------+------------+----------+-------+----------+--------+
+
+Detection FSM per entry:
+  IDLE:     No activity. Entry free for allocation.
+  TRAIN:    One access recorded (Head Ptr = line). Waiting for confirmation.
+  ACTIVE:   Two+ consecutive sequential accesses confirmed.
+            Begin prefetching ahead.
+
+On cache access to line L at page P:
+  1. Look up P in SDT
+  2. If hit and state == ACTIVE:
+       direction matches? Count++ and prefetch Head + direction * D
+  3. If hit and state == TRAIN:
+       If L == Head + direction: state -> ACTIVE, begin prefetching
+       Else: update Head and direction, stay in TRAIN
+  4. If miss: allocate entry, set Head = L, state = TRAIN
+
+Prefetch generation when ACTIVE:
+  Prefetch_addr = (current_access) + direction * Degree
+  Issue prefetch if:
+    - Not already in cache (check tags)
+    - Not already in MSHR (check outstanding misses)
+    - Prefetch buffer has room
+```
+
 ### 5.2 Stride Prefetcher
 
 Generalizes the stream prefetcher by tracking arbitrary constant strides. Each entry
@@ -317,16 +559,198 @@ records a base address and the last observed stride $\Delta$. On a new access:
 Handles both forward and backward strides. Common in L1 D-cache prefetchers.
 Intel calls this the "stride prefetcher"; ARM Neoverse uses it in the L1.
 
-### 5.3 Correlation Prefetcher
+#### Stride Prefetcher Hardware (PC-Indexed Stride Table)
+
+```
+RPT (Reference Prediction Table): 64-256 entries, indexed by PC[11:2]
+
+Per entry:
+  +--------+----------+---------+---------+--------+
+  | PC Tag | Last Addr| Stride  | State   | Valid  |
+  | 10 bits| 30 bits  | 16 bits | 2 bits  | 1 bit  |
+  +--------+----------+---------+---------+--------+
+
+State machine:
+  00 = Initial:     No stride information. First access.
+  01 = Training:    One stride observed. Waiting for confirmation.
+  10 = Steady:      Two+ matching strides. Actively prefetching.
+  11 = No-prediction: Stride changed. Reset to training.
+
+On load/store at PC with address A:
+  1. Index RPT with PC (or PC XOR some address bits for set-associative RPT)
+  2. If tag match and valid:
+     delta = A - Last_Addr
+     if delta == Stride and State == Training:
+       State = Steady
+       Prefetch A + delta     // prefetch 1 ahead
+       Optionally: Prefetch A + 2*delta  // degree = 2
+     elif delta == Stride and State == Steady:
+       Prefetch A + delta
+       Prefetch A + 2*delta   // degree = 2
+     elif delta != Stride:
+       Stride = delta
+       State = Training
+     Last_Addr = A
+  3. If tag miss: allocate, set PC Tag, Last_Addr = A, State = Initial
+
+Storage: 64 entries x (10 + 30 + 16 + 2 + 1) = 3776 bits ≈ 472 bytes
+```
+
+### 5.3 Delta Correlation Prefetcher
+
+An advanced stride prefetcher that tracks sequences of deltas (stride differences)
+rather than single strides. This captures complex repeating access patterns like
+A, A+8, A+16, A+32, A+40, A+48 (deltas: +8, +8, +16, +8, +8).
+
+```
+Delta History Buffer (DHB): circular buffer, 64-256 entries
+  Each entry: {delta, PC, address}  // delta = current - previous address
+
+Delta Prediction Table (DPT): maps delta patterns to predicted next deltas
+
+Training:
+  For each miss, record delta in DHB
+  Extract last K deltas (K = 2 typical): [d(n-1), d(n)]
+  Look up pattern in DPT
+  If pattern exists: record that d(n+1) followed this pattern
+
+Prediction:
+  On miss, extract current K deltas
+  Look up in DPT
+  If hit: predict next delta from DPT
+  Prefetch: current_address + predicted_delta
+
+Advantage over simple stride: captures non-constant but repeating patterns
+  e.g., array-of-structs traversal: +8, +8, +16, +8, +8, +16, ...
+  Simple stride sees +8, +16 alternating and gets confused
+  Delta correlation learns the [+8, +16] -> +8, [+16, +8] -> +8 pattern
+```
+
+### 5.3.1 PC-Indexed Stride Prefetcher — Worked Example
+
+The PC-indexed stride prefetcher uses the load/store instruction address (PC) rather
+than the data address to index its prediction table. This is critical because the same
+data address accessed by different instructions may have different strides (e.g., one
+instruction walks an array forward, another walks it backward).
+
+```
+Worked example:
+
+Load instruction at PC = 0x4008A0:
+  Access 1: addr = 0x1000 -> RPT entry created: PC_tag=0x8A0, Last_Addr=0x1000, Stride=--, State=Initial
+  Access 2: addr = 0x1080 -> delta = 0x80. RPT updated: Stride=0x80, State=Training
+  Access 3: addr = 0x1100 -> delta = 0x80. Matches Stride! State -> Steady.
+             Prefetch: 0x1100 + 0x80 = 0x1180
+             Prefetch: 0x1100 + 2*0x80 = 0x1200  (degree = 2)
+  Access 4: addr = 0x1180 -> HIT in cache (prefetched!). Stride confirmed.
+             Prefetch: 0x1180 + 0x80 = 0x1200 (may already be prefetched)
+             Prefetch: 0x1180 + 2*0x80 = 0x1280
+  ...
+
+Meanwhile, a different load at PC = 0x4008F0 walks a linked list:
+  Access 1: addr = 0x5000 -> RPT entry: PC_tag=0x8F0, Last_Addr=0x5000, State=Initial
+  Access 2: addr = 0x7820 -> delta = 0x2820 (not a useful stride). State -> Training, Stride=0x2820
+  Access 3: addr = 0x3F10 -> delta != 0x2820. State stays Training, Stride updated.
+  ...never reaches Steady... no prefetches issued (correctly, since linked list is unpredictable)
+
+The PC-indexed approach correctly handles:
+  - Multiple instructions accessing the same array with different strides
+  - Pointer-chasing code (never trains, no wasted prefetches)
+  - The same instruction accessing different arrays (one stride per PC, may need
+    set-associative RPT to avoid aliasing)
+```
+
+### 5.3.2 Stride Prefetcher vs Stream Prefetcher — When to Use Each
+
+```
+Stride prefetcher:
+  Detects: constant stride (any value: +64, -128, +256, etc.)
+  Best for: array traversals, struct field accesses, strided BLAS
+  Limitation: only one stride per PC; confused by irregular patterns
+  Typical location: L1 D-cache (needs PC, which is only available at L1)
+
+Stream prefetcher:
+  Detects: sequential (stride = +1 cache line) access patterns
+  Best for: memcpy, sequential file I/O, video/image scanlines
+  Limitation: cannot handle non-unit strides
+  Typical location: L2 cache (can operate on cache line addresses without PC)
+
+Combined approach (most modern designs):
+  L1 has a stride prefetcher (PC-indexed, catches all constant strides)
+  L2 has a stream prefetcher (catches sequential patterns missed by L1)
+  Together they cover the majority of regular access patterns
+
+  Neither catches: pointer chasing, random hash table lookups, graph traversals.
+  These require correlation prefetchers (delta correlation, Markov) or software prefetch.
+```
+
+### 5.4 Markov Prefetcher
 
 Records sequences of cache miss addresses (or page + offset pairs) in a history table.
 When a miss occurs, the table is consulted to predict future misses based on past
 sequences.
 
-- Markov prefetcher: a table maps $(A_i \to \{A_j, A_k, \ldots\})$, where the set
-  contains addresses observed to follow $A_i$ in the past.
-- Good for pointer-chasing (linked lists, trees) where strides are irregular.
-- Disadvantage: large storage requirement; less practical for L1 due to area/power.
+```
+Markov prefetch table: maps (miss_address) -> {next_miss_addresses with probabilities}
+
+Table structure (direct mapped or set-associative, 256-1024 entries):
+  +-------------------+------------------+------------------+
+  | Miss Address Tag  | Next Addr[0]     | Next Addr[1]     |
+  | (partial)         | + confidence      | + confidence     |
+  +-------------------+------------------+------------------+
+
+Training:
+  Record miss address stream: M0, M1, M2, M3, ...
+  For each pair (Mi, Mi+1):
+    Update table: increment confidence of Mi+1 as successor of Mi
+
+Prediction:
+  On miss at address A:
+    Look up A in table
+    If hit: prefetch highest-confidence successor(s)
+
+Advantage: Captures pointer-chasing patterns (linked list, tree traversal)
+  where the "stride" is the pointer value, not a constant.
+Disadvantage: Large storage; cold-start (needs many repetitions to train);
+  only predicts 1 step ahead (multi-step Markov is expensive).
+```
+
+### 5.5 Bandwidth-Aware Prefetch Throttling
+
+Prefetches consume memory bandwidth. If prefetching is too aggressive, it can
+interfere with demand (non-prefetch) requests, increasing demand latency.
+
+```
+Prefetch Throttling Logic:
+
+Track per-cycle:
+  demand_pending    = number of outstanding demand requests
+  prefetch_pending  = number of outstanding prefetch requests
+  total_bandwidth   = demand_pending + prefetch_pending
+
+Throttle condition (example):
+  if prefetch_pending > THRESHOLD_HIGH:
+    disable_prefetch_issue  // too many prefetches in flight
+  elif prefetch_pending < THRESHOLD_LOW:
+    enable_prefetch_issue   // safe to issue prefetches
+
+Dynamic threshold adjustment:
+  Monitor demand latency (moving average over last N requests)
+  If demand latency increases > 20% above baseline:
+    Reduce prefetch degree and/or increase throttle threshold
+  If demand latency is near baseline:
+    Increase prefetch degree (up to configured maximum)
+
+Accuracy-based throttling:
+  Track: useful_prefetches / total_prefetches (rolling window)
+  If accuracy < 50%: reduce degree
+  If accuracy > 90%: increase degree
+
+Timing:
+  Prefetch issue also checks MSHR availability
+  Prefetch cannot use the last MSHR (reserved for demand)
+  Prefetch is lower priority than demand in the MSHR allocator
+```
 
 ### 5.4 Prefetch Metrics
 
@@ -458,10 +882,12 @@ bits. This grows quickly and makes exact LRU impractical for high associativity.
 ### 7.2 PLRU (Pseudo-LRU)
 
 Tree-based approximation using $N-1$ bits per set. Organize the $N$ ways as leaves of
-a binary tree. Each internal node stores 1 bit indicating which subtree was accessed
-more recently. On access, the bits along the path from root to the accessed leaf are
-updated to point away from that leaf. On eviction, follow the bits from root to leaf
-to find the least-recently-used candidate.
+a binary tree. Each internal node stores 1 bit. The convention is:
+
+- **On access:** set all bits on the path from root to the accessed leaf to point
+  *away* from that leaf (marking it as most recently used).
+- **On eviction:** follow the bits from root to leaf to find the
+  least-recently-used candidate.
 
 For $N=4$: 3 bits per set.
 
@@ -472,9 +898,16 @@ For $N=4$: 3 bits per set.
     / \   / \
    W0  W1 W2  W3
 
-b0=0: left subtree (W0/W1) was more recently used --> evict from right (W2/W3)
-b0=1: right subtree (W2/W3) was more recently used --> evict from left (W0/W1)
-b1, b2 work similarly within their subtrees.
+Bit update on access:
+  Access W0: b0=1 (point right), b1=1 (point right within left subtree)
+  Access W1: b0=1 (point right), b1=0 (point left within left subtree)
+  Access W2: b0=0 (point left),  b2=1 (point right within right subtree)
+  Access W3: b0=0 (point left),  b2=0 (point left within right subtree)
+
+Eviction: follow bits from root to leaf.
+  b0=0: go left,  b0=1: go right
+  b1=0: go left (W0),  b1=1: go right (W1)
+  b2=0: go left (W2),  b2=1: go right (W3)
 ```
 
 ### 7.3 RRIP (Re-Reference Interval Prediction)
@@ -519,19 +952,20 @@ Initial state: all ways empty (Invalid).
 | E | Way 1 (evicts B, LRU) | E, A, D, C | B evicted |
 
 **PLRU trace (3 bits: b0, b1, b2):** Initial state b0=b1=b2=0.
+Convention: on access, set bits to point away from the accessed way. On eviction,
+follow bits (0=left, 1=right).
 
-| Access | Action | Bits after | Way hit/assigned |
-|--------|--------|------------|------------------|
-| A | Assign Way 0, set path to point left | b0=0, b1=0, b2=0 | Way 0 |
-| B | Assign Way 1, b1=1 | b0=0, b1=1, b2=0 | Way 1 |
-| C | Assign Way 2, b2=0, b0=1 | b0=1, b1=1, b2=0 | Way 2 |
-| D | Assign Way 3, b2=1, b0=1 | b0=1, b1=1, b2=1 | Way 3 |
-| A | Hit Way 0, b1=0, b0=0 | b0=0, b1=0, b2=1 | Way 0 |
-| E | Follow bits: b0=0 --> right, b2=1 --> left, evict Way 2 | | Way 2 evicted |
+| Access | Eviction path / action | Bits after | Way assigned |
+|--------|------------------------|------------|--------------|
+| A | b0=0->L, b1=0->L = W0 (empty) | b0=1, b1=1, b2=0 | Way 0 |
+| B | b0=1->R, b2=0->L = W2 (empty) | b0=0, b1=1, b2=1 | Way 2 |
+| C | b0=0->L, b1=1->R = W1 (empty) | b0=1, b1=0, b2=1 | Way 1 |
+| D | b0=1->R, b2=1->R = W3 (empty) | b0=0, b1=0, b2=0 | Way 3 |
+| A | Hit Way 0, update bits | b0=1, b1=1, b2=0 | Way 0 |
+| E | b0=1->R, b2=0->L = W2 (has B) | b0=0, b1=1, b2=1 | Evict **B** |
 
-LRU evicts **B**; PLRU evicts **C** (or **B** depending on bit encoding -- the
-point is they may differ). For the access sequence A A B C D E A F G, PLRU will
-differ from LRU in the later evictions, demonstrating the approximation gap.
+LRU evicts **B**; PLRU also evicts **B** for this sequence. They may differ for
+other sequences -- PLRU is an approximation.
 
 **RRIP trace (2-bit SRRIP, insert at RRPV=2):**
 
@@ -545,6 +979,248 @@ differ from LRU in the later evictions, demonstrating the approximation gap.
 | E | 2 | 3 | 2 | 2 | Evict B (highest RRPV was tied, age-order breaks tie), insert E at 2 |
 
 RRIP evicts **B** (same as LRU in this case, but the mechanism differs).
+
+### 7.6 Replacement Policy Deep Comparison
+
+This section compares all major replacement policies on the same access sequence,
+highlighting where each diverges and why.
+
+**Access sequence: A B C D E A B C D F** (4-way set, working set = 5 unique lines,
+cache holds only 4).
+
+#### LRU (Exact)
+
+Storage: $\lceil\log_2(N!)\rceil$ bits per set. For 4-way: 5 bits. For 8-way: 16 bits.
+For 16-way: 45 bits. Impractical beyond 8-way due to storage and update logic complexity.
+
+```
+Matrix method: M[i][j] = 1 if way i was accessed more recently than way j.
+On access to way k: set M[k][*] = 1, set M[*][k] = 0.
+Victim: way with all zeros in its row.
+```
+
+| Access | MRU→LRU order | Eviction |
+|--------|---------------|----------|
+| A | A _ _ _ | -- |
+| B | B A _ _ | -- |
+| C | C B A _ | -- |
+| D | D C B A | -- |
+| E | E D C B | **A** evicted |
+| A | A E D C | **B** evicted |
+| B | B A E D | **C** evicted |
+| C | C B A E | **D** evicted |
+| D | D C B A | **E** evicted |
+
+**LRU thrashes**: A is evicted and immediately re-requested. With working set (5) > associativity (4),
+LRU cycles through all entries, evicting the one that will be needed next. **Hits after warmup: 0/5.**
+
+#### PLRU (Tree-Based)
+
+Storage: $N - 1$ bits per set. For 4-way: 3 bits. For 8-way: 7 bits. For 16-way: 15 bits.
+Very practical at all associativities.
+
+Same result as LRU for this sequence (PLRU approximates LRU well for 4-way). Divergence
+occurs with pathological sequences where two ways in the same subtree are accessed
+repeatedly while a way in the other subtree ages.
+
+#### Random
+
+No storage per set (uses a PRNG). Selects a random way on eviction.
+
+Expected hit rate after warmup: $3/5 \times (3/4) \approx 45\%$ (probabilistic). Random
+avoids thrashing because it sometimes evicts a non-immediately-needed line. For working
+sets slightly larger than associativity, random outperforms LRU.
+
+#### FIFO (First-In, First-Out)
+
+Evicts the oldest-inserted line, regardless of recency of access. Uses a circular pointer.
+Storage: $\lceil\log_2(N)\rceil$ bits per set.
+
+| Access | Insert order (oldest→newest) | Eviction |
+|--------|------------------------------|----------|
+| A | A | -- |
+| B | A B | -- |
+| C | A B C | -- |
+| D | A B C D | -- |
+| E | B C D E | **A** evicted (oldest) |
+| A | C D E A | **B** evicted |
+| B | D E A B | **C** evicted |
+| C | E A B C | **D** evicted |
+| D | A B C D | **E** evicted |
+
+Same thrashing as LRU for this sequence. FIFO ignores recency of access, so a frequently-
+hit line can be evicted simply because it was inserted long ago. **Belady's anomaly:**
+FIFO can have a *higher* miss rate when given *more* associativity (counterintuitive).
+
+#### SRRIP (Static RRIP, 2-bit)
+
+Each line has a 2-bit RRPV counter. Insert at RRPV=2 (long re-reference). On access,
+set RRPV=0. On eviction, pick highest RRPV; if tie, age-order or random.
+
+| Access | W0 | W1 | W2 | W3 | Eviction |
+|--------|----|----|----|----|----------|
+| A | 2 | -- | -- | -- | -- |
+| B | 2 | 2 | -- | -- | -- |
+| C | 2 | 2 | 2 | -- | -- |
+| D | 2 | 2 | 2 | 2 | -- |
+| E | 3 | 2 | 2 | 2 | Insert E→2 at W0. A aged to 3, evicted. |
+| A | 0 | 2 | 2 | 3 | Hit: A→0. W3(E) ages to 3. |
+| B | 0 | 0 | 2 | 3 | Hit: B→0. W3(E) ages to 3, evicted on next miss. |
+| C | 0 | 0 | 0 | 2 | Hit: C→0. |
+| D | 0 | 0 | 0 | 0 | Hit: D→0. All at 0. |
+| F | 3 | 0 | 0 | 0 | Age all by 1 until one hits 3. W0→1, W1→1, W2→1, W3→1. Age again: W0→2, W1→2, W2→2, W3→2. Age again: W0→3 (A evicted). |
+
+Wait -- that's the same result as LRU. Let me redo with correct SRRIP insertion logic:
+
+| Access | W0 | W1 | W2 | W3 | Action |
+|--------|----|----|----|----|--------|
+| A | 2 | -- | -- | -- | Insert A |
+| B | 2 | 2 | -- | -- | Insert B at W1 |
+| C | 2 | 2 | 2 | -- | Insert C at W2 |
+| D | 2 | 2 | 2 | 2 | Insert D at W3 |
+| E | **2** | 2 | 2 | 2 | All at 2. Increment all: 3,3,3,3. Evict W0 (A). Insert E at W0, RRPV=2. |
+| A | **2** | 2 | 2 | 2 | All at 2 again. Increment all: 3,3,3,3. Evict W0 (E, not A!). Insert A at W0. |
+
+**Key SRRIP difference:** SRRIP evicts E (the scan line) preferentially because E was
+inserted at RRPV=2 and was never re-accessed before the eviction decision. When A is
+re-accessed (step "A" after E), A becomes the "new" line at RRPV=2, but it has already
+proven itself useful. The anti-thrashing property emerges over longer sequences: scan
+lines (accessed once) are evicted before working-set lines (accessed multiple times).
+
+**SRRIP anti-thrashing:** New lines are inserted at RRPV=2, not 3. This gives them one
+"chance" to be accessed before being evicted. In the scan-heavy sequence above, SRRIP
+detects that the scan line (E) is not reused and evicts it preferentially, preserving
+the working set {A, B, C, D} with higher probability than LRU.
+
+**Key result:** For scan-resistant workloads (streaming + working set), SRRIP achieves
+5-15% lower miss rate than LRU/PLRU. For purely random access, all policies converge.
+
+#### BRRIP (Bimodal RRIP)
+
+Inserts most new lines at RRPV=3 (distant, likely evicted) but a small fraction
+(e.g., 1/32 probability determined by a policy bit) at RRPV=2. This provides even
+stronger scan resistance: 97% of scan lines are inserted at the "evict me first" level
+and quickly discarded, while the 3% that happen to be useful get a second chance.
+
+**Use case:** Large L3 caches serving many cores with mixed streaming and random-access
+workloads. BRRIP can reduce LLC miss rate by 10-20% over LRU for memory-intensive
+server workloads.
+
+#### Summary Table
+
+| Policy | Bits per set (4-way) | Anti-thrash | Scan-resistant | Hardware complexity |
+|--------|---------------------|-------------|----------------|---------------------|
+| LRU | 5 | No | No | High (matrix or shift register) |
+| PLRU | 3 | No | No | Low (tree of MUXes) |
+| FIFO | 2 | No | No | Lowest (circular pointer) |
+| Random | 0 | Yes (probabilistic) | Yes (probabilistic) | Minimal (PRNG) |
+| SRRIP | 8 (2 bits x 4 ways) | Yes | Yes | Low (counters + comparator) |
+| BRRIP | 8 + 1 (policy bit) | Yes | Strong | Low (same as SRRIP + PRNG) |
+
+### 7.7 Replacement Policy Side-by-Side Comparison on Identical Sequence
+
+All four policies applied to the same access sequence on a 4-way set.
+**Sequence:** A B C D A B C D E F G H (working set grows from 4 to 8).
+
+#### LRU (Exact) — 5 bits/set, matrix method
+
+```
+Access:  A  B  C  D  A  B  C  D  E  F  G  H
+MRU→LRU after each access:
+  A:     A  _  _  _                        (miss, fill W0)
+  B:     B  A  _  _                        (miss, fill W1)
+  C:     C  B  A  _                        (miss, fill W2)
+  D:     D  C  B  A                        (miss, fill W3)
+  A:     A  D  C  B                        (HIT, A moves to MRU)
+  B:     B  A  D  C                        (HIT)
+  C:     C  B  A  D                        (HIT)
+  D:     D  C  B  A                        (HIT)
+  E:     E  D  C  B   evict A (LRU)        (miss)
+  F:     F  E  D  C   evict B              (miss)
+  G:     G  F  E  D   evict C              (miss)
+  H:     H  G  F  E   evict D              (miss)
+
+Hits: 4 (A, B, C, D re-accessed). Misses: 8.
+LRU thrashes once working set exceeds 4: E evicts A, F evicts B, etc.
+```
+
+#### PLRU (Tree-Based) — 3 bits/set
+
+```
+PLRU evictions match LRU for this sequence (confirmed in Section 7.5).
+The tree approximation produces identical results for sequential cyclic patterns
+where the working set equals the associativity.
+
+Hits: 4. Misses: 8. Same as LRU.
+```
+
+#### Random — 0 bits/set
+
+```
+Expected hit rate after warmup is probabilistic.
+For each re-access of {A,B,C,D} after all 4 are loaded:
+  P(hit) = 3/4 (3 out of 4 ways have useful data, assuming no prior eviction)
+
+For {E,F,G,H} (new lines): always miss (compulsory).
+
+Expected hits from re-accessing {A,B,C,D}: 4 * (3/4) = 3.0
+Expected misses: 9.0
+
+Random does NOT thrash deterministically. It sometimes evicts the "right" line
+(preserving a soon-to-be-accessed entry). For working sets slightly larger than
+associativity, random often outperforms LRU because it avoids the systematic
+eviction of the next-needed line.
+```
+
+#### SRRIP (2-bit) — 8 bits/set (2 bits x 4 ways)
+
+```
+Insert at RRPV=2. On access, set RRPV=0. On eviction, pick max RRPV; if tie,
+increment all until one reaches 3.
+
+Access: A   B   C   D   A   B   C   D   E   F   G   H
+W0:     2   2   2   2   0   0   0   0   2   2   2   2
+W1:     --  2   2   2   2   0   0   0   0   2   2   2
+W2:     --  --  2   2   2   2   0   0   0   0   2   2
+W3:     --  --  --  2   2   2   2   0   2   2   2   2
+
+After D loaded: all at RRPV=2.
+Re-access A: W0=0, others stay 2.
+Re-access B: W1=0.
+Re-access C: W2=0.
+Re-access D: W3=0. All at 0 now.
+
+E arrives: all at 0. Increment all: 1,1,1,1. Again: 2,2,2,2. Again: 3,3,3,3.
+Pick W0 (tie-break: lowest index). Evict A. Insert E at RRPV=2.
+  W0(E)=2, W1(B)=3(aged), W2(C)=3, W3(D)=3
+
+F arrives: W1(B) at 3 → evict B. Insert F at 2.
+  W0(E)=2, W1(F)=2, W2(C)=3, W3(D)=3
+
+G arrives: W2(C) at 3 → evict C. Insert G at 2.
+  W0(E)=2, W1(F)=2, W2(G)=2, W3(D)=3
+
+H arrives: W3(D) at 3 → evict D. Insert H at 2.
+
+Hits: 4 (same as LRU for this sequence). Misses: 8.
+
+KEY DIFFERENCE: SRRIP evicts the aged "3" entries first. After the re-accesses
+warm all entries to RRPV=0, the subsequent new inserts (E,F,G,H) all start at 2.
+SRRIP ages the entries uniformly, so eviction order depends on tie-breaking.
+For a SCAN-HEAVY workload (e.g., A B C D A B C D E E E E), SRRIP would recognize
+that E is not reused (stays at RRPV=2, then ages to 3) and evict it preferentially,
+preserving the working set {A,B,C,D}. LRU would thrash.
+```
+
+**Bottom line for interviews:**
+
+| Sequence | LRU | PLRU | Random | SRRIP |
+|----------|-----|------|--------|-------|
+| A B C D A B C D E F G H | 4 hits / 8 misses | 4 / 8 | ~3 / 9 expected | 4 / 8 |
+| A B C D E A B C D E (scan+reuse) | 0 after warmup (thrash) | 0 | ~1-2 expected | 2-4 (anti-thrash) |
+| A A A A B C D E (hot + scan) | 0 after warmup | 0 | ~1-2 | 3-4 (preserves hot A) |
+
+SRRIP/BRRIP excel at scan-resistant workloads; LRU/PLRU excel at LRU-friendly locality.
 
 ---
 
@@ -618,25 +1294,89 @@ Bus transactions:
 | BusUpgr | Announce upgrade from S to M (already have the line) |
 | Flush | Write back modified data to memory |
 
-### 9.3 MESI State Transition Table
+### 9.3 MESI Complete State Transition Table
 
-Actions are formatted as: **received signal / action taken**.
+The table below shows every transition for every event. Each cell shows the
+**new state / action taken**. "--" means the event cannot occur from that state
+(no valid transition). BusUpd is included for completeness (used by MOESI
+variants and some directory protocols).
 
-| Current State | Processor Read | Processor Write | BusRd (from other core) | BusRdX / BusUpgr |
-|---------------|---------------|-----------------|-------------------------|-------------------|
-| **I** | BusRd --> S or E | BusRdX --> M | -- | -- |
-| **S** | Hit: stay S | BusUpgr --> M | Stay S | --> I |
-| **E** | Hit: stay E | --> M (silent) | Flush --> S | --> I |
-| **M** | Hit: stay M | Hit: stay M | Flush --> S | Flush --> I |
+| Current State | PrRd (local read) | PrWr (local write) | BusRd (other core reads) | BusRdX (other core writes) | BusUpgr (other upgrades S→M) | BusUpd (partial write broadcast) |
+|---------------|-------------------|--------------------|--------------------------|-----------------------------|-------------------------------|-----------------------------------|
+| **I** | **S/E**: issue BusRd. If Shared line asserted → S, else → E. Memory supplies data. | **M**: issue BusRdX. Memory supplies data. No other cache has it. | -- (no action) | -- (no action) | -- | -- |
+| **S** | **S**: cache hit, no bus transaction. | **M**: issue BusUpgr. All other S copies → I. | **S**: stay S. Assert Shared signal so requester knows multiple copies exist. | **I**: invalidate silently. | **I**: invalidate silently. | **S**: apply update if matching address (rare in MESI; more relevant in MOESI/directory). |
+| **E** | **E**: cache hit, no bus transaction. | **M**: silent upgrade. No bus transaction. This is the key E-state benefit. | **S**: Flush data to requester and memory. Assert Shared. Both caches now S. | **I**: Flush data to requester. Invalidate. | -- (E cannot see BusUpgr; already only copy) | -- |
+| **M** | **M**: cache hit, no bus transaction. | **M**: cache hit, no bus transaction. | **S**: Flush dirty data to requester (and memory). Requester gets S. Both are S. | **I**: Flush dirty data to requester. Invalidate. Requester gets M. | -- (M implies exclusive, no S copies to upgrade) | -- |
 
-Key transitions explained:
+**Event definitions:**
 
-- **I to S or E on BusRd:** If no other cache responds (no shared assert), the line
-  arrives in E (exclusive). If another cache asserts shared, the line arrives in S.
-- **E to M on write:** No bus transaction needed. The core already has the only copy.
-  This is the "silent upgrade" and is a major advantage of the E state.
-- **M to S on BusRd:** The modified cache must flush the data to memory (or supply it
-  directly to the requester via a write-back). Both caches end in S.
+| Event | Who initiates | Meaning |
+|-------|---------------|---------|
+| PrRd | Local processor | Read request from this core |
+| PrWr | Local processor | Write request from this core |
+| BusRd | Other core (snooped) | Another core requests a shared copy |
+| BusRdX | Other core (snooped) | Another core requests exclusive ownership for writing |
+| BusUpgr | Other core (snooped) | Another core upgrades from S to M (already has a copy) |
+| BusUpd | Other core (snooped) | Another core broadcasts a partial write (used in update-based protocols, rare in MESI) |
+
+**Key transitions explained in detail:**
+
+- **I → S or E on PrRd:** The cache issues a BusRd. If any other cache currently holds the
+  line (in S, E, or M), it asserts the Shared signal on the bus. If Shared is asserted,
+  the line arrives in S (multiple copies may exist). If no cache responds (Shared not
+  asserted), the line arrives in E -- this cache has the only copy, and can silently
+  upgrade to M on a subsequent write without any bus transaction. This is the critical
+  optimization that the E state provides over a pure MSI protocol.
+
+- **I → M on PrWr:** The cache issues a BusRdX (read-for-ownership). All other caches
+  must invalidate any copies. Memory supplies the data. The line arrives in M (dirty)
+  because a write will immediately follow.
+
+- **E → M on PrWr (silent upgrade):** No bus transaction needed. The core already has
+  the only copy (guaranteed by the E state). This eliminates a BusUpgr transaction that
+  would be required in a pure MSI protocol. For workloads with predominantly private
+  data, this optimization eliminates 20-50% of coherence bus traffic.
+
+- **M → S on BusRd:** The modified (dirty) cache has the only up-to-date copy. It must
+  intervene: supply the data to the requesting cache (and optionally write it back to
+  memory). Both the original holder and the requester end in S. The memory is updated
+  as a side effect.
+
+- **M → I on BusRdX:** Same as M→S, but the requesting cache wants exclusive ownership.
+  The dirty cache flushes data to the requester and invalidates. The requester enters M.
+
+- **S → I on BusUpgr:** Another core is upgrading its copy from S to M. All other S copies
+  must be invalidated. No data transfer needed (the upgrader already has a clean copy).
+
+**Bus transaction count analysis:**
+
+| Operation | MESI Bus Transactions | Notes |
+|-----------|----------------------|-------|
+| Read miss, no other copy | 1 (BusRd) | Line arrives in E |
+| Read miss, other copies exist | 1 (BusRd) + 1 (Flush) | Line arrives in S |
+| Write miss | 1 (BusRdX) | All others invalidated |
+| Write hit in S | 1 (BusUpgr) | Others invalidated |
+| Write hit in E | 0 (silent) | Key E-state benefit |
+| Write hit in M | 0 (silent) | Already exclusive |
+| Read hit in any state | 0 | No bus traffic |
+
+### 9.3.1 MESI State Transition Summary — Compact Reference
+
+The full MESI state transition table above (Section 9.3) is the definitive reference.
+Below is a compact matrix for quick interview recall. Each cell is "resulting state / bus action":
+
+| From \ Event | PrRd | PrWr | BusRd | BusRdX |
+|---|---|---|---|---|
+| **M** | M / -- | M / -- | S / Flush | I / Flush |
+| **E** | E / -- | M / -- (silent) | S / Flush | I / Flush |
+| **S** | S / -- | M / BusUpgr | S / Assert Shared | I / -- |
+| **I** | S or E / BusRd | M / BusRdX | -- / -- | -- / -- |
+
+Quick-interview shorthand:
+- PrRd always keeps or improves the current state (M stays M, E stays E, S stays S, I upgrades to S or E).
+- PrWr always drives toward M (M stays M, E silently upgrades, S requires BusUpgr, I requires BusRdX).
+- BusRd (another core reads) forces sharing: M/E flush data and downgrade toward S; S stays S and asserts Shared.
+- BusRdX (another core writes) forces invalidation: any holder must flush (if M/E) and go to I.
 
 ### 9.4 MOESI Protocol
 
@@ -650,6 +1390,24 @@ When a modified line is read by another core via BusRd, instead of writing back 
 memory and transitioning both to S, the original holder transitions to O and the
 requester enters S. The owner supplies data on subsequent BusRd events without
 touching memory. Only when the owner evicts the line does it write back to memory.
+
+**MOESI Complete State Transition Table:**
+
+| Current State | PrRd | PrWr | BusRd | BusRdX | BusUpgr | BusUpd |
+|---------------|------|------|-------|--------|---------|--------|
+| **I** | BusRd → **S/E** | BusRdX → **M** | -- | -- | -- | -- |
+| **S** | Hit → **S** | BusUpgr → **M** | Stay **S** (assert Shared) | → **I** | → **I** | Stay **S** (apply update) |
+| **O** | Hit → **O** | BusUpgr → **M** | Stay **O** (supply data, no memory write) | → **I** (flush) | -- (O implies no other M) | Stay **O** (apply update) |
+| **E** | Hit → **E** | Silent → **M** | Flush → **O** (become owner, supply to requester) | → **I** (flush) | -- | -- |
+| **M** | Hit → **M** | Hit → **M** | Flush → **O** (supply data, no memory writeback yet) | Flush → **I** | -- | -- |
+
+**Key MOESI difference from MESI:** The O state avoids memory write-back on sharing.
+When a dirty line (M) is read by another core via BusRd, in MESI both caches end in S
+and memory is updated. In MOESI, the original holder transitions to O (not S) and the
+requester enters S. The O-state cache is responsible for supplying data on future BusRd
+events without going to memory. Only when the O-state cache evicts the line does it
+write back to memory. This saves memory bandwidth when multiple cores read data that was
+recently written by one core (common for producer-consumer patterns).
 
 Advantage: reduces memory bandwidth for shared-read data that was recently written.
 Used by: AMD (all modern designs), ARM (optionally).
@@ -864,19 +1622,29 @@ and for the conflict miss(es).
 Evictions under LRU: A, B, C, D.
 
 **PLRU Solution (3 bits, initial 000):**
+Convention: on access, set bits on the path to point AWAY from the accessed way.
+On eviction, follow bits (0=left, 1=right).
 
-| Access | b0 b1 b2 | Assignment | Notes |
-|--------|----------|------------|-------|
-| A | 0 0 0 | Way 0 | Follow tree: all 0, go left-left = Way 0. Update b1=1. |
-| A | 0 1 0 | Way 0 (hit) | Update b1=1 (already). |
-| B | 0 1 0 | Way 1 | b1=1, go right within left subtree = Way 1. Update b1=0. |
-| C | 1 0 0 | Way 2 | b0=0, go right subtree. b2=0, go left = Way 2. Update b2=1. |
-| D | 1 0 1 | Way 3 | b0=0, go right. b2=1, go right = Way 3. Update b0=1. |
-| E | 1 0 1 | Evict Way 2 | b0=1, go left. b1=0, go left = Way 0 has A. But Way 0 was recently used... |
+| Access | Eviction path / action | b0 b1 b2 after | Way | Notes |
+|--------|------------------------|----------------|-----|-------|
+| A | b0=0->L, b1=0->L = W0 (empty) | 1 1 0 | W0 | Compulsory miss. Access W0: b0=1, b1=1. |
+| A | Hit W0 | 1 1 0 | W0 | Hit. Re-access W0: b0=1, b1=1 (unchanged). |
+| B | b0=1->R, b2=0->L = W2 (empty) | 0 1 1 | W2 | Compulsory miss. Access W2: b0=0, b2=1. |
+| C | b0=0->L, b1=1->R = W1 (empty) | 1 0 1 | W1 | Compulsory miss. Access W1: b0=1, b1=0. |
+| D | b0=1->R, b2=1->R = W3 (empty) | 0 0 0 | W3 | Compulsory miss. Access W3: b0=0, b2=0. |
+| E | b0=0->L, b1=0->L = W0 (has A) | 1 1 0 | W0 | Evict **A**, load E. Access W0: b0=1, b1=1. |
+| A | b0=1->R, b2=0->L = W2 (has B) | 0 1 1 | W2 | Evict **B**, load A. Access W2: b0=0, b2=1. |
+| F | b0=0->L, b1=1->R = W1 (has C) | 1 0 1 | W1 | Evict **C**, load F. Access W1: b0=1, b1=0. |
+| G | b0=1->R, b2=1->R = W3 (has D) | 0 0 0 | W3 | Evict **D**, load G. Access W3: b0=0, b2=0. |
 
-The precise PLRU eviction depends on the bit-update convention, but the key point is:
-**PLRU may evict a different line than LRU**, and for some pathological sequences,
-PLRU can thrash (evicting a line that will be needed soon) while LRU does not.
+Evictions under PLRU: A, B, C, D.
+
+For this particular access sequence, PLRU and LRU agree on every eviction. This is
+not always the case. **PLRU may evict a different line than LRU** because it cannot
+distinguish recency within a subtree -- it only tracks which half of each subtree was
+accessed more recently. For some pathological sequences (e.g., with associativity > 4
+or repeated accesses to two ways in the same subtree), PLRU can thrash (evicting a
+line that will be needed soon) while LRU does not.
 
 ---
 

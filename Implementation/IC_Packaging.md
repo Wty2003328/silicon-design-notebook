@@ -11,7 +11,11 @@
 8. HBM (High Bandwidth Memory)
 9. Die-to-Die Interfaces (UCIe, BoW)
 10. Thermal and Power Delivery Challenges
-11. Interview Q&A (20+ Questions)
+11. Assembly Flow
+12. Reliability Testing
+13. Warpage
+14. Numbers to Memorize
+15. Interview Q&A (20+ Questions)
 
 ---
 
@@ -676,7 +680,392 @@ Decoupling strategy (multi-level):
 
 ---
 
-## 11. Interview Q&A
+## 11. Assembly Flow
+
+### 11.1 Standard Wire-Bond / Molded Package Assembly
+
+```
+Step-by-step from wafer to finished package:
+
+1. Wafer Probe / Test
+   - Electrical test at wafer level using probe card
+   - Identifies known-good dies (KGD) before packaging
+   - Wafer map generated: pass/fail per die
+   - Test coverage limited (no full-speed tests; probe parasitics limit accuracy)
+
+2. Die Singulation (Wafer Dicing)
+   - Diamond blade dicing or laser dicing
+   - Street width: 40-80 μm (lost area between dies)
+   - Laser dicing: narrower streets, less mechanical damage
+   - Dies sorted by bin (speed binning at probe)
+
+3. Die Attach
+   - Epoxy die attach: conductive or non-conductive epoxy, cured at 150-175°C
+     - Epoxy thickness: 10-25 μm
+     - Thermal conductivity: 0.5-5 W/m·K (silver-filled epoxy)
+   - Eutectic die attach: Au-Si eutectic (363°C), used for high-power/high-reliability
+     - Better thermal conductivity than epoxy (~50 W/m·K at interface)
+     - Used in RF, automotive, aerospace
+   - Die attach controls: bond line thickness (BLT), void-free attach, fillet coverage
+
+4. Wire Bonding (or Flip-Chip Bumping — see alternate flows below)
+   - Thermosonic ball-stitch bonding (Au, Cu wire)
+   - 10-50 ms per wire; high pin-count packages can have 1000+ wires
+   - Wire sweep concern during molding (wires deformed by compound flow)
+
+5. Encapsulation (Transfer Molding)
+   - Epoxy molding compound (EMC) transferred under pressure and heat
+   - Mold temperature: 175°C, transfer pressure: 50-100 kg/cm²
+   - Curing: post-mold cure at 175°C for 2-8 hours
+   - Provides mechanical protection, environmental sealing, flame retardancy
+
+6. Marking
+   - Laser marking or ink stamping on package surface
+   - Part number, lot code, date code, pin-1 indicator
+
+7. Singulation (for lead-frame / strip-molded packages)
+   - Punch or saw individual packages from the molded strip/panel
+
+8. Final Test
+   - Full electrical test at package level (at-speed functional + parametric)
+   - Burn-in: powered operation at elevated temperature (125°C, 24-168h) to screen infant mortality
+   - Outgoing quality: AQL (Acceptable Quality Level) sampling
+```
+
+### 11.2 Flip-Chip Assembly Flow
+
+```
+1. Wafer-level bumping
+   - UBM (Under-Bump Metallurgy) sputtered/evaporated on die pads
+   - C4 solder bumps: evaporation or electroplating (SnAgCu, 130-200 μm pitch)
+   - Cu pillar bumps: electroplated Cu + SnAg cap (40-130 μm pitch)
+
+2. Die singulation (flip-chip dies)
+
+3. Die placement and reflow
+   - Die flipped face-down onto substrate
+   - Aligned (±5-10 μm for C4, ±1-2 μm for Cu pillar)
+   - Reflow oven: peak ~250°C (Pb-free SnAgCu)
+   - Surface tension self-aligns die (C4 only; Cu pillar has limited self-alignment)
+
+4. Flux clean (if applicable)
+
+5. Underfill dispensing
+   - Capillary underfill: epoxy flows between die and substrate by capillary action
+   - Cure: 150-165°C for 30-60 minutes
+   - Thickness: 20-50 μm (gap between die and substrate)
+   - Critical for solder joint reliability: distributes CTE-mismatch stress
+
+6. Lid attach / heat spreader (for FCBGA)
+   - Thermal interface material (TIM): solder, thermal paste, or indium foil
+   - Lid: Cu, Al, or Cu-W (CTE-matched)
+   - Lid attaches to substrate with adhesive seal
+
+7. BGA ball attach (if not pre-mounted on substrate)
+
+8. Marking and final test
+```
+
+### 11.3 WLCSP (Wafer-Level Chip-Scale Package) Assembly Flow
+
+```
+1. RDL (Redistribution Layer) formation on wafer
+   - Dielectric (polyimide or BCB) + Cu RDL patterning
+   - Reroutes peripheral pads to area-array bumps
+
+2. Solder ball placement (ball drop or screen print)
+
+3. Reflow to form solder balls on RDL pads
+
+4. Wafer-level test (full electrical at wafer level)
+
+5. Singulation (dicing to individual packaged dies)
+   - Package size ≈ die size — no post-die-attach steps
+```
+
+---
+
+## 12. Reliability Testing
+
+### 12.1 JEDEC Standards Framework
+
+```
+Key JEDEC standards for IC package reliability:
+
+JESD22:     General reliability test methods (umbrella standard)
+J-STD-020:  Moisture/Reflow Sensitivity Classification (MSL)
+JESD22-A104: Temperature Cycling
+JESD22-A108: High Temperature Operating Life (HTOL)
+JESD22-A110: Highly Accelerated Stress Test (HAST)
+JESD22-A101: Steady State Temperature Humidity Bias (THB)
+JESD22-B111: Drop Test (for handheld products)
+JESD22-A114: Electrostatic Discharge (ESD) — Human Body Model
+JESD22-A115: Electrostatic Discharge — Machine Model
+
+J-STD-020 MSL Classification:
+  Determines the floor life of a package after opening moisture-sealed bag.
+  MSL levels define max time before reflow without bake:
+
+  Level 1:  Unlimited floor life at ≤30°C/85%RH
+  Level 2:  1 year at ≤30°C/60%RH
+  Level 3:  168 hours at ≤30°C/60%RH   (most common for BGA)
+  Level 4:  72 hours at ≤30°C/60%RH
+  Level 5:  48 hours at ≤30°C/60%RH
+  Level 6:  Mandatory bake before use (zero floor life)
+
+  If floor life exceeded → bake at 125°C for 5-48 hours (per J-STD-033)
+  then re-seal or use within new floor life window.
+```
+
+### 12.2 Key Reliability Tests
+
+```
+Temperature Cycling (TC / JESD22-A104):
+  Conditions: -65°C to +150°C (extreme), or -40°C to +125°C (standard)
+  Dwell time: 10-15 min at each extreme
+  Ramp rate: 10-15°C/min (air chamber)
+  Duration:   500-1000 cycles
+  Purpose:    Tests CTE mismatch fatigue at die/package interfaces
+  Failures:   Solder joint cracking, wire bond lift, delamination, die cracking
+
+HTOL — High Temperature Operating Life (JESD22-A108):
+  Conditions: 125°C ambient, VDD = max rated, dynamic or static bias
+  Duration:   1000 hours (standard), 2000 hours (automotive/high-rel)
+  Purpose:    Accelerates transistor-level failure mechanisms (electromigration,
+              oxide breakdown, hot carrier injection)
+  Sample size: 77-116 units (LTPD-based sampling)
+
+HAST — Highly Accelerated Stress Test (JESD22-A110):
+  Conditions: 130°C / 85% RH / VDD biased (no condensation, pressurized chamber)
+  Duration:   96-264 hours
+  Acceleration factor: 100-500× over THB
+  Purpose:    Accelerates moisture-induced failures (corrosion, delamination,
+              popcorn cracking)
+  Note:       Must not exceed dew point (no liquid water on sample)
+
+THB — Temperature Humidity Bias (JESD22-A101):
+  Conditions: 85°C / 85% RH / VDD biased (unpressurized)
+  Duration:   1000 hours
+  Purpose:    Same mechanisms as HAST, but lower acceleration
+  Used when:  HAST is too aggressive for the package/material system
+```
+
+### 12.3 Failure Mechanisms
+
+```
+Delamination:
+  - Interface separation between die and mold compound, or mold compound and substrate
+  - Caused by: moisture absorption → vapor expansion during reflow ("popcorn cracking")
+  - Mitigated by: MSL control (J-STD-020), adhesion promoters (silane coupling agents)
+
+Die / Package Cracking:
+  - Mechanical overstress from CTE mismatch during thermal cycling
+  - Die cracking: exacerbated by thin dies (<100 μm) and large die area
+  - Package cracking: from reflow moisture expansion (popcorn effect)
+
+Intermetallic Growth:
+  - Au-Al wire bonds: AuAl₂ (purple plague), Au₅Al₂ (white plague)
+  - Growth rate doubles every ~10°C above 150°C
+  - Increases wire bond resistance → eventual open circuit
+  - Cu-Al bonds: Cu₉Al₄ intermetallic, slower growth than Au-Al
+  - Why Cu wire bonding is preferred for high-temperature applications
+
+Moisture Ingress:
+  - Absorbed by mold compound and substrate (hygroscopic)
+  - Vaporizes during solder reflow (>200°C) → internal pressure → cracking
+  - Controlled by MSL classification and handling procedures
+
+Electromigration in Bumps:
+  - High current density in solder bumps/Cu pillars causes atomic migration
+  - Forms voids at bump contact → increased resistance → open circuit
+  - Accelerated by temperature and current density
+  - Cu pillar has better EM resistance than SnAgCu solder (Cu melting point: 1085°C vs Sn: 232°C)
+  - Design rule: max current per bump typically 0.2-0.5 A
+```
+
+### 12.4 FIT Rate and MTBF
+
+```
+FIT (Failures In Time):
+  Number of failures per 10^9 device-hours
+
+MTBF (Mean Time Between Failures):
+  For constant failure rate (exponential distribution):
+    MTBF = 1 / λ
+    FIT = λ × 10^9 = 10^9 / MTBF_hours
+
+Example:
+  If MTBF = 10,000,000 hours (1 million hours):
+  FIT = 10^9 / 10^7 = 100 FIT
+
+Typical FIT rates:
+  Consumer IC:           10-100 FIT
+  Automotive (AEC-Q100): 1-10 FIT per component
+  Telecom infrastructure: 1-5 FIT
+
+FIT accumulation for a system:
+  FIT_system = Σ FIT_i for all components
+  MTBF_system = 10^9 / FIT_system
+
+  Example: Board with 20 ICs at 50 FIT each
+  FIT_system = 1000 FIT
+  MTBF_system = 10^6 hours ≈ 114 years
+```
+
+### 12.5 AEC-Q100 Automotive Qualification
+
+```
+AEC-Q100 defines qualification requirements for automotive-grade ICs.
+
+Grade 0: -40°C to +150°C ambient (engine compartment, transmission)
+Grade 1: -40°C to +125°C ambient (under-hood, power train)
+Grade 2: -40°C to +105°C ambient (passenger compartment, near heat sources)
+Grade 3: -40°C to +85°C ambient  (passenger compartment, general)
+
+Additional automotive requirements beyond JEDEC:
+  - Extended HTOL duration (often 2000h)
+  - Extended temperature cycling (1000+ cycles at wider range)
+  - HAST at 130°C/85%RH with bias
+  - EMC (electromagnetic compatibility) testing
+  - Zero-defect philosophy: stricter outgoing inspection and screening
+  - Production Part Approval Process (PPAP) documentation
+  - Change notification requirements (any process/material change)
+```
+
+---
+
+## 13. Warpage
+
+### 13.1 Root Cause: CTE Mismatch
+
+```
+Warpage = out-of-plane deformation of the package during thermal excursions.
+
+Cause: Different materials expand at different rates (CTE mismatch).
+  Silicon:       2.6 ppm/°C
+  Mold compound: 8-12 ppm/°C
+  Cu substrate:  17 ppm/°C
+  Organic substrate: 15-17 ppm/°C
+  Underfill:     20-40 ppm/°C (below Tg), drops above Tg
+
+When the molded package cools from molding temperature (175°C) to room
+temperature, the mold compound shrinks more than the die but less than the
+substrate, creating a bimetallic-strip effect.
+
+Common warpage shapes:
+  "Smiley face" (concave up): center rises, corners curl down
+    → caused by mold compound shrinkage exceeding die shrinkage
+  "Frown face" (convex up): center drops, corners rise
+    → caused by substrate shrinkage exceeding top-side shrinkage
+
+Warpage magnitude:
+  Typical FCBGA: 50-200 μm (acceptable < 100 μm for most applications)
+  Thin packages (e.g., mobile PoP): 30-80 μm
+  After reflow: warpage can change sign due to solder solidification stress
+```
+
+### 13.2 Warpage Measurement
+
+```
+Shadow Moiré:
+  - Projects a reference grating pattern onto the sample surface
+  - Deformation of the grating (fringe pattern) = surface height map
+  - Resolution: ~1-5 μm height, full-field measurement
+  - Performed in temperature-controlled chamber (ramp -40°C to +250°C)
+  - Industry standard for package warpage characterization
+
+Digital Image Correlation (DIC):
+  - Speckle pattern on sample surface, tracked by dual cameras
+  - Full 3D displacement field (in-plane and out-of-plane)
+  - Higher spatial resolution than shadow moiré
+  - Can measure during reflow (infrared heating, real-time)
+
+Interferometry (laser):
+  - Highest precision (~0.1 μm)
+  - Limited to small area and reflective surfaces
+  - Used for die-level warpage studies
+```
+
+### 13.3 Impact on Assembly and Reliability
+
+```
+Solder joint reliability:
+  - Warpage causes non-planar BGA ball array → uneven solder joint height
+  - Corner/edge balls under tension or compression
+  - Opens (stretched joints) or shorts (compressed joints)
+  - JEDEC specifies max coplanarity: typically < 100-150 μm for BGA
+
+Die cracking:
+  - Bending stress from warpage concentrates at die edges
+  - Thin dies (<100 μm) especially susceptible
+  - Cracks propagate from edge defects or handling damage
+  - Design rule: die stress < fracture strength (Si: ~300 MPa theoretical,
+    practical limit ~100-200 MPa with surface defects)
+
+Non-uniform underfill:
+  - Warped die-substrate gap is thinner at center, wider at edges (or vice versa)
+  - Underfill flow rate varies → voids in thin regions
+  - Incomplete underfill → reduced solder joint life
+```
+
+### 13.4 Warpage Mitigation
+
+```
+Die overcoat / die coat:
+  - Thin polymer layer (parylene, polyimide) over die surface
+  - Reduces stress concentration at die edges
+  - Adds compliance between die and mold compound
+
+Mold compound optimization:
+  - Lower CTE mold compound (filler loading: silica 70-90% by weight)
+  - Higher Tg (glass transition temperature): 150-200°C
+  - Lower modulus below Tg (more compliant → less stress)
+  - Optimized curing profile (multi-step cure reduces residual stress)
+
+Embedded die (eWLB/FOWLP approach):
+  - Die embedded in mold compound → symmetrical structure
+  - Top and bottom surfaces have matched CTE
+  - Much lower warpage than asymmetric die-on-substrate
+
+Substrate design:
+  - Coreless substrate (thinner, more flexible → can conform)
+  - Balanced metal density on top and bottom substrate layers
+  - Thicker substrate (stiffer, resists bending)
+
+Process control:
+  - Post-mold cure optimization (slow cool vs fast cool)
+  - Warpage-aware reflow profile (controlled heating/cooling rates)
+  - Vacuum reflow for flip-chip (reduces void-induced non-uniformity)
+```
+
+---
+
+## 14. Numbers to Memorize — IC Packaging Quick Reference
+
+| Quantity | Value | Why It Matters |
+|----------|-------|----------------|
+| Si CTE | ~2.6 ppm/°C | Baseline; mismatch with organic substrate (~15-17 ppm/°C) drives warpage |
+| Organic substrate CTE | ~15-17 ppm/°C | 6× higher than Si → significant thermal stress |
+| Cu CTE | ~17 ppm/°C | Matches substrate, but mismatch with Si causes TSV stress |
+| Mold compound CTE | ~8-12 ppm/°C | Between Si and substrate; filler loading tunes it |
+| Typical wire bond diameter | 25 μm (1 mil) | Au or Cu; sets inductance (~1 nH/mm) and current capacity (~0.2 A) |
+| Cu pillar bump pitch | 40-130 μm | Standard for flip-chip at 28nm and below |
+| C4 bump pitch | 130-200 μm | Traditional solder bump; self-aligning during reflow |
+| TSV diameter | 5-10 μm | Interposer TSV; determines keep-out zone area |
+| TSV depth | 50-100 μm | Interposer TSV; sets aspect ratio (5:1 to 20:1) |
+| Microbump pitch | 20-40 μm | Die-to-die in 2.5D/3D stacks; alignment tolerance ±1-2 μm |
+| Flip-chip underfill thickness | 20-50 μm | Gap between die and substrate; filled by capillary epoxy |
+| HBM stack height (8-high) | ~775 μm | DRAM stack + logic base; drives warpage and thermal challenge |
+| Reticle limit | ~830 mm² (26 × 33 mm) | Max single-die area from lithography scanner field |
+| JEDEC MSL levels | 1 through 6 | Floor life after moisture bag opening; Level 3 = 168h most common |
+| HTOL duration | 1000 hours | Standard operating life test; automotive may require 2000h |
+| Temperature cycling | 500-1000 cycles | Standard TC test; -65°C to +150°C or -40°C to +125°C |
+| FIT = 1 failure per | 10^9 device-hours | FIT = 10^9 / MTBF; used for reliability budgeting |
+| AEC-Q100 Grade 0 temp range | -40°C to +150°C | Harshest automotive grade; engine compartment |
+
+---
+
+## 15. Interview Q&A
 
 **Q1: Compare wire bonding and flip chip. When would you choose each?**
 

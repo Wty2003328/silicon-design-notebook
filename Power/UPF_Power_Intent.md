@@ -69,6 +69,149 @@ changing only the UPF file. This decouples functional design from power architec
 
 ## 2. Core UPF Concepts
 
+### 2.0A Isolation Cell Types -- Complete Reference
+
+```
+When a power domain is powered off, its outputs become undefined (X/float).
+Isolation cells clamp these outputs to safe, known values.
+
+Type 1: AND-type isolation (clamp to 0) -- MOST COMMON
+  Implementation: output = data_in & ~isolate_enable
+  When isolated (isolate_enable = 1): output = 0 regardless of data_in
+  When active (isolate_enable = 0): output = data_in (pass-through)
+  
+  Use when:
+    - Data buses (idle state is all-zeros)
+    - Active-HIGH control signals (0 = deasserted)
+    - Address buses (idle = 0x0)
+    - General-purpose outputs where 0 is the safe default
+  
+  Schematic:
+    data_in ──┐
+              AND ── output
+    iso_en ───┘ (inverted: AND gate with iso_n = !iso_en)
+    
+  Liberty function: Z = A & !ISO
+
+Type 2: OR-type isolation (clamp to 1)
+  Implementation: output = data_in | isolate_enable
+  When isolated (isolate_enable = 1): output = 1 regardless of data_in
+  When active (isolate_enable = 0): output = data_in (pass-through)
+  
+  Use when:
+    - Active-LOW control signals (reset_n, enable_n)
+      Clamping to 1 means "deasserted" -> safe state
+    - Interrupt lines that should not false-trigger when domain is off
+    - Chip select_n signals that must be HIGH (deselected) when domain is off
+  
+  Schematic:
+    data_in ──┐
+              OR ── output
+    iso_en ───┘
+    
+  Liberty function: Z = A | ISO
+
+Type 3: Latch-type isolation (hold last value)
+  Implementation: transparent latch that captures data when not isolated
+  When isolated: output holds the last valid value before domain went off
+  When active: output follows data_in (latch is transparent)
+  
+  Use when:
+    - Status registers that downstream logic depends on
+    - Configuration outputs that should remain at last valid setting
+    - Feedback paths where 0 or 1 would cause incorrect behavior
+    - Debug outputs that must show last known good state
+  
+  Schematic:
+    data_in ──[TG]── Latch ── output
+               ↑
+              !iso_en (transparent when not isolated)
+    
+  Larger than AND/OR type: ~1.5-2x area
+
+Type 4: Combined isolation + level shifter
+  Single cell that both isolates AND level-shifts
+  Use when: crossing both power state AND voltage domains simultaneously
+  Saves area vs separate ISO + LS cells
+
+Selection decision tree:
+  Is the signal active-low (name ends in _n)?
+    YES -> OR-type (clamp to 1 = deasserted)
+  Does downstream need last valid value?
+    YES -> Latch-type
+  Default -> AND-type (clamp to 0)
+```
+
+### 2.0B Level Shifter Types -- Complete Reference
+
+```
+Level shifters convert signals between voltage domains.
+
+Type 1: Step-up level shifter (Low -> High)
+  Input: 0 to VDDL (e.g., 0.5V)
+  Output: 0 to VDDH (e.g., 0.9V)
+  
+  A 0.5V logic-HIGH is below the switching threshold of 0.9V logic.
+  The level shifter amplifies the voltage:
+    VDDL-HIGH (0.5V) -> VDDH-HIGH (0.9V)
+    VDDL-LOW (0.0V) -> VDDH-LOW (0.0V)
+  
+  Implementation: cross-coupled PMOS pair (differential sense amplifier)
+    VDDH ──┬── [PMOS1] ──┬── output
+            |              |
+            └── [PMOS2] ──┘
+                ↑ cross-coupled (regenerative feedback)
+    Input drives NMOS that pulls one side down, feedback pulls other high
+  
+  Delay: 100-300 ps
+  Use: signals going FROM low-voltage domain TO high-voltage domain
+  Example: CPU (0.75V) -> always-on bus (0.9V)
+
+Type 2: Step-down level shifter (High -> Low)
+  Input: 0 to VDDH (e.g., 0.9V)
+  Output: 0 to VDDL (e.g., 0.5V)
+  
+  A 0.9V signal overdrives a 0.5V gate's input, potentially causing
+  gate oxide stress or excessive current. The level shifter attenuates:
+    VDDH-HIGH (0.9V) -> VDDL-HIGH (0.5V)
+    VDDH-LOW (0.0V) -> VDDL-LOW (0.0V)
+  
+  Implementation: simple buffer powered by VDDL
+    The input (0.9V) easily switches the buffer (threshold ~0.25V)
+    Output swings 0 to VDDL
+    
+  Delay: 50-150 ps (simpler than step-up)
+  Use: signals going FROM high-voltage domain TO low-voltage domain
+
+Type 3: Bidirectional (both directions)
+  Can handle either step-up or step-down
+  Use when: DVFS domains where either domain can be at higher voltage
+  Example: CPU at turbo (0.95V) vs bus at nominal (0.9V)
+    Sometimes CPU is higher (step-down needed)
+    Sometimes CPU is lower (step-up needed)
+  
+  Implementation: combination of both types, or a dedicated symmetric design
+  Area: larger than single-direction (~1.5-2x)
+
+Where level shifters are needed:
+  EVERY signal crossing power domains with different voltages needs one.
+  
+  Domain A (0.9V) ----[LS]---- Domain B (0.75V)
+  
+  Direction A->B: step-down (0.9V logic output -> 0.75V logic input)
+  Direction B->A: step-up   (0.75V logic output -> 0.9V logic input)
+  
+  For a 32-bit bus crossing domains: 32 level shifters per direction
+  Area cost: 32 * 2 * ~5 um^2 = ~320 um^2 (non-trivial for many crossings)
+  Timing cost: 100-300 ps per crossing (must be included in STA)
+
+Common mistake: forgetting level shifters on signals that are "only one
+direction" -- during DVFS transitions, either domain can temporarily
+be at higher voltage.
+```
+
+## 2. Core UPF Concepts
+
 ### 2.1 Power Domain
 
 A **power domain** is a group of logic instances that share the same power supply behavior.

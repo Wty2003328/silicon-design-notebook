@@ -13,7 +13,10 @@
 10. BEOL (Back-End-of-Line) Processing
 11. Advanced Patterning Techniques
 12. Yield, Defects, and DFM
-13. Interview Q&A (25+ Questions)
+13. Reliability Mechanisms
+14. Basic Packaging
+15. Numbers to Memorize
+16. Interview Q&A (25+ Questions)
 
 ---
 
@@ -106,6 +109,25 @@ Two regimes:
                          (diffusion through existing oxide limits growth)
 ```
 
+**Worked Example — Deal-Grove (Dry Oxide at 1000°C):**
+
+```
+Problem: Calculate the time to grow 10 nm of dry SiO2 at 1000°C on a bare silicon wafer.
+
+Given (at 1000°C, dry O2):  A = 0.165 μm,  B = 0.0117 μm²/hr,  τ ≈ 0 (bare silicon)
+
+Deal-Grove equation:  x² + A·x = B·(t + τ)
+
+For x = 10 nm = 0.01 μm:
+  (0.01)² + 0.165 × 0.01 = 0.0117 × t
+  0.0001 + 0.00165 = 0.0117 × t
+  t = 0.00175 / 0.0117 ≈ 0.15 hr ≈ 9 minutes
+
+Note: at this thickness we are in the linear regime (x << A/2 = 0.0825 μm),
+so the linear approximation gives a close answer:
+  t ≈ x / (B/A) = x × A/B = 0.01 × 0.165/0.0117 = 0.141 hr ≈ 8.5 min
+```
+
 ### 2.3 Gate Oxide at Advanced Nodes
 
 ```
@@ -155,6 +177,22 @@ Resolution limit (Rayleigh equation):
 Depth of Focus:
   DOF = k2 × λ / NA²
   Higher NA → better resolution but smaller DOF → tighter process control needed
+```
+
+**Worked Example — Rayleigh Equation:**
+
+```
+Problem: A 193 nm immersion scanner has NA = 1.35.
+What is the minimum half-pitch at k1 = 0.25? At k1 = 0.35?
+
+  CD = k1 × λ / NA
+
+  At k1 = 0.25:  CD = 0.25 × 193 / 1.35 = 35.7 nm  (single-exposure limit)
+  At k1 = 0.35:  CD = 0.35 × 193 / 1.35 = 50.0 nm  (more realistic production)
+
+EUV comparison:
+  λ = 13.5 nm, NA = 0.33, k1 = 0.3:
+  CD = 0.3 × 13.5 / 0.33 = 12.3 nm
 ```
 
 ### 3.2 DUV (Deep Ultraviolet) Lithography
@@ -962,7 +1000,144 @@ DFM rules ensure designs are robust to process variation:
 
 ---
 
-## 13. Interview Q&A
+## 13. Reliability Mechanisms
+
+### 13.1 TDDB (Time-Dependent Dielectric Breakdown)
+
+```
+Gate oxide degrades under electric field stress over time.
+Time to breakdown follows:  t_BD ∝ exp(γ × (E_BD − E_ox))
+
+  γ:  field acceleration factor (~1-3 decade·cm/MV)
+  E_ox: operating oxide field
+
+Design rule: maximum oxide field ≤ 3-4 MV/cm for 10-year lifetime.
+
+At N5 with EOT = 0.9 nm and VDD = 0.7 V:
+  E = 0.7 / (0.9 × 10⁻⁷) = 7.8 MV/cm — approaching the reliability limit.
+This is why high-k dielectrics are essential (thicker physical layer at same EOT).
+```
+
+### 13.2 NBTI (Negative Bias Temperature Instability)
+
+```
+PMOS threshold voltage increases (degrades) when gate is held at negative bias
+(VGS = −VDD) at elevated temperature. Vth shift follows a power law:
+
+  ΔVth ∝ (t_stress)^n,  where n ≈ 0.16-0.25
+
+This causes timing degradation over the chip's lifetime.
+Designers add 5-10% timing guardband for NBTI.
+Recovery occurs when stress is removed (partial, not complete).
+```
+
+### 13.3 HCI (Hot Carrier Injection)
+
+```
+High-energy carriers gain enough energy from the lateral electric field near
+the drain to be injected into the gate oxide. Causes Vth shift and
+transconductance degradation. Worse at higher VDD and shorter channels.
+
+Mitigation:
+  - LDD (lightly-doped drain) structures reduce peak lateral field
+  - Lower VDD at advanced nodes naturally reduces HCI
+  - Graded junction profiles
+```
+
+### 13.4 Electromigration (EM)
+
+```
+Momentum transfer from current-carrying electrons to metal atoms causes
+progressive void formation (open) or hillock formation (short).
+
+Black's equation:  MTTF = A × J^(−n) × exp(Ea / kT)
+
+  J:   current density
+  n:   ≈ 1-2
+  Ea:  ≈ 0.5-0.7 eV for Cu
+
+Design rule: J_max ≈ 1-3 mA/μm for Cu interconnect at 105°C, 10-year lifetime.
+Cu has ~100× better EM resistance than Al due to higher activation energy.
+```
+
+### 13.5 ESD (Electrostatic Discharge)
+
+```
+Brief voltage spikes (HBM: 2 kV, CDM: 500V) can destroy thin gate oxides.
+On-chip ESD protection circuits clamp these transients.
+(Detailed ESD design covered in the dedicated ESD section.)
+```
+
+---
+
+## 14. Basic Packaging
+
+### 14.1 Wire Bonding
+
+```
+25 μm Au (or Al, Cu) wire bonded from die pad to package leadframe.
+  Bandwidth limit:   2-4 GHz (inductance limited)
+  Inductance:        0.5-1 nH per bond
+  Pad pitch:         ≥ 50 μm
+  Advantages:        Low cost, mature, high yield
+  Limitations:       Only peripheral I/O, inductance limits high-speed signals
+```
+
+### 14.2 Flip Chip (C4)
+
+```
+Solder bumps (C4 = Controlled Collapse Chip Connection) on die surface.
+Die is flipped and bonded face-down onto substrate.
+  Bump pitch:        50-200 μm
+  Inductance:        < 0.1 nH (much lower than wire bond)
+  Advantages:        Better power delivery, higher I/O density, area-array pads,
+                     shorter signal paths, better thermal path
+  Used in:           All high-performance designs (CPU, GPU, SoC)
+```
+
+### 14.3 Wafer-Level Packaging (WLP)
+
+```
+Packaging performed at wafer level before dicing.
+  Fan-in WLP:   Package size ≈ die size (limited I/O count)
+  Fan-out WLP:  Encapsulates die in mold compound, RDL routes I/O beyond die edges
+                 Used for mobile SoCs (higher I/O density than fan-in)
+  Advantages:   Direct board attach without interposer, lowest cost for high volume
+  Used in:      Mobile/IoT devices, RF modules
+```
+
+See IC_Packaging.md for the full treatment of advanced packaging (2.5D, 3D, chiplets, TSVs).
+
+---
+
+## 15. Numbers to Memorize
+
+```
+Parameter                                   | Value
+--------------------------------------------|---------------------------
+Si melting point                             | 1414°C
+Dry O2 growth rate at 1000°C (linear regime) | ~2.5 nm/min
+Wet O2 growth rate at 1000°C                 | ~20 nm/min
+DUV wavelength (ArF immersion)              | 193 nm
+EUV wavelength                               | 13.5 nm
+NA (ArF immersion)                           | 1.35
+NA (EUV current)                             | 0.33
+NA (High-NA EUV)                             | 0.55
+Resolution at EUV 0.33 NA, k1=0.3           | ~12 nm
+Reticle size (standard EUV)                  | 858 mm²
+Reticle size (High-NA EUV)                   | 429 mm²
+Implant dose range                           | 10¹¹ – 10¹⁶ ions/cm²
+CMP removal rate (oxide)                     | 100-300 nm/min
+N5 minimum metal pitch (M1)                  | ~28 nm
+N5 minimum metal pitch (M4)                  | ~40 nm
+Defect density (N5 production)               | ~0.1-0.3 /cm²
+Yield (Poisson)                              | Y = exp(−D×A)
+Yield (negative binomial)                    | Y = (1 + D×A/α)^(−α)
+```
+
+---
+
+## 16. Interview Q&A
 
 **Q1: Walk through the major steps in CMOS fabrication.**
 

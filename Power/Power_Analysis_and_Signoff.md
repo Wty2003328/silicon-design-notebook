@@ -1244,6 +1244,37 @@ Pre-Signoff Checklist:
 
 ---
 
+## Numbers to Memorize -- Power Analysis Quick Reference
+
+| Quantity | Value | Why it matters |
+|----------|-------|----------------|
+| Dynamic power equation | P = alpha x C x V^2 x f | Quadratic voltage dependence is the key lever for power reduction |
+| Leakage power equation | P = I_leak x VDD | Dominates at idle; doubles roughly every 10C temperature increase |
+| Dynamic/leakage split at N5 | 70/30 (high perf), 40/60 (low power) | Determines which optimization strategy matters most |
+| IR drop budget (static) | <=5% VDD | Average voltage drop; exceeded means timing failures |
+| IR drop budget (dynamic) | <=10% VDD | Peak transient droop at clock edges; requires decap to fix |
+| EM lifetime target | 10 years at 105C junction | Industry-standard reliability requirement for wire integrity |
+| Black's equation MTTF | A x J^(-n) x exp(Ea/kT), n=1-2, Ea=0.5-0.7 eV | Higher current density (J) and temperature (T) exponentially reduce lifetime |
+| Typical SoC TDP (mobile) | 2-15 W | Constrained by battery and passive cooling; sets total power budget |
+| Typical SoC TDP (desktop) | 65-250 W | Active cooling budget; determines heatsink/fan design |
+| Typical SoC TDP (AI accelerator) | 300-1000 W | Requires liquid or advanced cooling; drives rack-level power design |
+| Power density limit (air cooling) | ~100 W/cm^2 | Exceeding this causes thermal throttling or reliability issues |
+| Power density limit (liquid cooling) | ~300 W/cm^2 | Enables high-performance chips but adds cost and complexity |
+| Clock power fraction | 30-50% of total dynamic power | Clock is the single largest power consumer; clock gating is essential |
+| Memory (SRAM) power fraction | 15-25% of total | Large arrays contribute significant dynamic and leakage power |
+| Decap cell insertion | 5-15% of total cell count | Provides local charge for transient current; trades area for IR drop margin |
+| PrimeTime PX accuracy vs silicon | +/-10-15% | Gate-level power estimation; sufficient for budgeting but not final signoff |
+| Voltus/RedHawk accuracy vs silicon | +/-5-10% | Post-layout power and IR drop; used for final signoff |
+| Vectorless activity estimation | +/-20-30% vs VCD | Useful for early estimation; too inaccurate for signoff |
+| TCF (Toggle Count Format) average activity factor | 5-20% | Typical switching activity; clock nets are 100%, random data ~50% |
+| Typical SAIF metrics | Toggle rate, static probability per net | Captured during simulation; annotation coverage >80% needed for signoff |
+| Power gating inrush current | 2-5x steady-state leakage | Turning on a power-gated domain causes a current surge; must size sleep transistors for peak |
+| DVFS range | 0.6V-1.2V, 200 MHz - 3 GHz (typical) | Dynamic scaling saves power by matching voltage to required performance |
+| Voltage scaling power benefit | Halving V -> 4x power reduction (quadratic) | Most effective power lever; why near-threshold computing is attractive |
+| Frequency scaling power benefit | Halving f -> 2x power reduction (linear) | Linear benefit; less effective than voltage scaling but easier to implement |
+
+---
+
 *This document targets senior-engineer / staff-level ASIC power interview preparation.
 Cross-reference with Power_Fundamentals.md, Power_Reduction_Techniques.md, and
 UPF_Power_Intent.md.*
