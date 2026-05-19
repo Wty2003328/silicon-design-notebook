@@ -46,6 +46,7 @@ trade-offs, sizing calculations, and interview-style design problems.
 | **Yanqihu** | 雁栖湖 | `yanqihu` | First stable microarchitecture (2020). 6-wide, 6-stage pipeline, baseline OoO. |
 | **Nanhu** | 南湖 | `nanhu` | Second generation. Refined frontend (TAGE-SC BPU), improved LSU, 192-entry ROB. |
 | **Kunminghu** | 昆明湖 | `master` / `kunminghu-v3` | Current generation. 256-entry ROB, vector extension (V), CHI-based L2, enhanced prefetch, wider dispatch. |
+| **Kunminghu v2** | 昆明湖v2 | `kunminghu-v2` | Refined Kunminghu with CHI Issue B/C support, improved OoO pipeline tuning, enhanced vector unit throughput. |
 
 Each generation is a **clean microarchitectural iteration**: the ISA stays the
 same but pipeline depth, queue sizes, predictor structures, and cache parameters
@@ -619,7 +620,7 @@ comparison happens in parallel with data SRAM read to minimize latency.
 | **Inclusion** | Inclusive of L1 | Inclusive of L1 |
 | **Hit latency** | 10--15 cycles | 10--15 cycles |
 | **Coherence** | MESI directory | MESI directory |
-| **Interconnect** | TileLink | CHI (Coherent Hub Interface) |
+| **Interconnect** | TileLink | CHI Issue B/C (Coherent Hub Interface) |
 
 The L2 is a **non-blocking cache** with multiple MSHRs supporting concurrent
 miss handling. It maintains inclusion over the private L1 caches using a
@@ -1152,6 +1153,63 @@ many server workloads.
 9. RISC-V Privileged Architecture Specification, Version 1.12-draft.
 
 10. TileLink Specification, Version 1.8. SiFive.
+
+---
+
+## 16 — Kunminghu v2 and Recent Developments
+
+### 16.1 CHI Issue B/C Support
+
+Kunminghu v2 migrated the L2-cache interconnect from CHI Issue A to **CHI Issue B/C**, bringing several protocol-level improvements:
+
+| Feature | CHI Issue A | CHI Issue B/C |
+|---|---|---|
+| **Snoop filter** | Optional | Enhanced snoop filter with reduced false-positive invalidates |
+| **Stash requests** | Not supported | RN can push dirty data to HN proactively (reduces snoop latency) |
+| **Directory encoding** | Basic sharer vector | Compact encoding + Partial cache-line state tracking |
+| **Retry mechanism** | Simple PCrdGrant | Improved credit-based retry with explicit credit return |
+| **Endianness** | Little-endian only | Bi-endian data handling on DAT channel |
+| **Data poisoning** | Not supported | Poison bit per 64B chunk marks corrupted data (RAS) |
+
+The CHI Issue B/C migration required changes in the Huancun L2 submodule: new REQ opcodes (StashOnceSepData, StashOnceShared), updated SNP response handling, and a revised directory format. The benefit is reduced coherence latency on multi-core workloads: stash hints allow a core to proactively push shared-dirty lines toward the home node, cutting the critical path on subsequent ReadUnique requests by 2-3 hops.
+
+### 16.2 Improved Out-of-Order Pipeline (Kunminghu v2)
+
+Kunminghu v2 refines several microarchitectural parameters over the initial Kunminghu:
+
+| Parameter | Kunminghu v1 | Kunminghu v2 |
+|---|---|---|
+| **ROB entries** | 256 | 256 (unchanged) |
+| **Integer IQ** | 32 | 40 (wider scheduling window) |
+| **FP IQ** | 16 | 24 |
+| **Load queue** | 64 | 80 (more in-flight loads) |
+| **Store queue** | 48 | 64 |
+| **L2 MSHRs** | 16 | 24 (more concurrent misses) |
+| **Prefetch depth** | Stream + BOP | Stream + BOP + STRIDE (per-page stride detector) |
+| **TAGE tables** | 4-tagged tables | 6-tagged tables (improved conditional prediction) |
+| **Vector unit** | Basic V-extension | Pipelined VFPU with 4-element SIMD per cycle |
+
+The larger issue queues and LQ/SQ improve IPC on memory-intensive SPEC benchmarks by an estimated 8-12%. The expanded TAGE tables push branch prediction accuracy from ~97.0% to ~97.5% on SPEC INT 2006, reducing the mispredict penalty from 6-8 cycles amortized over ~33 instructions (3% mispredict rate) to ~50 instructions.
+
+### 16.3 Tapeout Status
+
+| Generation | Node | Tapeout | Frequency Achieved | Notes |
+|---|---|---|---|---|
+| Yanqihu | TSMC 28nm | 2021 | ~1.0 GHz | First silicon, validated on FPGA co-sim |
+| Nanhu | TSMC 28nm | 2022 | ~1.2 GHz | Stable silicon, SPEC CPU2006 running |
+| Kunminghu | TSMC 7nm-equivalent | 2023 | ~1.8 GHz | Advanced node tapeout, V extension |
+| Kunminghu v2 | Advanced node | 2024 | ~2.0+ GHz (target) | Refined pipeline, CHI B/C |
+
+Xiangshan has been fabricated on both 28nm and more advanced process nodes through multi-project wafer (MPW) runs and dedicated tapeouts. The project maintains an agile cadence of roughly one major tapeout per year.
+
+### 16.4 Xiangshan in Research and Education
+
+Xiangshan has become a foundational platform for computer architecture research and education in China:
+
+- **University courses:** ICT/UCAS uses Xiangshan as the primary teaching platform for graduate-level processor design courses. Tsinghua University, Peking University, Zhejiang University, and University of Science and Technology of China (USTC) have adopted Xiangshan RTL in advanced computer architecture curricula.
+- **Chip design competitions:** Xiangshan serves as the baseline platform for the "China Computer Society (CCF) Chip Design Competition," where student teams propose and implement microarchitectural improvements (e.g., new prefetchers, better branch predictors, custom accelerators) and validate them on the DiffTest co-simulation framework.
+- **Research vehicle:** Academic papers have used Xiangshan as an open-source evaluation platform for novel prefetching algorithms, cache coherence extensions (CHI protocol enhancements), and security features (pointer authentication, PMP enhancements). The open RTL eliminates the need for proprietary cycle-accurate simulators.
+- **BOSC ecosystem:** The Beijing Institute of Open Source Chip (BOSC) provides documentation, tutorial labs, and cloud-based FPGA emulation environments for Xiangshan, lowering the barrier for students without local FPGA boards.
 
 ---
 

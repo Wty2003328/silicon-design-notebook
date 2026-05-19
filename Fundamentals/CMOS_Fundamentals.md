@@ -767,9 +767,16 @@ Impact on design:
   - Channel = stacked nanosheets (multiple horizontal sheets)
   - Width tunable by nanosheet width (more flexibility than FinFET)
 
-  Samsung 3nm GAA: 2022 (first production GAAFET)
-  Intel RibbonFET: Intel 20A (2024)
-  TSMC N2: GAA nanosheet (2025)
+  Samsung 3nm GAA (MBCFET): 2022 (first production GAAFET)
+    - Multi-Bridge Channel FET — nanosheets connected in parallel
+    - Production since July 2022, used in Samsung Exynos and Qualcomm
+  TSMC N2: GAA nanosheet, production 2025-2026
+    - ~15% speed improvement or ~30% power reduction over N3
+    - First TSMC node to use GAA, replacing FinFET after N3/N3E
+  Intel 18A (1.8nm): RibbonFET + PowerVia, production 2025
+    - Intel cancelled 20A node and moved directly to 18A
+    - RibbonFET = Intel's name for GAA nanosheet
+    - Combined with PowerVia backside power delivery (see Section 9.3)
 
      Gate          Gate
     ┌────┐        ┌────┐
@@ -877,7 +884,65 @@ Examples:
   - Backside Power Delivery Network (BSPDN):
     Power delivered from the backside of the wafer
     Completely separates power and signal routing
-    Intel PowerVia, TSMC N2P
+    Intel PowerVia (first in Intel 18A, 2025):
+      - VDD/VSS delivered through backside vias (TSV-like)
+      - Eliminates IR drop on frontside metal (up to 50% reduction)
+      - Frees M0/M1 for signal routing → higher cell density
+      - Requires wafer thinning to expose backside
+    TSMC N2P (2026): Super Power Rail (SPR) backside delivery
+    Samsung SF2 (2025): BSPDN on 2nm node
+```
+
+### 9.4 GAA Nanosheet Channel Width Modulation
+
+```
+Key advantage of GAA over FinFET: continuous width control
+
+FinFET width: W = N_fins * (2*H + W_fin), quantized in units of one fin
+GAA nanosheet: W = N_sheets * W_sheet, where W_sheet is continuously tunable
+
+  Example: 3 stacked nanosheets, each 30nm wide
+    Weff = 4 * 3 * 30nm = 360nm (gate wraps all 4 sides of each sheet)
+    Can also make W_sheet = 25nm for Weff = 300nm
+    Or W_sheet = 20nm for Weff = 240nm → continuous adjustment!
+
+Sheet width range: ~15nm to ~50nm per sheet (technology-dependent)
+Number of sheets: typically 3-5 stacked vertically
+
+Implications for standard cell design:
+  - Can tune drive strength more precisely than FinFET
+  - Library cells can have optimized widths, not just integer multiples
+  - Analog/mixed-signal benefits: better current mirror matching
+  - But: wider sheets → more gate capacitance (trade-off)
+```
+
+### 9.5 Near-Threshold Computing
+
+```
+Operating transistors near Vth (VDD ≈ 0.4-0.6V) for extreme energy efficiency:
+
+  Energy per operation ∝ VDD² (dominated by dynamic power)
+  At VDD ≈ 3*n*VT ≈ 0.3-0.4V: optimal energy-delay product
+
+  Benefits:
+    - 5-10x energy reduction vs. nominal VDD
+    - Still reasonable performance (50-70% of max frequency)
+
+  Challenges:
+    - Exponential leakage sensitivity to Vth variation
+    - Subthreshold slope limits on/off ratio at low VDD
+    - SRAM stability worst at low VDD (read/write margin collapse)
+    - Performance variability increases dramatically
+
+  Applications:
+    - IoT sensors (energy-harvested devices)
+    - Always-on edge AI (wake-word detection)
+    - Ultra-low-power microcontrollers (ARM Cortex-M0+ at 0.5V)
+
+  Design techniques for near-threshold:
+    - Separate VDD domains: logic at VDD_low, SRAM at VDD_nominal
+    - Adaptive body bias to compensate Vth variation
+    - Replica circuits for dynamic VDD/frequency adjustment
 ```
 
 ---
@@ -926,7 +991,8 @@ Planar: gate contacts channel from one side. Good to ~28nm. Poor short-channel c
 below 22nm. FinFET: gate wraps 3 sides of a vertical fin. Used at 22nm-5nm. Quantized
 width (integer number of fins). Excellent short-channel control. GAAFET: gate wraps all
 4 sides of horizontal nanosheets. Used at 3nm and below. Even better electrostatic control.
-Width somewhat adjustable via nanosheet width.
+Width is continuously adjustable via nanosheet width (unlike FinFET's quantized fin count).
+Samsung 3nm MBCFET (2022) was first; TSMC N2 (2025) and Intel 18A/RibbonFET (2025) follow.
 
 **Q7: What is fin quantization and how does it impact design?**
 
@@ -1048,7 +1114,9 @@ Buried Power Rail places VDD/VSS rails below the transistor layer (buried in the
 freeing up Metal 1 for signal routing. Backside Power Delivery (BSPDN) takes this further
 — the entire power grid is on the back of the wafer, completely decoupling power and signal
 routing. Benefits: more routing resources, lower IR drop (shorter power paths), better cell
-density. Intel PowerVia and TSMC N2P are early implementations.
+density. Intel PowerVia (first deployed in Intel 18A, 2025) delivers power through backside
+vias, eliminating IR drop on frontside metal by up to 50%. TSMC N2P will use Super Power Rail
+(SPR) backside delivery. Samsung SF2 node also plans BSPDN.
 
 **Q22: Why does lowering VDD help power more than it hurts performance?**
 

@@ -9,7 +9,7 @@
 6. Thin-Film Deposition (CVD, PVD, ALD, ECD)
 7. Chemical Mechanical Polishing (CMP)
 8. Complete CMOS Process Flow
-9. FinFET Fabrication
+9. FinFET and GAA Fabrication
 10. BEOL (Back-End-of-Line) Processing
 11. Advanced Patterning Techniques
 12. Yield, Defects, and DFM
@@ -233,10 +233,16 @@ EUV adoption:
 
 High-NA EUV:
   - Next generation: 0.55 NA (vs current 0.33 NA)
-  - ~1.7× resolution improvement
+  - ~1.7× resolution improvement (CD_min ≈ 8nm half-pitch without multi-patterning)
   - Anamorphic optics (4× in one direction, 8× in other)
   - First tools: 2025-2026 (ASML EXE:5000 series)
-  - Cost: ~$350M+ per tool
+  - Intel first to deploy High-NA EUV in production (2025-2026)
+    - Installed at Intel D1X fab in Hillsboro, Oregon
+    - Targeting Intel 14A node and beyond
+  - TSMC and Samsung evaluating for A16/A10 nodes (~2027+)
+  - Cost: ~$350M+ per tool (vs ~$150-200M for standard EUV)
+  - Key challenge: larger reticle size, new mask infrastructure needed
+  - May eliminate multi-patterning on most layers at 2nm and below
 ```
 
 ### 3.4 Resolution Enhancement Techniques (RET)
@@ -679,7 +685,7 @@ Gate-Last (Replacement Metal Gate, RMG):
 
 ---
 
-## 9. FinFET Fabrication
+## 9. FinFET and GAA Fabrication
 
 ### 9.1 Fin Formation
 
@@ -752,6 +758,108 @@ Strain engineering:
   Si:P in NMOS: P smaller than Si → tensile strain on channel
   Strain → changes band structure → increases carrier mobility
   Mobility enhancement: ~30-50% for PMOS, ~10-20% for NMOS
+```
+
+### 9.4 GAA Nanosheet Fabrication
+
+```
+Transition from FinFET to Gate-All-Around at 3nm/2nm nodes:
+
+1. Start with a Si/SiGe superlattice on SOI:
+   - Alternating layers of Si and SiGe grown by epitaxy
+   - Typically 3-5 pairs of Si (channel) and SiGe (sacrificial)
+   - Each Si layer will become a nanosheet channel
+
+2. Fin patterning:
+   - Pattern vertical fins from the superlattice (same SAQP as FinFET)
+
+3. Inner spacer formation:
+   - Selective etch of SiGe recess in S/D regions
+   - Deposit SiN inner spacer (isolates gate from S/D)
+   - Critical for reducing gate-to-S/D capacitance
+
+4. S/D epitaxy:
+   - Grow SiGe:B (PMOS) or Si:P (NMOS) epitaxially on exposed Si layers
+   - Merges vertically between sheets for lower S/D resistance
+
+5. Channel release (key GAA step):
+   - Selective wet etch removes ALL SiGe sacrificial layers
+   - Leaves suspended Si nanosheets (channels) in free space
+   - Etch selectivity SiGe:Si > 100:1 required
+
+6. Gate formation (RMG process):
+   - ALD of interfacial SiO2 layer (~0.5nm)
+   - ALD of high-k dielectric (HfO2, ~1.5nm)
+   - Deposit work function metal (TiN, TiAl) by ALD/CVD
+   - Gate wraps ALL 4 sides of each nanosheet simultaneously
+
+Cross-section after gate formation:
+       ┌──────────────────────────────┐
+       │          Gate Metal          │
+       │  ┌────┐  ┌────┐  ┌────┐    │
+       │  │Si  │  │Si  │  │Si  │    │  3 nanosheets
+       │  │ns1 │  │ns2 │  │ns3 │    │  fully wrapped
+       │  └────┘  └────┘  └────┘    │
+       │          Gate Metal          │
+       └──────────────────────────────┘
+
+Nanosheet width modulation:
+  - Unlike FinFET (quantized width), nanosheet width is set by lithography
+  - Width range: ~15-50nm per sheet (depends on node)
+  - Wider sheets → more drive current, but more gate capacitance
+  - Enables per-cell optimization of drive strength
+
+Samsung MBCFET (Multi-Bridge Channel FET) — 3nm:
+  - Nanosheets connected at ends → "bridges" between S/D
+  - Production since July 2022
+
+TSMC N2 — GAA nanosheet:
+  - Production 2025-2026
+  - ~15% speed or ~30% power improvement over N3
+  - Uses wider nanosheets for higher drive
+
+Intel RibbonFET — Intel 18A (1.8nm):
+  - Production 2025
+  - Combined with PowerVia backside power delivery
+```
+
+### 9.5 CFET (Complementary FET) — Future Beyond 2nm
+
+```
+CFET: Stacked NMOS over PMOS (or vice versa) in a single vertical structure
+
+  Traditional (FinFET/GAA):
+    PMOS ──┐  (side by side)
+    NMOS ──┘   → each needs its own footprint
+
+  CFET:
+    ┌──────┐
+    │ PMOS │  ← Top nanosheet (p-type)
+    ├──────┤
+    │ NMOS │  ← Bottom nanosheet (n-type)
+    └──────┘
+    → same function in HALF the footprint
+
+  Benefits:
+    - ~1.5-2x density improvement over GAA nanosheet
+    - Reduced parasitic capacitance (shorter S/D connections)
+    - Enables continued scaling below 1nm node
+
+  Challenges:
+    - Thermal budget: NMOS and PMOS processed at different temps
+    - N-type and P-type channel material optimization on same stack
+    - Vertical alignment and connection between stacked devices
+    - Self-heating: two active devices stacked doubles heat density
+
+  Timeline:
+    - Expected for A10/A7 nodes (~2030+)
+    - Intel, TSMC, Samsung all researching CFET
+    - Requires monolithic 3D integration techniques
+
+  CFET + BSPDN is the projected end-of-scaling architecture:
+    - CFET provides density
+    - Backside power provides clean power delivery
+    - Together they may extend Moore's Law to ~2035
 ```
 
 ---
@@ -906,6 +1014,50 @@ Challenges:
   - Two spacer depositions + four etch steps → process complexity
   - Spacer thickness uniformity critical (determines final pitch)
   - Design restrictions (not all patterns achievable)
+```
+
+### 11.4 DTCO (Design-Technology Co-Optimization)
+
+```
+DTCO: Jointly optimizing process technology and circuit design to maximize
+PPA (Power, Performance, Area) benefits at each node.
+
+Key DTCO techniques at advanced nodes:
+
+1. Track height reduction:
+   7.5T → 6.5T → 6T → 5.5T → 5T
+   Reduces standard cell height → higher density
+   Cost: fewer routing tracks per cell, more congestion
+   Enabled by: smaller contacts (V0), tighter M0 pitch
+
+2. Fin depopulation / nanosheet width optimization:
+   Remove fins (or narrow nanosheets) in non-critical cells
+   Saves leakage power without impacting performance
+   Requires library characterization for each variant
+
+3. Diffusion breaks:
+   AB (Always-ON break): physical gap between cells → larger but safe
+   SDB (Single Diffusion Break): shared diffusion → 10-15% smaller cells
+   NB (No Break / continuous diffusion): smallest, CPODE technique
+
+4. Contact over active gate (COAG):
+   Place gate contact directly over the gate poly
+   Eliminates separate gate contact area → 5-10% cell width reduction
+
+5. Buried Power Rail (BPR):
+   VDD/VSS routed below transistor layer in buried metal lines
+   Frees M0/M1 for signal routing
+   Combined with backside power delivery for maximum benefit
+
+6. Backside Power Delivery Network (BSPDN):
+   Intel PowerVia (Intel 18A, 2025):
+     - Wafer thinned to expose backside
+     - Deep vias (TSV-like) connect frontside to backside power grid
+     - Power rails removed from frontside → M0/M1 fully for signals
+     - Up to 50% IR drop reduction, ~5-10% frequency improvement
+   TSMC N2P Super Power Rail (SPR, 2026):
+     - Similar concept, different integration approach
+   Samsung SF2 (2025): BSPDN on 2nm GAA node
 ```
 
 ---
@@ -1227,10 +1379,12 @@ multiple smaller dies instead of one large monolithic die.
 **Q12: What is high-NA EUV and when will it be used?**
 
 High-NA EUV increases the numerical aperture from 0.33 to 0.55, improving resolution
-by ~1.7×. It uses anamorphic optics (different magnification in X and Y). First tools
-from ASML (EXE:5000 series) are being installed in 2025-2026 for 2nm and below. The
-tools cost $350M+ and require new mask infrastructure. High-NA EUV may eliminate the
-need for multi-patterning on most layers at 2nm.
+by ~1.7× (CD_min ≈ 8nm half-pitch). It uses anamorphic optics (different magnification
+in X and Y). First tools from ASML (EXE:5000 series) are being installed in 2025-2026.
+Intel is the first to deploy High-NA EUV at its D1X fab in Oregon, targeting the Intel
+14A node. The tools cost $350M+ and require new mask infrastructure. High-NA EUV may
+eliminate multi-patterning on most layers at 2nm and below, significantly reducing
+process complexity and cost per layer.
 
 **Q13: What is strain engineering in FinFETs?**
 
@@ -1300,3 +1454,29 @@ Y = exp(-0.05) = 95.1%. But if A = 500mm² = 5cm² (large SoC), Y = exp(-0.5) = 
 This is why: (1) new processes launch with small dies, (2) chiplets (multiple small dies)
 can have much better effective yield than monolithic large dies, (3) yield improvement is
 the #1 priority in process development.
+
+**Q21: How is a GAA nanosheet transistor fabricated differently from a FinFET?**
+
+The key difference is the channel release step. In GAA fabrication, a Si/SiGe superlattice
+is grown epitaxially (alternating Si channel layers and sacrificial SiGe layers). After fin
+patterning and inner spacer formation, the sacrificial SiGe is selectively etched away
+(wet etch with >100:1 selectivity), leaving suspended Si nanosheets. The gate dielectric
+and metal gate are then deposited by ALD, wrapping all 4 sides of each nanosheet. This is
+fundamentally different from FinFET where the fin is a single vertical structure with the
+gate wrapping 3 sides. The GAA process requires: (1) precise epitaxial growth of the
+superlattice, (2) highly selective SiGe etch, (3) careful inner spacer formation to
+isolate gate from S/D. Samsung was first to production (3nm MBCFET, 2022), followed by
+TSMC N2 (2025) and Intel 18A RibbonFET (2025).
+
+**Q22: What is backside power delivery and why is it needed?**
+
+As transistors scale, the frontside metal layers become increasingly congested with both
+signal routing and power delivery competing for the same metal tracks. IR drop on the
+power grid worsens because narrower wires have higher resistance. Backside power delivery
+solves this by routing VDD/VSS through the back of the wafer: the wafer is thinned,
+deep vias (TSV-like) are etched from the backside to reach frontside transistor terminals,
+and a power distribution network is formed on the backside using thick metal layers.
+Intel PowerVia (first in Intel 18A, 2025) demonstrates up to 50% IR drop reduction and
+frees up frontside M0/M1 layers entirely for signal routing, improving cell density.
+The trade-off: wafer thinning adds process complexity and cost, and thermal management
+becomes more challenging since the backside is no longer available for heat removal.

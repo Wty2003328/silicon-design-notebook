@@ -2199,4 +2199,192 @@ the clock-based timing framework and can lead to incorrect hold analysis.
 
 ---
 
+## 10. AI Accelerator Synthesis
+
+### 10.1 Massive Parameter Count Synthesis
+
+```
+AI accelerator synthesis challenges:
+
+  Modern AI accelerator complexity:
+    NVIDIA H100 (GH100): ~80 billion transistors, ~2M+ standard cells (per block)
+    Google TPU v5: ~30 billion transistors
+    AMD MI300X: ~153 billion transistors (multi-chiplet)
+
+  Synthesis challenges at this scale:
+    1. Memory: Single flat synthesis requires >256 GB RAM for >10M instances
+    2. Runtime: Full compile_ultra can take 48-72+ hours
+    3. Netlist size: Gate-level Verilog can be 10-50 GB
+    4. Timing convergence: millions of timing paths, thousands of violations
+
+  Hierarchical synthesis approach:
+    ┌──────────────────────────────────────────────────┐
+    │                    Top Level                       │
+    │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐  │
+    │  │ Tensor   │ │ Tensor   │ │ NoC Router       │  │
+    │  │ Core 0   │ │ Core 1   │ │ (synthesized      │  │
+    │  │ (separate│ │ (separate│ │  independently)   │  │
+    │  │  synth)  │ │  synth)  │ │                   │  │
+    │  └──────────┘ └──────────┘ └──────────────────┘  │
+    │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐  │
+    │  │ HBM PHY  │ │ NVLink   │ │ Memory Controller │  │
+    │  │ (IP)     │ │ PHY (IP) │ │ (synth)           │  │
+    │  └──────────┘ └──────────┘ └──────────────────┘  │
+    └──────────────────────────────────────────────────┘
+
+    Each block synthesized independently:
+      - Tensor core: 500K-2M instances per core
+      - NoC: 200K-500K instances
+      - Memory controller: 100K-300K instances
+      - Top-level integration: stitch blocks, route interconnect
+
+  Synthesis tool settings for large blocks:
+    # Design Compiler
+    set_app_var hdlin_infer_memories true
+    set_app_var compile_enable_constant_propagation_with_no_boundary_opt true
+    compile_ultra -no_autoungroup -timing_high_effort
+
+    # Genus
+    set_db syn_global_effort high
+    syn_generic
+    syn_map
+    syn_opt -incr  ;# multiple rounds if needed
+```
+
+### 10.2 Multi-Instance Block Synthesis
+
+```
+Multi-instance synthesis for regular structures:
+
+  Problem: A GPU has 100+ SMs (streaming multiprocessors),
+  each identical. Synthesizing each separately is wasteful.
+
+  Solution: Synthesize once, replicate physically.
+
+  Flow:
+    1. Synthesize one SM instance with full optimization
+    2. Generate LEF abstract (physical outline + pins)
+    3. Floorplan: place 100+ SM instances in the die
+    4. Each SM is treated as a hard macro in top-level PnR
+
+  Multi-instance synthesis considerations:
+    - All instances must use the same timing constraints
+    - Physical context differs per instance (different neighbors)
+    - Wire load estimation must account for actual placement
+    - Use topographical synthesis with representative floorplan
+
+  In DC:
+    # Synthesize one instance with physical awareness
+    create_floorplan -core_utilization 0.7 -core_aspect_ratio 0.8
+    compile_ultra -spg
+
+    # Generate LEF and timing models for replication
+    write_milkway -output sm_block
+    write_lef sm_block.lef
+    write_lib -output sm_block.lib
+
+  In Genus:
+    set_db design:sm_block .place true
+    syn_generic; syn_map; syn_opt
+    write_design -innovus -basename sm_block
+    write_lef sm_block.lef
+```
+
+### 10.3 Retiming and Register Balancing for Deep Pipelines
+
+```
+AI accelerators use deep pipelines for throughput:
+
+  Example: Tensor core datapath (8-stage pipeline)
+    Stage 1: Input register file read
+    Stage 2: Operand formatting (FP32→TF32→BF16→INT8 conversion)
+    Stage 3: Pre-multiplication alignment
+    Stage 4: Partial product generation (multiply)
+    Stage 5: Partial product reduction (CSA tree)
+    Stage 6: Final addition (CPA)
+    Stage 7: Accumulation (add to accumulator)
+    Stage 8: Output formatting + write-back
+
+  Retiming for pipeline balancing:
+    Without retiming:
+      Stage 4 (multiply): 1.2 ns ← bottleneck
+      Stage 6 (CPA):      0.5 ns ← slack
+      Max frequency: 833 MHz (limited by stage 4)
+
+    With retiming:
+      Stage 4a: 0.7 ns (partial product gen + part of CSA)
+      Stage 4b: 0.7 ns (rest of CSA + pre-add)
+      Stage 6:  0.7 ns (CPA + part of accumulation)
+      Max frequency: 1.43 GHz (balanced)
+
+  Retiming commands:
+    # DC
+    compile_ultra -retime -gate_clock
+
+    # Genus
+    set_db design:tensor_core .retime true
+    syn_opt -retime
+
+  Retiming verification:
+    - LEC must use sequential equivalence checking (not combinational)
+    - Formality: set_dp_retime_operation -design tensor_core
+    - Conformal: enable retiming-aware verification mode
+    - Verify functional equivalence with retimed vs pre-retimed netlist
+```
+
+### 10.4 Verifying SDC Constraint Correctness
+
+```
+Common SDC mistakes in AI accelerator designs:
+
+  1. Missing generated clock for divided clocks:
+     WRONG:
+       create_clock -name clk_div2 -period 4.0 [get_pins div_ff/Q]
+       # Tool treats as async to source clock!
+
+     CORRECT:
+       create_generated_clock -name clk_div2 \
+           -source [get_ports clk] -divide_by 2 [get_pins div_ff/Q]
+
+  2. Missing -add_delay for DDR constraints:
+     WRONG (second constraint overwrites first):
+       set_input_delay -clock clk -max 0.4 [get_ports ddr_dq]
+       set_input_delay -clock clk -max 0.4 -clock_fall [get_ports ddr_dq]
+
+     CORRECT:
+       set_input_delay -clock clk -max 0.4 [get_ports ddr_dq]
+       set_input_delay -clock clk -max 0.4 -clock_fall -add_delay [get_ports ddr_dq]
+
+  3. Over-constraining with false paths:
+     WRONG:
+       set_false_path -from [get_clocks clk_a] -to [get_clocks clk_b]
+       set_false_path -from [get_clocks clk_b] -to [get_clocks clk_a]
+       # Should use set_clock_groups -asynchronous instead
+       # set_false_path doesn't affect SI analysis
+
+  4. Missing inter-clock uncertainty:
+     When two clocks are synchronous (same PLL) but different phases:
+       set_clock_uncertainty -setup 0.15 \
+           -from [get_clocks clk_fast] -to [get_clocks clk_slow]
+       # Without this, cross-clock paths may be under-constrained
+
+  5. Hold MCP not paired with setup MCP:
+     WRONG:
+       set_multicycle_path 4 -setup -from [get_cells a*] -to [get_cells b*]
+       # Hold check remains at default → massive hold buffer insertion
+
+     CORRECT:
+       set_multicycle_path 4 -setup -from [get_cells a*] -to [get_cells b*]
+       set_multicycle_path 3 -hold  -from [get_cells a*] -to [get_cells b*]
+
+  Verification checklist:
+    1. report_timing -unconstrained → should show zero paths
+    2. report_clocks → verify all clocks defined, relationships correct
+    3. report_timing -loops → no combinational loops
+    4. Check coverage: all ports constrained, no floating constraints
+    5. Validate generated clocks: report_clock -waveform
+```
+
+---
+
 *End of Logic Synthesis and Optimization Deep Dive*

@@ -652,9 +652,8 @@ control and status registers (CSRs) and trap-handling mechanisms.
 | 1     | 01       | S (Supervisor) | OS kernel, virtual memory      |
 | 3     | 11       | M (Machine) | Highest privilege, firmware/BIOS   |
 
-Level 2 (H, Hypervisor) is defined in the hypervisor extension but is not
-part of the base specification. Code running at a given privilege level can
-only access CSRs at that level or lower.
+Level 2 (H, Hypervisor) is defined in the H extension (see Section 11). Code
+running at a given privilege level can only access CSRs at that level or lower.
 
 ### 6.2 Trap Handling
 
@@ -1662,10 +1661,308 @@ at the S-level (so the next S-mode trap can be taken).
 
 ---
 
+## 11. RV64V -- Vector Extension V 1.0 (Ratified)
+
+The V extension adds a scalable vector unit. Unlike fixed-width SIMD (ARM NEON,
+x86 AVX), RISC-V vectors have a **design-time-agnostic** programming model: the
+same binary runs on hardware with different vector lengths. The programmer (or
+compiler) writes loops in terms of "strip mines" and the hardware handles the
+rest.
+
+### 11.1 Vector Registers and Configuration CSRs
+
+The V extension adds 32 vector registers `v0`--`v31`, each `VLEN` bits wide
+(`VLEN >= 128` in the ratified spec, common implementations: 128--512 bits).
+
+| CSR | Purpose |
+|-----|---------|
+| `vstart` | Element index at which to resume after a trap |
+| `vxsat` | Fixed-point saturation flag |
+| `vxrm` | Fixed-point rounding mode |
+| `vcsr` | Vector control and status (contains vxsat, vxrm) |
+| `vlenb` | VLEN in bytes (read-only, VLEN/8) |
+
+Three configuration CSRs set the vector operating parameters:
+
+| Parameter | Full Name | Description |
+|-----------|-----------|-------------|
+| **SEW** | Selected Element Width | Width of each vector element: 8, 16, 32, or 64 bits (also 128 in some profiles) |
+| **LMUL** | Vector Length Multiplier | Groups of vector registers treated as one: 1, 2, 4, 8 (or fractional: 1/2, 1/4, 1/8) |
+| **VL** | Vector Length | Number of elements to process in the current strip-mine iteration |
+
+The `vsetvli` / `vsetivli` / `vsetvl` instructions configure SEW, LMUL, and VL
+simultaneously:
+
+```
+vsetvli rd, rs1, vtypei   // rd = old VL; VL = min(rs1, VLMAX); vtype = imm
+vsetvl  rd, rs1, rs2      // rd = old VL; VL = min(rs1, VLMAX); vtype = rs2
+```
+
+`VLMAX = LMUL * VLEN / SEW`. This is the maximum number of elements that fit in
+the grouped vector registers. Setting LMUL > 1 multiplies the effective register
+width (e.g., LMUL=2 with VLEN=128 gives 256-bit effective vectors using two
+registers as one).
+
+### 11.2 Strip Mining
+
+Strip mining is the key programming idiom. A vectorizable loop is written as:
+
+```c
+// C pseudocode for strip-mined vector loop
+size_t vl;
+for (size_t avl = n; avl > 0; avl -= vl) {
+    vl = vsetvl_e32m1(avl);   // configure SEW=32, LMUL=1, returns actual VL
+    vfloat32m1_t a = vle32_v_f32m1(src, vl);   // vector load VL elements
+    vfloat32m1_t b = vfmul_vf_f32m1(a, 2.0f, vl);  // multiply each by 2
+    vse32_v_f32m1(dst, b, vl);                  // vector store VL elements
+    src += vl; dst += vl;
+}
+```
+
+The hardware sets `VL = min(requested_avl, VLMAX)`. If `VLMAX = 4` (128-bit VLEN,
+SEW=32, LMUL=1) and `n = 13`, the loop executes 4 iterations: VL = 4, 4, 4, 1.
+No predication or tail-handling code is needed -- instructions respect VL
+naturally.
+
+### 11.3 Vector Load and Store
+
+| Instruction | Description |
+|-------------|-------------|
+| `vle{sew}.v` | Unit-stride load (contiguous elements) |
+| `vse{sew}.v` | Unit-stride store |
+| `vlse{sew}.v` | Strided load (constant byte stride) |
+| `vsse{sew}.v` | Strided store |
+| `vluxei{sew}.v` | Indexed-unordered load (gather) |
+| `vsoxei{sew}.v` | Indexed-unordered store (scatter) |
+
+Unit-stride loads/stores are the most common and map directly to cache-line
+fills. Strided and indexed variants require the address-generation unit to
+compute a separate address per element.
+
+### 11.4 Vector Arithmetic
+
+The V extension defines a comprehensive set of arithmetic instructions that
+operate element-wise on VL elements:
+
+| Category | Examples |
+|----------|----------|
+| Integer ALU | `vadd.vv`, `vsub.vv`, `vand.vv`, `vor.vv`, `vxor.vv` |
+| Integer shift | `vsll.vv`, `vsrl.vv`, `vsra.vv` |
+| Integer compare | `vmseq.vv`, `vmslt.vv`, `vmsle.vv` |
+| Integer multiply | `vmul.vv`, `vmulh.vv`, `vmacc.vv` |
+| Integer divide | `vdivu.vv`, `vrem.vv` |
+| FP arithmetic | `vfadd.vv`, `vfsub.vv`, `vfmul.vv`, `vfdiv.vv` |
+| Fused multiply-add | `vfmacc.vv` (a = a + b * c) |
+| Reduction | `vredsum.vs` (sum all elements into scalar) |
+| Masked operations | Any instruction can take a mask register (`v0`) |
+
+**Masking:** Bit 0 of the instruction encodes whether masking is active. If so,
+only elements where `v0[i] = 1` are computed; others are left unchanged (or set
+to the undisturbed value). This is critical for conditional SIMD code (e.g.,
+`if (a[i] > 0) b[i] = a[i] * 2`).
+
+### 11.5 Microarchitectural Implications
+
+- **Register file sizing:** 32 registers x VLEN bits. At VLEN = 256, this is
+  1 KB. At VLEN = 512, it is 2 KB. The vector register file needs 2 read + 1
+  write ports for a single-issue vector pipeline; wider issue requires more ports.
+- **Chaining:** Analogous to instruction forwarding, vector chaining allows a
+  dependent vector instruction to begin execution before the producer has finished
+  all elements. For example, `vfmul` producing element 0 can chain into `vfadd`
+  consuming element 0 in the next cycle. Full chaining reduces the effective
+  latency of back-to-back vector operations to 1 element per cycle.
+- **Lane decomposition:** A common implementation partitions the vector datapath
+  into N lanes (e.g., 4 lanes of 128 bits each for VLEN = 512). Each lane
+  processes SEW-width elements in parallel. Lane count determines throughput:
+  4 lanes with SEW=32 produce 4 x 4 = 16 float32 results per cycle.
+
+---
+
+## 12. RVA23 Profile -- Application Processor Standard
+
+The RISC-V profiles define mandatory extension sets that software can rely on.
+The **RVA23U64** profile (ratified 2024) is the target for general-purpose
+application processors running rich OSes (Linux, Android). It mandates:
+
+### 12.1 Mandatory Extensions
+
+| Extension | Full Name | Purpose |
+|-----------|-----------|---------|
+| **V** | Vector Extension | Scalable SIMD for media, ML, crypto |
+| **Zicond** | Conditional Operations | `czero.eqz`, `czero.nez` -- conditional moves without branch |
+| **Zvfh** | Vector FP16 | Half-precision (16-bit) floating-point in vectors |
+| **Zawrs** | Wait-on-Reservation-Set | `WRS.STO`, `WRS.NTO` -- low-power wait for semaphore |
+| **Zihintpause** | Pause Hint | `PAUSE` instruction -- hint to pipeline for spin-wait optimization |
+| **Zicsr** | CSR Instructions | `CSRRW`, `CSRRS`, `CSRRC` (already implied by base) |
+| **Zifencei** | Instruction-Fence | `FENCE.I` -- instruction-cache coherence |
+| **Zcb** | Compressed Bit-Manipulation | Additional compressed instructions for code density |
+| **Zba / Zbb / Zbs** | Bit-Manipulation | Address-generation acceleration, population count, bit set/clear |
+| **Zfhmin** | FP16 Minimal | Load/store/move for IEEE half-precision floats |
+| **Zkt** | Data-Independent Execution Timing | Constant-time execution for crypto (resists timing side-channels) |
+| **Zvkng** | Vector Crypto -- NIST Suite | AES-256, SHA-256, SHA-512, SM3, SM4, GCM in vector unit |
+
+### 12.2 Why V Is Mandatory
+
+Making V mandatory in RVA23 means application software (Android runtime, Linux
+glibc, LLVM/OpenMP) can assume vector support and ship pre-compiled vectorized
+libraries. This breaks the chicken-and-egg problem: ISAs without a guaranteed
+SIMD baseline force developers to ship scalar fallback paths that leave hardware
+underutilized.
+
+### 12.3 Impact on Hardware Design
+
+An RVA23-compliant core must implement:
+
+1. A vector unit with at least VLEN = 128 (V extension).
+2. Half-precision FP datapaths in both scalar and vector units (Zfhmin + Zvfh).
+3. Conditional select in the integer ALU (Zicond adds 2 instructions to the
+   decoder, minimal gate cost).
+4. Crypto-constant-time guarantees in the pipeline (Zkt constrains the
+   multiplier and divider to not have data-dependent latency).
+5. PAUSE as a no-op that signals the fetch/issue logic to yield resources to
+   the other SMT thread (Zihintpause).
+
+---
+
+## 13. RISC-V in AI Accelerators
+
+RISC-V has become the ISA of choice for several major AI/ML accelerator
+programs because of its license-free model and extensibility.
+
+### 13.1 Alibaba Xuantie C910 / C920
+
+- **C910:** 6-wide out-of-order RV64GCV core at 2.5 GHz (TSMC 7 nm). Features a
+  256-bit vector unit (VLEN=256), 128-entry ROB, 3 ALU + 2 FPU execution units.
+  Achieves ~7 SPECint2006/GHz. Open-sourced in 2022.
+- **C920:** Successor with improved branch prediction (TAGE-based), larger
+  L2 cache, and RISC-V hypervisor extension support. Targets cloud AI inference.
+- **Extension for AI:** Xuantie adds custom T-Head extensions for matrix
+  operations (int8/matmul acceleration), interleaved memory access patterns, and
+  a custom cache-prefetch hint.
+
+### 13.2 SiFive P870
+
+- 6-wide out-of-order RV64GCV core. Designed for high-performance computing
+  and automotive. Implements RVA23 profile (V, Zicond, Zvfh, Zba, Zbb, Zbs).
+- Vector unit: VLEN=256, 4 lanes, supports FP16/BF16/INT8/INT4 data types.
+- Coherent mesh interconnect (SiFive CacheCoherent Interconnect) supports
+  up to 16 P870 cores in a single cluster.
+
+### 13.3 Tenstorrent
+
+- Founded by Jim Keller. Uses RISC-V as the control processor for AI
+  accelerator tiles.
+- Each tile contains a small RISC-V core (in-order, RV32IMC) plus a matrix
+  math unit (Tensix core). Tiles communicate via a packet-switched network-on-chip.
+- The RISC-V core handles data movement, synchronization, and kernel dispatch;
+  the matrix unit handles the compute-heavy GEMM operations.
+- Grayskull (2020): 120 tiles, 368 MB SRAM. Wormhole (2023): expanded with
+  Ethernet-die-to-die links for multi-chip scaling.
+
+### 13.4 Other Notable RISC-V AI Designs
+
+| Company | Product | Core Type | Target |
+|---------|---------|-----------|--------|
+| Esperanto | ET-1031 | 1000+ in-order RV64GC cores + VPU | Datacenter inference |
+| Ventana | Veyron V1 | 8-wide OoO RV64GCV | Cloud/server |
+|小米 | Xuanjie C1350 | 6-wide OoO with NPU | Mobile SoC |
+
+---
+
+## 14. RISC-V Hypervisor Extension (H Extension)
+
+The H extension adds hardware support for Type-1 and Type-2 hypervisors. It was
+ratified in 2021 and enables virtualization without binary translation.
+
+### 14.1 Two-Stage Address Translation
+
+Without the H extension, the MMU performs a single translation: VA -> PA. With
+the H extension active, the MMU performs **two-stage translation**:
+
+```
+Guest Virtual Address (GVA)
+        |
+   [Stage 1: Guest VM page table]     <-- controlled by guest OS
+        |
+   Guest Physical Address (GPA)
+        |
+   [Stage 2: Host / hypervisor page table]  <-- controlled by hypervisor
+        |
+   Host Physical Address (HPA / actual PA)
+```
+
+- **Stage 1** is managed by the guest OS writing to its own `satp` (called
+  `vsatp` in the hypervisor context). The hardware walks the guest page table
+  (in GPA space) to produce a GPA.
+- **Stage 2** is managed by the hypervisor via the `hgatp` CSR (Hypervisor
+  Guest Address Translation and Protection). The hardware walks the host page
+  table to translate GPA to HPA.
+
+Each stage follows the standard Sv39/Sv48 radix-tree format. The total walk
+latency doubles: 3 memory accesses for Stage 1 + 3 for Stage 2 = 6 accesses
+(worst case without caching).
+
+### 14.2 VMID (Virtual Machine ID)
+
+Analogous to ASID for processes, the **VMID** tags Stage-2 TLB entries to avoid
+flushing the entire TLB on VM context switches.
+
+```
+hgatp CSR format:
+  [Mode (4 bits)] [VMID (14 bits)] [PPN of Stage-2 root table (44 bits)]
+```
+
+- VMID width: 14 bits = 16,384 concurrent VMs (before recycling).
+- On a VM switch, the hypervisor writes the new VMID to `hgatp`. TLB entries
+  from the previous VM remain valid but will not match (VMID mismatch).
+
+### 14.3 Key Hypervisor CSRs
+
+| CSR | Address | Purpose |
+|-----|---------|---------|
+| `hstatus` | 0x600 | Hypervisor status (VS-field, VTVM, VTM) |
+| `hedeleg` | 0x602 | Hypervisor exception delegation to VS-mode |
+| `hideleg` | 0x603 | Hypervisor interrupt delegation to VS-mode |
+| `hie` | 0x604 | Hypervisor interrupt enable |
+| `hgeie` | 0x607 | Hypervisor guest external interrupt enable |
+| `hgatp` | 0x680 | Stage-2 page table base + VMID |
+| `vsatp` | 0x280 | Guest's satp (Stage-1 page table base) |
+| `vstvec` | 0x280 | Guest's stvec |
+| `hgeip` | 0xE12 | Guest external interrupt pending |
+| `htval` | 0x643 | Hypervisor trap value |
+| `htinst` | 0x64A | Hypervisor trap instruction |
+
+### 14.4 Instruction Emulation with htinst
+
+When a guest executes a privileged instruction that must be trapped (e.g.,
+accessing a device register via load/store), the hypervisor needs to know which
+instruction caused the trap. The `htinst` CSR provides the **transformed
+instruction encoding** of the trapping instruction, allowing the hypervisor to
+decode and emulate it without reading guest memory. This is critical for
+performance: device emulation in the hypervisor avoids a costly instruction-fetch
+from guest physical memory.
+
+### 14.5 Memory Mapping for VMs
+
+The hypervisor maps guest physical frames to host physical frames via the
+Stage-2 page tables. This enables:
+
+1. **Memory overcommitment:** Allocate more GPA space than physical HPA, swap
+   unused guest pages to disk.
+2. **Device pass-through:** Map a physical device's MMIO range directly into
+   the guest GPA so the guest can access it without hypervisor intervention.
+3. **Memory isolation:** Ensure a malicious guest cannot access another VM's
+   memory (enforced by Stage-2 PTE permissions).
+
+---
+
 ## References
 
 - RISC-V ISA Specification (Volume 1, Ratified 20191213-draft)
 - RISC-V Privileged Architecture Specification (20211203)
+- RISC-V Vector Extension V 1.0 (ratified 2023)
+- RISC-V Hypervisor Extension H (ratified 2021)
+- RVA23 Profiles Specification (RISC-V International, 2024)
 - Patterson, David A. and Andrew S. Waterman, *The RISC-V Reader: An
   Open Architecture Atlas*, First Edition, Strawberry Canyon, 2017.
 - RISC-V International, "RISC-V Instruction Set Manual," available at

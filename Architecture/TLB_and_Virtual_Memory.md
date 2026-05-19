@@ -1414,7 +1414,287 @@ significantly -- and why superpages are critical for data-intensive workloads.
 
 ---
 
-## 10. References
+## 10. Five-Level Paging
+
+### 10.1 Motivation
+
+4-level paging in x86-64 (PML4 -> PDPT -> PD -> PT) supports 48-bit virtual
+addresses, giving 256 TiB of virtual address space per process. This was
+sufficient until workloads such as in-memory databases, persistent memory
+(DIMM-based NVRAM), and multi-terabyte ML training sets pushed beyond the
+limit. 5-level paging extends the virtual address width to 57 bits (128 PiB).
+
+### 10.2 x86-64 LA57 (5-Level Paging, Intel)
+
+LA57 adds a fifth level (PML5) above PML4:
+
+```
+57-bit Virtual Address:
+  [PML5 (9)] [PML4 (9)] [PDPT (9)] [PD (9)] [PT (9)] [Offset (12)]
+  bits 56:48  bits 47:39  bits 38:30  bits 29:21  bits 20:12  bits 11:0
+
+CR3 register holds physical address of PML5 table (new root).
+
+Walk:
+  Step 0: PML5_entry = Memory[CR3 + VA[56:48] * 8]        (NEW)
+  Step 1: PML4_entry = Memory[PML5_entry.addr + VA[47:39] * 8]
+  Step 2: PDPT_entry = Memory[PML4_entry.addr + VA[38:30] * 8]
+  Step 3: PD_entry   = Memory[PDPT_entry.addr + VA[29:21] * 8]
+  Step 4: PT_entry   = Memory[PD_entry.addr + VA[20:12] * 8]
+  Step 5: PA = PT_entry.PFN || VA[11:0]
+
+Total: 5 memory accesses per translation (without TLB or page-walk cache).
+```
+
+**Support status:**
+- Intel: Supported since Ice Lake (2019). Enabled via CR4.LA57 bit.
+- AMD: Supported since Zen 4 / Genoa (2023).
+- Linux: Supported since kernel 4.14 (2017). Requires CONFIG_X86_5LEVEL=y.
+
+**TLB impact:** LA57 does not change the TLB entry format -- each entry still
+maps one 4 KB page. However, the page-walk latency increases by 1 level.
+With a page-walk cache that caches PML5 and PML4 entries, the effective
+overhead is minimal (most walks still hit in 2--3 cycles).
+
+### 10.3 ARM LPA2 (Large Physical Addressing v2)
+
+ARMv9.2-A introduces LPA2, extending the physical address width from 48 bits
+to 52 bits and the virtual address width from 48 to 52 bits:
+
+| Parameter | ARMv8 (LPA) | ARMv9 (LPA2) |
+|-----------|-------------|---------------|
+| Virtual address width | 48 bits | 52 bits |
+| Physical address width | 48 bits | 52 bits |
+| Page table levels | 4 (TTBR0 + TTBR1) | 4 or 5 |
+| Addressable physical memory | 256 TiB | 4 PiB |
+
+LPA2 reclaims 4 bits from the PTE's "ignored" fields (bits 51:48 and 47:44)
+by using a larger PTE format. The walk is similar to ARMv8 but with wider
+PPN fields in each PTE.
+
+**Why ARM stayed at 4 levels:** ARM uses separate translation tables for user
+(TTBR0) and kernel (TTBR1) address spaces. With a 52-bit VA split (e.g., 49
+bits user / 49 bits kernel), 4 levels suffice because each half of the address
+space uses its own root table. This avoids the extra walk level that x86
+requires.
+
+### 10.4 RISC-V Sv57
+
+RISC-V Sv57 adds a 5th level to Sv48, supporting 57-bit virtual addresses:
+
+$$
+\text{VA}[56:0] \rightarrow \underbrace{\text{VPN}[4]}_{9} \underbrace{\text{VPN}[3]}_{9} \underbrace{\text{VPN}[2]}_{9} \underbrace{\text{VPN}[1]}_{9} \underbrace{\text{VPN}[0]}_{9} \underbrace{\text{offset}}_{12}
+$$
+
+`satp.MODE = 10` selects Sv57. The walk is 5 levels, same format as Sv39/Sv48.
+Superpages: 128 TiB (leaf at L1), 256 GiB (L2), 1 GiB (L3), 2 MiB (L4), 4 KiB (L5).
+
+---
+
+## 11. CXL Memory and Virtual Memory: NUMA-Aware Page Tables
+
+### 11.1 Compute Express Link (CXL) Overview
+
+CXL (Compute Express Link) is a cache-coherent interconnect built on PCIe
+physical layers. It allows a CPU to access memory attached to a different
+device (another CPU, a memory expander, or a smart NIC) as if it were local
+memory -- but with higher latency.
+
+| CXL Version | Bandwidth (x16) | Latency (typical) | Key Feature |
+|-------------|------------------|---------------------|-------------|
+| CXL 1.1 | 32 GT/s (~64 GB/s) | 100--200 ns | Cache-coherent memory access |
+| CXL 2.0 | 32 GT/s (~64 GB/s) | 80--150 ns | Switching, multi-head devices |
+| CXL 3.0 | 64 GT/s (~128 GB/s) | 50--100 ns | Fabric, peer-to-peer |
+
+CXL-attached memory appears in the physical address map as a separate NUMA
+node with higher latency and lower bandwidth than DDR-attached memory.
+
+### 11.2 NUMA-Aware Page Tables
+
+When a system has both local DDR and remote CXL memory, the OS page table
+must track where each page is physically located. The virtual memory system
+must be NUMA-aware:
+
+1. **Page placement:** The OS allocates pages for latency-sensitive data on
+   the local DDR node and throughput-sensitive (bulk) data on the CXL node.
+   Linux uses `mbind()` and the `numactl` tool for this.
+
+2. **Page migration:** If a page allocated on the CXL node is accessed
+   frequently by the local CPU, the OS may migrate it to the local DDR node.
+   Linux `kpageidle` and `migratepages` support this. Page migration copies
+   the page to the new node, updates the page table PTE atomically, and
+   flushes the old TLB entries (TLB shootdown).
+
+3. **TLB implications:** CXL memory accesses have higher latency, so TLB
+   misses are more expensive when the page-walk cache entries for CXL-backed
+   PTEs are cold. The page-walk itself may need to traverse the CXL link to
+   read page-table entries stored in remote memory, adding 50--100 ns per
+   access.
+
+4. **Page table placement:** The OS should allocate page-table pages on the
+   same NUMA node as the data they describe. If the page table for a process
+   running on CPU 0 is stored in CXL memory attached to CPU 1, every TLB miss
+   crosses the CXL link twice (once for the page walk, once for the data).
+
+### 11.3 Hardware Support for NUMA-Aware VM
+
+- **NUMA-aware page walkers:** Some modern CPUs (Intel Sapphire Rapids, AMD
+  Genoa) allow the page walker to be configured with a NUMA preference, so
+  page-walk cache refills target the nearest memory controller.
+
+- **CXL Type 3 (memory expanders):** A CXL memory expander is a headless
+  device that provides DDR channels accessible via the CXL link. The OS treats
+  it as a separate NUMA node. The page table format is unchanged; only the
+  physical address mapping differs.
+
+- **Tiered memory systems:** Future designs (projected 2025--2027) use CXL
+  memory as a tier between DRAM and SSD. The OS's virtual memory system
+  manages three tiers: hot pages in DDR, warm pages in CXL, cold pages on
+  SSD. Page promotion/demotion between tiers is guided by hardware access
+  counters (Intel MAT, ARM MPAM).
+
+---
+
+## 12. Secure Memory: Encrypted Memory
+
+### 12.1 The Threat Model
+
+In cloud environments, a malicious hypervisor (or a physical attacker with
+access to DRAM DIMMs) can:
+1. Read the guest's memory contents (via DMA or DIMM snooping).
+2. Modify the guest's memory (via DMA or bus interception).
+3. Roll back memory to a previous state (replay attacks).
+
+Encrypted memory protects against these threats by ensuring that all data
+stored in DRAM is encrypted, with the encryption keys managed by hardware that
+the hypervisor cannot access.
+
+### 12.2 AMD SME (Secure Memory Encryption)
+
+AMD SME (introduced in EPYC Naples, 2017) uses a hardware memory encryption
+engine between the memory controller and the DRAM:
+
+```
+CPU Core
+  |
+  MMU (VA -> PA translation)
+  |
+  [Encryption Engine (AES-128/256 XTS)]
+  |
+  DRAM (stores ciphertext)
+
+Encryption key: generated by the AMD Secure Processor (on-die ARM core)
+at boot. The key is never visible to the host OS or hypervisor.
+```
+
+**Page table interaction:**
+- A bit in the page table entry (C-bit in AMD's case, bit 51 of the PTE)
+  indicates whether the page is encrypted.
+- The OS sets the C-bit when allocating encrypted pages. The hardware checks
+  the C-bit on every memory access and routes the request through the
+  encryption engine.
+- Encrypted and unencrypted pages can coexist: the hypervisor runs with
+  unencrypted memory while the guest runs with encrypted memory (in SEV mode).
+
+**Performance impact:** The encryption engine adds ~6--10 cycles of latency to
+every memory access that goes to DRAM (cache hits are not affected because
+data is decrypted before entering the cache). For workloads with high cache
+miss rates, this translates to 5--15% performance overhead.
+
+### 12.3 AMD SEV / SEV-SNP (Secure Encrypted Virtualization)
+
+SEV extends SME to virtual machines:
+
+- **SEV (v1):** Each VM is assigned a unique encryption key by the AMD Secure
+  Processor. The hypervisor cannot read the guest's memory in plaintext.
+  Limitation: the hypervisor can still replay or corrupt guest memory.
+
+- **SEV-ES (Encrypted State, v2):** All CPU register state is encrypted when
+  saved to memory (on VM exit). The hypervisor cannot inspect or modify
+  guest registers.
+
+- **SEV-SNP (Secure Nested Paging, v3):** Adds integrity protection. The
+  hardware maintains a reverse-map table (RMP) that tracks which VM owns
+  each physical page. The hypervisor cannot map a guest page into its own
+  address space or into another guest's address space (prevents aliasing
+  attacks). This also prevents replay attacks because the RMP is checked
+  on every access.
+
+**Page table changes for SEV-SNP:**
+- The guest's page tables are unchanged (the guest runs a standard OS).
+- The hypervisor's nested page tables (Stage-2) are augmented with
+  SEV-SNP metadata in the RMP, not in the page table itself.
+- The hardware walker checks the RMP in parallel with the nested page walk.
+
+### 12.4 Intel TDX (Trust Domain Extensions)
+
+Intel TDX (introduced in Sapphire Rapids, 2023) is Intel's equivalent of
+SEV-SNP:
+
+- Creates **Trust Domains (TDs)** -- isolated VMs whose memory and register
+  state are encrypted and integrity-protected.
+- Uses **MKTME (Multi-Key Total Memory Encryption):** up to 64 encryption
+  keys, one per TD.
+- The **TDX Module** (a secure monitor running at the highest privilege)
+  manages TD lifecycle, key allocation, and entry/exit.
+- Page table integrity: a **Secure EPT (Extended Page Table)** maps guest
+  physical to host physical with integrity checks (Merkle-tree-based MACs
+  on EPT entries).
+
+**Key difference from SEV-SNP:** TDX uses a Merkle tree for integrity
+(trades storage for verification speed), while SEV-SNP uses a flat RMP table
+(simpler but requires more memory for large systems).
+
+### 12.5 ARM CCA (Confidential Compute Architecture)
+
+ARM CCA (introduced in ARMv9.4-A) adds **Realms** -- isolated execution
+environments protected from the hypervisor and the OS:
+
+- **Realm Management Monitor (RMM):** A firmware component at EL2.5 (between
+  the hypervisor and the secure monitor) that manages realm page tables.
+- **Realm page tables:** Separate Stage-2 page tables managed by the RMM. The
+  hypervisor cannot modify realm page tables.
+- **Granule Protection Checks (GPC):** Hardware checks on every memory access
+  that verify the page's protection state (realm vs. normal vs. secure) before
+  allowing the access.
+- Encryption: Realm memory is encrypted by hardware using keys managed by the
+  RMM.
+
+### 12.6 Comparison
+
+| Feature | AMD SEV-SNP | Intel TDX | ARM CCA |
+|---------|-------------|-----------|---------|
+| Encryption | AES-128/256 XTS | AES-256 XTS (MKTME) | Hardware-dependent |
+| Integrity | RMP table | Merkle tree | GPC + RMM |
+| Max keys | 509 (SEV guests) | 64 (MKTME keys) | Per-realm |
+| Page table isolation | Nested paging + RMP | Secure EPT | Realm Stage-2 |
+| Register encryption | Yes (SEV-ES) | Yes (TDX) | Yes (Realm) |
+| Deployed | EPYC Milan+, 2021 | Xeon Sapphire+, 2023 | Neoverse V3, 2025+ |
+
+### 12.7 TLB Impact of Encrypted Memory
+
+Encrypted memory does not change the TLB format or lookup path. The encryption
+engine sits **below** the cache, so the TLB translates virtual to physical
+addresses as usual. However:
+
+1. **C-bit / encryption attribute in TLB:** Some implementations store an
+   encryption attribute in the TLB entry (e.g., AMD's C-bit is stored in the
+   PTE and cached in the TLB). This ensures the encryption engine is engaged
+   on cache misses for encrypted pages.
+
+2. **Page walk through encrypted memory:** In SEV, the guest page tables
+   are encrypted. The hardware page walker must decrypt PTEs during a page
+   walk, adding latency. SEV-SNP mitigates this by caching decrypted PTEs
+   in the page-walk cache.
+
+3. **TLB shootdown for secure VMs:** When the hypervisor modifies the nested
+   page tables (Stage-2) for a TD or SEV guest, it must issue TLB shootdowns
+   via IPI. The secure VM is paused during the shootdown to prevent it from
+   observing stale translations.
+
+---
+
+## 13. References
 
 1. **RISC-V Privileged Architecture Specification v1.12** -- Chapter 4.3 (Sv39), Sv48,
    Sv57 page-table formats, `satp` CSR, `SFENCE.VMA` instruction semantics.
@@ -1432,6 +1712,14 @@ significantly -- and why superpages are critical for data-intensive workloads.
    TLB maintenance instructions (TLBI), VIPT constraints.
 8. **Intel 64 and IA-32 Architectures Software Developer's Manual, Vol. 3A** --
    Chapter 4 (Paging), 4-level and 5-level paging, INVLPG, PCID.
+9. **Intel Corp., "5-Level Paging and LA57," Intel 64 and IA-32 Architectures
+   Software Developer's Manual, Vol. 3A, Section 4.5.**
+10. **ARM Architecture Reference Manual (ARMv9-A)** -- LPA2, CCA, Realm
+    Management.
+11. **CXL Consortium, "Compute Express Link Specification, Rev 3.0," 2022.**
+12. **AMD, "SEV-SNP: Strengthening VM Isolation with Integrity and More,"
+    AMD Developer Documentation, 2021.**
+13. **Intel, "TDX Architecture Overview," Intel Developer Manual, 2023.**
 
 ---
 

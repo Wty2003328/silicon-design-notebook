@@ -2792,3 +2792,202 @@ analyzing pipeline throughput, counting fused uops separately would
 underestimate the machine's capability. It also illustrates the interplay
 between ISA complexity (x86's memory-operand instructions generate more
 micro-fusion opportunities) and microarchitectural efficiency.
+
+---
+
+## 18. Modern SMT Implementations
+
+### 18.1 Intel Hyper-Threading (SMT-2)
+
+Intel has shipped 2-thread SMT on most client and server cores since the
+Pentium 4 Northwood (2002). Key implementation details from Golden Cove
+(Alder Lake P-core, 2021):
+
+| Structure | Sharing Model | Details |
+|-----------|--------------|---------|
+| ROB | Dynamically shared | 512 total entries, each thread capped at 384 |
+| IQ (unified) | Dynamically shared | ~128 entries, thread-ID tagged |
+| Physical Register File | Dynamically shared | ~280 INT, ~224 FP entries |
+| L1 D-Cache | Fully shared | 48 KB, 12-way |
+| L2 Cache | Fully shared | 1.25 MB (Golden Cove), 2 MB (Raptor Cove) |
+| Rename width | Time-multiplexed | 6 uops/cycle total, alternating fetch groups |
+| Execution units | Fully shared | 6 INT ALUs, 2 FP FMA units, 3 load AGUs |
+
+Typical SMT-2 speedup on Golden Cove: 1.25--1.35x on server workloads
+(SPEC CPU2017 multi-copy), diminishing to 1.10x on workloads with heavy L2
+cache contention.
+
+### 18.2 AMD Zen 4 SMT-2
+
+AMD Zen 4 (2022) implements 2-thread SMT with a different resource partitioning
+philosophy:
+
+| Structure | Details |
+|-----------|---------|
+| ROB | 320 entries, per-thread floor of 160 |
+| IQ | Distributed: 64 INT + 44 FP + 48 AGU/load + 24 store entries |
+| PRF | 224 INT + 192 FP physical registers, shared with per-thread floor |
+| Load/Store Queue | 128 combined entries, dynamically partitioned |
+| L1 D-Cache | 32 KB, 8-way, fully shared |
+| L2 Cache | 1 MB per core, private, fully shared by both threads |
+| Execution units | 4 INT ALU + 2 AGU + 2 FPU (shared) |
+
+Zen 4 SMT-2 speedup: 1.20--1.30x. AMD publishes per-thread IPC guarantees
+for real-time use cases.
+
+### 18.3 IBM POWER10 SMT-4 / SMT-8
+
+IBM POWER10 supports up to 8 hardware threads per core (SMT-8), the widest
+commercial SMT implementation:
+
+- 8 threads share a 512-entry ROB and 8 execution slices.
+- Each thread gets its own architected register file and program counter.
+- SMT-4 mode: 4 threads, each with ~128 ROB entries guaranteed.
+- SMT-8 mode: 8 threads, ~64 ROB entries per thread.
+- SMT-8 throughput: 1.6--2.2x over single-thread, depending on memory
+  intensity.
+
+### 18.4 Apple: No SMT
+
+Apple's M-series cores (Firestorm, Avalanche, Everest) do not implement SMT.
+Instead, Apple uses very wide single-thread cores (8-wide decode, 600+ entry
+ROB) and relies on chip-area efficiency: two non-SMT cores in the same area as
+one SMT-2 core provide more predictable performance and avoid security
+vulnerabilities inherent in shared microarchitectural state.
+
+### 18.5 SMT Design Tradeoffs Summary
+
+| Vendor | Core | SMT Width | ROB | Decode Width | SMT Speedup |
+|--------|------|-----------|-----|-------------|-------------|
+| Intel | Golden Cove | 2 | 512 | 6 | 1.25--1.35x |
+| AMD | Zen 4 | 2 | 320 | 4 (6 uop) | 1.20--1.30x |
+| IBM | POWER10 | 8 | 512 | 8 | 1.6--2.2x |
+| Apple | Avalanche | 1 | ~630 | 8 | N/A |
+| ARM | Cortex-X4 | 1 | ~320 | 5 | N/A |
+
+---
+
+## 19. Pipeline Security: Spectre, Meltdown, and Mitigations
+
+### 19.1 The Attack Class
+
+The Spectre (2018) and Meltdown (2018) attacks exploit the microarchitectural
+side-effects of speculative execution. The core vulnerability: when the
+processor speculatively executes instructions on a wrong path (or with wrong
+privilege), the changes to microarchitectural state (cache contents, TLB
+entries, branch predictor state) are not rolled back even though the
+architectural state is restored. An attacker can use a **covert channel**
+(typically the data cache) to exfiltrate secret data that was loaded during
+the speculative window.
+
+**Spectre Variant 1 (Bounds Check Bypass):**
+```
+if (index < array_size)            // Trains branch predictor to "taken"
+    temp = array2[array1[index]];  // Speculative access: index may be out-of-bounds
+```
+The attacker mistrains the branch predictor, causes speculative execution with
+a malicious index, and observes which cache line was loaded via a timing
+side-channel on array2.
+
+**Spectre Variant 2 (Branch Target Injection):**
+The attacker poisons the indirect branch predictor (BTB) so that an indirect
+branch in the victim speculatively jumps to a gadget chosen by the attacker.
+
+**Meltdown (Rogue Data Cache Load):**
+On affected Intel processors (pre-2018), a user-mode load from a
+supervisor-only page faults, but the data reaches the cache before the fault
+is processed. The attacker reads the cached data via a covert channel.
+
+### 19.2 Hardware Mitigations
+
+#### Retpoline (Return Trampoline)
+
+A software+hardware mitigation for Spectre Variant 2. Instead of executing an
+indirect branch (which may be poisoned in the BTB), the compiler replaces it
+with a `call` + `ret` sequence:
+
+```asm
+; Original: jmp *%rax
+; Retpoline:
+  call retpoline_target
+retpoline_target:
+  lfence          ; stop speculation
+  jmp retpoline_target  ; infinite loop -- never reaches here speculatively
+```
+
+The `call` pushes a return address onto the RAS; the `ret` pops it. Because the
+RAS is not poisoned by the BTB attack, the speculative path is safe. The
+performance cost is ~5--15% on indirect-heavy workloads.
+
+#### IBRS (Indirect Branch Restricted Speculation)
+
+An x86 MSR (Model-Specific Register) that, when set, prevents indirect branch
+predictions from using branch predictor state that was populated at a lower
+privilege level. This creates a "predictor fence" on privilege transitions.
+Intel introduced IBRS in microcode updates (2018). Performance cost: 1--5%
+on system-call-heavy workloads.
+
+#### STIBP (Single Thread Indirect Branch Predictor)
+
+Prevents one SMT thread from influencing the other thread's indirect branch
+predictions. When enabled, each SMT thread has its own branch predictor state
+(partitioned BTB). Performance cost on SMT-2: 1--10% depending on workload.
+
+#### Microarchitectural Buffer Flushing
+
+On return from a higher-privilege exception handler, the processor flushes
+internal buffers that could leak data:
+
+| Buffer | Mitigation |
+|--------|-----------|
+| Load port buffers | Cleared on VM exit / privilege change |
+| Store buffer | Drained and verified before returning to less-privileged mode |
+| Line fill buffer | Invalidated on context switch |
+| L1 D-Cache | May require flush on core sibling entry (L1D flush on VM entry, some Intel) |
+
+#### Speculative Store Bypass Disable (SSBD)
+
+Controls whether speculative loads may bypass older stores to the same address
+(before the store address is resolved). Disabling store bypass prevents a
+variant where speculative loads read stale data. Performance cost: 0--3%.
+
+### 19.3 RISC-V Security Considerations
+
+RISC-V cores are not immune to speculative side-channels. Mitigations in
+RISC-V designs include:
+
+1. **Speculation barriers:** `FENCE` with appropriate predecessors/successors
+   can act as a speculation barrier. The `Zicom` extension adds conditional
+   select instructions that avoid branches entirely (eliminating BTB attack
+   surface).
+
+2. **Data-independent timing (Zkt):** The Zkt extension mandates that
+   certain instructions (MUL, DIV, AES round) execute in data-independent time,
+   preventing timing side-channels on secret-dependent values.
+
+3. **PMP/PMA access checks before speculation:** In properly designed RISC-V
+   cores, the Physical Memory Protection (PMP) and Physical Memory Attributes
+   (PMA) checks are performed before speculative data is returned to the cache
+   fill buffer, preventing Meltdown-class attacks by design.
+
+4. **Platform-level security (TEE):** The RISC-V Trusted Execution
+   Environment (TEE) proposal uses PMP to isolate a secure monitor from the
+   rich OS, preventing the OS from accessing secure-memory regions even via
+   speculative execution.
+
+### 19.4 Performance Impact Summary
+
+| Mitigation | Mechanism | Typical Cost |
+|-----------|-----------|-------------|
+| Retpoline | Software (compiler) | 5--15% (indirect-heavy code) |
+| IBRS | MSR (microcode) | 1--5% (syscall-heavy) |
+| STIBP | MSR (partition BTB) | 1--10% (SMT workloads) |
+| SSBD | MSR (block store bypass) | 0--3% |
+| L1D flush on VM entry | Microcode | 1--3% per VM entry |
+| KPTI (Kernel Page Table Isolation) | Software (OS) | 5--10% (syscall-heavy) |
+| Full mitigation stack | All combined | 10--30% worst case |
+
+KPTI is a software mitigation for Meltdown: the kernel runs with a separate
+page table that maps only a small trampoline, forcing a TLB flush on every
+syscall entry/exit. This is not needed on processors with hardware Meltdown
+mitigations (AMD Zen, ARM Cortex-A76+, post-2018 Intel).

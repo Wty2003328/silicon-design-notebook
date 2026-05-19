@@ -1173,3 +1173,324 @@ At sub-10μm pitch: (1) Alignment accuracy must be <500nm (extremely tight for D
 small that Cu grain structure matters for bond quality. (4) Thermal expansion mismatch
 can cause misalignment during anneal. (5) Testing at this density is challenging — can't
 probe individual bonds. (6) Design rules for keep-out and dummy patterns become complex.
+```
+
+---
+
+## 12. UCIe 3.0 and Advanced Die-to-Die Interfaces
+
+### 12.1 UCIe Specification Evolution
+
+```
+UCIe specification timeline:
+  UCIe 1.0 (March 2022): Initial release
+    - Standard package: 4-32 GT/s, 100-130 μm bump pitch
+    - Advanced package: 4-32 GT/s, 25-55 μm bump pitch
+  UCIe 1.1 (August 2023): Enhanced diagnostics
+  UCIe 2.0 (2024): 64 GT/s mode, improved RAS
+  UCIe 3.0 (2025-2026, projected): 32-64 GT/s standard, up to 128 GT/s advanced
+
+UCIe 3.0 key features:
+  - Data rates: 32 GT/s (standard), 64 GT/s (advanced)
+  - Bandwidth per mm die edge:
+    Standard package (130 μm pitch): ~250-500 Gbps/mm
+    Advanced package (25 μm pitch):  ~2000-4000 Gbps/mm
+  - Latency: <2 ns (link layer), <5 ns end-to-end
+  - Energy efficiency: 0.25-0.5 pJ/bit (advanced package)
+  - Protocol support: CXL 3.x, PCIe 6.x, AXI, streaming
+
+UCIe vs standard packaging vs advanced packaging:
+  ┌──────────────────┬──────────────────┬──────────────────┐
+  │ Feature           │ Standard Package  │ Advanced Package  │
+  ├──────────────────┼──────────────────┼──────────────────┤
+  │ Bump pitch        │ 100-130 μm       │ 25-55 μm         │
+  │ Substrate         │ Organic          │ Si bridge/interp. │
+  │ Reach             │ 5-25 mm          │ < 5 mm            │
+  │ Max data rate     │ 32 GT/s          │ 64+ GT/s          │
+  │ BW per mm edge    │ 250-500 Gbps     │ 2000-4000 Gbps    │
+  │ Energy/bit        │ 0.5-1.0 pJ       │ 0.25-0.5 pJ       │
+  │ Cost              │ Lower            │ Higher            │
+  │ Example use case  │ AMD EPYC IOD-CCD │ NVIDIA H100 GPU-HBM│
+  └──────────────────┴──────────────────┴──────────────────┘
+```
+
+---
+
+## 13. TSMC SoIC (System on Integrated Chips)
+
+```
+TSMC SoIC: 3D stacking using hybrid bonding
+
+  SoIC variants:
+
+  SoIC-CoW (Chip on Wafer):
+    - Known-good dies bonded to a base wafer
+    - Hybrid bonding (Cu-Cu, face-to-face)
+    - Bonding pitch: 1-9 μm
+    - Used for: SRAM-on-logic, logic-on-logic
+    - Example: AMD V-Cache (64MB SRAM on Zen CCD)
+
+    ┌──────────────┐
+    │  SRAM Cache  │  (top die, thinned to ~30 μm)
+    │    TSVs ↕↕   │
+    └──────┬───────┘
+    ┌──────┴───────┐
+    │   CPU Die    │  (bottom die, active side up)
+    │              │
+    └──────────────┘
+
+  SoIC-WoW (Wafer on Wafer):
+    - Entire wafers bonded, then diced
+    - Best alignment accuracy (< 200 nm)
+    - Both wafers must have same die size
+    - Higher throughput (batch process)
+    - Used for: image sensors, memory stacks
+
+  SoIC face-to-face:
+    - Both dies face the bonding interface
+    - No TSVs needed for signal (shortest path)
+    - Power TSVs still needed (through backside of one die)
+    - Bonding pitch: as fine as 1 μm
+
+    ┌──────────────┐
+    │   Top Die    │  (face down)
+    │   ──Cu-Cu──  │  ← bonding interface (1-9 μm pitch)
+    │  Bottom Die  │  (face up)
+    └──────────────┘
+    │  Power TSVs  │  (through bottom die backside)
+    └──────────────┘
+
+  Design considerations:
+    - Die matching: thermal expansion must be compatible
+    - Alignment: affects yield at sub-5 μm pitch
+    - Test: full KGD testing before bonding (no rework possible)
+    - Thermal: power budget limited by bottom die thermal resistance
+    - ESD: handling thin dies (30-50 μm) requires special precautions
+```
+
+---
+
+## 14. Intel Foveros and Samsung X-Cube
+
+### 14.1 Intel Foveros
+
+```
+Intel Foveros Direct (Hybrid Bonding):
+  - Cu-Cu hybrid bonding, face-to-face
+  - Pitch: 1-10 μm (current), targeting sub-1 μm
+  - Used in: Intel Meteor Lake (compute tile + SoC tile)
+  - Bond density: > 10,000 connections/mm²
+
+  Foveros Direct 3D:
+    ┌──────────────┐
+    │  Compute Die │  (top, face-down)
+    │   ──Cu-Cu──  │  ← hybrid bonding
+    │  Base Die    │  (bottom, face-up, with TSVs)
+    └──────┬───────┘
+           │TSVs
+    ┌──────┴───────┐
+    │ Package      │
+    │ Substrate    │
+    └──────────────┘
+
+  Foveros Omni (Die-to-Die):
+    - Dies connected via embedded silicon bridge
+    - Similar concept to EMIB but for 3D configurations
+    - Supports mixed die sizes and technologies
+    - Used for: heterogeneous chiplet integration
+
+Foveros vs TSMC SoIC comparison:
+  ┌──────────────┬──────────────┬──────────────┐
+  │ Feature       │ Foveros Direct│ TSMC SoIC    │
+  ├──────────────┼──────────────┼──────────────┤
+  │ Bonding       │ Hybrid Cu-Cu │ Hybrid Cu-Cu │
+  │ Pitch         │ 1-10 μm      │ 1-9 μm       │
+  │ Face config   │ Face-to-face │ Face-to-face  │
+  │ TSV            │ In base die  │ In one die    │
+  │ Platform       │ Intel process│ TSMC process  │
+  │ Key product    │ Meteor Lake  │ AMD V-Cache   │
+  └──────────────┴──────────────┴──────────────┘
+```
+
+### 14.2 Samsung X-Cube 3D IC
+
+```
+Samsung X-Cube:
+  - 3D IC stacking using TSVs
+  - EUV-based 3D packaging technology
+  - Supports heterogeneous integration:
+    logic + SRAM, logic + analog, logic + eMRAM
+
+  Key specifications:
+    TSV diameter: 2-6 μm
+    TSV pitch: 20-50 μm
+    Bonding: Cu-Cu direct or hybrid bonding
+    Stacking: 2-4 layers
+
+  Samsung advanced packaging portfolio:
+    I-Cube4: 2.5D (4 dies on silicon interposer)
+    X-Cube:  3D (vertical stacking with TSVs)
+    H-Cube:  Heterogeneous (2.5D + 3D combined)
+
+  Applications:
+    - Mobile SoCs (SRAM cache stacked on CPU)
+    - HBM (Samsung is a major HBM manufacturer)
+    - Custom AI accelerators
+```
+
+---
+
+## 15. Glass Substrates
+
+```
+Glass core substrates: next-generation packaging substrate material
+
+  Why glass:
+    - Lower dielectric loss: Df ~ 0.001 (vs 0.02 for organic)
+      → better signal integrity for high-speed I/O
+    - Coefficient of thermal expansion (CTE): ~3 ppm/°C
+      → matches silicon (2.6 ppm/°C) much better than organic (15-17 ppm/°C)
+      → reduces warpage, enables larger packages
+    - Dimensional stability: no moisture absorption
+    - Can support finer L/S: 1-2 μm (vs 8-10 μm organic)
+    - Higher package sizes possible: 100×100 mm+ (vs ~75×75 mm organic limit)
+
+  Glass interposer vs silicon interposer:
+    ┌──────────────┬──────────────┬──────────────┬──────────────┐
+    │ Feature       │ Glass Core   │ Silicon Inter │ Organic Sub  │
+    ├──────────────┼──────────────┼──────────────┼──────────────┤
+    │ L/S           │ 1-2 μm       │ 0.4-2 μm     │ 8-10 μm      │
+    │ CTE           │ 3-4 ppm/°C   │ 2.6 ppm/°C   │ 15-17 ppm/°C │
+    │ Dielectric loss│ Very low    │ Low           │ Moderate     │
+    │ Max size      │ 100+ mm      │ ~50 mm (reticle) │ 75 mm     │
+    │ TSV equivalent │ TGV (Through │ TSV           │ Through-via  │
+    │               │ Glass Via)   │               │              │
+    │ Cost          │ Medium       │ High          │ Low          │
+    │ Maturity      │ R&D / early  │ Production    │ Production   │
+    │               │ production   │               │              │
+    └──────────────┴──────────────┴──────────────┴──────────────┘
+
+  Through-Glass Via (TGV):
+    - Diameter: 10-30 μm (comparable to TSV)
+    - Formation: laser drilling or photolithographic etching
+    - Fill: Cu electroplating (same as TSV)
+    - Pitch: 30-100 μm
+    - Electrical: R ~10-30 mΩ, C ~10-30 fF (similar to TSV)
+
+  Industry status (2025-2026):
+    - Intel: glass substrate research for next-gen server CPUs
+    - TSMC: exploring glass core interposers for advanced packaging
+    - Samsung: glass substrate development for HBM integration
+    - Absolics (Intel spin-off): glass substrate prototypes
+    - Target production: 2027-2028 for high-volume applications
+```
+
+---
+
+## 16. Blackwell Case Study
+
+```
+NVIDIA Blackwell (B200 / GB200) Packaging:
+
+  Package configuration:
+    - GPU die: GB100, ~1600 mm² (dual-reticle, stitched)
+    - HBM: 6× HBM3e stacks (each 36 GB, 1.2 TB/s)
+    - Package: TSMC CoWoS-L (large format)
+    - Total memory: 192 GB HBM3e
+    - Total memory bandwidth: ~7.2 TB/s
+    - TDP: 1000W (B200)
+
+  CoWoS-L floorplan:
+    ┌─────────────────────────────────────────────────────┐
+    │  ┌────┐ ┌────┐  ┌────────────────────┐  ┌────┐ ┌────┐ ┌────┐ │
+    │  │HBM0│ │HBM1│  │                    │  │HBM2│ │HBM3│ │HBM4│ │
+    │  │    │ │    │  │    GB100 GPU Die   │  │    │ │    │ │    │ │
+    │  │    │ │    │  │    (~1600 mm²)     │  │    │ │    │ │    │ │
+    │  └──┬─┘ └──┬─┘  │                    │  └──┬─┘ └──┬─┘ └──┬─┘ │
+    │     │      │    │   (dual-reticle    │     │      │      │    │
+    │     │      │    │    stitched die)   │     │      │      │    │
+    │     │      │    └────────────────────┘     │      │      │    │
+    │═════╧══════╧════════════════════════════════╧══════╧══════╧════│
+    │                   CoWoS-L Interposer                        │
+    │   (local silicon bridges under GPU-HBM interfaces)          │
+    └─────────────────────────────────────────────────────────────┘
+
+  Key packaging challenges solved:
+    1. Die stitching: dual-reticle GPU requires mask alignment
+       at the stitch boundary with < 5 nm accuracy
+    2. 6 HBM interfaces: 6 × 1024-bit data + control/clock
+       → massive routing on interposer (> 6000 signal wires)
+    3. Power delivery: 1000W at 0.75V = 1333A
+       → 5000+ power bumps, heavy power grid
+    4. Thermal: 1000W concentrated in ~1600 mm²
+       → direct liquid cooling (cold plate) required
+    5. Warpage: large interposer + multiple dies
+       → CoWoS-L bridges reduce full silicon interposer size
+
+  GB200 (Grace + Blackwell superchip):
+    - 2× B200 GPU + 1× Grace CPU on same board
+    - NVLink interconnect: 900 GB/s between GPUs
+    - Total package power: ~2000W (including Grace CPU)
+    - Liquid-to-air cooling or direct liquid cooling mandatory
+
+  Manufacturing yield considerations:
+    - GPU die: ~50-60% yield (near reticle limit, N5/N4)
+    - HBM stack: ~96-98% (after KGD selection + repair)
+    - CoWoS-L assembly: ~90-95% (die placement + bonding)
+    - Total package yield: ~45-55% (dominated by GPU die yield)
+    - CoWoS capacity: major bottleneck (TSMC expanding aggressively)
+```
+
+---
+
+## 17. Advanced Packaging Roadmap
+
+```
+Advanced packaging technology roadmap (2025-2030):
+
+  Die-to-die bandwidth scaling:
+  ┌──────────┬──────────────┬──────────────┬──────────────┐
+  │ Year      │ 2024         │ 2026         │ 2028-2030    │
+  ├──────────┼──────────────┼──────────────┼──────────────┤
+  │ UCIe rate │ 32 GT/s      │ 64 GT/s      │ 128 GT/s     │
+  │ BW per mm │ 1.3 Tbps     │ 2.6 Tbps     │ 5+ Tbps      │
+  │ Bond pitch│ 25-40 μm     │ 10-25 μm     │ 1-10 μm      │
+  │ Bond type │ μbump        │ hybrid bond  │ hybrid bond  │
+  └──────────┴──────────────┴──────────────┴──────────────┘
+
+  Chiplet ecosystem evolution:
+    2024: UCIe 1.1 — first chiplet products shipping (AMD, Intel)
+    2025: UCIe 2.0 — broader adoption, 64 GT/s support
+    2026: UCIe 3.0 — standardized 64+ GT/s, multi-protocol
+    2028: Mature chiplet ecosystem — third-party chiplets, BoW+UCIe
+    2030: Full chiplet marketplace — plug-and-play chiplet integration
+
+  Key technology inflections:
+    1. Hybrid bonding mainstream (2025-2026):
+       - Sub-10 μm pitch in high volume
+       - Enables logic-on-logic 3D stacking
+       - AMD V-Cache → broader adoption
+
+    2. Glass substrates (2027-2028):
+       - Replace organic for large packages
+       - Enable >100 mm × 100 mm packages
+       - Critical for next-gen AI accelerators
+
+    3. Chiplet standardization (2026-2028):
+       - UCIe as universal die-to-die interface
+       - Standardized test interfaces (IEEE 1838)
+       - Thermal and power delivery standards
+
+    4. 3D logic-on-logic (2028-2030):
+       - Active logic on both top and bottom die
+       - Not just cache-on-logic (current state)
+       - Requires thermal breakthroughs (microfluidics?)
+       - Potential: 3D-stacked GPU with SRAM cache layer
+
+  Challenges remaining:
+    - Thermal: 3D stacking traps heat
+    - Testing: Known Good Die at <1 DPM for 3D
+    - Standardization: die-to-die interface fragmentation
+    - EDA: unified 3D design tools still maturing
+    - Cost: advanced packaging is $200-1000+ per unit
+```

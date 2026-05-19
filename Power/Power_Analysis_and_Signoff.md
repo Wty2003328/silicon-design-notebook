@@ -64,8 +64,8 @@ count, time at logic-0, and time at logic-1 for every annotated net.
       (NET
         (clk
           (T0 1000000) (T1 1000000) (TC 4000) (IG 0)
-          ;; clk: 50% duty cycle, 4000 transitions in 2000000 ps
-          ;; -> 2 GHz clock (4000 edges / 2000 ps = 2e12 edges/s = 1 GHz freq)
+          ;; clk: 50% duty cycle, 4000 transitions in 2000000 ps (2 us)
+          ;; -> 1 GHz clock (TC=4000 edges / 2 ns period = 2000 cycles / 2 us = 1 GHz)
           ;; SP = 0.5, TR = 4000/2000000 = 0.002 transitions/ps = 2e9/s
         )
         (reset_n

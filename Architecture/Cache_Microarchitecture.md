@@ -1711,6 +1711,207 @@ limited by memory bandwidth.
 
 ---
 
+## 11. Cache-Adjacent Compute: AMX (Apple Matrix eXtensions)
+
+### 11.1 Architecture
+
+Apple's M1/M2/M3/M4 chips include a dedicated matrix multiplication unit called
+AMX (Apple Matrix eXtensions) that sits conceptually "next to" the load/store
+unit and operates on data from the L2 cache. AMX is not a traditional ISA-
+visible coprocessor; instead, it is accessed via special ARM instructions that
+the Apple CPU decodes into micro-ops targeting the matrix unit.
+
+**Key parameters (M2):**
+
+| Parameter | Value |
+|-----------|-------|
+| Matrix size (X/Y registers) | 16x16 elements (FP16) or 8x8 (FP32) |
+| Register file | 16 X-registers + 16 Y-registers + 16 Z-registers |
+| Compute throughput | Up to 128 FP16 FLOPs/cycle per AMX unit |
+| Latency (matmul tile) | 8--12 cycles |
+| Data path | Connected to L2 cache fill bandwidth |
+
+### 11.2 Cache Interaction
+
+AMX operates on data that flows from the L2 cache (or from registers loaded by
+the scalar core). The critical performance path is:
+
+1. Software loads a tile (16x16 FP16 = 512 bytes) from memory into AMX
+   registers via AMX load instructions.
+2. AMX performs a matrix multiply-accumulate: `Z += X * Y^T`.
+3. Software stores the result tile back to memory.
+
+Because each tile is 512 bytes (8 cache lines), the AMX unit's sustained
+throughput is limited by L2 cache bandwidth, not by the compute unit. This is
+a general principle: **for cache-adjacent compute, the cache hierarchy's
+bandwidth and the prefetcher's ability to keep data flowing are the bottleneck.**
+
+### 11.3 Comparison with Other Matrix Units
+
+| Unit | ISA | Tile Size | Peak FP16 | Cache Connection |
+|------|-----|-----------|-----------|------------------|
+| Apple AMX | ARM (Apple-specific) | 16x16 | 128 FLOP/cyc | L2 cache |
+| Intel AMX | x86 (TILECFG/TILELOAD) | 16x16 (8-bit) / 4x8 (FP32) | 4096 INT8 OP/cyc | L2 cache |
+| ARM SME | AArch64 (Streaming SVE) | VL-dependent | 2x SVE bandwidth | L2 cache |
+| NVIDIA Tensor Core | SASS (CUDA) | 16x8x16 (FP16) | 312 TFLOPS (H100) | Shared L2 |
+
+Intel's AMX (Advanced Matrix Extensions), introduced in Sapphire Rapids (2023),
+is architecturally similar but ISA-visible. It uses `TILECFG` to configure tile
+dimensions, `TILELOAD`/`TILESTORE` to move data, and `TDPBSSD`/`TDPBF16PS` for
+matrix operations. The Intel AMX register file holds 8 tiles of up to 16x16
+x 4 bytes = 1 KB each.
+
+---
+
+## 12. Cache Partitioning for AI Workloads
+
+### 12.1 The Problem
+
+In a multi-core system running mixed workloads (e.g., an LLM inference server
+alongside a web server), an AI workload with a large working set can evict
+useful data from the shared L3 cache, degrading the co-running workload's
+performance by 20--50%. This is called **cache interference** or **noisy
+neighbor** problem.
+
+### 12.2 Intel CAT (Cache Allocation Technology)
+
+Intel CAT (introduced in Xeon Skylake) allows the OS or hypervisor to partition
+the L3 cache into **classes of service (CLOS)**. Each CLOS is assigned a
+bitmask that determines which cache ways it can allocate into.
+
+**Mechanism:**
+
+- L3 cache has N ways (e.g., 20 ways in a 2.5 MB slice).
+- A CLOS is defined by a **capacity bitmask (CBM)** of N bits. A CLOS with
+  CBM = `0x0000F` can only allocate into ways 0--3 (4 out of 20 ways = 20% of
+  L3 capacity).
+- Each core (or thread) is assigned a CLOS ID. The core's fill requests can
+  only allocate into the ways permitted by its CLOS.
+- **Allocation enforcement:** On a cache fill, the replacement logic only
+  considers ways within the CLOS bitmask. This guarantees the CLOS will not
+  exceed its allocation.
+
+**Typical configuration:**
+
+| CLOS | CBM | Capacity | Workload |
+|------|-----|----------|----------|
+| 0 | 0xFFFFF | 100% | System / hypervisor |
+| 1 | 0x0FFF0 | 50% | AI inference (LLM) |
+| 2 | 0x0000F | 20% | Web server |
+| 3 | 0x00003 | 10% | Latency-sensitive service |
+
+**Limitation:** CAT partitions by ways, not by sets. A CLOS with 4 ways out
+of 20 gets exactly 4/20 = 20% of the cache, regardless of its actual working
+set. This can waste capacity if the CLOS's working set is smaller than its
+allocation.
+
+### 12.3 ARM MPAM (Memory System Partitioning and Monitoring)
+
+ARM MPAM (introduced in ARMv8.4, widely deployed in Neoverse V2/N2) provides
+a more fine-grained partitioning mechanism:
+
+- **Partition IDs (PARTID):** Each thread or VM is assigned a PARTID (up to
+  256 partitions).
+- **Cache maximum portion:** A partition can be limited to a percentage of the
+  cache (in increments of ~1--4 KB, not whole ways). This is implemented by
+  partition-aware replacement logic that tracks occupancy per PARTID.
+- **Memory bandwidth partitioning:** MPAM also partitions DRAM bandwidth.
+  Each PARTID can be assigned a minimum guaranteed bandwidth and a maximum
+  limit, enforced by the memory controller's scheduler.
+- **Monitoring (MPAM monitor):** Hardware counters track cache occupancy and
+  memory bandwidth usage per PARTID, allowing the OS to dynamically adjust
+  partitions based on actual behavior.
+
+**Comparison:**
+
+| Feature | Intel CAT | ARM MPAM |
+|---------|-----------|----------|
+| Partition granularity | Cache ways (coarse) | Bytes / percentage (fine) |
+| Bandwidth partitioning | No (separate RDT feature: MBA) | Yes (unified with cache) |
+| Monitoring | CQM (Cache QoS Monitoring) | Built-in MPAM monitors |
+| Max partitions | ~8--16 CLOS | 256 PARTID |
+| Applicable caches | L3 only | Any cache level (configurable) |
+
+### 12.4 Interview Insight
+
+Cache partitioning is increasingly important for cloud and edge AI. An
+interview candidate should be able to explain:
+1. Why shared caches suffer from interference (conflict misses from co-runners).
+2. How way-partitioning (CAT) works and its granularity limitation.
+3. How fine-grained partitioning (MPAM) tracks occupancy per partition.
+4. The tradeoff between partition isolation and overall cache utilization.
+
+---
+
+## 13. Non-Inclusive Cache Hierarchies
+
+### 13.1 Background
+
+Section 6.3 covered inclusive and exclusive hierarchies. Modern high-performance
+CPUs increasingly use **non-inclusive** (also called non-inclusive/non-exclusive,
+or NINE) hierarchies, which offer the best capacity utilization but add
+coherence complexity.
+
+### 13.2 Why Non-Inclusive?
+
+**The inclusion problem:** If the L3 is inclusive of L1/L2, the L3 must be at
+least as large as the sum of all private caches. For a 16-core chip with 48 KB
+L1 + 1 MB L2 per core, that is $16 \times (48 + 1024) = 17$ MB of L3 "wasted"
+on duplicates. In practice, the L3 must be even larger because some lines exist
+only in L3 (not in any private cache). For a 32-core design, the inclusion
+requirement becomes prohibitive.
+
+**Intel's shift:** Intel used inclusive L3 caches from Nehalem (2008) through
+Skylake (2017). Starting with Ice Lake Server (2020), Intel switched to a
+non-inclusive L3. The reason: server chips grew from 8 to 28+ cores, and the
+inclusion overhead became too costly.
+
+### 13.3 Non-Inclusive Coherence
+
+In a non-inclusive hierarchy, the L3 does not know which private caches hold a
+given line. This requires a **snoop filter** or **directory at the L3 level**
+to track which cores might have a copy.
+
+**Snoop filter:** A tag-only structure in the L3 controller that records which
+cores have cached each line. On a coherence request (BusRdX, BusUpgr):
+1. Look up the snoop filter.
+2. If the line is present in one or more private caches, direct the
+   invalidation to those specific cores (directed probe).
+3. If the line is not in any private cache, the L3 can supply the data
+   (if it has it) or forward the request to memory.
+
+The snoop filter consumes tag storage but not data storage, so it is much
+smaller than a fully inclusive L3.
+
+**Non-inclusive back-invalidation:** Unlike an exclusive hierarchy, the L3 in
+a NINE design can hold a copy even when a private cache also holds it. On an L3
+eviction of a line that is also in a private cache, the L3 must send a
+**back-invalidation** to that private cache. This is an additional coherence
+message not needed in inclusive or exclusive designs.
+
+### 13.4 Modern Examples
+
+| Processor | L3 Policy | Snoop Mechanism | Notes |
+|-----------|-----------|-----------------|-------|
+| Intel Ice Lake / Sapphire Rapids | Non-inclusive | Snoop filter + directory | Per-tile L3 with mesh interconnect |
+| AMD Zen 4 | Exclusive (L3 as victim cache) | Directory-based | L3 receives evicted L2 lines |
+| Apple M2 Max | Non-inclusive | Snoop filter | System-level cache (SLC) with per-core tracking |
+| ARM Neoverse V2 | Non-inclusive | Directed probe via CMN mesh | Coherent mesh network with home-node directory |
+| IBM POWER10 | Non-inclusive | Distributed directory | Each core complex has a local directory slice |
+
+### 13.5 Interview Insight
+
+When asked about cache hierarchy design, explain the three-way tradeoff:
+
+1. **Inclusive:** Simple coherence (probe only L3), but wastes L3 capacity.
+   Good for small-core-count designs.
+2. **Exclusive:** Maximizes effective capacity (L2 + L3), but requires probe
+   broadcast on coherence checks. Good for mid-range designs.
+3. **Non-inclusive:** Best capacity efficiency, but requires snoop filter or
+   directory. The standard for high-core-count server chips.
+
+---
+
 ## References
 
 1. Hennessy, J. L. and Patterson, D. A., *Computer Architecture: A Quantitative
@@ -1728,6 +1929,9 @@ limited by memory bandwidth.
 7. ARM Ltd., "Arm Cortex-A78 Core Technical Reference Manual," ARM DDI 0414.
 8. Intel Corp., "Intel 64 and IA-32 Architectures Optimization Reference Manual,"
    Order 248966.
+9. Intel Corp., "Intel Cache Allocation Technology," Intel Developer Manual,
+   Chapter 17 (RDT/CAT).
+10. ARM Ltd., "ARM Memory System Partitioning and Monitoring (MPAM)," ARM DDI 0598.
 
 ---
 

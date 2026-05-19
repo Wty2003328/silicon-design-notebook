@@ -38,7 +38,7 @@ changing only the UPF file. This decouples functional design from power architec
 | UPF 2.0    | 2014 | Supply sets, successive refinement, power states, PST      |
 | UPF 2.1    | 2017 | Repeater/buffer strategy, liberty extensions                |
 | UPF 3.0    | 2019 | Incremental UPF, improved supply handles, abstract models  |
-| UPF 3.1    | 2022 | Refinements for tool interoperability                      |
+| UPF 3.1    | 2023 | Refinements for tool interoperability, IEEE 1801-2023     |
 
 ### 1.3 UPF in the Design Flow
 

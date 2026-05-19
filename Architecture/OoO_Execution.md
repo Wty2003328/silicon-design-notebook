@@ -1635,6 +1635,115 @@ Value prediction questions distinguish senior- and staff-level architecture cand
 
 ---
 
+## 14. Real-World OoO Core Examples
+
+### 14.1 Intel Golden Cove (12th Gen Alder Lake P-Core)
+
+Golden Cove is Intel's high-performance core (2021). It represents the state
+of the art in x86 OoO design:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Decode width | 6 uops/cycle | 6-wide x86 decode (variable-length ISA makes this costly) |
+| MOP cache (DSB) | 4K uops, 8-way | Bypasses decode for frequently executed code; delivers up to 8 uops/cycle |
+| Rename width | 6 uops/cycle | From DSB or decode path |
+| ROB entries | 512 | Largest in any x86 core at launch |
+| Physical registers (INT) | ~280 | Renamed from 16 x86 GPRs (RAX--R15) |
+| Physical registers (FP/SIMX) | ~224 | AVX-512 mask and vector registers |
+| Issue width | 6 uops/cycle (10 ports) | Port 0--9: mixed INT/FP/SIMD/load/store |
+| INT ALUs | 4 | Ports 0, 1, 5, 6 |
+| FP/SIMD units | 3 FMA (2 x 512-bit, 1 x 256-bit) | AVX-512 support |
+| Load/Store Queue | 128 LSQ entries | 2 loads + 1 store per cycle |
+| Load-use latency (L1D) | 4 cycles | 48 KB L1D, 12-way |
+| Branch predictor | TAGE-based (TAGE-SC-L variant) | ~99% accuracy on SPEC INT |
+| L2 cache | 1.25 MB, private | 17-cycle hit latency |
+| Clock frequency | Up to 5.2 GHz (single-core boost) | Intel 7 process (10nm ESF) |
+| SMT | 2 threads | Hyper-Threading with dynamic resource sharing |
+
+**Key OoO design choices:**
+
+1. **Unified scheduler (not distributed):** A single 128-entry unified
+   scheduler feeds all 10 execution ports. This simplifies wakeup logic but
+   increases CAM power. The unified scheduler is a departure from earlier
+   Intel designs (Sunny Cove used distributed schedulers).
+
+2. **Dedicated address-generation units (AGU):** 3 AGUs (ports 2, 3, 7)
+   compute load/store addresses independently from the ALU datapath, allowing
+   up to 3 memory operations per cycle (2 loads + 1 store).
+
+3. **Store-to-load forwarding:** A dedicated store-forwarding network checks
+   the 128-entry store queue against incoming loads. Forwarding latency is
+   1 cycle for exact-match stores, 3--5 cycles for partial overlaps.
+
+4. **ROB size rationale:** 512 entries was chosen to cover the memory
+   parallelism window for server workloads: at 100 ns DRAM latency and 4 GHz
+   clock, a core can have ~400 loads in flight. The ROB must be large enough
+   to keep independent instructions flowing while those loads complete.
+
+### 14.2 AMD Zen 4 (Ryzen 7000, EPYC Genoa)
+
+Zen 4 (2022) is AMD's high-performance core on TSMC 5nm:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Decode width | 4 uops/cycle (up to 8 from op cache) | Dual decode path |
+| Op cache | 4K uops, 8-way | Similar to Intel DSB but smaller |
+| Rename width | 6 uops/cycle | From either decode or op-cache path |
+| ROB entries | 320 | Smaller than Golden Cove but higher IPC/clock efficiency |
+| Physical registers (INT) | 224 | 192 GPR + 32 for special purpose |
+| Physical registers (FP) | 192 | AVX-512 capable |
+| Issue width | 6 uops/cycle | Distributed schedulers (INT, FP, AGU, MEM) |
+| INT ALUs | 4 | 4x 64-bit ALUs |
+| FP/SIMD units | 2 x 256-bit FMA (or 1 x 512-bit fused) | AVX-512 support added in Zen 4 |
+| Load queue | 80 entries | 2 loads per cycle |
+| Store queue | 64 entries | 1 store per cycle |
+| Load-use latency (L1D) | 4 cycles | 32 KB L1D, 8-way |
+| Branch predictor | Perceptron-based with TAGE elements | ~98.5% accuracy on SPEC INT |
+| L2 cache | 1 MB, private | 12--14 cycle hit latency |
+| Clock frequency | Up to 5.7 GHz (single-core boost) | TSMC N5 |
+| SMT | 2 threads | Dynamic partitioning |
+
+**Key OoO design choices:**
+
+1. **Distributed schedulers:** Zen 4 uses separate issue queues for integer
+   (64 entries), FP (44 entries), and address-generation (48 entries). This
+   reduces CAM power compared to Golden Cove's unified scheduler but requires
+   careful load balancing between queues.
+
+2. **Integer multiply:** Radix-4 Booth + Wallace tree, 3-cycle latency. The
+   multiply unit is pipelined and can accept a new operation every cycle.
+
+3. **Store-forward optimization:** Zen 4 added a fast-path for store-to-load
+   forwarding when the store address and data are both known. The forwarding
+   check happens in the load pipeline stage, avoiding a replay.
+
+4. **Prefetch integration:** The L1 data prefetcher is integrated with the LSQ.
+   Prefetch requests are issued from the load queue, sharing the AGU bandwidth
+   with demand loads. This means aggressive prefetching can compete with demand
+   accesses for the 2 load ports.
+
+### 14.3 Comparison Table
+
+| Feature | Intel Golden Cove | AMD Zen 4 |
+|---------|-------------------|-----------|
+| ROB | 512 | 320 |
+| Decode width | 6 (or 8 from DSB) | 4 (or 8 from op cache) |
+| Scheduler type | Unified (128 entries) | Distributed (64+44+48) |
+| INT ALUs | 4 | 4 |
+| FP FMA units | 3 (AVX-512) | 2 (AVX-512) |
+| L1D size | 48 KB | 32 KB |
+| L2 size | 1.25 MB | 1 MB |
+| Max clock | 5.2 GHz | 5.7 GHz |
+| Process | Intel 7 (10nm) | TSMC N5 |
+| Die area (core) | ~15 mm^2 | ~10 mm^2 |
+
+Both cores demonstrate the same fundamental tradeoff: larger OoO windows (ROB,
+IQ, PRF) extract more ILP but consume more area and power. Golden Cove bets on
+a larger window and unified scheduling; Zen 4 bets on higher clock frequency
+and distributed scheduling.
+
+---
+
 ## References
 
 1. Hennessy, J.L. and Patterson, D.A., *Computer Architecture: A Quantitative Approach*, 6th Edition, Morgan Kaufmann, 2017. Chapters 2-3 cover ILP and OoO execution in depth.

@@ -1747,6 +1747,154 @@ This is why AI chips report massive TOPS/TFLOPS for lower precisions.
 | Scientific computing | FP64 (mandatory for convergence) |
 | Graphics (shading) | FP16 or FP32 |
 
+### FP8 (E4M3 and E5M2) — OCP Standard for AI
+
+```
+FP8 was standardized by the Open Compute Project (OCP) in late 2022, with
+broad industry adoption (NVIDIA, AMD, Intel, ARM, Qualcomm, Google, Microsoft).
+
+Two encodings optimized for different AI use cases:
+
+FP8 E4M3 (4-bit exponent, 3-bit mantissa):
+  Sign | Exponent (4) | Mantissa (3) = 8 bits total
+  Range: ±240 (max value), no inf representation in some implementations
+  Bias = 7 → actual exponent range: [-6, +9] (approximately)
+  Precision: ~1.2 decimal digits
+  Primary use: AI training forward pass, AI inference weights/activations
+  NaN: exponent = 1111, mantissa != 0 (only one NaN encoding needed)
+
+FP8 E5M2 (5-bit exponent, 2-bit mantissa):
+  Sign | Exponent (5) | Mantissa (2) = 8 bits total
+  Range: ±5.7e4 (same dynamic range as FP16)
+  Bias = 15 → actual exponent range similar to FP16
+  Precision: ~0.9 decimal digits
+  Primary use: AI training backward pass (gradients), where dynamic range
+  matters more than precision
+  Supports inf and NaN (exponent = 11111)
+
+Why two formats:
+  - Forward pass: activations and weights need precision more than range → E4M3
+  - Backward pass: gradients need range (can be very large or small) → E5M2
+  - Hardware can dynamically switch between formats per layer/phase
+
+Hardware implementation:
+  - FP8 multiply: 4x4 or 3x2 mantissa multiply → ~16-36 "multiply units"
+  - vs FP32 multiply: 24x24 = 576 units → 16-36x smaller
+  - Conversion to/from FP32: simple shift-and-truncate (8→32 bit zero-extend)
+  - NVIDIA Hopper H100: native FP8 tensor core support (2022)
+  - AMD MI300: FP8 support in matrix units
+  - Intel Gaudi3: FP8 native support
+```
+
+### FP4 and Sub-Byte Formats for AI Inference
+
+```
+FP4 (multiple competing formats, not yet standardized):
+
+NVFP4 (NVIDIA Blackwell, 2024):
+  1-bit sign + 2-bit exponent + 1-bit mantissa = 4 bits
+  Very limited range: approximately ±6
+  Must be used with block scaling (MX format, see below)
+
+FP4 with E2M1 encoding:
+  Sign | Exponent (2) | Mantissa (1) = 4 bits
+  Representable values (positive): 0, 1, 1.5, 2, 3, 4, 6
+  Only 7 distinct positive values!
+  Requires per-block scaling factor to be useful
+
+Why FP4 works for neural networks:
+  - Neural network weights are approximately normally distributed
+  - Most values cluster near zero → coarse quantization acceptable
+  - Per-block scaling compensates for limited dynamic range
+  - 2x throughput and 2x memory savings vs FP8
+  - Accuracy loss: 1-3% on most tasks (acceptable for inference)
+
+Hardware approach:
+  - FP4 stored in memory, decompressed to FP8/FP16 for compute
+  - Or: native FP4 MAC units (very small: 2x2 = 4 multiply units)
+  - NVIDIA Blackwell: FP4 tensor core support
+```
+
+### MX (Microscaling) Formats — Block-Scaled Arithmetic
+
+```
+MX (Microscaling) formats: OCP standard (2023) for block-scaled floating point.
+Jointly developed by AMD, ARM, Intel, NVIDIA, Qualcomm, and others.
+
+Key idea: Group elements into blocks of size B (typically B=32).
+Each block shares a single 8-bit scale factor.
+Individual elements use reduced-precision formats.
+
+MX format variants:
+  MXFP8: Block of 32 × E4M3 or E5M2 elements + 1 shared 8-bit scale
+    Each element: 8 bits, scale: 8 bits → average 8.25 bits/element
+    Use case: training (replaces FP32/BF16 in forward/backward)
+
+  MXFP6: Block of 32 × FP6 elements + 1 shared 8-bit scale
+    FP6 encodings: E2M3 or E3M2 (debated, not finalized)
+    Use case: training and inference
+
+  MXFP4: Block of 32 × FP4 (E2M1) elements + 1 shared 8-bit scale
+    Each element: 4 bits, scale: 8 bits → average 4.25 bits/element
+    Use case: inference (weights and activations)
+
+  MXINT8: Block of 32 × INT8 elements + 1 shared 8-bit scale
+    Use case: inference (replaces per-tensor INT8 quantization)
+
+Block scaling mathematics:
+  value_i = element_i * 2^(scale)    (shared exponent for the block)
+  scale is stored as 8-bit integer with bias
+
+  Example MXFP4 with block size 32:
+    Raw storage: 32 * 4 bits + 8 bits = 136 bits for 32 values
+    Average: 4.25 bits/value (vs 16 for FP16, 32 for FP32)
+    Memory savings: 7.5x vs FP32, 3.8x vs FP16
+
+Hardware implementation:
+  1. Load block: read scale + B elements
+  2. Dequantize: multiply each element by 2^scale (shift)
+  3. Compute: use FP16 or FP32 MAC units
+  4. (Or: native MX MAC that folds in scaling during multiply)
+
+  The per-block scale adds minimal hardware overhead:
+    - One shared exponent per 32 elements → 1 barrel shifter per block
+    - Can be pipelined: dequantize block N while computing block N-1
+```
+
+### BF16 Training — Industry Standard for Deep Learning
+
+```
+Key shift: BF16 has replaced FP32 for most deep learning training workloads.
+
+Why BF16 won over FP16 for training:
+  - FP16 (5-bit exponent, max ~65504): gradients easily overflow → requires
+    loss scaling (multiply loss by large constant, divide gradients later)
+  - BF16 (8-bit exponent, max ~3.4e38): same range as FP32 → no overflow
+    → no loss scaling needed, simpler training recipes
+  - BF16 lower precision (7-bit mantissa) acts as implicit regularization,
+    often matching or exceeding FP32 training accuracy
+
+Industry adoption:
+  - Google TPU (v2+): native BF16 training since 2017
+  - NVIDIA Ampere A100: BF16 tensor cores (2020)
+  - NVIDIA Hopper H100: BF16 + FP8 tensor cores (2022)
+  - AMD MI300: BF16 matrix units
+  - All major training frameworks (PyTorch, JAX): BF16 default for mixed precision
+
+Training recipe (mixed precision with BF16):
+  1. Master weights stored in FP32
+  2. Forward pass: compute in BF16 (weights cast BF16→FP32→BF16)
+  3. Loss computation: in FP32
+  4. Backward pass: gradients in BF16
+  5. Weight update: FP32 master weights += FP32 gradient (from BF16)
+  → No loss scaling needed (unlike FP16 mixed precision)
+
+Hardware cost of BF16 vs FP32:
+  BF16 multiplier: 8×8 mantissa = 64 multiply units
+  FP32 multiplier: 24×24 mantissa = 576 multiply units
+  → 9x smaller multiply, 9x more MACs in same area
+```
+
 ---
 
 ## Extended Interview Q&A — Advanced Topics
@@ -1802,6 +1950,18 @@ This is why AI chips report massive TOPS/TFLOPS for lower precisions.
 ### Q25: What considerations apply when choosing FP precision for an ASIC?
 
 **A:** The choice depends on the application's numerical requirements versus silicon budget: (1) **Dynamic range:** If the algorithm's values span many orders of magnitude, sufficient exponent bits are needed to avoid overflow/underflow. bfloat16 and FP32 both have 8-bit exponents (range ~1e-38 to ~3.4e38). FP16 has only 5-bit exponent (range ~6e-5 to ~65504) — inadequate for many training algorithms without loss scaling. (2) **Precision:** The mantissa width determines how many significant digits are preserved. For iterative algorithms (solvers, optimization), insufficient precision causes convergence failure or error accumulation. Rule of thumb: if the algorithm needs k decimal digits of accuracy, you need at least ceil(k / log10(2)) mantissa bits. (3) **Area and power:** FP multiplier area scales as O(p^2) where p is mantissa width. Power scales similarly. A bfloat16 MAC unit is ~9x smaller and uses ~9x less energy than FP32. (4) **Memory bandwidth:** Smaller formats reduce off-chip bandwidth requirements, which is often the bottleneck in data-intensive workloads (ML training, signal processing). (5) **Mixed precision:** Many designs use different precisions at different stages — e.g., FP8 for matrix multiply, FP32 for accumulation, FP16 for storage. This requires format conversion logic between stages.
+
+### Q26: Explain FP8 E4M3 and E5M2 formats and why AI needs two different encodings.
+
+**A:** FP8 was standardized by the OCP (Open Compute Project) in 2022. E4M3 (4-bit exponent, 3-bit mantissa) has better precision (~1.2 decimal digits) but limited range (max ±240). E5M2 (5-bit exponent, 2-bit mantissa) has wider range (max ±5.7e4, same as FP16) but coarser precision (~0.9 digits). In AI training, the forward pass uses E4M3 for weights and activations (values are bounded, precision matters more), while the backward pass uses E5M2 for gradients (which can span many orders of magnitude due to chain rule multiplication). This split gives the best accuracy-vs-range trade-off for each phase. Hardware: FP8 mantissa multiply is 4x4 = 16 (E4M3) or 3x2 = 6 (E5M2) multiply units, vs 576 for FP32 — enabling 36-96x more MAC units in the same area. NVIDIA Hopper, AMD MI300, and Intel Gaudi3 all support FP8 natively.
+
+### Q27: What are MX (Microscaling) formats and why is block scaling important?
+
+**A:** MX formats (OCP standard, 2023) group elements into blocks of 32 that share a single 8-bit scale factor, while individual elements use reduced-precision encodings (FP8, FP6, FP4, or INT8). The per-block scale compensates for the limited dynamic range of tiny formats like FP4 (which has only ~7 distinct positive values). MXFP4 stores each element in 4 bits with a shared scale, averaging 4.25 bits/value — 7.5x denser than FP32. This works for neural networks because weight distributions are approximately Gaussian (concentrated near zero), so a single scale per 32-element block captures the magnitude well. Hardware implementation: load block scale + 32 elements, dequantize by shifting (scale is a shared exponent), then compute in FP16/FP32. The scaling hardware overhead is minimal (one shifter per block), while the compute density benefit is enormous. MX formats are being adopted by NVIDIA (Blackwell), AMD, and Intel for next-generation AI accelerators.
+
+### Q28: Why has bfloat16 replaced FP32 for deep learning training?
+
+**A:** BF16 has the same 8-bit exponent as FP32 (same dynamic range, max ~3.4e38), so gradient values don't overflow during training — unlike FP16 (5-bit exponent, max ~65504) which requires loss scaling. BF16's 7-bit mantissa provides sufficient precision for gradient descent (the reduced precision acts as implicit regularization, often matching FP32 accuracy). The hardware advantage is massive: BF16 multiply is 8x8 = 64 units vs FP32's 24x24 = 576 — 9x smaller, enabling 9x more MACs in the same silicon area. The standard training recipe is: FP32 master weights, BF16 forward/backward computation, FP32 weight update. This "mixed precision" approach was first deployed by Google (TPU v2, 2017) and is now universal across NVIDIA (Ampere, Hopper), AMD (MI300), and all major training frameworks (PyTorch, JAX). No loss scaling needed, simpler than FP16 mixed precision.
 
 ---
 

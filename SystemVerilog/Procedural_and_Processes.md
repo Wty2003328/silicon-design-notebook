@@ -164,9 +164,12 @@ always_ff @(posedge clk or posedge clk2) begin  // Questionable
     // Which clock drives this register? Ambiguous for synthesis
 end
 
-// always_ff enforces that only <= (non-blocking) is used
+// Note: always_ff does NOT enforce non-blocking assignments per the LRM.
+// The LRM (1800-2017 §9.2.2.4) only mandates a single event expression.
+// However, most synthesis tools will warn/error on blocking assignments
+// in always_ff as a best-practice check (tool-specific enforcement).
 always_ff @(posedge clk) begin
-    q = d;    // WARNING or ERROR: blocking assignment in always_ff
+    q = d;    // WARNING in most synthesis tools, but technically legal per LRM
 end
 ```
 
@@ -537,8 +540,9 @@ endmodule
 ### Purpose: Model Setup/Hold Timing Relationships
 
 Clocking blocks define the timing relationship between testbench and DUT signals, abstracting
-away clock edges and skew. `input #1step` samples one step before the clock edge (Preponed
-region). `output #0` drives at the exact clock edge (effectively the same time slot).
+away clock edges and skew. `input #1step` samples in the Preponed region — i.e., at the
+current time slot *before* the Active region evaluates, capturing DUT state as it was
+immediately before the clock edge. `output #0` drives at the exact clock edge (Re-Nba region).
 
 ```systemverilog
 interface bus_if (input logic clk);

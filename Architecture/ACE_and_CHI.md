@@ -1272,6 +1272,314 @@ How the TZC decides:
 
 ---
 
+## 10a. CHI Issue E -- Coherent Chiplet Interconnect
+
+### CHI Issue E Enhancements
+
+CHI Issue E (the latest revision as of 2025) introduces features specifically targeting **coherent chiplet-to-chiplet interconnect**, where multiple dies in a package communicate coherently through die-to-die (D2D) links such as UCIe (Universal Chiplet Interconnect Express).
+
+| Feature | CHI Issue C | CHI Issue E |
+|---|---|---|
+| **Target topology** | Single-die mesh/ring | Multi-die chiplet fabric |
+| **Snoop filtering** | Per-node snoop filter | Distributed snoop filter with cross-die invalidation optimization |
+| **Cache stashing** | Optional | Enhanced stash with hint-based push (proactive dirty-data migration) |
+| **Retry and credit** | PCrdGrant-based retry | Extended credit model with per-die credit pools |
+| **Data return path** | DAT channel only | DAT + optional direct D2D data bypass (reduces hop count) |
+| **Endianness** | Little-endian | Bi-endian data payload support |
+| **Poison / Data error** | Not supported | Per-64B poison marker on DAT channel for RAS |
+| **Coherent coherency between dies** | Via HN-F proxy | Direct RN-F to RN-F snoops across D2D links |
+| **Ordered write** | Optional | Mandatory ordered-write observation for persistent memory |
+
+**Why chiplet coherence needs CHI Issue E:**
+
+In a chiplet system, each die may contain CPU cores (RN-F nodes) and a slice of the shared LLC (HN-F nodes). When a core on die 0 reads data that is dirty in a core on die 1's private cache, the coherence transaction must traverse the D2D link. CHI Issue E optimizes this path:
+
+```
+Without Issue E:
+  RN-F (die 0) -> HN-F (die 0) -> HN-F (die 1) -> RN-F (die 1) -> HN-F (die 1) -> HN-F (die 0) -> RN-F (die 0)
+  Latency: 4 D2D link crossings
+
+With Issue E (direct cross-die snoop):
+  RN-F (die 0) -> HN-F (die 0) -> RN-F (die 1) -> HN-F (die 0) -> RN-F (die 0)
+  Latency: 2 D2D link crossings (if directory on die 0 tracks die 1's sharers)
+```
+
+This reduces cross-die coherence latency by 40-60% in the common case of two-die chiplet configurations.
+
+### D2D Link Integration with CHI
+
+```
++-----------+    UCIe / D2D Link    +-----------+
+|  Die 0    |<====================>|  Die 1    |
+|  RN-F0    |  CHI flits over      |  RN-F4    |
+|  RN-F1    |  UCIe transport      |  RN-F5    |
+|  HN-F0    |  (typically 256-512  |  HN-F1    |
+|  SN-F0    |   bit width, 16-32   |  SN-F1    |
+|           |   GT/s)              |           |
++-----------+                       +-----------+
+
+CHI packets are encapsulated in UCIe flits:
+  REQ flit: ~128 bits (opcode, src/tgt ID, addr, size)
+  SNP flit: ~96 bits
+  RSP flit: ~64 bits
+  DAT flit: ~256+ bits (data payload + BE + CC + poison)
+
+UCIe 256-bit x 16 GT/s = 64 GB/s per direction (bandwidth-matched to PCIe 6.0 x4)
+UCIe 512-bit x 32 GT/s = 256 GB/s per direction (for high-performance chiplets)
+```
+
+The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management across the D2D link, link-level retry (UCIe CRC + replay), and protocol-level flow control mapping between CHI valid/ready and UCIe credits.
+
+---
+
+## 10b. CXL Cache Coherence Integration with CHI
+
+### CXL.cache and CHI Coexistence
+
+CXL.cache allows an accelerator (CXL Type-1 or Type-2 device) to participate in the host's coherence domain. When the host interconnect uses CHI, the CXL.cache protocol must be bridged to CHI transactions at the system-level interconnect.
+
+```
+CXL Type-2 Device (e.g., GPU with cache):
+
+  GPU Core <-> GPU L1/L2$ <-> CXL.cache Agent <-> CXL Link <-> Host CHI Interconnect
+
+  CXL.cache protocol operations mapped to CHI:
+    CXL.cache SnpData     --> CHI SNP: SnpShared
+    CXL.cache SnpInv      --> CHI SNP: SnpUnique / SnpInv
+    CXL.cache RdShared    --> CHI REQ: ReadShared
+    CXL.cache RdUnique    --> CHI REQ: ReadUnique
+    CXL.cache ClnFull/WB   --> CHI REQ: WriteBackFull / Evict
+    CXL.cache DataPull     --> CHI REQ: ReadNoSnp (non-coherent read from device memory)
+
+  The CXL agent at the host side translates between CXL.cache packets
+  and CHI REQ/SNP/RSP/DAT flits, maintaining coherence by acting as
+  an RN-F proxy for the CXL device.
+```
+
+**Coherence flow example: CXL GPU reads host memory**
+
+```
+1. GPU misses in local cache -> CXL.cache issues RdShared to host
+2. CXL-to-CHI bridge translates RdShared -> CHI REQ ReadShared
+3. CHI HN-F checks directory: line is in S state on CPU core 0
+4. HN-F sends SNP SnpShared to CPU core 0
+5. CPU core 0 responds: RSP Shared (keeps its copy)
+6. HN-F fetches data from memory (or cache-to-cache from CPU core 0)
+7. HN-F sends DAT to CXL-to-CHI bridge
+8. Bridge translates DAT -> CXL.cache Data response
+9. GPU receives data in Shared state
+
+Key insight: The CXL device appears as just another RN-F in the CHI
+coherence domain. The directory at the HN-F tracks CXL device sharers
+exactly like CPU core sharers. No software intervention is needed.
+```
+
+**CXL Type-3 (memory expansion) and CHI:**
+
+CXL.mem (Type-3) extends the host's physical address space with device-attached memory. From the CHI interconnect's perspective, a CXL Type-3 device appears as a **remote SN-F (Subordinate Node)**: the HN-F routes memory requests to the CXL-attached memory via the CXL.mem protocol. The HN-F maintains coherence for lines cached in local CPU caches, issuing snoops as needed before responding to memory requests from the CXL device (back-invalidation flow).
+
+---
+
+## 10c. PCIe 6.0 and 7.0 Overview
+
+### PCIe 6.0: PAM-4 Signaling and FLIT Mode
+
+PCIe 6.0 (ratified 2022) represents the most significant PHY change in PCIe history, moving from NRZ (Non-Return-to-Zero) to **PAM-4 (Pulse Amplitude Modulation, 4 levels)** signaling.
+
+| Parameter | PCIe 5.0 | PCIe 6.0 | PCIe 7.0 (spec announced) |
+|---|---|---|---|
+| Data rate | 32 GT/s | 64 GT/s | 128 GT/s |
+| Signaling | NRZ (2-level) | PAM-4 (4-level) | PAM-4 |
+| Encoding | 128b/130b | FLIT mode (no encoding overhead) | FLIT mode |
+| Bandwidth per lane | ~4 GB/s (duplex) | ~8 GB/s (duplex) | ~16 GB/s (duplex) |
+| x16 bandwidth | ~64 GB/s | ~128 GB/s | ~256 GB/s |
+| FEC | None | Light-weight FEC (3-bit CRC + retry) | Enhanced FEC |
+| Per-lane voltage levels | 2 (0, 1) | 4 (00, 01, 10, 11) | 4 |
+| BER target | 1e-12 | 1e-6 (with FEC correcting to 1e-12 equivalent) | 1e-6 (with FEC) |
+
+**PAM-4 encoding:** Each UI (Unit Interval) carries 2 bits instead of 1:
+
+```
+NRZ (PCIe 5.0):
+  Signal level: 0 or 1  --> 1 bit per UI
+  At 32 GT/s: 32 Gbps per lane per direction
+
+PAM-4 (PCIe 6.0):
+  Signal levels: 00, 01, 10, 11  --> 2 bits per UI
+  At 64 GT/s: 128 Gbps per lane per direction (raw)
+  After FLIT overhead: ~121 Gbps usable = ~8 GB/s net per direction
+```
+
+**FLIT mode (PCIe 6.0):**
+
+PCIe 6.0 replaces the 128b/130b encoding with FLIT (Flow Control Unit) mode:
+
+```
+FLIT structure:
+  236 bytes payload + 6 bytes CRC + 4 bytes FEC = 246 bytes total
+  Overhead: (6 + 4) / 246 = 4.1% (vs 128b/130b = 1.5%)
+  But: no per-packet disparity or skip requirements, better efficiency at
+  the transaction level due to no scrambling synchronization overhead.
+
+  FEC: 3-bit Gray-coded FEC corrects 1-bit errors per FLIT
+  Retry: if FEC fails (multi-bit error), receiver requests FLIT retransmit
+  This is lighter-weight than Ethernet FEC (which uses Reed-Solomon)
+
+FLIT mode is MANDATORY in PCIe 6.0: all transactions must use FLIT encoding.
+NRZ mode is still supported for backward compatibility (PCIe 1.0-5.0 fallback).
+```
+
+**Forward Error Correction (FEC) detail:**
+
+```
+PCIe 6.0 uses a lightweight FEC + CRC scheme:
+  CRC-6: detects errors in the FLIT
+  FEC-3: corrects single-bit errors within the FLIT
+
+  Error handling flow:
+    1. Receiver computes CRC on received FLIT
+    2. If CRC passes: accept FLIT (no error or FEC-correctable error)
+    3. If CRC fails: attempt FEC correction (1-bit)
+    4. If FEC corrects: accept FLIT
+    5. If FEC cannot correct (multi-bit error): request retransmit
+
+  Retransmit latency: ~1-2 us (one RTT across the link)
+  Target: retransmit rate < 1e-12 (essentially never in normal operation)
+```
+
+### PCIe 7.0
+
+PCIe 7.0 doubles the data rate again to 128 GT/s, maintaining PAM-4 signaling with tighter eye margins and improved equalization. The spec targets 2025-2026 ratification.
+
+- **Enhanced FEC:** More robust error correction for the smaller eye opening at 128 GT/s.
+- **Improved CXL integration:** PCIe 7.0 PHY serves as the transport for CXL 3.1, which runs CXL.cache, CXL.mem, and CXL.io protocols over the same link.
+
+### Interview Significance
+
+PCIe 6.0/7.0 are directly relevant to DDR controller and system interconnect design because:
+1. CXL Type-3 memory expanders use PCIe 6.0/7.0 PHY, so understanding the link's bandwidth, latency, and error characteristics is essential for sizing memory expansion pools.
+2. The 128 GB/s x16 bandwidth of PCIe 6.0 approaches the bandwidth of a single DDR5 channel, making CXL-attached memory competitive for bandwidth-intensive workloads.
+3. PAM-4 signaling and FEC introduce a new error model: transient multi-bit errors are possible on the link, requiring end-to-end data integrity (CRC + retry) that adds latency variability.
+
+---
+
+## 10d. CXL 3.0/3.1 Detailed Protocol
+
+### CXL Protocol Stack
+
+CXL runs three protocols over a single PCIe/CXL link:
+
+```
++---------------------------------------------------+
+|                CXL 3.0 / 3.1 Link                  |
+|                                                    |
+|  CXL.io     |    CXL.cache      |    CXL.mem       |
+|  (PCIe-like |  (coherent cache  |  (coherent mem   |
+|   config,   |   access from     |   access to      |
+|   MMIO,     |   device to host  |   device-attached|
+|   DMA)      |   memory)         |   memory)        |
+|             |                    |                  |
+|  Based on   |  New protocol:    |  New protocol:   |
+|  PCIe TLP   |  256B cache lines |  MemRd/MemWr     |
+|  ecosystem  |  D2H/H2D req/rsp  |  with coherence  |
++---------------------------------------------------+
+|            PCIe 6.0 PHY (64 GT/s)                  |
+|            or PCIe 5.0 PHY (32 GT/s)               |
++---------------------------------------------------+
+```
+
+### CXL Device Types
+
+| Type | CXL.io | CXL.cache | CXL.mem | Example |
+|---|---|---|---|---|
+| **Type 1** | Yes | Yes | No | Smart NIC, AI accelerator (cache-coherent access to host memory, no device memory exposed) |
+| **Type 2** | Yes | Yes | Yes | GPU with local HBM (cache-coherent bidirectional: GPU caches host memory, host caches GPU HBM) |
+| **Type 3** | Yes | No | Yes | Memory expander (DDR5/E3.S DIMMs, no device-side cache, purely memory target) |
+
+### CXL 3.0 Fabric Topology
+
+CXL 3.0 introduces **fabric switching**, enabling multi-level topologies beyond the simple tree of CXL 1.1/2.0:
+
+```
+CXL 2.0 (tree only):
+  Host CPU 0 ----+---- CXL Switch ---- Type-3 Mem Expander 0
+                  |                    |
+                  +---- Type-3 Mem Expander 1
+
+CXL 3.0 (fabric):
+  Host CPU 0 ----+----+---- Switch 0 ----+---- Type-3 Mem 0
+  Host CPU 1 ----+    |                  +---- Type-3 Mem 1
+                      |                  +---- Type-2 GPU 0
+                      +---- Switch 1 ----+---- Type-3 Mem 2
+                                          +---- Type-1 NIC 0
+
+  Key: Multiple hosts can share Type-3 memory pools via the fabric.
+  A fabric manager (software agent) configures routing, access permissions,
+  and bandwidth allocation across the fabric.
+```
+
+### CXL 3.1 Enhancements over CXL 3.0
+
+- **Bandwidth allocation:** Per-device, per-host bandwidth limits and guarantees at the fabric switch level. Prevents one host from monopolizing a shared memory pool.
+- **Enhanced telemetry:** Standardized performance counters for latency, bandwidth, error rates per device and per link, enabling fabric-wide monitoring.
+- **Memory error handling:** CXL.mem adds error injection and detection capabilities for validation, plus graceful degradation when a Type-3 device reports uncorrectable errors.
+- **Enhanced coherency engine:** Improved handling of multi-host sharing scenarios with reduced false sharing and more efficient directory-based tracking.
+
+### CXL.cache Protocol Operations
+
+```
+CXL.cache Device-to-Host (D2H) requests:
+  RdShared:   Device requests shared (read-only) access to a host cache line
+  RdUnique:   Device requests exclusive (read-write) access to a host cache line
+  RdOwn:      Device wants ownership (exclusive, data from host or memory)
+  ClnFull:    Device writes back a clean line (no data, just surrender ownership)
+  ClnInv:     Device invalidates its copy (no write-back)
+  DirtyWB:    Device writes back dirty data to host
+  RdCurr:     Device reads current value without changing coherence state
+
+CXL.cache Host-to-Device (H2D) snoops:
+  SnpData:    Host asks device to return data if cached (for another reader)
+  SnpInv:     Host asks device to invalidate its copy (for exclusive access)
+  SnpCur:     Host asks device for current state (coherence query)
+
+CXL.cache Data Response:
+  Data:       Device returns cache line data to host
+  DataInv:    Device returns data and invalidates its copy
+```
+
+### Memory Pooling with CXL 3.0/3.1
+
+```
+CXL memory pooling scenario:
+
+  +--------+  +--------+  +--------+
+  | Host 0 |  | Host 1 |  | Host 2 |
+  +---+----+  +---+----+  +---+----+
+      |           |           |
+      +----+------+-----------+
+           |
+      CXL 3.0/3.1 Fabric Switch
+           |
+      +----+------+----------+
+      |           |          |
+  +---+---+  +---+---+  +---+---+
+  |Pool 0 |  |Pool 1 |  |Pool 2 |
+  |256 GB |  |512 GB |  |1 TB   |
+  |DDR5   |  |DDR5   |  |CXL.mem|
+  +-------+  +-------+  +-------+
+
+  Fabric manager assigns memory regions:
+    Host 0: Pool 0 (256 GB) + 128 GB from Pool 1 = 384 GB total
+    Host 1: 256 GB from Pool 1 + 256 GB from Pool 2 = 512 GB total
+    Host 2: 768 GB from Pool 2 = 768 GB total
+
+  Dynamic reassignment: when Host 2 is idle, Pool 2 can be
+  reassigned to Host 0 for a batch job. No reboot needed.
+  The OS sees CXL-attached memory as a separate NUMA node.
+```
+
+---
+
 ## 11. References
 
 1. ARM IHI 0022E -- AMBA AXI and ACE Protocol Specification (AXI3, AXI4, ACE, ACE-Lite)

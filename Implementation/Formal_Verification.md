@@ -1700,3 +1700,268 @@ eventually happens" (e.g., every request eventually gets a response). They requi
 constraints (assumptions about the environment not starving the system) and cannot be
 disproven by a finite prefix — you'd need an infinite trace. Formal tools handle liveness
 via k-liveness (bounded liveness checking) or fair-cycle detection.
+```
+
+---
+
+## 11. AI Hardware Formal Verification
+
+### 11.1 Tensor Core Correctness Verification
+
+```
+Challenge: Proving a GEMM (General Matrix Multiply) array produces correct results
+
+  Formal verification target:
+    Result = A × B + C  (matrix multiply-accumulate)
+    Where A, B, C are NxN matrices (typically N=4 for a tensor core tile)
+
+  Verification approach:
+    1. Abstract datapath: reduce 32-bit to 4-bit for tractability
+    2. Prove: systolic array output matches specification for ALL inputs
+    3. Specification: golden reference model (simple loop implementation)
+
+  SVA properties for tensor core:
+    // After N cycles of valid input, output matches reference
+    assert property (@(posedge clk) disable iff (!rst_n)
+        output_valid |-> result_matrix == reference_matrix);
+
+    // No data corruption in accumulation
+    assert property (@(posedge clk) disable iff (!rst_n)
+        accumulate_en |-> accumulator_next == accumulator_curr + product);
+
+    // Pipeline integrity: no data lost between stages
+    assert property (@(posedge clk) disable iff (!rst_n)
+        stage_N_valid |-> stage_N_data == expected_stage_N_data);
+
+  Challenge with wide datapaths:
+    - 32-bit multiply: 2^64 input combinations
+    - Must use data abstraction or word-level solvers
+    - Some tools support bit-blasting with SAT for small widths
+    - Alternative: word-level formal (SMT solvers, SMT-LIB QF_BV)
+
+  Practical approach:
+    - Prove correctness for 4×4 tiles with reduced precision (4-bit elements)
+    - Use structural arguments to extend to full precision
+    - Verify rounding / saturation / overflow behavior separately
+    - Combine formal proof with constrained-random simulation for full-width
+```
+
+### 11.2 NoC (Network-on-Chip) Deadlock Freedom
+
+```
+NoC formal verification targets:
+
+  1. Deadlock freedom:
+     Prove: No cycle of dependencies among virtual channels can form
+
+     Approach:
+       - Model the routing function as a formal model
+       - Prove: the channel dependency graph (CDG) is acyclic
+       - This is a graph-theoretic property → naturally suited to formal
+
+     Property:
+       assert property (@(posedge clk) disable iff (!rst_n)
+           !(packet_stuck && no_progress_for_N_cycles));
+       // No packet can be indefinitely blocked
+
+  2. Liveness (no starvation):
+     Prove: Every injected packet eventually reaches its destination
+
+     assert property (@(posedge clk) disable iff (!rst_n)
+         packet_injected |-> s_eventually packet_received);
+
+  3. In-order delivery (if required):
+     Prove: Packets from same source to same destination arrive in order
+
+     assert property (@(posedge clk) disable iff (!rst_n)
+         packet_A_injected_before_packet_B |->
+         packet_A_received_before_packet_B);
+
+  4. Flow control correctness:
+     Prove: credit-based flow control never overflows buffers
+
+     assert property (@(posedge clk) disable iff (!rst_n)
+         buffer_occupancy <= BUFFER_DEPTH);
+
+  Abstraction strategies for NoC:
+    - Model data payload abstractly (only headers matter for routing)
+    - Reduce number of virtual channels in proof (prove structure holds)
+    - Use symmetry: prove for one router, extend by structural argument
+    - Topology-specific: mesh, torus, butterfly each have known proof methods
+```
+
+### 11.3 Dataflow Accelerator Verification
+
+```
+Dataflow accelerators (Google TPU, SambaNova, Groq):
+
+  Verification challenge:
+    Prove: the computation graph executes correctly on the dataflow fabric
+
+  Formal targets:
+    1. Schedule correctness:
+       Prove: all operations execute in the correct order
+       (respecting data dependencies)
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           consumer_en |-> producer_done);
+
+    2. Buffer sizing correctness:
+       Prove: no buffer overflow occurs for any valid schedule
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           fifo_count <= FIFO_DEPTH);
+
+    3. Memory consistency:
+       Prove: reads and writes to shared memory are correctly ordered
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           write_complete |-> ##1 read_sees_new_data);
+
+    4. Data integrity through the pipeline:
+       Prove: output matches the intended computation for all inputs
+       (requires abstraction for large tensors)
+
+  Approach:
+    - Extract computation graph from compiler output
+    - Generate formal properties from the graph structure
+    - Verify hardware implementation satisfies graph execution requirements
+    - Tools: custom property generators + JasperGold/VC Formal backends
+```
+
+### 11.4 RISC-V Formal Verification
+
+```
+RISC-V formal verification ecosystem:
+
+  riscv-formal framework (open source, by Clifford Wolf):
+    - Defines ISA-level formal properties for RISC-V processors
+    - Covers: RV32I, RV64I, M, A, F, D extensions
+    - Properties verify: instruction semantics, exception handling,
+      privilege mode transitions, CSR behavior
+
+  ISA formal specification:
+    Prove: processor implementation matches ISA specification for ALL
+    legal instruction sequences
+
+    // Example: ADD instruction correctness
+    assert property (@(posedge clk) disable iff (!rst_n)
+        decode_ADD && execute_valid |->
+        reg_file[rd] == reg_file_prev[rs1] + reg_file_prev[rs2]);
+
+    // Example: No unintended side effects
+    assert property (@(posedge clk) disable iff (!rst_n)
+        decode_ADD && retire_valid && (rd != rs1) && (rd != rs2) |->
+        reg_file[rs1] == reg_file_prev[rs1] &&
+        reg_file[rs2] == reg_file_prev[rs2]);
+
+  Verification levels:
+    Level 1: ISA compliance (riscv-formal)
+    Level 2: Microarchitecture-specific (pipeline hazards, forwarding)
+    Level 3: Implementation-level (cache coherence, TLB correctness)
+
+  Tools:
+    riscv-formal:   Open-source ISA-level formal checks
+    RVVI (RISC-V Verification Interface): Standardized formal interface
+    Formal ASIC tools: JasperGold/VC Formal for custom properties
+```
+
+### 11.5 GPU Shader Verification
+
+```
+GPU shader core verification challenges:
+
+  Formal targets:
+    1. SIMT execution correctness:
+       Prove: all threads in a warp execute the same instruction
+       (divergence handled correctly by hardware)
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           warp_active && !divergence |->
+           all_threads_same_pc);
+
+    2. Warp scheduling fairness:
+       Prove: no warp is starved indefinitely
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           warp_valid[i] && !warp_issued[i] |->
+           s_eventually warp_issued[i]);
+
+    3. Register file banking correctness:
+       Prove: bank conflicts are detected and resolved
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           bank_conflict_detected |-> stall_or_arbitrate);
+
+    4. Memory consistency (GPU memory model):
+       Prove: memory operations obey the GPU memory model rules
+       (e.g., CUDA memory model or OpenCL memory model)
+       - This is extremely complex: requires reasoning about
+         multiple memory scopes and ordering guarantees
+
+  Why GPU shader verification is hard for formal:
+    - Wide datapaths (32 threads × 32-bit = 1024-bit)
+    - Deep pipelines (10-20 stages)
+    - Complex memory hierarchy (L1, shared memory, L2, global)
+    - Dynamic scheduling and dependency resolution
+    - State space: exponentially larger than CPU cores
+
+  Practical approach:
+    - Verify control logic formally (scheduling, scoreboarding)
+    - Verify datapath with simulation (wide arithmetic)
+    - Use formal for memory ordering properties
+    - Cache coherence protocol verification (formal is essential here)
+```
+
+### 11.6 Security Verification
+
+```
+Formal verification for hardware security:
+
+  1. Side-channel resistance:
+     - Prove: no data-dependent timing variation in crypto engines
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           crypto_operation_valid |->
+           ##CONSTANT_LATENCY crypto_done);
+
+     - Constant-time execution: prove number of cycles is input-independent
+     - Power-equalized paths: formally prove no correlation between
+       secret data and switching activity
+     - Cache timing attacks: prove secret-dependent data does not
+       influence cache access patterns
+
+  2. Secure boot verification:
+     - Prove: boot ROM code is immutable
+     - Prove: chain of trust is maintained from ROM → bootloader → OS
+     - Prove: no unauthorized code can execute before authentication
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           boot_phase == PHASE_ROM |->
+           pc inside {ROM_START:ROM_END});
+
+  3. Access control verification:
+     - Prove: untrusted domain cannot access trusted resources
+     - Prove: firewall/MPU rules are enforced for ALL access patterns
+
+       assert property (@(posedge clk) disable iff (!rst_n)
+           untrusted_master_access && target_requires_trusted |->
+           access_denied);
+
+  4. Information flow security (non-interference):
+     - Prove: secret inputs do not influence observable outputs
+     - Formalized as: for all secret states S1, S2 with same public state,
+       the observable outputs are identical
+
+     This is the strongest security guarantee — proving that
+     no amount of observation of public outputs can reveal secret data.
+
+  5. Glitch-free clock gating:
+     - Prove: clock gating control cannot produce glitches
+     - Glitches could be exploited for fault injection attacks
+
+  Tools for security formal:
+    - CW308/CW305 (ChipWhisperer): side-channel analysis (measurement)
+    - Formal tools: prove absence of vulnerabilities (JasperGold, VC Formal)
+    - Logic synthesis: verify no timing channels introduced during optimization
+```

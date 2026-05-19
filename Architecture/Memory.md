@@ -2033,6 +2033,371 @@ Mitigation strategies for SDC include: chipkill (distributing each memory word a
 
 ---
 
+## 12a. SRAM Scaling Challenges at 3nm/2nm
+
+### 6T Bitcell Scaling Limits
+
+As SRAM scales from 5nm to 3nm and 2nm (gate-all-around / GAA nanosheet transistors), the fundamental 6T bitcell faces compounding challenges:
+
+| Parameter | 7nm | 5nm | 3nm | 2nm (projected) |
+|---|---|---|---|---|
+| **6T cell area (um^2)** | 0.027 | 0.021 | 0.015 | 0.010 |
+| **VDD min (read-stable)** | 0.7V | 0.65V | 0.55V | 0.45V |
+| **Read SNM (mV, VDD min)** | 120 | 90 | 60 | 40 |
+| **Write margin (mV)** | 200 | 160 | 110 | 80 |
+| **Cell ratio (CR)** | 1.5 | 1.3 | 1.1 | 1.0 (marginal) |
+| **Process variation (sigma Vth)** | 30 mV | 35 mV | 45 mV | 55 mV |
+
+**Key scaling challenges:**
+
+1. **Read/write margin degradation:** As transistors shrink, the cell ratio (CR = pulldown/access strength) degrades because the access transistor does not scale as favorably. At 2nm, CR approaches 1.0, leaving almost no margin between read stability and write-ability. The fundamental tension (read wants weak access, write wants strong access) becomes nearly unresolvable at these nodes.
+
+2. **Process variation sensitivity:** Random dopant fluctuation (RDF) and line-edge roughness (LER) increase with scaling. The standard deviation of Vth (sigma_Vth) scales as $1/\sqrt{W \cdot L}$, meaning smaller transistors have larger Vth variation. For a 6T cell at 2nm, a 55 mV sigma_Vth means 1-sigma read-margin variation is ~40% of the nominal margin -- requiring 5-6 sigma design guardbanding that consumes most of the available margin.
+
+3. **Bitline leakage:** At 3nm/2nm, subthreshold leakage through unaccessed cells on the same bitline becomes significant. A 256-row bitline has 255 off-state access transistors leaking, collectively contributing a DC offset that reduces the sense amplifier's effective signal swing. Solutions include: read-bitline precharge to a reference voltage (instead of VDD) to reduce leakage-induced offset, and bitline segmentation (split a 256-row column into 4x 64-row segments with local-global bitline hierarchy).
+
+4. **8T cell adoption:** At 3nm and below, the read-decoupled 8T cell is increasingly necessary to maintain adequate read SNM. The 30% area penalty of 8T is offset by the ability to operate at lower VDD (0.45V vs 0.55V for 6T), reducing active power by ~33% ($P \propto VDD^2$).
+
+5. **Assist circuits:** Read-assist (wordline under-drive: reduce WL voltage during read to weaken the access transistor, increasing CR) and write-assist (negative bitline: drive BL below GND during write to strengthen the access transistor's pull-down) are mandatory at 3nm/2nm. These add 5-10% area overhead for charge pump circuits.
+
+```
+Read-assist wordline under-drive:
+  Normal read: V_WL = VDD = 0.55V -> access transistor strong -> CR ~1.1
+  With under-drive: V_WL = VDD - 0.15V = 0.40V -> access weaker -> effective CR ~1.4
+  Read SNM improvement: ~30-40 mV (significant at these margins)
+
+Write-assist negative bitline:
+  Normal write: BL = 0V (GND) -> access pulls Q toward GND
+  With negative BL: BL = -0.2V -> stronger pull on Q -> write margin +50 mV
+  Implementation: on-chip charge pump generates -0.2V rail, gated to BL during write
+```
+
+---
+
+## 12b. Compute-in-Memory (CIM / PIM)
+
+### Overview
+
+Compute-in-Memory (CIM) or Processing-in-Memory (PIM) integrates arithmetic operations directly into the memory array, eliminating the data movement between memory and processor that dominates energy consumption in data-intensive workloads (AI inference, graph analytics, scientific computing).
+
+```
+Traditional von Neumann:
+  Memory Array -> Read data -> Bus -> ALU -> Result -> Bus -> Write back
+  Energy per operation: ~100-1000 pJ (dominated by data movement)
+  Data movement energy: ~10-100x the energy of the computation itself
+
+Compute-in-Memory:
+  Memory Array + integrated compute logic
+  Input applied to wordlines/bitlines -> result appears on sense amplifiers
+  Energy per operation: ~1-10 pJ (10-100x improvement)
+  No data leaves the memory array for the computation
+```
+
+### SRAM-Based CIM: Bitline Computing
+
+SRAM-based CIM performs analog accumulation directly on the bitlines by simultaneously activating multiple wordlines and interpreting the resulting bitline voltage as a multi-bit analog value.
+
+```
+Basic SRAM CIM operation (1-bit multiply-accumulate):
+
+  Bitline computing:
+    RBL is precharged to VDD.
+    Multiple wordlines (RWL0..RWL3) are asserted simultaneously.
+    Each activated cell conditionally discharges RBL through its read port.
+
+    For an 8T cell (read-decoupled):
+      RWL_i = 1, Q_bar_i = 1 -> cell i discharges RBL (contributes current)
+      RWL_i = 1, Q_bar_i = 0 -> cell i does NOT discharge RBL
+
+    RBL voltage drop is proportional to the number of cells that discharge:
+      V_RBL = VDD - n * delta_V
+      where n = number of cells with (RWL=1 AND Q_bar=1)
+      and delta_V = per-cell discharge contribution
+
+    This computes: n = sum(X_i AND W_i) for i = 0..3
+    where X_i = RWL_i (input) and W_i = Q_bar_i (stored weight)
+    = dot product of binary input vector and binary weight vector
+
+  Multi-bit extension:
+    For 4-bit weights and 4-bit inputs:
+    - Weight bits stored across 4 rows (W[3:0] in rows 0-3)
+    - Input bits applied to 4 wordlines (X[3:0] on RWL0-3)
+    - Bitline voltage encodes: sum(X_i * W_i) for one column
+    - Analog-to-digital converter (ADC) on the bitline converts voltage to digital count
+
+  Array-level accumulation:
+    128 columns compute 128 independent dot products in parallel
+    = 128 MACs per cycle per subarray
+    Throughput: 128 TOPS (binary) at 1 GHz
+```
+
+**SRAM CIM energy model:**
+
+```
+Energy per binary MAC operation in SRAM CIM:
+  RBL discharge: ~0.5 fJ (capacitance x voltage swing)
+  ADC per column: ~5 fJ (moderate-resolution SAR ADC)
+  WL driver: ~0.1 fJ per WL
+
+  Total per MAC: ~5-10 fJ (vs ~100 pJ for SRAM read + ALU + writeback)
+  CIM advantage: 10,000x lower energy per MAC
+
+Limitations:
+  - ADC precision limits compute precision: 3-4 bit ADC is practical
+  - Process variation causes column-to-column offset (requires calibration)
+  - Limited to integer/fixed-point; floating-point requires software decomposition
+  - Analog noise accumulates with array size (practical limit: 128-256 columns)
+```
+
+### ReRAM/RRAM for In-Memory Computing
+
+Resistive RAM (ReRAM or RRAM) stores data as resistance states (low-resistance = "1", high-resistance = "0") and naturally supports analog computation because Ohm's law provides multiplication ($V \times G = I$, where G = conductance = stored weight) and Kirchhoff's current law provides accumulation (currents sum at a node).
+
+```
+RRAM crossbar array for matrix-vector multiplication:
+
+  Input voltages V[0]..V[N-1] applied to wordlines
+  RRAM cells at crosspoints store conductance G[i][j]
+  Bitline currents: I[j] = sum(V[i] * G[i][j], i=0..N-1)
+
+  This computes Y = G * X in a single step (O(1) time complexity)
+  where G is the weight matrix, X is the input vector
+
+  Energy per MAC: ~1 fJ (current-based, no ADC needed for binary)
+  Array size: 128x128 crossbar practical (~2x2 um per cell)
+
+Challenges:
+  - Limited endurance: 10^6 - 10^9 write cycles (vs 10^15+ for SRAM)
+  - Conductance drift: resistance changes over time (retention error)
+  - Non-ideal linearity: conductance does not scale perfectly with voltage
+  - Fabrication: RRAM requires additional mask layers beyond CMOS logic
+  - Programming: write-verify cycles needed for precise weight setting
+```
+
+### MRAM: STT-MRAM and SOT-MRAM for Last-Level Cache
+
+MRAM (Magnetoresistive RAM) uses magnetic tunnel junctions (MTJs) to store data non-volatilely. Two variants are relevant for cache memory:
+
+**STT-MRAM (Spin-Transfer Torque MRAM):**
+
+```
+STT-MRAM cell:
+  1T + 1 MTJ (Magnetic Tunnel Junction)
+  MTJ structure: Free layer / MgO tunnel barrier / Fixed layer
+  Resistance states:
+    Parallel (P):  low resistance  = "0"
+    Anti-parallel (AP): high resistance = "1"
+
+  Write: current through MTJ flips free layer orientation
+    Write current: ~50-100 uA per cell
+    Write latency: 5-20 ns (current-induced switching)
+    Write energy: ~0.1-1 pJ per bit
+
+  Read: sense resistance via small read current
+    Read latency: 2-5 ns (similar to SRAM sense amplifier)
+    Read energy: ~0.01 pJ per bit
+
+Area: ~30-50 nm^2 per MTJ + 1 NMOS access transistor
+  Cell area (7nm): ~0.03 um^2 (comparable to 6T SRAM)
+  Advantage: non-volatile (retains data with zero power)
+```
+
+**STT-MRAM for last-level cache (LLC):**
+
+| Parameter | SRAM (6T, 7nm) | STT-MRAM (1T-1MTJ, 7nm) |
+|---|---|---|
+| Cell area | 0.021 um^2 | 0.025 um^2 (comparable) |
+| Read latency | 2-4 ns | 3-6 ns (slightly slower) |
+| Write latency | 0.5-1 ns | 10-35 ns (significantly slower) |
+| Endurance | > 10^16 cycles | 10^12-10^15 cycles |
+| Standby power | ~10-100 uW/Mb (leakage) | ~0 (non-volatile, zero leakage) |
+| Retention | Requires power | > 10 years at 85C |
+
+**Key trade-off:** STT-MRAM eliminates standby power (critical for large LLCs that are idle most of the time) but write latency is 10-30x worse than SRAM. Write-aware LLC management policies (write-buffering, write-bypass for non-dirty lines) mitigate this.
+
+**SOT-MRAM (Spin-Orbit Torque MRAM):**
+
+```
+SOT-MRAM cell:
+  1T + 1 SOT channel + 1 MTJ
+  Write: current through heavy-metal SOT channel (not through MTJ)
+    Write current: ~50-200 uA
+    Write latency: 1-5 ns (much faster than STT, comparable to SRAM!)
+    Write energy: ~0.05-0.5 pJ per bit
+
+  Read: same as STT-MRAM (sense MTJ resistance)
+    Read latency: 2-5 ns
+
+  Key advantage: write current does NOT pass through the MTJ tunnel barrier,
+  so endurance is effectively unlimited (> 10^16 cycles, matching SRAM).
+  Write speed is 3-10x faster than STT-MRAM.
+
+Area: ~0.04-0.06 um^2 (larger than STT due to additional SOT channel)
+  Trade-off: faster write and unlimited endurance at 2x area cost
+```
+
+SOT-MRAM is projected to replace SRAM in last-level caches (L3/L4) in advanced nodes where SRAM leakage dominates total chip power. The combination of near-SRAM write speed, zero standby power, and unlimited endurance makes it attractive for server processors with 100+ MB LLCs that consume 30-50W of leakage power in SRAM.
+
+### eMRAM as Embedded NVM
+
+Embedded MRAM (eMRAM) uses STT-MRAM technology integrated into the logic CMOS process as an on-chip non-volatile memory replacement for embedded flash (eFlash).
+
+```
+eMRAM characteristics:
+  Capacity: 8-64 MB per die (integrated in Back-End-Of-Line BEOL metal stack)
+  Read latency: 10-30 ns (random access, byte-addressable)
+  Write latency: 50-200 ns (block write for efficiency)
+  Endurance: 10^6 - 10^8 cycles (sufficient for firmware / config storage)
+  Retention: > 10 years at 125C
+
+  Use cases:
+    - Secure boot ROM replacement (store boot code in eMRAM, updateable)
+    - Firmware storage (microcontroller code, updateable in-field)
+    - Configuration fuses (replace eFuses with re-programmable eMRAM)
+    - AI weight storage (persistent model parameters in edge devices)
+    - Instant-on memory (retain system state across power cycles)
+
+  Integration: eMRAM sits in the interconnect metal layers (BEOL), not
+  in the front-end-of-line (FEOL) with logic transistors. This means
+  it can be added to any logic process (5nm, 3nm, 2nm) without
+  modifying the FEOL transistor stack -- just add 2-3 extra BEOL masks.
+```
+
+---
+
+## 12c. Near-Memory Processing: HBM-PIM
+
+### Samsung HBM-PIM (Aquabolt-XL with Programmable Logic)
+
+HBM-PIM integrates programmable compute logic directly into the HBM (High Bandwidth Memory) stack, adjacent to the DRAM banks. This enables computation to occur where the data resides, avoiding the energy and latency of moving data across the HBM-to-host interface.
+
+```
+HBM-PIM architecture:
+
+  +------------------------------------------+
+  | HBM Stack (8-high 3D-stacked DRAM)       |
+  |                                          |
+  |  Layer 0-7: DRAM banks (standard)        |
+  |  Each bank has an adjacent PIM unit:     |
+  |                                          |
+  |  +--------+  +--------+  +--------+     |
+  |  | Bank 0 |  | Bank 1 |  | Bank 2 | ... |
+  |  +--------+  +--------+  +--------+     |
+  |       |           |           |          |
+  |  +--------+  +--------+  +--------+     |
+  |  | PIM-0  |  | PIM-1  |  | PIM-2  | ... |
+  |  | (ALU + |  | (ALU + |  | (ALU + |     |
+  |  |  MAC)  |  |  MAC)  |  |  MAC)  |     |
+  |  +--------+  +--------+  +--------+     |
+  |                                          |
+  |  PIM units access local bank data at     |
+  |  DRAM internal bandwidth (~256 GB/s per  |
+  |  bank group), not limited by HBM I/O BW  |
+  +------------------------------------------+
+
+HBM-PIM compute capabilities per PIM unit:
+  - 16-bit integer MAC (multiply-accumulate)
+  - 8-bit integer MAC (for quantized inference)
+  - SIMD: 32 elements in parallel per PIM unit
+  - Local register file: 256-1024 bytes per PIM unit
+  - Instruction memory: microcoded operations (load, MAC, store, reduce)
+```
+
+**HBM-PIM performance model:**
+
+```
+Samsung Aquabolt-XL HBM-PIM (HBM2E-based):
+  HBM stack bandwidth: 460 GB/s (host interface)
+  Internal DRAM bank bandwidth: ~4x host BW = ~1.8 TB/s
+  PIM compute: 128 INT8 MAC units per channel x 16 channels
+             = 2048 MACs per cycle at 300 MHz = 1.2 TOPS per HBM stack
+
+  For GEMM (matrix multiply) on 4096x4096 matrices:
+    Traditional: read both matrices from HBM -> GPU -> write result back
+      Data movement: ~100 GB, at 460 GB/s = ~0.22 s (bandwidth-bound)
+    HBM-PIM: compute in HBM, only read result
+      Data movement: ~0 (compute where data lives)
+      Compute time: ~0.05 s (compute-bound at 1.2 TOPS)
+      Speedup: ~4x, energy reduction: ~10x
+
+Key use case: AI inference where model parameters are too large for on-chip SRAM.
+  A 175B-parameter model at INT8: ~175 GB of weights.
+  Must stream from HBM. With PIM, the streaming and compute happen simultaneously
+  at the DRAM bank level, hiding the bandwidth bottleneck.
+```
+
+**Programming model challenges:**
+
+- The host GPU/CPU must issue PIM-specific commands (via a command queue in the HBM controller). These are not standard DRAM commands -- they are custom opcodes that the PIM unit decodes and executes.
+- Data layout: weights must be pre-arranged in DRAM bank order to maximize bank-level parallelism. Scatter-gather patterns are inefficient.
+- Synchronization: the host must wait for PIM operations to complete before reading results. This requires a completion signal mechanism (e.g., a status register in the HBM controller that the host polls).
+
+---
+
+## 12d. DRAM Process Scaling Limits
+
+### Capacitor Scaling
+
+The DRAM storage capacitor must maintain sufficient charge (~25-30 fF) for reliable sensing despite shrinking cell area. At 1znm and beyond, capacitor scaling is approaching fundamental limits.
+
+```
+DRAM capacitor scaling approaches:
+
+  1x nm node: ~15.5 um^2 cell footprint, 25 fF capacitor
+  1y nm node: ~12.5 um^2 cell footprint, ~22 fF
+  1z nm node: ~10.0 um^2 cell footprint, ~18 fF
+  1a nm node: ~8.0 um^2 cell footprint (projected), ~15 fF
+
+  Capacitor height must increase to maintain capacitance as footprint shrinks:
+    1x nm: ~1.0 um tall capacitor pillar
+    1z nm: ~1.5 um tall (aspect ratio > 30:1, extremely difficult to etch)
+    1a nm: ~2.0 um tall (aspect ratio > 50:1, near manufacturing limit)
+
+  High-k dielectric materials (ZrO2, Al2O3-based) have been adopted to
+  boost capacitance per unit area, but further k-value improvements are
+  approaching diminishing returns.
+
+  If capacitance drops below ~10 fF:
+    Sense margin: delta_V < 20 mV (below reliable sense amplifier detection)
+    Retention time drops below 64 ms at 85C (violates DDR spec)
+    Soft error rate increases (cosmic ray charge overwhelms smaller capacitor)
+```
+
+### Access Transistor Scaling
+
+The DRAM access transistor (1T in the 1T1C cell) faces scaling challenges similar to logic transistors, but with additional DRAM-specific constraints.
+
+```
+Access transistor requirements:
+  - Low leakage: must hold capacitor charge for 64+ ms
+    I_off < 1 fA per cell (extremely low compared to logic transistors)
+  - Sufficient I_on for sense amplifier detection
+    I_on > 30 uA per cell (to discharge bitline in ~10 ns)
+  - Low Vth variation: sense margin is tiny, so Vth spread must be < 50 mV
+
+  Scaling challenge: reducing transistor size increases I_off (leakage).
+  DRAM uses high-Vth transistors (~0.8V threshold) to minimize leakage,
+  but this limits I_on and slows access time.
+
+  Solutions:
+    - Recessed channel array transistor (RCAT): wrap gate around a recessed
+      channel to increase effective channel length without increasing footprint.
+    - Saddle-fin / U-shape gate: 3D gate structure for increased drive current
+      at the same footprint.
+    - These are DRAM-specific transistor architectures not used in logic CMOS.
+```
+
+### Implications for Memory Controllers
+
+As DRAM scaling slows (doubling time increasing from ~2 years to ~4+ years), memory controllers must extract more performance from the same DRAM technology:
+
+- **Higher burst lengths and wider channels:** DDR5 BL16 (128 bytes per READ) and MRDIMM multiplexing maximize per-command data transfer.
+- **Same-bank refresh (SBR):** DDR5's SBR refreshes a subset of banks while others remain active, reducing refresh-induced latency spikes.
+- **Error-aware scheduling:** As capacitor charge decreases, the controller must handle increasing soft-error rates, potentially scheduling more aggressive scrubbing or using stronger ECC (BCH or on-die ECC + system ECC).
+- **Thermal-aware refresh:** High-density DRAM stacks (HBM, 3DS DIMMs) require temperature-compensated refresh rates. The controller monitors on-die thermal sensors and adjusts tREFI dynamically.
+
+---
+
 ## 12. Content-Addressable Memory (CAM/TCAM)
 
 ### CAM Cell Design

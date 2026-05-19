@@ -2593,6 +2593,313 @@ DREAMPlace reformulates analytical placement as a differentiable optimization pr
 
 ---
 
+## 11. AI Accelerator Physical Design
+
+### 11.1 Power Delivery at 1000W+
+
+Modern AI accelerators push power delivery to unprecedented levels:
+
+```
+Power budget evolution:
+  NVIDIA A100:   ~400W (2020)
+  NVIDIA H100:   ~700W (2022)
+  NVIDIA B200:   1000W (2024)
+  NVIDIA Rubin:  1500W+ (2026, projected)
+
+IR drop challenge at 1000W:
+  VDD = 0.75V (N5), I_total = 1000W / 0.75V = 1333A
+
+  For 3% static IR drop budget: 22.5 mV
+  Required grid resistance: R_grid = 22.5mV / 1333A = 0.017 mΩ
+
+  At 1333A, EM limits are extremely tight:
+    Each C4 bump carries ~0.25A → need 5300+ power bumps minimum
+    Power bumps typically consume 40-60% of total bump map
+
+  Power delivery stack:
+    VRM (off-chip) → PCB planes → BGA balls → Package substrate
+    → C4 bumps → On-die grid → Standard cell rails
+
+  Each stage must be co-optimized:
+    - Package substrate: 10-20 layer, 5-10 mΩ total
+    - On-die: M9-M10 grid, heavy via stacks between layers
+    - Decap: 15-25% of core area for di/dt management
+```
+
+### 11.2 Reticle-Limit Dies and Multi-Reticle Stitching
+
+```
+Reticle size limits (lithography field):
+  N5 (5nm):  ~830 mm² maximum single die
+  N3 (3nm):  ~700 mm² (tighter due to EUV constraints)
+  N2 (2nm):  ~700 mm² projected
+
+AI accelerator die sizes:
+  NVIDIA H100 (GH100): 814 mm² (near N5 reticle limit)
+  NVIDIA B200 (GB200): ~1600 mm² (dual-reticle, stitched)
+
+Multi-reticle die stitching:
+  ┌───────────────────────────────────────┐
+  │              Stitched Die              │
+  │  ┌─────────────┐  ┌─────────────┐    │
+  │  │  Reticle A  │  │  Reticle B  │    │
+  │  │  (Left      │  │  (Right     │    │
+  │  │   Half)     │  │   Half)     │    │
+  │  └──────┬──────┘  └──────┬──────┘    │
+  │         │    stitch seam  │           │
+  │         └─────────────────┘           │
+  └───────────────────────────────────────┘
+
+  Stitching challenges:
+    - Alignment across reticle boundary (±2-4 nm)
+    - DRC rules at stitch seam are tighter
+    - Timing paths crossing seam have additional uncertainty
+    - Requires double-exposure at boundary region
+    - Mask cost: 2x reticle masks instead of 1
+```
+
+### 11.3 HBM Floorplanning
+
+```
+Typical AI accelerator floorplan (B200-class):
+
+  ┌──────────────────────────────────────────────┐
+  │  ┌────┐ ┌────┐  ┌──────────────┐  ┌────┐ ┌────┐ ┌────┐ │
+  │  │HBM0│ │HBM1│  │              │  │HBM2│ │HBM3│ │HBM4│ │
+  │  │    │ │    │  │   GPU Die    │  │    │ │    │ │    │ │
+  │  └──┬─┘ └──┬─┘  │  (~1600mm²)  │  └──┬─┘ └──┬─┘ └──┬─┘ │
+  │     │      │    │              │     │      │      │    │
+  │═════╧══════╧════╧══════════════╧═════╧══════╧══════╧════│
+  │              Silicon Interposer (CoWoS-L)                  │
+  └──────────────────────────────────────────────────────────┘
+
+  HBM-to-GPU routing:
+    - 1024 data signals per HBM stack (HBM3/HBM3E)
+    - 6 stacks × 1024 = 6144 data wires + control/clock
+    - Interposer RDL pitch: 0.4-1.0 μm
+    - Routing channel width per HBM: ~500-800 μm
+    - Signal integrity: matched-length routing within ±5 μm per byte lane
+
+  Floorplanning constraints:
+    - HBM placed close to GPU to minimize interposer wiring
+    - Power TSVs distributed under GPU die (not under HBM)
+    - Thermal: HBMs generate 10-20W each, GPU 700-1000W
+      → heat dissipation path from center of GPU is critical
+    - Bump map: power bumps concentrated under GPU, signal bumps
+      around periphery for HBM and other I/O
+```
+
+### 11.4 CTS for Massive Dies
+
+```
+Clock tree for 800-1600 mm² dies:
+
+  Challenges:
+    - 500K+ clock sinks (flip-flops, latches, ICG cells)
+    - Die dimensions: 25-30 mm per side
+    - Wire RC across 30 mm: ~500-1000 ps delay (even on upper metals)
+    - Thermal gradient: 30-50°C across die → clock buffer delay varies
+    - IR drop variation: clock buffers at different VDD see different delays
+
+  Clock spine architecture:
+                          PLL
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+         ┌────┴─────┐ ┌───┴────┐ ┌────┴─────┐
+         │  Spine   │ │  Spine │ │  Spine   │
+         │  Driver  │ │ Driver │ │  Driver  │
+         └────┬─────┘ └───┬────┘ └────┬─────┘
+              │            │            │
+    ═════════╧════════════╧════════════╧═════════  Clock spine (M10-M11)
+         │         │         │         │
+       ┌─┴─┐    ┌─┴─┐    ┌─┴─┐    ┌─┴─┐
+       │CTS│    │CTS│    │CTS│    │CTS│      Clock mesh
+       │sub│    │sub│    │sub│    │sub│      segments per
+       │tree│    │tree│    │tree│    │tree│    partition
+       └───┘    └───┘    └───┘    └───┘
+
+  Approach:
+    1. Divide die into 4-16 clock partitions
+    2. Each partition has its own CTS sub-tree
+    3. Global spine connects partitions (H-tree or mesh)
+    4. Skew budget: < 50ps global, < 20ps local
+    5. CCD (Concurrent Clock and Data) essential for closure
+
+  Metrics for massive die CTS:
+    - Insertion delay: 800-1500 ps
+    - Global skew: < 100 ps (with OCV)
+    - Clock power: 40-60W (30-50% of total dynamic power)
+    - CTS buffer count: 200K-1M buffers
+```
+
+### 11.5 Thermal Hotspot Management
+
+```
+Thermal hotspots in AI accelerators:
+
+  Sources:
+    - Tensor cores / systolic arrays: dense MAC operations
+      → 50-100 W/cm² heat flux
+    - HBM PHY interfaces: high-speed SerDes (6.4 Gbps per pin)
+    - NoC routers: high activity factor
+    - SRAM banks: moderate but sustained activity
+
+  Thermal gradient across die:
+    Hotspot (tensor core): 95-110°C
+    SRAM region:            70-85°C
+    I/O region:             55-70°C
+    Gradient:               30-50°C
+
+  Physical design mitigations:
+    1. Thermal-aware placement: spread hot blocks
+    2. Insert thermal vias under hotspots (dummy TSVs for heat)
+    3. Increase metal density over hotspots for heat spreading
+    4. Place decap cells near hot blocks for di/dt
+    5. Floorplan hot blocks near die edges (shorter path to heatsink)
+    6. On-die thermal sensors for runtime throttling
+
+  Thermal analysis tools: Ansys RedHawk-SC, Cadence Celsius
+```
+
+### 11.6 3D IC Place-and-Route
+
+```
+3D IC (face-to-face or face-to-back):
+
+  Face-to-face (F2F) bonding:
+    ┌──────────────┐
+    │   Top Die     │  (flipped, face down)
+    │   ───μbumps───│  ← bonding interface at top
+    │   Bottom Die  │  (face up)
+    └──────────────┘
+
+    Top die routing is "inverted" — requires mirror-aware PnR
+    μbump pitch: 25-40 μm → 10,000+ connections/mm²
+
+  TSV placement in 3D IC:
+    - Signal TSVs: placed by PnR tool, pitch 10-40 μm
+    - Power TSVs: regular array, pitch 50-100 μm
+    - Thermal TSVs: dummy, placed under hotspots
+    - Keep-out zone: 5-15 μm around each TSV
+
+  PnR tool support:
+    ICC2: 3D-IC flow with multi-die partitioning
+    Innovus: 3D stacking support via GDS merging
+    Both: support TSV cell definition, 3D timing analysis
+
+  Timing in 3D:
+    TSV delay: ~1-5 ps per TSV (negligible)
+    TSV capacitance: 50-200 fF (significant loading!)
+    Cross-die path: launch FF (die A) → TSV → logic → capture FF (die B)
+    Must model TSV RC in extraction and STA
+```
+
+### 11.7 TSMC InFO and CoWoS Design Flows
+
+```
+TSMC InFO (Integrated Fan-Out) Design Flow:
+  ─────────────────────────────────────────
+  Used for: Mobile SoCs, mid-range AI chips
+  Key: No silicon interposer, RDL on mold compound
+
+  Flow:
+    1. Die placement on carrier wafer (face-down)
+    2. Mold compound injection (fills gaps)
+    3. Backside grinding (thin to target thickness)
+    4. RDL fabrication on mold surface
+       - L/S: 1-2 μm (InFO-2D), 0.8-1.0 μm (InFO-3D)
+    5. Ball placement on RDL
+    6. Carrier removal and singulation
+
+  InFO variants:
+    InFO-WLP:  Single die, fan-out WLP
+    InFO-PoP:  Package-on-package (SoC + DRAM)
+    InFO-OS:   Organic substrate variant
+    InFO-R:    RDL interposer (no TSV, chip-to-chip)
+    InFO-3D:   3D stacking with InFO technology
+
+  Design rules:
+    - RDL routing must avoid mold compound voids
+    - Die shift during molding: ±5-10 μm (account in routing)
+    - Cu exposure for grounding/shielding
+    - Warpage control: balanced RDL on both sides
+
+TSMC CoWoS Design Flow:
+  ──────────────────────
+  Used for: High-performance AI accelerators (H100, B200)
+
+  CoWoS-S (Silicon interposer):
+    1. Build silicon interposer (65nm BEOL, 2-4 RDL layers)
+    2. Form TSVs in interposer (via-middle)
+    3. Mount dies on interposer (C4 or μbump)
+    4. Underfill
+    5. Attach interposer to organic substrate (C4)
+    6. Encapsulate
+
+  CoWoS-L (Large, with local Si bridges):
+    - Replaces full silicon interposer with:
+      local silicon bridges embedded in organic substrate
+    - Supports up to 6× reticle size interposer area
+    - Used for B200: dual-reticle GPU + 6 HBM3e
+
+    ┌─────────────────────────────────────────┐
+    │  Organic Substrate (large, up to 6× ret) │
+    │                                          │
+    │   ┌────┐     ┌────────────┐    ┌────┐   │
+    │   │HBM │     │  GPU Die   │    │HBM │   │
+    │   │ 0  │     │  (~1600mm²)│    │ 1  │   │
+    │   └──┬─┘     └─────┬──────┘    └──┬─┘   │
+    │    ┌─┴──────────────┴──────────────┴─┐   │
+    │    │    Local Si Bridge (fine RDL)   │   │
+    │    └──────────────────────────────────┘   │
+    │                                          │
+    └──────────────────────────────────────────┘
+
+  CoWoS design considerations:
+    - Die-to-die timing: ~2-5 ns latency on interposer
+    - Signal integrity: tightly coupled microstrip lines on interposer
+    - Warpage: large interposer bows → assembly yield impact
+    - Thermal expansion mismatch between Si dies and organic substrate
+```
+
+### 11.8 Advanced Node PnR: DPT, SADP/SAQP
+
+```
+Double Patterning Technology (DPT) at N5/N3:
+
+  At 7nm and below, minimum pitch requires EUV or DUV+DPT:
+    N7 EUV:  single exposure for most layers (36-40 nm pitch)
+    N7 DUV:  DPT required for M2-M5 (40 nm pitch → 80 nm per mask)
+    N5:      EUV for critical layers, DPT for some interconnect
+    N3:      EUV only for critical layers, some layers still DPT
+             SADP for fin patterning, SAQP for metal layers
+
+  SADP (Self-Aligned Double Patterning) at N3:
+    - Mandrel + spacer approach for fin/metal definition
+    - Routing rules: strict unidirectional per layer
+    - Track-assignment constraints: specific tracks for specific colors
+    - PnR tool must be color-aware during routing
+
+  SAQP (Self-Aligned Quadruple Patterning) at N3/N2:
+    - Two rounds of SADP → 4× pitch division
+    - Used for fin patterning at N3 and below
+    - Design rules extremely restrictive:
+      • All features must be on specific grids
+      • No jogs or bends within SAQP regions
+      • Cut mask approach for line-end definition
+    - PnR tools: ICC2/Innovus have SAQP-aware routers
+
+  Impact on PnR:
+    - Routing congestion increases (color constraints)
+    - DRC rule count: 5000+ rules at N3 (vs ~500 at 65nm)
+    - Runtime: 2-3× longer for routing at N3 vs N5
+    - Need close collaboration with foundry for rule deck updates
+    - In-design DRC checking recommended (catch errors during PnR)
+```
+
+---
+
 ## Numbers to Memorize -- Physical Design Quick Reference
 
 | Quantity | Value | Why it matters |

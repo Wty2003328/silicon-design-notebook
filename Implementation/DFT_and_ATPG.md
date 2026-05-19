@@ -2741,4 +2741,327 @@ clocks can share clock tree resources; the others cannot.
 
 ---
 
+## 11. AI Accelerator DFT
+
+### 11.1 Tensor Core Testing
+
+```
+Tensor core / systolic array DFT challenges:
+
+  A modern AI accelerator tensor core:
+    - 4-8 systolic arrays, each 128×128 MAC units
+    - Per MAC: 8-bit multiply + 32-bit accumulate
+    - Total MAC units: 65,000-130,000
+    - Pipeline depth: 4-8 stages through the array
+
+  Testing approaches:
+
+  1. Systolic array BIST (SA-BIST):
+     - Built-in pattern generator feeds known matrices
+     - On-chip comparator checks against golden results
+     - Tests: all-zeros, all-ones, walking-1, random matrices
+     - Coverage: stuck-at, transition, bridging in MAC units
+
+     ┌──────────┐    ┌───────────────────┐    ┌──────────┐
+     │ Pattern  │───>│  Systolic Array   │───>│ Response │
+     │ Generator│    │  (MAC units)      │    │ Checker  │
+     └──────────┘    └───────────────────┘    └──────────┘
+                           ↑
+                     BIST Controller
+
+  2. MAC unit scan testing:
+     - Insert scan chains through MAC pipeline registers
+     - ATPG targets: multiplier stuck-at, accumulator stuck-at
+     - Challenge: massive sequential depth through pipeline
+       → pattern count can be very high
+     - Solution: pipeline-isolated scan segments with
+       capture points between stages
+
+  3. Accumulator overflow/underflow testing:
+     - Test wrap-around behavior at max/min values
+     - Verify saturation logic (if implemented)
+     - Test precision reduction (FP32 → FP16 → INT8)
+
+  DFT overhead for tensor core:
+    - Area: 3-5% (BIST controller + scan registers)
+    - Test time: ~2-5 seconds for SA-BIST
+    - Additional scan patterns: 5,000-20,000 for full ATPG coverage
+```
+
+### 11.2 HBM Stack Testing
+
+```
+HBM testing hierarchy:
+
+  Level 1: Known Good Die (KGD) testing
+    - Each DRAM die tested on wafer before stacking
+    - Memory BIST on wafer probe: March C- or March SS
+    - Redundancy repair analysis at wafer level
+    - KGD yield requirement: >99.5% per die
+      (8-die stack: 0.995^8 = 96% stack yield minimum)
+
+  Level 2: HBM interface testing (post-assembly)
+    - Boundary scan on HBM interface signals:
+      IEEE 1149.1 BSCs on all data, address, command pins
+      → Tests interconnect between GPU and HBM
+
+    - HBM BIST (built into HBM base logic die):
+      Read/write patterns to each DRAM die in stack
+      Tests TSV integrity between DRAM layers
+      Pattern: checkerboard, walking-1, March C-
+
+    - HBM PHY training and compliance:
+      Per-bit deskew calibration
+      Write leveling across 1024-bit interface
+      Read/write eye margin testing at speed
+
+  Level 3: System-level HBM test:
+    - Functional test: run AI workload, verify data integrity
+    - Margin testing: vary VDD and frequency to find operating limits
+    - Retention test: write pattern, wait, read back
+    - Temperature-accelerated stress test
+
+  HBM DFT architecture:
+    ┌─────────────────────────────────────────┐
+    │              GPU Die                     │
+    │  ┌──────────┐      ┌────────────────┐   │
+    │  │ HBM PHY  │──────│ HBM BIST Ctrl  │   │
+    │  │ (1024b)  │      │ (on GPU die)   │   │
+    │  └────┬─────┘      └───────┬────────┘   │
+    └───────┼────────────────────┼─────────────┘
+            │ μbumps             │
+    ════════╧════════════════════╧═══════════════
+            │ Interposer         │
+    ┌───────┼────────────────────┼─────────────┐
+    │       │    HBM Stack       │             │
+    │  ┌────┴──────┐    ┌────────┴──────────┐  │
+    │  │ HBM PHY   │    │ HBM Base Logic    │  │
+    │  │ (1024b)   │    │ (BIST, Repair,    │  │
+    │  │           │    │  TSV testing)     │  │
+    │  └───────────┘    └───────────────────┘  │
+    │         ┌──────────────────┐              │
+    │         │  DRAM Die Stack  │              │
+    │         │  (8-12 layers)   │              │
+    │         └──────────────────┘              │
+    └──────────────────────────────────────────┘
+```
+
+### 11.3 Die-to-Die Link Testing
+
+```
+UCIe / die-to-die link testing:
+
+  1. Loopback testing:
+     - TX sends known pattern → through interposer → RX receives
+     - Compare received vs expected at speed
+     - Pattern types: PRBS, walking-1, clock pattern (101010...)
+     - Tests: bit error rate (BER), eye margin, jitter tolerance
+
+     Die A TX ──→ Interposer ──→ Die A RX (loopback)
+                                 (on-chip compare)
+
+  2. UCIe compliance testing:
+     - Link training verification: verify handshake sequence
+     - Retrain testing: force link down, verify recovery
+     - CRC error injection: verify retry mechanism
+     - Power state transitions: verify link enters/exits low-power
+
+  3. NVLink compliance testing:
+     - 200+ GB/s per link, PAM-4 signaling
+     - TX eye diagram: verify eye height/width margin
+     - RX equalization: verify CTLE/DFE adaptation
+     - Link training: verify negotiation and lane deskew
+
+  4. Die-to-die boundary scan:
+     - IEEE 1149.1 extended for inter-die connections
+     - EXTEST mode: drive from die A, capture at die B
+     - Tests interposer routing, μbump integrity
+     - IEEE 1838 (3D test access): standardized for chiplet testing
+
+  DFT infrastructure per die-to-die link:
+    - Loopback mux at TX and RX
+    - Pattern generator / checker (PRBS-based)
+    - Error counter and status registers
+    - JTAG access for configuration and readback
+```
+
+### 11.4 3D IC Test: TSV and KGD
+
+```
+TSV testing:
+
+  Pre-bond TSV test (via-middle or via-last):
+    - Probe TSV from wafer backside
+    - Measure DC resistance: R < 50 mΩ (pass)
+    - Measure capacitance: C < 200 fF (pass)
+    - Open detection: R > 1 kΩ → defective TSV
+    - Short detection: C > 500 fF → likely shorted to substrate
+
+  Post-bond TSV test:
+    - Use boundary scan through TSV chain
+    - At-speed test: data pattern through TSV, check integrity
+    - TSV redundancy: spare TSVs can replace defective ones
+      via laser fuse or eFuse programming
+
+  Known Good Die (KGD) requirements for 3D:
+    ┌─────────────────────────────────────────────────┐
+    │ KGD test flow for 3D stacking:                  │
+    │                                                 │
+    │  Wafer test → Sort → Known Good Die selection   │
+    │  - Full scan ATPG (stuck-at + TDF)              │
+    │  - Memory BIST (all embedded SRAMs)             │
+    │  - IO test (boundary scan + at-speed IO)        │
+    │  - TSV test (if via-middle)                     │
+    │  - Speed binning (at-speed functional test)      │
+    │                                                 │
+    │  Target: <10 DPM (defective parts per million)  │
+    │  Reason: 2-die stack yield = KGD1 × KGD2        │
+    │    If KGD = 99.99%: stack yield = 99.98%        │
+    │    If KGD = 99.9%:  stack yield = 99.8%         │
+    │    If KGD = 99%:    stack yield = 98.01%        │
+    └─────────────────────────────────────────────────┘
+```
+
+### 11.5 Power-Aware Test Scheduling for 1000W+ Designs
+
+```
+Challenge: Testing a 1000W+ AI accelerator on ATE
+
+  ATE power limitations:
+    - Typical ATE per-pin current: 200-500 mA
+    - ATE total power delivery: 200-500W per test head
+    - Device may require 1000W+ during functional test
+
+  Power-aware test scheduling:
+    1. Partition test into power segments:
+       - Scan test (shift): ~100-200W (shift clock slow, moderate toggling)
+       - Scan test (capture): ~300-500W (at-speed burst, one clock cycle)
+       - IO test: ~50-100W (limited toggling)
+       - Memory BIST: ~200-400W (one SRAM at a time)
+       - Functional test: ~700-1000W (full power)
+
+    2. Test ordering for power management:
+       a. Low-power tests first (scan stuck-at, shift slow)
+       b. Medium-power tests (TDF, memory BIST per block)
+       c. High-power tests last (at-speed functional, link training)
+       d. Thermal soak between high-power segments
+
+    3. Power gating during test:
+       - Disable unused chiplets / tensor cores during block-level test
+       - Only power the block under test
+       - Sequence power domains: avoid simultaneous power-on surge
+       - Monitor on-die thermal sensors during test
+
+    4. Test insertion for power management:
+       - On-chip power management unit (PMU) accessible via JTAG
+       - PMU controls power switches, voltage regulators
+       - DFT controller coordinates with PMU during test
+       - Emergency shutdown if die temperature exceeds threshold
+
+  Shift power reduction for large designs:
+    - 2M+ FFs shifting simultaneously → 100-300W shift power alone
+    - Low-power fill: reduce toggle rate from ~50% to ~10-15%
+    - Staggered chain activation: only shift subset of chains at once
+    - Reduced VDD for shift: 0.6V instead of 0.75V (50% power savings)
+    - Split capture: limit simultaneous switching during capture pulses
+```
+
+### 11.6 High-Speed I/O Testing
+
+```
+PCIe 6.0 / CXL link testing:
+
+  PCIe 6.0 (PAM-4 signaling):
+    - Data rate: 64 GT/s per lane (x16 = 1024 Gbps)
+    - PAM-4: 4-level signaling (2 bits per symbol)
+    - Signal-to-noise ratio: ~10 dB lower than NRZ at same rate
+    - TX equalization: 3-tap pre-emphasis + 1-tap de-emphasis
+    - RX equalization: CTLE + 1-tap DFE
+
+  Test requirements:
+    1. Transmitter eye margin:
+       - Measure eye height and width at 1e-12 BER
+       - Target: >30% eye opening
+       - Jitter decomposition: RJ + DJ + ISI
+
+    2. Receiver sensitivity:
+       - Inject calibrated jitter (SJ, RJ)
+       - Find minimum detectable signal level
+       - Stress test: run at 64 GT/s with injected errors
+
+    3. Link training verification:
+       - PCIe link training sequence (TS1/TS2 ordered sets)
+       - Speed negotiation: 2.5 → 5.0 → 8.0 → 16.0 → 32.0 → 64.0 GT/s
+       - Equalization negotiation (preset/coeff exchange)
+       - CXL mode entry (if supported): verify mode switch
+
+    4. PAM-4 specific tests:
+       - Level separation: verify 4 voltage levels are distinct
+       - Non-linearity: check level spacing uniformity
+       - Crosstalk: measure coupling between adjacent lanes
+       - Forward error correction (FEC): verify CRC + retry
+
+  CXL link training:
+    - CXL.cache, CXL.mem, CXL.io protocol verification
+    - Link training at PCIe rate, then switch to CXL mode
+    - Flit-based testing: verify 256-byte flit integrity
+    - Latency measurement: round-trip latency < 150 ns target
+```
+
+### 11.7 Analog/Mixed-Signal BIST (AMBIST)
+
+```
+AMBIST: Built-In Self-Test for analog/mixed-signal blocks
+
+  Targets: PLLs, SerDes PHYs, ADCs, DACs, voltage regulators
+
+  1. PLL BIST:
+     - Frequency lock detection: verify PLL locks to target frequency
+     - Jitter measurement: on-chip jitter measurement circuit
+       (self-referenced or reference-based)
+     - Lock time: measure cycles from reset to lock
+     - Test flow:
+       a. Enable PLL, wait for lock
+       b. Measure output frequency (counter-based)
+       c. Measure jitter (self-referenced ring oscillator)
+       d. Compare against pass/fail thresholds
+
+  2. SerDes PHY BIST:
+     - Loopback: internal (near-end), external (far-end)
+     - PRBS pattern generator → SerDes TX → loopback → SerDes RX → checker
+     - Eye monitor: on-chip eye diagram measurement
+     - Calibration verification: verify impedance, equalization settings
+
+     ┌────────┐  PRBS  ┌────────┐  analog  ┌────────┐
+     │ Pattern│───────>│  TX    │────────>│ (loop) │
+     │ Gen    │        │  PHY   │         │        │
+     └────────┘        └────────┘         └────────┘
+                                             │
+     ┌────────┐  result ┌────────┐          │
+     │Checker │<────────│  RX    │<─────────┘
+     │        │         │  PHY   │  analog
+     └────────┘         └────────┘
+
+  3. ADC/DAC BIST:
+     - DAC: generate known digital pattern → analog output →
+       compare against reference (on-chip comparator or ADC loopback)
+     - ADC: apply known analog voltage (resistor ladder DAC) →
+       digital output → compare expected code
+     - INL/DNL testing: ramp input, check linearity
+     - Histogram-based testing: statistical analysis of output codes
+
+  4. Voltage regulator BIST:
+     - Output voltage accuracy: ±2-5% of target
+     - Load regulation: vary load current, measure voltage change
+     - Line regulation: vary input voltage, measure output stability
+     - Transient response: step load, measure settling time
+
+  AMBIST area overhead: 5-10% of analog block area
+  Test time per analog block: 10-100 ms
+  Industry trend: More analog BIST at advanced nodes to reduce
+  ATE cost and enable system-level self-test
+```
+
+---
+
 *End of DFT and ATPG Deep Dive*

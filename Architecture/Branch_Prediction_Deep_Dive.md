@@ -1767,7 +1767,145 @@ history window.
 
 ---
 
-## 12. References
+## 12. TAGE-SC-L: The Full Championship Predictor
+
+### 12.1 Statistical Corrector (SC) -- Deep Dive
+
+The SC is a perceptron-like auxiliary predictor that corrects TAGE's remaining
+mispredictions. It operates as follows:
+
+**Input features (per branch):**
+- TAGE's prediction (taken / not-taken)
+- The base bimodal prediction
+- Partial tags and useful bits from each tagged component (geometric features)
+- A hash of the PC and recent global history
+
+**Mechanism:**
+Each SC entry stores a vector of 8-bit signed weights. The SC output is:
+
+$$
+y_{SC} = \sum_{i=0}^{N-1} w_i \cdot x_i
+$$
+
+where $x_i$ are the binary features and $w_i$ are the weights. The sign of
+$y_{SC}$ determines the corrected prediction.
+
+**Override rule:** The SC prediction overrides TAGE only when:
+1. $|y_{SC}| > \theta$ (confidence threshold, typically $\theta = 2 \times N$), AND
+2. TAGE's prediction differs from SC's prediction.
+
+This gating is critical: the SC only overrides when it is highly confident, so
+a poorly trained SC cannot degrade accuracy below the TAGE baseline.
+
+**Training:** The SC is trained only on TAGE mispredictions (not on every
+branch). This focuses learning capacity on the hard cases. The weight update
+follows the perceptron learning rule:
+
+$$
+w_i \leftarrow \text{clamp}(w_i + t \cdot x_i,\; -128,\; 127)
+$$
+
+where $t = +1$ if actual was Taken, $t = -1$ if Not-Taken.
+
+### 12.2 SC Accuracy Improvement
+
+| Component | SPEC INT 2006 MPKI | SPEC INT 2017 MPKI |
+|-----------|---------------------|---------------------|
+| TAGE (8 components, 16 KB) | 3.0 | 4.2 |
+| TAGE-SC (with corrector) | 2.6 | 3.7 |
+| TAGE-SC-L (with loop predictor) | 2.4 | 3.5 |
+
+### 12.3 The Loop Predictor (L in TAGE-SC-L)
+
+The "L" component is a small loop predictor that detects regular loop-exit
+patterns that TAGE struggles with. It tracks:
+
+- A loop iteration counter (how many times this branch was taken consecutively)
+- A predicted trip count (learned from past iterations)
+- A confidence counter
+
+When the loop predictor has high confidence and the iteration count matches
+the predicted trip count, it overrides TAGE's prediction to "not-taken" (loop
+exit). This is especially effective for tight counting loops where the loop
+count is a constant known at run time (e.g., `for (i = 0; i < 16; i++)`).
+
+**Hardware cost:** ~256 entries x ~30 bits = ~1 KB. Very small relative to the
+TAGE tables.
+
+---
+
+## 13. Neural and Perceptron Branch Prediction -- Research Landscape
+
+### 13.1 Perceptron Predictor (Jimenez and Lin, 2001)
+
+The perceptron predictor (covered in Section 4) treats branch prediction as
+binary classification. Key properties for interview discussions:
+
+- **Fast training:** Single-pass weight update, no gradient descent needed.
+- **Long correlation:** Can capture patterns spanning 32--64 branches back.
+- **XOR limitation:** Cannot learn non-linearly separable patterns (e.g., XOR
+  of two history bits). This is the theoretical accuracy ceiling.
+
+### 13.2 Piecewise Linear / Multiperceptron (Jimenez, 2005)
+
+Extends the single perceptron by maintaining separate weight tables indexed by
+partial history patterns (similar to TAGE's geometric history lengths):
+
+- Multiple weight tables with different history lengths.
+- Final prediction is a weighted sum of outputs from each table.
+- Achieves ~98.5% accuracy on SPEC INT (vs. ~97% for single perceptron).
+- Too expensive for production: storage grows as $O(\text{tables} \times N \times
+  \text{entries})$, easily exceeding 100 KB.
+
+### 13.3 Hashed Perceptron (CBP-5, 2016)
+
+A practical compromise: each weight is stored in a small SRAM table indexed by
+a hash of (PC, history bits). Multiple hash functions reduce aliasing. Used in
+the AMD Zen branch predictor (perceptron-based with multiple tables).
+
+### 13.4 ML-Based Branch Prediction (Recent Academic Work)
+
+Recent research (2020--2025) has explored applying deep learning to branch
+prediction, achieving new state-of-the-art results:
+
+#### Multiperspective Perceptron (Daniel A. Jimenez, 2020--2024)
+
+- Uses multiple "perspectives" (hash functions) that each produce a weight.
+- Final prediction is the sum of weights from all perspectives.
+- Won CBP-5 (2020) and remained competitive through CBP-6.
+- Key insight: by using many simple hash-indexed weight tables (each small),
+  the predictor avoids both the XOR limitation and the storage explosion.
+- Accuracy: ~99.3% on SPEC INT 2017 (vs. ~99.0% for TAGE-SC-L).
+
+#### Neural Network Approaches
+
+- **LSTM-based predictors:** Research prototypes using recurrent neural
+  networks (LSTM/GRU) to model branch history as a sequence. Accuracy
+  exceeds TAGE by 0.5--1.0 percentage points but requires 100 KB--1 MB of
+  weights and is not feasible for 1-cycle latency at 5 GHz.
+- **Expert-based predictors:** An ensemble of simple predictors (analogous to
+  boosting) where each expert specializes in a subset of branch behaviors.
+  A meta-learner selects the expert. Achieves high accuracy but with
+  unpredictable worst-case latency.
+
+#### Practical Limitations for Silicon
+
+| Challenge | Issue |
+|-----------|-------|
+| Latency | TAGE lookup must complete in <1 cycle (pipelined). Any predictor requiring sequential computation (like an LSTM forward pass) cannot meet this. |
+| Power | Full NN inference (even a small MLP) costs 10--100x the energy of a TAGE CAM lookup. |
+| Area | Competitive TAGE-SC-L fits in 32--64 KB. Most NN predictors require 100 KB--1 MB. |
+| Worst-case timing | Silicon predictors must have bounded worst-case latency for every branch. ML models can have variable-latency inference. |
+
+**Interview takeaway:** ML-based branch prediction is an active research area
+but TAGE-SC-L remains the practical choice for production silicon. If asked
+"what comes after TAGE," the answer is: the Multiperspective Perceptron
+family, which uses perceptron-like weights with multiple hashing perspectives,
+achieving higher accuracy at comparable hardware cost.
+
+---
+
+## 14. References
 
 1. Seznec, A. and Michaud, P. (2006). "A Case for (Partially) Tagged Geometric
    History Length Branch Prediction." *Journal of Instruction-Level Parallelism*.
@@ -1793,6 +1931,15 @@ history window.
 
 8. Lee, C.-C., Chen, I.-C.K., and Mudge, T.N. (1997). "The Bi-Mode Branch
    Predictor." *MICRO-30*. -- Bi-mode predictor (related to tournament).
+
+9. Seznec, A. (2011). "TAGE-SC-L Branch Predictors." *CBP-4 Championship
+   Branch Prediction*. -- The TAGE-SC-L design that won the championship.
+
+10. Jimenez, D.A. (2020). "Multiperspective Perceptron Predictor." *CBP-5*.
+    -- Multiperspective perceptron, state-of-the-art accuracy.
+
+11. Seznec, A. (2014). "ITTAGE: Indirect Target TAGE." *CBP-3*. -- ITTAGE
+    for indirect branch target prediction.
 
 ---
 

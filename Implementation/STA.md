@@ -2312,6 +2312,193 @@ Best practices:
 13. Electromigration clean on all signal and clock nets
 14. DFT timing clean (scan shift and capture modes)
 15. Formal verification of SDC constraints against design intent
+```
+
+---
+
+## 14. GAA (Gate-All-Around) Variation Analysis
+
+### 14.1 Nanosheet Width Variation
+
+At N2 and beyond, Gate-All-Around (GAA / nanosheet) transistors introduce new variation sources beyond what FinFETs experienced:
+
+```
+GAA nanosheet structure:
+  ┌────────────────────────────────┐
+  │         Gate Metal             │
+  │  ┌──────────────────────────┐  │
+  │  │   NS1 (nanosheet 1)      │  │
+  │  ├──────────────────────────┤  │
+  │  │   NS2 (nanosheet 2)      │  │
+  │  ├──────────────────────────┤  │
+  │  │   NS3 (nanosheet 3)      │  │
+  │  └──────────────────────────┘  │
+  │         Gate Metal             │
+  └────────────────────────────────┘
+
+New variation sources at N2:
+  1. Nanosheet width variation:
+     - Sheet width W_ns defines drive strength
+     - Variation: ±1-3 nm per sheet (lithography + etch)
+     - Wider sheets = more drive, but also more capacitance
+     - Device matching: adjacent sheets match well; distant sheets less so
+
+  2. Nanosheet thickness variation:
+     - Internal oxidation defines sheet gap (2-5 nm)
+     - Thickness variation affects Vth and mobility
+     - More critical than FinFET fin height variation
+
+  3. Work function variation (WFV):
+     - Metal gate granularity causes random Vth shifts
+     - Different metal crystal orientations → different work functions
+     - Per-device variation: ~5-15 mV sigma at N2
+     - This is ADDITIVE to all other variation sources
+
+  4. Contact resistance variation:
+     - Source/drain contact resistance: 50-200 Ω·μm at N2
+     - Variation due to silicide formation non-uniformity
+     - Impacts access time and drive current
+```
+
+### 14.2 POCV / LOCV at 2nm Nodes
+
+```
+POCV at N2: Increased variability requires more sophisticated modeling
+
+  Variation budget breakdown at N2 (VDD = 0.55V):
+  ┌───────────────────────────────┬───────────────────┐
+  │ Source                         │ 3-sigma impact    │
+  ├───────────────────────────────┼───────────────────┤
+  │ Global process (die-to-die)   │ ±8-12%            │
+  │ Local Vth variation (WFV)     │ ±3-5% per device  │
+  │ Nanosheet width               │ ±2-4% per device  │
+  │ Voltage (IR drop)             │ ±5-8%             │
+  │ Temperature gradient          │ ±3-5%             │
+  │ Aging (NBTI/ HCI, 3yr)       │ ±5-10%            │
+  └───────────────────────────────┴───────────────────┘
+
+  Total variation at N2 can be 20-30% without POCV averaging
+
+  POCV sigma values (typical N2, 7.5T library):
+    Inverter (X1):  mean = 8 ps,  sigma = 1.5 ps
+    Inverter (X8):  mean = 5 ps,  sigma = 1.0 ps
+    NAND2 (X2):     mean = 12 ps, sigma = 2.0 ps
+    DFF (Q-to-Q):   mean = 25 ps, sigma = 4.0 ps
+
+  LOCV (Location-based OCV) — emerging for N2:
+    - Combines POCV with physical distance derating
+    - sigma increases with distance between cells
+    - sigma_eff = sigma_base + k_distance * distance
+    - Better accuracy for large dies (>500 mm²) where
+      spatial correlation matters
+
+  Impact on signoff:
+    - More extraction corners needed (6-8 vs 4 at N5)
+    - POCV tables include WFV contribution
+    - Aging derating must be included in signoff corners
+    - Self-heating variation adds another dimension
+```
+
+### 14.3 AI Accelerator STA
+
+```
+Multi-GPU die STA (e.g., B200 with dual-reticle GPU):
+
+  Clock domains in a B200-class accelerator:
+    - GPU core clock: ~1.8-2.2 GHz
+    - HBM interface clock: ~3.2 GHz (HBM3E data rate 9.6 Gbps)
+    - NVLink clock: ~2.0 GHz
+    - PCIe clock: 250 MHz (reference)
+    - NoC (Network-on-Chip) clock: ~1.5 GHz
+
+  Die-to-die link timing:
+    - UCIe standard package: 32 GT/s per lane
+    - Forwarded clock architecture: source-synchronous
+    - TX jitter budget: ~10-20 ps
+    - RX setup/hold at die edge: must include:
+      • Interposer wire delay (~50-200 ps depending on length)
+      • μbump parasitic (~5-10 ps)
+      • Clock-data compensation across PVT
+
+    STA modeling for die-to-die:
+      set_input_delay  -clock rx_clk -max 0.200 [get_ports rx_data*]
+      set_input_delay  -clock rx_clk -min 0.050 [get_ports rx_data*]
+      set_output_delay -clock tx_clk -max 0.200 [get_ports tx_data*]
+      set_output_delay -clock tx_clk -min 0.050 [get_ports tx_data*]
+      set_clock_uncertainty -setup 0.050 [get_clocks rx_clk]
+      set_clock_uncertainty -hold  0.020 [get_clocks rx_clk]
+
+  NVLink compliance timing:
+    - 200+ GB/s aggregate bandwidth
+    - Per-lane: 100 Gbps PAM-4 (NRZ equivalent)
+    - TX eye margin: ~20-30 ps at target BER 1e-15
+    - Must verify with IBIS-AMI models in STA extraction
+```
+
+### 14.4 MCMM for Advanced Packaging
+
+```
+Multi-chiplet signoff complexity:
+
+  For a chiplet-based AI accelerator (e.g., AMD MI300X):
+    - 8 compute chiplets + 1 I/O chiplet + HBM stacks
+    - Each chiplet has its own PVT corner
+    - Inter-chiplet links add inter-die corners
+    - Package-level thermal variation: chiplets at different T
+
+  MCMM scenarios for chiplet designs:
+  ┌─────────────┬──────────┬──────────┬───────────┬───────────┐
+  │ Scenario     │ Chiplet A│ Chiplet B│ HBM Stack │ Package T │
+  ├─────────────┼──────────┼──────────┼───────────┼───────────┤
+  │ SS_A, SS_B  │ SS, 0.7V │ SS, 0.7V │ SS, 0.9V  │ 105°C     │
+  │ FF_A, SS_B  │ FF, 0.8V │ SS, 0.7V │ TT, 0.95V │ 85°C      │
+  │ SS_A, FF_B  │ SS, 0.7V │ FF, 0.8V │ TT, 0.95V │ 85°C      │
+  │ FF_A, FF_B  │ FF, 0.8V │ FF, 0.8V │ FF, 1.0V  │ -40°C     │
+  └─────────────┴──────────┴──────────┴───────────┴───────────┘
+
+  Additional extraction corners for inter-chiplet:
+    - Interposer RDL: Cworst, RCworst, Cbest, RCbest
+    - μbump parasitic: min/typical/max
+    - TSV delay: min/max (if 3D stacking)
+
+  Total scenario count:
+    4 intra-die corners × 4 inter-die corners × 3 modes
+    = 48+ scenarios per chiplet pair
+    Signoff requires hierarchical STA with distributed analysis
+```
+
+### 14.5 Incremental STA for ECO Flows
+
+```
+Incremental STA: Re-analyze only affected timing paths after ECO
+
+  When to use:
+    - After timing ECO (cell swap, buffer insertion)
+    - After functional ECO (logic change in small region)
+    - After metal fill insertion
+    - After DRC fix (via optimization, wire widening)
+
+  Flow:
+    1. Run full-chip STA (baseline)
+    2. Apply ECO changes
+    3. Re-extract parasitics for affected region + margin
+       (typically: changed cells + 50-100 μm boundary)
+    4. Run incremental STA:
+       update_timing -full -incremental
+       (PrimeTime) or equivalent
+    5. Report only changed paths + paths with delta > threshold
+
+  Performance comparison:
+    Full-chip STA:    8-24 hours (for 100M+ gate design)
+    Incremental STA:  10-60 minutes (depends on ECO scope)
+    Speedup:          10-100× for localized ECOs
+
+  Correctness checks:
+    - All paths through modified cells are re-analyzed
+    - Paths with shared parasitic nodes are re-analyzed
+    - Hold/setup interaction: verify ECO doesn't flip one to help other
+    - Full STA recommended before final tapeout signoff
+```
 
 ---
 

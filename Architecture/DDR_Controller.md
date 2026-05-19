@@ -1667,6 +1667,186 @@ Step 3: Schedule accounting for bank conflicts
 
 ---
 
+## 11a. DDR5 Server Extensions: MRDIMM and MCR
+
+### MRDIMM (Multiplexed Rank DIMM)
+
+MRDIMM is a JEDEC-standardized extension for DDR5 that addresses the bandwidth gap between standard DIMMs and HBM in server platforms. It introduces a **multiplexing register (MRCD/MDB)** on the DIMM that aggregates data from multiple ranks and presents a wider logical interface to the memory controller.
+
+```
+Standard DDR5 RDIMM:
+  Controller <---> Register Clock Driver (RCD) <---> 2 ranks of DRAM chips
+  Data bus: 2 x 40-bit subchannels (80-bit total with ECC)
+
+MRDIMM (Multiplexed Rank DIMM):
+  Controller <---> MRCD (Multiplexed Register Clock Driver)
+                     |
+                     +---> Rank 0 (data buffer 0, MDB0)
+                     +---> Rank 1 (data buffer 1, MDB1)
+
+  Key difference: MDB (Multiplexed Data Buffer) sits between the RCD and DRAM chips.
+  The MDB can buffer and re-time data, allowing the DRAM cores to operate at a
+  different frequency than the external data bus.
+
+  MRDIMM mode: DRAM core runs at one frequency, external bus runs at 1.5x or 2x
+  The MDB multiplexes data from two ranks onto the same data bus, effectively
+  doubling the data rate seen by the controller without doubling the DRAM core speed.
+```
+
+**MRDIMM signaling and timing:**
+
+| Parameter | DDR5 RDIMM | DDR5 MRDIMM |
+|---|---|---|
+| DRAM core data rate | 5600 MT/s | 5600 MT/s (core) |
+| Effective data rate to controller | 5600 MT/s | 8800 MT/s (1.5x multiplexing) |
+| Data buffers per DIMM | 0 (RCD only) | 10 MDB chips (1 per byte lane x 2 subchannels) |
+| Latency overhead | Baseline | +5-10 ns (MDB buffering and re-timing) |
+| Max DIMM capacity | 128 GB | 256 GB (dual-rank with high-density chips) |
+
+**Controller implications:**
+
+- The controller must support MRDIMM-specific mode registers (MR25-MR34 for MDB configuration, training, and calibration).
+- Training is more complex: per-MDB write/read leveling, DFE tuning for the multiplexed data path, and separate PHY calibration for core vs. external clock domains.
+- Scheduling sees higher bank-level parallelism because two physical ranks appear as a single logical rank with 2x the banks, but the MDB serialization introduces additional timing constraints (tMDB, multiplexed data buffer turnaround time).
+
+### MCR (Multiplexed Combined Rank) DDR5
+
+MCR DIMMs are Micron's implementation of multiplexed-rank technology (closely related to MRDIMM). MCR stacks two ranks behind a data-buffer chip that time-division multiplexes their data onto the external bus at 2x the per-rank data rate.
+
+```
+MCR DIMM structure:
+  Controller <---> MCR Data Buffer (MDB) <---> Rank 0 (8 Gb or 16 Gb x8 chips)
+                                            <---> Rank 1 (8 Gb or 16 Gb x8 chips)
+
+  The MCR buffer alternates between Rank 0 and Rank 1 on successive clock edges:
+    Even clock edges: data from Rank 0
+    Odd clock edges:  data from Rank 1
+
+  Net effect: 2x the bandwidth of a single-rank DIMM at the same DRAM core frequency.
+  Example: DDR5-5600 core --> MCR-11200 effective data rate to controller
+```
+
+**MCR vs MRDIMM:**
+
+| Feature | MCR DIMM | MRDIMM |
+|---|---|---|
+| Standard | Vendor-specific (Micron) | JEDEC standardized |
+| Multiplexing ratio | 2x | 1.5x or 2x |
+| Target data rate | DDR5-8800 to DDR5-12800 | DDR5-8800 to DDR5-12800 |
+| DIMM capacity | 128 GB (2 ranks x 64 GB) | 128-256 GB |
+| Primary market | High-bandwidth servers | High-bandwidth servers |
+
+Both MRDIMM and MCR target the same problem: extracting more bandwidth from the DDR5 DIMM form factor without requiring faster DRAM cores. The controller design must account for the multiplexing buffer's latency, training complexity, and per-buffer timing constraints.
+
+---
+
+## 11b. CXL 3.0/3.1 Type-3 Memory Expansion
+
+### CXL Type-3 Devices for Memory Expansion
+
+CXL (Compute Express Link) Type-3 devices provide **coherent memory expansion** -- allowing a server to attach additional DRAM (or persistent memory) via the PCIe/CXL interface, appearing as system-manageable memory rather than I/O-mapped storage.
+
+```
+CXL memory expansion topology:
+
+  +-------------------+     CXL 3.0/3.1 link      +-------------------+
+  |  Host CPU         |<------------------------->|  CXL Type-3       |
+  |  (CXL.cache +     |   64 GT/s (PCIe 6.0 PHY)  |  Memory Expander  |
+  |   CXL.mem host)   |   x16 = 64 GB/s bidir     |  DDR5 channels    |
+  +-------------------+                            |  (4-8 channels)   |
+                                                   |  256-512 GB DRAM  |
+                                                   +-------------------+
+
+  The Type-3 device exposes its attached DRAM as coherent memory via CXL.mem.
+  The host CPU accesses it with near-local-latency (cache-coherent reads/writes).
+```
+
+**CXL 3.0/3.1 Type-3 protocol stack:**
+
+| Layer | Function | Notes |
+|---|---|---|
+| CXL.io | PCIe-compatible I/O, enumeration, configuration | PCIe 6.0 FLIT mode, 64 GT/s |
+| CXL.cache | Host-initiated cache-coherent access to device memory | Bidirectional, 256-byte cache lines |
+| CXL.mem | Device-attached memory access from host | MemRd/MemWr, coherent with host caches |
+
+**CXL 3.0 key features over CXL 2.0:**
+
+| Feature | CXL 2.0 | CXL 3.0 | CXL 3.1 |
+|---|---|---|---|
+| Max link speed | 32 GT/s (PCIe 5.0) | 64 GT/s (PCIe 6.0) | 64 GT/s |
+| Fabric switching | Single-level fanout | Multi-level fabric switching | Multi-level + enhanced telemetry |
+| Memory pooling | Single-level pooling | Multi-level pooling, global fabric attached memory (GFAM) | GFAM + bandwidth allocation |
+| Coherence mode | Back-invalidation only | Back-inv + HDM-D (Host-managed Device Memory - Decoded) | HDM-D + enhanced coherency engine |
+| Topology | Tree only | Tree, Mesh, Star (fabric) | Fabric + peer-to-peer |
+| Memory sharing | No | Limited (via fabric manager) | Enhanced multi-host sharing |
+| Telemetry | Basic | Bandwidth/latency monitoring | Per-device health, thermal, error stats |
+
+**Controller design impact:**
+
+- The DDR controller inside a CXL Type-3 expander is architecturally similar to a standard DDR5 controller but operates as a **CXL.mem target** rather than being directly behind a CPU's memory bus.
+- The CXL.mem protocol adds a coherence layer: the controller must handle back-invalidation requests from the host (when another agent modifies shared memory), manage HDM-D decoded address ranges, and respond to MemRd/MemWr with appropriate latency tracking.
+- **Memory pooling:** In a CXL 3.0/3.1 fabric, a pool of Type-3 devices can be dynamically allocated to different hosts via a fabric manager. The DDR controller in each Type-3 device must support dynamic reconfiguration of the address map (which host "owns" which address range) without requiring a reboot.
+
+### Bandwidth and Latency Considerations
+
+```
+Typical CXL 3.0 Type-3 memory expansion (x16 link):
+
+  Link bandwidth: 64 GB/s bidirectional (64 GT/s x 16 lanes / 8 bits/byte)
+  DDR5-5600 x 4 channels behind expander: 4 x 44.8 = 179.2 GB/s peak
+  Bottleneck: CXL link (64 GB/s < 179.2 GB/s)
+
+  Access latency:
+    Local DDR5: ~80-100 ns
+    CXL Type-3: ~150-250 ns (DDR5 access + CXL link traversal + protocol overhead)
+    Breakdown: ~80 ns DDR5 + ~30 ns CXL link RTT + ~40 ns protocol processing
+
+  Implication: CXL-attached memory is 2-3x higher latency than local DRAM.
+  OS should place hot data locally, warm/cold data on CXL-attached memory.
+  NUMA-aware page migration policies are critical for performance.
+```
+
+---
+
+## 11c. LPDDR5X for Mobile and Edge AI
+
+### LPDDR5X Overview
+
+LPDDR5X is an extension of LPDDR5 that increases data rates from 6400 MT/s to 8533 MT/s (and beyond in OC), targeting mobile SoCs (smartphones, tablets) and emerging edge-AI platforms.
+
+| Parameter | LPDDR5 | LPDDR5X |
+|---|---|---|
+| Max data rate | 6400 MT/s | 8533 MT/s (JEDEC), 9600+ MT/s (OC) |
+| VDD | 1.05 V (core) | 0.9 V (core, reduced from LPDDR5) |
+| VDDQ | 0.5 V (I/O) | 0.35 V (I/O, LP4-compat signaling option) |
+| Prefetch | 16n | 16n |
+| Bank groups | 8 (16 banks) | 8 (16 banks) |
+| Command rate | Dual command per clock | Dual command per clock + enhanced command efficiency |
+| DFE | No | Yes (transmitter-side pre-emphasis + RX DFE) |
+| Target use case | Smartphones (2021-2023) | Flagship phones, edge AI, automotive |
+
+**LPDDR5X low-power features critical for mobile:**
+
+```
+DVFS (Dynamic Voltage and Frequency Scaling):
+  LPDDR5X supports fine-grained DVFS with multiple operating points:
+    8533 MT/s: VDD = 0.9V, VDDQ = 0.35V
+    6400 MT/s: VDD = 0.8V, VDDQ = 0.30V
+    3200 MT/s: VDD = 0.6V, VDDQ = 0.25V
+    Deep sleep: VDD retained, clock gated, < 1 mW standby
+
+  Transition between data rates: ~2-5 us (fast DVFS, critical for mobile
+  workloads that burst between idle and active).
+```
+
+**Edge AI implications:**
+
+- **Bandwidth for on-device inference:** A large language model (LLM) inference on a mobile NPU requires 50-100 GB/s of memory bandwidth for parameter loading. LPDDR5X-8533 on a 4-byte (32-bit) channel provides 34.1 GB/s; a quad-channel mobile SoC provides 136.4 GB/s, sufficient for 7B-parameter models at ~10 tokens/s.
+- **Thermal constraints:** LPDDR5X reduces VDD by 14% over LPDDR5, lowering power density. The lower VDDQ (0.35V vs 0.50V) cuts I/O power by approximately 30% at the same data rate.
+- **Controller adaptations:** The LPDDR5X controller must handle LPDDR-specific features not present in standard DDR5: DVFS state machine, clock-stop mode entry/exit, partial-array self-refresh (only refresh rows in use, saving refresh power by 30-50%), and enhanced write-data-mask (DM) for sparse updates common in AI weight patching.
+
+---
+
 ## 12. References
 
 1. **JEDEC Standard JESD79-4B** -- DDR4 SDRAM Specification (2017)
