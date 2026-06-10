@@ -2312,13 +2312,12 @@ Best practices:
 13. Electromigration clean on all signal and clock nets
 14. DFT timing clean (scan shift and capture modes)
 15. Formal verification of SDC constraints against design intent
-```
 
 ---
 
-## 14. GAA (Gate-All-Around) Variation Analysis
+## 17. GAA (Gate-All-Around) Variation Analysis
 
-### 14.1 Nanosheet Width Variation
+### 17.1 Nanosheet Width Variation
 
 At N2 and beyond, Gate-All-Around (GAA / nanosheet) transistors introduce new variation sources beyond what FinFETs experienced:
 
@@ -2360,7 +2359,7 @@ New variation sources at N2:
      - Impacts access time and drive current
 ```
 
-### 14.2 POCV / LOCV at 2nm Nodes
+### 17.2 POCV / LOCV at 2nm Nodes
 
 ```
 POCV at N2: Increased variability requires more sophisticated modeling
@@ -2399,7 +2398,7 @@ POCV at N2: Increased variability requires more sophisticated modeling
     - Self-heating variation adds another dimension
 ```
 
-### 14.3 AI Accelerator STA
+### 17.3 AI Accelerator STA
 
 ```
 Multi-GPU die STA (e.g., B200 with dual-reticle GPU):
@@ -2435,7 +2434,7 @@ Multi-GPU die STA (e.g., B200 with dual-reticle GPU):
     - Must verify with IBIS-AMI models in STA extraction
 ```
 
-### 14.4 MCMM for Advanced Packaging
+### 17.4 MCMM for Advanced Packaging
 
 ```
 Multi-chiplet signoff complexity:
@@ -2467,7 +2466,7 @@ Multi-chiplet signoff complexity:
     Signoff requires hierarchical STA with distributed analysis
 ```
 
-### 14.5 Incremental STA for ECO Flows
+### 17.5 Incremental STA for ECO Flows
 
 ```
 Incremental STA: Re-analyze only affected timing paths after ECO

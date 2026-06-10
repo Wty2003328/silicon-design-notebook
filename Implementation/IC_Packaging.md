@@ -1173,13 +1173,12 @@ At sub-10μm pitch: (1) Alignment accuracy must be <500nm (extremely tight for D
 small that Cu grain structure matters for bond quality. (4) Thermal expansion mismatch
 can cause misalignment during anneal. (5) Testing at this density is challenging — can't
 probe individual bonds. (6) Design rules for keep-out and dummy patterns become complex.
-```
 
 ---
 
-## 12. UCIe 3.0 and Advanced Die-to-Die Interfaces
+## 16. UCIe 3.0 and Advanced Die-to-Die Interfaces
 
-### 12.1 UCIe Specification Evolution
+### 20.1 UCIe Specification Evolution
 
 ```
 UCIe specification timeline:
@@ -1216,7 +1215,7 @@ UCIe vs standard packaging vs advanced packaging:
 
 ---
 
-## 13. TSMC SoIC (System on Integrated Chips)
+## 17. TSMC SoIC (System on Integrated Chips)
 
 ```
 TSMC SoIC: 3D stacking using hybrid bonding
@@ -1270,9 +1269,9 @@ TSMC SoIC: 3D stacking using hybrid bonding
 
 ---
 
-## 14. Intel Foveros and Samsung X-Cube
+## 18. Intel Foveros and Samsung X-Cube
 
-### 14.1 Intel Foveros
+### 18.1 Intel Foveros
 
 ```
 Intel Foveros Direct (Hybrid Bonding):
@@ -1312,7 +1311,7 @@ Foveros vs TSMC SoIC comparison:
   └──────────────┴──────────────┴──────────────┘
 ```
 
-### 14.2 Samsung X-Cube 3D IC
+### 18.2 Samsung X-Cube 3D IC
 
 ```
 Samsung X-Cube:
@@ -1340,7 +1339,7 @@ Samsung X-Cube:
 
 ---
 
-## 15. Glass Substrates
+## 19. Glass Substrates
 
 ```
 Glass core substrates: next-generation packaging substrate material
@@ -1387,7 +1386,7 @@ Glass core substrates: next-generation packaging substrate material
 
 ---
 
-## 16. Blackwell Case Study
+## 20. Blackwell Case Study
 
 ```
 NVIDIA Blackwell (B200 / GB200) Packaging:
@@ -1443,7 +1442,7 @@ NVIDIA Blackwell (B200 / GB200) Packaging:
 
 ---
 
-## 17. Advanced Packaging Roadmap
+## 21. Advanced Packaging Roadmap
 
 ```
 Advanced packaging technology roadmap (2025-2030):

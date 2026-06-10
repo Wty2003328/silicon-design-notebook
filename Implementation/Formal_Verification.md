@@ -1700,13 +1700,12 @@ eventually happens" (e.g., every request eventually gets a response). They requi
 constraints (assumptions about the environment not starving the system) and cannot be
 disproven by a finite prefix — you'd need an infinite trace. Formal tools handle liveness
 via k-liveness (bounded liveness checking) or fair-cycle detection.
-```
 
 ---
 
-## 11. AI Hardware Formal Verification
+## 12. AI Hardware Formal Verification
 
-### 11.1 Tensor Core Correctness Verification
+### 12.1 Tensor Core Correctness Verification
 
 ```
 Challenge: Proving a GEMM (General Matrix Multiply) array produces correct results
@@ -1746,7 +1745,7 @@ Challenge: Proving a GEMM (General Matrix Multiply) array produces correct resul
     - Combine formal proof with constrained-random simulation for full-width
 ```
 
-### 11.2 NoC (Network-on-Chip) Deadlock Freedom
+### 12.2 NoC (Network-on-Chip) Deadlock Freedom
 
 ```
 NoC formal verification targets:
@@ -1790,7 +1789,7 @@ NoC formal verification targets:
     - Topology-specific: mesh, torus, butterfly each have known proof methods
 ```
 
-### 11.3 Dataflow Accelerator Verification
+### 12.3 Dataflow Accelerator Verification
 
 ```
 Dataflow accelerators (Google TPU, SambaNova, Groq):
@@ -1829,7 +1828,7 @@ Dataflow accelerators (Google TPU, SambaNova, Groq):
     - Tools: custom property generators + JasperGold/VC Formal backends
 ```
 
-### 11.4 RISC-V Formal Verification
+### 12.4 RISC-V Formal Verification
 
 ```
 RISC-V formal verification ecosystem:
@@ -1866,7 +1865,7 @@ RISC-V formal verification ecosystem:
     Formal ASIC tools: JasperGold/VC Formal for custom properties
 ```
 
-### 11.5 GPU Shader Verification
+### 12.5 GPU Shader Verification
 
 ```
 GPU shader core verification challenges:
@@ -1913,7 +1912,7 @@ GPU shader core verification challenges:
     - Cache coherence protocol verification (formal is essential here)
 ```
 
-### 11.6 Security Verification
+### 12.6 Security Verification
 
 ```
 Formal verification for hardware security:

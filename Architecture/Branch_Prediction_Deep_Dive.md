@@ -4,7 +4,7 @@
 > [OoO_Execution.md](./OoO_Execution.md) (speculative execution, reorder buffer)
 >
 > **Hands-off to**: [Memory.md](./Memory.md) (I-cache design, TLB),
-> [Front_End_Design.md](./Front_End_Design.md) (fetch-directed prefetch, decode bandwidth)
+> [Front_End_Design.md](CPU_Architecture.md) (fetch-directed prefetch, decode bandwidth)
 
 ---
 
@@ -440,38 +440,6 @@ Hardware implementation of the folding:
 ### 3.5 Lookup
 
 ```mermaid
-flowchart TD
-    A[PC arrives at predictor] --> B[Base predictor: index by PC]
-    A --> C[T1: index by folded_hist_4 XOR PC]
-    A --> D[T2: index by folded_hist_16 XOR PC]
-    A --> E[T3: index by folded_hist_64 XOR PC]
-    A --> F[T4: index by folded_hist_256 XOR PC]
-    B --> G{Tag match?}
-    C --> H{Tag match?}
-    D --> I{Tag match?}
-    E --> J{Tag match?}
-    F --> K{Tag match?}
-    G -->|No| L[Base prediction b_pred]
-    G -->|Yes| L
-    H -->|No| M[No hit]
-    H -->|Yes| N[T1 hits: pred1, u1]
-    I -->|No| M
-    I -->|Yes| O[T2 hits: pred2, u2]
-    J -->|No| M
-    J -->|Yes| P[T3 hits: pred3, u3]
-    K -->|No| M
-    K -->|Yes| Q[T4 hits: pred4, u4]
-    N --> R[Select provider: longest history with tag hit]
-    O --> R
-    P --> R
-    Q --> R
-    L --> S{Provider useful > 0?}
-    R --> S
-    S -->|Yes| T[Use provider prediction]
-    S -->|No| U[Use alternate prediction]
-    T --> V[Output: taken or not-taken]
-    U --> V
-```
 flowchart TD
     A[PC arrives at predictor] --> B[Base predictor: index by PC]
     A --> C[T1: index by folded_hist_4 XOR PC]
@@ -1950,7 +1918,7 @@ achieving higher accuracy at comparable hardware cost.
 - **Next**: [OoO_Execution.md](./OoO_Execution.md) -- Speculative execution,
   reorder buffer, memory disambiguation
 - **See also**: [Memory.md](./Memory.md) -- I-cache design, cache hierarchy
-- **See also**: [Front_End_Design.md](./Front_End_Design.md) -- Fetch unit
+- **See also**: [Front_End_Design.md](CPU_Architecture.md) -- Fetch unit
   integration, decode bandwidth, micro-op cache
 
 ---

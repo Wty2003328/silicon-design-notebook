@@ -2,8 +2,8 @@
 
 | Field | Value |
 |---|---|
-| **Prerequisites** | [RISC-V ISA](./RISC_V_ISA.md), [OoO Execution](../Architecture/OoO_Execution.md), [Cache Microarchitecture](../Memory_Hierarchy/Cache_Microarchitecture.md), [Branch Prediction](./Branch_Prediction_Deep_Dive.md) |
-| **Hands-off-to** | [TileLink and SoC Interconnect](../Interconnect/TileLink_and_SoC_Interconnect.md), [Chisel HDL Methodology](../Design_Methodology/Chisel_HDL_Methodology.md) |
+| **Prerequisites** | [RISC-V ISA](./RISC_V_ISA.md), [OoO Execution](../Architecture/OoO_Execution.md), [Cache Microarchitecture](Cache_Microarchitecture.md), [Branch Prediction](./Branch_Prediction_Deep_Dive.md) |
+| **Hands-off-to** | [TileLink and SoC Interconnect](AHB_AXI_APB.md), [Chisel HDL Methodology](../Index.md) |
 | **Difficulty** | Advanced |
 | **Scope** | Full microarchitecture deep-dive of an open-source superscalar OoO RISC-V core |
 
@@ -1218,6 +1218,6 @@ Xiangshan has become a foundational platform for computer architecture research 
 | Direction | Link |
 |---|---|
 | **Previous** | [Branch Prediction Deep Dive](./Branch_Prediction_Deep_Dive.md) |
-| **Next** | [TileLink and SoC Interconnect](../Interconnect/TileLink_and_SoC_Interconnect.md) |
+| **Next** | [TileLink and SoC Interconnect](AHB_AXI_APB.md) |
 | **Up** | [CPU Architecture](./CPU_Architecture.md) |
-| **Related** | [RISC-V ISA](./RISC_V_ISA.md) | [OoO Execution](./OoO_Execution.md) | [Cache Microarchitecture](../Memory_Hierarchy/Cache_Microarchitecture.md) |
+| **Related** | [RISC-V ISA](./RISC_V_ISA.md) | [OoO Execution](./OoO_Execution.md) | [Cache Microarchitecture](Cache_Microarchitecture.md) |

@@ -3,8 +3,8 @@
 > **Prerequisites:** [CPU_Architecture.md](./CPU_Architecture.md) (pipeline basics, memory hierarchy),
 > [Memory.md](./Memory.md) (SRAM cell design, DRAM organization)
 >
-> **Hands off to:** [../Systems/Coherence_Protocols.md](../Systems/Coherence_Protocols.md),
-> [../Systems/Memory_Controller.md](../Systems/Memory_Controller.md)
+> **Hands off to:** [../Systems/Coherence_Protocols.md](ACE_and_CHI.md),
+> [../Systems/Memory_Controller.md](DDR_Controller.md)
 
 ---
 
@@ -1935,4 +1935,4 @@ When asked about cache hierarchy design, explain the three-way tradeoff:
 
 ---
 
-[Prev: CPU Architecture](./CPU_Architecture.md) | [Up: Architecture](./Architecture.md) | [Next: Memory Design](./Memory.md)
+[Prev: CPU Architecture](./CPU_Architecture.md) | [Up: Architecture](CPU_Architecture.md) | [Next: Memory Design](./Memory.md)

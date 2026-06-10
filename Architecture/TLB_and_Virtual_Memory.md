@@ -1728,4 +1728,4 @@ addresses as usual. However:
 - **Previous:** [Memory.md](./Memory.md) -- SRAM cells, cache organization
 - **Next:** [AHB_AXI_APB.md](./AHB_AXI_APB.md) -- Bus protocols carrying physical addresses
 - **Up:** [CPU_Architecture.md](./CPU_Architecture.md) -- Full processor microarchitecture
-- **Index:** [../README.md](../README.md)
+- **Index:** [../README.md](../Index.md)
