@@ -32,13 +32,23 @@ changing only the UPF file. This decouples functional design from power architec
 
 ### 1.2 UPF Versions
 
-| Version    | Year | Key Additions                                              |
-|------------|------|------------------------------------------------------------|
-| UPF 1.0    | 2007 | Core: domains, switches, isolation, retention              |
-| UPF 2.0    | 2014 | Supply sets, successive refinement, power states, PST      |
-| UPF 2.1    | 2017 | Repeater/buffer strategy, liberty extensions                |
-| UPF 3.0    | 2019 | Incremental UPF, improved supply handles, abstract models  |
-| UPF 3.1    | 2023 | Refinements for tool interoperability, IEEE 1801-2023     |
+| Version | Standard / Year | Key Additions |
+|---------|-----------------|----------------|
+| UPF 1.0 | Accellera, 2007 | Core: domains, switches, isolation, retention |
+| UPF 2.0 | IEEE 1801-2009 | Supply sets, successive refinement, power states, PST |
+| UPF 2.1 | IEEE 1801-2013 | Cleanups, repeater (buffer) strategy, liberty alignment |
+| UPF 3.0 | IEEE 1801-2015 | Component-level power modeling, information model/HDL APIs |
+| UPF 3.1 | IEEE 1801-2018 | Consolidation, bias supplies refinement, tool interoperability |
+| UPF 4.0 | IEEE 1801-2024 (published 2025) | Value Conversion Methods (VCM) + tunneling for UPF-to-HDL type interconnect, virtual supply nets, refinable macros, UPF libraries, reworked analog/digital (AMS) interfacing, advanced retention modeling |
+
+**UPF 4.0 (IEEE 1801-2024) in one interview answer:** the 2024 revision (published
+March 2025, available fee-free via the IEEE GET program) focuses on making power intent
+compose better across mixed abstraction levels: VCMs let UPF supplies connect to
+arbitrary HDL types (key for AMS and macro models), refinable macros and UPF libraries
+make IP-level power intent reusable and refinable at SoC level, and retention modeling
+is generalized. Tool adoption is incremental -- production flows in 2025-2026 are
+mostly UPF 2.x/3.x constructs with 4.0 features arriving feature-by-feature; citing
+that nuance signals real flow experience.
 
 ### 1.3 UPF in the Design Flow
 

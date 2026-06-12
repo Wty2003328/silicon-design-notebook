@@ -1136,6 +1136,80 @@ PDN impedance target (Zmax):
   Each level of the PDN hierarchy covers a frequency band.
 ```
 
+### 7.4 Glitch Power Analysis
+
+At <=7nm, glitch (spurious-transition) power is commonly **25-40% of dynamic power**
+in datapath-heavy blocks -- large enough that ignoring it busts budgets.
+
+```
+Why standard flows miss it:
+  - Zero-delay RTL simulation: all input transitions arrive simultaneously
+    -> NO glitches generated -> activity files underestimate datapath power
+  - Vectorless propagation without timing windows: same blind spot
+
+Analysis options (in increasing accuracy/cost):
+  1. Statistical glitch estimation: power tool propagates arrival-time
+     windows from STA and estimates spurious transitions per net
+     (PrimePower / Joules glitch-analysis modes)
+  2. SDF-annotated gate-level simulation: real glitch waveforms; slow,
+     used on representative windows only
+  3. Signoff tools split reported glitches into:
+       transparent (full-swing)  -- full CV^2 per spurious transition
+       filtered    (partial)     -- pulse narrower than gate delay; still
+                                    burns partial CV^2 (not free!)
+
+Signoff guidance: compare RTL-activity power vs SDF gate-level power on the
+same window; a large gap localized in arithmetic blocks = glitch. Reduce
+via path balancing, retiming, operand isolation (see
+Power_Reduction_Techniques and Block_Activity_and_Power notes).
+```
+
+### 7.5 Peak Power and di/dt Signoff
+
+Average-power signoff does not protect against transient events:
+
+```
+What must be checked beyond average power:
+  1. Realistic peak window: from emulation activity of real workloads,
+     find the worst 1-10 us window -> drive dynamic IR analysis with it
+  2. Synthetic worst case: power-virus vectors (max simultaneous switching)
+     -> bounds VRM/package current, validates throttle response
+  3. di/dt events: domain wake-up (rush current), vector-unit turn-on,
+     clock-ungating of a large cluster -- each is a load STEP that excites
+     the package resonance (~50-300 MHz "first droop")
+  4. Checks: peak droop within budget WITH the droop mitigation modeled
+     (decap + adaptive clocking), current ramp within PMIC slew capability,
+     no EM overstress on the burst profile
+```
+
+### 7.6 Backside Power Delivery (BSPDN) -- What Changes for Power Signoff
+
+Through 2025-2026, power delivery moved to the wafer backside on leading nodes:
+**Intel 18A PowerVia** (in volume production 2025; power routed on the backside,
+connecting to transistor contacts) and **TSMC A16 "Super Power Rail"** (production
+2H 2026; backside network contacting source/drain directly).
+
+```
+Why: frontside power grids competed with signal routing on the lower metal
+layers and reached transistors through tall, resistive via stacks.
+
+Benefits (reported):
+  - Large IR-drop reduction (short, fat backside vias feed the cells)
+  - Frees frontside routing tracks -> better density/congestion
+    (Intel reported ~6% frequency gain attributable to PowerVia-class
+    delivery plus the routing relief)
+
+What changes for the signoff engineer:
+  - PDN extraction now includes backside metal + nanoTSVs; new tech files
+  - IR analysis topology changes: drop is dominated by the backside
+    network and the TSV interface, not M1-M3 grid weave
+  - Thermal: the silicon between devices and the backside grid is thinned;
+    heat paths and thermal-sensor placement assumptions change -- thermal
+    and IR signoff become more coupled
+  - Decap strategy shifts (backside capacitance options, different
+    effective inductance to the bumps)
+```
+
 ---
 
 ## 8. Interview Questions and Answers

@@ -10,10 +10,11 @@
 7. Multi-Vt Optimization
 8. Body Biasing (Forward and Reverse)
 9. Practical Power Budgeting and Thermal Management
-10. UPF Specification -- Production-Level Example
-11. Power Analysis Methodology
-12. Low-Power Design Flow
-13. Interview Q&A (20+ Questions)
+10. Power Analysis Methodology
+11. Low-Power Design Flow
+12. Interview Q&A (20 Questions)
+13. Mid-Level Scenario Drills -- Debug Stories
+    (UPF production example lives in section 6.8 and in UPF_Power_Intent.md)
 
 ---
 
@@ -1552,3 +1553,97 @@ When valid=0, inputs are 0, and the multiplier internals don't toggle (0*0 = 0, 
 ### Q20: What power verification checks must pass before tapeout?
 
 **A:** (1) UPF consistency: all domains defined, all crossings have level shifters and/or synchronizers; (2) Isolation completeness: every output of every switchable domain is isolated; (3) Retention coverage: all required state registers have retention; (4) Power-aware simulation: correct behavior during all power-on/off transitions; (5) Power grid EM clean: no metal wire exceeds electromigration current density limit; (6) Static IR drop < 5% VDD; (7) Dynamic IR drop < 10% VDD; (8) Rush current within package current limit; (9) Total power within thermal budget at worst-case workload; (10) Leakage power within budget at worst-case temperature; (11) No missing supply connections; (12) All power switches correctly sized and connected.
+
+---
+
+## 13. Mid-Level Scenario Drills -- Debug Stories You Should Be Able to Tell
+
+Interviews at the 2-5 year level shift from "derive the formula" to "here's a broken
+chip/flow -- what do you do?" Practice narrating these five end-to-end.
+
+### Drill 1: Silicon power is 30% above the signoff estimate
+
+```
+Structure the bisection:
+1. Idle, clocks gated, nominal V/T -> measures LEAKAGE
+   High? -> wrong corner assumption, hotter die than modeled, Vt-mix or
+   body-bias misconfiguration, or a domain that never actually power-gates
+   (check PMU state residency counters -- a driver holding a vote/wakelock
+   on a power domain is the #1 real-world cause)
+2. Fixed workload, compare dynamic component
+   -> read activity counters: is real utilization what the model assumed?
+   -> check CGE in silicon vs RTL estimate (enable telemetry / scan dumps)
+   -> check AVS: is the chip running the fused worst-case voltage instead
+      of the adaptive one?
+3. Still unexplained -> glitch power (signoff used zero-delay activity?)
+   or extraction/library model gap -- escalate with a gate-level rerun
+   on the measured activity window.
+Key behavior: never say "the estimate was wrong" without naming WHICH input
+(leakage corner / activity / voltage / glitch) was wrong.
+```
+
+### Drill 2: Chip resets when a big domain wakes up
+
+```
+Hypothesis: rush current collapses the shared/parent rail.
+Evidence to collect: correlation of resets with wake events; droop monitor
+or PMIC undervoltage flags; does slowing the wake (longer switch staging,
+trickle-first) make it disappear?
+Fixes by layer: more daisy-chain stages / weaker trickle switches; stagger
+wakes of multiple domains in firmware (never wake two big domains in the
+same 10 us); add decap near the domain; raise parent rail slew headroom.
+Signoff lesson learned: ramp-up dynamic IR sim must include the WORST
+concurrent-wake scenario, not a lone domain on a quiet die.
+```
+
+### Drill 3: Random single-bit state corruption after sleep/wake cycles
+
+```
+Suspects in order:
+1. RESTORE pulsed before VVDD stable at the far corner of the domain
+   (worse cold: slower ramp) -> voltage detector placement / wake timer
+2. Always-on rail droop during the gated period corrupting balloon latches
+3. Retention FF library issue: min pulse width on SAVE/RESTORE violated by
+   a derated corner
+4. Isolation released one cycle early on a bus, letting X-garbage write
+   a register file
+Discriminator: does corruption pattern follow physical placement (far from
+switch chain -> ramp issue) or logical structure (one bus -> sequencing)?
+```
+
+### Drill 4: Leakage passes at signoff, fails 3x over budget in HTOL/burn-in
+
+```
+Not a bug -- physics, if signoff corner was optimistic:
+leakage doubles every ~10C and burn-in runs hot and high-V.
+Check: which corner was the leakage budget defined at? (typical-25C
+budgets with FF-125C silicon = 50-100x gap); IDDQ outliers may also be
+defects (bridging faults), so separate population shift (process) from
+tail outliers (defects). Fix forward: re-fuse AVS/RBB settings for the
+hot condition, tighten the Vt mix in the next ECO, or re-negotiate the
+budget at a defined corner.
+```
+
+### Drill 5: DVFS transitions occasionally hang the system
+
+```
+Classic causes:
+1. Frequency raised before voltage settled (sequencing bug or PMIC
+   settling-time mis-set for the new board's load) -> setup violations
+2. Clock glitch during PLL relock because the divider switch wasn't
+   glitch-free -> use a glitchless clock mux, switch to a safe clock
+   during relock
+3. Level shifter enable race on a domain whose neighbor changed voltage
+4. The DVFS governor thrashing between two OPPs at kHz rate (control
+   instability) -> add hysteresis/dwell time
+Debug data: PMIC telemetry trace + PLL lock signals + last-OPP registers
+captured on watchdog reset.
+```
+
+---
+
+*Cross-reference: [Power_Reduction_Techniques](Power_Reduction_Techniques.md) for the
+technique deep-dives (sequential clock gating, DLVR/AVFS, SRAM modes, leakage ECO),
+[Block_Activity_and_Power](Block_Activity_and_Power.md) for activity-based estimation,
+telemetry, and power capping, and [Power_Analysis_and_Signoff](Power_Analysis_and_Signoff.md)
+for glitch, peak/di-dt, and backside-power signoff.*

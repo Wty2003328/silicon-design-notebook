@@ -69,10 +69,11 @@ Power analysis, reduction, and signoff across all abstraction levels.
 | Page | Lines | Coverage |
 |------|-------|----------|
 | [Power Fundamentals](Power/Power_Fundamentals.md) | 1,177 | Switching/short-circuit/leakage physics, TDP, power density, technology scaling |
-| [Power Reduction Techniques](Power/Power_Reduction_Techniques.md) | 1,144 | Optimization across system, micro-arch, RTL, gate, circuit, physical levels |
-| [Power Analysis and Signoff](Power/Power_Analysis_and_Signoff.md) | 1,280 | RTL/gate/transistor-level analysis, PrimeTime PX, Voltus, activity estimation, signoff flow |
-| [UPF Power Intent](Power/UPF_Power_Intent.md) | 1,298 | IEEE 1801: power domains, retention, isolation, level shifters, power switches |
-| [Low Power Design](Power/Low_Power_Design.md) | 1,554 | Clock gating, DVFS, power gating, multi-Vt, body biasing — system-level techniques |
+| [Power Reduction Techniques](Power/Power_Reduction_Techniques.md) | 1,577 | Clock gating (incl. sequential/data-driven), DVFS + DLVR/AVFS/droop response, power gating PnR + SRAM modes, multi-Vt incl. GAA-era + leakage ECO |
+| [Power Analysis and Signoff](Power/Power_Analysis_and_Signoff.md) | 1,354 | PrimeTime PX, Voltus, activity annotation, IR/EM, glitch power, peak/di-dt, backside power delivery |
+| [UPF Power Intent](Power/UPF_Power_Intent.md) | 1,308 | IEEE 1801 through UPF 4.0 (1801-2024): power domains, retention, isolation, level shifters, switches |
+| [Low Power Design](Power/Low_Power_Design.md) | 1,649 | Interview bible: clock gating, DVFS, power gating, multi-Vt, body biasing + mid-level debug scenario drills |
+| [Block Activity and Power](Power/Block_Activity_and_Power.md) | 417 | Activity-based power: per-block/per-mode power modeling, RTL power tools, glitch power, emulation power, on-die telemetry/power proxies, power capping, power virus |
 
 ## Section 6 — SystemVerilog
 

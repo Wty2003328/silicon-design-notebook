@@ -64,10 +64,13 @@ change is blocked until the next negative edge.
 
 **Timing constraint on enable:**
 ```
-  Enable must be stable by: t_falling_edge - t_setup_ICG
+  Conservative house rule: enable stable by t_falling_edge - t_setup_ICG
+  (arrive before the latch opens -- no time borrowing through transparency)
 
   Typical setup time of ICG cell: 50-200 ps (process dependent)
-  This setup is to the FALLING clock edge, not the rising edge.
+  Hard requirement: the transparent-low latch CLOSES at the next RISING
+  edge, so the enable formally has until that rising edge and may borrow
+  through the low phase. See 2.9 for precise STA semantics.
 ```
 
 **Transistor-level implementation (Latch-AND):**
@@ -214,6 +217,134 @@ the scan clock. Solution:
 ```
 
 The ICG cell has a dedicated test/scan_enable pin for this purpose.
+
+### 2.7 Sequential / Data-Driven Clock Gating (Beyond Synthesis Inference)
+
+Synthesis-inferred gating only captures explicit `if (en) q <= d` patterns. Two stronger
+levels exist, and mid-level interviews increasingly probe them:
+
+**XOR self-gating (data-driven gating):**
+```verilog
+// Build the enable from actual data change detection:
+assign change = |(d_bus ^ q_bus);   // any bit differs?
+// gated_clk = ICG(clk, change)
+always @(posedge gated_clk)
+  q_bus <= d_bus;
+```
+- Clock fires only when the data ACTUALLY changes -- no architectural enable needed.
+- Cost: 1 XOR per bit + wide OR reduction tree + ICG.
+- Pays off for wide registers (>16 bits) with low data activity (<10-20% change rate).
+- Catch: the D -> XOR -> OR-tree -> ICG enable path adds delay to an already-tight
+  enable timing path (see 2.9). For very wide buses, pipeline the OR tree or gate
+  per-byte instead of per-word.
+
+**Stability/observability-based (sequential) clock gating:**
+
+Tools (Siemens PowerPro lineage, Cadence Joules RTL Design Studio, Synopsys
+PrimePower RTL guidance flow) analyze MULTI-CYCLE behavior:
+```
+Observability don't-care (ODC) gating:
+  If the downstream consumer ignores this register's output for N cycles
+  (e.g., result register read only when valid_out=1), the register may be
+  gated even while "new" data arrives -- it computes values nobody observes.
+
+Stability-condition gating:
+  If the enable condition provably implies D == Q in some cycles
+  (recirculation), strengthen the enable to exclude those cycles.
+```
+Because these transformations change cycle-by-cycle behavior on don't-care cycles,
+they CANNOT be verified by combinational equivalence checking. They require
+**sequential equivalence checking (SLEC)** -- this distinction is a classic
+interview checkpoint.
+
+**Enable strengthening at RTL (manual, very common in practice):**
+```verilog
+// Before: multiplier result register clocks every cycle
+always @(posedge clk) result <= a * b;
+
+// After: gate with the pipeline valid, one stage earlier
+always @(posedge clk) valid_d <= valid_in;
+always @(posedge clk) if (valid_in) result <= a * b;  // ICG inferred from valid_in
+```
+
+### 2.8 Debugging Low Clock-Gating Efficiency (Real-World Flow)
+
+Scenario you should be able to narrate in an interview: *"Architecture predicted 80%
+CGE; emulation/silicon shows 35%. Find out why."*
+
+```
+Step 1: Collect per-ICG enable activity
+  - RTL sim or emulation -> SAIF/FSDB -> per-ICG toggle/enable statistics
+  - Tools report: ICG instance, fanout (#FFs), %cycles enabled
+
+Step 2: Separate the two metrics (people conflate them):
+  - ICG COVERAGE   = % of FFs whose clock passes through any ICG
+                     (structural; target >95% for a well-gated design)
+  - CGE            = % of cycles actually gated (workload-dependent)
+  High coverage + low CGE = enables are weak, not missing.
+
+Step 3: Rank offenders by wasted clock power:
+  waste(ICG_i) = fanout_i * %cycles_enabled_i * C_clk_per_FF * Vdd^2 * f
+
+Step 4: Classify root causes (the usual suspects):
+  a) Enable stuck near 1: upstream "valid" free-runs even when data is garbage
+     -> fix at source: qualify valid with downstream ready / FSM busy
+  b) Recirculating mux survived: q <= en ? d : q coded in a way the tool
+     could not extract (e.g., enable buried under reset priority logic)
+     -> recode: separate reset and enable branches
+  c) Gating too fine-grained: ICG with fanout 2-3 whose own clock pin +
+     latch power exceeds savings -> raise minimum_bitwidth, merge groups
+  d) No hierarchical gating: leaf ICGs gate FFs but the 2,000 clock buffers
+     above them still toggle -> add cluster/root-level ICG driven by
+     module idle (FSM state, no outstanding transactions)
+  e) Wrong observation window: CGE measured during a busy benchmark says
+     nothing about idle power -- always report CGE per workload/mode
+
+Step 5: Verify the fix moves CLOCK TREE power, not just register power:
+  In a well-gated design, clock distribution power should drop roughly
+  proportionally to CGE at each level of the tree.
+```
+
+### 2.9 ICG Cells in CTS and Enable Timing Closure
+
+**Where the ICG sits in the clock tree matters:**
+```
+ICG near ROOT:                       ICG near LEAVES:
+  + gates all buffers below it        + enable timing is easy
+    (max power savings)                 (full insertion delay of tree
+  - enable path must arrive             gives margin)
+    EARLIER (less clock network       - buffers above still toggle
+    insertion delay as margin)          (less power saved)
+  - one enable for many FFs          - more ICG instances (area)
+```
+CTS performs **ICG cloning** (split one ICG into copies placed near sink clusters
+when fanout/skew is unmanageable) and **de-cloning** (merge equivalent ICGs to save
+power/area). Modern flows (ICC2 concurrent clock-and-data, Innovus CCOpt) treat
+ICG placement as a primary CTS optimization target.
+
+**Why the enable path is the hard part -- be precise here (common interview trap):**
+```
+Plain AND gating (no latch), enable launched by a posedge FF:
+  Enable changes at t = tcq, while CLK is HIGH (pulse [0, T/2])
+  -> changes the gating value mid-pulse -> truncated/glitched clock pulse
+  -> this is a clock-gating HOLD violation BY CONSTRUCTION.
+  PrimeTime models this: enable may only change while the clock is LOW
+  (setup checked against the next rising edge, hold against the falling edge).
+
+Latch-based ICG (transparent-low latch + AND):
+  The latch is OPAQUE while CLK=1 -> blocks mid-pulse enable changes (hold solved)
+  The latch closes at the RISING edge -> enable effectively has until the next
+  rising edge to settle (nearly a full cycle, with transparency through the
+  low phase).
+  Many teams still constrain enable arrival to the FALLING edge as a margin
+  policy (no time borrowing into the transparent window) -- know the
+  difference between the hard requirement and the house rule.
+```
+With ICGs pulled toward the root, the enable's effective capture point moves
+EARLIER in time (less insertion delay downstream of the ICG), tightening the path.
+Standard fixes: register the enable one stage earlier, push the ICG one level
+down, let CTS apply useful skew to the ICG's clock pin, or pipeline wide enable
+logic (see XOR self-gating above).
 
 ---
 
@@ -379,6 +510,115 @@ Modern SoCs have independent voltage/frequency domains:
   - Independent PLL/divider
   - Level shifters at domain boundaries
   - Handshake protocol for cross-domain communication
+```
+
+### 3.7 Voltage Regulation Hardware: PMIC vs IVR vs DLVR
+
+Per-core/per-domain DVFS is only as good as the regulator granularity behind it.
+
+| Regulator type | Location | Transition speed | Efficiency | Granularity | Example |
+|----------------|----------|------------------|------------|-------------|---------|
+| Board PMIC (buck) | Motherboard | 10-100 us | 85-92% | Per rail (coarse) | Most mobile SoCs |
+| IVR / FIVR (integrated buck) | On-die + package inductors | ~1 us | 80-90% | Per domain | Intel Haswell-era FIVR |
+| DLVR (digital LDO) | On-die, per IP | ns-us | = Vout/Vin (linear!) | Per core/cluster | Intel Core Ultra (Meteor/Arrow Lake) |
+| Switched-capacitor | On-die | fast | 80-90% at fixed ratios | Per domain | Research/niche |
+
+**Why per-core regulation matters:**
+```
+With one shared rail, Vdd = max(V_request of all cores)
+  - One core running AVX/turbo forces ALL cores to its voltage
+  - Idle cores burn (V_shared/V_needed)^2 extra dynamic power
+
+Intel's DLVR (Core Ultra 200S "Arrow Lake"): each P-core, each E-core
+cluster, and the ring has its own digital linear regulator fed from the
+shared VccIA input rail. The DLVR drops each domain to just-enough voltage.
+  - Linear regulator loss = (Vin - Vout) * I  -> efficient only when the
+    drop is small; a bypass ("power gate") mode shorts input to output
+    when the domain wants full rail voltage.
+AMD Zen families: per-core digital LDOs + per-core DFS, driven by on-die
+speed/power sensors (AMD calls the closed-loop system AVFS).
+```
+
+### 3.8 AVFS, Droop Detection, and Adaptive Clocking
+
+**Terminology ladder (know the difference):**
+```
+DVFS: open-loop table of (V, f) operating points; firmware picks an entry
+AVS:  closed-loop trim of V per chip (process) and per condition (T, aging)
+      using on-die monitors -- recovers the worst-case-silicon guardband
+AVFS: fully closed-loop V AND f management with distributed on-die sensors
+      (speed monitors, droop detectors, power proxies) -- AMD's term
+```
+
+**The di/dt problem -- why firmware is too slow:**
+```
+A load step (vector unit wakes, cache burst) causes L*di/dt droop through
+the package/PDN. The "first droop" resonance is at ~50-300 MHz -> the rail
+dips within NANOSECONDS. No regulator (us) or firmware loop (ms) can react.
+
+Classical fix: carry a static voltage guardband (e.g., +50-80 mV) sized for
+the worst droop that might ever happen. Cost at 0.9V nominal:
+  2 * 60/900 = ~13% wasted dynamic power, ALL the time.
+```
+
+**Modern fix: droop detector + adaptive clock stretching:**
+```
+1. On-die droop detector (analog comparator or tunable delay monitor)
+   senses Vdd dipping below threshold        (latency: ~1-5 ns)
+2. Adaptive clock module stretches the clock period by a few percent
+   within a handful of cycles -- gate delays grew because V dropped,
+   so the cycle time grows to match. Timing is preserved THROUGH the
+   droop instead of margined against it.
+3. When Vdd recovers, frequency ramps back.
+
+Implementations:
+  - AMD (since Steamroller, refined through Zen): PLL output passed
+    through a DLL that produces ~40 phases; the clock stretcher inserts
+    phases to lengthen the period smoothly with near-zero latency
+  - IBM POWER9: adaptive clocking for droop protection (ISSCC 2017)
+  - Intel: related concept in "AVX guardband / license-based frequency" --
+    pre-emptively lowers f before enabling wide vector units
+
+Benefit: removing a 50 mV permanent guardband at 0.9V recovers ~11% dynamic
+power (P ~ V^2) or the equivalent frequency headroom, in exchange for a few
+percent frequency loss only DURING actual droop events (rare, tens of ns).
+```
+
+### 3.9 DVFS in GPUs and AI Accelerators
+
+```
+GPU power management stack:
+  - Firmware PM controller (NVIDIA: on-die microcontroller running the
+    power management stack; AMD: SMU) closes a ~ms control loop
+  - Inputs: per-block activity counters, temperature sensors, current
+    telemetry from the VRM, power proxies
+  - Outputs: per-domain clocks (SM clock vs memory clock are separate
+    domains), voltage requests, and THROTTLE events
+  - Constraints enforced: total board power (TGP/power limit), current
+    limits (AMD: PPT/TDC/EDC), temperature, di/dt ramp rates
+
+Operator-visible knobs: power capping (e.g., nvidia-smi power limit),
+clock pinning, per-workload frequency offsets.
+```
+
+**AI-era twist -- synchronized power swings (2025-2026 interview gold):**
+```
+Training = thousands of GPUs in lock-step: compute burst -> collective
+communication (compute idles) -> burst... The whole CLUSTER swings tens of
+percent of MW-scale power at ms granularity. The grid and facility hate this.
+
+Chip/rack-level mitigations (NVIDIA GB300 NVL72 example):
+  - Energy storage in the power shelves (~65 J of electrolytic capacitance
+    per GPU) absorbs short spikes and fills short dips
+  - Ramp-rate-limited power capping at job start (caps rise gradually)
+  - "Burn" mode: on abrupt job end, GPUs keep dissipating power briefly so
+    the facility-visible load ramps DOWN smoothly instead of cliff-dropping
+  - Net effect: up to ~30% reduction in peak grid demand for the same work
+
+Inference serving angle: prefill is compute-bound (wants max clocks);
+decode is bandwidth-bound -- SM clocks can drop with little latency impact
+for a large energy saving. Phase-aware DVFS is an active serving-stack
+optimization (ties directly to the AI-infra notes on disaggregated serving).
 ```
 
 ---
@@ -680,6 +920,109 @@ OUTPUT:    ````````````XXXX|000000000000|000000000000XXX|``````````
 | Design complexity    | Higher                       | Lower                        |
 | Use case             | CPU cores, DSPs              | Peripherals, rarely-used IPs |
 
+### 4.9 Physical Implementation of Power Switches (PnR View)
+
+**Switch placement styles:**
+```
+RING style:                          COLUMN/GRID style:
+  switches form a ring around          switch cells in regular columns
+  the domain boundary                  distributed across the domain
+  + minimal disturbance to             + uniform IR drop on virtual rail
+    internal placement/routing         + scales to large domains
+  - IR sags toward the middle          - placement blockages everywhere
+  -> small hard macros, IP blocks      -> the default for big domains
+```
+- **Coarse-grain MTCMOS** (shared switches powering many cells via a virtual
+  rail) is the industry standard. **Fine-grain** (a sleep transistor inside
+  every cell) costs 2-4x area and is essentially never used in ASIC flows.
+- Switch cells come in **mother/daughter (dual-stage)** variants: a weak
+  "trickle" transistor chain turns on first to charge the domain slowly,
+  then the strong main chain engages once VVDD reaches ~90% -- the in-cell
+  version of daisy-chained wake-up.
+
+**What the implementation tools actually do:**
+```
+1. Read UPF -> know which domain is switched, which strategy
+2. Insert switch array (ICC2: create_power_switch_array / Innovus:
+   addPowerSwitch -column ...), hook acknowledge chain for staged wake
+3. Route virtual rail (VVDD) as a separate net from the parent rail
+4. Place always-on (AON) buffers for any signal that must cross or live
+   inside the OFF domain (feedthroughs, retention controls, isolation
+   enables) -- these get SECONDARY PG pin routing to the AON supply
+5. Sign off:
+   - ON-state IR: the switch network adds series resistance; budget an
+     extra 1-3% drop on top of the grid budget
+   - Ramp-up (rush current) dynamic sim: Voltus/RedHawk transient with
+     the staging delays -- verify parent rail droop stays in budget and
+     wake time meets spec
+   - Wake latency check: time from sleep_n deassert to VVDD at 95%,
+     measured at the FARTHEST corner of the domain from the switches
+```
+
+### 4.10 Power-Gating Verification and the Classic Bug Catalog
+
+**Static low-power checks (Synopsys VC LP, Cadence Conformal Low Power):**
+missing isolation on a domain output, isolation cell powered by the wrong
+(switched!) supply, level shifter wrong direction, retention supply hookup
+errors, control signals (save/restore/iso_en) sourced FROM the domain they
+control, AON buffer placed on the switched rail.
+
+**Power-aware simulation (UPF-driven):** simulator corrupts all domain
+state to X on power-down; checks isolation clamps actually hold values,
+domain recovers through reset/restore, random sleep-injection tests pass.
+
+**Bug catalog worth telling as war stories:**
+```
+1) Isolation enable polarity inverted
+   Symptom: chip works perfectly... until the first sleep entry, then the
+   fabric hangs (X / garbage propagated into the always-on interconnect).
+
+2) Restore fired before the rail was stable at the far corner
+   Symptom: sporadic single-bit state corruption after wake, worse at cold
+   temperature (slower ramp). Fix: voltage detector at the far corner, or
+   lengthen the wake timer at the slow corner.
+
+3) Rush current collapses the PARENT rail
+   Symptom: a NEIGHBORING domain (or the always-on logic itself!) resets
+   "randomly" -- correlated with this domain's wake events. Fix: more
+   staging stages, slower trickle, more parent-rail decap.
+
+4) A buffer of an unrelated net auto-placed inside the gated region
+   Symptom: some other block's signal dies whenever this domain sleeps.
+   Fix: feedthrough exclusion / AON buffering rules in PnR.
+
+5) Wake works on the bench, fails in system
+   Root cause: in-system the parent rail is already near its IR budget;
+   wake droop adds on top. Bench PSU was stiffer than the real PMIC.
+```
+
+### 4.11 SRAM Low-Power Modes (Compiler-Memory Standard Feature)
+
+SRAM macros ship with built-in power modes -- this is asked constantly
+because memory is 15-25% of chip power and mostly idle:
+
+| Mode | Periphery | Array | Data | Wake-up | Leakage saved |
+|------|-----------|-------|------|---------|----------------|
+| Active | On | Full VDD | Valid | -- | 0% |
+| Light sleep (LS) | Clock-gated, partial bias | Full VDD | Retained | 1-2 cycles | ~20-50% of macro leakage |
+| Deep sleep / retention (DS) | Off | Lowered to retention voltage (~0.5-0.6V via built-in regulator or separate VDDM rail) | Retained | 100s ns - us | ~70-90% |
+| Shutdown (SD) | Off | Power removed | LOST | us + re-init/refill | ~95-100% |
+
+```
+Practical notes:
+- Dual-rail memories: VDD (periphery, scales with logic DVFS) + VDDM
+  (array, fixed higher voltage for bitcell stability). UPF must model the
+  macro's power states and the LS/DS/SD control pins.
+- Mapping to a cache hierarchy:
+    L1: active or light sleep only (latency-critical)
+    L2: per-way deep sleep; flush + shutdown unused ways
+    LLC/SLC: bank-level shutdown with dirty-line flush, driven by the
+    power-management firmware based on occupancy counters
+- Retention voltage has a MARGIN problem: bitcell retention Vmin rises
+  with process variation and temperature extremes -- signed off with
+  statistical (Monte Carlo) analysis by the memory vendor.
+```
+
 ---
 
 ## 5. Multi-Vt Optimization -- Deep Dive
@@ -800,6 +1143,67 @@ vs all-HVT: 10M * 10nA * 0.20 * 0.9V = 18 mW (but won't meet timing)
 
 The art is in minimizing the LVT/ULVT count while still meeting timing.
 ```
+
+### 5.5 Multi-Vt at GAA / Nanosheet Nodes (N2-Class, 2025-2026)
+
+How Vt flavors are physically created has changed twice:
+
+```
+Planar (>=28nm):  channel doping dose        -> many cheap Vt flavors
+FinFET (16-3nm):  work-function metal (WFM)  -> Vt set by gate metal stack
+                  thickness/composition         (undoped channel)
+GAA nanosheet:    WFM space between stacked sheets is TINY -> thick-WFM
+(N2, 18A, SF2)    tricks run out -> DIPOLE ENGINEERING takes over:
+                  thin dipole layers (n-type and p-type) in the gate stack
+                  shift the effective work function without thickness
+```
+- TSMC reports **six Vt levels spanning ~200 mV on N2**, built with
+  third-generation dipole integration (both n- and p-dipoles).
+- Nanosheet adds a new knob FinFETs never had: **sheet width tuning**
+  (TSMC "NanoFlex": short cells for density/power, tall cells for drive,
+  mixable within a block) -- effectively a continuous drive-strength axis
+  alongside the discrete Vt axis.
+- Practical implications you can cite:
+  - Early PDKs at a new node offer FEWER Vt/channel-length combos; leakage
+    recovery has less room -> activity reduction and architecture-level
+    techniques matter relatively more at bring-up.
+  - Vt is now a GATE-STACK property: Vt mistracking between flavors across
+    process corners is real -- sign off leakage and timing per-corner, do
+    not assume fixed delay/leakage ratios between flavors.
+
+### 5.6 Leakage-Recovery ECO -- The Bread-and-Butter PD Task
+
+After timing closure, recover leakage by downgrading every cell that has
+more slack than it needs:
+
+```
+Loop (per signoff corner set):
+  1. STA at signoff corners (PrimeTime / Tempus)
+  2. For each cell with positive WORST slack > threshold (e.g., +20-30 ps):
+       swap to the next-higher-Vt FOOTPRINT-COMPATIBLE variant
+       (same cell footprint and pinout -> no placement/routing change)
+  3. Incremental STA -> reject swaps that break setup, HOLD, or max_tran
+  4. Iterate until no legal swaps remain
+
+Tooling:
+  PrimeTime:  fix_eco_power  (DMSA, multi-scenario) -> ECO change list
+              -> implement via ICC2 place_eco / Innovus ecoChangeCell
+  Innovus:    optPower -postRoute (in-place leakage optimization)
+
+Typical result: 20-50% leakage reduction at zero frequency cost, run at
+EVERY late netlist drop. This is one of the most common "what did you
+actually do" answers for physical design roles.
+```
+Guardrails (the part interviewers push on):
+- Keep a slack cushion: a swap that lands a path at exactly 0 ps slack will
+  fail later under OCV/aging updates -- chips age (BTI raises Vt over the
+  lifetime), so end-of-life timing must still close.
+- Respect global mix constraints (e.g., max 10-15% LVT) and per-corner
+  leakage budgets -- a swap legal at TT/85C may bust the FF/125C budget.
+- Never blind-swap clock network cells (skew shifts) or cells feeding
+  clock-gating enables (half-cycle-ish paths, see 2.9).
+- Re-check at the LOW-VOLTAGE corner: HVT delay degrades disproportionately
+  as Vdd approaches Vth -- a swap fine at 0.9V can fail at 0.6V.
 
 ---
 
@@ -1107,6 +1511,38 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 ### Q16: "Explain retention register timing requirements in detail."
 
 **A:** The SAVE signal must be pulsed AFTER the last clock edge (so all FFs have valid data) and BEFORE power is removed. The SAVE pulse width must meet the shadow latch setup and hold time (typically 200-500ps minimum pulse width). The RESTORE signal must be pulsed AFTER power is stable (voltage within 90-95% of nominal) and BEFORE the first functional clock edge. RESTORE also has minimum pulse width requirements. Between SAVE and RESTORE, the shadow latch must retain data on the always-on supply -- any voltage droop on the always-on rail can corrupt retained state. The always-on supply must remain stable within ~10% of nominal throughout the power-gated period.
+
+### Q17: "Emulation shows 35% CGE where architecture predicted 80%. Walk me through your debug."
+
+**A:** First separate structural ICG coverage (% FFs behind an ICG -- if this is low, synthesis settings or RTL coding style are the problem) from CGE (% cycles gated -- if coverage is high but CGE is low, the ENABLES are weak). Then rank ICGs by wasted clock power (fanout x %enabled) and inspect the top offenders: valids that free-run regardless of downstream readiness, recirculation muxes the tool failed to extract (often due to reset-priority coding), missing module-level gating so the upper clock tree toggles even when leaf ICGs gate, and over-fine ICGs whose own overhead exceeds savings. Also confirm the workload: CGE measured on a busy benchmark says nothing about idle power. Fixes: qualify enables at the source, recode enable patterns, add hierarchical ICGs from FSM-idle signals. Verify the fix shows up as reduced CLOCK TREE power, not just register power.
+
+### Q18: "Explain the clock-gating check in STA. Why does a plain AND gate fail it?"
+
+**A:** The gating signal may only change while the clock is low: setup is checked against the next rising edge, hold against the falling edge. With a plain AND gate and an enable launched from a posedge FF, the enable changes just after the rising edge -- while the clock is high -- truncating or glitching the pulse: a hold violation by construction. The ICG's transparent-low latch fixes this: it is opaque during the high phase (blocks mid-pulse changes) and closes at the rising edge, giving the enable nearly a full cycle to arrive. Many teams additionally require enable arrival by the falling edge as a margin policy; that is a house rule, not the hard requirement.
+
+### Q19: "Compare a board PMIC, an integrated buck (FIVR), and a digital LDO (DLVR) for per-core DVFS."
+
+**A:** Board PMIC: efficient (85-92%) but slow (10-100 us) and one rail feeds many cores -- voltage is set by the most demanding core. FIVR: on-die buck with package inductors, ~us transitions, per-domain rails, but inductor cost/area and conversion loss. DLVR (Intel Core Ultra: per P-core, per E-core cluster, per ring): a digital linear regulator -- nanosecond-class response and very fine granularity, but linear efficiency = Vout/Vin, so it only wins when shaving a small delta off the shared rail; a bypass mode shorts it when the core needs full voltage. The architectural point: per-core regulation converts the (V_shared - V_needed) gap on every idle/slow core into real power savings, which a single rail can never capture.
+
+### Q20: "A voltage droop event happens in 5 ns. Your firmware DVFS loop runs every millisecond. Reconcile."
+
+**A:** Power management is a reaction-time hierarchy: ns-scale first droop is handled by circuits -- on-die droop detectors plus adaptive clock stretching (AMD: DLL-based phase insertion; IBM POWER9 adaptive clocking) that lengthen the clock period through the droop, plus local decap; us-scale is the regulator's control loop and load-line; ms-scale is firmware DVFS adjusting the operating point; seconds-scale is thermal management. Each layer exists because the faster phenomenon cannot wait for the slower controller. The payoff of the ns layer is guardband recovery: without it you carry a permanent ~50 mV margin (~11% dynamic power at 0.9V) for an event that occurs rarely and lasts tens of ns.
+
+### Q21: "An 8MB L2 is idle 60% of the time. Which SRAM mode do you use and why not the deeper one?"
+
+**A:** Light sleep for short idle windows (1-2 cycle wake keeps it transparent to the pipeline), deep-sleep retention for sustained idle (data retained at ~0.5-0.6V array voltage, ~70-90% leakage saved, but wake is 100s of ns -- needs a predictor or explicit driver hint to hide). Shutdown only if the contents are clean or worth flushing: wake costs a flush-and-refill (us-to-ms of effective penalty and DRAM traffic energy). The decision is a break-even calculation between leakage saved per idle window and the energy/latency of entry/exit -- same math as power-gating break-even, plus the retention-Vmin margin question at temperature extremes.
+
+### Q22: "Describe a leakage-recovery ECO and three ways it can go wrong."
+
+**A:** Post-route, swap positive-slack cells to higher-Vt footprint-compatible variants (PrimeTime fix_eco_power -> ICC2/Innovus ECO; or Innovus optPower -postRoute), iterating with incremental STA; typically 20-50% leakage reduction for free. Failure modes: (1) swapping to exactly-zero slack leaves nothing for OCV updates and aging -- BTI raises Vt over life, so end-of-life paths fail; (2) corner blindness -- a swap that closes at the nominal corner violates at the low-voltage corner where HVT delay blows up, or busts the high-temp leakage budget; (3) touching the wrong cells -- clock network cells (skew shift) or clock-gate enable paths (tight checks). Also watch max_transition: HVT variants have weaker drive, and a legal-timing swap can still create a slew violation downstream.
+
+### Q23: "How are multiple Vt flavors built on a GAA nanosheet process if the channel is undoped and there's no room for thick work-function metal?"
+
+**A:** Dipole engineering: ultra-thin dipole layers (separate n-type and p-type dipole materials) inserted in the high-k gate stack shift the effective work function without consuming the few nanometers between stacked sheets. TSMC's N2 reports six Vt levels across ~200 mV using third-generation dipole integration. Nanosheets also add sheet-WIDTH tuning (NanoFlex short vs tall cells) as a quasi-continuous drive knob alongside discrete Vt. Interview-relevant consequence: early GAA PDKs offer fewer Vt/Lg combos than mature FinFET nodes, so leakage recovery has less room and Vt-flavor mistracking across corners must be signed off explicitly.
+
+### Q24: "Why do AI training clusters create a power-delivery problem that single-chip DVFS can't solve, and what's done about it?"
+
+**A:** Training synchronizes thousands of GPUs: all compute bursts and all communication stalls happen in lock-step, so the facility load swings by tens of percent of MW-scale power at millisecond granularity -- a grid/facility problem, not a chip problem. Chip-level DVFS reacts per-GPU and actually AMPLIFIES synchronization. Mitigations operate at the rack/system level (NVIDIA GB300 NVL72 as the canonical example): energy storage in the power shelves (~65 J of capacitance per GPU) absorbs spikes, ramp-rate-limited power caps make job starts gradual, and a controlled "burn" mode dissipates power on abrupt job end so the load ramps down smoothly -- together cutting peak grid demand by up to ~30%. Knowing this bridges chip power techniques to data-center reality, which is exactly what AI-hardware roles screen for.
 
 ---
 
