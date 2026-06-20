@@ -1,6 +1,6 @@
 # RTL Coding Questions — Classic Problems with Full Solutions
 
-> The whiteboard-RTL canon. Each problem: statement → key insight → SystemVerilog solution → follow-ups interviewers actually ask. Theory backup: [Basic_Knowledge](../Fundamentals/Basic_Knowledge.md), [Memory](../Architecture/Memory.md) (FIFOs), [Clock_Division](../Clocking_and_Signals/Clock_Division.md), [Async_Circuit_Design](../Clocking_and_Signals/Async_Circuit_Design.md).
+> The whiteboard-RTL canon. Each problem: statement → key insight → SystemVerilog solution → follow-ups interviewers actually ask. Theory backup: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs), [Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md).
 
 ---
 
@@ -56,7 +56,7 @@ module div3_50 (input logic clk, rst_n, output logic clk_o);
 endmodule
 ```
 
-**Follow-ups:** generalize to any odd N (same trick: two phases, OR); is `clk_o` a "real" clock? — only via CTS-aware implementation; prefer clock generators/ICG cells in production ([Clock_Division](../Clocking_and_Signals/Clock_Division.md) has the full zoo). Even N → counter + toggle at N/2.
+**Follow-ups:** generalize to any odd N (same trick: two phases, OR); is `clk_o` a "real" clock? — only via CTS-aware implementation; prefer clock generators/ICG cells in production ([Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md) has the full zoo). Even N → counter + toggle at N/2.
 
 ---
 
@@ -103,7 +103,7 @@ module rr_arb #(parameter N=4)
 endmodule
 ```
 
-`x & ~(x-p)` isolates the least-significant 1 of `x` at or above one-hot `p` (subtract borrows through the low zeros). **Follow-ups:** fairness definition (work-conserving, bounded waiting ≤ N−1 grants); weighted RR (per-source credit counters); matrix arbiter alternative; how this becomes the SA stage of a NoC router ([Network_on_Chip](../Architecture/Network_on_Chip.md)).
+`x & ~(x-p)` isolates the least-significant 1 of `x` at or above one-hot `p` (subtract borrows through the low zeros). **Follow-ups:** fairness definition (work-conserving, bounded waiting ≤ N−1 grants); weighted RR (per-source credit counters); matrix arbiter alternative; how this becomes the SA stage of a NoC router ([Network_on_Chip](../01_Architecture_and_PPA/Network_on_Chip.md)).
 
 ---
 
@@ -177,7 +177,7 @@ module afifo #(parameter W=32, A=4)
 endmodule
 ```
 
-**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../Architecture/Memory.md) / [Async_Circuit_Design](../Clocking_and_Signals/Async_Circuit_Design.md).
+**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../01_Architecture_and_PPA/Memory.md) / [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md).
 
 ---
 
@@ -243,7 +243,7 @@ always_ff @(posedge sclk) t3 <= t2;
 assign pulse_s = t2 ^ t3;
 ```
 
-**Why:** a 1-cycle fast pulse can fall entirely between slow edges; a toggle *level* cannot be missed. **Constraint:** source pulses must be spaced > 2–3 slow periods, else toggles merge — add a busy/ack handshake (`req` toggle one way, `ack` toggle back) for arbitrary rates. This toggle-handshake is the universal single-event CDC primitive; multi-bit data → async FIFO or req/ack + qualifier ([Async_Circuit_Design](../Clocking_and_Signals/Async_Circuit_Design.md)).
+**Why:** a 1-cycle fast pulse can fall entirely between slow edges; a toggle *level* cannot be missed. **Constraint:** source pulses must be spaced > 2–3 slow periods, else toggles merge — add a busy/ack handshake (`req` toggle one way, `ack` toggle back) for arbitrary rates. This toggle-handshake is the universal single-event CDC primitive; multi-bit data → async FIFO or req/ack + qualifier ([Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md)).
 
 ---
 
@@ -317,7 +317,7 @@ module skid #(parameter W=32)
 endmodule
 ```
 
-**Why it's asked:** it is the atom of every AXI register slice ([AHB_AXI_APB](../Architecture/AHB_AXI_APB.md)) and elastic pipeline. Follow-up: full-throughput proof (accepts every cycle downstream is ready; skid absorbs exactly the one in-flight beat) and the half-bandwidth naive alternative (deassert ready whenever output valid — 50% duty under stall).
+**Why it's asked:** it is the atom of every AXI register slice ([AHB_AXI_APB](../01_Architecture_and_PPA/AHB_AXI_APB.md)) and elastic pipeline. Follow-up: full-throughput proof (accepts every cycle downstream is ready; skid absorbs exactly the one in-flight beat) and the half-bandwidth naive alternative (deassert ready whenever output valid — 50% duty under stall).
 
 ---
 
@@ -344,6 +344,6 @@ What senior interviewers actually score:
 
 ## Cross-references
 
-- Building blocks: [Basic_Knowledge](../Fundamentals/Basic_Knowledge.md), [Adders](../Fundamentals/Adders.md).
-- Deep dives behind problems: [Memory](../Architecture/Memory.md) (FIFOs/SRAM), [Clock_Division](../Clocking_and_Signals/Clock_Division.md), [Async_Circuit_Design](../Clocking_and_Signals/Async_Circuit_Design.md) (CDC), [Network_on_Chip](../Architecture/Network_on_Chip.md) (arbiter in context).
+- Building blocks: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Adders](../00_Fundamentals/Adders.md).
+- Deep dives behind problems: [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs/SRAM), [Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) (CDC), [Network_on_Chip](../01_Architecture_and_PPA/Network_on_Chip.md) (arbiter in context).
 - Companion: [Hardware_Interview_Questions](Hardware_Interview_Questions.md) (concept Q&A + timing/power math), [System_Design_Interview](../../ai_infra/interview_prep/System_Design_Interview.md) (the AI-systems counterpart).

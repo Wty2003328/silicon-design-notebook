@@ -1,102 +1,122 @@
-# Hardware Design — Index
+# Hardware Design — Index (chip-design-flow order)
 
-> A senior-level technical notebook for digital IC design, CPU architecture, and SystemVerilog verification interviews.
-> Target roles: RTL design engineer, physical design engineer, STA/signoff engineer, DFT engineer, verification engineer, CPU architect.
+> A senior-level technical notebook for digital IC design, CPU architecture, and verification.
+> Target roles: RTL design, physical design, STA/signoff, DFT, verification, CPU architect.
 > Style: deep theory + gate-level detail + worked examples + interview-ready tradeoffs.
 >
-> **39 pages** organized in 7 thematic sections (including interview prep).
+> **Organized by the chip design flow.** The folders are numbered `00 → 07` in flow order — early PPA/architecture, frontend RTL + verification, synthesis, backend, signoff, manufacturing. Power is kept together as a cross-cutting track (02). **Start with the [Chip Design Flow Overview](Chip_Design_Flow_Overview.md)** — it maps every stage, hand-off, and iteration loop.
+>
+> **48 pages.** New pages added in the flow reorg are marked ⭐.
 
 ---
 
-## Section 1 — Fundamentals
+## ▶ [Chip Design Flow Overview](Chip_Design_Flow_Overview.md) ⭐ — read this first
 
-Device physics and basic building blocks. These pages establish the transistor-level foundation that everything else builds on.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [CMOS Fundamentals](Fundamentals/CMOS_Fundamentals.md) | 1,518 | MOSFET operation, CMOS inverter VTC, noise margins, propagation delay, latch-up, ESD, FinFET |
-| [Fabrication Process](Fundamentals/Fabrication_Process.md) | 1,482 | Wafer prep, lithography (DUV/EUV), etching, ion implantation, CMP, FinFET, BEOL, yield/DFM |
-| [Basic Knowledge](Fundamentals/Basic_Knowledge.md) | 981 | Combinational/sequential logic: MUX, Shannon expansion, encoders, decoders, basic building blocks |
-| [Adders](Fundamentals/Adders.md) | 1,197 | Half adder through Kogge-Stone, carry-lookahead, carry-select, gate-level architectures |
-| [Floating Point](Fundamentals/Floating_Point.md) | 1,997 | IEEE 754, bias encoding, rounding modes, FPU pipeline, division algorithms |
-
-## Section 2 — Architecture
-
-CPU microarchitecture, ISA, memory subsystem, and SoC interconnect. This is the largest section, covering everything from RISC-V ISA to out-of-order execution to cache and DDR design.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [RISC-V ISA](Architecture/RISC_V_ISA.md) | 1,977 | RV64G (RV64IMAFdc) instruction set, encoding formats, privilege modes, Sv39/Sv48 virtual memory |
-| [CPU Architecture](Architecture/CPU_Architecture.md) | 2,993 | 5-stage pipeline, hazards, forwarding, branch prediction, Tomasulo, superscalar, MESI, fetch unit, SMT, exceptions |
-| [OoO Execution](Architecture/OoO_Execution.md) | 1,761 | Full OoO datapath: rename, ROB, issue queue, LSQ, misprediction recovery, execution units, SMT |
-| [Branch Prediction Deep Dive](Architecture/Branch_Prediction_Deep_Dive.md) | 1,926 | BTB, gshare, TAGE/TAGE-SC, perceptron, tournament, RAS, ITTAGE, fetch unit architecture |
-| [Cache Microarchitecture](Architecture/Cache_Microarchitecture.md) | 1,938 | Cache pipeline, MSHR, write policy, prefetch engines, replacement policies, MESI/MOESI |
-| [TLB and Virtual Memory](Architecture/TLB_and_Virtual_Memory.md) | 1,731 | TLB entry format, multi-level TLB, hardware page walker, VIPT, shootdown, superpages |
-| [Xiangshan CPU Design](Architecture/Xiangshan_CPU_Design.md) | 1,223 | Open-source RISC-V OoO processor: Nanhu/Kunminghu, TAGE-SC, distributed IQ, LSU, cache hierarchy |
-| [DDR Controller](Architecture/DDR_Controller.md) | 1,872 | DDR commands, timing parameters, row buffer management, FR-FCFS scheduling, ECC, DDR5 |
-| [ACE and CHI](Architecture/ACE_and_CHI.md) | 1,604 | AMBA ACE/CHI coherence protocols, snoop channels, TrustZone, AXI ATOP |
-| [Memory](Architecture/Memory.md) | 2,557 | 6T SRAM, DRAM, async FIFO, multi-port SRAM, register files, ECC, CAM/TCAM |
-| [AHB / AXI / APB](Architecture/AHB_AXI_APB.md) | 2,444 | AMBA bus protocols, AXI4 complete spec, CDC bridges, TrustZone, AXI ATOP |
-| [Network-on-Chip](Architecture/Network_on_Chip.md) | 248 | Topologies and bisection math, wormhole/VC flow control, router pipeline, deadlock theory (Dally–Seitz, escape VCs), CHI-over-mesh (CMN), QoS, die-to-die NoC |
-
-## Section 3 — Implementation
-
-The RTL-to-GDSII EDA flow: synthesis, place-and-route, timing signoff, testing, and formal verification.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [Synthesis and Optimization](Implementation/Synthesis_and_Optimization.md) | 2,390 | RTL-to-gates, SDC constraints, technology mapping, timing closure, area optimization |
-| [Physical Design (PnR)](Implementation/Physical_Design.md) | 2,931 | Floorplanning, placement, CTS, routing, physical verification signoff |
-| [Static Timing Analysis](Implementation/STA.md) | 2,526 | Cell delay modeling, setup/hold derivation, CRPR, OCV/AOCV/POCV, SDC walkthrough |
-| [DFT and ATPG](Implementation/DFT_and_ATPG.md) | 3,067 | Scan chains, fault models, ATPG algorithms, at-speed testing, test compression, logic BIST |
-| [Formal Verification](Implementation/Formal_Verification.md) | 1,966 | SAT/BDD, LEC equivalence checking, model checking, CDC formal, connectivity verification |
-| [IC Packaging](Implementation/IC_Packaging.md) | 1,495 | Wire bonding, flip chip, WLP, 2.5D/3D stacking, chiplets, HBM, UCIe |
-
-## Section 4 — Clocking and Signals
-
-Clock generation, clock domain crossing, and signal integrity — the cross-cutting concerns that span implementation and signoff.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [Clock Division](Clocking_and_Signals/Clock_Division.md) | 2,460 | Even/odd division, non-integer dividers, fractional techniques, gate-level circuits |
-| [Asynchronous Circuit Design](Clocking_and_Signals/Async_Circuit_Design.md) | 1,816 | Metastability physics, synchronizers, async FIFO design, handshake protocols, CDC verification |
-| [Signal Integrity and Reliability](Clocking_and_Signals/Signal_Integrity_Reliability.md) | 840 | Crosstalk, EM, IR drop, power grid design, thermal analysis, reliability signoff |
-
-## Section 5 — Power
-
-Power analysis, reduction, and signoff across all abstraction levels.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [Power Fundamentals](Power/Power_Fundamentals.md) | 1,177 | Switching/short-circuit/leakage physics, TDP, power density, technology scaling |
-| [Power Reduction Techniques](Power/Power_Reduction_Techniques.md) | 1,577 | Clock gating (incl. sequential/data-driven), DVFS + DLVR/AVFS/droop response, power gating PnR + SRAM modes, multi-Vt incl. GAA-era + leakage ECO |
-| [Power Analysis and Signoff](Power/Power_Analysis_and_Signoff.md) | 1,354 | PrimeTime PX, Voltus, activity annotation, IR/EM, glitch power, peak/di-dt, backside power delivery |
-| [UPF Power Intent](Power/UPF_Power_Intent.md) | 1,308 | IEEE 1801 through UPF 4.0 (1801-2024): power domains, retention, isolation, level shifters, switches |
-| [Low Power Design](Power/Low_Power_Design.md) | 1,649 | Interview bible: clock gating, DVFS, power gating, multi-Vt, body biasing + mid-level debug scenario drills |
-| [Block Activity and Power](Power/Block_Activity_and_Power.md) | 417 | Activity-based power: per-block/per-mode power modeling, RTL power tools, glitch power, emulation power, on-die telemetry/power proxies, power capping, power virus |
-
-## Section 6 — SystemVerilog
-
-The language and methodology for design and verification: types, processes, OOP, assertions, and testbench architecture.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [Data Types and Basics](SystemVerilog/Data_Types_and_Basics.md) | 928 | 2-state vs 4-state, packed/unpacked arrays, structs, unions, enums, casting |
-| [Procedural and Processes](SystemVerilog/Procedural_and_Processes.md) | 824 | Event regions, always blocks, fork/join variants, simulation scheduling |
-| [OOP and Randomization](SystemVerilog/OOP_and_Randomization.md) | 1,431 | Classes, inheritance, polymorphism, constraint-based randomization, coverage-driven |
-| [Assertions and Coverage](SystemVerilog/Assertions_and_Coverage.md) | 1,564 | Immediate/concurrent SVA, properties, functional and code coverage strategies |
-| [IPC and Verification](SystemVerilog/IPC_and_Verification.md) | 1,720 | Mailbox, semaphores, testbench architecture, UVM-style patterns |
-| [UVM Methodology](SystemVerilog/UVM_Methodology.md) | 332 | Component hierarchy, phasing/objections, sequence-driver handshake, factory and overrides, config_db, TLM, RAL, full agent skeleton, interview Q&A |
-
-## Section 7 — Interview Prep
-
-Live-coding drill set and worked numeric problems, mirroring `ai_infra/interview_prep`.
-
-| Page | Lines | Coverage |
-|------|-------|----------|
-| [RTL Coding Questions](interview_prep/RTL_Coding_Questions.md) | 349 | The whiteboard canon with full SystemVerilog solutions: edge detect, div-3 50%, gray counter, round-robin arbiter, sync/async FIFO + depth math, FSM detector, debounce/MTBF, CDC pulse transfer, priority encoder, gearbox, skid buffer, parallel CRC, grading rubric |
-| [Hardware Interview Questions](interview_prep/Hardware_Interview_Questions.md) | 208 | Worked numeric problems + snap answers per domain: STA (fmax/hold/MCP/OCV), CDC MTBF math, power (DVFS/clock gating), AMAT and cache geometry, closure ladder, verification strategy, 30-minute design prompts |
+The spine: spec → architecture → RTL → synthesis → backend → signoff → silicon, with the hand-off contract and cost-of-late-change at each boundary.
 
 ---
 
-## Read
+## 00 · Fundamentals
+*Device physics, logic, and arithmetic the rest of the flow assumes.*
+
+| Page | Coverage |
+|------|----------|
+| [CMOS Fundamentals](00_Fundamentals/CMOS_Fundamentals.md) | MOSFET, inverter VTC, noise margins, delay, latch-up, ESD, FinFET, 6T SRAM, leakage |
+| [Basic Knowledge (Logic Building Blocks)](00_Fundamentals/Basic_Knowledge.md) | MUX, Shannon expansion, encoders/decoders, latch vs FF (transistor-level), metastability, FSMs, gray code, hazards, FIFO depth |
+| [Adders](00_Fundamentals/Adders.md) | Half/full adder → CLA, carry-select, carry-skip, prefix (Kogge-Stone), CSA, Booth, Wallace/Dadda |
+| [Floating Point](00_Fundamentals/Floating_Point.md) | IEEE-754, add/mul pipelines, GRS rounding, SRT division, FMA microarchitecture |
+
+## 01 · Architecture and PPA
+*Explore the microarchitecture; model performance; budget power and area — before RTL.*
+
+| Page | Coverage |
+|------|----------|
+| [Performance Modeling & DSE](01_Architecture_and_PPA/Performance_Modeling_and_DSE.md) ⭐ | modeling-fidelity ladder, CPI stack, gem5/SystemC-TLM, SimPoint, design-space exploration, PPA tradeoffs |
+| [CPU Architecture](01_Architecture_and_PPA/CPU_Architecture.md) | 5-stage pipeline, hazards, forwarding, Tomasulo, superscalar, MESI, SMT, Spectre/Meltdown |
+| [OoO Execution](01_Architecture_and_PPA/OoO_Execution.md) | rename, ROB, issue queue, LSQ, misprediction recovery, wakeup/select |
+| [Branch Prediction Deep Dive](01_Architecture_and_PPA/Branch_Prediction_Deep_Dive.md) | BTB, gshare, TAGE-SC-L, perceptron, RAS, ITTAGE |
+| [Cache Microarchitecture](01_Architecture_and_PPA/Cache_Microarchitecture.md) | pipeline, MSHR, write policy, prefetch, replacement, coherence |
+| [TLB and Virtual Memory](01_Architecture_and_PPA/TLB_and_Virtual_Memory.md) | TLB format, page-table walker, VIPT, shootdown, superpages, 5-level |
+| [RISC-V ISA](01_Architecture_and_PPA/RISC_V_ISA.md) | RV64GC, privilege modes, Sv39/48, Vector, Bitmanip, Hypervisor |
+| [Xiangshan CPU Design](01_Architecture_and_PPA/Xiangshan_CPU_Design.md) | open-source RISC-V OoO core case study (Nanhu/Kunminghu) |
+| [Memory](01_Architecture_and_PPA/Memory.md) | 6T/8T/10T SRAM (transistor-level), DRAM, async FIFO, multi-port, register file, CAM/TCAM, CIM |
+| [DDR Controller](01_Architecture_and_PPA/DDR_Controller.md) | commands, timing, row-buffer, FR-FCFS, ECC, DDR5, LPDDR5X |
+| [Network-on-Chip](01_Architecture_and_PPA/Network_on_Chip.md) | topology/bisection math, wormhole/VC flow control, **router datapath + allocators**, deadlock theory, CHI-over-mesh |
+| [AHB / AXI / APB](01_Architecture_and_PPA/AHB_AXI_APB.md) | AMBA bus protocols, AXI4 spec, CDC bridges, ATOP |
+| [ACE and CHI](01_Architecture_and_PPA/ACE_and_CHI.md) | cache-coherence protocols, snoop, CXL/PCIe |
+
+## 02 · Power and Low-Power *(cross-cutting track)*
+*Power is specified early, intended in RTL, implemented in synth/backend, signed off at the end — kept together here.*
+
+| Page | Coverage |
+|------|----------|
+| [Power Fundamentals](02_Power_and_Low_Power/Power_Fundamentals.md) | switching/short-circuit/leakage physics, scaling, sub-threshold swing |
+| [Block Activity and Power](02_Power_and_Low_Power/Block_Activity_and_Power.md) | per-block/per-mode modeling, RTL power, glitch, emulation power, on-die telemetry |
+| [Power Reduction Techniques](02_Power_and_Low_Power/Power_Reduction_Techniques.md) | clock gating, DVFS, power gating, multi-Vt, body biasing, operand isolation |
+| [Low Power Design](02_Power_and_Low_Power/Low_Power_Design.md) | the interview bible: ICG, power-gating switches/retention, debug drills |
+| [UPF Power Intent](02_Power_and_Low_Power/UPF_Power_Intent.md) | IEEE 1801, domains, retention, isolation, level shifters, switches, PST |
+| [Power Analysis and Signoff](02_Power_and_Low_Power/Power_Analysis_and_Signoff.md) | PrimeTime PX/Voltus, IR/EM, glitch, peak/di-dt, backside power |
+
+## 03 · Frontend RTL and Verification
+*Write synthesizable RTL; prove it correct (dynamic + static).*
+
+| Page | Coverage |
+|------|----------|
+| [RTL Design Methodology](03_Frontend_RTL_and_Verification/RTL_Design_Methodology.md) ⭐ | synchronous discipline, reset architecture, clocking, datapath/control split, synthesis-safe coding |
+| [Data Types and Basics](03_Frontend_RTL_and_Verification/Data_Types_and_Basics.md) | 2/4-state, arrays, structs, enums, casting |
+| [Procedural and Processes](03_Frontend_RTL_and_Verification/Procedural_and_Processes.md) | event regions, always blocks, fork/join, scheduling |
+| [OOP and Randomization](03_Frontend_RTL_and_Verification/OOP_and_Randomization.md) | classes, polymorphism, constraint randomization |
+| [Clock Division](03_Frontend_RTL_and_Verification/Clock_Division.md) | even/odd/fractional dividers, PLL/DLL, glitch-free switching |
+| [Asynchronous Circuit Design](03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) | metastability/MTBF, synchronizers, async FIFO, handshakes, CDC |
+| [Assertions and Coverage](03_Frontend_RTL_and_Verification/Assertions_and_Coverage.md) | immediate/concurrent SVA, functional+code coverage |
+| [IPC and Verification](03_Frontend_RTL_and_Verification/IPC_and_Verification.md) | mailbox, semaphore, testbench architecture |
+| [UVM Methodology](03_Frontend_RTL_and_Verification/UVM_Methodology.md) | components, phasing, sequences, factory, config_db, RAL |
+| [Lint, CDC & RDC Signoff](03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md) ⭐ | static lint, structural+functional CDC, reset-domain crossing |
+| [Gate-Level Sim & Emulation](03_Frontend_RTL_and_Verification/Gate_Level_Sim_and_Emulation.md) ⭐ | GLS (zero-delay/SDF, X-prop), emulation, FPGA prototyping |
+| [Verification Planning & Coverage Closure](03_Frontend_RTL_and_Verification/Verification_Planning_and_Coverage_Closure.md) ⭐ | vplan, coverage taxonomy, closure loop, sign-off criteria |
+| [Formal Verification](03_Frontend_RTL_and_Verification/Formal_Verification.md) | SAT/BDD, LEC, model checking, CDC formal, connectivity |
+
+## 04 · Synthesis
+*RTL → gate netlist under constraints.*
+
+| Page | Coverage |
+|------|----------|
+| [Synthesis and Optimization](04_Synthesis/Synthesis_and_Optimization.md) | RTL-to-gates, mapping, timing closure, area/power opt |
+| [Constraints (SDC)](04_Synthesis/Constraints_SDC.md) ⭐ | clocks, I/O delay, the four exceptions, MCMM, SDC discipline |
+
+## 05 · Backend (Physical Design)
+*Gate netlist → layout.*
+
+| Page | Coverage |
+|------|----------|
+| [Physical Design (PnR)](05_Backend_Physical_Design/Physical_Design.md) | floorplan, placement, CTS, routing, physical signoff |
+| [Signal Integrity and Reliability](05_Backend_Physical_Design/Signal_Integrity_Reliability.md) | crosstalk, EM, IR drop, power grid, thermal, aging, antenna |
+
+## 06 · Signoff
+*Prove it's correct before tape-out.*
+
+| Page | Coverage |
+|------|----------|
+| [Static Timing Analysis](06_Signoff/STA.md) | cell delay, setup/hold, CRPR, OCV/AOCV/POCV, SDC walkthrough |
+| [DFT and ATPG](06_Signoff/DFT_and_ATPG.md) | scan, fault models, ATPG, at-speed, compression, BIST, AI-accelerator DFT |
+| [Physical Verification (DRC/LVS)](06_Signoff/Physical_Verification_DRC_LVS.md) ⭐ | DRC, LVS graph-compare, antenna, DFM/fill |
+
+## 07 · Manufacturing and Bring-up
+*Fab, package, tape-out, first silicon.*
+
+| Page | Coverage |
+|------|----------|
+| [Fabrication Process](07_Manufacturing_and_Bringup/Fabrication_Process.md) | wafer→litho (DUV/EUV)→etch→implant→CMP→FinFET/GAA→BEOL, yield/DFM |
+| [IC Packaging](07_Manufacturing_and_Bringup/IC_Packaging.md) | wire bond, flip chip, WLP, 2.5D/3D, chiplets, HBM, UCIe, Foveros/SoIC |
+| [Tapeout & Post-Silicon Bring-up](07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md) ⭐ | GDSII hand-off, mask/OPC, respin economics, bring-up, shmoo, debug, yield ramp |
+
+## Interview Prep
+
+| Page | Coverage |
+|------|----------|
+| [RTL Coding Questions](interview_prep/RTL_Coding_Questions.md) | whiteboard canon with full SystemVerilog solutions |
+| [Hardware Interview Questions](interview_prep/Hardware_Interview_Questions.md) | worked numeric problems + snap answers per domain |
+
+---
+
+> *Reorg

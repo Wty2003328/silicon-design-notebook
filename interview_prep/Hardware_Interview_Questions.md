@@ -32,7 +32,7 @@ The same skew that bought setup margin *eats* hold margin — the seesaw every S
 
 **P3 — multicycle.** A 64-bit multiplier takes 1.4 ns; clock is 1 GHz. Declare `set_multicycle_path 2 -setup`; what else must you do and why?
 
-*Answer:* `set_multicycle_path 1 -hold` (move the hold check back to the launch edge). Default hold for MCP-2 setup checks against edge N+1, demanding the data be stable a full extra cycle — exploding hold fixing for no reason. Also: enable logic must guarantee the destination samples only every 2nd cycle (the constraint documents intent; RTL must enforce it). Derivations: [STA](../Implementation/STA.md).
+*Answer:* `set_multicycle_path 1 -hold` (move the hold check back to the launch edge). Default hold for MCP-2 setup checks against edge N+1, demanding the data be stable a full extra cycle — exploding hold fixing for no reason. Also: enable logic must guarantee the destination samples only every 2nd cycle (the constraint documents intent; RTL must enforce it). Derivations: [STA](../06_Signoff/STA.md).
 
 **P4 — OCV flavor.** Why did the industry move OCV → AOCV → POCV/LVF? *Answer:* flat OCV derates everything by worst-case % → hopeless pessimism on deep paths; AOCV: derate as f(depth, distance) — random variation averages over long chains ($\sigma_{chain} \propto \sqrt{n}$ not $n$); POCV/LVF: per-cell delay distributions (σ moments) propagated statistically. Same physics, decreasing pessimism, increasing signoff cost.
 
@@ -63,7 +63,7 @@ Two-flop adds a full period (500 ps) of resolution: $e^{(850/15)} = e^{56.7} \ap
 - **Why can't you synchronize a multi-bit bus with 2FF per bit?** Bits resolve independently → mixed old/new word. Use gray (unit-distance counters only), req/ack + quasi-static data, or async FIFO.
 - **Convergence/fan-in rule:** two separately-synchronized signals re-converging in logic can be skewed by a cycle → never combine synchronizer outputs combinationally without a qualifier.
 - **What does a CDC tool actually check?** Structural: every crossing has a recognized scheme; glitch sources feeding sync (comb logic before sync FF is illegal); reconvergence; gray-coding on multi-bit; reset domain crossings (the 2025+ added focus — RDC).
-- Full schemes: [Async_Circuit_Design](../Clocking_and_Signals/Async_Circuit_Design.md); pulse/toggle code in [RTL_Coding_Questions](RTL_Coding_Questions.md) §9.
+- Full schemes: [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md); pulse/toggle code in [RTL_Coding_Questions](RTL_Coding_Questions.md) §9.
 
 ---
 
@@ -83,12 +83,12 @@ Energy/task ∝ $CV^2$ (f cancels for fixed work): $(0.55/0.75)^2 = 0.54$ → **
 
 **P3 — clock gating.** Clock tree = 30% of block dynamic power; gating achieves 85% idle coverage on a block idle 60% of the time. Saving?
 
-Clock-tree saving = 0.30 × 0.60 × 0.85 ≈ 15.3% of block dynamic power; plus downstream flop-internal clock power and killed datapath toggles (often another ~5–10%). Cheapest power knob in the book — and why ICG insertion is automatic in synthesis ([Power_Reduction_Techniques](../Power/Power_Reduction_Techniques.md)).
+Clock-tree saving = 0.30 × 0.60 × 0.85 ≈ 15.3% of block dynamic power; plus downstream flop-internal clock power and killed datapath toggles (often another ~5–10%). Cheapest power knob in the book — and why ICG insertion is automatic in synthesis ([Power_Reduction_Techniques](../02_Power_and_Low_Power/Power_Reduction_Techniques.md)).
 
 ### 3.2 Snap answers
 
 - **Power gating vs clock gating:** clock gating kills dynamic only (state retained, instant wake); power gating kills leakage too (state lost or retention flops; µs-scale wake, rush-current management, isolation cells on outputs).
-- **Why isolation cells?** Floating outputs from an off domain drive X/crowbar current into on domains — clamp at the boundary ([UPF_Power_Intent](../Power/UPF_Power_Intent.md)).
+- **Why isolation cells?** Floating outputs from an off domain drive X/crowbar current into on domains — clamp at the boundary ([UPF_Power_Intent](../02_Power_and_Low_Power/UPF_Power_Intent.md)).
 - **Level shifters:** any signal crossing voltage domains; missing LS = silent timing/functional hazard, caught only by UPF-aware checks.
 - **Where does leakage go at low Vt / high temp?** Subthreshold leakage ∝ $e^{-V_t/nkT}$ — exponential in both; hence multi-Vt mixing (LVT only on critical paths) as a standard closure move.
 
@@ -106,15 +106,15 @@ $$
 
 Follow-up they always add: which helps more, halving L1 miss rate or halving memory latency? Halve L1 miss: 4 + 0.025×38 = 4.95. Halve mem: 4 + 0.05×26 = 5.3. **L1 miss rate wins here** — run the numbers, don't intuit.
 
-**P2 — cache geometry from address bits.** 64 KiB, 4-way, 64 B lines, 48-bit PA: offset = log2(64) = 6 b; sets = 64Ki/(4×64) = 256 → index 8 b; tag = 48−14 = 34 b. Tag SRAM ≈ sets × ways × (34 + state ~3 b) ≈ 256×4×37 b ≈ 4.6 KiB. **VIPT constraint:** index+offset (14 b) > 12-bit page offset → 2 bits of index are virtual → alias risk: forbid (page coloring), or restrict to ≤ 16 KiB/way, or dual-lookup. This exact trap appears constantly ([TLB_and_Virtual_Memory](../Architecture/TLB_and_Virtual_Memory.md)).
+**P2 — cache geometry from address bits.** 64 KiB, 4-way, 64 B lines, 48-bit PA: offset = log2(64) = 6 b; sets = 64Ki/(4×64) = 256 → index 8 b; tag = 48−14 = 34 b. Tag SRAM ≈ sets × ways × (34 + state ~3 b) ≈ 256×4×37 b ≈ 4.6 KiB. **VIPT constraint:** index+offset (14 b) > 12-bit page offset → 2 bits of index are virtual → alias risk: forbid (page coloring), or restrict to ≤ 16 KiB/way, or dual-lookup. This exact trap appears constantly ([TLB_and_Virtual_Memory](../01_Architecture_and_PPA/TLB_and_Virtual_Memory.md)).
 
-**P3 — speedup accounting.** 5-stage in-order, CPI contributions: base 1.0 + 0.25 load-use×1 + branch: 18% branches, 70% predicted, 3-cycle flush. CPI = 1 + 0.25 + 0.18×0.3×3 = 1.41. Doubling predictor accuracy to 85%: CPI = 1 + 0.25 + 0.081 = 1.33 → 6% perf. Now they ask: why does the same predictor change matter ~3× more on a 14-stage OoO? Deeper flush (≈14–20 cycles) and wider issue multiply the lost-slot cost: 0.18×0.15×16×(IPC 4) — misprediction cost scales with width × depth ([Branch_Prediction_Deep_Dive](../Architecture/Branch_Prediction_Deep_Dive.md)).
+**P3 — speedup accounting.** 5-stage in-order, CPI contributions: base 1.0 + 0.25 load-use×1 + branch: 18% branches, 70% predicted, 3-cycle flush. CPI = 1 + 0.25 + 0.18×0.3×3 = 1.41. Doubling predictor accuracy to 85%: CPI = 1 + 0.25 + 0.081 = 1.33 → 6% perf. Now they ask: why does the same predictor change matter ~3× more on a 14-stage OoO? Deeper flush (≈14–20 cycles) and wider issue multiply the lost-slot cost: 0.18×0.15×16×(IPC 4) — misprediction cost scales with width × depth ([Branch_Prediction_Deep_Dive](../01_Architecture_and_PPA/Branch_Prediction_Deep_Dive.md)).
 
 ### 4.2 Snap answers
 
-- **ROB vs issue queue:** ROB = in-order retirement window (precise exceptions, rename reclaim); IQ = out-of-order wakeup/select window. Sizes decouple: ROB ~300+, IQ ~100− because IQ is CAM-expensive per entry ([OoO_Execution](../Architecture/OoO_Execution.md)).
+- **ROB vs issue queue:** ROB = in-order retirement window (precise exceptions, rename reclaim); IQ = out-of-order wakeup/select window. Sizes decouple: ROB ~300+, IQ ~100− because IQ is CAM-expensive per entry ([OoO_Execution](../01_Architecture_and_PPA/OoO_Execution.md)).
 - **Why physical register file rename over ROB-value rename?** Values written once, read from one place; no retirement copy; supports wide machines — cost: free-list management and a level of indirection.
-- **MESI: why is E worth it?** Silent E→M on private write (no bus transaction) — the common single-threaded case writes without coherence traffic ([Cache_Microarchitecture](../Architecture/Cache_Microarchitecture.md), [ACE_and_CHI](../Architecture/ACE_and_CHI.md)).
+- **MESI: why is E worth it?** Silent E→M on private write (no bus transaction) — the common single-threaded case writes without coherence traffic ([Cache_Microarchitecture](../01_Architecture_and_PPA/Cache_Microarchitecture.md), [ACE_and_CHI](../01_Architecture_and_PPA/ACE_and_CHI.md)).
 - **Store-to-load forwarding hazard:** load must check older stores in LSQ (address overlap, partial overlap → stall or replay); memory disambiguation prediction (e.g., store-set) lets loads bypass *predicted-independent* stores with replay on violation.
 - **Inclusive vs exclusive LLC:** inclusive = snoop filter for free, wastes capacity (duplicates), back-invalidation pathology; exclusive = max capacity, needs separate snoop filter — the AMD/Intel historical split.
 
@@ -132,13 +132,13 @@ Follow-up they always add: which helps more, halving L1 miss rate or halving mem
 4. **RTL micro-restructure**: balance the cone (move logic across the register), retime — days + reverify.
 5. **Pipeline stage / spec change**: the honest answer when 80 ps is really 300 ps at the next corner — weeks, architecture sign-off.
 
-Naming the *verification cost* of each rung is what separates senior answers ([Synthesis_and_Optimization](../Implementation/Synthesis_and_Optimization.md), [Physical_Design](../Implementation/Physical_Design.md)).
+Naming the *verification cost* of each rung is what separates senior answers ([Synthesis_and_Optimization](../04_Synthesis/Synthesis_and_Optimization.md), [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md)).
 
 ### 5.2 Snap answers
 
 - **Why does the tool report 0 violations at synthesis and hundreds at PnR?** Synthesis timed with wireload/virtual route; PnR has real RC + congestion detours + CTS skew + SI. Synthesis numbers are a *promissory note*.
-- **Scan insertion's timing cost:** mux in front of every D pin (one mux delay on all reg-reg paths) + hold fixing on scan chains; ~2–5% area ([DFT_and_ATPG](../Implementation/DFT_and_ATPG.md)).
-- **LEC vs simulation:** equivalence checking proves netlist ≡ RTL for all inputs (combinational induction over mapped state points) — no vectors; required after every netlist surgery (scan, CTS buffers, ECO) ([Formal_Verification](../Implementation/Formal_Verification.md)).
+- **Scan insertion's timing cost:** mux in front of every D pin (one mux delay on all reg-reg paths) + hold fixing on scan chains; ~2–5% area ([DFT_and_ATPG](../06_Signoff/DFT_and_ATPG.md)).
+- **LEC vs simulation:** equivalence checking proves netlist ≡ RTL for all inputs (combinational induction over mapped state points) — no vectors; required after every netlist surgery (scan, CTS buffers, ECO) ([Formal_Verification](../03_Frontend_RTL_and_Verification/Formal_Verification.md)).
 - **Antenna violation in one line:** charge collected on long metal during etch discharges through thin gate oxide — fixed by layer-hopping or antenna diodes; purely a manufacturing-flow effect, invisible in RTL.
 
 ---
@@ -147,8 +147,8 @@ Naming the *verification cost* of each rung is what separates senior answers ([S
 
 ### 6.1 Snap answers
 
-- **Directed vs constrained-random economics:** directed = linear effort per scenario, CR = front-loaded env cost then coverage-per-cycle compounding; the crossover argument is *the* verification-strategy interview ([IPC_and_Verification](../SystemVerilog/IPC_and_Verification.md), [UVM_Methodology](../SystemVerilog/UVM_Methodology.md)).
-- **When formal over simulation:** control-dominated, bounded-state, completeness-critical: arbiters (starvation), FIFOs (no overflow), CDC structure, register access policies, security/lockstep — exhaustive where sim samples ([Formal_Verification](../Implementation/Formal_Verification.md)).
+- **Directed vs constrained-random economics:** directed = linear effort per scenario, CR = front-loaded env cost then coverage-per-cycle compounding; the crossover argument is *the* verification-strategy interview ([IPC_and_Verification](../03_Frontend_RTL_and_Verification/IPC_and_Verification.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/UVM_Methodology.md)).
+- **When formal over simulation:** control-dominated, bounded-state, completeness-critical: arbiters (starvation), FIFOs (no overflow), CDC structure, register access policies, security/lockstep — exhaustive where sim samples ([Formal_Verification](../03_Frontend_RTL_and_Verification/Formal_Verification.md)).
 - **Coverage closure ≠ done:** code+functional coverage at 100% with a wrong/missing covergroup still ships bugs; review coverage *model* against spec, not just the percentage.
 - **"Your test passes but the bug exists" — name mechanisms:** checker disabled/X-optimism masking, scoreboard compares only fields that match, assertion off during reset window where bug fires, seed luck — the question tests epistemic humility about green dashboards.
 
@@ -165,7 +165,7 @@ assert property (p_handshake);
 cover property (@(posedge clk) $rose(req) ##8 $rose(gnt)); // boundary hit
 ```
 
-Talking points: `throughout` for the hold condition, `disable iff` reset semantics, antecedent-vacuity (cover the trigger!), and the matching `cover` for the boundary case ([Assertions_and_Coverage](../SystemVerilog/Assertions_and_Coverage.md)).
+Talking points: `throughout` for the hold condition, `disable iff` reset semantics, antecedent-vacuity (cover the trigger!), and the matching `cover` for the boundary case ([Assertions_and_Coverage](../03_Frontend_RTL_and_Verification/Assertions_and_Coverage.md)).
 
 ---
 
@@ -173,10 +173,10 @@ Talking points: `throughout` for the hold condition, `disable iff` reset semanti
 
 For each, the expected skeleton — practice narrating these:
 
-1. **Design a 4-master memory arbiter with QoS.** Clarify: latency vs bandwidth guarantees? → per-master req FIFOs, weighted-RR credit arbiter + aging promotion (no starvation), grant pipelining (hide arbitration behind data), backpressure story, then: how weights map to bandwidth fractions, worst-case latency bound proof ([Network_on_Chip](../Architecture/Network_on_Chip.md) §6 QoS logic).
-2. **Design the fetch stage of a 2-wide CPU.** I$ + ITLB lookup, BTB/RAS/predictor in parallel, fetch-buffer decoupling, misalignment across cache lines, redirect plumbing and bubble math ([Branch_Prediction_Deep_Dive](../Architecture/Branch_Prediction_Deep_Dive.md) §fetch).
-3. **Design a DMA engine.** Descriptor format (linked list), prefetch of next descriptor during current transfer, outstanding-read tracking (tags), reorder buffer or strict-order choice, completion interrupts + write-coalescing, error/abort semantics, AXI burst legality (4 KB) ([AHB_AXI_APB](../Architecture/AHB_AXI_APB.md)).
-4. **Size and design an L2 prefetcher.** Stream detection (delta-correlation), training table geometry, throttling by accuracy/bandwidth headroom, page-boundary stop, interaction with MSHR occupancy ([Cache_Microarchitecture](../Architecture/Cache_Microarchitecture.md)).
+1. **Design a 4-master memory arbiter with QoS.** Clarify: latency vs bandwidth guarantees? → per-master req FIFOs, weighted-RR credit arbiter + aging promotion (no starvation), grant pipelining (hide arbitration behind data), backpressure story, then: how weights map to bandwidth fractions, worst-case latency bound proof ([Network_on_Chip](../01_Architecture_and_PPA/Network_on_Chip.md) §6 QoS logic).
+2. **Design the fetch stage of a 2-wide CPU.** I$ + ITLB lookup, BTB/RAS/predictor in parallel, fetch-buffer decoupling, misalignment across cache lines, redirect plumbing and bubble math ([Branch_Prediction_Deep_Dive](../01_Architecture_and_PPA/Branch_Prediction_Deep_Dive.md) §fetch).
+3. **Design a DMA engine.** Descriptor format (linked list), prefetch of next descriptor during current transfer, outstanding-read tracking (tags), reorder buffer or strict-order choice, completion interrupts + write-coalescing, error/abort semantics, AXI burst legality (4 KB) ([AHB_AXI_APB](../01_Architecture_and_PPA/AHB_AXI_APB.md)).
+4. **Size and design an L2 prefetcher.** Stream detection (delta-correlation), training table geometry, throttling by accuracy/bandwidth headroom, page-boundary stop, interaction with MSHR occupancy ([Cache_Microarchitecture](../01_Architecture_and_PPA/Cache_Microarchitecture.md)).
 
 The grading axis is identical in all four: **clarify constraints → block diagram → the one hard sub-problem in depth → verification plan unprompted.**
 
@@ -204,5 +204,5 @@ The grading axis is identical in all four: **clarify constraints → block diagr
 ## Cross-references
 
 - Live-coding companion: [RTL_Coding_Questions](RTL_Coding_Questions.md).
-- Per-domain depth: [STA](../Implementation/STA.md), [Power_Reduction_Techniques](../Power/Power_Reduction_Techniques.md), [OoO_Execution](../Architecture/OoO_Execution.md), [Cache_Microarchitecture](../Architecture/Cache_Microarchitecture.md), [Async_Circuit_Design](../Clocking_and_Signals/Async_Circuit_Design.md), [UVM_Methodology](../SystemVerilog/UVM_Methodology.md), [Formal_Verification](../Implementation/Formal_Verification.md).
+- Per-domain depth: [STA](../06_Signoff/STA.md), [Power_Reduction_Techniques](../02_Power_and_Low_Power/Power_Reduction_Techniques.md), [OoO_Execution](../01_Architecture_and_PPA/OoO_Execution.md), [Cache_Microarchitecture](../01_Architecture_and_PPA/Cache_Microarchitecture.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/UVM_Methodology.md), [Formal_Verification](../03_Frontend_RTL_and_Verification/Formal_Verification.md).
 - AI-systems counterpart: [Common_Interview_Questions](../../ai_infra/interview_prep/Common_Interview_Questions.md), [System_Design_Interview](../../ai_infra/interview_prep/System_Design_Interview.md).
