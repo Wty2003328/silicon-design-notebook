@@ -79,4 +79,8 @@ Confirmed decisions and built:
 - **Verification folded into Frontend** → stage **03_Frontend_RTL_and_Verification** (one combined frontend stage).
 - **Fabrication moved to Manufacturing** → **07_Manufacturing_and_Bringup**.
 - **Power kept together** as one cross-cutting track → **02_Power_and_Low_Power** (all 6 power pages).
-- **All 9 gap pages written** at depth: Chip_Design_Flow_Overview, Performance_Modeling_and_DSE, RTL_Design_Methodology, Lint_CDC_RDC_Signoff, Gate_Level
+- **All 9 gap pages written** at depth: Chip_Design_Flow_Overview, Performance_Modeling_and_DSE, RTL_Design_Methodology, Lint_CDC_RDC_Signoff, Gate_Level_Sim_and_Emulation, Verification_Planning_and_Coverage_Closure, Constraints_SDC, Physical_Verification_DRC_LVS, Tapeout_and_Post_Silicon_Bringup.
+
+Final stages: `00_Fundamentals · 01_Architecture_and_PPA · 02_Power_and_Low_Power · 03_Frontend_RTL_and_Verification · 04_Synthesis · 05_Backend_Physical_Design · 06_Signoff · 07_Manufacturing_and_Bringup` (+ `interview_prep`). The authoritative page list is [Index.md](Index.md).
+
+**One manual step left for you:** this environment can't delete files/folders, so the 6 now-empty old folders (Architecture, Power, Implementation, SystemVerilog, Clocking_and_Signals, Fundamentals — Implementation also holds two leftover scratch `.tmp` files) must be deleted in Finder/your file explorer to finish the cleanup.
