@@ -690,6 +690,50 @@ end
 
 ---
 
+## RTL Coding Constructs and Synthesizability
+
+### case vs casez vs casex
+
+All three pick a branch by comparing the selector against each case-item, **bit by bit**. They differ only in how `x`/`z` bits are treated during that compare:
+
+- **`case`** — exact 4-state compare. Every bit must match literally, including `x` and `z`. There is **no wildcard**: an item bit written as `?` is just `z` and is matched literally (see trap below).
+- **`casez`** — `z` (and its shorthand `?`) bits are **don't-care** wildcards, on *either* the selector or the item. This is the idiom for priority / one-hot decoders: list patterns like `4'b1???`, or use the reverse-case form `case (1'b1)` with the conditions as items.
+- **`casex`** — **both** `x` and `z` are wildcards. This is **dangerous**: a propagated `x` on the selector silently matches some item, so a real bug (uninitialized/contended signal) is masked instead of producing `x`. Avoid in RTL; lint rules flag every `casex`.
+
+**Trap:** in plain `case`, `?` is **not** a wildcard — it is `z`, matched literally. Writing `casez`-style patterns such as `4'b1?_??` inside a plain `case` is a classic bug: those items only match if the selector actually carries `z` bits, so the branch never fires for normal `0/1` inputs.
+
+Per-bit match table (selector bit value down, statement across — does the item wildcard bit match it?):
+
+| selector bit | `case` (item `?`=`z`) | `casez` (item `?`/`z`) | `casex` (item `?`/`z`/`x`) |
+|--------------|-----------------------|------------------------|----------------------------|
+| `0`          | no (item `z` ≠ `0`)   | **yes**                | **yes**                    |
+| `1`          | no (item `z` ≠ `1`)   | **yes**                | **yes**                    |
+| `x`          | no                    | no (only `z` wild)     | **yes**                    |
+| `z`          | yes (literal `z`=`z`) | **yes**                | **yes**                    |
+
+**Qualifiers.** Prefix the keyword with `unique` / `unique0` / `priority` to state intent: `unique` asserts the items are mutually exclusive and (for `unique`) fully cover the selector — the tool both checks this in simulation and uses it to drop priority/default logic; `priority` asserts at least one item matches and preserves top-to-bottom precedence. Prefer these over the legacy `// synopsys full_case parallel_case` pragmas, which assert the same facts to **synthesis only** — if the assertion is false, the gates and the simulation disagree (a sim/synth mismatch that the qualifiers would have caught in sim). See the Synthesis/Lint notes elsewhere in `03_Frontend_RTL_and_Verification` for how these are enforced.
+
+### Synthesizable vs Non-Synthesizable Constructs
+
+Think of an abstraction ladder, and the synthesis tool as a mapper that only understands the lower rungs:
+
+- **Behavioral / algorithmic** — describes *what* to compute, possibly untimed. May be non-synthesizable.
+- **RTL (register-transfer)** — clocked registers + combinational logic between them. This is the synthesizable contract: the tool maps it to gates and flops.
+- **Gate / structural** — explicit primitives or instantiated cells.
+
+| Synthesizable (maps to hardware) | Non-synthesizable (simulation / testbench only) |
+|----------------------------------|-------------------------------------------------|
+| `always` / `always_ff` / `always_comb` / `always_latch` | `initial` blocks |
+| `assign`, `if`/`case` (see above) | `fork…join` / `join_any` / `join_none` (see [Fork-Join Deep Dive](#fork-join-deep-dive)) |
+| statically-bound `for` loops, `generate` | `#delay`, `wait`, untimed `forever`, `@event` as control |
+| combinational `function` (zero-time, no time controls) | `$display` / `$monitor` / `$finish` / `$strobe` |
+| module / cell instantiation | `real`, `time`; classes, `mailbox`, `semaphore` |
+| parameters, constants | `===` / `!==` (4-state compare — usually TB only) |
+
+One line to remember: **the tool maps RTL to gates; testbench constructs have no hardware to map to.** A loop bound or `generate` range must be static (resolvable at elaboration) precisely because the tool must unroll it into fixed structure rather than execute it over time.
+
+---
+
 ## Interview Questions and Answers
 
 ### Q1: Explain the SystemVerilog scheduling regions and why they matter.

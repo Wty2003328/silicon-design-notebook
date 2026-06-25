@@ -5,7 +5,7 @@
 2. CMOS Inverter and VTC
 3. Noise Margins
 4. Propagation Delay and Power-Delay Product
-5. CMOS Logic Families
+5. CMOS Logic Families & I/O Signaling
 6. Latch-Up
 7. ESD Protection
 8. FinFET and Advanced Nodes
@@ -370,7 +370,7 @@ At optimal VDD for minimum EDP:
 
 ---
 
-## 5. CMOS Logic Families
+## 5. CMOS Logic Families & I/O Signaling
 
 ### 5.1 Static CMOS (Complementary)
 
@@ -490,6 +490,43 @@ Domino: Add a static inverter after dynamic node
 4. Cannot implement inverting functions directly
    Fix: use NP-CMOS (alternating NMOS and PMOS domino stages)
 ```
+
+### 5.5 I/O Signaling Standards (Off-Chip)
+
+§5.1–5.4 are *on-chip* logic styles driving fF-scale gate loads. **I/O cells (pads)** are a different world: they drive pF-scale off-chip loads (package + PCB trace + connector + receiver), so they trade speed/area for **drive strength, slew-rate control, defined voltage levels, termination, and ESD**. The signaling *standard* is the TX↔RX contract on the board; pick it from three families.
+
+**(1) Rail-referenced single-ended** — receiver compares to fixed thresholds referenced to its own rails. Cheapest (1 pin/signal), but noise margin is VDDQ-bounded and rate is limited by ground bounce / SSO noise.
+
+| Standard | VDDQ | Thresholds | Typical use |
+|----------|------|-----------|-------------|
+| LVTTL | 3.3 V | VIH 2.0 / VIL 0.8 V (TTL-compatible) | legacy GPIO |
+| LVCMOS | 3.3 / 2.5 / 1.8 / 1.5 / 1.2 V | VIH≈0.7·VDDQ, VIL≈0.3·VDDQ (rail-to-rail) | GPIO, SPI, UART, JTAG, I²C |
+
+**(2) VREF-referenced, terminated single-ended** — for wide, fast parallel buses (DRAM). Receiver compares to an external **VREF ≈ VDDQ/2** and uses **on-die termination (ODT)** to kill reflections, so the swing can be small (fast edges).
+
+| Standard | Reference / termination | Used by |
+|----------|------------------------|---------|
+| SSTL (Stub-Series Terminated Logic) — SSTL_18/15/135 | VTT = VDDQ/2 series-stub termination | DDR2 / DDR3 / DDR3L |
+| HSTL (High-speed Transceiver Logic) | VTT termination | QDR SRAM, older FPGA banks |
+| POD (Pseudo-Open-Drain) — POD12/135 | terminate to **VDDQ** (only a "0" sinks DC) | DDR4 / DDR5, GDDR |
+
+**(3) Differential** — two complementary wires; receiver senses the *difference*, so common-mode noise cancels → small swing, high speed, low EMI, at 2 pins/signal.
+
+| Standard | Swing / Vcm | Termination | Used by |
+|----------|-------------|-------------|---------|
+| LVDS | ~350 mV diff, Vcm ≈ 1.2 V | 100 Ω across the pair | display/sensor links, moderate Gb/s |
+| CML (current-mode logic) | ~400–800 mV | 50 Ω/leg to VDD | SerDes — PCIe / Ethernet / HBM PHY, multi-Gb/s |
+
+(DDR clock/strobe DQS also use *differential* SSTL/HSTL.)
+
+**Tradeoffs (interview):**
+- **Single-ended vs differential:** SE is pin-efficient and cheap, but noise margin and max rate are limited by SSO/ground bounce; differential rejects common-mode, runs Gb/s+, and its small swing cuts dynamic I/O power — at 2× the pins.
+- **Why VREF + ODT for DRAM:** a wide bus at high rate can't tolerate full-swing reflections; centering on VREF with ODT yields clean eyes at low swing.
+- **SSTL → POD (DDR3→DDR4/5):** POD terminates to VDDQ, so a bus that idles high burns termination DC only on "0"s → lower I/O power as data rates climbed.
+- **Drive strength & slew:** a stronger driver gives faster edges but more SSO/overshoot/EMI; I/O cells expose selectable drive strength and slew-rate control to trade SI for speed.
+- **Open-drain (I²C/SMBus):** wired-AND with an external pull-up — bidirectional on one wire, but slow (RC pull-up).
+
+Related: noise-margin basis (§3 above); reflections/termination + SerDes equalization → [Signal Integrity](../05_Backend_Physical_Design/Signal_Integrity_Reliability.md); DDR I/O & ODT → [DDR Controller](../01_Architecture_and_PPA/DDR_Controller.md); package-level high-speed I/O → [IC Packaging](../07_Manufacturing_and_Bringup/IC_Packaging.md).
 
 ---
 

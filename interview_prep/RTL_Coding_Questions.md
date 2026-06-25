@@ -329,7 +329,71 @@ endmodule
 
 ---
 
-## 14. The grading rubric behind all of these
+## 14. Divisible-by-3 detector (serial, MSB-first)
+
+**Q:** Bits of an unsigned integer arrive serially, **MSB first**, one per cycle. Assert `out` whenever the value received *so far* is divisible by 3.
+
+**Insight:** appending bit `b` to the low end of a binary number means `value' = 2·value + b`, so the remainder mod 3 follows `rem' = (2·rem + b) mod 3`. Only the remainder matters → 3 states `{0,1,2}`. Moore output `out = (rem == 0)`. (General rule: **divisible-by-N** needs exactly N states; this is unrelated to the divide-by-3 *clock* problem in §2, which is about waveforms, not arithmetic.)
+
+Transition table (derive each entry from `(2·rem + b) mod 3`):
+
+| state (rem) | b=0 → | b=1 → |
+|-------------|-------|-------|
+| S0 (0)      | S0    | S1    |
+| S1 (1)      | S2    | S0    |
+| S2 (2)      | S1    | S2    |
+
+```systemverilog
+module div3_detect (input logic clk, rst_n, vld, b, output logic out);
+  typedef enum logic [1:0] {S0, S1, S2} state_t;
+  state_t st, nxt;
+  always_comb unique case (st)
+    S0:      nxt = b ? S1 : S0;
+    S1:      nxt = b ? S0 : S2;
+    S2:      nxt = b ? S2 : S1;
+    default: nxt = S0;
+  endcase
+  always_ff @(posedge clk or negedge rst_n)
+    if (!rst_n)    st <= S0;          // empty string ≡ 0, divisible by 3
+    else if (vld)  st <= nxt;
+  assign out = (st == S0);            // Moore: value-so-far ≡ 0 (mod 3)
+endmodule
+```
+
+**Follow-ups:** generalize to divisible-by-N (N states, `rem' = (2·rem+b) mod N`); LSB-first instead needs tracking `2^k mod N` (powers cycle) — harder, usually you reverse to MSB-first. Mealy vs Moore: Moore output (shown) is glitch-free and registered-clean.
+
+---
+
+## 15. Pipeline operand-alignment pitfall (chained comparators)
+
+**Q:** Build `min3(A,B,C)` from two pipelined `min(x,y)` units, each with **1-cycle latency**. Naive: stage-1 `m = min(A,B)`, stage-2 `min(m, C)`. What's wrong?
+
+**The bug — data misalignment:** `m` emerges from stage-1 one cycle *after* `A,B` were presented, but `C` is wired straight into stage-2 **undelayed**. So in any given cycle stage-2 compares `m = min(A,B)` computed from the inputs of cycle *t−1* against `C` from cycle *t* — two operands from **different** input vectors → wrong `min3`.
+
+```
+cycle:        t          t+1
+stage-1 in:   A,B(t)     A,B(t+1)
+stage-1 out:  --         m=min(A,B(t))      <- m is 1 cycle late
+stage-2 in:               m(from t),  C(t+1)   <- MISMATCH: C should be C(t)
+```
+
+**Fix:** delay `C` by one register stage so it lines up with `m` (balance the two paths to equal latency):
+
+```systemverilog
+// stage 1
+always_ff @(posedge clk) begin
+  m_q <= min(A, B);     // 1-cycle latency
+  c_q <= C;             // <-- matching delay line keeps C aligned with m
+end
+// stage 2
+always_ff @(posedge clk) min3_q <= min(m_q, c_q);   // both from the SAME input cycle
+```
+
+**General rule:** every operand entering a pipeline stage must originate from the **same source cycle**. Whenever one path through a pipe is deeper than another, insert matching FF delays (a delay line / "skid") on the shorter path so latencies balance. This "comparator data-alignment" point generalizes to any multi-operand pipelined datapath (a tree of adders, MAC arrays, sorting networks).
+
+---
+
+## 16. The grading rubric behind all of these
 
 What senior interviewers actually score:
 

@@ -895,6 +895,48 @@ A 4:2 compressor is equivalent to 2 cascaded full adders, but with the critical 
 
 ---
 
+## Sequential (Shift-Add) Multiplier
+
+The Booth/Wallace/Dadda multipliers above are *combinational*: they build the entire partial-product tree in hardware and produce a result in one (deep) combinational path. The shift-add multiplier makes the opposite trade — it reuses **one** adder over ~N cycles instead of a tree, trading throughput and latency for a large area saving.
+
+### Algorithm (N×N → 2N-bit)
+
+Keep a single `2N`-bit *product* register; load the multiplier into its low half and clear the high half. The multiplicand sits in its own `N`-bit register. Each cycle:
+
+1. If `product[0] == 1`, add the multiplicand to the **high half** of the product register.
+2. **Shift the whole product register right by 1** (this also walks the multiplier bits down to `product[0]` one at a time).
+
+After `N` cycles the multiplier bits are exhausted and the `2N`-bit product register holds `multiplicand × multiplier`.
+
+```
+init:  P[2N-1:N] = 0 ;  P[N-1:0] = multiplier ;  M = multiplicand
+repeat N times:
+    if (P[0]) P[2N:N] = P[2N-1:N] + M     // extra bit catches the add carry
+    P = P >> 1                            // shift right by 1
+result: P[2N-1:0]
+```
+
+**Signed:** use an **arithmetic** right shift and sign-extend the partial sum, or Booth-encode the multiplier — radix-4 Booth also **halves the cycle count** (~N/2) while handling sign naturally (see [Booth Encoding for Multipliers](#booth-encoding-for-multipliers) above).
+
+### Hardware
+
+- One `N`-bit carry-propagate adder (CPA) — the only arithmetic unit, reused every cycle.
+- A `(2N+1)`-bit shift register (the product reg plus a carry bit).
+- AND-gating on the multiplicand (the conditional add = `M & {N{P[0]}}`).
+- A small control FSM / down-counter with a `start` / `valid` (busy) / `done` handshake.
+
+### Tradeoff vs Combinational Multipliers
+
+| Multiplier        | Adders / area      | Throughput      | Latency        | Use when |
+|-------------------|--------------------|-----------------|----------------|----------|
+| Shift-add (this)  | **1 CPA**, tiny    | 1 result / ~N clk | ~N cycles    | area-critical, low multiply rate |
+| Radix-4 Booth seq | 1 CPA + encoder    | 1 result / ~N/2 clk | ~N/2 cycles | area-critical, moderate rate |
+| Array / Wallace (comb) | O(N²) FAs     | 1 result / clk (if pipelined) | 1 deep comb path (or P stages) | high throughput |
+
+Rule of thumb: pick the architecture from the required multiply throughput. If you issue a multiply only occasionally (config math, address calc), the shift-add unit's near-zero area wins; if every cycle needs a product (datapath, MAC array), pay for the pipelined Wallace tree.
+
+---
+
 ## Adder Selection Guide — Practical Wisdom
 
 ### When to Hand-Instantiate vs. Let the Tool Decide

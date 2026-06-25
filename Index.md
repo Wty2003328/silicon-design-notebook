@@ -21,7 +21,7 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 
 | Page | Coverage |
 |------|----------|
-| [CMOS Fundamentals](00_Fundamentals/CMOS_Fundamentals.md) | MOSFET, inverter VTC, noise margins, delay, latch-up, ESD, FinFET, 6T SRAM, leakage |
+| [CMOS Fundamentals](00_Fundamentals/CMOS_Fundamentals.md) | MOSFET, inverter VTC, noise margins, delay, logic families, **I/O signaling standards (LVCMOS/SSTL/POD/LVDS/CML)**, latch-up, ESD, FinFET, 6T SRAM, leakage |
 | [Basic Knowledge (Logic Building Blocks)](00_Fundamentals/Basic_Knowledge.md) | MUX, Shannon expansion, encoders/decoders, latch vs FF (transistor-level), metastability, FSMs, gray code, hazards, FIFO depth |
 | [Adders](00_Fundamentals/Adders.md) | Half/full adder → CLA, carry-select, carry-skip, prefix (Kogge-Stone), CSA, Booth, Wallace/Dadda |
 | [Floating Point](00_Fundamentals/Floating_Point.md) | IEEE-754, add/mul pipelines, GRS rounding, SRT division, FMA microarchitecture |
@@ -119,4 +119,4 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 
 ---
 
-> *Reorg
+> *Reorg note: the old topic folders (Architecture/, Power/, Implementation/, SystemVerilog/, Clocking_and_Signals/, Fundamentals/) are now empty and can be deleted in your file explorer. See [REORG_PLAN](REORG_PLAN.md) for the full mapping.*
