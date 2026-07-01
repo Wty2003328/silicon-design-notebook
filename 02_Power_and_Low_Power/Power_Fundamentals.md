@@ -947,6 +947,49 @@ When simulation is not available (or too expensive), tools estimate activity:
 - Use vectorless for low-power blocks and glue logic
 - Compare vectorless vs annotated results for a few blocks to calibrate
 
+### 11.5 Annotation Coverage and Its Pitfalls
+
+**Annotation coverage %** is the fraction of design nets whose switching activity
+was actually back-annotated from simulation (as opposed to defaulted or derived).
+Tools report it via `report_saif` / `report_switching_activity` (PrimeTime PX) or
+the coverage section of the activity-read log (Voltus). It is the single most
+important quality metric for a power number: a power result with 60% coverage is a
+guess dressed up as a measurement, regardless of how precise the SPEF or library
+data is. Always read coverage *before* trusting the watts.
+
+**Nets that commonly go un-annotated** (and why it matters):
+
+| Category                          | Why un-annotated in functional sim                                      | Power risk |
+|-----------------------------------|-------------------------------------------------------------------------|------------|
+| Scan/DFT flops, scan-chain nets   | Scan-enable held static in functional mode -> chains look 0-activity, but scan-FF mux/extra load still adds cap + leakage; in *test* mode chains toggle massively (shift power) -- a separate vector | Functional underestimate of cap/leakage; test power is a different number entirely |
+| Clock-gating cell internal nets   | ICG enable/latch nets and generated/divided clocks often not in the dumped scope or not named at RTL | Large -- CG and clock power dominate dynamic |
+| Black-box / hard-macro / IP / memory nets | No RTL visibility; power comes from the IP's own Liberty/power model, not SAIF | Wrong if IP model not wired in |
+| RTL->gate name-mapping mismatches | Synthesis renamed/merged/optimized nets fail to match the SAIF instance/net path | Silent coverage loss, often in optimized datapaths |
+
+**What the tool does with un-annotated nets:** it either applies a **default toggle
+rate / static probability** (e.g. TR=0.1, SP=0.5) or **propagates/derives** activity
+vectorlessly (probabilistically) from annotated driving inputs. Both inject optimistic
+or pessimistic bias depending on the default chosen. Clock-related nets defaulting
+wrong is especially dangerous: clock + clock-gating power is a large share of dynamic,
+so a mis-defaulted generated clock can swing the total by tens of percent.
+
+**The aggregate-coverage trap:** a headline 95% overall coverage can still hide a
+40%-covered *critical* block -- the uncovered nets concentrate where it hurts (a busy
+datapath, the clock-gating logic, a renamed macro wrapper). Never sign off on the
+top-level number alone; check coverage **per hierarchy / per instance**.
+
+**Raising and trusting coverage:**
+- Use **representative and long-enough** simulation windows (real workload, post-reset steady state) so low-activity nets still get exercised.
+- Dump **hierarchical / per-instance SAIF** scoped to the DUT, not a flat top-only file.
+- Fix **name mapping** explicitly (`name_map`, `-strip_path`, `set_rtl_to_gate_name`) so renamed nets back-annotate.
+- **Force clock activity** on generated/divided clocks (`set_switching_activity -base_clock`) rather than letting them default.
+- **Reconcile vector-based vs vectorless** on a few blocks to calibrate the default toggle rate before relying on it elsewhere.
+
+See [Block_Activity_and_Power](Block_Activity_and_Power.md) for per-block activity
+derivation, [Power_Analysis_and_Signoff](Power_Analysis_and_Signoff.md) for coverage
+sign-off criteria, and [DFT_and_ATPG](../06_Signoff/DFT_and_ATPG.md) for scan/shift
+power and test-mode vectors.
+
 ---
 
 ## 12. Power Analysis Tool Flow
