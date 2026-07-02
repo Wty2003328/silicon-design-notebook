@@ -32,6 +32,7 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 | Page | Coverage |
 |------|----------|
 | [Performance Modeling & DSE](01_Architecture_and_PPA/Performance_Modeling_and_DSE.md) ⭐ | modeling-fidelity ladder, CPI stack, gem5/SystemC-TLM, SimPoint, design-space exploration, PPA tradeoffs |
+| [Full-Chip Modeling](01_Architecture_and_PPA/Full_Chip_Modeling.md) ⭐ | full-chip hierarchical power+perf modeling: CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod, contention/overlap/DVFS/thermal coupling |
 | [CPU Architecture](01_Architecture_and_PPA/CPU_Architecture.md) | 5-stage pipeline, hazards, forwarding, Tomasulo, superscalar, MESI, SMT, Spectre/Meltdown |
 | [OoO Execution](01_Architecture_and_PPA/OoO_Execution.md) | rename, ROB, issue queue, LSQ, misprediction recovery, wakeup/select |
 | [Branch Prediction Deep Dive](01_Architecture_and_PPA/Branch_Prediction_Deep_Dive.md) | BTB, gshare, TAGE-SC-L, perceptron, RAS, ITTAGE |

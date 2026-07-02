@@ -507,6 +507,8 @@ The same `P = alpha*C*V^2*f + leak` and PSM machinery, instantiated per architec
 The art is mapping *occupancy/utilization* (the architecture team's number) to per-block
 alpha (the power team's number) -- the bridge this whole page is about.
 
+> **Composing these per-block numbers into a full chip** (CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod) — plus the contention, overlap, DVFS-budget, and thermal-coupling layers that make it a *chip* model, not a sum of blocks — is [Full_Chip_Modeling](../01_Architecture_and_PPA/Full_Chip_Modeling.md).
+
 ```
 CPU  (P_core + P_caches + P_uncore)
   core    : fetch/decode/rename/issue/ALU/FPU/LSU -- per-unit E_op * access counts

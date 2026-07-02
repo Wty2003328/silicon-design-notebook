@@ -231,6 +231,8 @@ Map $C = A B$ with $M=512, N=512, K=256$ onto $D=128$ (WS).
 
 ## 11. Worked example — building an industrial operator-level simulator (NeuSim)
 
+> **Composing these leaf/block perf models into a full chip** — CPU core→cluster→SoC, GPU SM→chip, NPU PE→pod — with the contention, compute/memory/comm overlap, power-budget (DVFS/turbo), and thermal-throttling layers co-modeled, is the hierarchical treatment in [Full_Chip_Modeling](Full_Chip_Modeling.md).
+
 This is the capstone: **how you turn the analytical models of §9–10 into an industrial DSE tool.** [NeuSim](https://github.com/platformxlab/NeuSim) (UIUC PlatformX lab; backs the Neu10/MICRO'24, V10/ISCA'23 perf papers and ReGate/MICRO'25 power-gating paper) is an open-source NPU simulator that does exactly the perf → power → carbon → SLO loop, config-driven, at design-space scale.
 
 ### 11.1 Component models — one model per block
