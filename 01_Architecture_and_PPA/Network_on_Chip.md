@@ -359,16 +359,6 @@ $$
 
 ---
 
-## 11. Interview snap answers
-
-- **"Why a NoC over a bus/crossbar?"** → bandwidth scales with bisection not constant; $O(N^2)$ crossbar area/wire-delay avoided; links are short repeatable wires that close timing; modularity (tile + DFT + CDC per hop).
-- **"Wormhole vs cut-through?"** → buffer flits not packets (area), but blocked packets span routers → HoL blocking & deadlock pressure; VCs mitigate.
-- **"Why is XY deadlock-free?"** → forbidden turn set ⇒ acyclic channel-dependency graph (Dally–Seitz).
-- **"Why does CHI need 4 channels?"** → message-class isolation kills protocol deadlock: responses must never wait behind requests.
-- **"Where do NoC cycles go?"** → VA/SA allocation; cures: lookahead RC, speculative SA, bypass for straight-through traffic.
-
----
-
 ## Cross-references
 
 - Protocol layer above: [ACE_and_CHI](ACE_and_CHI.md), [AHB_AXI_APB](AHB_AXI_APB.md).

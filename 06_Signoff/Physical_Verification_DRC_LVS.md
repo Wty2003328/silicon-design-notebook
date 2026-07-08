@@ -115,16 +115,6 @@ Physical verification is run on the **full-chip merged GDSII** (including IP, me
 
 ---
 
-## 7. Interview Q&A
-
-**Q: DRC passes but the chip is dead — what check did you skip?** Almost certainly **LVS**: DRC only proves the geometry is legal, not that it implements the right circuit. A poly-to-metal mis-connection or a power/ground short can be perfectly DRC-clean and electrically fatal. LVS (extract + compare to netlist) is what catches it.
-
-**Q: What is the antenna effect and how is it fixed?** A long single-layer metal connected to a thin gate collects plasma charge during fab; if the charge/gate-area ratio exceeds the limit, the gate oxide is damaged. Fix by adding antenna diodes (bleed charge) or jumping the route to another layer so no single segment is too large relative to the gate.
-
-**Q: Why add dummy metal fill if the design already passes DRC?** For **CMP planarity** and yield: chemical-mechanical polishing dishes/erodes low-density regions, changing thickness and hurting yield and timing. Density-balancing fill (and double vias, hotspot fixes) is DFM — making a DRC-clean layout actually high-yielding.
-
----
-
 ## Cross-references
 - Upstream layout: [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md). SI/reliability: [Signal_Integrity_Reliability](../05_Backend_Physical_Design/Signal_Integrity_Reliability.md).
 - Rule physics: [Fabrication_Process](../07_Manufacturing_and_Bringup/Fabrication_Process.md). Hand-off: [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md).

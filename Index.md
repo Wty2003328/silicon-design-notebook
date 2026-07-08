@@ -113,8 +113,18 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 
 ## Interview Prep
 
+Per-folder Q&A consolidated out of the topic pages above, plus two cross-cutting banks.
+
 | Page | Coverage |
 |------|----------|
+| [00 — Fundamentals Questions](interview_prep/00_Fundamentals_Questions.md) | CMOS/logic/adders/FP interview Q&A moved out of 00_Fundamentals/ |
+| [01 — Architecture and PPA Questions](interview_prep/01_Architecture_and_PPA_Questions.md) | CPU/cache/memory/NoC/bus interview Q&A moved out of 01_Architecture_and_PPA/ |
+| [02 — Power and Low-Power Questions](interview_prep/02_Power_and_Low_Power_Questions.md) | power/UPF/DVFS interview Q&A moved out of 02_Power_and_Low_Power/ |
+| [03 — Frontend RTL and Verification Questions](interview_prep/03_Frontend_RTL_and_Verification_Questions.md) | RTL/UVM/CDC/formal interview Q&A moved out of 03_Frontend_RTL_and_Verification/ |
+| [04 — Synthesis Questions](interview_prep/04_Synthesis_Questions.md) | synthesis/SDC interview Q&A moved out of 04_Synthesis/ |
+| [05 — Backend Physical Design Questions](interview_prep/05_Backend_Physical_Design_Questions.md) | PnR/SI interview Q&A moved out of 05_Backend_Physical_Design/ |
+| [06 — Signoff Questions](interview_prep/06_Signoff_Questions.md) | STA/DFT interview Q&A moved out of 06_Signoff/ |
+| [07 — Manufacturing and Bring-up Questions](interview_prep/07_Manufacturing_and_Bringup_Questions.md) | fab/packaging/bring-up interview Q&A moved out of 07_Manufacturing_and_Bringup/ |
 | [RTL Coding Questions](interview_prep/RTL_Coding_Questions.md) | whiteboard canon with full SystemVerilog solutions |
 | [Hardware Interview Questions](interview_prep/Hardware_Interview_Questions.md) | worked numeric problems + snap answers per domain |
 

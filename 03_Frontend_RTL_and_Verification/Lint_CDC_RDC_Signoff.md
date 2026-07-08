@@ -105,16 +105,6 @@ This is cheaper than finding the same bug in [gate-level sim](Gate_Level_Sim_and
 
 ---
 
-## 6. Interview Q&A
-
-**Q: Why can't simulation find a missing CDC synchronizer?** RTL simulation is cycle-deterministic — it samples the crossing signal as a clean 0/1 each cycle and never models the metastable settling window. The bug only appears as real-time metastability in silicon. Only static CDC analysis (structure) or gate-sim with timing + metastability injection can flag it.
-
-**Q: You 2-FF-synchronized each bit of an 8-bit bus across clocks. What's wrong?** The bits can settle on *different* destination cycles, so the receiver can observe a transient value that never existed (e.g., 0111→1000 seen as 1111). Use gray code (if it's a counter, only 1 bit changes), a handshake/MCP formulation, or an async FIFO.
-
-**Q: What is RDC and how does it differ from CDC?** RDC is reset-domain crossing: a flop in reset-domain A feeding one in reset-domain B. When A asserts asynchronously, B (if running) can capture the mid-cycle transition and go metastable — same failure as CDC but caused by independent *reset assertion* rather than a clock edge. Fix with isolation or reset sequencing.
-
----
-
 ## Cross-references
 - CDC physics & synchronizer/FIFO design: [Async_Circuit_Design](Async_Circuit_Design.md).
 - Produced by: [RTL_Design_Methodology](RTL_Design_Methodology.md). Complements: [Formal_Verification](Formal_Verification.md) (formal CDC), [Verification_Planning_and_Coverage_Closure](Verification_Planning_and_Coverage_Closure.md).

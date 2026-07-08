@@ -132,16 +132,6 @@ The **same constraint intent** flows through every tool — but evolves: pre-CTS
 
 ---
 
-## 8. Interview Q&A
-
-**Q: What breaks if you forget to declare a divided clock?** STA treats the divider output as a normal data net on the source clock, so every flop clocked by the /2 is timed against the wrong period/edges — paths that are actually fine look failing, and real violations on the divided domain go unchecked. Always `create_generated_clock`.
-
-**Q: You set a 3-cycle setup multicycle and the chip fails hold in silicon. Why?** You relaxed setup to 3 cycles but didn't set the matching hold multicycle (2). The default hold check still expects the data to be stable for the same-cycle relationship, which a genuinely multicycle path doesn't satisfy → hold violation. Setup MCP N needs hold MCP N−1.
-
-**Q: When is a false path dangerous?** Always potentially — it tells STA to *stop checking* a path. If the path is in fact functionally active (you mis-judged the mode/CDC), STA never flags its violation and it fails in silicon. Treat every false_path as a reviewed waiver with explicit justification.
-
----
-
 ## Cross-references
 - Consumed by: [STA](../06_Signoff/STA.md) (timing signoff), [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md).
 - Produced from: [Synthesis_and_Optimization](Synthesis_and_Optimization.md). Clocks: [Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md). Async groups → [Lint_CDC_RDC_Signoff](../03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md).

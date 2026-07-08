@@ -15,8 +15,7 @@
 6. [Physical Verification (Signoff)](#6-physical-verification-signoff)
 7. [Timing Signoff](#7-timing-signoff)
 8. [Advanced Topics](#8-advanced-topics)
-9. [Interview Q&A](#9-interview-qa)
-10. [AI/ML-Assisted Physical Design](#10-aiml-assisted-physical-design)
+9. [AI/ML-Assisted Physical Design](#9-aiml-assisted-physical-design)
 
 ---
 
@@ -2056,175 +2055,6 @@ Hierarchical approach: each block is implemented independently (its own floorpla
 
 ---
 
-## 9. Interview Q&A
-
-### Q1: Walk me through the complete ASIC PD flow from netlist to GDSII.
-
-**A:** The flow begins with a synthesized gate-level netlist, SDC timing constraints, technology LEF files, and standard cell/macro libraries. First, floorplanning establishes the die size (cell area / utilization), places macros, defines IO pin locations, and creates the power grid (VDD/VSS rings and stripes). Next, placement distributes standard cells using analytical global placement followed by legalization to snap cells to rows. The tool optimizes for timing, congestion, and power. Clock Tree Synthesis builds a balanced buffer tree for each clock domain, targeting minimum skew and insertion delay, using CTS-specific cells and NDR routing rules. Post-CTS, hold time fixing is performed. Routing proceeds in phases: global routing (GCell-level paths), track assignment, and detail routing (DRC-clean geometries). Post-route optimization fixes remaining timing/DRC issues. Chip finishing adds filler cells, metal fill for CMP density, and via optimization. Signoff runs include STA (PrimeTime, MCMM with POCV), DRC/LVS (Calibre/ICV), IR drop/EM analysis (RedHawk), and extraction correlation. After all signoff clean, GDSII is streamed out.
-
----
-
-### Q2: How do you estimate die size? What utilization would you target for a high-performance CPU block vs a low-power IoT chip?
-
-**A:** Die size = (total standard cell area / utilization) + macro area + IO ring area. For a high-performance CPU targeting >2GHz, I'd use 60-65% utilization to provide ample routing resources and minimize congestion — critical paths need direct routes without detours. For a low-power IoT chip running at 100MHz, 75-80% utilization is acceptable since timing is relaxed and area is the primary cost driver. The remaining whitespace in both cases accommodates routing tracks, buffer insertion during CTS and optimization, decap cells, and filler cells.
-
----
-
-### Q3: You have a block with 20 large SRAM macros. Describe your macro placement strategy.
-
-**A:** First, analyze fly-lines to understand dataflow between macros and logic. Group macros that share buses (e.g., cache data arrays accessed by the same controller). Place macros along the periphery to maximize contiguous standard cell area in the center. Orient macros so signal pins face the logic — for example, SRAM data pins toward the datapath, address pins toward the address decoder. Leave minimum 10-20um channels between macros for routing. Apply halos (5-10um) around each macro to prevent standard cells from crowding macro pins. Place hard blockages over macros and partial blockages (50-60% utilization) in channels. Run trial placement and routing to verify no congestion hotspots in channels. If macros have dedicated power, ensure power grid straps extend into macro channels with adequate via stacks.
-
----
-
-### Q4: Explain the difference between static and dynamic IR drop. Which is harder to fix?
-
-**A:** Static IR drop is the DC voltage drop caused by average current flowing through the resistive power grid: V_drop = I_avg × R_grid. It produces a steady-state voltage map. Dynamic IR drop is the transient voltage drop caused by sudden current surges during simultaneous switching (e.g., many FFs capturing on the same clock edge). It includes both resistive (IR) and inductive (Ldi/dt) components and can be 2-5x worse than static. Dynamic is harder to fix because it depends on switching patterns, which vary with functional scenarios. Fixes include: adding more power straps (reduces R), inserting decap cells near hotspots (local charge reservoir), staggering clock edges, reducing simultaneous switching activity, and ensuring adequate package-level decoupling capacitance.
-
----
-
-### Q5: What is useful skew in CTS? When would you use it, and what are the risks?
-
-**A:** Useful skew intentionally unbalances the clock tree to borrow time from a slack-rich stage and give it to a slack-poor stage. If a critical path has 100ps of negative setup slack, and the downstream path has 500ps of positive slack, adding 200ps of skew to the capturing FF (delaying its clock arrival) gives the critical path 200ps more time while taking 200ps from the downstream path (which can afford it). The risk is that useful skew tightens hold timing on the skewed paths — the data must still be stable for the hold time after the (now delayed) clock arrives. This typically requires inserting hold-fix buffers, which add area and power. The CTS tool must jointly optimize setup and hold across the design to find the globally optimal skew schedule.
-
----
-
-### Q6: How do NDR (Non-Default Rules) help clock quality? What's the area cost?
-
-**A:** NDR for clock nets typically specifies 2x width and 2x spacing. Double width cuts wire resistance in half, reducing RC delay and making clock delay less sensitive to process variation (less skew variation). Double spacing reduces coupling capacitance to adjacent signal wires, reducing crosstalk-induced jitter. Multi-cut vias are also mandated for reliability. The cost is significant: a 2W2S clock wire occupies roughly 4x the routing resources of a standard wire. For a large design where clock nets span the full die, this can consume 10-20% of available routing tracks on clock-heavy layers. The trade-off is worthwhile because clock quality directly impacts all timing paths in the design.
-
----
-
-### Q7: Explain the antenna effect. How does the router fix antenna violations?
-
-**A:** During fabrication, metal layers are processed sequentially (bottom-up). When a metal layer is being plasma-etched, the exposed metal acts as an antenna, collecting charge. If this metal is connected to a transistor gate through lower metals, the accumulated charge can damage the thin gate oxide. The antenna ratio (metal area / gate area) must stay below a foundry-specified limit per layer. The router fixes violations by: (1) inserting protection diodes near the gate to discharge charge (most common), (2) breaking the long wire by jumping to a higher metal layer (which is processed later, breaking the charge path), or (3) rearranging the routing topology to reduce the single-layer wire length connected to the gate. Diode insertion is simplest but requires placement of diode cells, which may need whitespace near the gate.
-
----
-
-### Q8: What is the difference between DRC and LVS? Can a design pass DRC but fail LVS?
-
-**A:** DRC checks geometric rules — spacing, width, enclosure, density — ensuring the layout is manufacturable. LVS verifies that the manufactured circuit (extracted from layout geometry) matches the intended schematic. Yes, a design can pass DRC but fail LVS. For example, two nets could be properly spaced (DRC clean) but a missing via causes an open in one net, meaning the extracted circuit has a disconnected node that doesn't match the schematic. Conversely, a short between two wires violates both DRC (spacing) and LVS (incorrect connectivity), but some shorts may be through substrate or other non-obvious paths that DRC doesn't directly check.
-
----
-
-### Q9: Explain AOCV and POCV. Why are they better than flat OCV?
-
-**A:** Flat OCV applies a fixed derate (e.g., 5%) to all cells, assuming worst-case variation on every stage. This is pessimistic for deep paths because statistical variations tend to average out over many stages. AOCV (Advanced OCV) uses depth-dependent derates: a 2-stage path might get 8% derate, while a 20-stage path gets only 3%. This reduces pessimism and allows higher operating frequencies (or lower voltage). POCV (Parametric OCV) goes further by treating each cell's delay as a distribution (mean + sigma). Path delay sigma grows as sqrt(sum of variances), which grows much slower than linearly. For a 100-stage path, POCV's relative variation is ~10x smaller than flat OCV's, enabling 5-10% better timing margins. POCV is the preferred method at 7nm and below.
-
----
-
-### Q10: How do you handle crosstalk in routing? What's the timing impact?
-
-**A:** Crosstalk is managed through SI-aware routing and extraction. The router uses shielding (inserting VSS/VDD wires between sensitive nets), spacing (widening the gap between aggressors and victims), and layer assignment (moving sensitive nets away from aggressors). Timing impact: opposite-direction switching makes the victim slower (coupling capacitance effectively doubles per Miller effect), while same-direction switching makes it faster. In STA, we analyze both for setup (add slow-down SI delay) and hold (add speed-up SI benefit). The extraction tool reports coupling capacitances in SPEF, and the timer computes worst-case aggressor alignment. Fixing priorities: clock nets first (jitter), then setup-critical data paths, then hold-critical paths.
-
----
-
-### Q11: What is metal fill? Why is it needed, and what's the timing impact?
-
-**A:** Metal fill (dummy fill) adds non-functional metal shapes to meet CMP density requirements. Without it, regions with low metal density polish differently during CMP, causing dishing (metal thinning) and erosion, leading to thickness variation and potentially shorts or opens. Foundries require 20-80% density per layer per window. The timing impact is that fill shapes add parasitic capacitance to nearby signal wires, slightly increasing delay. Timing-aware fill placement keeps fill shapes away from timing-critical nets (with a defined keep-out distance). Post-fill extraction and STA re-run are mandatory for signoff.
-
----
-
-### Q12: Describe the difference between H-tree and balanced CTS. When would you choose each?
-
-**A:** H-tree uses a recursive symmetric topology where each branch has exactly equal wire length, providing inherently zero skew (in theory). It works best for regular structures (SRAM arrays, FPGAs) where sinks are uniformly distributed. Balanced CTS (standard approach in ASIC tools) builds a buffer tree bottom-up, clustering nearby sinks and inserting buffers to equalize delays. It handles irregular sink distributions much better and is the default for digital ASIC designs. A clock mesh provides the lowest skew (<5ps) by using a grid of wires with multiple drivers, but at 3-5x the power cost of tree-based CTS. Choose H-tree for array structures, balanced CTS for general ASIC logic, and mesh for high-performance processors where skew budget is extremely tight.
-
----
-
-### Q13: What is Black's equation? How does EM impact PD decisions?
-
-**A:** Black's equation models electromigration MTTF: MTTF = A × J^(-n) × exp(Ea/(kT)), where J is current density, n ≈ 1-2, Ea is activation energy, T is temperature. Higher current density and temperature exponentially reduce wire lifetime. PD impact: power straps must be wide enough to keep J below EM limits (typically 1 MA/cm^2 for DC). Signal wires carry less current but long-running high-toggle nets (clocks) need checking. Multi-cut vias distribute current across multiple via cuts. At the end, EM analysis (RedHawk/Voltus) generates a current density map and flags violations. Fixes include widening wires, adding parallel straps, reducing load (downsizing driver fanout), or adding more via cuts.
-
----
-
-### Q14: How does fin quantization affect physical design at 7nm and below?
-
-**A:** In FinFET technology, transistor drive strength is quantized by the number of fins (1, 2, 3, etc. fins), unlike planar CMOS where width is continuous. Standard cell height is defined in terms of fin pitches — common heights are 6T, 7.5T, 9T (tracks). A 6T cell has fewer routing tracks (fewer M2 tracks available above the cell), saving area but making routing harder. A 9T cell provides more tracks, easing routing and enabling higher performance but using more area. The PD engineer must choose the cell library height based on the block's requirements: 6T for area-critical mobile chips, 7.5T for balanced designs, 9T for high-frequency server chips. Additionally, cell sizing options are discrete (1-fin steps), meaning timing optimization has coarser granularity than planar CMOS.
-
----
-
-### Q15: Walk me through a timing ECO flow for fixing a setup violation found in signoff STA.
-
-**A:** Start by analyzing the violation in PrimeTime: identify the failing path, the amount of negative slack, and which stages contribute the most delay. Strategies in priority order: (1) Swap cells to faster VT (e.g., SVT → LVT), which increases leakage but reduces delay — check that the leakage budget isn't exceeded. (2) Upsize the driving cell (e.g., BUFX2 → BUFX8) to reduce stage delay — check that load on the previous stage doesn't worsen. (3) Insert a buffer to break a long wire into two shorter segments, reducing RC delay. (4) Reroute the critical net to a higher (thicker) metal layer for lower resistance. After the ECO, run incremental placement (if cells were added), incremental routing, and re-extract parasitics. Re-run STA to verify the fix doesn't create new violations. Then re-run DRC/LVS on the affected region.
-
----
-
-### Q16: What is hierarchical PD? When would you use it vs flat implementation?
-
-**A:** Hierarchical PD partitions a large SoC into blocks, each implemented independently and then integrated at the top level. Use it when the design exceeds 100-200M gates (flat tools struggle with runtime and memory) or when multiple teams work in parallel with different schedules. Each block gets a timing budget (interface constraints at its boundary) and is implemented as a separate PnR run. The top level stitches blocks together using their LEF abstracts (physical outlines + pin locations). Challenges include interface timing budgeting (if wrong, blocks don't integrate cleanly), cross-block clock tree balancing, power grid continuity, and feedthrough signals. Flat implementation gives globally optimal results but doesn't scale beyond ~200M gates with current tools. Most modern SoCs use a mix: large regular blocks (CPU, GPU) are hierarchical, while smaller glue logic is flat.
-
----
-
-### Q17: Explain double patterning coloring constraints. What happens if there's a coloring conflict?
-
-**A:** In LELE double patterning, features on one metal layer are split onto two photomasks (two colors). Adjacent features must be on different colors because same-color features need wider spacing (single-exposure resolution limit). A coloring conflict occurs when three features are mutually close — you can't assign colors to all three without violating same-color spacing. Example: three parallel wires each within minimum space of each other form a conflict. The fix requires the router to either: increase spacing for at least one pair (to allow same-color assignment), jog one wire to create distance, or re-route entirely. Some tools support pre-coloring critical nets. DRC checks include color-aware rules (same-color spacing vs different-color spacing) and are mandatory at 7nm and below.
-
----
-
-### Q18: How do you verify that the power grid is adequate before starting placement?
-
-**A:** After floorplanning and power grid creation, run early IR drop analysis using simplified models. Use a tool like RedHawk or Voltus with estimated power consumption (from synthesis power reports or activity assumptions). Check: (1) Static IR drop at every node is within budget (typically <5% VDD). (2) EM current density on every strap and via is below limits. (3) Power grid mesh has adequate connectivity (no broken straps or missing vias). Also check: ring resistance is low enough, via arrays at strap intersections have sufficient cuts, and decap cell plan provides enough local charge storage. If violations exist, iterate on strap width, pitch, number of metal layers used, and ring dimensions before committing to placement.
-
----
-
-### Q19: What is CCD (Concurrent Clock and Data) optimization?
-
-**A:** Traditional CTS builds the clock tree first, then freezes it and optimizes data paths. CCD allows the tool to simultaneously adjust both clock tree delays and data path delays during optimization. By selectively adding or removing clock tree delay at specific endpoints (useful skew), CCD can relax critical setup paths without requiring data path changes. This provides 5-10% better frequency compared to fixed-clock-then-optimize flows. The cost is longer runtime and increased hold buffer insertion (since skewing the clock creates new hold violations). CCD is available in ICC2 (as "clock concurrent optimization") and Innovus (as "CCOpt"). It's essential for high-frequency designs where traditional CTS + data optimization can't close timing.
-
----
-
-### Q20: What are the key considerations for 3D IC physical design?
-
-**A:** (1) TSV planning: TSVs are 5-10um diameter with 5-15um keep-out zones due to mechanical stress, consuming significant area. Need to carefully budget TSV count and locations. (2) Thermal: bottom die has higher thermal resistance (heat must pass through top die or interposer), requiring thermal-aware placement. (3) Power delivery: power must reach both dies through TSVs or micro-bumps; IR drop analysis becomes 3D. (4) Timing: TSV delay (~1-5ps) and capacitance (~50-200fF) must be modeled in STA. (5) Testing: access to bottom die is through top die; need test strategies for each die independently and combined. (6) Partitioning: deciding which logic goes on which die to minimize TSV count while meeting thermal and timing requirements. (7) Alignment: micro-bump pitch (40-100um) limits the density of inter-die connections.
-
----
-
-### Q21: Describe a routing congestion scenario you've encountered and how you resolved it.
-
-**A:** [Framework answer] A common scenario: a block with 16 SRAM macros has severe congestion in the channels between macros. The GRC map shows 150% overflow on horizontal M4 in the channel regions. Root cause: all data bus wires (256-bit bus) must route through narrow channels between macros. Resolution: (1) Widened channels by moving macros further apart (traded 3% area increase). (2) Applied cell padding of 2 sites in congested regions. (3) Added routing blockages on M2/M3 in the channels to push routing to higher layers. (4) Reoriented two macros so data pins faced different directions, distributing routing demand. (5) Used placement density constraints to prevent cells from filling the channels. Result: overflow reduced to 0%, with only 1% frequency impact from slightly longer wires.
-
----
-
-### Q22: What is the difference between a halo and a blockage in macro placement?
-
-**A:** A halo is a relative keep-out zone around a macro — it moves with the macro if the macro is repositioned. It's specified as a distance from each macro edge (e.g., 5um on all sides). It prevents standard cells from being placed too close to the macro, ensuring adequate routing channels for macro pins. A blockage is an absolute coordinate-based region where placement or routing is prohibited. Blockages don't move with any object. Hard placement blockages completely prevent cell placement; soft blockages discourage but allow placement if necessary; partial blockages limit density (e.g., 50% utilization). Routing blockages prevent routing on specific layers in a region. In practice, halos are used around macros, while blockages are used for fixed regions (analog areas, special routing reservations).
-
----
-
-### Q23: How does scan chain reordering interact with placement?
-
-**A:** Scan chains are inserted during DFT (Design for Testability) synthesis, creating a serial shift register through all scan FFs. Initially, the chain order is arbitrary, meaning physically distant FFs may be adjacent in the chain, creating long scan routing. Scan chain reordering (during or after placement) rearranges the chain to follow physical proximity, reducing total scan wire length by 30-60%. This improves congestion (fewer long wires) and hold timing in scan mode (shorter wires = less delay variation). The tool groups FFs in the same scan chain that are physically nearby and chains them in a serpentine pattern across the block. Constraint: must maintain the same number of scan chains and chain lengths. Tools like ICC2 and Innovus perform this automatically as part of the placement flow.
-
----
-
-### Q24: How would you handle a scenario where post-route STA shows 200ps WNS on a path that was clean post-CTS?
-
-**A:** This 200ps degradation from post-CTS to post-route indicates significant routing issues. Debug steps: (1) Check if the path has unexpected wire detours — congestion may have caused the router to take longer paths. (2) Check crosstalk: SI analysis may show coupling delay from adjacent aggressors. (3) Check extraction: compare post-CTS estimated wire delay vs post-route extracted delay. (4) Look at specific stages: identify which cell-to-cell segments degraded most. Fixes depend on root cause: if congestion-driven detour, apply routing guides or NDR for the critical net; if crosstalk, shield the victim net or add spacing; if extraction mismatch, the pre-route estimate was too optimistic (adjust RC estimation during placement). For 200ps, likely need a combination: route the critical net on higher metals (lower R), shield it, and possibly add a pipeline register (if architecture allows) or run CCD to redistribute the timing budget.
-
----
-
-### Q25: Explain the sign-off flow: what checks must pass before tapeout?
-
-**A:** All of the following must be clean (zero violations) for tapeout:
-
-1. **STA**: All setup and hold timing met across all MCMM scenarios (10-30 corners × modes). POCV/AOCV derating applied. SI-aware analysis. Max transition and max capacitance clean.
-2. **DRC**: Zero violations on all layers, including multi-patterning (LELE/SADP) rules, density checks, and antenna rules.
-3. **LVS**: Layout matches schematic with zero errors. All devices match, all nets connected correctly.
-4. **ERC**: No floating gates, no well connectivity issues, ESD path complete.
-5. **IR drop**: Static IR < 5% VDD at all nodes. Dynamic IR within budget for worst-case switching scenarios.
-6. **EM**: All wires and vias within current density limits per Black's equation for target lifetime (e.g., 10-year reliability).
-7. **Metal density**: All layers within foundry-specified density range (with dummy fill).
-8. **Formal verification (LEC)**: Post-layout netlist matches post-synthesis netlist.
-
-Additionally: power analysis confirms total power within package/board thermal limits, and the GDSII file passes foundry's incoming inspection checks.
-
----
-
-### Q26: What is the impact of VDD scaling on physical design at advanced nodes?
-
-**A:** Lower VDD (e.g., 0.5V at 3nm vs 1.0V at 28nm) impacts PD in several ways: (1) Reduced noise margins — 5% IR drop budget at 0.5V is only 25mV, demanding a denser power grid with more metal consumed for power straps. (2) Slower gates — lower VDD increases gate delay, requiring either higher performance cells (more leakage) or additional pipeline stages. (3) Increased sensitivity to variation — at 0.5V, a 25mV VT variation is 5% of VDD (vs 2.5% at 1.0V), making OCV derating more aggressive. (4) SRAM Vmin concerns — SRAMs have minimum operating voltage that may be higher than logic Vmin, requiring separate SRAM power domains or assist circuits. (5) Leakage becomes a larger fraction of total power, making VT optimization (multi-VT) critical in placement/optimization.
-
----
-
 ## Additional Backend Topics
 
 ### Parasitic Extraction (SPEF)
@@ -2438,7 +2268,7 @@ Types of ECOs:
 
 ---
 
-## 10. AI/ML-Assisted Physical Design
+## 9. AI/ML-Assisted Physical Design
 
 ### 10.1 Google Circuit Training (Nature 2021)
 
@@ -2508,7 +2338,7 @@ DREAMPlace reformulates analytical placement as a differentiable optimization pr
 
 ---
 
-## 11. AI Accelerator Physical Design
+## 10. AI Accelerator Physical Design
 
 ### 11.1 Power Delivery at 1000W+
 

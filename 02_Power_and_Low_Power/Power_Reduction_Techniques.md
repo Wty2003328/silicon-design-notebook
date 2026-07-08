@@ -1424,128 +1424,7 @@ Conceptually interesting but rarely practical in digital ASIC:
 
 ---
 
-## 9. Interview Questions and Answers
-
-### Q1: "A block has 5000 FFs, clock freq 1GHz, Vdd=0.8V, C_clk per FF = 8fF. Calculate power savings with 75% clock gating efficiency."
-
-**A:** P_saved = CGE * N * C_clk * Vdd^2 * f = 0.75 * 5000 * 8e-15 * 0.64 * 1e9 = 0.75 * 5000 * 8 * 0.64 * 1e-6 = 0.75 * 25,600 * 1e-6 = 0.75 * 25.6 mW = 19.2 mW. With ICG overhead (assume 100 ICG cells at 10uW each = 1mW), net savings = ~18.2 mW.
-
-### Q2: "Why must you reduce frequency before voltage when scaling down?"
-
-**A:** If you reduce voltage first while still running at high frequency, the gate delay increases (Td ~ Vdd/(Vdd-Vth)^alpha). If the new delay exceeds the clock period, setup time violations occur, causing functional failures (wrong data captured by flip-flops). Reducing frequency first ensures that even at the slower voltage, all timing constraints are met. The reverse applies when scaling up: increase voltage first to provide timing headroom for the higher frequency.
-
-### Q3: "Explain the difference between isolation types and when to use each."
-
-**A:** AND isolation (clamp to 0): use for data buses, address buses -- zero is a benign default that won't trigger downstream logic. OR isolation (clamp to 1): use for active-low signals like reset_n, enable_n -- clamping to 1 means "deasserted" which is the safe state. Latch isolation (hold last value): use for status/configuration outputs where the downstream logic should see the last valid value, not a forced constant. Clamp-high/low: simpler versions that tie to rail -- lower area than latch isolation but less flexible.
-
-### Q4: "Design a power-up sequence for a CPU core with retention. What happens if you get the order wrong?"
-
-**A:** Correct sequence: (1) turn on power switch (staged), (2) wait for voltage stable, (3) assert reset, (4) restore retention, (5) deassert reset, (6) deassert isolation, (7) enable clocks. If you deassert isolation before restoring retention: the flip-flops have random state, which propagates to always-on domain causing potential functional errors or bus contention. If you restore before voltage is stable: retention restore requires correct voltage to properly transfer data from shadow to master latch -- may get corrupted bits. If you enable clocks before deasserting reset: flip-flops clock in garbage data for one or more cycles.
-
-### Q5: "A design has 80% HVT, 15% SVT, 4% LVT, 1% ULVT. Total 5M gates. Leakage per gate: HVT=1nA, SVT=5nA, LVT=25nA, ULVT=100nA. Vdd=0.75V. Calculate total leakage power."
-
-**A:**
-```verilog
-HVT:  4.0M * 1nA   = 4.0 mA
-SVT:  0.75M * 5nA  = 3.75 mA
-LVT:  0.2M * 25nA  = 5.0 mA
-ULVT: 0.05M * 100nA = 5.0 mA
-Total: 17.75 mA * 0.75V = 13.3 mW at 25C
-
-At 85C (6x factor from 25C, using 2x per 10C):
-  13.3 * 64 = 851 mW ... using 2^((85-25)/10) = 2^6 = 64x
-  Actually that's the right math. 851 mW at 85C.
-
-Note: 1% ULVT cells contribute 28% of total leakage current!
-```
-
-### Q6: "What is the stack effect? Quantify its leakage reduction."
-
-**A:** When NMOS transistors are stacked in series (like a NAND gate), and one transistor is OFF, the intermediate node floats to a voltage Vm (typically 50-200mV). This causes: (1) the OFF transistor has positive Vsb, increasing its Vth by gamma*delta (maybe 30-50mV), (2) the OFF transistor has reduced Vds (only Vm instead of Vdd), reducing DIBL. Combined: 2-stack reduces leakage by ~5-10x vs single transistor. 3-stack: ~15-30x. This is why NAND gates leak less than equivalently-sized inverters, and why 4-input NAND gates are sometimes used in non-critical paths for leakage reduction.
-
-### Q7: "Compare power gating header vs footer switches."
-
-**A:** Header (PMOS between Vdd and logic): cleaner ground for internal logic (no ground bounce), better noise margins for retention registers, larger area (PMOS is ~2x wider for same current). Footer (NMOS between logic and GND): smaller area (NMOS has higher mobility), but virtual ground bounces during switching causing noise on internal nodes. Industry standard: headers for most ASIC designs. Footers sometimes for SRAM arrays (regular structure, easier to manage ground bounce). For FinFET: the PMOS/NMOS mobility gap is smaller (both use undoped channel), so the area advantage of NMOS footer is reduced.
-
-### Q8: "How does AVS save power compared to fixed DVFS?"
-
-**A:** DVFS uses a fixed voltage for each frequency point, designed for the worst-case silicon (slowest chip). Fast silicon runs at unnecessary high voltage. AVS measures actual silicon speed (via ring oscillator or critical path monitor) and reduces voltage until just meeting timing. Typical savings: 50-100mV on fast silicon. For Vdd=0.9V, saving 75mV reduces dynamic power by 1-(0.825/0.9)^2 = 1-0.840 = 16%. This adds up across billions of chips. Apple, Qualcomm, and all major mobile SoC vendors use AVS.
-
-### Q9: "What determines the minimum power gating block size? When is power gating not worth it?"
-
-**A:** Overhead: switch cells (~3-5% area), isolation cells (per output signal, ~1 gate each), retention FFs if needed (~2x area each), control logic, design/verification effort. Break-even: if the block's leakage savings during sleep exceeds the overhead. For a tiny block (100 gates), the switch/isolation/control overhead exceeds the leakage savings -- not worth it. Rule of thumb: power gating is beneficial for blocks > ~10K gates that are idle > 50% of the time. The minimum idle time for break-even depends on the power-up energy cost (charging internal capacitance).
-
-### Q10: "Explain operand isolation. Give an example where it saves significant power."
-
-**A:** Operand isolation freezes the inputs of a combinational block when its output is not needed, preventing useless toggling. Classic example: a CPU with an ALU and a multiplier behind a result MUX. When the instruction is ADD, the multiplier inputs should be frozen (AND-gated with the MUL select signal) to prevent the multiplier from burning dynamic power computing an unused result. For a 64-bit multiplier that consumes 15mW and is used only 20% of cycles: savings = 0.80 * 15 = 12 mW. Synthesis tools can do this automatically with pragmas or automatic operand isolation inference.
-
-### Q11: "What is the energy overhead of power-gating on/off transitions?"
-
-**A:** Each power-on event requires charging the internal decoupling capacitance from 0 to Vdd: E_charge = C_int * Vdd^2 (just like switching energy). For C_int = 10nF, Vdd = 0.8V: E = 10e-9 * 0.64 = 6.4 nJ. If the domain sleeps for T_sleep and saves P_leak during sleep: break-even when P_leak * T_sleep > E_charge. For P_leak = 10 mW: T_sleep_min = 6.4nJ / 10mW = 640 ns. So if the block sleeps for less than ~640ns, it's not worth power-gating (you spend more energy on the transition than you save). This sets the minimum granularity of power gating decisions.
-
-### Q12: "Compare DVFS, clock gating, and power gating in terms of power savings, granularity, and latency."
-
-**A:**
-
-| Aspect        | Clock Gating       | DVFS               | Power Gating         |
-|---------------|--------------------|--------------------|----------------------|
-| Saves         | Dynamic (clock)    | Dynamic (Vdd^2*f)  | Leakage + dynamic    |
-| Granularity   | Per-register group | Per-voltage-domain  | Per-power-domain     |
-| Latency       | 0 cycles           | 10-100 us          | 5-50 us + restore    |
-| Overhead      | ~5% area (ICGs)    | PMIC, PLL, LDO     | Switches, ISO, ret   |
-| When to use   | Always (free win)  | Workload varies     | Block fully idle     |
-
-### Q13: "What is near-threshold computing and why is it energy-efficient?"
-
-**A:** Near-threshold computing operates at Vdd ~ Vth (0.3-0.5V). Dynamic energy drops as Vdd^2 (huge savings: (0.4/0.9)^2 = 0.20 -> 80% less). But speed drops dramatically (circuit is ~10x slower). Energy per operation: E = P * T = C*Vdd^2 (dynamic, same per op) + P_leak * T_op. At very low Vdd, T_op is huge and leakage energy dominates. The minimum energy point (MEP) is typically at Vdd ~ Vth. Below MEP, total energy actually increases. Near-threshold is ideal for energy-constrained, latency-tolerant applications: IoT sensors, biomedical implants, always-on wake-up circuits.
-
-### Q14: "How do you handle clock gating for multi-bit registers that span different enable conditions?"
-
-**A:** If bits [31:16] have enable A and bits [15:0] have enable B, the synthesis tool inserts two separate ICG cells. If bits [31:24] share enable A and bits [23:0] have enable B, you get two ICGs with different fan-out. The tool optimizes by grouping FFs with the same enable into one ICG (up to max_fanout). Sometimes restructuring RTL to align enable boundaries with byte/word boundaries improves CGE. The -minimum_bitwidth constraint prevents insertion of ICG for very small groups (e.g., a single FF) where the ICG power overhead exceeds the savings.
-
-### Q15: "A 7nm chip runs at 2GHz, 0.75V. You need to reduce power by 30% without changing the design. What do you do?"
-
-**A:** Options: (1) Reduce voltage to ~0.64V (0.64/0.75)^2 = 0.73 -> 27% dynamic power reduction, but frequency drops to maybe 1.4-1.5 GHz. If throughput matters, might need to accept the slowdown or compensate with parallelism. (2) Reduce frequency to 1.4 GHz (0.7x) -> 30% dynamic savings at same voltage, but no leakage savings. (3) DVFS: reduce to 0.68V/1.5GHz -> ~30% dynamic savings with proportional frequency hit. (4) If design allows: aggressive clock gating analysis to find ungated FFs (tools like CG audit can find 5-15% more gating opportunities). (5) Multi-Vt re-optimization: if current design has too many LVT cells, re-optimize with tighter constraints to trade some timing margin for less leakage. Best approach: combination of (3) DVFS + (4) improved clock gating + (5) Vt re-optimization.
-
-### Q16: "Explain retention register timing requirements in detail."
-
-**A:** The SAVE signal must be pulsed AFTER the last clock edge (so all FFs have valid data) and BEFORE power is removed. The SAVE pulse width must meet the shadow latch setup and hold time (typically 200-500ps minimum pulse width). The RESTORE signal must be pulsed AFTER power is stable (voltage within 90-95% of nominal) and BEFORE the first functional clock edge. RESTORE also has minimum pulse width requirements. Between SAVE and RESTORE, the shadow latch must retain data on the always-on supply -- any voltage droop on the always-on rail can corrupt retained state. The always-on supply must remain stable within ~10% of nominal throughout the power-gated period.
-
-### Q17: "Emulation shows 35% CGE where architecture predicted 80%. Walk me through your debug."
-
-**A:** First separate structural ICG coverage (% FFs behind an ICG -- if this is low, synthesis settings or RTL coding style are the problem) from CGE (% cycles gated -- if coverage is high but CGE is low, the ENABLES are weak). Then rank ICGs by wasted clock power (fanout x %enabled) and inspect the top offenders: valids that free-run regardless of downstream readiness, recirculation muxes the tool failed to extract (often due to reset-priority coding), missing module-level gating so the upper clock tree toggles even when leaf ICGs gate, and over-fine ICGs whose own overhead exceeds savings. Also confirm the workload: CGE measured on a busy benchmark says nothing about idle power. Fixes: qualify enables at the source, recode enable patterns, add hierarchical ICGs from FSM-idle signals. Verify the fix shows up as reduced CLOCK TREE power, not just register power.
-
-### Q18: "Explain the clock-gating check in STA. Why does a plain AND gate fail it?"
-
-**A:** The gating signal may only change while the clock is low: setup is checked against the next rising edge, hold against the falling edge. With a plain AND gate and an enable launched from a posedge FF, the enable changes just after the rising edge -- while the clock is high -- truncating or glitching the pulse: a hold violation by construction. The ICG's transparent-low latch fixes this: it is opaque during the high phase (blocks mid-pulse changes) and closes at the rising edge, giving the enable nearly a full cycle to arrive. Many teams additionally require enable arrival by the falling edge as a margin policy; that is a house rule, not the hard requirement.
-
-### Q19: "Compare a board PMIC, an integrated buck (FIVR), and a digital LDO (DLVR) for per-core DVFS."
-
-**A:** Board PMIC: efficient (85-92%) but slow (10-100 us) and one rail feeds many cores -- voltage is set by the most demanding core. FIVR: on-die buck with package inductors, ~us transitions, per-domain rails, but inductor cost/area and conversion loss. DLVR (Intel Core Ultra: per P-core, per E-core cluster, per ring): a digital linear regulator -- nanosecond-class response and very fine granularity, but linear efficiency = Vout/Vin, so it only wins when shaving a small delta off the shared rail; a bypass mode shorts it when the core needs full voltage. The architectural point: per-core regulation converts the (V_shared - V_needed) gap on every idle/slow core into real power savings, which a single rail can never capture.
-
-### Q20: "A voltage droop event happens in 5 ns. Your firmware DVFS loop runs every millisecond. Reconcile."
-
-**A:** Power management is a reaction-time hierarchy: ns-scale first droop is handled by circuits -- on-die droop detectors plus adaptive clock stretching (AMD: DLL-based phase insertion; IBM POWER9 adaptive clocking) that lengthen the clock period through the droop, plus local decap; us-scale is the regulator's control loop and load-line; ms-scale is firmware DVFS adjusting the operating point; seconds-scale is thermal management. Each layer exists because the faster phenomenon cannot wait for the slower controller. The payoff of the ns layer is guardband recovery: without it you carry a permanent ~50 mV margin (~11% dynamic power at 0.9V) for an event that occurs rarely and lasts tens of ns.
-
-### Q21: "An 8MB L2 is idle 60% of the time. Which SRAM mode do you use and why not the deeper one?"
-
-**A:** Light sleep for short idle windows (1-2 cycle wake keeps it transparent to the pipeline), deep-sleep retention for sustained idle (data retained at ~0.5-0.6V array voltage, ~70-90% leakage saved, but wake is 100s of ns -- needs a predictor or explicit driver hint to hide). Shutdown only if the contents are clean or worth flushing: wake costs a flush-and-refill (us-to-ms of effective penalty and DRAM traffic energy). The decision is a break-even calculation between leakage saved per idle window and the energy/latency of entry/exit -- same math as power-gating break-even, plus the retention-Vmin margin question at temperature extremes.
-
-### Q22: "Describe a leakage-recovery ECO and three ways it can go wrong."
-
-**A:** Post-route, swap positive-slack cells to higher-Vt footprint-compatible variants (PrimeTime fix_eco_power -> ICC2/Innovus ECO; or Innovus optPower -postRoute), iterating with incremental STA; typically 20-50% leakage reduction for free. Failure modes: (1) swapping to exactly-zero slack leaves nothing for OCV updates and aging -- BTI raises Vt over life, so end-of-life paths fail; (2) corner blindness -- a swap that closes at the nominal corner violates at the low-voltage corner where HVT delay blows up, or busts the high-temp leakage budget; (3) touching the wrong cells -- clock network cells (skew shift) or clock-gate enable paths (tight checks). Also watch max_transition: HVT variants have weaker drive, and a legal-timing swap can still create a slew violation downstream.
-
-### Q23: "How are multiple Vt flavors built on a GAA nanosheet process if the channel is undoped and there's no room for thick work-function metal?"
-
-**A:** Dipole engineering: ultra-thin dipole layers (separate n-type and p-type dipole materials) inserted in the high-k gate stack shift the effective work function without consuming the few nanometers between stacked sheets. TSMC's N2 reports six Vt levels across ~200 mV using third-generation dipole integration. Nanosheets also add sheet-WIDTH tuning (NanoFlex short vs tall cells) as a quasi-continuous drive knob alongside discrete Vt. Interview-relevant consequence: early GAA PDKs offer fewer Vt/Lg combos than mature FinFET nodes, so leakage recovery has less room and Vt-flavor mistracking across corners must be signed off explicitly.
-
-### Q24: "Why do AI training clusters create a power-delivery problem that single-chip DVFS can't solve, and what's done about it?"
-
-**A:** Training synchronizes thousands of GPUs: all compute bursts and all communication stalls happen in lock-step, so the facility load swings by tens of percent of MW-scale power at millisecond granularity -- a grid/facility problem, not a chip problem. Chip-level DVFS reacts per-GPU and actually AMPLIFIES synchronization. Mitigations operate at the rack/system level (NVIDIA GB300 NVL72 as the canonical example): energy storage in the power shelves (~65 J of capacitance per GPU) absorbs spikes, ramp-rate-limited power caps make job starts gradual, and a controlled "burn" mode dissipates power on abrupt job end so the load ramps down smoothly -- together cutting peak grid demand by up to ~30%. Knowing this bridges chip power techniques to data-center reality, which is exactly what AI-hardware roles screen for.
-
----
-
-## 10. Summary: Power Reduction Decision Tree
+## 9. Summary: Power Reduction Decision Tree
 
 ```verilog
 Is the block idle for extended periods (ms)?
@@ -1574,7 +1453,7 @@ Is the block idle for extended periods (ms)?
 
 ---
 
-## 11. Numbers to Memorize
+## 10. Numbers to Memorize
 
 | Quantity | Value | Why it matters |
 |---|---|---|

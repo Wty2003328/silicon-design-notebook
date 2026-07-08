@@ -114,16 +114,6 @@ RTL is not "done" when it simulates — it is done when it is **lint-clean** ([L
 
 ---
 
-## 8. Interview Q&A
-
-**Q: Why async-assert, sync-deassert reset?** Async assert resets the chip even with no clock (power-up). Synchronous de-assert guarantees no flop releases reset inside its recovery/removal window, which would otherwise drive it metastable. The reset synchronizer (2 FF, async-clear, D tied high) implements exactly this.
-
-**Q: You see an inferred latch in the synthesis report. Cause and fix?** A combinational (`always_comb`) block that doesn't assign an output on every path — typically an `if` with no `else` or an incomplete `case`. Fix: default-assign all outputs at the top, or add `else`/`default`.
-
-**Q: When clock-enable vs clock-gating?** Clock-enable (`if (en) q<=d`) keeps one clock and is trivial to verify and time — use it for functional control. Clock-gating (ICG) actually stops the clock to save dynamic power — use it for power, inserted as an ICG cell, never as combinational logic on the clock.
-
----
-
 ## Cross-references
 - Language mechanics: [Data_Types_and_Basics](Data_Types_and_Basics.md), [Procedural_and_Processes](Procedural_and_Processes.md), [OOP_and_Randomization](OOP_and_Randomization.md).
 - Next gates: [Lint_CDC_RDC_Signoff](Lint_CDC_RDC_Signoff.md), [Verification_Planning_and_Coverage_Closure](Verification_Planning_and_Coverage_Closure.md), [Async_Circuit_Design](Async_Circuit_Design.md).

@@ -115,16 +115,6 @@ A block is "verification-signed-off" when:
 
 ---
 
-## 7. Interview Q&A
-
-**Q: 100% code coverage — are you done?** No. Code coverage only proves the lines *executed*, not that the checks would have caught a bug, and it says nothing about scenarios the spec cares about (functional coverage) or combinations (cross coverage). 100% code + weak checkers can ship a broken chip. Closure needs functional coverage + passing checks too.
-
-**Q: A cover point won't hit after a long random regression. What do you do?** Triage: is it reachable with more seeds/looser constraints (add them)? Reachable only by a specific sequence (write a directed test)? Genuinely unreachable (dead/illegal — waive with justification or fix the coverage model)? Or reachable-but-the-test-fails-there (a real DUT bug)?
-
-**Q: How do constrained-random and functional coverage relate?** They're the two halves of CDV: random stimulus reaches breadth and corners cheaply; functional coverage measures what was actually exercised; the un-hit bins feed back as new constraints/seeds (or coverage-driven generation). One produces volume, the other measures meaning.
-
----
-
 ## Cross-references
 - Mechanics: [Assertions_and_Coverage](Assertions_and_Coverage.md), [UVM_Methodology](UVM_Methodology.md), [OOP_and_Randomization](OOP_and_Randomization.md).
 - Complementary engines: [Formal_Verification](Formal_Verification.md), [Lint_CDC_RDC_Signoff](Lint_CDC_RDC_Signoff.md), [Gate_Level_Sim_and_Emulation](Gate_Level_Sim_and_Emulation.md).

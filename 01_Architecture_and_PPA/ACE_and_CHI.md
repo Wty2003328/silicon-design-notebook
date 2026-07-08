@@ -1004,204 +1004,7 @@ For SoC design:
 
 ---
 
-## 10. Worked Interview Problems
-
-### Problem 1: ACE Transaction Sequence
-
-**Question:** Draw the ACE transaction sequence for: Core 0 ReadShared X, Core 1 ReadShared X, Core 0 ReadUnique X. Show all channel activity.
-
-**Answer:**
-
-```verilog
-Initial state: address X not cached anywhere.
-
---- Phase 1: Core 0 ReadShared X ---
-  Core 0: AR channel -> ReadShared, Addr=X
-  Interconnect: AC channel -> snoop Core 1 (and Core 2, Core 3, ...)
-  Core 1: CR channel -> Miss (does not have X)
-  Core 2: CR channel -> Miss (does not have X)
-  Interconnect: fetches X from memory
-  Interconnect: R channel -> data, state=Exclusive (no other master has X)
-  Core 0: RACK -> acknowledges receipt
-  State after: Core 0 has X in E state
-
---- Phase 2: Core 1 ReadShared X ---
-  Core 1: AR channel -> ReadShared, Addr=X
-  Interconnect: AC channel -> snoop Core 0 (has X in E)
-  Core 0: CR channel -> Hit, Shared (E -> S transition)
-  Core 0: CD channel -> supplies cache line data (cache-to-cache)
-  Interconnect: R channel -> data to Core 1, state=Shared
-  Core 1: RACK -> acknowledges receipt
-  State after: Core 0 has X in S, Core 1 has X in S
-
---- Phase 3: Core 0 ReadUnique X ---
-  Core 0: AR channel -> ReadUnique, Addr=X
-  Interconnect: AC channel -> snoop Core 1 (has X in S)
-  Core 1: CR channel -> Hit, Shared (S -> I transition, invalidation)
-  No CD needed (Core 1 had clean data, Core 0 already has a copy in S)
-  Interconnect: R channel -> data to Core 0, state=Unique/Modified
-  Core 0: RACK -> acknowledges receipt
-  State after: Core 0 has X in M, Core 1 has X invalidated
-
-Key observations:
-  - ReadShared from E state: no memory access, cache-to-cache transfer
-  - ReadUnique: invalidation without data transfer if line was clean
-  - Total bus transactions: 3 reads + 3 snoops + 3 responses = 9 ops
-```
-
-### Problem 2: Snoop Filter Design for 4-Core ACE System
-
-**Question:** Design a simple snoop filter for a 4-core ACE system: 64-byte cache line size, 4 MB shared L3. How many snoop filter entries? What is the storage overhead?
-
-**Answer:**
-
-```verilog
-Given:
-  Cache line size: 64 bytes
-  Shared L3 size: 4 MB = 4 * 1024 * 1024 = 4,194,304 bytes
-  Number of cores: 4
-
-Step 1: How many L3 cache lines?
-  L3 lines = L3_size / line_size = 4,194,304 / 64 = 65,536 lines
-
-Step 2: How many L1 + L2 lines total (upper bound on concurrent sharers)?
-  Assume each core has:
-    L1 I$: 64 KB, 64B line -> 1024 lines
-    L1 D$: 64 KB, 64B line -> 1024 lines
-    L2$:   512 KB, 64B line -> 8192 lines
-  Per core: 1024 + 1024 + 8192 = 10,240 lines
-  Total across 4 cores: 40,960 lines (upper bound)
-
-  But L1 + L2 lines are a subset of L3 lines (inclusive cache).
-  Maximum unique addresses cached across all private caches <= 65,536.
-
-Step 3: Snoop filter tracks L3 address space.
-  Entries needed: 65,536 (one per L3 line)
-
-  Each entry:
-    Valid bit: 1 bit
-    Sharer vector: 4 bits (one per core)
-    Tag: need to identify the address. If indexed by L3 set + way,
-         we need ~17 bits for the physical address tag.
-    State: 2 bits (Invalid, Shared, Exclusive/Modified)
-    Total per entry: 1 + 4 + 17 + 2 = 24 bits = 3 bytes
-
-Step 4: Storage overhead:
-  Total storage = 65,536 * 24 bits = 1,572,864 bits = 192 KB
-
-  As fraction of L3: 192 KB / 4 MB = 4.7%
-
-  Optimization: track only lines that are actually cached.
-  If average private cache utilization is 50%, only ~20,000 entries
-  are active. Use a set-associative structure with fewer entries
-  and tags for further savings.
-
-Answer: 65,536 entries, ~24 bits each, ~192 KB storage (4.7% of L3 size).
-```
-
-### Problem 3: CHI ReadUnique with Dirty and Clean Sharers
-
-**Question:** RN0 sends ReadUnique to HN. HN sends SNP to RN1 and RN2. RN1 has dirty data, RN2 has clean. Show the complete message flow.
-
-**Answer:**
-
-```verilog
-Initial state:
-  RN0: does not cache address X
-  RN1: X in Modified state (dirty, sole valid copy, memory stale)
-  RN2: X in Shared state (clean, read-only copy)
-  HN directory: X is shared in RN1 (tracked as Exclusive/Modified)
-                  and RN2 (tracked as Shared)
-
---- Message Flow ---
-
-1. RN0 -> HN:  REQ {Opcode=ReadUnique, Addr=X, SrcID=RN0}
-   "I want exclusive ownership of X to write it"
-
-2. HN checks directory:
-   Sharers of X = {RN1, RN2}
-   HN must invalidate both and get dirty data from RN1.
-
-3. HN -> RN1:  SNP {Opcode=SnpUnique, Addr=X, TgtID=RN1}
-   "Give up X exclusively, return data if dirty"
-
-4. HN -> RN2:  SNP {Opcode=SnpInv, Addr=X, TgtID=RN2}
-   "Invalidate your copy of X, no data needed" (clean, no writeback)
-
-5. RN2 -> HN:  RSP {Opcode=SnpResp_I, SrcID=RN2}
-   "Invalidated. I had a clean Shared copy, now Invalid."
-   No DAT from RN2 (clean data, no writeback needed).
-
-6. RN1 -> HN:  DAT {Opcode=SnpRespData, SrcID=RN1, Data=X_cache_line}
-   "Here is the dirty data. My copy is now Invalid."
-   RN1: M -> I transition. Dirty cache line written back.
-
-7. HN processes responses:
-   - Received data from RN1 (dirty, authoritative copy)
-   - RN2 confirmed invalidation
-   - HN writes RN1's dirty data to memory (optional, can defer)
-   - HN updates directory: X is now Exclusive in RN0
-
-8. HN -> RN0:  DAT {Opcode=Data, Data=X_cache_line, Resp=Unique}
-   "Here is the data. You have exclusive ownership."
-
-9. HN -> RN0:  RSP {Opcode=CompAck (implicit in data response)}
-   Combined with data in some implementations.
-
-10. RN0 -> HN: RSP {Opcode=CompAck, SrcID=RN0}
-    "I acknowledge receipt of the data."
-
-Final state:
-  RN0: X in Modified state (can write freely)
-  RN1: X invalidated
-  RN2: X invalidated
-  Memory: will be updated when RN0 eventually writes back
-
-Key observations:
-  - RN1 returns dirty data via DAT (cache-to-cache, avoids memory read)
-  - RN2 only needs a simple invalidation response (no data transfer)
-  - HN uses different SNP opcodes based on directory state:
-    SnpUnique for the dirty owner, SnpInv for clean sharers
-  - This targeted approach is why CHI scales: only 2 snoops, not N
-```
-
-### Problem 4: TrustZone Preventing Non-Secure DMA Access
-
-**Question:** Explain how TrustZone prevents a Non-secure DMA master from reading Secure memory. Show the signal path.
-
-**Answer:**
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-sequenceDiagram
-    participant DMA as DMA Engine
-    participant IC as AXI Interconnect
-    participant TZC as TZC-400
-    participant DRAM
-    DMA->>IC: ARADDR=0x0000_1000, ARPROT[1]=1 (Non-sec), ARVALID=1
-    Note over IC: Route to TZC based on address map
-    IC->>TZC: ARADDR=0x0000_1000, ARPROT[1]=1
-    Note over TZC: Region 0x0000_0000–0x0FFF_FFFF = Secure.<br/>NS=1 into a Secure region → DENY
-    TZC-->>IC: RRESP = DECERR (11)
-    IC-->>DMA: RRESP = DECERR
-    Note over DMA,DRAM: DMA receives a bus error. Secure data never left DRAM — no leak.
-```
-
-**How the TZC decides.** Input: address + `ARPROT[1]` (or `AWPROT[1]` for writes). Region config: Region 0 `0x0000_0000–0x0FFF_FFFF` Secure-only; Region 1 `0x1000_0000–0x1FFF_FFFF` Non-secure OK; Region 2 `0x2000_0000–0x2FFF_FFFF` Non-secure OK.
-
-```verilog
-if (ARPROT[1] == 0)        // Secure master
-    -> allow all regions
-else if (ARPROT[1] == 1)   // Non-secure master
-    -> allow only Non-secure regions
-    -> Region 0 access -> DECERR
-```
-
-Enforced in hardware, so a Non-secure master cannot bypass the TZC by software means. Additional layers: (1) the AXI interconnect may also check `AxPROT` and refuse to route Non-secure transactions to Secure slaves; (2) in ACE/CHI, snoop responses are tagged with security so a Non-secure snoop cannot interrogate Secure lines; (3) the SMMU provides per-device translation and permission checks, complementary to TrustZone.
-
----
-
-## 10a. CHI Issue E -- Coherent Chiplet Interconnect
+## 9a. CHI Issue E -- Coherent Chiplet Interconnect
 
 ### CHI Issue E Enhancements
 
@@ -1261,7 +1064,7 @@ The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management a
 
 ---
 
-## 10b. CXL Cache Coherence Integration with CHI
+## 9b. CXL Cache Coherence Integration with CHI
 
 ### CXL.cache and CHI Coexistence
 
@@ -1310,7 +1113,7 @@ CXL.mem (Type-3) extends the host's physical address space with device-attached 
 
 ---
 
-## 10c. PCIe 6.0 and 7.0 Overview
+## 9c. PCIe 6.0 and 7.0 Overview
 
 ### PCIe 6.0: PAM-4 Signaling and FLIT Mode
 
@@ -1391,7 +1194,7 @@ PCIe 6.0/7.0 are directly relevant to DDR controller and system interconnect des
 
 ---
 
-## 10d. CXL 3.0/3.1 Detailed Protocol
+## 9d. CXL 3.0/3.1 Detailed Protocol
 
 ### CXL Protocol Stack
 
@@ -1505,7 +1308,7 @@ Fabric manager assigns memory regions: Host 0 → Pool 0 (256 GB) + 128 GB of Po
 
 ---
 
-## 11. References
+## 10. References
 
 1. ARM IHI 0022E -- AMBA AXI and ACE Protocol Specification (AXI3, AXI4, ACE, ACE-Lite)
 2. ARM IHI 0050C -- AMBA 5 CHI Architecture Specification (Issue C)
@@ -1518,7 +1321,7 @@ Fabric manager assigns memory regions: Host 0 → Pool 0 (256 GB) + 128 GB of Po
 
 ---
 
-## 12. Navigation
+## 11. Navigation
 
 | Direction       | Link                                                    |
 |-----------------|---------------------------------------------------------|

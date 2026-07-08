@@ -12,8 +12,7 @@
 9. Practical Power Budgeting and Thermal Management
 10. Power Analysis Methodology
 11. Low-Power Design Flow
-12. Interview Q&A (20 Questions)
-13. Mid-Level Scenario Drills -- Debug Stories
+12. Mid-Level Scenario Drills -- Debug Stories
     (UPF production example lives in section 6.8 and in UPF_Power_Intent.md)
 
 ---
@@ -1460,99 +1459,7 @@ Signoff
 
 ---
 
-## 12. Interview Questions & Answers
-
-### Q1: Derive P = alpha * C * V^2 * f from first principles.
-
-**A:** Consider a node with load capacitance C. During a 0->1 transition, charge Q = CV flows from VDD through the PMOS to charge C. Energy from VDD = Q * VDD = CV^2. Of this, (1/2)CV^2 is stored in C, and (1/2)CV^2 is dissipated in the PMOS channel. During 1->0, the stored (1/2)CV^2 is dissipated in the NMOS. Total energy per full cycle = CV^2, all dissipated as heat. With switching activity alpha (probability of 0->1 per clock) and clock frequency f, power = alpha * C * V^2 * f. This is exact regardless of transistor sizes (energy loss is intrinsic to charging a capacitor through a resistor).
-
-### Q2: Why does leakage increase exponentially with temperature? Quantify it.
-
-**A:** Sub-threshold leakage is I_sub = I_0 * exp(-Vth / (n * kT/q)). Temperature appears in two places: (1) the thermal voltage Vt = kT/q increases linearly with T, making the exponent less negative; (2) Vth decreases with T at about -1 to -2 mV/K, further reducing the exponent magnitude. Both effects increase leakage exponentially. Rule of thumb: leakage roughly doubles per 10C rise. From 25C to 125C (100C delta), leakage increases by 2^10 ~ 1000x. In practice, the increase is somewhat less (~100-300x) due to mobility reduction at high temperatures partially compensating, but it remains a dominant concern.
-
-### Q3: Explain the difference between clock gating and power gating. When do you use each?
-
-**A:** Clock gating stops the clock to idle blocks, eliminating switching power (dynamic) but leaving supply connected (leakage unchanged). It's lightweight: single ICG cell, ~1 cycle enable latency, no isolation or retention needed. Use for blocks that idle frequently for short periods (tens of cycles). Power gating disconnects VDD entirely, eliminating BOTH dynamic and leakage power. It requires header/footer switches, isolation cells, retention registers, and a power-on sequence (microseconds of latency). Use for blocks that idle for long periods (milliseconds+) where leakage savings justify the overhead. In a mobile SoC, both are used: clock gating for fine-grain (register-level) and power gating for coarse-grain (block-level).
-
-### Q4: Size a header switch for a 2mm^2 domain with 200mA peak current.
-
-**A:** Target IR drop budget: 5% of VDD = 5% * 0.8V = 40mV. Required switch resistance: R = V/I = 40mV / 200mA = 0.2 ohm. For a PMOS header in 7nm with R_per_um ~ 200 ohm*um: total width = 200/0.2 = 1000 um. With standard header cells of 10um width each: need 100 header cells. Distribute them uniformly along the VDD rail across the 2mm^2 domain. For rush current: C_domain ~ 20nF (10nF/mm^2), with 10us ramp time: I_rush = 20nF * 0.8V / 10us = 1.6mA (easily handled by 100 header cells). Use daisy-chain turn-on with 1us delay between groups of 10 cells.
-
-### Q5: Explain sub-threshold slope and the Boltzmann tyranny. Why does it matter for low-power design?
-
-**A:** Sub-threshold slope (SS) is the gate voltage change needed to reduce drain current by 10x: SS = n*kT/q*ln(10) = 60mV/decade minimum at room temperature (when n=1). This means to maintain a 10^6 Ion/Ioff ratio, we need Vth > 6 * 60mV = 360mV. This sets a floor on VDD (need VDD > Vth + overdrive for adequate speed). Since P ~ V^2, this floor limits how low we can scale power. At 7nm, SS is typically 65-70 mV/decade. Novel devices like tunnel FETs (TFETs) and negative capacitance FETs (NCFETs) aim to break this 60mV/decade limit to enable lower VDD operation.
-
-### Q6: What is GIDL and when does it matter?
-
-**A:** GIDL (Gate-Induced Drain Leakage) occurs when the gate is at 0V and drain is at VDD, creating a strong electric field at the gate-drain overlap region. This field causes band-to-band tunneling -- electrons tunnel from the valence band to the conduction band, generating electron-hole pairs. GIDL matters in: (1) DRAM, where it discharges the storage capacitor (reduces retention time); (2) FinFET devices with thin gate oxide and wrap-around gate (larger overlap area); (3) power-gated domains where header switches have high Vds when the domain is off. GIDL is typically 5-10% of total leakage but can be significant at low temperatures (where sub-threshold leakage drops but GIDL stays roughly constant).
-
-### Q7: Describe the complete power-up sequence for a power-gated domain. Why does ordering matter?
-
-**A:** The sequence is: (1) Deassert SLEEP (enable header switches, daisy-chain for rush current control); (2) Wait for virtual VDD to stabilize (monitor ramp or use fixed delay); (3) Assert RESET to all FFs in the domain; (4) Deassert RESET synchronously (to avoid recovery/removal violations); (5) Deassert ISOLATION (outputs now driven by live logic); (6) Assert RESTORE (retention FFs recover saved state); (7) Deassert RESTORE; (8) Resume operation. Ordering is critical: if ISOLATION is deasserted before power is stable, the domain outputs are floating/garbage and corrupt the always-on domain. If RESTORE happens before RESET, the reset overwrites the restored values. If RESET is deasserted asynchronously, FFs may violate recovery/removal timing.
-
-### Q8: What is UPF and how does it differ from RTL?
-
-**A:** UPF (Unified Power Format, IEEE 1801) is a separate TCL-based specification that defines power intent: power domains, supply networks, power states, isolation, retention, level shifters, and power switches. RTL describes function; UPF describes how power is managed. RTL cannot express concepts like "this block can be powered off" or "these outputs need isolation when the domain is off." UPF is read by synthesis tools (to insert special cells), simulation tools (to model power-down behavior), and P&R tools (to physically implement the power architecture). Without UPF, the tools would not know which cells need always-on supply, where to place header switches, or which outputs to isolate.
-
-### Q9: Compare leakage reduction techniques: multi-Vt, power gating, and body biasing.
-
-**A:** Multi-Vt: assigns HVT to non-critical paths (5-10x leakage reduction per cell, no area overhead, works always, standard flow). Power gating: turns off entire domains (nearly 100% leakage elimination when off, but requires isolation/retention/switches, only works for long idle periods). Body biasing: applies reverse body bias to increase Vth in idle mode (5-20x reduction, requires bias generators and distribution network, less effective in FinFET). Best practice: use multi-Vt always (baseline), add power gating for large blocks with long idle periods, use body biasing for fine-grain control in planar CMOS. In modern FinFET designs, multi-Vt + power gating is the dominant combination.
-
-### Q10: How do you estimate the break-even time for power gating?
-
-**A:** Power gating has overhead: energy to power-down (save state, ramp switch), energy to power-up (ramp, restore, re-initialize), and always-on leakage of retention FFs and isolation cells. Break-even time = overhead energy / leakage power saved. Example: if power-up/down costs 10nJ and leakage saved is 5mW, break-even = 10nJ / 5mW = 2us. If the block idles for less than 2us, power gating wastes energy. In practice, add margin: only gate if expected idle > 3-5x break-even. Software/firmware must predict idle duration, which is why DVFS (lower latency) is preferred for short idle periods and power gating for long idle periods.
-
-### Q11: Explain IR drop and its impact on timing. How is it analyzed?
-
-**A:** IR drop is voltage reduction across the power distribution network (PDN) due to resistive losses. If VDD at a cell drops from 0.80V to 0.76V (50mV drop), the cell's delay increases because drive current is proportional to (VDD-Vth)^alpha. A 50mV drop at 0.8V could increase delay by 5-10%. Static IR drop uses average current; dynamic IR drop captures transient surges (e.g., at clock edges when thousands of FFs switch simultaneously). Dynamic IR drop can be 2-3x worse than static. Analysis tools (Voltus, RedHawk) take switching activity + PDN model and compute per-instance voltage, which is fed back to STA for timing derating. Worst-case dynamic IR drop determines if the PDN needs more straps, wider metals, or additional decoupling capacitance.
-
-### Q12: What is the relationship between activity factor and different types of signals?
-
-**A:** Clock signals: alpha = 1.0 (toggle every cycle by definition). Data signals: alpha = 0.05-0.3 (depends on workload, randomness). Address buses: alpha ~ 0.2-0.5 (depends on access pattern). Reset signals: alpha ~ 0 (toggle only at reset). For power estimation, clock network alpha=1.0 makes it the dominant dynamic power consumer (30-50% of total). This is why clock gating is the single most effective dynamic power reduction technique. Accurate alpha values require simulation with representative workloads; using default alpha=0.5 can overestimate power by 2-3x.
-
-### Q13: How do high-k dielectrics reduce gate leakage? Explain with the EOT concept.
-
-**A:** Gate leakage (tunneling) depends exponentially on oxide thickness: thinner oxide = exponentially more tunneling. But thinner oxide gives higher gate capacitance = better transistor control. High-k dielectrics (like HfO2, k~25 vs SiO2 k~3.9) provide the same capacitance with a physically thicker layer: C = epsilon*k/T. EOT (Equivalent Oxide Thickness) = T_physical * (3.9/k_highk). Example: 5nm HfO2 has EOT = 5*(3.9/25) = 0.78nm. This gives the capacitance of a 0.78nm SiO2 gate but the tunneling barrier of a 5nm film, reducing gate leakage by 100-1000x. High-k was introduced at the 45nm node (Intel 2007) and enabled continued gate length scaling.
-
-### Q14: What is thermal runaway and how do you prevent it in a design?
-
-**A:** Thermal runaway is a positive feedback loop: leakage generates heat, heat increases temperature, higher temperature increases leakage exponentially. If the cooling system cannot remove heat fast enough, temperature rises until the chip fails. Prevention: (1) Design the PDN and package for adequate thermal dissipation (R_thermal * P_max < T_max - T_ambient); (2) Use on-chip temperature sensors (one per major block) feeding a Dynamic Thermal Management (DTM) controller; (3) DTM reduces frequency/voltage when temperature exceeds thresholds; (4) Hardware thermal trip circuit forces emergency shutdown above critical temperature (typically 125C junction); (5) At design time, perform thermal simulations to verify the power budget at worst-case workload doesn't exceed cooling capacity.
-
-### Q15: Explain operand isolation with a concrete example showing power savings.
-
-**A:** Consider a 32-bit multiplier used only when `valid` is high (25% of cycles). Without operand isolation, random input toggling causes the multiplier's internal nodes to switch uselessly 75% of the time. With operand isolation, the inputs are AND-gated with `valid`:
-
-```verilog
-wire [31:0] a_gated = valid ? a : 32'd0;
-wire [31:0] b_gated = valid ? b : 32'd0;
-wire [63:0] product = a_gated * b_gated;
-```
-
-When valid=0, inputs are 0, and the multiplier internals don't toggle (0*0 = 0, no transitions). Power savings: the multiplier has ~10,000 internal nodes with average alpha=0.2. Without isolation: P_mult = 0.2 * C * V^2 * f * 100% of time. With isolation: P_mult = 0.2 * C * V^2 * f * 25% + P_mux_overhead. Savings ~ 75% of multiplier dynamic power minus the small MUX (AND gate) overhead. The 64 AND gates add negligible power compared to the 10,000-node multiplier.
-
-### Q16: How does memory partitioning save power?
-
-**A:** A 64KB SRAM as one monolithic block draws full power on every access (all bitlines charge, all sense amps fire). Partitioned into 8 banks of 8KB: only the accessed bank is active (1/8 the bitline + sense amp power). Additional savings: shorter bitlines = lower capacitance per access, smaller decoders, banks in standby can be put in retention or shut down. Trade-off: bank selection logic adds a small amount of area and delay, and the total area increases slightly due to duplicated peripheral circuits. But for memories > 16KB, partitioning almost always wins. Advanced memory compilers offer configurable banking ratios.
-
-### Q17: What are the challenges of near-threshold computing?
-
-**A:** Operating at VDD near Vth (e.g., 0.4V with Vth = 0.35V): (1) Ion/Ioff ratio is very poor (~10-100x) making logic unreliable; (2) Process variation causes huge delay spread (Vth variation of +/-30mV at 3-sigma means some gates are super-threshold and others are sub-threshold simultaneously); (3) SRAM fails first (6T SRAM read/write margins collapse near Vth, need 8T or 10T cells); (4) Frequency drops to MHz range; (5) Leakage becomes comparable to dynamic power, so the energy advantage plateaus. Used in ultra-low-power applications (IoT sensors, biomedical) where throughput is not critical. Design requires wide timing margins, oversized transistors, and error-resilient architectures.
-
-### Q18: Explain the difference between static and dynamic IR drop. Which is worse?
-
-**A:** Static IR drop: caused by average DC current flowing through the resistive power grid. It's the steady-state voltage drop. Calculated as V_drop = I_avg * R_mesh. Typically 10-30mV for a well-designed grid. Dynamic IR drop: caused by sudden current surges (e.g., when the clock edge triggers thousands of FFs switching simultaneously). The transient current causes both resistive drop (I*R) and inductive voltage spikes (L*dI/dt). Dynamic IR drop is typically 2-5x worse than static and can cause 50-100mV droops lasting a few hundred picoseconds. These droops slow down gates exactly when they need to switch, causing timing violations that static analysis misses. This is why dynamic IR drop simulation with realistic switching activity is mandatory for signoff.
-
-### Q19: How does leakage scale across technology nodes?
-
-**A:** Leakage per transistor increased dramatically from 180nm to 65nm due to: thinner gate oxide (more tunneling), shorter channels (worse DIBL), lower Vth (needed to maintain speed as VDD scaled). At 45nm, high-k/metal gate reduced gate leakage significantly. At 22nm, FinFET reduced sub-threshold leakage (better electrostatic control, n closer to 1.0, steeper SS). However, total chip leakage continued to grow because transistor count increased faster than per-transistor leakage decreased. At 7nm, total leakage is ~45-50% of total power for a high-performance design, making leakage management (multi-Vt, power gating) mandatory, not optional.
-
-### Q20: What power verification checks must pass before tapeout?
-
-**A:** (1) UPF consistency: all domains defined, all crossings have level shifters and/or synchronizers; (2) Isolation completeness: every output of every switchable domain is isolated; (3) Retention coverage: all required state registers have retention; (4) Power-aware simulation: correct behavior during all power-on/off transitions; (5) Power grid EM clean: no metal wire exceeds electromigration current density limit; (6) Static IR drop < 5% VDD; (7) Dynamic IR drop < 10% VDD; (8) Rush current within package current limit; (9) Total power within thermal budget at worst-case workload; (10) Leakage power within budget at worst-case temperature; (11) No missing supply connections; (12) All power switches correctly sized and connected.
-
----
-
-## 13. Mid-Level Scenario Drills -- Debug Stories You Should Be Able to Tell
+## 12. Mid-Level Scenario Drills -- Debug Stories You Should Be Able to Tell
 
 Interviews at the 2-5 year level shift from "derive the formula" to "here's a broken
 chip/flow -- what do you do?" Practice narrating these five end-to-end.
@@ -1638,7 +1545,7 @@ captured on watchdog reset.
 
 ---
 
-## 14. Numbers to Memorize
+## 13. Numbers to Memorize
 
 | Quantity | Value | Why it matters |
 |---|---|---|

@@ -104,18 +104,6 @@ Once functional, the product moves to volume: **yield ramp** (driving defect den
 
 ---
 
-## 7. Interview Q&A
-
-**Q: First silicon draws huge current at power-on. First hypotheses?** A short — power-to-ground bridging that [LVS](../06_Signoff/Physical_Verification_DRC_LVS.md) should have caught (or in an analog/IO area it didn't cover), a missing well tie, or a bus-contention/X-state driving fight (often a reset bug leaving outputs enabled). Drop voltage, use thermal imaging to localize the hot spot, scan-dump if it'll come up enough.
-
-**Q: Why is DFT critical for bring-up, not just production test?** Because silicon has no internal visibility. Scan lets you freeze and read out all flop state to see *where* a non-booting chip died; trace buffers capture internal activity. Without good DFT, debugging first silicon is nearly impossible — you're guessing at a black box.
-
-**Q: What's a shmoo plot and what does it tell you?** A 2-D pass/fail map over voltage × frequency (often × temperature). It reveals the real operating region, the actual fmax/Vmin vs STA's prediction, and the *shape* of failures — a clean diagonal edge suggests a speed path; a ragged or unexpected boundary suggests an electrical/SI or marginal-timing issue.
-
-**Q: A functional bug is found in silicon. Options?** If it can be fixed by changing logic reachable with spare cells, do a **metal-layer ECO** (cheap, weeks). If it needs base-layer changes, it's a **full respin** (expensive, months). Sometimes you can **work around it in firmware/software** and ship, fixing it in the next spin — often the fastest path to revenue.
-
----
-
 ## Cross-references
 - Signoff feeding tape-out: [STA](../06_Signoff/STA.md), [Physical_Verification_DRC_LVS](../06_Signoff/Physical_Verification_DRC_LVS.md), [DFT_and_ATPG](../06_Signoff/DFT_and_ATPG.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/Power_Analysis_and_Signoff.md).
 - Manufacturing: [Fabrication_Process](Fabrication_Process.md), [IC_Packaging](IC_Packaging.md).

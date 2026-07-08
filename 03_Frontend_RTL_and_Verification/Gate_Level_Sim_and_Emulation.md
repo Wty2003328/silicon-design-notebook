@@ -88,16 +88,6 @@ flowchart TD
 
 ---
 
-## 5. Interview Q&A
-
-**Q: Why run GLS if you already ran RTL sim and STA?** RTL sim doesn't run the actual netlist (misses synthesis/scan bugs and X-pessimism); STA is static (checks timing margins, not functional waveforms, and can't see glitches or async races). SDF GLS runs the real netlist with real delays and catches reset/X-propagation, scan-chain, and timing-dependent functional bugs neither can.
-
-**Q: Emulation vs FPGA prototype — when each?** Emulation: verification wants full signal visibility, fast compile, and HW/SW co-verification of long scenarios — accept ~MHz speed. FPGA prototype: software/system teams want near-real-time to develop apps and demo — accept lower visibility and slow compile. Same design, different consumer.
-
-**Q: How do you cut GLS pain?** Prove logical equivalence with formal LEC (fast), reserve GLS for what LEC can't do (X/reset, SDF timing, DFT), and run a focused suite (power-up + sanity + ATPG patterns) rather than the full regression.
-
----
-
 ## Cross-references
 - Equivalence checking: [Formal_Verification](Formal_Verification.md). Functional verification: [UVM_Methodology](UVM_Methodology.md), [Verification_Planning_and_Coverage_Closure](Verification_Planning_and_Coverage_Closure.md).
 - Inputs: [Synthesis_and_Optimization](../04_Synthesis/Synthesis_and_Optimization.md), [DFT_and_ATPG](../06_Signoff/DFT_and_ATPG.md), [STA](../06_Signoff/STA.md) (SDF).

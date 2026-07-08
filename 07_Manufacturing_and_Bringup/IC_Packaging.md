@@ -15,7 +15,6 @@
 12. Reliability Testing
 13. Warpage
 14. Numbers to Memorize
-15. Interview Q&A (20+ Questions)
 
 ---
 
@@ -1039,118 +1038,7 @@ Process control:
 
 ---
 
-## 15. Interview Q&A
-
-**Q1: Compare wire bonding and flip chip. When would you choose each?**
-
-Wire bonding is cheaper, peripheral-only I/O, higher inductance (~1 nH/wire), limited
-to ~500 pins. Flip chip has area-array I/O, lower inductance (~0.1 nH/bump), supports
-10,000+ connections, better thermal (die face-down). Choose wire bond for low-cost,
-low-pin-count packages (sensors, microcontrollers). Choose flip chip for high-performance
-(GPUs, CPUs, SoCs) or high-pin-count applications.
-
-**Q2: What is a TSV? What are its key parameters?**
-
-A Through-Silicon Via is a vertical copper connection through a silicon wafer. Key
-parameters: diameter (5-10 μm interposer, 1-5 μm 3D IC), depth (50-100 μm interposer,
-5-50 μm 3D), aspect ratio (5:1 to 20:1), resistance (~10-50 mΩ), capacitance (~10-50 fF),
-inductance (~10-50 pH). TSVs enable vertical integration in 2.5D/3D IC packaging with
-much better electrical performance than wire bonds.
-
-**Q3: What is CoWoS and how does it work?**
-
-TSMC CoWoS (Chip-on-Wafer-on-Substrate) is a 2.5D packaging technology. Multiple dies
-(e.g., GPU + HBM stacks) are mounted on a silicon interposer with fine-pitch RDL (0.4-2μm
-L/S) for die-to-die connections, and TSVs for vertical connection to the package substrate
-below. CoWoS-S uses a standard silicon interposer, CoWoS-R uses RDL-only (organic),
-and CoWoS-L uses a larger interposer with embedded silicon bridges.
-
-**Q4: Why are chiplets becoming popular? What are the trade-offs?**
-
-Chiplets improve effective yield (small dies yield better than one large die), enable
-mixing process nodes (3nm logic + 7nm I/O), reduce design cost (reuse chiplets across
-products), and overcome the reticle size limit. Trade-offs: die-to-die interface adds
-latency (2-5 ns), bandwidth is lower than on-chip wires, packaging cost increases,
-design complexity (multi-die floor planning, power delivery, thermal).
-
-**Q5: Explain HBM and why it's critical for AI accelerators.**
-
-HBM stacks 8-12 DRAM dies vertically using TSVs, providing a 1024-bit wide interface
-(vs DDR5's 64 bits). This gives enormous bandwidth (>1 TB/s per stack). AI workloads
-are memory-bandwidth limited — transformers need to move massive weight matrices
-between memory and compute. HBM provides 5-10× the bandwidth of GDDR6 in a compact
-form factor, mounted on the same interposer as the GPU/accelerator die.
-
-**Q6: What is hybrid bonding and why is it revolutionary?**
-
-Hybrid bonding directly connects Cu pads between two dies without solder bumps. At 1-10 μm
-pitch (vs 40-55 μm for μbumps), it enables 100× more connections per area. This gives
-unprecedented inter-die bandwidth and lowest latency. Used in AMD V-Cache (3D SRAM cache),
-Sony image sensors, and planned for future chiplet-to-chiplet connections. The key
-challenge is surface preparation — requires atomic-level flatness for reliable bonding.
-
-**Q7: What is UCIe and how does it compare to proprietary die-to-die links?**
-
-UCIe is an open standard for chiplet interconnect, defining physical, link, and protocol
-layers. It supports both standard package (100-130 μm pitch) and advanced package
-(25-55 μm pitch). Benefits: interoperability between vendors' chiplets, standard
-verification methodology. Compared to proprietary links (AMD Infinity Fabric, Apple
-UltraFusion): UCIe may have slightly higher overhead but enables a chiplet ecosystem
-where third-party chiplets can be integrated.
-
-**Q8: What are the thermal challenges in 3D IC stacking?**
-
-In 3D stacking, the top die's heat must conduct through the bottom die to reach the
-heat sink. This creates a higher thermal resistance path. The bonding interface (solder,
-underfill, or hybrid bond) adds thermal resistance. Result: top die runs hotter, which
-increases leakage and reduces reliability. Solutions: thermal TSVs (Cu-filled vias for
-heat conduction), power-aware floorplanning, splitting high-power blocks across layers,
-and advanced cooling (microfluidic channels).
-
-**Q9: What is the yield advantage of chiplets?**
-
-For Poisson defect model: $Y = \exp(-D \times A)$. A monolithic 500mm² die at D=0.1/cm² yields
-60.7%. Two 250mm² chiplets each yield 77.9%, and the combined good-pair probability
-is 77.9%² = 60.7% — same if you need both to work. BUT: with testing, you only combine
-known-good dies (KGD), so yield $= Y_{chiplet} \times (1 - r_{esc}) \approx 77.9\%$ (with $r_{esc}$ the test-escape rate). The real
-advantage grows with more chiplets and higher defect density.
-
-**Q10: How does power delivery work in a multi-die package?**
-
-Power flows: VRM → PCB → BGA balls → package substrate → C4 bumps → interposer (if 2.5D)
-→ μbumps → die. Each die has its own power domain (possibly different voltages). The
-power delivery network (PDN) impedance must be extremely low (< 0.2 mΩ for 200A at
-35mV drop). This requires massive parallelism in bumps and vias, multi-level decoupling
-(on-die MOS caps, on-package MIM caps, on-board MLCCs), and careful PDN design with
-full-wave electromagnetic simulation.
-
-**Q11: What is the difference between 2.5D and 3D IC?**
-
-2.5D: Dies placed side-by-side on an interposer (silicon or organic). Dies don't stack
-vertically. Inter-die connections through interposer RDL. Example: GPU + HBM on CoWoS.
-3D: Dies stacked vertically, connected by TSVs or hybrid bonds through the silicon.
-Much higher connection density but worse thermal and more complex. Example: AMD V-Cache,
-HBM stacks. Many "3D" products are actually 2.5D with 3D memory stacks.
-
-**Q12: What is fan-out packaging and when is it used?**
-
-Fan-out WLP uses a reconstituted wafer where dies are embedded in mold compound with an
-RDL that extends beyond the die boundary. This allows more I/O than the die area alone
-would permit. TSMC InFO is a leading fan-out technology, used in Apple's A-series chips.
-Fan-out is cheaper than silicon interposer for applications that don't need the extreme
-die-to-die bandwidth of CoWoS. It's ideal for mobile SoCs and mid-range packages.
-
-**Q13: What challenges exist at <10μm hybrid bonding pitch?**
-
-At sub-10μm pitch: (1) Alignment accuracy must be <500nm (extremely tight for D2W).
-(2) Surface cleanliness — a single particle can cause bond failure. (3) Pad size is so
-small that Cu grain structure matters for bond quality. (4) Thermal expansion mismatch
-can cause misalignment during anneal. (5) Testing at this density is challenging — can't
-probe individual bonds. (6) Design rules for keep-out and dummy patterns become complex.
-
----
-
-## 16. UCIe 3.0 and Advanced Die-to-Die Interfaces
+## 15. UCIe 3.0 and Advanced Die-to-Die Interfaces
 
 ### 16.1 UCIe Specification Evolution
 
@@ -1189,7 +1077,7 @@ UCIe vs standard packaging vs advanced packaging:
 
 ---
 
-## 17. TSMC SoIC (System on Integrated Chips)
+## 16. TSMC SoIC (System on Integrated Chips)
 
 ```ascii-graph
 TSMC SoIC: 3D stacking using hybrid bonding
@@ -1243,7 +1131,7 @@ TSMC SoIC: 3D stacking using hybrid bonding
 
 ---
 
-## 18. Intel Foveros and Samsung X-Cube
+## 17. Intel Foveros and Samsung X-Cube
 
 ### 18.1 Intel Foveros
 
@@ -1313,7 +1201,7 @@ Samsung X-Cube:
 
 ---
 
-## 19. Glass Substrates
+## 18. Glass Substrates
 
 ```ascii-graph
 Glass core substrates: next-generation packaging substrate material
@@ -1360,7 +1248,7 @@ Glass core substrates: next-generation packaging substrate material
 
 ---
 
-## 20. Blackwell Case Study
+## 19. Blackwell Case Study
 
 ```ascii-graph
 NVIDIA Blackwell (B200 / GB200) Packaging:
@@ -1416,7 +1304,7 @@ NVIDIA Blackwell (B200 / GB200) Packaging:
 
 ---
 
-## 21. Advanced Packaging Roadmap
+## 20. Advanced Packaging Roadmap
 
 ```ascii-graph
 Advanced packaging technology roadmap (2025-2030):

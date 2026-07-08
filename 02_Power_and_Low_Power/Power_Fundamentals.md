@@ -1114,75 +1114,7 @@ report_power -outfile power_dynamic.txt
 
 ---
 
-## 13. Interview Questions and Answers
-
-### Q1: "A 28nm design has 10M gates, average switching activity 0.15, average gate capacitance 1.2fF, Vdd=0.9V, 500MHz. Estimate dynamic power."
-
-**A:** P = alpha * C * Vdd^2 * f = 0.15 * (10e6 * 1.2e-15) * 0.81 * 500e6 = 0.15 * 12e-9 * 0.81 * 5e8 = 729 mW. Add ~40% for clock network: ~1.02W total dynamic power. This is the data-path + clock estimate; real chips would also include memory macro dynamic power.
-
-### Q2: "Why does leakage double every ~10C? Derive it."
-
-**A:** I_leak ~ exp(-Vth/(n*kT/q)). As T increases: (1) kT/q increases, directly increasing the exponential argument denominator (but the numerator also decreases because Vth drops with T). For a 10C increase from T to T+10: Vth drops by ~15-20mV, and V_T = kT/q increases by ~0.87mV. The net effect is approximately: I(T+10)/I(T) = exp(delta_Vth/(n*V_T)) ~ exp(15e-3 / (1.3*26e-3)) ~ exp(0.44) ~ 1.6-2.0x. The exact ratio depends on the Vth temperature coefficient and the node. Typical industry rule: 2x per 10C.
-
-### Q3: "Explain why the energy per switching event is C*Vdd^2, not 1/2*C*Vdd^2."
-
-**A:** During 0->1 transition, Vdd delivers C*Vdd^2 energy. Capacitor stores (1/2)*C*Vdd^2. The other half is dissipated in PMOS. During 1->0, the stored (1/2)*C*Vdd^2 is dissipated in NMOS. Per complete cycle: C*Vdd^2 from supply, all dissipated as heat. The (1/2) factor appears only if you count a single transition. The activity factor definition determines which convention you use.
-
-### Q4: "What is DIBL and how does it affect power?"
-
-**A:** DIBL = Drain-Induced Barrier Lowering. In short-channel devices, Vds reduces the source-channel barrier, lowering effective Vth. Higher Vds -> lower Vth -> exponentially more subthreshold leakage. DIBL coefficient eta is ~50-100 mV/V in planar, ~20-30 mV/V in FinFET. This means at Vds=0.8V, effective Vth can be 40-80mV lower than at Vds=0V in planar devices, causing 3-10x more leakage. FinFET's superior electrostatics reduce DIBL significantly.
-
-### Q5: "A chip has 2W leakage at 85C. Estimate leakage at 25C."
-
-**A:** Using the 2x per 10C rule: temperature difference = 60C, so factor = 2^(60/10) = 2^6 = 64. Leakage at 25C = 2W / 64 = 31.25 mW. Note: this is approximate -- the actual ratio depends on process specifics, but 64x is a reasonable estimate.
-
-### Q6: "Why did the industry move to high-k dielectrics?"
-
-**A:** SiO2 gate oxide had to be thinned to ~1.2nm at the 90nm node to maintain gate capacitance (and thus drive current) as channel lengths shrank. At this thickness, direct quantum mechanical tunneling caused gate leakage current of ~100 A/cm^2, making gate leakage comparable to subthreshold leakage. HfO2 (k~22 vs 3.9 for SiO2) allows a physically thicker oxide (e.g., 4nm HfO2 ~ 0.7nm SiO2 equivalent) with the same capacitance, reducing tunneling current by ~100x. Intel introduced high-k/metal gate at 45nm (2007).
-
-### Q7: "What is the stack effect and how does it help leakage?"
-
-**A:** In series-connected transistors (e.g., NAND pull-down), when one transistor is off, the intermediate node floats to a voltage between 0 and Vdd. This causes the off transistor to have: (1) positive Vsb -> higher Vth via body effect, and (2) reduced Vds -> reduced DIBL. Both effects reduce leakage. A 2-stack reduces leakage by ~10x compared to a single transistor. 3-stack gives ~25-50x reduction. This is why NAND gates are preferred over NOR gates for low-leakage design (NMOS stack in NAND benefits from stack effect more than PMOS stack in NOR because PMOS has higher Vth already).
-
-### Q8: "What fraction of switching power is due to glitches in a typical design?"
-
-**A:** 15-30% in unoptimized datapaths (e.g., ripple-carry adders, multiplier trees). After optimization (path balancing, retiming), this can be reduced to 5-10%. Clock gating downstream logic eliminates the power impact of glitches on registered outputs but not on the combinational logic itself. Synthesis tools automatically minimize glitches through technology mapping, but physical design (routing delays) can introduce new glitch paths.
-
-### Q9: "Compare leakage mechanisms: subthreshold vs gate vs junction vs GIDL. Which dominates when?"
-
-**A:** At room temperature, 7nm: subthreshold >> gate (mitigated by high-k) > GIDL > junction. At 125C: subthreshold >>> junction (grows fastest with T) > GIDL > gate (temperature-insensitive). For HVT cells at room temp: subthreshold is suppressed, GIDL can become comparable. For ultra-low-voltage near-threshold designs: subthreshold dominates overwhelmingly (exponentially sensitive to Vgs near Vth).
-
-### Q10: "Explain forward vs backward SAIF annotation."
-
-**A:** Forward annotation: simulate RTL, dump SAIF at RTL level, then map net names from RTL to gates during power analysis. This requires name mapping (can be lossy). Backward annotation: tools read the gate-level netlist, generate a "SAIF template" with gate-level net names, you simulate the gate-level netlist (or annotated RTL) and fill in the template. Backward is more accurate because net names match exactly. Forward is faster because RTL simulation is much faster than gate-level simulation.
-
-### Q11: "How would you estimate the power of a block you haven't designed yet?"
-
-**A:** (1) Use a similar block from a previous project as a reference and scale by gate count, activity, Vdd, and frequency. (2) Use high-level estimation: P = alpha * N_gates * C_avg * Vdd^2 * f, where N_gates and C_avg come from synthesis estimates or published data. (3) For memory-dominated blocks, estimate memory macro power from datasheets and add logic power. (4) Industry rules of thumb: ARM Cortex-A class cores are ~100-300 mW/GHz at 7nm; DSP blocks are ~50-100 mW/GHz; always-on domains target < 1 mW.
-
-### Q12: "What is the difference between average power and peak power? Why do both matter?"
-
-**A:** Average power (mW over a workload period) determines thermal steady state and battery life. Peak power (instantaneous maximum, often over a 1-10ns window) determines: (1) worst-case IR drop on the power grid (V_drop = I_peak * R_grid), (2) Ldi/dt noise on the supply, (3) maximum current the package must deliver. Peak can be 3-5x average. Both must meet specs: average for thermal/battery, peak for supply integrity.
-
-### Q13: "If you reduce Vdd by 10%, what happens to dynamic power, leakage, and frequency?"
-
-**A:** Dynamic power: P ~ Vdd^2, so 0.9^2 = 0.81 -> 19% reduction. Leakage: subthreshold leakage has weak Vdd dependence (mainly through DIBL: lower Vds -> slightly higher Vth -> less leakage, maybe 10-20% reduction, highly process-dependent). Gate leakage reduces roughly proportionally with Vdd. Frequency: Fmax ~ (Vdd-Vth)^alpha / Vdd where alpha~1.3. For Vdd=0.9V->0.81V, Vth=0.3V: (0.81-0.3)^1.3/0.81 vs (0.9-0.3)^1.3/0.9 -> roughly 15-20% frequency reduction. Net: 19% power savings for ~15-20% performance loss -- this is why DVFS is so effective.
-
-### Q14: "Why is clock power so high?"
-
-**A:** Clock toggles every cycle (activity factor = 1.0, vs 0.05-0.2 for data). Clock networks are heavily buffered (thousands of buffers in clock tree) with large drive strengths. Clock wires run long distances across the chip with significant wire capacitance. In a typical SoC: clock tree = 30-50% of dynamic power. This is why clock gating is the single most impactful power reduction technique.
-
-### Q15: "What is the minimum energy point (MEP) and why does it exist?"
-
-**A:** As you reduce Vdd, dynamic power drops quadratically, but the circuit slows down, so you need more time (cycles) to do the same work. At very low Vdd (near Vth), the circuit is so slow that leakage energy per operation dominates (leakage power * long execution time). The MEP is the Vdd where total energy per operation (dynamic + leakage) is minimized. It typically occurs at Vdd ~ Vth (near-threshold computing). Below MEP, reducing Vdd actually increases total energy because the performance loss causes leakage to dominate. MEP is ~0.3-0.4V for most processes.
-
-### Q16: "Explain the power-performance-area (PPA) trade-off at the cell level."
-
-**A:** A larger cell (wider transistors) has: more drive current -> faster (better P), but more capacitance -> more switching power (worse P), and more area (worse A). Multi-Vt: LVT is faster (better performance) but leaks ~5-20x more than HVT (worse leakage power), at the same area. Sizing: upsizing a cell on the critical path improves timing but increases its capacitance and the capacitance it presents to its driver. The optimization is a constrained problem: minimize power subject to timing constraints, using cell sizing and Vt assignment as the primary levers.
-
----
-
-## 14. Summary: Power Breakdown Decision Framework
+## 13. Summary: Power Breakdown Decision Framework
 
 ```verilog
 When analyzing power for a new design, think:
@@ -1212,7 +1144,7 @@ When analyzing power for a new design, think:
 
 ---
 
-## 15. Numbers to Memorize
+## 14. Numbers to Memorize
 
 | Quantity | Value | Why it matters |
 |---|---|---|

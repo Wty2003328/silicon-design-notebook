@@ -39,7 +39,7 @@ hardware_design_notebook/
 ├── 05_Backend_Physical_Design/    gates -> layout, signal integrity
 ├── 06_Signoff/                    STA, DFT/ATPG, physical verification
 ├── 07_Manufacturing_and_Bringup/  fab, packaging, tapeout, post-silicon
-└── interview_prep/                RTL coding canon + worked numeric problems
+└── interview_prep/                per-folder interview Q&A (00-07) + RTL coding canon
 ```
 
 See [Index.md](Index.md) for the full page-by-page index and topic reading paths (CPU design, physical design/STA, verification, power-aware design, etc.).

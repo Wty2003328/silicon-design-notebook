@@ -1431,222 +1431,7 @@ improved power efficiency:
 
 ---
 
-## 11. Worked Interview Problems
-
-### Problem 1: Peak and Effective Bandwidth
-
-**Question:** Calculate the peak and effective bandwidth for a DDR4-3200 dual-channel
-system. Assume 4% refresh overhead, 50% row buffer hit rate, tCAS = 13.75 ns,
-tRCD = 13.75 ns, tRP = 13.75 ns, and 2% read-write switch overhead.
-
-**Solution:**
-
-```verilog
-Peak bandwidth:
-  Single channel: 3200 MT/s x 8 bytes = 25.6 GB/s
-  Dual channel:   25.6 x 2 = 51.2 GB/s
-
-Row buffer efficiency:
-  Hit time:  tCAS = 13.75 ns (serves 64 bytes = 1 cache line)
-  Miss time: tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
-
-  Average access time = 0.5 x 13.75 + 0.5 x 41.25 = 27.5 ns
-
-  Row buffer efficiency = tCAS / average_time = 13.75 / 27.5 = 0.50
-
-Effective bandwidth:
-  = Peak x (1 - refresh_overhead) x row_buffer_eff x (1 - rw_switch_overhead)
-  = 51.2 x (1 - 0.04) x 0.50 x (1 - 0.02)
-  = 51.2 x 0.96 x 0.50 x 0.98
-  = 51.2 x 0.4704
-  = 24.1 GB/s
-
-Efficiency = 24.1 / 51.2 = 47.1%
-```
-
-### Problem 2: Timing Diagram Construction
-
-**Question:** Draw the timing for the following command sequence on a DDR4-3200
-channel. Label all timing constraints.
-
-- ACT bank 0, row 5
-- READ bank 0, col 10
-- ACT bank 1, row 3
-- READ bank 1, col 20
-
-Given: tRCD = 13.75 ns, tCAS = 13.75 ns (CL = 22 tCK), tRRD_S = 4 ns,
-burst length = 8, tCK = 0.625 ns.
-
-**Solution:**
-
-```ascii-graph
-Time (ns):   0       13.75    16      27.5    29.75   41.25   43.5
-             |         |       |        |        |       |       |
-CMD:         ACT_B0    READ_B0  ACT_B1   --       READ_B1  --      --
-             R5        C10      R3                        C20
-
-Constraints:
-  1. ACT_B0 to READ_B0: 13.75 ns >= tRCD = 13.75 ns  [OK]
-  2. ACT_B0 to ACT_B1:  16 ns   >= tRRD_S = 4 ns     [OK]
-  3. ACT_B1 to READ_B1: 29.75 - 16 = 13.75 ns >= tRCD [OK]
-  4. tFAW: only 2 activates in window, max is 4         [OK]
-
-Data bus timing:
-  READ_B0 issued at t=13.75 ns
-  Data appears at t = 13.75 + CL*tCK = 13.75 + 22*0.625 = 13.75 + 13.75 = 27.5 ns
-  Burst duration = BL8 / (2 edges/clock) = 4 tCK = 4 * 0.625 = 2.5 ns
-  Data_B0 occupies bus from 27.5 ns to 30.0 ns
-
-  READ_B1 issued at t=29.75 ns
-  Data appears at t = 29.75 + 13.75 = 43.5 ns
-  Data_B1 occupies bus from 43.5 ns to 46.0 ns
-
-  No data bus collision: 30.0 ns < 43.5 ns  [OK]
-
-Total time: 46.0 ns for 2 cache lines = 128 bytes
-Effective BW = 128 / 46 ns = 2.78 GB/s (per bank pair)
-
-With 8 bank groups x 2 banks = 16 banks, fully interleaved:
-  Peak BW ~ 2.78 x 8 = 22.3 GB/s (not quite peak due to tFAW limitations)
-```
-
-### Problem 3: Row Hit vs Miss Service Time
-
-**Question:** A DDR4-3200 controller receives 100 read requests. 40 are row hits,
-60 are row misses. Compute the total service time. Given: tCAS = 13.75 ns,
-tRCD = 13.75 ns, tRP = 13.75 ns, burst length = 8, data bus width = 8 bytes,
-tCCD_S = 4 tCK = 2.5 ns (minimum gap between column commands).
-
-**Solution:**
-
-**Per-request service time:**
-   - Row hit:  tCAS = 13.75 ns  (data appears after CAS latency)
-   - Row miss: tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
-
-Each READ returns BL8 x 8 bytes = 64 bytes
-
-Data transfer time per request: BL8 / 2 = 4 clocks = 2.5 ns
-(but overlapped with next request's CAS latency in pipelined operation)
-
-**Naive total (no pipelining):**
-   - Total time = 40 x 13.75 + 60 x 41.25
-   - = 550 + 2475
-   - = 3025 ns
-
-Data transferred = 100 x 64 bytes = 6400 bytes
-Average BW = 6400 / 3025 ns = 2.12 GB/s
-
-With bank pipelining (assuming requests go to different banks):
-The limiting factor is the data bus utilization.
-Each READ occupies the data bus for 2.5 ns (4 tCK).
-Minimum gap between column commands: tCCD_S = 2.5 ns.
-
-But sequential READs must be separated by at least tCCD_S = 2.5 ns:
-Effective throughput = 64 bytes / 2.5 ns = 25.6 GB/s (matches peak!)
-
-Total data bus time = 100 x 2.5 ns = 250 ns
-But row activations and precharges take time OFF the data bus.
-The row management time is hidden by bank-level parallelism.
-
-For 60 row misses: need 60 x (tRP + tRCD) = 60 x 27.5 = 1650 ns of
-row management, but this can be overlapped with data transfers to
-other banks. With 16 banks, the row management overhead is largely hidden.
-
-Realistic total time for a well-scheduled controller:
-~250 ns (data bus time) + ~500 ns (row management overhead not fully hidden)
-= ~750 ns
-Effective BW = 6400 / 750 = 8.5 GB/s (about 33% of peak)
-
-### Problem 4: FR-FCFS Scheduler Walkthrough
-
-**Question:** Given 8 pending requests in the controller queue, determine the scheduling
-order using FR-FCFS. Assume 4 banks (B0-B3), open-page policy, and the following state:
-
-```verilog
-Currently open rows: B0=row5, B1=row2, B2=no row, B3=row8
-
-Pending requests (in arrival order):
-  R0: READ  B0, row5, col20   (age=7)
-  R1: WRITE B0, row3, col10   (age=6)
-  R2: READ  B1, row2, col15   (age=5)
-  R3: READ  B3, row8, col30   (age=4)
-  R4: WRITE B1, row7, col25   (age=3)
-  R5: READ  B2, row1, col5    (age=2)
-  R6: WRITE B0, row5, col40   (age=1)
-  R7: READ  B3, row4, col50   (age=0)
-
-Write buffer threshold not reached, so reads and writes can be interleaved.
-```
-
-**Solution:**
-
-```text
-Step 1: Classify each request
-
-  R0: READ B0 row5 - Row HIT (B0 has row5 open)
-  R1: WRITE B0 row3 - Row MISS (B0 has row5, need row3)
-  R2: READ B1 row2 - Row HIT (B1 has row2 open)
-  R3: READ B3 row8 - Row HIT (B3 has row8 open)
-  R4: WRITE B1 row7 - Row MISS (B1 has row2, need row7)
-  R5: READ B2 row1 - Row MISS (B2 has no row open)
-  R6: WRITE B0 row5 - Row HIT (B0 has row5 open)
-  R7: READ B3 row4 - Row MISS (B3 has row8, need row4)
-
-Step 2: Apply FR-FCFS priority
-
-  Highest priority: Row hits (in arrival order)
-    R0 (age=7, READ B0 hit)
-    R2 (age=5, READ B1 hit)
-    R3 (age=4, READ B3 hit)
-    R6 (age=1, WRITE B0 hit)
-
-  Next priority: Row misses (oldest first)
-    R1 (age=6, WRITE B0 miss)
-    R4 (age=3, WRITE B1 miss)
-    R5 (age=2, READ B2 miss)
-    R7 (age=0, READ B3 miss)
-
-Step 3: Schedule accounting for bank conflicts
-
-  The scheduler cannot issue two commands to the same bank simultaneously.
-  It must respect timing constraints.
-
-  Schedule:
-  Slot 1: R0 - READ B0 (hit, tCAS only)       B0 busy for tCAS
-  Slot 2: R2 - READ B1 (hit, tCAS only)       B1 busy for tCAS (different bank)
-  Slot 3: R3 - READ B3 (hit, tCAS only)       B3 busy for tCAS (different bank)
-  Slot 4: R6 - WRITE B0 (hit, tCAS)           B0 done from R0, hit
-
-  After all row hits are served, handle misses:
-  Slot 5: R1 - PRE B0, ACT B0 row3, WRITE B0  (miss: tRP + tRCD + CWL)
-  Slot 6: R4 - PRE B1, ACT B1 row7, WRITE B1  (miss, B1 done from R2)
-  Slot 7: R5 - ACT B2 row1, READ B2           (miss, B2 had no row, skip PRE)
-  Slot 8: R7 - PRE B3, ACT B3 row4, READ B3   (miss, B3 done from R3)
-
-  Note: Slots 5-8 can partially overlap because they target different banks.
-  The row management (PRE/ACT) for each bank can proceed in parallel.
-  The data bus transfers must be serialized (one at a time).
-
-  Optimized data bus order (accounting for parallel bank work):
-    Data from R0 -> Data from R2 -> Data from R3 -> Data from R6
-    (all hits, back-to-back with tCCD_S gaps)
-
-    Then: Data from R5 (B2 had no precharge, fastest miss)
-          Data from R1 (B0 miss)
-          Data from R4 (B1 miss)
-          Data from R7 (B3 miss)
-
-  Reasoning for miss order:
-    R5 targets B2 which has no open row (no PRE needed, saves tRP = 13.75 ns)
-    R1, R4, R7 all need full PRE+ACT, but their bank management can overlap.
-    Within the misses, R1 is oldest (age=6), so it goes first among equal-cost misses.
-
-  Final scheduling order: R0, R2, R3, R6, R5, R1, R4, R7
-```
-
----
-
-## 11a. DDR5 Server Extensions: MRDIMM and MCR
+## 10a. DDR5 Server Extensions: MRDIMM and MCR
 
 ### MRDIMM (Multiplexed Rank DIMM)
 
@@ -1725,7 +1510,7 @@ Both MRDIMM and MCR target the same problem: extracting more bandwidth from the 
 
 ---
 
-## 11b. CXL 3.0/3.1 Type-3 Memory Expansion
+## 10b. CXL 3.0/3.1 Type-3 Memory Expansion
 
 ### CXL Type-3 Devices for Memory Expansion
 
@@ -1790,7 +1575,7 @@ Typical CXL 3.0 Type-3 memory expansion (x16 link):
 
 ---
 
-## 11c. LPDDR5X for Mobile and Edge AI
+## 10c. LPDDR5X for Mobile and Edge AI
 
 ### LPDDR5X Overview
 
@@ -1829,7 +1614,7 @@ DVFS (Dynamic Voltage and Frequency Scaling):
 
 ---
 
-## 12. References
+## 11. References
 
 1. **JEDEC Standard JESD79-4B** -- DDR4 SDRAM Specification (2017)
 2. **JEDEC Standard JESD79-5** -- DDR5 SDRAM Specification (2020)

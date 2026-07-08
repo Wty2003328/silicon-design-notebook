@@ -10,12 +10,11 @@
 7. ESD Protection
 8. FinFET and Advanced Nodes
 9. Process Variations and DTCO
-10. Interview Q&A (25+ Questions)
-11. Elmore Delay Model
-12. Logical Effort
-13. 6T SRAM Cell
-14. Leakage Current Breakdown
-15. Numbers to Memorize
+10. Elmore Delay Model
+11. Logical Effort
+12. 6T SRAM Cell
+13. Leakage Current Breakdown
+14. Numbers to Memorize
 
 ---
 
@@ -967,213 +966,7 @@ Operating transistors near Vth (VDD ≈ 0.4-0.6V) for extreme energy efficiency:
 
 ---
 
-## 10. Interview Q&A
-
-**Q1: Draw the VTC of a CMOS inverter and label all five regions of operation.**
-
-(See Section 2.2 above.) Region A: NMOS off, PMOS linear, Vout=VDD. Region B: NMOS
-saturation, PMOS linear. Region C: both saturation (transition). Region D: NMOS linear,
-PMOS saturation. Region E: NMOS linear, PMOS off, Vout=0.
-
-**Q2: Derive the switching threshold VM. How do you make VM = VDD/2?**
-
-Set IDn = IDp with both in saturation: kn(VM-Vthn)² = kp(VDD-VM-|Vthp|)². Solving gives
-$V_M = \dfrac{V_{thn} + r(V_{DD}-|V_{thp}|)}{1+r}$ where $r = \sqrt{k_p/k_n}$. For VM = VDD/2 with equal
-thresholds: kp = kn, meaning $W_p/L_p \approx 2.5 \times W_n/L_n$ (to compensate for lower hole mobility).
-
-**Q3: Why is NAND preferred over NOR in CMOS?**
-
-NAND has NMOS in series and PMOS in parallel. NOR has PMOS in series and NMOS in parallel.
-Since PMOS is ~2.5× slower than NMOS (lower mobility), series PMOS in NOR creates very
-high pull-up resistance, making NOR gates much slower and larger for equal drive strength.
-For an N-input NOR, each PMOS must be N×2.5× minimum width — prohibitively large.
-
-**Q4: Explain latch-up. How is it triggered and prevented?**
-
-Latch-up occurs when parasitic PNP and NPN BJTs in CMOS form a positive feedback loop
-(thyristor/SCR structure). Triggered when substrate or well current forward-biases one
-BJT, which then feeds the other. Once triggered, a low-impedance VDD-to-GND path forms
-with potentially destructive current. Prevention: guard rings (reduce well/substrate
-resistance), sufficient NMOS-PMOS spacing, epitaxial substrate, trench isolation, frequent
-well taps, and SOI processes (which eliminate latch-up entirely).
-
-**Q5: What is the body effect and when does it matter?**
-
-The body effect increases Vth when source-to-body voltage (VSB) is non-zero:
-$V_{th} = V_{th0} + \gamma\left(\sqrt{2\phi_F+V_{SB}} - \sqrt{2\phi_F}\right)$. It matters in stacked transistors (e.g., 4-input
-NAND: the NMOS closest to the output has its source above GND due to other NMOS below it,
-increasing VSB and thus Vth, which slows the gate). Also matters in source-follower
-circuits and transmission gates.
-
-**Q6: Compare planar MOSFET, FinFET, and GAAFET.**
-
-Planar: gate contacts channel from one side. Good to ~28nm. Poor short-channel control
-below 22nm. FinFET: gate wraps 3 sides of a vertical fin. Used at 22nm-5nm. Quantized
-width (integer number of fins). Excellent short-channel control. GAAFET: gate wraps all
-4 sides of horizontal nanosheets. Used at 3nm and below. Even better electrostatic control.
-Width is continuously adjustable via nanosheet width (unlike FinFET's quantized fin count).
-Samsung 3nm MBCFET (2022) was first; TSMC N2 (2025) and Intel 18A/RibbonFET (2025) follow.
-
-**Q7: What is fin quantization and how does it impact design?**
-
-In FinFET, transistor width is quantized — only integer numbers of fins are possible.
-Unlike planar CMOS where W can be any continuous value, FinFET designs must choose 1, 2,
-3... fins. This makes fine-grained sizing impossible, affects drive strength ratios in
-standard cells, complicates analog design (current mirrors need precise ratios), and
-requires library architects to carefully choose fin counts for each cell variant.
-
-**Q8: Explain the temperature inversion effect at advanced nodes.**
-
-At high VDD (>0.9V), the traditional relationship holds: higher temperature → slower
-(mobility decreases). But at low VDD (<0.8V), higher temperature → FASTER. This is because
-Vth decreases with temperature, and at low VDD the Vth reduction provides more
-current increase than the mobility decrease causes current loss. The crossover voltage
-where temperature has no effect is called the zero-temperature-coefficient (ZTC) point.
-
-**Q9: What are noise margins? How do you calculate them?**
-
-NMH = VOH - VIH (tolerance for high logic level). NML = VIL - VOL (tolerance for low
-level). VIH and VIL are defined as the points on the VTC where gain = -1. For a symmetric
-CMOS inverter with $V_{DD} = 0.7$ V and $V_t = 0.3$ V, $N_{MH} = N_{ML} \approx 0.34$ V (about 48% of VDD).
-Ideal CMOS has VOH = VDD and VOL = 0, giving excellent noise margins.
-
-**Q10: What is velocity saturation and why does it matter?**
-
-In long-channel MOSFETs, current scales quadratically with (VGS-Vth). But in
-short-channel devices (< 100nm), the lateral electric field is so high that carrier
-velocity saturates at vsat ≈ 10^7 cm/s. This makes IDS proportional to (VGS-Vth)
-linearly instead of quadratically, reducing the benefit of higher VGS. It also means
-that NMOS and PMOS performance is closer than predicted by mobility ratio alone (since
-both saturate at similar velocities).
-
-**Q11: What is DIBL and how does it affect timing?**
-
-Drain-Induced Barrier Lowering: the drain voltage reduces the source-channel potential
-barrier, effectively lowering Vth. Higher VDS → lower Vth → more current → faster
-switching. But also more leakage (lower Vth at VDS = VDD). DIBL creates a coupling
-between neighboring gates through shared drain nodes and is a major concern for timing
-variation at advanced nodes (η can be 50-100 mV/V at 7nm).
-
-**Q12: Compare HBM and CDM ESD models.**
-
-HBM models a human touching a pin: 100pF through 1.5kΩ, peak ~1.3A over ~150ns. CDM
-models the IC itself discharging: very fast (<1ns), peak >10A. CDM is more damaging to
-thin gate oxides because the high peak current density causes localized oxide breakdown.
-Modern specs typically require ±2kV HBM and ±500V CDM survival.
-
-**Q13: Why does wire resistance increase at advanced nodes?**
-
-At 7nm and below, Cu wire width approaches the electron mean free path (~40nm). Two
-effects increase resistivity: (1) Surface scattering — electrons bounce off wire surfaces.
-(2) Grain boundary scattering — more grain boundaries per unit length. The effective
-resistivity can be 2-5× higher than bulk Cu. This is why alternative metals (Co, Ru)
-are being explored — they have shorter mean free paths so they're less affected by
-narrow widths.
-
-**Q14: What is the subthreshold slope and why can't it go below 60 mV/dec?**
-
-The subthreshold slope $S = (kT/q) \times \ln(10) \times (1 + C_d/C_{ox})$ defines how sharply the
-transistor turns off. The theoretical minimum at room temperature is (kT/q) × ln(10) ≈
-60 mV/decade (when Cd/Cox → 0, i.e., perfect gate control). This is the Boltzmann tyranny
-— set by thermal physics. It limits how low VDD can go while maintaining adequate
-on/off ratio. Overcoming this requires non-classical devices (tunnel FET, negative
-capacitance FET).
-
-**Q15: What is the difference between static and dynamic CMOS logic?**
-
-Static CMOS: pull-up (PMOS) and pull-down (NMOS) networks. Outputs are always driven.
-Ratioless, full rail-to-rail swing, good noise margins, but 2N transistors for N inputs.
-Dynamic CMOS: uses precharge/evaluate phases with a clock. N+2 transistors for N inputs,
-faster (lower input capacitance since no PMOS in logic network), but sensitive to charge
-sharing, noise, clock skew, and only supports non-inverting functions (in domino).
-
-**Q16: What is charge sharing in dynamic logic and how do you fix it?**
-
-During evaluation, internal nodes in the NMOS pull-down network may not be precharged.
-When evaluation begins, charge from the precharged output node redistributes to these
-internal nodes, causing the output voltage to drop even when the PDN shouldn't conduct.
-Fix: precharge all internal nodes (add PMOS to each internal node), or add a keeper
-(weak PMOS from output to VDD, feedback-controlled) that fights the charge redistribution.
-
-**Q17: What are process corners and why do we need MCMM?**
-
-Process corners (TT, FF, SS, FS, SF) model manufacturing variation in NMOS and PMOS
-parameters. MCMM (Multi-Corner Multi-Mode) runs timing analysis at multiple
-corner-mode combinations simultaneously: e.g., SS/0.9*VDD/125°C for setup,
-FF/1.1*VDD/-40°C for hold. This is needed because setup violations worsen at slow
-corners while hold violations worsen at fast corners. Modern tools (PrimeTime, Tempus)
-handle 20+ MCMM scenarios in a single analysis.
-
-**Q18: Explain the concept of logical effort.**
-
-Logical effort quantifies the delay cost of computing a logic function compared to an
-inverter. It's defined as the ratio of input capacitance of a gate to that of an
-inverter with equal output drive. For minimum delay through a path, each stage should
-have equal stage effort (product of logical effort, electrical effort, and branching
-effort). This leads to optimal gate sizing: larger gates for higher fan-out stages.
-
-**Q19: What is random dopant fluctuation (RDF)?**
-
-In modern transistors, the channel is so small that individual dopant atoms matter.
-A minimum-size 7nm transistor might have only 10-20 dopant atoms under the gate.
-The exact number and position of these atoms is random, causing Vth variation:
-σ(Vth) ∝ 1/√(W×L). This is a major source of mismatch and timing variation at
-advanced nodes. FinFETs partially mitigate RDF by using undoped channels with
-workfunction engineering to set Vth.
-
-**Q20: What is CPODE and why is it important?**
-
-Continuous Poly on Diffusion Edge cuts the polysilicon gate at the boundary of active
-region to isolate adjacent transistors. This allows tighter cell-to-cell spacing compared
-to dummy poly approach, increasing standard cell density. It's a key enabler for smaller
-standard cell heights (6T, 5.5T) at 5nm and below.
-
-**Q21: Explain buried power rail (BPR) and backside power delivery.**
-
-Buried Power Rail places VDD/VSS rails below the transistor layer (buried in the silicon),
-freeing up Metal 1 for signal routing. Backside Power Delivery (BSPDN) takes this further
-— the entire power grid is on the back of the wafer, completely decoupling power and signal
-routing. Benefits: more routing resources, lower IR drop (shorter power paths), better cell
-density. Intel PowerVia (first deployed in Intel 18A, 2025) delivers power through backside
-vias, eliminating IR drop on frontside metal by up to 50%. TSMC N2P will use Super Power Rail
-(SPR) backside delivery. Samsung SF2 node also plans BSPDN.
-
-**Q22: Why does lowering VDD help power more than it hurts performance?**
-
-Dynamic power ∝ VDD². Delay ∝ VDD/(VDD-Vth)^α where α ≈ 1-2. So a 10% VDD reduction
-gives ~19% power savings but only ~10-15% delay increase (when VDD >> Vth). The
-energy-delay product (EDP) improves with VDD reduction until VDD approaches ~3nVT
-(near-threshold). This is why DVFS is so effective — even modest voltage reduction
-yields significant power savings with manageable performance loss.
-
-**Q23: What is antenna effect and how is it fixed?**
-
-During metal etching in fabrication, long metal lines connected to a gate can accumulate
-charge from the plasma. This charge can damage the thin gate oxide via Fowler-Nordheim
-tunneling. The antenna ratio = metal_area / gate_area. If it exceeds the process limit,
-fixes include: adding a diode to the gate node (provides discharge path), breaking the
-long metal into segments on different layers (layer hopping), or rerouting.
-
-**Q24: What is the difference between SOI and bulk CMOS?**
-
-In bulk CMOS, transistors are built directly on the silicon substrate — they share the
-substrate and have body ties, parasitic capacitance, body effect, and latch-up risk.
-In SOI, a buried oxide (BOX) layer isolates each transistor from the substrate.
-Benefits: no latch-up, lower junction capacitance (30-50% less), reduced body effect,
-better short-channel control. Drawbacks: floating body effects (in partially-depleted SOI),
-self-heating (oxide is a thermal insulator), higher wafer cost.
-
-**Q25: How does CMP affect ASIC design?**
-
-Chemical Mechanical Polishing planarizes metal and dielectric surfaces. If metal density
-is non-uniform, CMP causes thickness variation — dense regions polish faster (dishing),
-sparse regions stay thick. This affects: wire resistance (thinner wire = higher R),
-capacitance, and timing. Design rules require metal density to stay within bounds
-(typically 20-80%), achieved by inserting dummy metal fill in sparse regions.
-
----
-
-## 11. Elmore Delay Model
+## 10. Elmore Delay Model
 
 ### 11.1 RC Tree Delay
 
@@ -1219,7 +1012,7 @@ quadratically with length ($RC \propto L^2$), making wire delay dominant beyond 
 
 ---
 
-## 12. Logical Effort
+## 11. Logical Effort
 
 ### 12.1 Methodology
 
@@ -1316,7 +1109,7 @@ The delay of 13.32τ is the theoretical minimum for this path topology; any othe
 
 ---
 
-## 13. 6T SRAM Cell
+## 12. 6T SRAM Cell
 
 ### 13.1 Cell Schematic
 
@@ -1424,7 +1217,7 @@ Typical array size:    128-512 rows × 64-256 columns per subarray
 
 ---
 
-## 14. Leakage Current Breakdown
+## 13. Leakage Current Breakdown
 
 ### 14.1 Four Leakage Components
 
@@ -1513,7 +1306,7 @@ Mitigation: careful overlap engineering, lower VDD, LDD (lightly-doped drain) st
 
 ---
 
-## 15. Numbers to Memorize
+## 14. Numbers to Memorize
 
 | Quantity | Value | Why it matters |
 |----------|-------|----------------|

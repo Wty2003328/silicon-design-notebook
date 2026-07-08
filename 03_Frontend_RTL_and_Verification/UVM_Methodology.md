@@ -304,28 +304,6 @@ endclass
 
 ---
 
-## 11. Interview Q&A
-
-**Q: Why does UVM need a factory at all — isn't `new()` polymorphic enough?**
-**A:** Polymorphism needs the *caller* to choose the subclass at construction. The env code is frozen/reusable; only the test knows it wants `bad_parity_item`. The factory inverts control: env asks for a type by name, test injects the override. Construction-site polymorphism without editing the construction site.
-
-**Q: Monitor vs driver — can the monitor reuse the driver's pin code?**
-**A:** No — monitor must be passive (observe-only) and must work when the agent is passive (driver doesn't exist) and at system level where stimulus comes from real RTL neighbors. Independent observation also catches driver bugs; sharing code would verify the driver against itself.
-
-**Q: A test hangs at the end of stimulus. Triage tree?**
-**A:** (1) objection never dropped — `+UVM_OBJECTION_TRACE` shows the holder; (2) `finish_item` blocked — driver missing `item_done` (or driver never got the vif and is stuck at time 0); (3) `get_response` without responses; (4) forever-loop sequence started with `start()` (blocking) instead of fork. In that order of frequency.
-
-**Q: Why are sequences objects, not components?**
-**A:** They're transient *programs* over the static testbench: created per-run, possibly many concurrent, layered/nested, and they must travel (start on any matching sequencer). Components are fixed topology built at elaboration; stimulus must not be.
-
-**Q: When do you reach for `grab()` over priority arbitration?**
-**A:** Atomicity, not preference: a multi-item protocol unit (e.g., locked RMW, interrupt service burst) where interleaving any other sequence's item corrupts the protocol. Priority biases the long-run mix; grab guarantees an uninterrupted window.
-
-**Q: How does the scoreboard learn about register side-effects (e.g., write to CTRL flushes a FIFO)?**
-**A:** Subscribe the explicit RAL predictor to the config-bus monitor; scoreboard queries the register model's mirror (or the predictor publishes typed "config change" analysis transactions). DUT behavioral model keys off mirrored config — never off the stimulus side, or passive/firmware accesses break it.
-
----
-
 ## Cross-references
 
 - Language mechanics underneath: [OOP_and_Randomization](OOP_and_Randomization.md) (factory = polymorphism + registry; constraints), [IPC_and_Verification](IPC_and_Verification.md) (TLM vs raw mailboxes).
