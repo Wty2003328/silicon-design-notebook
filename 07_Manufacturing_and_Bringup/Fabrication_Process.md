@@ -24,40 +24,36 @@
 
 ### 1.1 Silicon Crystal Growth
 
-```
-Czochralski (CZ) Process:
-  1. Polysilicon chunks melted in quartz crucible at 1414°C
-  2. Seed crystal (small single-crystal Si) dipped into melt
-  3. Slowly pulled upward and rotated → single crystal ingot grows
-  4. Growth rate: ~1-2 mm/min, rotation: ~10-30 RPM
+**Czochralski (CZ) Process:**
+   1. Polysilicon chunks melted in quartz crucible at 1414°C
+2. Seed crystal (small single-crystal Si) dipped into melt
+3. Slowly pulled upward and rotated → single crystal ingot grows
+4. Growth rate: ~1-2 mm/min, rotation: ~10-30 RPM
 
-Crystal orientation:
-  (100): Most common for CMOS — lower interface trap density
-  (111): Used for some bipolar processes — higher mobility in certain directions
+**Crystal orientation:**
+   - (100): Most common for CMOS — lower interface trap density
+   - (111): Used for some bipolar processes — higher mobility in certain directions
 
-Wafer diameters (evolution):
-  100mm (4") → 150mm (6") → 200mm (8") → 300mm (12") → 450mm (planned)
-  Larger wafers → more dies → lower cost per chip
-  300mm is current mainstream (since ~2001)
-```
+**Wafer diameters (evolution):**
+   - 100mm (4") → 150mm (6") → 200mm (8") → 300mm (12") → 450mm (planned)
+   - Larger wafers → more dies → lower cost per chip
+   - 300mm is current mainstream (since ~2001)
 
 ### 1.2 Wafer Specifications
 
-```
 Typical 300mm wafer specs:
-  Diameter:     300 ± 0.2 mm
-  Thickness:    775 ± 25 μm
-  Resistivity:  1-20 Ω·cm (p-type, boron-doped for NMOS bulk)
-  Crystal:      <100> orientation
-  Flatness:     TTV (Total Thickness Variation) < 2 μm
-  Defect density: < 0.1/cm² (for advanced nodes)
+- **Diameter** — 300 ± 0.2 mm
+- **Thickness** — 775 ± 25 μm
+- **Resistivity** — 1-20 Ω·cm (p-type, boron-doped for NMOS bulk)
+- **Crystal** — <100> orientation
+- **Flatness** — TTV (Total Thickness Variation) < 2 μm
+- **Defect density** — < 0.1/cm² (for advanced nodes)
 
-Cost: ~$500-1000 per bare wafer, ~$10,000-20,000 after full processing
-```
+- **Cost** — ~$500-1000 per bare wafer, ~$10,000-20,000 after full processing
 
 ### 1.3 Epitaxial Layer
 
-```
+```ascii-graph
 Epi layer: Thin (2-20 μm) single-crystal Si grown on wafer surface
   - Lightly doped p-type epi on heavily doped p+ substrate
   - Provides better transistor characteristics (controlled doping)
@@ -74,7 +70,7 @@ Epi layer: Thin (2-20 μm) single-crystal Si grown on wafer surface
 
 ### 2.1 Thermal Oxidation
 
-```
+```ascii-graph
 Si + O2 → SiO2 (dry oxidation)
   - Slow growth rate, high quality oxide
   - Used for gate oxide (critical — determines transistor performance)
@@ -90,7 +86,7 @@ Si + 2H2O → SiO2 + 2H2 (wet oxidation)
 
 ### 2.2 Deal-Grove Model
 
-```
+```text
 Oxide thickness vs. time:
 
   x² + A*x = B*(t + τ)
@@ -111,26 +107,24 @@ Two regimes:
 
 **Worked Example — Deal-Grove (Dry Oxide at 1000°C):**
 
-```
 Problem: Calculate the time to grow 10 nm of dry SiO2 at 1000°C on a bare silicon wafer.
 
 Given (at 1000°C, dry O2):  A = 0.165 μm,  B = 0.0117 μm²/hr,  τ ≈ 0 (bare silicon)
 
 Deal-Grove equation:  x² + A·x = B·(t + τ)
 
-For x = 10 nm = 0.01 μm:
-  (0.01)² + 0.165 × 0.01 = 0.0117 × t
-  0.0001 + 0.00165 = 0.0117 × t
-  t = 0.00175 / 0.0117 ≈ 0.15 hr ≈ 9 minutes
+- **For x** = `10 nm = 0.01 μm:`
+   - (0.01)² + 0.165 × 0.01 = 0.0117 × t
+   - 0.0001 + 0.00165 = 0.0117 × t
+   - t = 0.00175 / 0.0117 ≈ 0.15 hr ≈ 9 minutes
 
 Note: at this thickness we are in the linear regime (x << A/2 = 0.0825 μm),
 so the linear approximation gives a close answer:
-  t ≈ x / (B/A) = x × A/B = 0.01 × 0.165/0.0117 = 0.141 hr ≈ 8.5 min
-```
+t ≈ x / (B/A) = x × A/B = 0.01 × 0.165/0.0117 = 0.141 hr ≈ 8.5 min
 
 ### 2.3 Gate Oxide at Advanced Nodes
 
-```
+```ascii-graph
 SiO2 gate oxide thickness trend:
   180nm node: tox ≈ 3.5 nm
   90nm node:  tox ≈ 1.2 nm
@@ -155,7 +149,7 @@ Metal gate (replaces poly-Si):
 
 ### 3.1 Photolithography Fundamentals
 
-```
+```ascii-graph
 Process:
   1. Spin-coat photoresist on wafer
   2. Expose resist through mask (reticle) using UV light
@@ -167,7 +161,7 @@ Process:
   Negative resist: exposed area becomes insoluble → stays after develop
 
 Resolution limit (Rayleigh equation):
-  CD_min = k1 × λ / NA
+  $CD_{min} = k_1 \times \lambda / NA$
 
   CD_min: minimum feature size (Critical Dimension)
   k1: process factor (theoretical minimum = 0.25, practical ≈ 0.3-0.4)
@@ -181,7 +175,7 @@ Depth of Focus:
 
 **Worked Example — Rayleigh Equation:**
 
-```
+```text
 Problem: A 193 nm immersion scanner has NA = 1.35.
 What is the minimum half-pitch at k1 = 0.25? At k1 = 0.35?
 
@@ -197,23 +191,21 @@ EUV comparison:
 
 ### 3.2 DUV (Deep Ultraviolet) Lithography
 
-```
 g-line (436nm):  Used for > 500nm features
 i-line (365nm):  Used for 350-500nm features
 KrF (248nm):     Used for 250-130nm features
 ArF (193nm):     Used for 90-65nm features
 ArF immersion (193nm, NA=1.35): Used for 45-7nm features (with multi-patterning)
 
-ArF immersion:
-  - Water (n=1.44) between lens and wafer increases effective NA
-  - NA = n × sin(θ) → max NA = 1.35 (with water)
-  - Resolution: 193/1.35 × k1 ≈ 40nm half-pitch (with k1 = 0.28)
-  - Requires multi-patterning for sub-40nm features
-```
+**ArF immersion:**
+   - Water (n=1.44) between lens and wafer increases effective NA
+   - NA = n × sin(θ) → max NA = 1.35 (with water)
+   - Resolution: 193/1.35 × k1 ≈ 40nm half-pitch (with k1 = 0.28)
+   - Requires multi-patterning for sub-40nm features
 
 ### 3.3 EUV (Extreme Ultraviolet) Lithography
 
-```
+```ascii-graph
 Wavelength: 13.5 nm (vs 193nm for ArF)
   → Much better resolution: CD_min ≈ 13.5/0.33 × 0.3 ≈ 12 nm
 
@@ -247,7 +239,7 @@ High-NA EUV:
 
 ### 3.4 Resolution Enhancement Techniques (RET)
 
-```
+```ascii-graph
 OPC (Optical Proximity Correction):
   - Add assist features to mask to pre-compensate for optical distortion
   - Serifs (corner additions), hammerheads (line-end extensions)
@@ -275,7 +267,7 @@ SMO (Source-Mask Optimization):
 
 ### 4.1 Wet Etching
 
-```
+```ascii-graph
 Mechanism: Chemical reaction dissolves target material
 
 Etchants:
@@ -303,7 +295,7 @@ Undercut problem:
 
 ### 4.2 Dry Etching (Plasma Etching)
 
-```
+```text
 Types:
   1. Physical (ion milling/sputtering):
      - Energetic ions physically knock atoms off surface
@@ -339,22 +331,20 @@ Key etch metrics:
 
 ### 4.3 Advanced Etch Challenges
 
-```
 At 7nm and below:
-  - Atomic Layer Etching (ALE): removes material one atomic layer at a time
-    - Self-limiting reactions (like ALD, but removal instead of deposition)
-    - Needed for fin recess, gate etch with atomic-scale precision
-  
-  - Etch selectivity becomes critical:
-    - Gate etch must stop on thin (1-2nm) gate oxide without damage
-    - Spacer etch must not attack fin sidewalls
-    - Contact etch through multiple layers with different selectivity
+- Atomic Layer Etching (ALE): removes material one atomic layer at a time
+- Self-limiting reactions (like ALD, but removal instead of deposition)
+- Needed for fin recess, gate etch with atomic-scale precision
 
-  - Aspect-ratio-dependent etching (ARDE):
-    - Dense features etch slower than isolated features
-    - Due to reduced ion/radical access in narrow trenches
-    - Requires etch bias compensation
-```
+- Etch selectivity becomes critical:
+- Gate etch must stop on thin (1-2nm) gate oxide without damage
+- Spacer etch must not attack fin sidewalls
+- Contact etch through multiple layers with different selectivity
+
+- Aspect-ratio-dependent etching (ARDE):
+- Dense features etch slower than isolated features
+- Due to reduced ion/radical access in narrow trenches
+- Requires etch bias compensation
 
 ---
 
@@ -362,7 +352,7 @@ At 7nm and below:
 
 ### 5.1 Ion Implantation Process
 
-```
+```ascii-graph
 Beam line implanter:
   Ion source → Mass analyzer → Accelerator → Scanner → Wafer
 
@@ -381,7 +371,7 @@ Key parameters:
 
 ### 5.2 Implant Physics
 
-```
+```ascii-graph
 Range and straggle (Gaussian approximation):
   N(x) = (Dose / (√(2π) × ΔRp)) × exp(-(x - Rp)² / (2 × ΔRp²))
 
@@ -401,7 +391,7 @@ Channeling:
 
 ### 5.3 Activation Anneal
 
-```
+```ascii-graph
 After implantation:
   - Dopants are NOT electrically active (interstitial positions)
   - Crystal is damaged (displaced Si atoms)
@@ -428,7 +418,7 @@ Anneal types:
 
 ### 5.4 Implants in CMOS Process
 
-```
+```text
 Key implant steps:
   1. Well implant:       Deep, high-dose (forms n-well and p-well)
   2. Channel implant:    Sets threshold voltage (Vt adjust)
@@ -449,7 +439,7 @@ At advanced nodes (FinFET):
 
 ### 6.1 Chemical Vapor Deposition (CVD)
 
-```
+```ascii-graph
 Principle: Gas-phase precursors react at hot wafer surface to form solid film
 
 Types:
@@ -477,30 +467,28 @@ Types:
 
 ### 6.2 Physical Vapor Deposition (PVD / Sputtering)
 
-```
 Principle: Physical transfer of material from target to wafer
 
-DC/RF Magnetron Sputtering:
-  1. Ar gas ionized to form plasma
-  2. Ar+ ions accelerated toward target (cathode)
-  3. Target atoms knocked off (sputtered)
-  4. Sputtered atoms travel to wafer and deposit
+**DC/RF Magnetron Sputtering:**
+   1. Ar gas ionized to form plasma
+2. Ar+ ions accelerated toward target (cathode)
+3. Target atoms knocked off (sputtered)
+4. Sputtered atoms travel to wafer and deposit
 
-  Used for: Metal films (Al, Cu barrier/seed, Ti, TiN, Ta, TaN, W)
-  
-  Advantages: Good adhesion, controlled composition, alloy deposition
-  Disadvantages: Poor step coverage (line-of-sight process)
+Used for: Metal films (Al, Cu barrier/seed, Ti, TiN, Ta, TaN, W)
 
-Ionized PVD (iPVD):
-  - Ionize sputtered atoms using secondary plasma
-  - Electric field directs ions into trenches/vias
-  - Better step coverage than conventional PVD
-  - Used for: barrier/seed layers in high-aspect-ratio vias
-```
+Advantages: Good adhesion, controlled composition, alloy deposition
+Disadvantages: Poor step coverage (line-of-sight process)
+
+**Ionized PVD (iPVD):**
+   - Ionize sputtered atoms using secondary plasma
+   - Electric field directs ions into trenches/vias
+   - Better step coverage than conventional PVD
+   - Used for: barrier/seed layers in high-aspect-ratio vias
 
 ### 6.3 Atomic Layer Deposition (ALD)
 
-```
+```ascii-graph
 Principle: Self-limiting, layer-by-layer growth
 
 Cycle:
@@ -532,7 +520,7 @@ Disadvantages:
 
 ### 6.4 Electrochemical Deposition (ECD)
 
-```
+```ascii-graph
 Used for: Copper metallization (since 130nm Cu interconnect)
 
 Dual Damascene copper process:
@@ -560,7 +548,7 @@ ECD copper plating:
 
 ### 7.1 Process
 
-```
+```text
 Principle: Combination of chemical dissolution and mechanical abrasion
 
 Setup:
@@ -584,7 +572,7 @@ Preston's equation:
 
 ### 7.2 CMP Challenges
 
-```
+```ascii-graph
 Dishing:
   - Soft metal (Cu) polished faster than surrounding dielectric
   - Creates recessed metal surface → increased resistance
@@ -611,32 +599,30 @@ Dishing + Erosion model:
 
 ### 8.1 Simplified Flow (28nm Planar CMOS)
 
-```
-Step  | Process           | Purpose
-------|-------------------|----------------------------------------
-1     | STI formation     | Isolate transistors
-2     | Well implants     | Form n-well (for PMOS) and p-well (for NMOS)
-3     | Vt adjust implant | Set threshold voltage
-4     | Gate oxide growth  | Thin oxide for gate dielectric (or high-k dep)
-5     | Poly-Si deposition| Gate electrode material
-6     | Gate patterning    | Define gate shapes (most critical litho step)
-7     | Halo implant       | Counter-doping for SCE control
-8     | LDD implant        | Lightly-doped drain extension
-9     | Spacer formation   | Si3N4 spacers on gate sidewalls
-10    | S/D implant        | Heavy-dose source/drain
-11    | Activation anneal  | Activate dopants, repair damage
-12    | Silicidation       | NiSi on gate/S/D for low contact resistance
-13    | Contact etch       | Open holes to S/D and gate
-14    | W plug fill        | Tungsten fill in contacts
-15    | M1 deposition/etch | First metal layer (Cu damascene)
-16    | Repeat M2-MN       | Additional metal layers
-17    | Passivation        | Protective layer (Si3N4/SiO2)
-18    | Pad opening        | Expose bond pads
-```
+| Step | Process | Purpose |
+|---|---|---|
+| 1 | STI formation | Isolate transistors |
+| 2 | Well implants | Form n-well (for PMOS) and p-well (for NMOS) |
+| 3 | Vt adjust implant | Set threshold voltage |
+| 4 | Gate oxide growth | Thin oxide for gate dielectric (or high-k dep) |
+| 5 | Poly-Si deposition | Gate electrode material |
+| 6 | Gate patterning | Define gate shapes (most critical litho step) |
+| 7 | Halo implant | Counter-doping for SCE control |
+| 8 | LDD implant | Lightly-doped drain extension |
+| 9 | Spacer formation | Si3N4 spacers on gate sidewalls |
+| 10 | S/D implant | Heavy-dose source/drain |
+| 11 | Activation anneal | Activate dopants, repair damage |
+| 12 | Silicidation | NiSi on gate/S/D for low contact resistance |
+| 13 | Contact etch | Open holes to S/D and gate |
+| 14 | W plug fill | Tungsten fill in contacts |
+| 15 | M1 deposition/etch | First metal layer (Cu damascene) |
+| 16 | Repeat M2-MN | Additional metal layers |
+| 17 | Passivation | Protective layer (Si3N4/SiO2) |
+| 18 | Pad opening | Expose bond pads |
 
 ### 8.2 STI (Shallow Trench Isolation) Process
 
-```
+```ascii-graph
 1. Grow pad oxide (~10nm SiO2)
 2. Deposit Si3N4 (~100nm) — CMP stop layer
 3. Pattern and etch trenches into Si (~300-500nm deep)
@@ -658,30 +644,28 @@ Cross-section:
 
 ### 8.3 Gate-First vs Gate-Last (Replacement Metal Gate)
 
-```
-Gate-First (traditional):
-  Form gate stack → S/D implant → anneal
-  Problem: High-k/metal gate must survive S/D anneal (~1050°C)
-  This degrades work function and high-k quality
+**Gate-First (traditional):**
+   - Form gate stack → S/D implant → anneal
+   - Problem: High-k/metal gate must survive S/D anneal (~1050°C)
+   - This degrades work function and high-k quality
 
-Gate-Last (Replacement Metal Gate, RMG):
-  Form dummy poly gate → S/D implant → anneal → 
-  remove dummy gate → deposit high-k + metal gate
-  
-  Advantage: High-k and metal gate not exposed to high temperature
-  Used at: 32nm (Intel) and all subsequent FinFET nodes
+**Gate-Last (Replacement Metal Gate, RMG):**
+   - Form dummy poly gate → S/D implant → anneal →
+   - remove dummy gate → deposit high-k + metal gate
 
-  Process:
-  1. Dummy poly gate patterned (same as gate-first up to spacer)
-  2. S/D epitaxy + implant + anneal
-  3. Deposit ILD0, CMP to expose top of dummy gate
-  4. Etch out dummy poly (selective to spacer and substrate)
-  5. Remove dummy gate oxide
-  6. Deposit high-k (HfO2 by ALD, ~2nm)
-  7. Deposit work function metals (TiN/TiAl for NMOS/PMOS)
-  8. Fill gate trench with W or Al
-  9. CMP to planarize gate metal
-```
+Advantage: High-k and metal gate not exposed to high temperature
+Used at: 32nm (Intel) and all subsequent FinFET nodes
+
+Process:
+1. Dummy poly gate patterned (same as gate-first up to spacer)
+2. S/D epitaxy + implant + anneal
+3. Deposit ILD0, CMP to expose top of dummy gate
+4. Etch out dummy poly (selective to spacer and substrate)
+5. Remove dummy gate oxide
+6. Deposit high-k (HfO2 by ALD, ~2nm)
+7. Deposit work function metals (TiN/TiAl for NMOS/PMOS)
+8. Fill gate trench with W or Al
+9. CMP to planarize gate metal
 
 ---
 
@@ -689,7 +673,7 @@ Gate-Last (Replacement Metal Gate, RMG):
 
 ### 9.1 Fin Formation
 
-```
+```ascii-graph
 1. Pattern fins using self-aligned techniques (SADP/SAQP at 7nm)
    - Fin pitch: 25-30nm at 7nm node
    - Fin width: 6-7nm
@@ -712,7 +696,7 @@ Cross-section after fin formation:
 
 ### 9.2 Gate Wrap-Around
 
-```
+```ascii-graph
 After gate dielectric and metal deposition, the gate material
 conformally wraps around the fin:
 
@@ -734,7 +718,7 @@ conformally wraps around the fin:
 
 ### 9.3 Source/Drain Epitaxy
 
-```
+```ascii-graph
 FinFET S/D is NOT formed by implant (fins are too narrow)
 Instead: Selective Epitaxial Growth (SEG)
 
@@ -762,7 +746,7 @@ Strain engineering:
 
 ### 9.4 GAA Nanosheet Fabrication
 
-```
+```ascii-graph
 Transition from FinFET to Gate-All-Around at 3nm/2nm nodes:
 
 1. Start with a Si/SiGe superlattice on SOI:
@@ -825,7 +809,7 @@ Intel RibbonFET — Intel 18A (1.8nm):
 
 ### 9.5 CFET (Complementary FET) — Future Beyond 2nm
 
-```
+```ascii-graph
 CFET: Stacked NMOS over PMOS (or vice versa) in a single vertical structure
 
   Traditional (FinFET/GAA):
@@ -868,26 +852,25 @@ CFET: Stacked NMOS over PMOS (or vice versa) in a single vertical structure
 
 ### 10.1 Metal Interconnect Stack
 
-```
 Advanced node metal stack (7nm example):
-  Layer    | Pitch  | Material | Purpose
-  ---------|--------|----------|------------------
-  M1       | 28nm   | Cu (CoAl)| Local connections
-  M2       | 28nm   | Cu       | Local connections
-  M3       | 40nm   | Cu       | Intermediate
-  M4       | 40nm   | Cu       | Intermediate
-  M5-M8    | 56nm   | Cu       | Semi-global
-  M9-M10   | 80nm   | Cu       | Semi-global
-  M11-M12  | 280nm  | Cu       | Global (power, clock)
-  M13 (AP) | 1.6μm  | Al/Cu    | Top metal (pad, inductor)
 
-  Total: 12-15 metal layers at 7nm
+| Layer | Pitch | Material | Purpose |
+|---|---|---|---|
+| M1 | 28nm | Cu (CoAl) | Local connections |
+| M2 | 28nm | Cu | Local connections |
+| M3 | 40nm | Cu | Intermediate |
+| M4 | 40nm | Cu | Intermediate |
+| M5-M8 | 56nm | Cu | Semi-global |
+| M9-M10 | 80nm | Cu | Semi-global |
+| M11-M12 | 280nm | Cu | Global (power, clock) |
+| M13 (AP) | 1.6μm | Al/Cu | Top metal (pad, inductor) |
+
+Total: 12-15 metal layers at 7nm
   Pitch doubles roughly every 2-3 layers
-```
 
 ### 10.2 Dual Damascene Process
 
-```
+```ascii-graph
 Standard copper interconnect formation:
 
 1. Deposit ILD (low-k dielectric, k ≈ 2.5-3.0)
@@ -921,7 +904,7 @@ Dual damascene: via and trench formed together → one Cu fill step
 
 ### 10.3 Low-k Dielectrics
 
-```
+```ascii-graph
 Why low-k:
   RC delay ∝ R × C
   C ∝ k × (area/spacing)
@@ -947,7 +930,7 @@ Challenges:
 
 ### 11.1 Double Patterning (LELE)
 
-```
+```ascii-graph
 LELE = Litho-Etch-Litho-Etch
 
 When minimum pitch < single-exposure resolution:
@@ -975,7 +958,7 @@ Coloring: Assigning features to Mask 1 or Mask 2
 
 ### 11.2 Self-Aligned Double Patterning (SADP)
 
-```
+```ascii-graph
 SADP eliminates overlay error by using spacer deposition:
 
 1. Pattern mandrels (wider pitch, easy litho)
@@ -998,7 +981,7 @@ Used at: 14nm, 10nm, 7nm for critical layers (M1, fins)
 
 ### 11.3 Self-Aligned Quadruple Patterning (SAQP)
 
-```
+```ascii-graph
 SAQP = Two rounds of SADP → 4× density
 
 1. Pattern mandrels at relaxed pitch P
@@ -1018,7 +1001,7 @@ Challenges:
 
 ### 11.4 DTCO (Design-Technology Co-Optimization)
 
-```
+```ascii-graph
 DTCO: Jointly optimizing process technology and circuit design to maximize
 PPA (Power, Performance, Area) benefits at each node.
 
@@ -1066,7 +1049,7 @@ Key DTCO techniques at advanced nodes:
 
 ### 12.1 Yield Models
 
-```
+```ascii-graph
 Poisson yield model (simple):
   Y = exp(-D × A)
   
@@ -1092,7 +1075,7 @@ Defect density at advanced nodes:
 
 ### 12.2 Types of Defects
 
-```
+```text
 Particle defects:
   - Dust, contamination landing on wafer
   - Causes shorts (bridging between lines) or opens
@@ -1117,7 +1100,6 @@ Systematic defects:
 
 ### 12.3 DFM (Design for Manufacturability)
 
-```
 DFM rules ensure designs are robust to process variation:
 
 1. Recommended rules (beyond minimum DRC):
@@ -1148,7 +1130,6 @@ DFM rules ensure designs are robust to process variation:
    - Avoid jogs shorter than minimum resolution
    - Use line-end extensions at tips
    - Respect SADP/LELE coloring constraints
-```
 
 ---
 
@@ -1156,7 +1137,7 @@ DFM rules ensure designs are robust to process variation:
 
 ### 13.1 TDDB (Time-Dependent Dielectric Breakdown)
 
-```
+```text
 Gate oxide degrades under electric field stress over time.
 Time to breakdown follows:  t_BD ∝ exp(γ × (E_BD − E_ox))
 
@@ -1172,7 +1153,7 @@ This is why high-k dielectrics are essential (thicker physical layer at same EOT
 
 ### 13.2 NBTI (Negative Bias Temperature Instability)
 
-```
+```text
 PMOS threshold voltage increases (degrades) when gate is held at negative bias
 (VGS = −VDD) at elevated temperature. Vth shift follows a power law:
 
@@ -1185,7 +1166,7 @@ Recovery occurs when stress is removed (partial, not complete).
 
 ### 13.3 HCI (Hot Carrier Injection)
 
-```
+```text
 High-energy carriers gain enough energy from the lateral electric field near
 the drain to be injected into the gate oxide. Causes Vth shift and
 transconductance degradation. Worse at higher VDD and shorter channels.
@@ -1198,7 +1179,7 @@ Mitigation:
 
 ### 13.4 Electromigration (EM)
 
-```
+```text
 Momentum transfer from current-carrying electrons to metal atoms causes
 progressive void formation (open) or hillock formation (short).
 
@@ -1214,7 +1195,7 @@ Cu has ~100× better EM resistance than Al due to higher activation energy.
 
 ### 13.5 ESD (Electrostatic Discharge)
 
-```
+```text
 Brief voltage spikes (HBM: 2 kV, CDM: 500V) can destroy thin gate oxides.
 On-chip ESD protection circuits clamp these transients.
 (Detailed ESD design covered in the dedicated ESD section.)
@@ -1226,7 +1207,7 @@ On-chip ESD protection circuits clamp these transients.
 
 ### 14.1 Wire Bonding
 
-```
+```verilog
 25 μm Au (or Al, Cu) wire bonded from die pad to package leadframe.
   Bandwidth limit:   2-4 GHz (inductance limited)
   Inductance:        0.5-1 nH per bond
@@ -1237,7 +1218,7 @@ On-chip ESD protection circuits clamp these transients.
 
 ### 14.2 Flip Chip (C4)
 
-```
+```text
 Solder bumps (C4 = Controlled Collapse Chip Connection) on die surface.
 Die is flipped and bonded face-down onto substrate.
   Bump pitch:        50-200 μm
@@ -1249,7 +1230,7 @@ Die is flipped and bonded face-down onto substrate.
 
 ### 14.3 Wafer-Level Packaging (WLP)
 
-```
+```text
 Packaging performed at wafer level before dicing.
   Fan-in WLP:   Package size ≈ die size (limited I/O count)
   Fan-out WLP:  Encapsulates die in mold compound, RDL routes I/O beyond die edges
@@ -1264,28 +1245,26 @@ See IC_Packaging.md for the full treatment of advanced packaging (2.5D, 3D, chip
 
 ## 15. Numbers to Memorize
 
-```
-Parameter                                   | Value
---------------------------------------------|---------------------------
-Si melting point                             | 1414°C
-Dry O2 growth rate at 1000°C (linear regime) | ~2.5 nm/min
-Wet O2 growth rate at 1000°C                 | ~20 nm/min
-DUV wavelength (ArF immersion)              | 193 nm
-EUV wavelength                               | 13.5 nm
-NA (ArF immersion)                           | 1.35
-NA (EUV current)                             | 0.33
-NA (High-NA EUV)                             | 0.55
-Resolution at EUV 0.33 NA, k1=0.3           | ~12 nm
-Reticle size (standard EUV)                  | 858 mm²
-Reticle size (High-NA EUV)                   | 429 mm²
-Implant dose range                           | 10¹¹ – 10¹⁶ ions/cm²
-CMP removal rate (oxide)                     | 100-300 nm/min
-N5 minimum metal pitch (M1)                  | ~28 nm
-N5 minimum metal pitch (M4)                  | ~40 nm
-Defect density (N5 production)               | ~0.1-0.3 /cm²
-Yield (Poisson)                              | Y = exp(−D×A)
-Yield (negative binomial)                    | Y = (1 + D×A/α)^(−α)
-```
+| Parameter | Value |
+|---|---|
+| Si melting point | 1414°C |
+| Dry O2 growth rate at 1000°C (linear regime) | ~2.5 nm/min |
+| Wet O2 growth rate at 1000°C | ~20 nm/min |
+| DUV wavelength (ArF immersion) | 193 nm |
+| EUV wavelength | 13.5 nm |
+| NA (ArF immersion) | 1.35 |
+| NA (EUV current) | 0.33 |
+| NA (High-NA EUV) | 0.55 |
+| Resolution at EUV 0.33 NA, k1=0.3 | ~12 nm |
+| Reticle size (standard EUV) | 858 mm² |
+| Reticle size (High-NA EUV) | 429 mm² |
+| Implant dose range | 10¹¹ – 10¹⁶ ions/cm² |
+| CMP removal rate (oxide) | 100-300 nm/min |
+| N5 minimum metal pitch (M1) | ~28 nm |
+| N5 minimum metal pitch (M4) | ~40 nm |
+| Defect density (N5 production) | ~0.1-0.3 /cm² |
+| Yield (Poisson) | Y = exp(−D×A) |
+| Yield (negative binomial) | Y = (1 + D×A/α)^(−α) |
 
 ---
 
@@ -1301,7 +1280,7 @@ replacement metal gate (RMG) process.
 
 **Q2: What is the Rayleigh equation and why does it matter?**
 
-CD_min = k1 × λ / NA. It sets the fundamental resolution limit of lithography. To print
+$CD_{min} = k_1 \times \lambda / NA$. It sets the fundamental resolution limit of lithography. To print
 smaller features: reduce wavelength (193nm → 13.5nm EUV), increase NA (immersion,
 high-NA EUV), or reduce k1 (OPC, phase shift masks, multi-patterning). At 193nm
 immersion, the resolution wall (~36nm half-pitch) drove the need for multi-patterning
@@ -1371,7 +1350,7 @@ density per layer (typically 20-80%).
 **Q11: What determines defect density and how does it affect yield?**
 
 Defect density D (defects/cm²) comes from particles, pattern errors, and process
-excursions. Yield Y = exp(-D×A) for Poisson model. A larger die has lower yield because
+excursions. Yield $Y = \exp(-D \times A)$ for Poisson model. A larger die has lower yield because
 each die has more chance of containing a defect. This is why new process nodes launch
 with smaller dies first, and why chiplet architectures improve effective yield by using
 multiple smaller dies instead of one large monolithic die.
@@ -1406,7 +1385,7 @@ and for SRAM bit-cell stability.
 
 EOT (Equivalent Oxide Thickness) expresses the capacitance of a high-k dielectric in
 terms of the SiO2 thickness that would give the same capacitance.
-EOT = t_physical × (k_SiO2 / k_highk). A 2nm HfO2 (k≈20) has EOT = 2 × 3.9/20 = 0.39nm.
+$EOT = t_{physical} \times (k_{SiO2} / k_{high\text{-}k})$. A 2nm HfO2 (k≈20) has $EOT = 2 \times 3.9/20 = 0.39\text{ nm}$.
 This gives the gate capacitance of a 0.39nm SiO2 layer but is physically 2nm thick, so
 there's no quantum tunneling. EOT allows fair comparison across different dielectric
 materials.
@@ -1449,7 +1428,7 @@ targets with HKMG.
 
 **Q20: How does the wafer yield relate to die size and defect density?**
 
-Y = exp(-D×A). If defect density D = 0.1/cm² and die area A = 50mm² = 0.5cm²,
+$Y = \exp(-D \times A)$. If defect density D = 0.1/cm² and die area A = 50mm² = 0.5cm²,
 Y = exp(-0.05) = 95.1%. But if A = 500mm² = 5cm² (large SoC), Y = exp(-0.5) = 60.7%.
 This is why: (1) new processes launch with small dies, (2) chiplets (multiple small dies)
 can have much better effective yield than monolithic large dies, (3) yield improvement is

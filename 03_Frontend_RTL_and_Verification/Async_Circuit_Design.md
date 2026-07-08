@@ -21,21 +21,19 @@
 
 A cross-coupled inverter pair (the core of any latch/FF) is a bistable element. In the metastable region, the circuit behavior is governed by:
 
-```
-Let V = voltage at the internal node (between the two inverters)
-Let Vm = metastable equilibrium point (midpoint, ~VDD/2)
+- **Let V** = `voltage at the internal node (between the two inverters)`
+- **Let Vm** = `metastable equilibrium point (midpoint, ~VDD/2)`
 
-Small-signal model near metastable point:
-  dV/dt = (V - Vm) / tau
+**Small-signal model near metastable point:**
+   - dV/dt = (V - Vm) / tau
 
-where tau = time constant of the regenerative latch
-  tau = C_node / (gm1 + gm2 - 1/R_load)
-  gm1, gm2 = transconductance of the inverter transistors at Vm
-  C_node = parasitic capacitance at the internal node
+- **where tau** = `time constant of the regenerative latch`
+   - tau = C_node / (gm1 + gm2 - 1/R_load)
+   - gm1, gm2 = transconductance of the inverter transistors at Vm
+   - C_node = parasitic capacitance at the internal node
 
-Solution:
-  V(t) = Vm + (V_initial - Vm) * exp(t / tau)
-```
+**Solution:**
+   - V(t) = Vm + (V_initial - Vm) * exp(t / tau)
 
 The voltage exponentially diverges from Vm. The closer V_initial is to Vm (smaller perturbation), the longer it takes to resolve.
 
@@ -43,7 +41,7 @@ The voltage exponentially diverges from Vm. The closer V_initial is to Vm (small
 
 For the output to be considered resolved, V(t) must reach a threshold V_logic (a valid logic level, say Vm + VDD/4):
 
-```
+```verilog
 V_logic = Vm + Delta_V_resolved
 
 V(t_resolve) = Vm + (V_initial - Vm) * exp(t_resolve / tau) = V_logic
@@ -63,8 +61,7 @@ where:
 
 The probability that the FF enters a metastable state within a clock period depends on the "metastability window" T_w:
 
-```
-P(metastable) = T_w * f_data
+- **P(metastable)** = `T_w * f_data`
 
 where f_data = rate of data transitions at the FF input
 
@@ -74,17 +71,16 @@ time is available:
 T_w(t_r) = T_0 * exp(-t_r / tau)
 
 where:
-  T_0  = intrinsic metastability window (related to setup + hold time)
-  t_r  = resolution time available before the next FF samples
-  tau  = metastability time constant
+T_0  = intrinsic metastability window (related to setup + hold time)
+t_r  = resolution time available before the next FF samples
+tau  = metastability time constant
 
 For a single FF: t_r = T_clk - T_c2q - T_setup_next
 For a 2-FF synchronizer: t_r = T_clk - T_c2q  (full period to resolve)
-```
 
 **MTBF = 1 / (failure rate):**
 
-```
+```verilog
 Failure rate = f_clk * f_data * T_w(t_r)
              = f_clk * f_data * T_0 * exp(-t_r / tau)
 
@@ -94,7 +90,7 @@ MTBF = 1 / (f_clk * f_data * T_0 * exp(-t_r / tau))
 
 ### 1.4 Numerical Example: MTBF Calculation for 7nm Technology
 
-```
+```verilog
 Technology parameters (7nm FinFET):
   tau = 18 ps  (metastability time constant)
   T_0 = 40 fs  (intrinsic window, from characterization)
@@ -137,7 +133,7 @@ Design parameters:
 
 ### 1.5 MTBF Worked Calculation for 28nm (Interview-Ready Numbers)
 
-```
+```ascii-graph
 Technology parameters (28nm CMOS):
   tau  = 50 ps    (metastability time constant, characterized by foundry)
   T_0  = 100 fs   (intrinsic metastability window)
@@ -206,21 +202,19 @@ What if we need to determine synchronizer stages for a TARGET MTBF?
 
 ### 1.6 When to Use 3-FF Synchronizers
 
-```
 3-FF needed when:
-  - Very high clock frequencies (f_clk > 2 GHz, reduces t_r per stage)
-  - Safety-critical applications (automotive ASIL-D, aerospace)
-  - MTBF target > 10^9 years with 2-FF is marginal
-  - Technology with poor tau (older nodes, high-Vt cells)
+- Very high clock frequencies (f_clk > 2 GHz, reduces t_r per stage)
+   - Safety-critical applications (automotive ASIL-D, aerospace)
+   - MTBF target > 10^9 years with 2-FF is marginal
+   - Technology with poor tau (older nodes, high-Vt cells)
 
-Practical guideline:
-  If 2-FF MTBF < 1000 years at worst-case corner -> use 3-FF
-  If 2-FF MTBF > 10^6 years -> 2-FF is fine
-```
+**Practical guideline:**
+   - If 2-FF MTBF < 1000 years at worst-case corner -> use 3-FF
+   - If 2-FF MTBF > 10^6 years -> 2-FF is fine
 
 ### 1.6 Layout Considerations for Synchronizers
 
-```
+```verilog
 1. Place both FFs physically close (within 10-20 um)
    - Minimizes wire delay between stages (maximizes t_r)
    - Ensures both FFs are on the same clock tree leaf
@@ -279,7 +273,7 @@ endmodule
 
 For the 2-FF synchronizer to work correctly, the asynchronous input must meet a **minimum pulse width** requirement:
 
-```
+```verilog
 Minimum pulse width > 1 destination clock period + setup time of first FF
 
 Why? The signal must be stable long enough for at least ONE destination
@@ -293,7 +287,7 @@ to guarantee capture.
 
 ### 2.3 Synchronizer Latency
 
-```
+```verilog
 A 2-FF synchronizer introduces 2 destination clock cycles of latency:
   Cycle 1: First FF samples (may go metastable)
   Cycle 2: Second FF samples (resolved value)
@@ -361,23 +355,25 @@ endmodule
 
 ### 3.2 Timing Diagram
 
-```
-clk_src:    |‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|
-pulse_in:   _____|‾‾|________________________________
-toggle_src: _____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-
-clk_dst:    |‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__  (slower clock)
-sync_ff1:   _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾  (may be metastable briefly)
-toggle_dst: ________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾  (resolved)
-toggle_d:   _______________________|‾‾‾‾‾‾‾‾‾‾‾‾  (delayed by 1 dst_clk)
-pulse_out:  ________________|‾‾‾‾‾|_______________  (XOR: one dst_clk pulse)
+```wavedrom
+{ "signal": [
+  { "name": "clk_src",          "wave": "p........" },
+  { "name": "pulse_in",         "wave": "0.10....." },
+  { "name": "toggle_src",       "wave": "0.1......" },
+  {},
+  { "name": "clk_dst (slower)", "wave": "0.101010." },
+  { "name": "sync_ff1",         "wave": "0...1...." },
+  { "name": "toggle_dst",       "wave": "0....1..." },
+  { "name": "toggle_d (+1clk)", "wave": "0.....1.." },
+  { "name": "pulse_out (XOR)",  "wave": "0....10.." }
+], "head": { "text": "Pulse synchronizer: src pulse flips a toggle, 2-FF sync in dst, XOR of toggle vs its delay regenerates a 1-cycle pulse" } }
 ```
 
 ### 3.3 Edge Cases and Limitations
 
 **What if pulse_in fires again before the previous toggle is synchronized?**
 
-```
+```verilog
 Source sends two pulses P1 and P2:
   P1: toggle 0->1
   P2: toggle 1->0
@@ -396,7 +392,7 @@ If source clock is much faster than destination:
 
 **Fast-to-slow crossing:**
 
-```
+```verilog
 If f_src >> f_dst (e.g., 10x faster), a single-cycle source pulse
 is much narrower than the destination clock period. The toggle approach
 handles this correctly because the toggle level persists until the next pulse.
@@ -410,7 +406,7 @@ for reliable fast-to-slow transfers.
 
 ### 4.1 Why You CANNOT Use Individual 2-FF Synchronizers on a Bus
 
-```
+```verilog
 Source domain launches a 4-bit bus: 0111 -> 1000 (all 4 bits change)
 
 With individual synchronizers, each bit may resolve at a different cycle:
@@ -631,19 +627,18 @@ endmodule
 
 ### 4.4 Handshake Waveform (4-Phase)
 
-```
-clk_src:    |‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|
-data_hold:  ---<  VALID DATA A  >-------------------------------------
-req_src:    ______|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________________________
-ack_synced: ____________________________|‾‾‾‾‾‾‾‾‾‾‾‾|________________
-
-clk_dst:    |‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__|‾‾|__
-req_synced: ____________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________________
-ack_dst:    __________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|______________
-data_out:   __________________|<  VALID DATA A  >|____________________
-
-             Phase 1       Phase 2       Phase 3       Phase 4
-             req=1         ack=1         req=0         ack=0
+```wavedrom
+{ "signal": [
+  { "name": "clk_src",    "wave": "p........." },
+  { "name": "data_hold",  "wave": "x=.......x", "data": ["DATA A"] },
+  { "name": "req_src",    "wave": "0.1....0.." },
+  { "name": "ack_synced", "wave": "0.....1.0." },
+  {},
+  { "name": "clk_dst",    "wave": "p........." },
+  { "name": "req_synced", "wave": "0..1....0." },
+  { "name": "ack_dst",    "wave": "0...1...0." },
+  { "name": "data_out",   "wave": "x...=...x.", "data": ["DATA A"] }
+], "head": { "text": "4-phase req/ack handshake with data hold — P1 req=1, P2 ack=1, P3 req=0, P4 ack=0" } }
 ```
 
 **Throughput:** 1 transfer per ~8-12 clock cycles (4 synchronization crossings).
@@ -652,7 +647,7 @@ data_out:   __________________|<  VALID DATA A  >|____________________
 
 Only 1 bit changes per increment, so individual 2-FF synchronizers are safe:
 
-```
+```verilog
 Binary:  0000 -> 0001 -> 0010 -> 0011 -> 0100  (multiple bits change)
 Gray:    0000 -> 0001 -> 0011 -> 0010 -> 0110  (one bit changes)
 ```
@@ -665,28 +660,32 @@ Gray:    0000 -> 0001 -> 0011 -> 0010 -> 0110  (one bit changes)
 
 ### 5.1 Architecture
 
-```
-  Write Domain (clk_wr)              Read Domain (clk_rd)
-  ┌─────────────────────┐           ┌─────────────────────┐
-  │  wr_ptr_bin          │           │  rd_ptr_bin          │
-  │       |              │           │       |              │
-  │  bin2gray            │           │  bin2gray            │
-  │       |              │           │       |              │
-  │  wr_ptr_gray ───────┼──[2FF]──>│  wr_ptr_gray_sync    │
-  │                      │           │       |              │
-  │  rd_ptr_gray_sync <──┼──[2FF]──┤  rd_ptr_gray         │
-  │       |              │           │       |              │
-  │  gray2bin            │           │  gray2bin (optional) │
-  │       |              │           │       |              │
-  │  FULL logic          │           │  EMPTY logic         │
-  └──────────┬───────────┘           └──────────┬───────────┘
-             │                                   │
-             └──────── Dual-Port SRAM ──────────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph wr["Write domain (clk_wr)"]
+        WB["wr_ptr_bin"] --> WG["bin2gray → wr_ptr_gray"]
+        WF["FULL logic"]
+    end
+    subgraph rd["Read domain (clk_rd)"]
+        RB["rd_ptr_bin"] --> RG["bin2gray → rd_ptr_gray"]
+        RE["EMPTY logic"]
+    end
+    WG -->|2-FF sync| RGS["wr_ptr_gray_sync"] --> RE
+    RG -->|2-FF sync| WGS["rd_ptr_gray_sync"] --> WF
+    WF --> RAM["Dual-port SRAM"]
+    RE --> RAM
+    classDef w fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef r fill:#dcfce7,stroke:#15803d,color:#000
+    classDef m fill:#fde68a,stroke:#b45309,color:#000
+    class WB,WG,WF,WGS w
+    class RB,RG,RE,RGS r
+    class RAM m
 ```
 
 ### 5.2 Binary-to-Gray Conversion (Proof)
 
-```
+```verilog
 Gray code property: adjacent codes differ in exactly 1 bit.
 
 Conversion formula: gray[i] = bin[i] ^ bin[i+1], gray[MSB] = bin[MSB]
@@ -716,7 +715,7 @@ Proof that only 1 bit changes per increment:
 
 ### 5.3 Gray-to-Binary Conversion
 
-```
+```verilog
 binary[MSB] = gray[MSB]
 binary[i]   = binary[i+1] ^ gray[i]    for i = MSB-1 down to 0
 
@@ -744,7 +743,7 @@ For a FIFO with 2^ADDR_W entries, the pointers count from 0 to 2^(ADDR_W+1) - 1.
 
 **Empty condition (in read clock domain):**
 
-```
+```verilog
 EMPTY when wr_ptr_gray_synced == rd_ptr_gray
 
 Proof: If the write pointer (as seen by the read domain) equals the read
@@ -757,7 +756,7 @@ never falsely report "not empty" when it is truly empty.
 
 **Full condition (in write clock domain):**
 
-```
+```text
 In BINARY: full when wr_ptr_bin[MSB] != rd_ptr_bin[MSB] AND
                       wr_ptr_bin[MSB-1:0] == rd_ptr_bin[MSB-1:0]
            (write pointer has wrapped once more than read pointer)
@@ -1015,7 +1014,7 @@ endmodule
 
 ### 5.6 Depth=8 FIFO Worked Example: All Pointer States
 
-```
+```ascii-graph
 FIFO configuration:
   DATA_W = 8 (8-bit data)
   ADDR_W = 3  (depth = 2^3 = 8 entries)
@@ -1151,27 +1150,25 @@ FIFO configuration:
 
 ### 5.7 Reset Handling in Async FIFO
 
-```
 Critical issue: write and read resets are in DIFFERENT clock domains.
 Both must reset pointers to 0, but the resets may deassert at different times.
 
-Solution:
-  1. Use async-assert, sync-deassert reset synchronizers in EACH domain.
-  2. Both synchronizers are driven by the SAME async reset source.
-  3. Gray code pointers reset to 0 (Gray 0 = binary 0, this is safe).
-  4. After reset deasserts in both domains, the FIFO is in a known empty state.
+**Solution:**
+   1. Use async-assert, sync-deassert reset synchronizers in EACH domain.
+2. Both synchronizers are driven by the SAME async reset source.
+3. Gray code pointers reset to 0 (Gray 0 = binary 0, this is safe).
+4. After reset deasserts in both domains, the FIFO is in a known empty state.
 
-  Potential issue: if write-side deasserts first and starts writing before
-  read-side deasserts, the write pointer advances while read pointer is still 0.
-  This is OKAY -- the empty flag will be asserted (correctly) in the read domain
-  until its reset deasserts, preventing reads of partially-reset state.
-```
+Potential issue: if write-side deasserts first and starts writing before
+read-side deasserts, the write pointer advances while read pointer is still 0.
+This is OKAY -- the empty flag will be asserted (correctly) in the read domain
+until its reset deasserts, preventing reads of partially-reset state.
 
 ### 5.8 Non-Power-of-2 FIFO Depth
 
 Gray code requires power-of-2 counts. For non-power-of-2 depth, options:
 
-```
+```verilog
 1. Round up to next power-of-2 (waste some entries but safe)
 2. Use a handshake-based FIFO (no Gray code requirement)
 3. Use Johnson counter (for very small depths, 2*N states for N FFs)
@@ -1227,7 +1224,7 @@ endmodule
 
 ### 6.3 Reset Domain Crossing
 
-```
+```ascii-graph
                         ┌── reset_sync (clk_a) ──> rst_a_n
   async_rst_n ──────────┤
                         ├── reset_sync (clk_b) ──> rst_b_n
@@ -1251,14 +1248,12 @@ Ordered reset release:
 
 ### 6.4 Reset Tree Considerations in Physical Design
 
-```
 - Reset fanout can be enormous (every FF in a domain)
 - Reset net must meet timing (recovery and removal checks)
 - CTS tools can build a "reset tree" similar to a clock tree
 - Or: use a hierarchical reset buffer tree with balanced fanout
 - Reset must NOT be clock-gated (it must reach all FFs even when clock is gated)
 - In scan mode, reset may need to be controllable (via DFT MUX)
-```
 
 ---
 
@@ -1268,7 +1263,7 @@ Ordered reset release:
 
 The simpler case: input swings 0 to VDD_low, output must swing 0 to VDD_high.
 
-```
+```verilog
         VDD_HIGH
         |      |
       [P1]   [P2]     <- Cross-coupled PMOS (powered by VDD_HIGH)
@@ -1299,7 +1294,7 @@ This works because the NMOS N1 only needs to pull down to ~0V, which is well bel
 
 Input swings 0 to VDD_high, output must swing 0 to VDD_low. Problem: VDD_high input can forward-bias the ESD protection diodes or damage thin-oxide transistors in the low-voltage domain.
 
-```
+```ascii-graph
 Solution: Current-limiting resistor + level clamp
 
   VDD_HIGH domain        VDD_LOW domain
@@ -1318,7 +1313,7 @@ limits the voltage seen by the low-voltage transistors.
 
 Used at the boundary of power-gated domains. When the source domain is off, the level shifter's enable pin forces the output to a known value.
 
-```
+```ascii-graph
                 ┌──────────────────┐
   IN (from OFF  │  Level Shifter    │
    domain) ────>│  with ENABLE     ├──> OUT (to ON domain)
@@ -1332,7 +1327,7 @@ This combines the functions of a level shifter and an isolation cell, saving are
 
 ### 7.4 Level Shifter Placement Rules
 
-```
+```verilog
 1. Place level shifters at the voltage domain boundary
 2. Signal direction determines which supply powers the LS:
    - Low-to-High: LS powered by HIGH supply (destination)
@@ -1353,7 +1348,7 @@ This combines the functions of a level shifter and an isolation cell, saving are
 
 ### 8.1 Two-Phase (Non-Return-to-Zero) Handshake
 
-```
+```ascii-graph
 Uses transitions (edges) instead of levels:
   REQ toggle = new data available
   ACK toggle = data consumed
@@ -1369,68 +1364,35 @@ Higher throughput but more complex (edge detection logic).
 
 **Detailed 2-Phase (Toggle) Signaling Waveform:**
 
-```
-            Transfer 1              Transfer 2              Transfer 3
-            ─────────               ─────────               ─────────
-CLK_src:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
-DATA:     ---<D0>--------------<D1>--------------<D2>------------
-REQ:      _____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______________________|‾‾‾
-                ^toggle              ^toggle                 ^toggle
-                (0→1)                (1→0)                   (0→1)
-CLK_dst:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
-REQ_sync: _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______________|‾‾‾‾‾‾
-ACK:      ________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________|‾‾‾‾‾‾‾
-                            ^toggle                     ^toggle
-                            (0→1)                       (1→0)
-ACK_sync: ______________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________
-
-Protocol:
-  Phase 1: Source toggles REQ, places new data on bus
-  Phase 2: Destination detects REQ edge (via XOR with delayed version),
-           captures data, toggles ACK
-  Phase 3: Source detects ACK edge, can immediately start next transfer
-           (no return-to-zero needed!)
-
-Key: REQ and ACK never return to zero -- each toggle is a new event.
-     The "meaning" of REQ=1 vs REQ=0 depends on the previous state.
+```wavedrom
+{ "signal": [
+  { "name": "CLK_src",      "wave": "p........." },
+  { "name": "DATA",         "wave": "x=..=..=..", "data": ["D0","D1","D2"] },
+  { "name": "REQ (toggle)", "wave": "01..0..1.." },
+  {},
+  { "name": "CLK_dst",      "wave": "p........." },
+  { "name": "REQ_sync",     "wave": "0.1..0..1." },
+  { "name": "ACK (toggle)", "wave": "0..1..0..1" }
+], "head": { "text": "2-phase (toggle) handshake -- each REQ/ACK edge marks one transfer" } }
 ```
 
 **Detailed 4-Phase (Return-to-Zero) Signaling Waveform:**
 
-```
-            Transfer 1                         Transfer 2
-            ─────────                          ─────────
-CLK_src:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
-DATA:     ---<D0>-----------------------------<D1>------------------
-REQ:      _____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___
-               Phase 1: assert      Phase 3:   Phase 1: assert
-               (data valid)         deassert    (data valid)
-                                    Phase 4:
-                                    clean slate
-CLK_dst:  _/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__
-REQ_sync: _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___________|‾‾‾‾‾‾‾‾‾‾‾‾|___
-ACK:      ________________|‾‾‾‾‾‾‾‾‾|___________________|‾‾‾‾‾‾‾‾
-                       Phase 2:     Phase 4:
-                       assert ACK   deassert ACK
-                       (data taken) (ready for next)
-ACK_sync: _____________________|‾‾‾‾‾‾‾‾‾|___________________
-
-Protocol (4 phases per transfer):
-  Phase 1: Source asserts REQ (high), data is valid on bus
-  Phase 2: Destination sees REQ_sync high, captures data,
-           asserts ACK (high)
-  Phase 3: Source sees ACK_sync high, deasserts REQ (low)
-  Phase 4: Destination sees REQ_sync low, deasserts ACK (low)
-           -> Both back to zero, ready for next transfer
-
-Key: Each signal must return to zero before the next transfer begins.
-     This costs 2 extra synchronization crossings per transfer compared
-     to 2-phase, but is simpler to implement (level-sensitive logic).
+```wavedrom
+{ "signal": [
+  { "name": "CLK_src",  "wave": "p........." },
+  { "name": "DATA",     "wave": "x=....=...", "data": ["D0","D1"] },
+  { "name": "REQ",      "wave": "0.1..0.1.0" },
+  {},
+  { "name": "CLK_dst",  "wave": "p........." },
+  { "name": "REQ_sync", "wave": "0..1..0.1." },
+  { "name": "ACK",      "wave": "0...1.0..1" }
+], "head": { "text": "4-phase handshake -- P1 assert REQ (data valid), P2 assert ACK, P3 deassert REQ, P4 deassert ACK" } }
 ```
 
 **Comparison Table:**
 
-```
+```ascii-graph
   ┌───────────────────┬───────────────────────┬───────────────────────┐
   │ Property           │ 2-Phase (Toggle)      │ 4-Phase (RTZ)         │
   ├───────────────────┼───────────────────────┼───────────────────────┤
@@ -1461,7 +1423,7 @@ Key: Each signal must return to zero before the next transfer begins.
              Throughput = 500 M transfers/sec (8x better than 4-phase)
 ```
 
-```
+```verilog
 4-phase handshake:
   4 synchronization crossings per transfer
   Each crossing: 2 dest_clk cycles
@@ -1488,7 +1450,7 @@ Comparison at f_src = f_dst = 1 GHz:
 
 ### 9.1 Structural Checks (SpyGlass CDC / Meridian CDC)
 
-```
+```verilog
 Check 1: Missing synchronizer
   Every signal crossing a clock domain boundary must pass through
   a recognized synchronization structure (2-FF, FIFO, handshake).
@@ -1524,7 +1486,7 @@ Check 5: Gray code verification
 
 ### 9.2 Protocol Checks
 
-```
+```verilog
 Check 6: Handshake protocol correctness
   Verify REQ/ACK follow the expected 4-phase or 2-phase protocol.
   REQ must not toggle while waiting for ACK.
@@ -1545,7 +1507,6 @@ Check 8: Data stability
 
 SpyGlass CDC and similar tools use **formal methods** (model checking, property checking) to exhaustively verify CDC correctness:
 
-```
 1. Build a formal model of the design with clock domain annotations
 2. Insert assertions at every CDC crossing:
    - Synchronizer present
@@ -1556,14 +1517,13 @@ SpyGlass CDC and similar tools use **formal methods** (model checking, property 
 4. Generate waivers for known-safe crossings (e.g., static config registers)
 
 Formal CDC catches bugs that simulation CANNOT:
-  - Race conditions that require precise clock alignment (rare in sim)
-  - Reconvergence issues that depend on metastable resolution direction
-  - Protocol violations that only occur under specific timing relationships
-```
+   - Race conditions that require precise clock alignment (rare in sim)
+   - Reconvergence issues that depend on metastable resolution direction
+   - Protocol violations that only occur under specific timing relationships
 
 ### 9.4 What Simulation Alone Cannot Catch
 
-```
+```ascii-graph
 CDC bugs that are invisible to simulation:
 
 1. Low-probability metastability events
@@ -1621,7 +1581,6 @@ CDC Verification Checklist (mandatory for tapeout):
 
 ### 9.4 CDC Sign-Off Checklist
 
-```
 1. All structural CDC violations resolved or waived with justification
 2. All multi-bit crossings use FIFO, handshake, or MUX synchronization
 3. All reconvergence paths verified (no data coherency issues)
@@ -1632,7 +1591,6 @@ CDC Verification Checklist (mandatory for tapeout):
 8. FIFO depths verified for all rate/burst scenarios
 9. SDC correctly declares all async clock relationships
 10. STA clean on all synchronizer FF-to-FF paths (within each domain)
-```
 
 ---
 
@@ -1640,7 +1598,7 @@ CDC Verification Checklist (mandatory for tapeout):
 
 ### 10.1 Bug: Data Coherency Failure
 
-```
+```verilog
 Symptom: Occasional corrupted data on AXI bus after CDC crossing.
 
 Root cause: A 32-bit data bus and a valid signal were synchronized
@@ -1659,7 +1617,7 @@ Lesson: NEVER use individual 2-FF synchronizers on a multi-bit bus.
 
 ### 10.2 Bug: Reset Domain Crossing
 
-```
+```verilog
 Symptom: System hangs after reset on approximately 1 in 1000 boots.
 
 Root cause: Reset signal crossed from the power management unit (PMU)
@@ -1676,7 +1634,7 @@ Lesson: Reset is a CDC signal too! It must be synchronized.
 
 ### 10.3 Bug: Clock Gating CDC Interaction
 
-```
+```verilog
 Symptom: Intermittent data loss in a sensor data path.
 
 Root cause: A clock gating cell's enable signal crossed from the control
@@ -1695,7 +1653,7 @@ Lesson: CDC signals driving clock gating cells need extra timing care.
 
 ### 10.4 Bug: Gray Code Pointer Overflow with Non-Power-of-2 Depth
 
-```
+```verilog
 Symptom: Async FIFO occasionally loses data or reports full when not full.
 
 Root cause: Designer specified FIFO depth = 12 (not power of 2) and
@@ -1714,7 +1672,7 @@ use handshake-based FIFO or round up.
 
 ### 10.5 Bug: Quasi-Static Signal Misconception
 
-```
+```verilog
 Symptom: Configuration register value occasionally read incorrectly
 after dynamic reconfiguration (not just at boot).
 

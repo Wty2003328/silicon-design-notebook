@@ -25,7 +25,7 @@
 
 ### 1.1 Stage 1: Instruction Fetch (IF)
 
-```
+```text
 Inputs:  PC (Program Counter), Branch prediction signals
 Outputs: Instruction bits, PC+4, predicted branch target
 
@@ -42,18 +42,17 @@ Components:
 Operation:
   1. Send PC to I-Cache
   2. Simultaneously look up PC in BTB
-  3. If BTB hit and BHT predicts taken: next PC = BTB target
-  4. If BTB miss or not taken: next PC = PC + 4
+  3. If BTB hit and BHT predicts taken: next PC  = BTB target
+  4. If BTB miss or not taken: next PC           = PC + 4
   5. Fetch instruction from I-Cache (1 cycle for cache hit)
   6. On I-Cache miss: pipeline stalls, fill from L2 (10-20 cycles)
 
 Pipeline register IF/ID:
   {instruction[31:0], PC+4, predicted_target, prediction_direction}
 ```
-
 ### 1.2 Stage 2: Instruction Decode / Register Read (ID)
 
-```
+```text
 Inputs:  Instruction from IF/ID register
 Outputs: Control signals, register values, immediate, decoded opcode
 
@@ -81,10 +80,9 @@ Operation:
 Pipeline register ID/EX:
   {rs1_data, rs2_data, immediate, rd, ALUOp, control_signals, PC+4}
 ```
-
 ### 1.3 Stage 3: Execute (EX)
 
-```
+```text
 Inputs:  Operands from ID/EX register, forwarded values
 Outputs: ALU result, branch decision, target address
 
@@ -105,10 +103,9 @@ Operation:
 Pipeline register EX/MEM:
   {ALU_result, rs2_data (for store), rd, control_signals, branch_taken, target}
 ```
-
 ### 1.4 Stage 4: Memory Access (MEM)
 
-```
+```text
 Inputs:  ALU result (address), store data from EX/MEM register
 Outputs: Memory read data or ALU pass-through
 
@@ -126,23 +123,20 @@ Operation:
 Pipeline register MEM/WB:
   {ALU_result, mem_read_data, rd, control_signals}
 ```
-
 ### 1.5 Stage 5: Write Back (WB)
 
-```
 Inputs:  MEM/WB register
 Outputs: Write to register file
 
-Components:
-  - Result MUX: select between ALU result and memory data
-  - Register file write port
+**Components:**
+   - Result MUX: select between ALU result and memory data
+   - Register file write port
 
-Operation:
-  1. Select result (MemtoReg: memory data or ALU result)
-  2. Write to destination register rd (if RegWrite is asserted)
-  3. Write occurs on the first half of the clock cycle (allows
-     same-cycle read in ID stage -- "write-first" register file)
-```
+**Operation:**
+   1. Select result (MemtoReg: memory data or ALU result)
+2. Write to destination register rd (if RegWrite is asserted)
+3. Write occurs on the first half of the clock cycle (allows
+same-cycle read in ID stage -- "write-first" register file)
 
 ---
 
@@ -150,40 +144,39 @@ Operation:
 
 ### 2.1 RAW (Read After Write) -- True Data Dependency
 
-```
+```text
 Instruction sequence (MIPS):
-  I1: ADD  $1, $2, $3      # Writes $1 in WB (cycle 5)
-  I2: SUB  $4, $1, $5      # Reads $1 in ID (cycle 3) -- $1 not yet written!
-  I3: AND  $6, $1, $7      # Reads $1 in ID (cycle 4) -- $1 not yet written!
-  I4: OR   $8, $1, $9      # Reads $1 in ID (cycle 5) -- $1 written this cycle (OK with write-first RF)
+  I1: ADD  $1, $2, $3       # Writes $1 in WB (cycle 5)
+  I2: SUB  $4, $1, $5       # Reads $1 in ID (cycle 3) -- $1 not yet written!
+  I3: AND  $6, $1, $7       # Reads $1 in ID (cycle 4) -- $1 not yet written!
+  I4: OR   $8, $1, $9       # Reads $1 in ID (cycle 5) -- $1 written this cycle (OK with write-first RF)
 
 Pipeline without forwarding:
   Cycle:  1    2    3    4    5    6    7    8
   I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  stall stall EX  MEM  WB   <- 2-cycle stall for $1
+  I2:         IF   ID  stall stall EX  MEM  WB    <- 2-cycle stall for $1
   I3:              IF  stall stall ID   EX  MEM  WB
   I4:                   stall stall IF   ID   EX  MEM  WB
 
 With forwarding (see Section 3):
   Cycle:  1    2    3    4    5    6    7    8
   I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID   EX  MEM  WB     <- Forward from EX/MEM
-  I3:              IF   ID   EX  MEM  WB  <- Forward from MEM/WB
-  I4:                   IF   ID   EX  MEM  WB  <- Normal read (WB to ID same cycle)
+  I2:         IF   ID   EX  MEM  WB               <- Forward from EX/MEM
+  I3:              IF   ID   EX  MEM  WB          <- Forward from MEM/WB
+  I4:                   IF   ID   EX  MEM  WB     <- Normal read (WB to ID same cycle)
 
   No stalls! Forwarding eliminates 2 stall cycles.
 ```
-
 ### 2.2 Load-Use Hazard (Forwarding Can't Solve It)
 
-```
-  I1: LW   $1, 0($2)       # Load: data available END of MEM (cycle 4)
-  I2: ADD  $4, $1, $5      # Needs $1 at BEGINNING of EX (cycle 3)
+```text
+  I1: LW   $1, 0($2)        # Load: data available END of MEM (cycle 4)
+  I2: ADD  $4, $1, $5       # Needs $1 at BEGINNING of EX (cycle 3)
 
 Pipeline:
   Cycle:  1    2    3    4    5    6    7
   I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  stall EX  MEM  WB    <- 1 stall UNAVOIDABLE
+  I2:         IF   ID  stall EX  MEM  WB     <- 1 stall UNAVOIDABLE
   I3:              IF  stall ID   EX  MEM  WB
 
 Why forwarding can't help:
@@ -196,23 +189,22 @@ Why forwarding can't help:
 
 Compiler optimization (load delay slot scheduling):
   I1: LW   $1, 0($2)
-  I3: AND  $6, $7, $8      <- Independent instruction moved here
-  I2: ADD  $4, $1, $5      <- Now 1 cycle later, no stall needed
+  I3: AND  $6, $7, $8                        <- Independent instruction moved here
+  I2: ADD  $4, $1, $5                        <- Now 1 cycle later, no stall needed
 ```
-
 ### 2.3 Control Hazards (Branch Penalty)
 
-```
-  I1: BEQ  $1, $2, target  # Branch resolved in EX (cycle 3)
-  I2: ADD  $3, $4, $5      # Fetched speculatively (may be wrong)
-  I3: SUB  $6, $7, $8      # Fetched speculatively (may be wrong)
+```text
+  I1: BEQ  $1, $2, target   # Branch resolved in EX (cycle 3)
+  I2: ADD  $3, $4, $5       # Fetched speculatively (may be wrong)
+  I3: SUB  $6, $7, $8       # Fetched speculatively (may be wrong)
 
 If branch is taken (mispredicted as not-taken):
   Cycle:  1    2    3    4    5
   I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  flush              <- Wrong path, flushed
-  I3:              IF  flush              <- Wrong path, flushed
-  target:               IF   ID   EX ...  <- Correct path starts
+  I2:         IF   ID  flush               <- Wrong path, flushed
+  I3:              IF  flush               <- Wrong path, flushed
+  target:               IF   ID   EX ...   <- Correct path starts
 
 Branch penalty = 2 cycles (for branch resolved in EX)
 
@@ -222,13 +214,12 @@ If branch resolved in ID (some implementations):
 If branch resolved in MEM (deeply pipelined):
   Penalty = 3 cycles
 ```
-
 ### 2.4 WAR and WAW (Out-of-Order Only)
 
-```
+```text
 WAR (Write After Read) - anti-dependency:
-  I1: ADD  $1, $2, $3      # Reads $2 in cycle 2
-  I2: SUB  $2, $4, $5      # Writes $2 in cycle 6
+  I1: ADD  $1, $2, $3       # Reads $2 in cycle 2
+  I2: SUB  $2, $4, $5       # Writes $2 in cycle 6
 
 In-order pipeline: No hazard (I1 reads $2 before I2 writes it).
 Out-of-order: I2 might execute before I1 if I2's operands are ready first.
@@ -237,48 +228,42 @@ Solution: Register renaming. I2 writes to physical reg P47 (renamed),
   I1 still reads from P12 (old mapping of $2). No conflict.
 
 WAW (Write After Write):
-  I1: ADD  $1, $2, $3      # Writes $1
-  I2: SUB  $1, $4, $5      # Also writes $1
+  I1: ADD  $1, $2, $3       # Writes $1
+  I2: SUB  $1, $4, $5       # Also writes $1
 
 In-order: No hazard (I1 writes before I2, final value is from I2).
 Out-of-order: I1 might write after I2, leaving $1 with I1's value (wrong!).
 Solution: Register renaming. I1 writes P47, I2 writes P63 (different physical regs).
   Architectural register $1 maps to P63 after I2. P47 is freed later.
 ```
-
 ---
 
 ## 3. Forwarding (Bypassing) -- Complete MUX Diagrams
 
 ### 3.1 Forwarding Paths
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    R1["ID/EX.rs1_data"] --> MA["MUX A"]
+    EM1["EX/MEM.ALU_result"] --> MA
+    MW1["MEM/WB.result"] --> MA
+    FA["Forward_A ctrl"] --> MA
+    MA --> AA["ALU Input A"]
+    R2["ID/EX.rs2_data"] --> MB["MUX B"]
+    EM2["EX/MEM.ALU_result"] --> MB
+    MW2["MEM/WB.result"] --> MB
+    FB["Forward_B ctrl"] --> MB
+    MB --> AB["ALU Input B"]
+    classDef mux fill:#fde68a,stroke:#b45309,color:#000
+    classDef src fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef out fill:#dcfce7,stroke:#15803d,color:#000
+    class MA,MB mux
+    class R1,R2,EM1,EM2,MW1,MW2,FA,FB src
+    class AA,AB out
 ```
-                    ┌──────────────────────────────────────────────┐
-                    │                                              │
-  ID/EX.rs1_data ──┤                                              │
-                    │    ┌─────┐                                   │
-  EX/MEM.ALU_result┼──>│ MUX ├──> ALU Input A                    │
-                    │    │  A  │                                   │
-  MEM/WB.result ───┼──>│     │                                   │
-                    │    └──┬──┘                                   │
-                    │       │                                      │
-  Forward_A ctrl ───┘       │                                      │
-                            │                                      │
-  ID/EX.rs2_data ──┐       │                                      │
-                    │    ┌──┴──┐                                   │
-  EX/MEM.ALU_result┼──>│ MUX ├──> ALU Input B                    │
-                    │    │  B  │                                   │
-  MEM/WB.result ───┼──>│     │                                   │
-                    │    └──┬──┘                                   │
-  Forward_B ctrl ───┘       │                                      │
-                                                                   │
-  Each MUX has 3 inputs:                                           │
-    00: Normal (from register file via ID/EX)                      │
-    01: Forward from EX/MEM (1-cycle forward, ALU->ALU)            │
-    10: Forward from MEM/WB (2-cycle forward, ALU->ALU or MEM->ALU)│
-                                                                   │
-  Load-to-use: Forward from MEM/WB to EX (after 1 stall cycle)    │
-```
+
+Each MUX selects one of three inputs: `00` normal (register file via ID/EX); `01` forward from EX/MEM (1-cycle forward, ALU→ALU); `10` forward from MEM/WB (2-cycle forward, ALU→ALU or MEM→ALU). Load-to-use forwards from MEM/WB to EX after one stall cycle.
 
 ### 3.2 Forwarding Control Logic
 
@@ -306,10 +291,9 @@ end
 // Priority: EX/MEM forward takes priority over MEM/WB forward
 // (EX/MEM has the most recent value)
 ```
-
 ### 3.3 Hazard Detection Unit (for Load-Use Stall)
 
-```verilog
+```text
 // Detect load-use hazard: current ID stage reads what EX stage is loading
 wire load_use_hazard = ID_EX_MemRead &&
                        ((ID_EX_Rd == IF_ID_Rs1) || (ID_EX_Rd == IF_ID_Rs2));
@@ -319,20 +303,19 @@ wire load_use_hazard = ID_EX_MemRead &&
 //   2. Stall IF and ID stages (don't advance PC, don't update IF/ID register)
 //   3. After 1 cycle, the load result is available for forwarding from MEM/WB
 ```
-
 ---
 
 ## 4. Branch Prediction -- Deep Dive
 
 ### 4.1 CPI Impact of Branches
 
-```
+```text
 CPI = CPI_base + Branch_Frequency * Misprediction_Rate * Penalty
 
 Example:
-  CPI_base = 1 (ideal pipeline)
-  Branch_Frequency = 20% (1 in 5 instructions is a branch)
-  Penalty = 2 cycles (branch resolved in EX)
+  CPI_base          = 1 (ideal pipeline)
+  Branch_Frequency  = 20% (1 in 5 instructions is a branch)
+  Penalty           = 2 cycles (branch resolved in EX)
 
   With always-not-taken prediction (50% accuracy for conditional branches):
     CPI = 1 + 0.2 * 0.5 * 2 = 1.2  (20% performance loss)
@@ -343,155 +326,100 @@ Example:
   With tournament predictor (97% accuracy):
     CPI = 1 + 0.2 * 0.03 * 2 = 1.012  (1.2% loss)
 
-  With deep pipeline (20 stages, penalty = 15 cycles):
-    At 97% accuracy: CPI = 1 + 0.2 * 0.03 * 15 = 1.09  (9% loss!)
+  With deep pipeline (20 stages, penalty  = 15 cycles):
+    At 97% accuracy: CPI                  = 1 + 0.2 * 0.03 * 15 = 1.09  (9% loss!)
     Even excellent prediction hurts with deep pipelines.
 ```
 
 ### 4.2 Two-Bit Saturating Counter -- FSM with Transitions
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+stateDiagram-v2
+    direction LR
+    ST: Strongly Taken (11) · predict T
+    WT: Weakly Taken (10) · predict T
+    WNT: Weakly Not-Taken (01) · predict NT
+    SNT: Strongly Not-Taken (00) · predict NT
+    ST --> ST: Taken
+    ST --> WT: Not Taken
+    WT --> ST: Taken
+    WT --> WNT: Not Taken
+    WNT --> WT: Taken
+    WNT --> SNT: Not Taken
+    SNT --> WNT: Taken
+    SNT --> SNT: Not Taken
 ```
-                    ┌──────────────┐
-          Taken     │              │     Not Taken
-    ┌──────────────>│  Strongly    │<──────────────┐
-    │               │  Taken (11)  │               │
-    │               │ Predict: T   │               │
-    │               └──────┬───────┘               │
-    │                      │ Not Taken              │
-    │               ┌──────v───────┐               │
-    │     Taken     │              │    Not Taken   │
-    │ ┌────────────>│  Weakly      │──────────────>│
-    │ │             │  Taken (10)  │               │
-    │ │             │ Predict: T   │               │
-    │ │             └──────┬───────┘               │
-    │ │                    │ Not Taken              │
-    │ │             ┌──────v───────┐               │
-    │ │   Taken     │              │    Not Taken   │
-    │ │<────────────│  Weakly      │──────────────>│
-    │               │  Not Taken   │               │
-    │               │  (01)        │               │
-    │               │ Predict: NT  │               │
-    │               └──────┬───────┘               │
-    │                      │ Not Taken              │
-    │               ┌──────v───────┐               │
-    │     Taken     │              │               │
-    └──────────────│  Strongly    │───────────────┘
-                    │  Not Taken   │     Not Taken
-                    │  (00)        │
-                    │ Predict: NT  │
-                    └──────────────┘
 
-Prediction rule: MSB = 1 -> predict Taken; MSB = 0 -> predict Not Taken
-
-For a loop that executes 100 times:
-  1-bit predictor: 2 mispredictions (first entry: NT, last exit: T)
-  2-bit predictor: 1 misprediction (only at exit, the "weakly taken" absorbs
-                   the first exit prediction but stays taken for re-entry)
-```
+Prediction rule: MSB = 1 → predict Taken; MSB = 0 → predict Not Taken. For a loop that runs 100×, a 1-bit predictor makes 2 mispredictions (first entry NT, last exit T); a 2-bit predictor makes only 1 (at exit — the weakly-taken state absorbs the first exit and stays taken for re-entry).
 
 ### 4.3 Branch History Table (BHT) Organization
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PC["PC"] --> LB["Lower bits · PC[11:2]"]
+    LB --> BHT["BHT array<br/>Entry 0 … Entry N-1<br/>(each a 2-bit counter)"]
+    BHT --> PR["Prediction<br/>(Taken / Not Taken)"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class PC,LB,BHT,PR s
 ```
-         PC
-          |
-    [Lower bits]
-          |
-          v
-  ┌───────────────┐
-  │  BHT Entry 0  │  2-bit counter
-  │  BHT Entry 1  │  2-bit counter
-  │  BHT Entry 2  │  2-bit counter
-  │     ...        │
-  │  BHT Entry N-1│  2-bit counter
-  └───────────────┘
-          |
-          v
-      Prediction (Taken/Not Taken)
 
-BHT size: typically 1K-16K entries
-Index: PC[11:2] for 1K entries (ignore byte offset, align to instruction)
-
-Problem: Aliasing -- different branches map to the same entry
-  (collision rate depends on table size and branch frequency)
-```
+BHT size is typically 1K–16K entries; the index is `PC[11:2]` for 1K entries (ignore the byte offset, align to instructions). The main problem is **aliasing** — different branches map to the same entry, with a collision rate that depends on table size and branch frequency.
 
 ### 4.4 BTB (Branch Target Buffer) Structure
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PC["PC"] --> TAG["BTB Tag RAM"]
+    TAG --> Q{"Tag match?"}
+    Q -->|Yes| DATA["BTB Data RAM"] --> TGT["Target address<br/>(next PC if taken)"]
+    Q -->|No| NT["Predict Not Taken<br/>(or use BHT separately)"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef d fill:#fde68a,stroke:#b45309,color:#000
+    class PC,TAG,DATA,TGT,NT s
+    class Q d
 ```
-  PC ──> [BTB Tag RAM]  ──> Tag Match?
-                              │
-                    ┌─────────┴───────────┐
-                   Yes                    No
-                    │                      │
-              [BTB Data RAM]         Predict Not Taken
-                    │                (or use BHT separately)
-                    v
-            Target Address
-            (next PC if taken)
 
-BTB entries:
-  {tag (upper PC bits), target_address, valid, branch_type}
-
-Typical size: 256-4K entries, 2-4 way set-associative
-
-BTB answers: "WHERE to fetch if taken?"
-BHT answers: "WHETHER to fetch from target (taken) or PC+4 (not taken)?"
-Both are needed for full prediction.
-```
+Each BTB entry holds `{tag (upper PC bits), target_address, valid, branch_type}`; typical size 256–4K entries, 2–4-way set-associative. The BTB answers *where* to fetch if taken; the BHT answers *whether* to take (target vs PC+4). Both are needed for full prediction.
 
 ### 4.5 Gshare Predictor
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PC["PC"] --> X(("XOR"))
+    GHR["GHR — global<br/>history register"] --> X
+    X --> IDX["Index"] --> PHT["PHT — pattern history table<br/>(2-bit counters)"]
+    PHT --> P["Prediction"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class PC,GHR,IDX,PHT,P s
 ```
-  PC ─────────┐
-              XOR──> [Index] ──> PHT (Pattern History Table)
-  GHR ────────┘                        |
-  (Global History                  2-bit counter
-   Register)                           |
-                                   Prediction
 
-GHR: N-bit shift register holding outcomes of last N branches
-  Taken:     shift in 1
-  Not Taken: shift in 0
-
-Index = PC[N-1:0] XOR GHR[N-1:0]
-
-Why XOR? It creates a unique index for each (PC, history) combination.
-This captures correlations: "if the last 2 branches were Taken, this
-branch is usually Not Taken."
-
-Typical accuracy: 93-95% on SPEC benchmarks
-GHR width: 10-18 bits
-PHT size: 2^10 to 2^18 entries (each 2-bit counter)
-```
+The GHR is an N-bit shift register of the last N branch outcomes (Taken→1, Not Taken→0). `Index = PC[N-1:0] XOR GHR[N-1:0]`; the XOR gives a unique index per (PC, history) pair, capturing correlations such as "if the last two branches were taken, this one is usually not taken." Typical accuracy 93–95% on SPEC; GHR width 10–18 bits; PHT 2¹⁰–2¹⁸ entries.
 
 ### 4.6 Tournament Predictor
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PC["PC"] --> CH["Chooser / meta<br/>2-bit counter per entry"]
+    CH --> L["Local predictor<br/>per-branch history"]
+    CH --> G["Global predictor<br/>gshare-style shared history"]
+    L --> Fr["Final prediction"]
+    G --> Fr
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef c fill:#fde68a,stroke:#b45309,color:#000
+    class PC,L,G,Fr s
+    class CH c
 ```
-                         ┌── Local Predictor ───┐
-  PC ──> Chooser (Meta) ─┤                       ├──> Final Prediction
-                         └── Global Predictor ──┘
 
-  Chooser: 2-bit counter per entry, similar to BHT
-    If chooser says "local": use local predictor's output
-    If chooser says "global": use global predictor's output
-
-  Update: On a branch outcome, compare both predictors:
-    If local was right and global wrong: increment chooser toward local
-    If global was right and local wrong: increment chooser toward global
-    If both right or both wrong: no change to chooser
-
-  Local predictor: Per-branch history (each branch has its own shift register)
-    Good for branches with patterns tied to their own history (loops)
-
-  Global predictor: Gshare-style (shared history)
-    Good for correlated branches (if-else chains)
-
-  Tournament accuracy: 95-97% on SPEC benchmarks (Alpha 21264 used this)
-```
+The chooser selects local or global. On each outcome: if local was right and global wrong, bias the chooser toward local (and vice-versa); if both agree, no change. Local history suits branches whose pattern is tied to their own history (loops); global history suits correlated branches (if-else chains). Tournament accuracy is 95–97% on SPEC (the Alpha 21264 used this).
 
 ### 4.7 Prediction Accuracy Comparison
 
-```
+```text
 | Predictor           | Accuracy (SPEC) | Hardware Cost   | Used In           |
 |---------------------|-----------------|-----------------|-------------------|
 | Always Not Taken    | 30-40%          | None            | -                 |
@@ -500,9 +428,9 @@ PHT size: 2^10 to 2^18 entries (each 2-bit counter)
 | 1-bit BHT (1K)      | 80-85%          | 1KB             | -                 |
 | 2-bit BHT (4K)      | 85-90%          | 8KB             | Early RISC        |
 | Gshare (14-bit)     | 93-95%          | 32KB            | AMD K6            |
-| Tournament           | 95-97%          | 64KB            | Alpha 21264       |
-| TAGE                 | 97-99%          | 64-256KB        | Intel Haswell+    |
-| Perceptron           | 95-97%          | 64KB            | AMD Zen           |
+| Tournament          | 95-97%          | 64KB            | Alpha 21264       |
+| TAGE                | 97-99%          | 64-256KB        | Intel Haswell+    |
+| Perceptron          | 95-97%          | 64KB            | AMD Zen           |
 ```
 
 ---
@@ -511,43 +439,41 @@ PHT size: 2^10 to 2^18 entries (each 2-bit counter)
 
 ### 5.1 Architecture Recap
 
-```
-  Instruction Queue
-        |
-     Issue (in-order)
-    /        \
-  ┌────┐    ┌────┐
-  │ RS │    │ RS │   Reservation Stations
-  │Add1│    │Mul1│
-  │Add2│    │Mul2│
-  │Add3│    │Mul3│
-  └──┬─┘    └──┬─┘
-     |          |
-  [Adder]   [Multiplier]   Functional Units (out-of-order execution)
-     |          |
-     └────┬─────┘
-          |
-    Common Data Bus (CDB)
-          |
-    Register File + ROB
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    IQ["Instruction queue"] --> ISS["Issue (in-order)"]
+    ISS --> RSA["Reservation stations<br/>Add1 / Add2 / Add3"]
+    ISS --> RSM["Reservation stations<br/>Mul1 / Mul2 / Mul3"]
+    RSA --> ADD["Adder"]
+    RSM --> MUL["Multiplier"]
+    ADD --> CDB["Common Data Bus (CDB)"]
+    MUL --> CDB
+    CDB --> RF["Register file + ROB"]
+    classDef q fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef rs fill:#fde68a,stroke:#b45309,color:#000
+    classDef fu fill:#dcfce7,stroke:#15803d,color:#000
+    class IQ,ISS,RF q
+    class RSA,RSM rs
+    class ADD,MUL,CDB fu
 ```
 
 ### 5.2 Step-by-Step Example
 
 **Code sequence:**
 
-```
-I1: LD    F6, 34(R2)      # Load F6 from memory[R2+34]
-I2: LD    F2, 45(R3)      # Load F2 from memory[R3+45]
-I3: MULTD F0, F2, F4      # F0 = F2 * F4 (depends on I2)
-I4: SUBD  F8, F6, F2      # F8 = F6 - F2 (depends on I1, I2)
-I5: DIVD  F10, F0, F6     # F10 = F0 / F6 (depends on I3, I1)
-I6: ADDD  F6, F8, F2      # F6 = F8 + F2 (depends on I4, I2)
+```text
+I1: LD    F6, 34(R2)       # Load F6 from memory[R2+34]
+I2: LD    F2, 45(R3)       # Load F2 from memory[R3+45]
+I3: MULTD F0, F2, F4       # F0   = F2 * F4 (depends on I2)
+I4: SUBD  F8, F6, F2       # F8   = F6 - F2 (depends on I1, I2)
+I5: DIVD  F10, F0, F6      # F10  = F0 / F6 (depends on I3, I1)
+I6: ADDD  F6, F8, F2       # F6   = F8 + F2 (depends on I4, I2)
 ```
 
 **Execution trace (cycle by cycle):**
 
-```
+```text
 Cycle 1: Issue I1 (LD F6, 34(R2))
   Load1 RS: Op=LD, Addr=R2+34, Dest=F6
   Register status: F6 -> Load1
@@ -563,8 +489,8 @@ Cycle 3: Issue I3 (MULTD F0, F2, F4)
   Load1 result written to F6 in register file
 
 Cycle 4: Issue I4 (SUBD F8, F6, F2)
-  Add1 RS: Op=SUB, Vj=F6 value (now available from I1), Qj=0,
-           Vk=?, Qk=Load2 (F2 still loading)
+  Add1 RS: Op = SUB, Vj=F6 value (now available from I1), Qj=0,
+           Vk = ?, Qk=Load2 (F2 still loading)
   Register status: F8 -> Add1
   I2 may execute this cycle
 
@@ -572,8 +498,8 @@ Cycle 5: Issue I5 (DIVD F10, F0, F6)
   Mul2 RS: Op=DIV, Vj=?, Qj=Mul1 (F0 not ready), Vk=F6 value, Qk=0
   Register status: F10 -> Mul2
   I2 completes (CDB broadcasts: Load2 -> F2 value)
-  Mul1 captures F2 value (Qj=Load2 matches, now Vj=F2 value, Qj=0)
-  Add1 captures F2 value (Qk=Load2 matches, now Vk=F2 value, Qk=0)
+  Mul1 captures F2 value (Qj = Load2 matches, now Vj=F2 value, Qj=0)
+  Add1 captures F2 value (Qk = Load2 matches, now Vk=F2 value, Qk=0)
 
 Cycle 6: Issue I6 (ADDD F6, F8, F2)
   Add2 RS: Op=ADD, Vj=?, Qj=Add1 (F8 not ready), Vk=F2 value, Qk=0
@@ -582,8 +508,8 @@ Cycle 6: Issue I6 (ADDD F6, F8, F2)
   I4 begins execution (Add1 has both operands)
 
 Cycle 7:
-  I4 completes (Add1 result on CDB: F8 = F6 - F2)
-  Add2 captures (Qj=Add1 matches, now Vj=F8 value)
+  I4 completes (Add1 result on CDB: F8  = F6 - F2)
+  Add2 captures (Qj                     = Add1 matches, now Vj=F8 value)
 
 Cycle 8:
   I6 begins execution (Add2 has both operands)
@@ -592,8 +518,8 @@ Cycle 9:
   I6 completes (Add2 result on CDB: F6 = F8 + F2)
 
 Cycle 10 (or later, multiplier takes multiple cycles):
-  I3 completes (Mul1 result on CDB: F0 = F2 * F4)
-  Mul2 captures (Qj=Mul1 matches, now Vj=F0 value)
+  I3 completes (Mul1 result on CDB: F0  = F2 * F4)
+  Mul2 captures (Qj                     = Mul1 matches, now Vj=F0 value)
 
 Cycle 11+:
   I5 begins execution (Mul2 has both operands, division is slow)
@@ -604,22 +530,20 @@ Cycle 40+ (division takes ~30 cycles):
 
 ### 5.3 How RAW, WAR, WAW Are Handled
 
-```
-RAW (I3 depends on I2 for F2):
-  I3 issues with Qj=Load2 (tag, not value). When I2 completes and broadcasts
-  on CDB, Mul1 snoops and captures the value. True data flow respected.
+**RAW (I3 depends on I2 for F2):**
+   - I3 issues with Qj=Load2 (tag, not value). When I2 completes and broadcasts
+   - on CDB, Mul1 snoops and captures the value. True data flow respected.
 
-WAR (I6 writes F6, which I5 reads):
-  At issue time of I5, F6's value is already captured into Mul2's Vk.
-  When I6 later writes F6 (updating the register file), Mul2 already has
-  the old value. No conflict.
+**WAR (I6 writes F6, which I5 reads):**
+   - At issue time of I5, F6's value is already captured into Mul2's Vk.
+   - When I6 later writes F6 (updating the register file), Mul2 already has
+   - the old value. No conflict.
 
-WAW (I1 writes F6, I6 also writes F6):
-  At I6's issue time, register status for F6 is updated from "Load1" to "Add2".
-  I1's result was already consumed. I6's result becomes the final F6 value.
-  Even if I1 completed after I6 (impossible in this example, but in general
-  with ROB), the ROB ensures in-order commit.
-```
+**WAW (I1 writes F6, I6 also writes F6):**
+   - At I6's issue time, register status for F6 is updated from "Load1" to "Add2".
+   - I1's result was already consumed. I6's result becomes the final F6 value.
+   - Even if I1 completed after I6 (impossible in this example, but in general
+   - with ROB), the ROB ensures in-order commit.
 
 ---
 
@@ -627,7 +551,7 @@ WAW (I1 writes F6, I6 also writes F6):
 
 ### 6.1 Superscalar Pipeline
 
-```
+```text
 2-wide superscalar: Issue up to 2 instructions per cycle
 
   Fetch:  [I0, I1]  [I2, I3]  [I4, I5]  ...  (fetch 2 per cycle)
@@ -646,7 +570,7 @@ Challenges:
 
 ### 6.2 Register Renaming with Physical Register File
 
-```
+```text
 Architectural registers: R0-R31 (ISA visible, 32 registers)
 Physical registers: P0-P127 (128 physical registers, not ISA visible)
 
@@ -678,31 +602,17 @@ On flush (misprediction):
 
 ### 6.3 Reorder Buffer (ROB) Management
 
-```
-ROB is a circular buffer:
+ROB is a circular buffer — **Head** points to the oldest instruction (next to commit), **Tail** to the newest (most recently issued).
 
-  Head: points to oldest instruction (next to commit)
-  Tail: points to newest instruction (most recently issued)
+| # | Instr | Dest | Value | Done? | Exception | Notes |
+|---|---|---|---|---|---|---|
+| 0 | ADD | P48 | 42 | Yes | No | ← Head (ready to commit) |
+| 1 | LW | P51 | 100 | Yes | No | |
+| 2 | BEQ | – | – | Yes | No | ← branch: check prediction |
+| 3 | MUL | P63 | – | No | – | ← not done yet |
+| 4 | ADD | P72 | – | No | – | ← Tail |
 
-  ┌────┬────────┬──────┬───────┬───────┬──────────┐
-  │ # │ Instr  │ Dest │ Value │ Done? │ Exception│
-  ├────┼────────┼──────┼───────┼───────┼──────────┤
-  │ 0 │ ADD    │ P48  │ 42    │ Yes   │ No       │ <- Head (ready to commit)
-  │ 1 │ LW     │ P51  │ 100   │ Yes   │ No       │
-  │ 2 │ BEQ    │ -    │ -     │ Yes   │ No       │ <- Branch: check prediction
-  │ 3 │ MUL    │ P63  │ -     │ No    │ -        │ <- Not done yet
-  │ 4 │ ADD    │ P72  │ -     │ No    │ -        │ <- Tail
-  └────┴────────┴──────┴───────┴───────┴──────────┘
-
-Commit rules:
-  1. Check head entry
-  2. If Done=Yes and No Exception: commit (write to arch state, free old Preg)
-  3. If Done=Yes and Exception: flush all entries from this one to tail
-  4. If Done=No: wait (even if later entries are done, cannot commit OoO)
-  5. Advance head
-
-Commit width: Typically 2-8 per cycle (matches issue width)
-```
+Commit rules: (1) check the head entry; (2) if Done and no exception, commit — write to arch state and free the old physical reg; (3) if Done with exception, flush all entries from this one to the tail; (4) if not Done, wait — later entries cannot commit out of order; (5) advance head. Commit width is typically 2–8 per cycle (matching issue width).
 
 ---
 
@@ -710,7 +620,7 @@ Commit width: Typically 2-8 per cycle (matches issue width)
 
 ### 7.1 AMAT (Average Memory Access Time)
 
-```
+```verilog
 AMAT = Hit_Time + Miss_Rate * Miss_Penalty
 
 For multi-level cache:
@@ -738,7 +648,7 @@ Numerical AMAT example:
 
 ### 7.2 Cache Organization
 
-```
+```verilog
 Cache parameters:
   Cache size:    S = 32 KB
   Block size:    B = 64 bytes (cache line size)
@@ -755,7 +665,7 @@ Address breakdown (32-bit address, 64B block, 64 sets):
 
 ### 7.3 Cache Line Size Trade-offs
 
-```
+```verilog
 Larger cache lines (e.g., 128B vs 64B):
   Pros:
     - Better spatial locality (more nearby data prefetched)
@@ -775,7 +685,7 @@ Typical cache line sizes:
 
 ### 7.4 Write Policies
 
-```
+```verilog
 Write-Through:
   Every write updates BOTH cache AND main memory
   Simple, memory always consistent
@@ -800,7 +710,7 @@ No-Write-Allocate (write-around):
 
 ### 7.5 Miss Types (3 C's)
 
-```
+```verilog
 Compulsory (Cold): First access to a block. Unavoidable (except with prefetching).
 Capacity: Cache is too small to hold all needed blocks. Reduce by increasing cache size.
 Conflict: Two blocks map to the same set. Reduce by increasing associativity.
@@ -836,20 +746,16 @@ retirement.
 address matches a pending store in the store buffer, the load can obtain the data
 directly from the buffer instead of waiting for the store to commit to cache.
 
-```
-Store Buffer (circular, FIFO):
+Store buffer (circular FIFO):
 
-  ┌─────────┬─────────┬─────────┬─────────┐
-  │ Addr=0x │ Addr=0x │ Addr=0x │  empty  │  ... up to N-1 entries
-  │ 1000    │ 1008    │ 2000    │         │
-  │ Data=42 │ Data=7  │ Data=99 │         │
-  └─────────┴─────────┴─────────┴─────────┘
-       ↑ oldest                      ↑ tail (next write)
+| Entry | Addr | Data |
+|---|---|---|
+| 0 (oldest) | 0x1000 | 42 |
+| 1 | 0x1008 | 7 |
+| 2 | 0x2000 | 99 |
+| 3 (tail) | empty | — |
 
-  Load(addr=0x1008):
-    CAM search matches entry 1 -> Data=7 returned immediately
-    No D-cache access needed.
-```
+On `Load(addr=0x1008)`, a CAM search matches entry 1 and returns Data = 7 immediately — no D-cache access needed. This is store-to-load forwarding.
 
 **Forwarding conditions:**
 
@@ -869,15 +775,13 @@ computed, or the overlap is partial -- the load must wait. This is a major
 performance limiter. Intel's optimization manual reports SFX stalls account for
 5-10% of cycles in typical integer workloads.
 
-```
-Typical SFX pattern:
-  STORE [rax], rcx          ; address = rax, data = rcx
-  LOAD  rdx, [rax]          ; same address -> must forward
+**Typical SFX pattern:**
+   - STORE [rax], rcx          ; address = rax, data = rcx
+   - LOAD  rdx, [rax]          ; same address -> must forward
 
-  Best case (address known, data ready): 1 extra cycle (forwarded)
-  Worst case (address unknown):         4-5 cycle stall on Intel
-  Partial overlap (load wider than store): ~15 cycle penalty (store must commit first)
-```
+Best case (address known, data ready): 1 extra cycle (forwarded)
+Worst case (address unknown):         4-5 cycle stall on Intel
+Partial overlap (load wider than store): ~15 cycle penalty (store must commit first)
 
 **Store buffer sizing:** Modern CPUs typically have 30-60 entries.
 
@@ -946,15 +850,13 @@ is too expensive.
 When a load address is computed, it is compared against all older SQ entries with
 `addr_known=1`:
 
-```
-Forwarding priority:
-  1. Find all SQ entries older than this load (lower SQ index) with matching address
-  2. Among matches, select the YOUNGEST (closest to the load in program order)
-  3. If multiple SQ entries overlap the load's byte range, merge bytes:
-     - Youngest store provides bytes it covers
-     - Next-youngest covers remaining bytes, etc.
-     - Any uncovered bytes come from D-cache
-```
+**Forwarding priority:**
+   1. Find all SQ entries older than this load (lower SQ index) with matching address
+2. Among matches, select the YOUNGEST (closest to the load in program order)
+3. If multiple SQ entries overlap the load's byte range, merge bytes:
+- Youngest store provides bytes it covers
+   - Next-youngest covers remaining bytes, etc.
+   - Any uncovered bytes come from D-cache
 
 The "youngest older store" rule ensures the load sees the most recent write to each
 byte. If the youngest older store covers the entire load, no D-cache access is needed
@@ -965,7 +867,7 @@ byte. If the youngest older store covers the entire load, no D-cache access is n
 Age-based priority is critical for correctness when multiple older stores overlap the
 load's address range. Consider this scenario:
 
-```
+```verilog
 SQ state (program order):
   SQ[0]: SW x5, addr=0x1000, size=8, data=0xAAAABBBBCCCCDDDD  (oldest)
   SQ[1]: SW x6, addr=0x1004, size=4, data=0x11223344          (younger)
@@ -996,36 +898,32 @@ stores have committed to the D-cache, trading ILP for hardware simplicity.
 A load may execute before an older store whose address is unknown, speculating that
 they do not alias. This is called **load bypass** and is critical for ILP:
 
-```
-Safe to bypass:
-  - Store address is known AND different from load address -> bypass (no alias)
-  - Store address is unknown -> speculate bypass, check later
+**Safe to bypass:**
+   - Store address is known AND different from load address -> bypass (no alias)
+   - Store address is unknown -> speculate bypass, check later
 
-Must wait:
-  - Store address is known AND matches load address -> forward (no bypass)
-  - Store-set predictor says this load aliases the pending store -> stall
-```
+**Must wait:**
+   - Store address is known AND matches load address -> forward (no bypass)
+   - Store-set predictor says this load aliases the pending store -> stall
 
 **Memory violation detection and recovery pipeline flush:**
 
 If a load bypassed an older store speculatively, and that store later computes an
 address that aliases the load, a **memory ordering violation** occurs:
 
-```
-Violation detection:
-  1. Store computes address -> SQ entry gets addr_known=1
-  2. SQ address is broadcast to all younger LQ entries
-  3. CAM match: LQ entry has same address AND load already completed
-  4. Violation detected! The load read stale data.
+**Violation detection:**
+   1. Store computes address -> SQ entry gets addr_known=1
+2. SQ address is broadcast to all younger LQ entries
+3. CAM match: LQ entry has same address AND load already completed
+4. Violation detected! The load read stale data.
 
-Recovery:
-  1. Identify the violating load's rob_idx
-  2. Flush the ROB from (load's rob_idx + 1) to tail
-     -- the load itself must be re-executed
-  3. Restore RAT from checkpoint at the load's rob_idx
-  4. Re-issue the load (this time it will forward from the store)
-  5. Penalty: typically 10-20 cycles (same as branch misprediction)
-```
+**Recovery:**
+   1. Identify the violating load's rob_idx
+2. Flush the ROB from (load's rob_idx + 1) to tail
+-- the load itself must be re-executed
+3. Restore RAT from checkpoint at the load's rob_idx
+4. Re-issue the load (this time it will forward from the store)
+5. Penalty: typically 10-20 cycles (same as branch misprediction)
 
 Violation frequency: ~0.1-1% of all loads on typical integer workloads. Store-set
 predictors keep this rate low by preventing speculative bypass when history indicates
@@ -1038,7 +936,7 @@ aliasing.
 The ROB is implemented as a SRAM array with head and tail pointers that wrap modulo
 $N_{ROB}$:
 
-```
+```python
 ROB[0]  ROB[1]  ...  ROB[Head]  ROB[Head+1]  ...  ROB[Tail-1]  ROB[Tail]
                                     |                              |
                               oldest uncommitted            next free slot
@@ -1075,7 +973,7 @@ When instruction $I$ commits and its destination architectural register $rd$ map
 physical register $P_{new}$, the *previous* physical register $P_{old}$ for that same
 $rd$ is returned to the free list:
 
-```
+```verilog
 At commit:
   P_old = ROB[head].phys_dst_old    // saved during rename
   arch_RAT[ROB[head].arch_dst] = ROB[head].phys_dst  // not strictly needed
@@ -1094,7 +992,7 @@ recycle.
 The ROB enables precise exceptions by serializing all architectural state updates
 through the in-order commit path:
 
-```
+```verilog
 1. Exception detected at any execution stage (e.g., page fault at MEM)
 2. Exception code written to ROB entry's exception field
 3. ROB entry marked completed=1
@@ -1119,7 +1017,7 @@ trivial -- simply discard everything after the faulting instruction.
 When a faulting instruction $I_f$ at ROB index $B$ reaches the head, the following
 sequence executes in 2--3 cycles:
 
-```
+```verilog
 Cycle 1: Detection and flush initiation
   1. ROB commit logic reads head entry (index B)
   2. Exception field != 0 -> trigger exception pipeline
@@ -1176,7 +1074,7 @@ for checkpointing (see below).
 
 **RAM-based RAT implementation details:**
 
-```
+```verilog
 RAT SRAM array (32 entries x 7 bits = 224 bits total):
 
   Read: arch_reg[4:0] drives the SRAM word-line decoder.
@@ -1205,7 +1103,7 @@ RAT SRAM array (32 entries x 7 bits = 224 bits total):
 
 **CAM-based RAT implementation details (for checkpoint recovery):**
 
-```
+```verilog
 CAM-based rename table (128 entries x 7-bit phys_tag):
 
   Each entry stores: {arch_reg[4:0], phys_tag[6:0], valid}
@@ -1234,7 +1132,7 @@ The free list must support W allocations per cycle (rename) and up to C dealloca
 per cycle (commit). For a 4-wide machine, this means 4 pops and up to 8 pushes per
 cycle (commit is typically wider than dispatch).
 
-```
+```text
 Free list FIFO implementation (N = 128 physical registers):
 
   head_ptr[6:0]: index of next register to allocate
@@ -1269,7 +1167,7 @@ Free list FIFO implementation (N = 128 physical registers):
 
 **Free list management:**
 
-```
+```verilog
 Free list: circular FIFO of physical register tags
   head_ptr: next tag to allocate
   tail_ptr: next slot to return a freed tag
@@ -1302,7 +1200,7 @@ be prevented by stalling dispatch when `count < dispatch_width`.
 | Hybrid: checkpoint for branches, ROB-walk for exceptions | 8-16 checkpoints + ROB walk | 1 cycle for branch, O(N) for exception | Moderate |
 
 Checkpoint approach (used in Intel, AMD, ARM high-performance cores):
-```
+```verilog
 On branch rename:
   Snapshot the active RAT into checkpoint[k]
   checkpoint[k].valid = 1
@@ -1314,7 +1212,7 @@ On branch misprediction:
 ```
 
 History buffer approach (used in area-constrained designs):
-```
+```verilog
 On any rename:
   ROB[tail].phys_dst_old = previous mapping (already stored)
 
@@ -1371,49 +1269,47 @@ the instruction's ROB entry and deferred to commit time*. The instruction is mar
 This lazy handling is what makes precise exceptions cheap -- no special fast-flush
 logic is needed at the detection point.
 
-```
 Fetch-stage exception (instruction page fault):
-  Detection: I-TLB miss -> page walk -> PTE not present or no execute permission
-  Action at fetch: the faulting instruction cannot enter the pipeline normally.
-    Instead, the fetch unit creates a "poison" fetch packet containing the PC
-    and the exception code (CAUSE_INSN_PAGE_FAULT = 12). This packet travels
-    through decode and rename like a normal instruction. At dispatch, the ROB
-    entry is created with exception_code = 12 and completed = 1 immediately.
-  ROB interaction: when this entry reaches the head, the normal exception
-    handler fires (flush, restore RAT, redirect to mtvec). No special handling
-    needed -- the ROB doesn't care that the instruction never actually executed.
+Detection: I-TLB miss -> page walk -> PTE not present or no execute permission
+Action at fetch: the faulting instruction cannot enter the pipeline normally.
+Instead, the fetch unit creates a "poison" fetch packet containing the PC
+and the exception code (CAUSE_INSN_PAGE_FAULT = 12). This packet travels
+through decode and rename like a normal instruction. At dispatch, the ROB
+entry is created with exception_code = 12 and completed = 1 immediately.
+ROB interaction: when this entry reaches the head, the normal exception
+handler fires (flush, restore RAT, redirect to mtvec). No special handling
+needed -- the ROB doesn't care that the instruction never actually executed.
 
 Decode-stage exception (illegal instruction):
-  Detection: opcode decoder cannot match the encoding to any valid instruction.
-  Action at decode: the instruction is still dispatched to the ROB, but its
-    exception field is set to CAUSE_ILLEGAL_INSTRUCTION = 2 and completed = 1.
-    The instruction does NOT proceed to issue or execute.
-  ROB interaction: identical to fetch-stage. The ROB entry arrives at commit
-    with exception already set. The handler sees mcause=2 and mtval contains
-    the faulting instruction encoding.
+Detection: opcode decoder cannot match the encoding to any valid instruction.
+Action at decode: the instruction is still dispatched to the ROB, but its
+exception field is set to CAUSE_ILLEGAL_INSTRUCTION = 2 and completed = 1.
+The instruction does NOT proceed to issue or execute.
+ROB interaction: identical to fetch-stage. The ROB entry arrives at commit
+with exception already set. The handler sees mcause=2 and mtval contains
+the faulting instruction encoding.
 
-Execute-stage exception (e.g., ECALL):
-  Detection: the execution unit recognizes the opcode (ECALL is a "trap"
-    instruction, not a computational one). Some designs detect ECALL at decode
-    and mark the ROB entry immediately, bypassing execute entirely.
-  Action at execute: the functional unit writes exception_code = CAUSE_ECALL_U/S/M
-    (8, 9, or 10 depending on current privilege mode) to the ROB entry via the CDB.
-  ROB interaction: the entry is marked completed=1 with the exception code.
-    When it reaches the head, the pipeline flushes and redirects to mtvec/stvec.
+**Execute-stage exception (e.g., ECALL):**
+   - Detection: the execution unit recognizes the opcode (ECALL is a "trap"
+   - instruction, not a computational one). Some designs detect ECALL at decode
+   - and mark the ROB entry immediately, bypassing execute entirely.
+   - Action at execute: the functional unit writes exception_code = CAUSE_ECALL_U/S/M
+   - (8, 9, or 10 depending on current privilege mode) to the ROB entry via the CDB.
+   - ROB interaction: the entry is marked completed=1 with the exception code.
+   - When it reaches the head, the pipeline flushes and redirects to mtvec/stvec.
 
 Memory-stage exception (load/store page fault):
-  Detection: D-TLB miss triggers a hardware page table walk. The walk returns a
-    PTE that is not present, or does not permit the required access (e.g., read-
-    only page for a store). Alternatively, the PTE may be present but the
-    privilege check fails (user-mode access to supervisor-only page).
-  Action at memory: the AGU/LSQ pipeline writes exception_code = CAUSE_LOAD_PAGE_FAULT
-    (13) or CAUSE_STORE_PAGE_FAULT (15) to the ROB entry, along with the faulting
-    virtual address in the ldst_addr field.
-  ROB interaction: the store's SQ entry is NOT committed to the D-cache (it never
-    reaches the head). On exception handling, the SQ entry is simply discarded.
-    For loads, the LQ entry is discarded and any data loaded from the wrong page
-    is ignored (it was never written to the PRF because the exception prevented it).
-```
+Detection: D-TLB miss triggers a hardware page table walk. The walk returns a
+PTE that is not present, or does not permit the required access (e.g., read-
+only page for a store). Alternatively, the PTE may be present but the
+privilege check fails (user-mode access to supervisor-only page).
+Action at memory: the AGU/LSQ pipeline writes exception_code = CAUSE_LOAD_PAGE_FAULT
+(13) or CAUSE_STORE_PAGE_FAULT (15) to the ROB entry, along with the faulting
+virtual address in the ldst_addr field.
+ROB interaction: the store's SQ entry is NOT committed to the D-cache (it never
+reaches the head). On exception handling, the SQ entry is simply discarded.
+For loads, the LQ entry is discarded and any data loaded from the wrong page
+is ignored (it was never written to the PRF because the exception prevented it).
 
 The key insight: because the ROB commits in-order, an exception detected in the
 memory stage of instruction $I_k$ cannot affect architectural state until $I_k$
@@ -1434,7 +1330,7 @@ committed, nothing after $I_k$ has touched architectural state.
 
 **How the ROB enables precise exceptions -- detailed walkthrough:**
 
-```
+```verilog
 Scenario: I3 causes a load page fault
 
 ROB state at fault detection:
@@ -1461,49 +1357,30 @@ Result: architectural state = state after I1 and I2 committed, nothing else.
 
 **Bypass paths in a 5-stage pipeline:**
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    EM["EX/MEM pipeline reg<br/>ALU_result"] --> MA["MUX · Forward_A=01"]
+    MW["MEM/WB pipeline reg<br/>result (ALU or MEM data)"] --> MA2["MUX · Forward_A=10"]
+    MA --> AA["ALU Input A"]
+    MA2 --> AA
+    EM --> MB["MUX · Forward_B=01"]
+    MW --> MB2["MUX · Forward_B=10"]
+    MB --> AB["ALU Input B"]
+    MB2 --> AB
+    R1["ID/EX.rs1_data"] --> AA
+    R2["ID/EX.rs2_data"] --> AB
+    classDef reg fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef mux fill:#fde68a,stroke:#b45309,color:#000
+    classDef out fill:#dcfce7,stroke:#15803d,color:#000
+    class EM,MW,R1,R2 reg
+    class MA,MA2,MB,MB2 mux
+    class AA,AB out
 ```
-                     Forwarding Network
-                     ==================
 
-   EX/MEM                     MEM/WB
-   pipeline reg               pipeline reg
-     |                           |
-     | ALU_result               | result (ALU or MEM data)
-     |                           |
-     v                           v
-   +---+                       +---+
-   |MUX| <-- Forward_A=01      |MUX| <-- Forward_A=10
-   +---+                       +---+
-     ^                           ^
-     |                           |
-     +--- ALU Input A -----------+
+Bypass paths: **EX→EX** (Forward=01) — result available after EX, forwarded to the next instruction's EX; **MEM→EX** (Forward=10) — result available after MEM, forwarded to an instruction two cycles later; **WB→EX** — not needed in a classic 5-stage pipeline with a write-first register file (WB writes in the first half of the cycle, ID reads in the second, so the value is available same-cycle).
 
-   +---+                       +---+
-   |MUX| <-- Forward_B=01      |MUX| <-- Forward_B=10
-   +---+                       +---+
-     ^                           ^
-     |                           |
-     +--- ALU Input B -----------+
-
-   ID/EX.rs1_data --------------+
-   ID/EX.rs2_data --------------+
-
-Bypass paths:
-  EX->EX (Forward=01): result available after EX stage, forwarded to next instruction's EX
-  MEM->EX (Forward=10): result available after MEM stage, forwarded to instruction 2 cycles later
-  WB->EX: NOT needed in a classic 5-stage pipeline with write-first register file
-          (WB writes in first half of cycle, ID reads in second half -> same-cycle)
-
-Note on deeper pipelines and OoO designs:
-  In pipelines with more than 5 stages, a WB->EX (or equivalent late-stage to
-  early-stage) bypass path IS needed. For example, in a 7-stage pipeline where
-  WB occurs in stage 6 and a dependent instruction's EX is in stage 4, the
-  result from WB must be forwarded back 2 stages. In an OoO core this is
-  handled by the Common Data Bus (CDB): when an instruction writes back, its
-  result tag is broadcast to the issue queue's CAM, which wakes up dependent
-  instructions regardless of pipeline distance. The CDB effectively replaces
-  all explicit bypass paths with a single broadcast mechanism.
-```
+In pipelines deeper than 5 stages a WB→EX (late-stage-to-early-stage) bypass *is* needed — e.g., a 7-stage pipeline with WB in stage 6 and a dependent EX in stage 4 must forward back two stages. In an out-of-order core the Common Data Bus handles this: on write-back, the result tag is broadcast to the issue queue's CAM, waking dependent instructions regardless of pipeline distance — replacing all explicit bypass paths with one broadcast.
 
 **Which forwarding is needed to avoid stalls:**
 
@@ -1517,7 +1394,7 @@ Note on deeper pipelines and OoO designs:
 
 **Worked pipeline timing diagram showing data hazard resolution:**
 
-```
+```verilog
 Instruction sequence:
   I1: ADD  $1, $2, $3     (writes $1)
   I2: SUB  $4, $1, $5     (reads $1 -- RAW hazard, distance 1)
@@ -1609,18 +1486,23 @@ pattern recognized by the prefetcher). The prefetcher detects a constant stride
 $\Delta$ between successive load addresses and issues prefetches for addresses
 $A + \Delta, A + 2\Delta, \ldots$ before the loads execute.
 
-```
-Strided access, no prefetcher:
-  Miss(addr=0x1000) ---- latency 200 cycles ----> data
-                     Miss(addr=0x1040)           ---- 200 cycles ----> data
-                                        Miss(addr=0x1080)  ---- 200 cycles ----> data
-  Total: 600 cycles (serial)
-
-Strided access, with stride prefetcher (MLP ≈ 3):
-  Miss(0x1000)  ----+
-  Pf (0x1040)   ----+---- all three in parallel ----> data arrives
-  Pf (0x1080)   ----+
-  Total: ~200 cycles (parallel, effective latency ≈ 200/3 ≈ 67 cycles per miss)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph serial["No prefetcher — serial misses"]
+        direction LR
+        s1["Miss 0x1000<br/>200 cyc"] --> s2["Miss 0x1040<br/>200 cyc"] --> s3["Miss 0x1080<br/>200 cyc"] --> st["Total ≈ 600 cyc"]
+    end
+    subgraph par["Stride prefetcher — MLP ≈ 3"]
+        direction LR
+        p0["Miss 0x1000"] --> pt["Total ≈ 200 cyc<br/>≈ 67 cyc effective per miss"]
+        p1["Prefetch 0x1040"] --> pt
+        p2["Prefetch 0x1080"] --> pt
+    end
+    classDef bad fill:#fee2e2,stroke:#b91c1c,color:#000
+    classDef good fill:#dcfce7,stroke:#15803d,color:#000
+    class s1,s2,s3,st bad
+    class p0,p1,p2,pt good
 ```
 
 **MSHR sizing trade-off.** More MSHRs enable higher MLP but increase area and
@@ -1640,15 +1522,17 @@ connected by an address/data queue:
 2. **Execute (compute) engine** -- consumes data from the queue and performs
    arithmetic, logic, and control-flow operations.
 
-```
-  Instruction Stream
-        │
-        ├──── Access Engine ──→ L1 D-Cache ──→ Data Queue ──┐
-        │       (runs ahead,                                      │
-        │        prefetches)                                      │
-        │                                                        ▼
-        └──── Execute Engine ◄──────────────────────── compute results
-                 (consumes prefetched data)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    IS["Instruction stream"] --> AE["Access engine<br/>(runs ahead, prefetches)"]
+    IS --> EE["Execute engine<br/>(consumes prefetched data)"]
+    AE --> L1["L1 D-cache"] --> DQ["Data queue"] --> EE
+    EE -.->|compute results| AE
+    classDef a fill:#fde68a,stroke:#b45309,color:#000
+    classDef e fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class AE,L1,DQ a
+    class IS,EE e
 ```
 
 The access engine uses address-generation instructions whose inputs are
@@ -1686,49 +1570,47 @@ tile).
 
 ### 8.2 All State Transitions (Processor Events and Bus Events)
 
-```
-Processor Events (local CPU actions):
-  PrRd:  Processor read
-  PrWr:  Processor write
+**Processor Events (local CPU actions):**
+   - PrRd:  Processor read
+   - PrWr:  Processor write
 
-Bus Events (snooped from other CPUs):
-  BusRd:    Another CPU reads this address (bus read)
-  BusRdX:   Another CPU writes this address (bus read exclusive / invalidate)
-  BusUpgr:  Another CPU upgrades from Shared to Modified (bus upgrade)
+**Bus Events (snooped from other CPUs):**
+   - BusRd:    Another CPU reads this address (bus read)
+   - BusRdX:   Another CPU writes this address (bus read exclusive / invalidate)
+   - BusUpgr:  Another CPU upgrades from Shared to Modified (bus upgrade)
 
-Transitions from INVALID (I):
-  PrRd  -> fetch from memory
-           If no other cache has it: I -> E (Exclusive)
-           If another cache has it:  I -> S (Shared)
-  PrWr  -> fetch from memory with invalidation
-           I -> M (Modified), invalidate all other copies
-           Bus transaction: BusRdX
+**Transitions from INVALID (I):**
+   - PrRd  -> fetch from memory
+   - If no other cache has it: I -> E (Exclusive)
+   - If another cache has it:  I -> S (Shared)
+   - PrWr  -> fetch from memory with invalidation
+   - I -> M (Modified), invalidate all other copies
+   - Bus transaction: BusRdX
 
-Transitions from EXCLUSIVE (E):
-  PrRd  -> E -> E (hit, no bus transaction)
-  PrWr  -> E -> M (silent upgrade, no bus transaction! This is the E state advantage)
-  BusRd -> E -> S (another CPU reads, must share; supply data)
-  BusRdX-> E -> I (another CPU writes, must invalidate; supply data)
+**Transitions from EXCLUSIVE (E):**
+   - PrRd  -> E -> E (hit, no bus transaction)
+   - PrWr  -> E -> M (silent upgrade, no bus transaction! This is the E state advantage)
+   - BusRd -> E -> S (another CPU reads, must share; supply data)
+   - BusRdX-> E -> I (another CPU writes, must invalidate; supply data)
 
-Transitions from SHARED (S):
-  PrRd  -> S -> S (hit, no bus transaction)
-  PrWr  -> S -> M (must invalidate other copies)
-           Bus transaction: BusUpgr (invalidation, no data transfer needed)
-  BusRd -> S -> S (another CPU reads, still shared)
-  BusRdX-> S -> I (another CPU writes, must invalidate our copy)
-  BusUpgr-> S -> I (another CPU upgrading, must invalidate)
+**Transitions from SHARED (S):**
+   - PrRd  -> S -> S (hit, no bus transaction)
+   - PrWr  -> S -> M (must invalidate other copies)
+   - Bus transaction: BusUpgr (invalidation, no data transfer needed)
+   - BusRd -> S -> S (another CPU reads, still shared)
+   - BusRdX-> S -> I (another CPU writes, must invalidate our copy)
+   - BusUpgr-> S -> I (another CPU upgrading, must invalidate)
 
-Transitions from MODIFIED (M):
-  PrRd  -> M -> M (hit, no bus transaction)
-  PrWr  -> M -> M (hit, no bus transaction)
-  BusRd -> M -> S (another CPU reads; must write back to memory, then share)
-           This is the expensive transition: writeback + state change
-  BusRdX-> M -> I (another CPU writes; must write back, then invalidate)
-```
+**Transitions from MODIFIED (M):**
+   - PrRd  -> M -> M (hit, no bus transaction)
+   - PrWr  -> M -> M (hit, no bus transaction)
+   - BusRd -> M -> S (another CPU reads; must write back to memory, then share)
+   - This is the expensive transition: writeback + state change
+   - BusRdX-> M -> I (another CPU writes; must write back, then invalidate)
 
 ### 8.3 Snooping Example with 4 Cores
 
-```
+```verilog
 Initial: Address X is not in any cache.
 
 Step 1: Core 0 reads X
@@ -1766,7 +1648,7 @@ Step 6: Core 1 writes X
 
 ### 8.4 Scalability Problem and Directory-Based Coherence
 
-```
+```verilog
 Snooping problem: Every bus transaction is broadcast to ALL caches.
   With N cores: bus bandwidth = O(N * traffic_per_core)
   Beyond 8-16 cores: bus becomes the bottleneck
@@ -1795,24 +1677,22 @@ Directory-based protocol:
 
 ### 8.5 MOESI Protocol Extension
 
-```
-Adds the Owned (O) state:
+**Adds the Owned (O) state:**
 
-  O = line is dirty (modified from memory), but other caches have Shared copies.
-      Owner is responsible for supplying data on snoop requests.
+O = line is dirty (modified from memory), but other caches have Shared copies.
+Owner is responsible for supplying data on snoop requests.
 
-MESI problem:
-  When M transitions to S (on BusRd), it must write back to memory.
-  This consumes memory bandwidth even though only a cache-to-cache transfer is needed.
+**MESI problem:**
+   - When M transitions to S (on BusRd), it must write back to memory.
+   - This consumes memory bandwidth even though only a cache-to-cache transfer is needed.
 
-MOESI solution:
-  M + BusRd -> O (Owner), requester gets S
-  Data goes directly from owner to requester (cache-to-cache transfer)
-  NO memory write-back! Saves memory bandwidth.
-  Memory is "stale" -- owner will write back on eviction.
+**MOESI solution:**
+   - M + BusRd -> O (Owner), requester gets S
+   - Data goes directly from owner to requester (cache-to-cache transfer)
+   - NO memory write-back! Saves memory bandwidth.
+   - Memory is "stale" -- owner will write back on eviction.
 
 AMD Zen uses MOESI (modified version called MOESI-F with F=Forward state).
-```
 
 ---
 
@@ -1820,7 +1700,7 @@ AMD Zen uses MOESI (modified version called MOESI-F with F=Forward state).
 
 ### 9.1 Four-Level Page Table Walk (x86-64, 48-bit VA)
 
-```
+```verilog
 48-bit Virtual Address:
   [PML4 (9)] [PDPT (9)] [PD (9)] [PT (9)] [Offset (12)]
   bits 47:39  bits 38:30  bits 29:21  bits 20:12  bits 11:0
@@ -1845,7 +1725,7 @@ Page Table Entry (PTE) format (simplified):
 
 ### 9.2 TLB Design
 
-```
+```verilog
 Typical TLB hierarchy:
   L1 ITLB: 64 entries, fully associative, 1-cycle lookup
   L1 DTLB: 64 entries, fully associative, 1-cycle lookup
@@ -1863,7 +1743,7 @@ Set-associative: L2 TLB often 8-way for larger capacity.
 
 ### 9.3 TLB Miss Penalty
 
-```
+```verilog
 TLB miss -> page table walk:
   Best case (page walk cache hits): 10-30 cycles
   Typical: 30-60 cycles (page walk entries in L2/L3 cache)
@@ -1882,7 +1762,7 @@ TLB miss rate depends heavily on working set size:
 
 ### 9.4 Huge Pages
 
-```
+```verilog
 4KB pages: 12-bit offset, 9 bits per level -> 4-level walk
 2MB pages: 21-bit offset, skip PT level -> 3-level walk
 1GB pages: 30-bit offset, skip PT and PD -> 2-level walk
@@ -1901,34 +1781,30 @@ Drawbacks:
 
 ### 9.5 VIPT (Virtually Indexed, Physically Tagged) Cache
 
-```
-The problem:
-  Cache lookup needs the physical address (tag comparison).
-  TLB provides physical address, but takes 1 cycle.
-  If cache uses physical index too, we need PA before indexing.
-  Total: 1 cycle (TLB) + 1 cycle (cache) = 2 cycles minimum.
+**The problem:**
+   - Cache lookup needs the physical address (tag comparison).
+   - TLB provides physical address, but takes 1 cycle.
+   - If cache uses physical index too, we need PA before indexing.
+   - Total: 1 cycle (TLB) + 1 cycle (cache) = 2 cycles minimum.
 
-VIPT solution:
-  INDEX the cache with virtual address bits (available immediately)
-  TAG the cache with physical address bits (from TLB)
-  TLB lookup and cache index happen IN PARALLEL -> 1 cycle total!
+**VIPT solution:**
+   - INDEX the cache with virtual address bits (available immediately)
+   - TAG the cache with physical address bits (from TLB)
+   - TLB lookup and cache index happen IN PARALLEL -> 1 cycle total!
 
-Constraint:
-  The virtual index bits must equal the physical index bits.
-  For a 32KB, 8-way cache with 64B lines:
-    Sets = 32768 / (8 * 64) = 64 sets
-    Index = 6 bits (log2(64)) = bits [11:6]
-    Offset = 6 bits = bits [5:0]
-    Total bits used for index+offset = 12 bits
+**Constraint:**
+   - The virtual index bits must equal the physical index bits.
+   - For a 32KB, 8-way cache with 64B lines:
+   - Sets = 32768 / (8 * 64) = 64 sets
+   - Index = 6 bits (log2(64)) = bits [11:6]
+   - Offset = 6 bits = bits [5:0]
+   - Total bits used for index+offset = 12 bits
 
-  For 4KB pages: page offset = 12 bits [11:0]
-  Index bits [11:6] are WITHIN the page offset -> same in VA and PA!
-  VIPT works without aliasing! (as long as index+offset <= page_offset_bits)
+For 4KB pages: page offset = 12 bits [11:0]
+Index bits [11:6] are WITHIN the page offset -> same in VA and PA!
+VIPT works without aliasing! (as long as index+offset <= page_offset_bits)
 
-  If cache is too large: index bits extend beyond page offset
-    -> VIPT becomes problematic (aliasing)
-    -> Solutions: page coloring, or increase associativity
-```
+If cache is too large: index bits extend beyond page offset → VIPT becomes problematic (aliasing) → Solutions: page coloring, or increase associativity
 
 ---
 
@@ -1936,7 +1812,7 @@ Constraint:
 
 ### 10.1 Performance Equations
 
-```
+```verilog
 CPU Time = Instruction_Count * CPI * Clock_Period
 
 CPI = CPI_ideal + Stall_cycles_per_instruction
@@ -1954,26 +1830,24 @@ Throughput = IPC * Frequency
 
 ### 10.2 Amdahl's Law
 
-```
-Speedup = 1 / ((1 - f) + f/S)
+- **Speedup** = `1 / ((1 - f) + f/S)`
 
 where:
-  f = fraction of execution time that is improved
-  S = speedup of the improved portion
+f = fraction of execution time that is improved
+S = speedup of the improved portion
 
-Example:
-  If 80% of execution is parallelizable and you have 8 cores:
-  Speedup = 1 / ((1-0.8) + 0.8/8) = 1 / (0.2 + 0.1) = 1 / 0.3 = 3.33x
+**Example:**
+   - If 80% of execution is parallelizable and you have 8 cores:
+   - Speedup = 1 / ((1-0.8) + 0.8/8) = 1 / (0.2 + 0.1) = 1 / 0.3 = 3.33x
 
-  Maximum speedup with infinite cores:
-  Speedup_max = 1 / (1 - 0.8) = 5x
+Maximum speedup with infinite cores:
+Speedup_max = 1 / (1 - 0.8) = 5x
 
-  Even with infinite parallelism, the serial 20% limits you to 5x!
-```
+Even with infinite parallelism, the serial 20% limits you to 5x!
 
 ### 10.3 Numerical Performance Example
 
-```
+```verilog
 Processor A: 2 GHz, CPI = 1.5
 Processor B: 3 GHz, CPI = 2.5
 
@@ -2082,7 +1956,7 @@ The FTQ is a small FIFO structure sitting between the branch predictor and the
 I-cache. It decouples prediction throughput from cache latency so the predictor
 can run ahead of the cache without stalling.
 
-```
+```verilog
 FTQ entry fields:
   { predicted_PC,          -- next fetch address (from BPU)
     fall_through_PC,       -- PC + fetch_width (sequential fallback)
@@ -2102,6 +1976,7 @@ The fetch pipeline typically spans 3--5 stages in a modern out-of-order core.
 The key dataflow is:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[BPU predicts next PC] --> B[FTQ Entry Allocated]
     B --> C[I-Cache Tag + Data Lookup]
@@ -2212,7 +2087,7 @@ occupies bits [6:0], which makes early decode straightforward.
 
 ### 13.2 R-Type Example: ADD x5, x6, x7
 
-```
+```verilog
 ADD x5, x6, x7
   funct7 = 0000000
   rs2    = 00111   (x7)
@@ -2227,7 +2102,7 @@ Hex: 0x007302B3
 
 ### 13.3 I-Type Example: ADDI x5, x6, -1
 
-```
+```verilog
 ADDI x5, x6, -1
   imm    = 111111111111  (-1, sign-extended 12-bit = 0xFFF)
   rs1    = 00110   (x6)
@@ -2241,7 +2116,7 @@ Hex: 0xFFF30293
 
 ### 13.4 Load Example: LD x5, 8(x6)
 
-```
+```verilog
 LD x5, 8(x6)
   imm    = 000000001000  (8)
   rs1    = 00110   (x6)
@@ -2255,7 +2130,7 @@ Hex: 0x00831283
 
 ### 13.5 Store Example: SD x5, 8(x6)
 
-```
+```verilog
 SD x5, 8(x6)
   imm[11:5] = 0000000   (upper immediate bits)
   rs2       = 00101     (x5, data to store)
@@ -2273,7 +2148,7 @@ Hex: 0x00531423
 The B-type immediate is the most complex encoding in RISC-V. For a branch
 offset of +4 (i.e., skip one instruction forward), the immediate is 4:
 
-```
+```verilog
 offset = +4 decimal = 0x004 = 0000000000100 binary (13-bit signed)
 
 B-type immediate layout (scattered):
@@ -2439,20 +2314,21 @@ $$
 ### 15.2 Exception Flow in the OoO Pipeline
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[Instruction executes on FU] --> B{Exception detected?}
-    B -->|No| C[Write result to ROB entry, set Done=1]
-    B -->|Yes| D[Write exception code to ROB entry, set Exception=1, Done=1]
+    B -->|No| C[Write result to ROB entry, set<br/>Done=1]
+    B -->|Yes| D[Write exception code to ROB entry,<br/>set Exception=1, Done=1]
     C --> E[ROB commit: check head entry]
     D --> E
     E --> F{Exception bit set?}
-    F -->|No| G[Commit: update arch register file / D-cache]
-    F -->|Yes| H[Flush all ROB entries from faulting entry to tail]
+    F -->|No| G[Commit: update arch register file /<br/>D-cache]
+    F -->|Yes| H[Flush all ROB entries from faulting<br/>entry to tail]
     H --> I[Save faulting PC to mepc / sepc]
-    I --> J[Set mcause / scause to exception code]
-    J --> K[Set mtval / stval to faulting address or instruction]
-    K --> L[PC = mtvec / stvec -- jump to trap vector]
-    L --> M[Trap handler executes in M-mode or S-mode]
+    I --> J[Set mcause / scause to exception<br/>code]
+    J --> K[Set mtval / stval to faulting<br/>address or instruction]
+    K --> L[PC = mtvec / stvec -- jump to trap<br/>vector]
+    L --> M[Trap handler executes in M-mode or<br/>S-mode]
 ```
 
 Step-by-step walk of the flow:
@@ -2520,7 +2396,7 @@ at execute:
 
 **Why check at commit, not at execute?** Consider this scenario:
 
-```
+```ascii-graph
 I1: ADD  x5, x6, x7     -- committed
 I2: LD   x8, 0(x9)      -- executing, L2 miss in flight
 I3: ADD  x10, x11, x12   -- executed out of order, result ready
@@ -2536,7 +2412,7 @@ architectural state is unambiguous.
 
 ### 15.5 Interrupt vs. Exception Timing Diagram
 
-```
+```verilog
 Cycle:         1    2    3    4    5    6    7    8    9    10
 I1 (ADD)      IF   ID   EX  MEM  WB(commit)                  <- commits at cycle 5
 I2 (LD)            IF   ID   EX  MEM  MEM  MEM  MEM  MEM  WB <- L2 miss, 10-cycle MEM
@@ -2624,7 +2500,7 @@ TSO relaxes exactly one ordering: a load may be reordered before an older store
 to a **different** address (store-load relaxation). All other program-order
 pairs are preserved:
 
-```
+```ascii-graph
 Allowed reorderings under TSO:
   Store X --> Load Y  (X != Y):  YES  (store-load relaxation)
   All other pairs:               NO
@@ -2649,7 +2525,7 @@ instruction with implicit full barrier semantics.
 Loads and stores can be reordered freely except where constrained by explicit
 fences or acquire/release annotations:
 
-```
+```ascii-graph
 Allowed reorderings under weak ordering:
   Load  --> Load:   YES
   Load  --> Store:  YES
@@ -2683,7 +2559,7 @@ Finer-grained ordering primitives that avoid the cost of a full fence:
   operations from being reordered after this store. Used at the exit of a
   critical section (releasing a lock).
 
-```
+```python
 Thread 0:                        Thread 1:
   data = 42                        ld.aq flag_val, flag
   st.rl flag, 1                    if flag_val == 1:
@@ -2726,7 +2602,7 @@ one issue slot, and traverses the pipeline as a single operation.
 
 **Common fused patterns:**
 
-```
+```ascii-graph
 CMP reg1, reg2    }                          TEST reg1, reg2    }
 JE  target        } --> fused-cmp-branch      JZ  target        } --> fused-test-branch
 
@@ -2752,7 +2628,7 @@ instruction so that they travel through most of the pipeline as one entry.
 
 **Common pattern -- memory operands:**
 
-```
+```verilog
 ADD rax, [rbx]      -- complex instruction with memory operand
 ```
 
@@ -2881,7 +2757,7 @@ architectural state is restored. An attacker can use a **covert channel**
 the speculative window.
 
 **Spectre Variant 1 (Bounds Check Bypass):**
-```
+```verilog
 if (index < array_size)            // Trains branch predictor to "taken"
     temp = array2[array1[index]];  // Speculative access: index may be out-of-bounds
 ```
@@ -2906,7 +2782,7 @@ A software+hardware mitigation for Spectre Variant 2. Instead of executing an
 indirect branch (which may be poisoned in the BTB), the compiler replaces it
 with a `call` + `ret` sequence:
 
-```asm
+```verilog
 ; Original: jmp *%rax
 ; Retpoline:
   call retpoline_target

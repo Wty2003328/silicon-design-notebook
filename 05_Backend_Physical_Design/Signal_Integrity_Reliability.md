@@ -17,7 +17,7 @@
 
 ### 1.1 Coupling Capacitance Model
 
-```
+```ascii-graph
 Two adjacent parallel wires in an IC:
 
     GND plane (above)
@@ -40,7 +40,7 @@ Two adjacent parallel wires in an IC:
 
 ### 1.2 Why Crosstalk Gets Worse at Advanced Nodes
 
-```
+```ascii-graph
 Wire pitch scaling:
   130nm: M1 pitch = 340nm, spacing = 200nm
   65nm:  M1 pitch = 190nm, spacing = 100nm
@@ -59,7 +59,6 @@ Also: higher resistance wires → RC time constant grows → noise lingers longe
 
 ### 1.3 Crosstalk Types
 
-```
 1. Functional crosstalk (glitch noise):
    - Aggressor switches, victim is quiet
    - Coupling injects noise voltage on victim
@@ -75,7 +74,6 @@ Also: higher resistance wires → RC time constant grows → noise lingers longe
    - Simultaneous switching output (SSO) noise
    - Many signals switching → current spike → VDD droops/GND bounces
    - Not strictly "crosstalk" but a related SI effect
-```
 
 ---
 
@@ -83,7 +81,7 @@ Also: higher resistance wires → RC time constant grows → noise lingers longe
 
 ### 2.1 Glitch Noise Calculation
 
-```
+```ascii-graph
 Simplified model (RC network):
 
   Aggressor: Step transition from 0 → VDD
@@ -108,27 +106,25 @@ Simplified model (RC network):
 
 ### 2.2 Noise Propagation
 
-```
 After noise is induced, it propagates through downstream logic:
 
-  Noise → gate input → if noise > switching threshold →
-          gate output switches → propagates further
+Noise → gate input → if noise > switching threshold →
+gate output switches → propagates further
 
-Noise immunity levels:
-  Level 1 (safe):       Noise < 0.1 × VDD → no functional impact
-  Level 2 (marginal):   0.1 × VDD < Noise < NM → may cause issues at worst corner
-  Level 3 (critical):   Noise > NM → can flip downstream gate → functional failure
+**Noise immunity levels:**
+   - Level 1 (safe):       Noise < 0.1 × VDD → no functional impact
+   - Level 2 (marginal):   0.1 × VDD < Noise < NM → may cause issues at worst corner
+   - Level 3 (critical):   Noise > NM → can flip downstream gate → functional failure
 
-Noise budget allocation:
-  Total noise margin:           NM ≈ 0.35V (for VDD = 0.7V)
-  Allocated to crosstalk:       ~40% = 0.14V
-  Allocated to power supply:    ~30% = 0.105V
-  Allocated to process variation: ~30% = 0.105V
-```
+**Noise budget allocation:**
+   - Total noise margin:           NM ≈ 0.35V (for VDD = 0.7V)
+   - Allocated to crosstalk:       ~40% = 0.14V
+   - Allocated to power supply:    ~30% = 0.105V
+   - Allocated to process variation: ~30% = 0.105V
 
 ### 2.3 Crosstalk Noise in STA Tools
 
-```
+```verilog
 PrimeTime SI / Tempus SI flow:
   1. Extract parasitics with coupling capacitances (SPEF with coupled_net sections)
   2. Tool identifies aggressor-victim pairs
@@ -155,7 +151,7 @@ SPEF coupling entry:
 
 ### 3.1 Miller Effect on Delay
 
-```
+```ascii-graph
 When aggressor and victim switch simultaneously:
 
   Same direction (aggressor and victim both rise):
@@ -181,7 +177,7 @@ Delay impact example:
 
 ### 3.2 SI-Aware STA
 
-```
+```ascii-graph
 PrimeTime SI methodology:
 
   Setup analysis (max delay):
@@ -201,7 +197,7 @@ PrimeTime SI methodology:
 
 ### 3.3 Crosstalk Fixing Techniques
 
-```
+```ascii-graph
 Technique              | How it helps              | Cost
 -----------------------|---------------------------|------------------
 Increase spacing       | Cc ∝ 1/S → less coupling  | More routing area
@@ -222,7 +218,7 @@ NDR (Non-Default Rules)| Wider spacing/width for    | Routing resource
 
 ### 4.1 What is Electromigration
 
-```
+```ascii-graph
 Electron current exerts force on metal atoms (momentum transfer).
 At high current density, atoms physically move in the direction of
 electron flow (opposite to conventional current flow).
@@ -244,7 +240,7 @@ electron flow (opposite to conventional current flow).
 
 ### 4.2 Black's Equation
 
-```
+```ascii-graph
 MTTF = A × J^(-n) × exp(Ea / (k × T))
 
   MTTF: Mean Time To Failure
@@ -273,7 +269,7 @@ Numerical example:
 
 ### 4.3 EM Design Rules
 
-```
+```ascii-graph
 Current density limits (typical, per metal layer):
 
   Layer  | Width   | DC limit    | RMS limit   | Peak limit
@@ -299,7 +295,7 @@ Width calculations:
 
 ### 4.4 Self-Heating EM
 
-```
+```ascii-graph
 At advanced nodes, wire self-heating exacerbates EM:
 
   Wire temperature = T_ambient + ΔT_self_heat
@@ -322,7 +318,7 @@ At advanced nodes, wire self-heating exacerbates EM:
 
 ### 5.1 Static IR Drop
 
-```
+```ascii-graph
 Static IR drop: Voltage drop due to average DC current through resistive power grid
 
   V_drop = I_avg × R_grid
@@ -349,7 +345,7 @@ Static IR drop: Voltage drop due to average DC current through resistive power g
 
 ### 5.2 Dynamic IR Drop
 
-```
+```ascii-graph
 Dynamic IR drop: Voltage drop due to instantaneous switching current
 
   Much worse than static because:
@@ -370,7 +366,7 @@ Dynamic IR drop: Voltage drop due to instantaneous switching current
 
 ### 5.3 IR Drop Analysis Flow
 
-```
+```text
 Tools: RedHawk (Synopsys), Voltus (Cadence), MVSIM (Apache)
 
 Static IR drop flow:
@@ -398,7 +394,7 @@ Signoff criteria:
 
 ### 5.4 IR Drop Fixing
 
-```
+```ascii-graph
 1. Widen power straps (reduce R):
    Wider metal → lower resistance → less voltage drop
    But consumes routing resources
@@ -430,7 +426,7 @@ Signoff criteria:
 
 ### 6.1 Power Grid Structure
 
-```
+```ascii-graph
 Hierarchical power grid:
 
   Top metals (M10-M12): Wide straps, carry bulk current
@@ -457,7 +453,7 @@ Hierarchical power grid:
 
 ### 6.2 Grid Design Parameters
 
-```
+```ascii-graph
 Key design decisions:
   1. Strap width and pitch (determines R and routing blockage)
   2. Number of metal layers used for power (vs signal routing)
@@ -486,7 +482,7 @@ Grid resistance estimation:
 
 ### 6.3 Decoupling Capacitance
 
-```
+```ascii-graph
 Purpose: Local charge storage to supply transient current
 
 Sources of decap:
@@ -504,7 +500,7 @@ Sources of decap:
      - Too far from chip for high-frequency noise (> 500 MHz)
 
 Sizing requirement:
-  Q = C × ΔV  →  C = I_peak × Δt / ΔV_allowed
+  Q = C × ΔV  →  $C = I_{peak} \times \Delta t / \Delta V_{allowed}$
 
   Example:
     I_peak = 10A (clock edge switching)
@@ -523,7 +519,7 @@ Sizing requirement:
 
 ### 7.1 Heat Generation and Dissipation
 
-```
+```ascii-graph
 Heat generation:
   P_total = P_dynamic + P_leakage
   Heat flux: q = P / A  (W/cm²)
@@ -551,7 +547,7 @@ Heat dissipation path:
 
 ### 7.2 Thermal Hotspots
 
-```
+```ascii-graph
 Hotspot: Local region with much higher temperature than average
 
 Causes:
@@ -576,7 +572,7 @@ Thermal runaway:
 
 ### 7.3 On-Chip Thermal Sensors
 
-```
+```ascii-graph
 Thermal diode:
   - Forward-biased PN junction
   - VBE decreases ~2 mV/°C (negative temperature coefficient)
@@ -602,7 +598,7 @@ Thermal management:
 
 ### 8.1 Reliability Mechanisms
 
-```
+```text
 Mechanism         | Root Cause                    | Impact
 ------------------|-------------------------------|------------------
 NBTI              | Hole trapping in PMOS oxide   | Vtp increases over time
@@ -618,28 +614,24 @@ ESD               | Electrostatic discharge       | Oxide rupture, junction dama
 
 ### 8.2 Aging Analysis (BTI + HCI)
 
-```
-BTI (Bias Temperature Instability):
-  NBTI (Negative BTI): Affects PMOS, VGS < 0 (normal operation)
-    ΔVth ∝ t^n × exp(-Ea/kT)    (n ≈ 0.16-0.25, power law)
-    
-    10-year aging at 125°C: ΔVth ≈ 30-50 mV (PMOS)
-    → Performance degradation of ~5-10%
-    → Must be included in timing signoff
+**BTI (Bias Temperature Instability):**
+   - NBTI (Negative BTI): Affects PMOS, VGS < 0 (normal operation)
+   - ΔVth ∝ t^n × exp(-Ea/kT)    (n ≈ 0.16-0.25, power law)
 
-  PBTI (Positive BTI): Affects NMOS with high-k dielectric
-    Similar mechanism but with electrons instead of holes
-    10-year aging: ΔVth ≈ 10-30 mV (NMOS)
+10-year aging at 125°C: ΔVth ≈ 30-50 mV (PMOS) → Performance degradation of ~5-10% → Must be included in timing signoff
 
-Aging-aware STA:
-  Library provides aged cell models (fresh + 10-year)
-  PrimeTime: read_lib fresh.lib; read_lib -age aged.lib
-  Signoff against aged timing ensures chip meets spec over lifetime
-```
+PBTI (Positive BTI): Affects NMOS with high-k dielectric
+Similar mechanism but with electrons instead of holes
+10-year aging: ΔVth ≈ 10-30 mV (NMOS)
+
+**Aging-aware STA:**
+   - Library provides aged cell models (fresh + 10-year)
+   - PrimeTime: read_lib fresh.lib; read_lib -age aged.lib
+   - Signoff against aged timing ensures chip meets spec over lifetime
 
 ### 8.3 Complete Reliability Signoff Checklist
 
-```
+```text
 □ EM analysis (all metal layers + vias):
   - DC EM for unidirectional nets (power, ground)
   - AC EM (RMS) for bidirectional nets (signal, clock)
@@ -702,7 +694,7 @@ impossible aggressor-victim combinations, avoiding excessive pessimism.
 
 **Q4: Write Black's equation and explain each term.**
 
-MTTF = A × J^(-n) × exp(Ea/(kT)). A is a material constant, J is current density (higher
+$MTTF = A \times J^{-n} \times \exp(E_a/(kT))$. A is a material constant, J is current density (higher
 J → shorter life), n is the current density exponent (1 for void nucleation, 2 for void
 growth), Ea is activation energy (higher → more EM-resistant, Cu ~0.7-0.9 eV vs Al
 ~0.5-0.7 eV), k is Boltzmann constant, T is temperature (exponential dependence — 10°C
@@ -791,7 +783,7 @@ average or peak.
 
 **Q15: How do you calculate the required decoupling capacitance?**
 
-C = I_peak × Δt / ΔV_allowed. Determine peak current from switching activity analysis
+$C = I_{peak} \times \Delta t / \Delta V_{allowed}$. Determine peak current from switching activity analysis
 (e.g., clock edge current), the duration of the current pulse (typically ~100ps for
 clock edge), and the allowed voltage drop (typically 5-10% of VDD). Place decap cells
 within ~50-100μm of hotspots (beyond that, wire resistance limits effectiveness). Verify

@@ -22,8 +22,8 @@ Key metrics every engineer must internalize:
 
 ## 2. Total Power Equation
 
-```
-P_total = P_dynamic + P_static
+```text
+P_total = P_dynamic   + P_static
 P_total = P_switching + P_short_circuit + P_leakage
 P_total = (alpha * C_L * V_DD^2 * f_clk) + (I_SC * V_DD) + (I_leak * V_DD)
 ```
@@ -43,27 +43,27 @@ P_total = (alpha * C_L * V_DD^2 * f_clk) + (I_SC * V_DD) + (I_leak * V_DD)
 Consider a CMOS inverter driving a load capacitance C_L. During a 0-to-1 output transition,
 the PMOS transistor turns on and charges C_L through its channel resistance R_p:
 
-```
-           Vdd
-            |
+```text
+          Vdd
+           |
          [R_p]    (PMOS on-resistance)
-            |
-            +------ Vout
-            |
-          [C_L]
-            |
-           GND
+           |
+           +------ Vout
+           |
+         [C_L]
+           |
+          GND
 ```
 
 The voltage across C_L rises exponentially:
 
-```
-V_out(t) = Vdd * (1 - e^(-t/(R_p * C_L)))
+```text
+V_out(t) = Vdd * (1 - e^(-t / (R_p * C_L)))
 ```
 
 Energy delivered by the supply during charging:
 
-```
+```text
 E_supply = integral(0 to inf) { Vdd * i(t) dt }
          = integral(0 to inf) { Vdd * C_L * dV/dt * dt }
          = Vdd * C_L * integral(0 to Vdd) { dV }
@@ -72,23 +72,23 @@ E_supply = integral(0 to inf) { Vdd * i(t) dt }
 
 Energy stored on the capacitor after charging:
 
-```
+```text
 E_cap = (1/2) * C_L * Vdd^2
 ```
 
 Energy dissipated in the PMOS resistance during charging:
 
-```
-E_PMOS = E_supply - E_cap = C_L * Vdd^2 - (1/2)*C_L*Vdd^2 = (1/2)*C_L*Vdd^2
+```text
+E_PMOS = E_supply - E_cap = C_L * Vdd^2 - (1/2) * C_L * Vdd^2 = (1/2) * C_L * Vdd^2
 ```
 
 During a 1-to-0 transition, the NMOS turns on and discharges C_L. The stored energy
 (1/2)*C_L*Vdd^2 is dissipated in the NMOS channel resistance. So for one complete
 cycle (0->1->0):
 
-```
+```text
 E_cycle = E_PMOS_charging + E_NMOS_discharging
-        = (1/2)*C_L*Vdd^2 + (1/2)*C_L*Vdd^2
+        = (1/2) * C_L * Vdd^2 + (1/2) * C_L * Vdd^2
         = C_L * Vdd^2
 ```
 
@@ -103,7 +103,7 @@ versus "per cycle":
 The factor of 2 appears or disappears depending on whether you count one transition or a
 full switching cycle. In the standard power equation:
 
-```
+```text
 P_switching = alpha * C_L * Vdd^2 * f_clk
 ```
 
@@ -111,11 +111,11 @@ Here, **alpha** is the activity factor defined as the average number of 0->1 tra
 per clock cycle (NOT total transitions). Since only the 0->1 transition draws energy from
 Vdd (the 1->0 transition dissipates stored energy to ground), we get:
 
-```
+```text
 P = alpha * (1/2 * C_L * Vdd^2 * 2) * f = alpha * C_L * Vdd^2 * f
 ```
 
-Some textbooks write P = (1/2) * alpha * C_L * Vdd^2 * f where alpha counts BOTH 0->1 and
+Some textbooks write $P = \tfrac{1}{2}\,\alpha\,C_L\,V_{dd}^2\,f$ where alpha counts BOTH 0->1 and
 1->0 transitions per cycle. Both are equivalent -- the factor of 1/2 either sits in the
 energy term or the activity term. Be clear about your definition in interviews.
 
@@ -123,9 +123,9 @@ energy term or the activity term. Be clear about your definition in interviews.
 
 For a signal with static probability p (probability of being 1):
 
-```
-alpha = 2 * p * (1-p) * f_clk    [if alpha counts both transitions]
-alpha = p * (1-p) * f_clk        [if alpha counts only 0->1]
+```text
+alpha = 2 * p * (1 - p) * f_clk    [if alpha counts both transitions]
+alpha = p * (1 - p) * f_clk        [if alpha counts only 0->1]
 ```
 
 For random data (p=0.5): alpha = 0.25 (one transition out of every 4 clock cycles on average
@@ -136,29 +136,26 @@ why clock networks consume 30-50% of total dynamic power.
 
 ### 3.4 Numerical Example
 
-```
+```text
 Given:
   28nm design, 10 million equivalent gates
-  Average switching activity alpha = 0.15 (realistic for data path)
-  Average load capacitance per gate = 1.2 fF
-  Vdd = 0.9V
-  Clock frequency = 500 MHz
+  Average switching activity (alpha)  = 0.15 (realistic for data path)
+  Average load capacitance per gate   = 1.2 fF
+  Vdd                                 = 0.9 V
+  Clock frequency                     = 500 MHz
 
 P_switching = alpha * C_total * Vdd^2 * f
-  C_total = 10M * 1.2fF = 12 nF
+  C_total     = 10M * 1.2 fF = 12 nF
+
   P_switching = 0.15 * 12e-9 * (0.9)^2 * 500e6
               = 0.15 * 12e-9 * 0.81 * 500e6
-              = 0.15 * 4.86e-3
-              = 729 uW ... wait, let me recalculate
-
-  P_switching = 0.15 * 12e-9 * 0.81 * 500e6
               = 0.15 * 12 * 0.81 * 500 * (1e-9 * 1e6)
               = 0.15 * 12 * 0.81 * 500 * 1e-3
               = 0.15 * 4860 * 1e-3
               = 0.15 * 4.86
               = 0.729 W
 
-So roughly 730 mW of switching power.
+Result: ~730 mW of switching power.
 ```
 
 Add clock network (~40% of dynamic power) and this block might draw ~1.2W dynamic total.
@@ -173,7 +170,7 @@ During an input transition on a CMOS gate, there is a brief period when BOTH the
 NMOS transistors are simultaneously conducting. This creates a direct path from Vdd to GND
 (a "short circuit") and draws crowbar current.
 
-```
+```ascii-graph
         Vdd
          |
       [PMOS]---+
@@ -192,7 +189,7 @@ NMOS transistors are simultaneously conducting. This creates a direct path from 
 
 ### 4.2 Voltage Transfer Characteristic (VTC) and the Overlap Window
 
-```
+```ascii-graph
   Vdd|          ___________
      |         /
      |        /    <-- Both ON in this transition region
@@ -207,43 +204,46 @@ NMOS transistors are simultaneously conducting. This creates a direct path from 
 The short-circuit current flows during the time the input voltage is between Vtn and
 (Vdd - |Vtp|). For Vdd = 0.8V and Vth = 0.3V:
 
-```
-Short-circuit window = Vdd - 2*Vth = 0.8 - 2*0.3 = 0.2V
+```text
+Short-circuit window = Vdd - 2*Vth = 0.8 - 2*(0.3) = 0.2 V
 ```
 
 ### 4.3 Analytical Model for Short-Circuit Power
 
 For a symmetric inverter with matched PMOS/NMOS strengths and a linear input ramp:
 
-```
+```text
 I_peak = (beta / 12) * (Vdd - 2*Vth)^3
 
-where:
+Where:
   beta = mu * Cox * (W/L)  (transconductance parameter)
   
 P_sc = (beta / 12) * (Vdd - 2*Vth)^3 * tau * f
 
-where:
+Where:
   tau = input transition time (rise or fall time)
-  f = switching frequency
+  f   = switching frequency
 ```
 
 ### 4.4 Numerical Example
 
-```
+```text
 Given:
-  Vdd = 0.8V, Vth = 0.3V (both NMOS and PMOS)
-  beta = 200 uA/V^2 (typical for minimum-size in 28nm)
-  tau_rise = tau_fall = 50 ps
-  f = 1 GHz
-  C_L = 2 fF
+  Vdd        = 0.8 V
+  Vth        = 0.3 V (both NMOS and PMOS)
+  beta       = 200 uA/V^2 (typical for minimum-size in 28nm)
+  tau_rise   = tau_fall = 50 ps
+  f          = 1 GHz
+  C_L        = 2 fF
 
-P_sc = (200e-6/12) * (0.8 - 0.6)^3 * 50e-12 * 1e9
+P_sc = (200e-6 / 12) * (0.8 - 0.6)^3 * 50e-12 * 1e9
      = 16.67e-6 * 8e-3 * 50e-3
      = 16.67e-6 * 4e-4
      = 6.67 nW per gate
 
-P_switching = 0.5 * 2e-15 * (0.8)^2 * 1e9 = 0.5 * 2e-15 * 0.64 * 1e9 = 640 nW
+P_switching = 0.5 * 2e-15 * (0.8)^2 * 1e9
+            = 0.5 * 2e-15 * 0.64 * 1e9
+            = 640 nW
 
 P_sc / P_switching = 6.67 / 640 = ~1%
 ```
@@ -270,40 +270,38 @@ slow input transitions (large tau) or when Vdd >> 2*Vth, short-circuit can be 5-
 Below threshold (Vgs < Vth), the MOSFET is in weak inversion. Current does not abruptly
 go to zero -- it decays exponentially:
 
-```
+```text
 I_ds = I_0 * exp((Vgs - Vth) / (n * V_T)) * (1 - exp(-Vds / V_T))
 
-where:
-  I_0   = technology-dependent reference current
-        = mu * Cox * (W/L) * (n-1) * V_T^2
-  n     = subthreshold swing ideality factor (1.3 - 1.5 for bulk, ~1.1 for FinFET)
-  V_T   = thermal voltage = kT/q
-        = 26 mV at T = 300K (27C)
-        = 33.5 mV at T = 125C (398K)
-  Vth   = threshold voltage (depends on process, body bias, temperature)
-  Vgs   = gate-to-source voltage
-  Vds   = drain-to-source voltage
+Where:
+  I_0 = technology-dependent reference current
+      = mu * Cox * (W/L) * (n - 1) * V_T^2
+  n   = subthreshold swing ideality factor (1.3 - 1.5 for bulk, ~1.1 for FinFET)
+  V_T = thermal voltage = kT / q
+      = 26 mV at T = 300K (27C)
+      = 33.5 mV at T = 125C (398K)
+  Vth = threshold voltage (depends on process, body bias, temperature)
+  Vgs = gate-to-source voltage
+  Vds = drain-to-source voltage
 ```
 
 ### 5.2 Understanding Each Parameter
 
 **Subthreshold slope (S):**
-```
+```text
 S = n * V_T * ln(10) = n * 2.3 * V_T
 
-At 300K: S = 1.3 * 2.3 * 26mV = ~78 mV/decade (bulk CMOS)
-For FinFET: S = 1.1 * 2.3 * 26mV = ~66 mV/decade (closer to ideal 60 mV/decade)
+At 300K:     S = 1.3 * 2.3 * 26 mV = ~78 mV/decade (bulk CMOS)
+For FinFET:  S = 1.1 * 2.3 * 26 mV = ~66 mV/decade (closer to ideal 60 mV/decade)
 ```
 This means: reducing Vgs by 78mV reduces leakage by 10x in bulk CMOS.
 
 **Ideality factor (n):**
-```
-n = 1 + C_depletion / C_oxide
+- **n** = `1 + C_depletion / C_oxide`
 
 For bulk CMOS: C_dep/Cox is significant -> n = 1.3-1.5
 For FinFET: gate wraps channel, C_dep/Cox is small -> n ~ 1.05-1.1
 For GAAFET: even better electrostatic control -> n ~ 1.02-1.05
-```
 
 ### 5.3 Temperature Dependence
 
@@ -314,17 +312,16 @@ Leakage has a strong exponential temperature dependence through two mechanisms:
 
 Combined effect:
 
-```
-I_leak(T2) / I_leak(T1) = exp((Vth(T1) - Vth(T2)) / (n * V_T(T2)))
-                          * (V_T(T2) / V_T(T1))^2
+```text
+I_leak(T2) / I_leak(T1) = exp((Vth(T1) - Vth(T2)) / (n * V_T(T2))) * (V_T(T2) / V_T(T1))^2
 
-Rule of thumb: leakage approximately DOUBLES for every 10-12C increase in
-junction temperature for typical processes.
+Rule of thumb: Leakage approximately DOUBLES for every 10-12C increase
+               in junction temperature for typical processes.
 
 Example:
-  At 25C:  I_leak = 10 nA/um
-  At 85C:  I_leak = 10 * 2^((85-25)/10) = 10 * 2^6 = 640 nA/um
-  At 125C: I_leak = 10 * 2^((125-25)/10) = 10 * 2^10 = ~10 uA/um
+  At 25C:   I_leak = 10 nA/um
+  At 85C:   I_leak = 10 * 2^((85-25)/10)  = 10 * 2^6  = 640 nA/um
+  At 125C:  I_leak = 10 * 2^((125-25)/10) = 10 * 2^10 = ~10 uA/um
 ```
 
 This is why leakage power analysis must be done at the worst-case temperature corner
@@ -334,10 +331,10 @@ This is why leakage power analysis must be done at the worst-case temperature co
 
 DIBL is a short-channel effect where the drain voltage influences the source-channel barrier:
 
-```
+```text
 Vth_effective = Vth0 - eta * Vds
 
-where:
+Where:
   eta = DIBL coefficient (typically 20-100 mV/V for planar, 10-30 mV/V for FinFET)
 ```
 
@@ -346,11 +343,12 @@ Physical explanation:
 - This lowers the potential barrier at the source, allowing more carriers to flow
 - Higher Vds -> lower effective Vth -> more subthreshold leakage
 
-```
+```text
 Example:
-  Vth0 = 0.35V, eta = 50 mV/V
-  At Vds = 0.1V: Vth_eff = 0.35 - 0.005 = 0.345V
-  At Vds = 0.8V: Vth_eff = 0.35 - 0.040 = 0.310V
+  Vth0 = 0.35 V, eta = 50 mV/V
+  
+  At Vds = 0.1 V:  Vth_eff = 0.35 - 0.005 = 0.345 V
+  At Vds = 0.8 V:  Vth_eff = 0.35 - 0.040 = 0.310 V
 
   Leakage ratio = exp((0.345 - 0.310) / (1.3 * 0.026))
                 = exp(0.035 / 0.0338)
@@ -362,14 +360,14 @@ Example:
 
 The threshold voltage depends on the source-to-body voltage (Vsb):
 
-```
-Vth = Vth0 + gamma * (sqrt(2*phi_f + Vsb) - sqrt(2*phi_f))
+```text
+Vth = Vth0 + gamma * (sqrt(2 * phi_f + Vsb) - sqrt(2 * phi_f))
 
-where:
-  gamma = body effect coefficient = sqrt(2*q*epsilon_si*N_A) / Cox
-        (typically 0.3 - 0.5 V^(1/2) for bulk CMOS)
-  phi_f = Fermi potential = (V_T) * ln(N_A / n_i)
-        (typically 0.3 - 0.4 V)
+Where:
+  gamma = body effect coefficient = sqrt(2 * q * epsilon_si * N_A) / Cox
+          (typically 0.3 - 0.5 V^(1/2) for bulk CMOS)
+  phi_f = Fermi potential = V_T * ln(N_A / n_i)
+          (typically 0.3 - 0.4 V)
 ```
 
 Implications for power:
@@ -409,7 +407,7 @@ from subthreshold leakage.
 
 ### 6.2 Direct Tunneling vs Fowler-Nordheim Tunneling
 
-```
+```text
 Direct Tunneling (thin oxide, < ~3nm):
   - Electron tunnels directly through the full oxide barrier
   - Current is exponential in oxide thickness: I ~ exp(-alpha * t_ox)
@@ -425,29 +423,30 @@ Fowler-Nordheim Tunneling (thick oxide, > ~3nm, high electric field):
 
 ### 6.3 Gate Leakage Numbers
 
-```
+```text
 Pure SiO2:
-  t_ox = 5.0 nm: I_gate ~ 10^(-5) A/cm^2   (negligible)
-  t_ox = 2.0 nm: I_gate ~ 1 A/cm^2          (problematic)
-  t_ox = 1.2 nm: I_gate ~ 100 A/cm^2        (unacceptable)
+  t_ox = 5.0 nm:  I_gate ~ 10^-5 A/cm^2 (negligible)
+  t_ox = 2.0 nm:  I_gate ~ 1     A/cm^2 (problematic)
+  t_ox = 1.2 nm:  I_gate ~ 100   A/cm^2 (unacceptable)
 ```
 
 ### 6.4 High-k Dielectrics
 
 The solution was to replace SiO2 (k ~ 3.9) with high-k materials:
 
-```
-HfO2 (k ~ 22): can use physically thicker oxide while maintaining same
-capacitance (same "electrical thickness" or EOT)
+```text
+HfO2 (k ~ 22):
+  Can use physically thicker oxide while maintaining same
+  capacitance (same "electrical thickness" or EOT)
 
-EOT = t_high-k * (k_SiO2 / k_high-k)
+  EOT = t_high-k * (k_SiO2 / k_high-k)
 
 Example:
   Physical HfO2 thickness = 4 nm
-  EOT = 4 * (3.9 / 22) = 0.71 nm equivalent SiO2
+  EOT = 4 * (3.9 / 22)    = 0.71 nm equivalent SiO2
 
-  4nm physical barrier -> dramatically reduced tunneling current
-  0.71nm equivalent oxide thickness -> same capacitance as ultra-thin SiO2
+  4 nm physical barrier -> dramatically reduced tunneling current
+  0.71 nm EOT           -> same capacitance as ultra-thin SiO2
 ```
 
 Intel introduced HfO2/metal gate at 45nm (2007). This reduced gate leakage by
@@ -466,7 +465,7 @@ GIDL occurs at the gate-drain overlap region when:
 This creates a high electric field in the gate-drain overlap that causes band-to-band
 tunneling (BTBT):
 
-```
+```text
 Energy Band Diagram at Gate-Drain Overlap:
 
                      Gate = 0V        Drain = Vdd
@@ -507,26 +506,28 @@ Energy Band Diagram at Gate-Drain Overlap:
 Every MOSFET has PN junctions at source/drain to substrate (or well). When reverse-biased,
 these junctions conduct a small reverse current:
 
-```
+```text
 I_junction = I_s * (exp(V_forward / V_T) - 1)
 
 For reverse bias (V < 0):
-I_junction ~ -I_s = -A * J_s
+  I_junction ~ -I_s = -A * J_s
 
-where:
-  A = junction area
+Where:
+  A   = junction area
   J_s = saturation current density
-      ~ 10^(-7) A/cm^2 at 25C for modern processes (much less than subthreshold)
+      ~ 10^-7 A/cm^2 at 25C for modern processes
+        (much less than subthreshold)
 ```
 
 ### 8.2 Temperature Dependence
 
 Junction leakage has even stronger temperature dependence than subthreshold leakage:
 
-```
-I_junction(T) ~ T^2 * exp(-E_g / (2*k*T))
+```text
+I_junction(T) ~ T^2 * exp(-E_g / (2 * k * T))
 
-where E_g = bandgap energy of silicon (1.12 eV)
+Where:
+  E_g = bandgap energy of silicon (1.12 eV)
 
 Roughly doubles every 8-10C (faster than subthreshold).
 ```
@@ -544,7 +545,7 @@ areas.
 Glitches (spurious transitions) occur due to unbalanced path delays through combinational logic,
 particularly at reconvergent fanout points:
 
-```
+```ascii-graph
                +------[delay=2]------+
    Input A --->|                     |---> AND ---> Y
                +------[delay=5]------+
@@ -558,25 +559,21 @@ particularly at reconvergent fanout points:
 
 ### 9.2 Impact on Power
 
-```
 In an unoptimized datapath:
-  - Glitch power can be 15-30% of total switching power
-  - Multiplier trees are notorious for glitches (many reconvergent paths)
-  - Each glitch propagates downstream, causing more glitches (glitch amplification)
-```
+- Glitch power can be 15-30% of total switching power
+- Multiplier trees are notorious for glitches (many reconvergent paths)
+- Each glitch propagates downstream, causing more glitches (glitch amplification)
 
 ### 9.3 Timing Diagram
 
-```
-        0   2   4   5   7   9
-        |   |   |   |   |   |
-Input A ____/```````````````````
-Fast    ______/```````````````````
-Slow    ____________/```````````````
-Output  ______/`````\___/```````````
-              ^glitch^
-              
-  This glitch consumes C*Vdd^2 of extra energy for no useful computation.
+```wavedrom
+{ "signal": [
+  { "name": "Input A",  "wave": "0.1......" },
+  { "name": "Fast path","wave": "0..1....." },
+  { "name": "Slow path","wave": "0....1..." },
+  {},
+  { "name": "Output",   "wave": "0..1010.." }
+], "head": { "text": "Reconvergent glitch: fast and slow paths arrive at different times, so the output pulses spuriously — wasting C·Vdd² per glitch" } }
 ```
 
 ### 9.4 Mitigation Techniques
@@ -602,8 +599,8 @@ Robert Dennard's 1974 paper established that as MOSFET dimensions shrink by a fa
 - Delay -> Delay/k (circuits get faster)
 - Power density remains CONSTANT (more transistors, same power per area)
 
-The math: Power per gate = C * V^2 * f. After scaling: (C/k) * (V/k)^2 * (k*f) = C*V^2*f / k.
-But k times as many gates fit in the same area: total power density = (C*V^2*f/k) * k = C*V^2*f = constant.
+The math: Power per gate $= C V^2 f$. After scaling: $(C/k)(V/k)^2(kf) = CV^2f / k$.
+But k times as many gates fit in the same area: total power density = $(CV^2f/k)\,k = CV^2f =$ constant.
 
 This was the foundation of "frequency doubles every generation" for 30 years.
 
@@ -611,7 +608,7 @@ This was the foundation of "frequency doubles every generation" for 30 years.
 
 Dennard scaling requires Vdd to scale with Vth. But as Vth drops, leakage increases exponentially:
 
-```
+```verilog
 For Vth = 0.3V at 130nm:
   If we scale Vdd from 1.2V to 0.6V (k=2), Vth should also halve to 0.15V.
   But at Vth = 0.15V: I_off = I_0 * exp(-0.15 / (1.3 * 0.026)) = I_0 * exp(-4.44)
@@ -635,7 +632,7 @@ reduce Vth below ~0.25V without I_off exceeding design limits.
 
 ### 9B.3 Consequences of Broken Dennard Scaling
 
-```
+```ascii-graph
 1. Power density INCREASES with scaling (instead of staying constant):
    Each generation: ~2x more transistors, Vdd drops only ~10-15% (not 30%)
    Power density grows ~30-50% per generation
@@ -660,7 +657,7 @@ reduce Vth below ~0.25V without I_off exceeding design limits.
 
 ### 9B.4 FinFET Advantage for Leakage
 
-```
+```verilog
 Why FinFET (16nm and below) partially restored scaling:
 
 Planar MOSFET at 20nm:
@@ -686,7 +683,7 @@ Consequence: FinFET can use LOWER Vth at same leakage budget:
 
 ### 9B.5 Dark Silicon and Power Density Limits
 
-```
+```verilog
 Power density ceiling for different cooling:
   Passive (mobile, no fan):     ~5 W/cm^2  -> ~5-8W total
   Active air cooling (laptop):  ~30 W/cm^2 -> ~45-65W total
@@ -712,7 +709,7 @@ Dark silicon fraction (fraction that must be off at peak performance):
 
 ### 9B.6 Worked Leakage Calculation With All Parameters
 
-```
+```text
 Calculate subthreshold leakage for a single NMOS in 28nm at 85C:
 
 Given:
@@ -779,7 +776,7 @@ A design that meets power budget at 25C will fail catastrophically at 85C.
 
 FinFET dramatically improved the power-performance trade-off:
 
-```
+```verilog
 Planar MOSFET:       Gate controls channel from ONE side
                      -> poor electrostatics at short gate lengths
                      -> high subthreshold slope (~80-100 mV/decade)
@@ -799,7 +796,7 @@ Power impact compared to equivalent planar node:
 
 ### 10.2 Gate-All-Around (GAAFET) / Nanosheet (3nm and below)
 
-```
+```verilog
 GAAFET:              Gate wraps channel on ALL FOUR sides
                      -> Best possible electrostatic control
                      -> Subthreshold slope ~62-65 mV/decade (near ideal)
@@ -837,7 +834,7 @@ Future (2nm and beyond): stack NMOS directly on top of PMOS:
 SAIF captures the switching activity of every net in the design. It records toggle count,
 time spent at logic-0 (T0), and time spent at logic-1 (T1) over a simulation period.
 
-```
+```verilog
 (SAIF
   (SAIFILE
     (DIRECTION "backward")
@@ -884,7 +881,7 @@ Field explanations:
 - **DURATION:** Total simulation time
 
 From SAIF, tools derive:
-```
+```verilog
 Static probability (SP) = T1 / DURATION
 Toggle rate (TR) = TC / DURATION     (transitions per time unit)
 Switching activity = TC / (2 * num_clock_cycles)  (probability of transition per clock)
@@ -904,7 +901,7 @@ Switching activity = TC / (2 * num_clock_cycles)  (probability of transition per
 
 ### 11.3 Activity Annotation Flow
 
-```
+```verilog
   RTL Simulation (VCS/Xcelium)
       |
       |  Run representative workload (boot + application scenario)
@@ -1187,7 +1184,7 @@ report_power -outfile power_dynamic.txt
 
 ## 14. Summary: Power Breakdown Decision Framework
 
-```
+```verilog
 When analyzing power for a new design, think:
 
 1. DYNAMIC POWER (~50-60% at modern nodes)

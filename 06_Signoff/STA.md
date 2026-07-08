@@ -31,7 +31,7 @@ NLDM is the traditional .lib delay model used from 180nm through 28nm. Each timi
 
 The table stores **cell delay** and **output slew** values.
 
-```
+```text
 /* Example NLDM table for a NAND2 cell, rise delay */
 cell_rise (delay_template_7x7) {
   index_1 ("0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0");    /* input slew (ns) */
@@ -56,7 +56,7 @@ cell_rise (delay_template_7x7) {
 
 **Numerical example:**
 
-```
+```text
 Given: Input slew = 0.15 ns, Output load = 0.03 pF
 Table indices:
   Slew:  between index 0.1 and 0.2
@@ -97,7 +97,7 @@ CCS (Synopsys) and ECSM (Cadence's Effective Current Source Model) address NLDM'
 
 **CCS data in .lib:**
 
-```
+```text
 /* CCS models store current waveforms instead of delay values */
 output_current_rise (ccs_template) {
   index_1 ("0.01, 0.05, 0.1, 0.2");          /* input slew */
@@ -134,7 +134,7 @@ The tool performs a SPICE-like simulation using the current source model and the
 
 **Elmore delay** (simple estimate):
 
-```
+```text
 For a single RC segment: T_Elmore = R * C
 For distributed RC:      T_Elmore = sum(R_i * C_downstream_i)
 ```
@@ -145,7 +145,7 @@ More accurate than Elmore for multi-segment RC networks. Used in signoff tools w
 
 **SPEF (Standard Parasitic Exchange Format):**
 
-```
+```text
 *D_NET total_cap_net 0.0523
 *CONN
 *I inst1/Z O
@@ -173,7 +173,7 @@ More accurate than Elmore for multi-segment RC networks. Used in signoff tools w
 
 **Combinational arcs:** Delay from input pin to output pin of a combinational cell.
 
-```
+```text
 cell (AND2) {
   pin (A) { direction: input; }
   pin (B) { direction: input; }
@@ -210,7 +210,7 @@ cell (AND2) {
 
 **Positive unate:** Output transitions in the SAME direction as input.
 
-```
+```text
 Buffer:  A rises -> Y rises    (positive unate)
          A falls -> Y falls
 
@@ -221,7 +221,7 @@ AND gate (from A, with B=1):
 
 **Negative unate:** Output transitions in the OPPOSITE direction.
 
-```
+```text
 Inverter:  A rises -> Y falls  (negative unate)
            A falls -> Y rises
 
@@ -232,7 +232,7 @@ NAND gate (from A, with B=1):
 
 **Non-unate:** Output direction depends on OTHER input values.
 
-```
+```text
 XOR gate:
   When B=0: A rises -> Y rises  (positive)
   When B=1: A rises -> Y falls  (negative)
@@ -248,7 +248,7 @@ XOR gate:
 
 In .lib:
 
-```
+```text
 timing () {
   related_pin: "A";
   timing_sense: positive_unate;  /* or negative_unate, non_unate */
@@ -259,7 +259,7 @@ timing () {
 
 Conditional arcs model data-dependent delays (e.g., different delays through a MUX depending on select):
 
-```
+```text
 timing () {
   related_pin: "A";
   when: "S";           /* This arc is active only when S=1 */
@@ -277,7 +277,7 @@ Used in SDF back-annotation for maximum accuracy.
 
 ### 3.1 Deriving Setup and Hold Slack from Path Delays
 
-```
+```ascii-graph
   Consider a timing path from Launch FF to Capture FF:
   
   CLK_SRC ──[clk_path_launch]──> Launch_FF ──[data_path]──> Capture_FF <──[clk_path_capture]── CLK_SRC
@@ -334,7 +334,7 @@ Used in SDF back-annotation for maximum accuracy.
 
 ### 3.2 Worked Timing Diagram with All Components
 
-```
+```ascii-graph
   Given:
     T_period = 1.0 ns (1 GHz)
     T_clk_launch  = 0.40 ns (max), 0.35 ns (min)
@@ -446,7 +446,7 @@ Used in SDF back-annotation for maximum accuracy.
 
 A standard positive-edge-triggered D-FF consists of two transmission-gate latches:
 
-```
+```ascii-graph
                 CLK=0 pass    CLK=1 pass
   D ---[TG1]---o M_node ---[TG2]---o S_node --- Q
          |                    |
@@ -481,7 +481,7 @@ A standard positive-edge-triggered D-FF consists of two transmission-gate latche
 
 The setup time is defined as the point where Tc2q degrades by X% (typically 10%) from its nominal value.
 
-```
+```ascii-graph
 Tc2q
   |
   |                  *
@@ -514,7 +514,7 @@ Negative hold time is extremely desirable -- it makes hold timing easier to clos
 
 **Given:**
 
-```
+```text
 Tc2q_max  = 80 ps   (launch FF clock-to-Q, max)
 Tc2q_min  = 50 ps   (launch FF clock-to-Q, min)
 Tlogic_max = 500 ps  (combinational delay, max path)
@@ -527,22 +527,20 @@ Tjitter   = 20 ps
 
 **Setup analysis (worst case = max delays):**
 
-```
-Data arrival time  = T_launch_clk + Tc2q_max + Tlogic_max
-                   = 0 + 80 + 500 = 580 ps
+- **Data arrival time** = `T_launch_clk + Tc2q_max + Tlogic_max`
+   - = 0 + 80 + 500 = 580 ps
 
-Data required time = T_capture_clk + Tperiod - Tsetup - Tjitter
-                   = 30 + Tperiod - 50 - 20
-                   = Tperiod - 40 ps
+- **Data required time** = `T_capture_clk + Tperiod - Tsetup - Tjitter`
+   - = 30 + Tperiod - 50 - 20
+   - = Tperiod - 40 ps
 
 For zero slack: 580 = Tperiod - 40
-                Tperiod_min = 620 ps
-                Fmax = 1/620ps = 1.613 GHz
-```
+Tperiod_min = 620 ps
+Fmax = 1/620ps = 1.613 GHz
 
 **Hold analysis (best case = min delays):**
 
-```
+```text
 Data arrival time  = T_launch_clk + Tc2q_min + Tlogic_min
                    = 0 + 50 + 100 = 150 ps
 
@@ -566,13 +564,11 @@ These are setup/hold analogs for **asynchronous signals** (reset, set, preset, c
 
 **Removal:** The async signal must remain stable at least Tremoval AFTER the clock edge.
 
-```
-Recovery check (analogous to setup):
-  Slack = Tperiod - Tc2q(reset_source) - Tcomb - Trecovery - Tuncertainty
+**Recovery check (analogous to setup):**
+   - Slack = Tperiod - Tc2q(reset_source) - Tcomb - Trecovery - Tuncertainty
 
-Removal check (analogous to hold):
-  Slack = Tc2q_min(reset_source) + Tcomb_min - Tremoval - Tuncertainty_hold
-```
+**Removal check (analogous to hold):**
+   - Slack = Tc2q_min(reset_source) + Tcomb_min - Tremoval - Tuncertainty_hold
 
 Recovery/removal violations on reset are the root cause of many silicon bugs. This is why **asynchronous reset assertion / synchronous reset deassertion** is mandatory.
 
@@ -582,7 +578,7 @@ Recovery/removal violations on reset are the root cause of many silicon bugs. Th
 
 ### 4.1 Annotated Setup Check Report
 
-```
+```text
   Startpoint: u_core/alu_reg[7] (rising edge-triggered flip-flop clocked by sys_clk)
   Endpoint:   u_core/wb_reg[3]  (rising edge-triggered flip-flop clocked by sys_clk)
   Path Group: sys_clk
@@ -626,7 +622,7 @@ Recovery/removal violations on reset are the root cause of many silicon bugs. Th
 
 ### 4.2 Hold Check Report
 
-```
+```verilog
   Path Type: min (hold check)
 
   Point                                    Incr       Path
@@ -667,7 +663,7 @@ A multi-cycle path is a path where the designer knows data takes N clock cycles 
 
 ### 5.2 Detailed Example: 2-Cycle MCP at 500 MHz (Tperiod = 2ns)
 
-```
+```tcl
 Waveform:
   CLK:    |‾|_|‾|_|‾|_|‾|_|‾|_|
   Time:   0  1  2  3  4  5  6  7  8  9  10 (ns)
@@ -691,7 +687,7 @@ With set_multicycle_path 2 -setup AND set_multicycle_path 1 -hold:
 
 ### 5.3 Why Hold MCP = Setup MCP - 1 (Proof by Timing Diagram)
 
-```
+```text
   CLK:    _|‾‾|__|‾‾|__|‾‾|__|‾‾|__
   Edge:    E0      E1      E2      E3
 
@@ -759,7 +755,7 @@ But if the launch and capture clock paths share common segments (reconverge from
 
 ### 6.2 Example
 
-```
+```text
                      CLK_ROOT
                         |
                     [BUF_common]  <- This buffer is shared
@@ -771,7 +767,7 @@ But if the launch and capture clock paths share common segments (reconverge from
 
 **Without CRPR (setup analysis):**
 
-```
+```text
 Launch clock path (max derate = 1.05):
   BUF_common delay: 100ps * 1.05 = 105ps
   BUF_L delay:       80ps * 1.05 =  84ps
@@ -789,7 +785,7 @@ Skew (capture - launch) = 180.5 - 189 = -8.5ps  (hurts setup)
 
 BUF_common cannot be both 105ps (launch) and 95ps (capture). The CRPR credit equals the OCV difference on the common segment:
 
-```
+```text
 CRPR = BUF_common_max - BUF_common_min = 105 - 95 = 10ps
 
 Adjusted capture clock = 180.5 + 10 = 190.5ps
@@ -800,7 +796,7 @@ CRPR recovered 10ps of pessimism!
 
 ### 6.3 Detailed CRPR Worked Example: Multi-Level Common Path
 
-```
+```ascii-graph
 Consider a clock tree where the launch and capture paths share THREE
 levels of buffers before diverging:
 
@@ -880,7 +876,7 @@ Step 6: Apply CRPR
 
 ### 6.3 CRPR in PrimeTime
 
-```
+```text
   clock reconvergence pessimism    -0.015    1.433
 ```
 
@@ -908,7 +904,7 @@ set si_enable_analysis true  ; # SI mode automatically enables CRPR
 
 OCV models within-die process variation by applying a flat derate to all cell delays.
 
-```
+```text
 For setup analysis:
   Launch path (early): delay * (1 - derate)    e.g., * 0.95
   Capture path (late):  delay * (1 + derate)    e.g., * 1.05
@@ -933,7 +929,7 @@ Typical OCV derate values:
 
 AOCV uses a derate table indexed by **path depth** (number of cells in the path) and optionally **physical distance**.
 
-```
+```text
 /* AOCV derate table example */
 aocv_table (early_derate) {
   /* depth:    1      2      3      5      10     20     50 */
@@ -951,7 +947,7 @@ aocv_table (late_derate) {
 
 **Numerical example:**
 
-```
+```text
 Path with 20 cells, each with nominal delay 50ps:
   Nominal path delay = 20 * 50ps = 1000ps
 
@@ -966,7 +962,7 @@ Path with 20 cells, each with nominal delay 50ps:
 
 ### 7.2.1 OCV / AOCV / POCV Worked Comparison with Identical Path
 
-```
+```ascii-graph
 Consider a specific timing path for setup analysis:
   15 cells in the data path, each with nominal delay = 40ps
   Clock period = 1.0 ns (1 GHz)
@@ -1063,7 +1059,7 @@ Consider a specific timing path for setup analysis:
 
 POCV models each cell's delay as a Gaussian random variable:
 
-```
+```text
 Cell delay = mean + k * sigma
 
 Where:
@@ -1074,14 +1070,14 @@ Where:
 
 **Path delay statistics:**
 
-```
+```text
 Path mean  = sum(mean_i)    for all cells i in the path
 Path sigma = sqrt(sum(sigma_i^2))    (independent random variables)
 ```
 
 Note: sigma adds in **quadrature** (root-sum-of-squares), NOT linearly. This is the key insight -- for a path with N identical cells:
 
-```
+```text
 Cell sigma = s
 Path sigma = s * sqrt(N)    (NOT s * N)
 
@@ -1123,7 +1119,7 @@ Moving from flat OCV to POCV can recover 50-80ps of slack on deep paths, which t
 
 Adjacent wires in the same metal layer (or adjacent layers) create coupling capacitance.
 
-```
+```ascii-graph
           Wire A (aggressor)
   ═══════════════════════════
           Cc (coupling cap)
@@ -1133,7 +1129,7 @@ Adjacent wires in the same metal layer (or adjacent layers) create coupling capa
 
 The victim wire sees an effective capacitance that depends on the aggressor's switching:
 
-```
+```text
 When aggressor switches in the SAME direction as victim:
   C_eff = C_ground + Cc * (1 - Kswitch)    <- Cc partially "disappears"
   Delay DECREASES (speeds up)  -- "helpful crosstalk"
@@ -1150,35 +1146,31 @@ Kswitch: switching factor, typically 0.5-2.0 depending on relative slew
 
 ### 8.2 Delta Delay Calculation
 
-```
-Delta delay = delay_with_crosstalk - delay_without_crosstalk
+- **Delta delay** = `delay_with_crosstalk - delay_without_crosstalk`
 
 For a victim net with coupling cap Cc to an aggressor:
-  Worst case delta = Cc * (V_aggressor / V_victim) * R_victim
+Worst case delta = Cc * (V_aggressor / V_victim) * R_victim
 
-Simplified Miller factor approach:
-  Same-direction switching:  effective Cc = Cc * (1 - slew_ratio)
-  Opposite-direction switching: effective Cc = Cc * (1 + slew_ratio)
+**Simplified Miller factor approach:**
+   - Same-direction switching:  effective Cc = Cc * (1 - slew_ratio)
+   - Opposite-direction switching: effective Cc = Cc * (1 + slew_ratio)
 
-  where slew_ratio approximates the temporal overlap
-```
+where slew_ratio approximates the temporal overlap
 
 **Numerical example:**
 
-```
 Victim wire: R = 50 ohm, C_ground = 20 fF
 Coupling cap to aggressor: Cc = 15 fF
 Aggressor switches in opposite direction (harmful)
 
-Without crosstalk:
-  delay ~ 0.69 * R * C_total = 0.69 * 50 * 35fF = 1.21 ps
+**Without crosstalk:**
+   - delay ~ 0.69 * R * C_total = 0.69 * 50 * 35fF = 1.21 ps
 
-With crosstalk (Miller factor = 2x on Cc):
-  C_effective = 20 + 2*15 = 50 fF
-  delay ~ 0.69 * 50 * 50fF = 1.73 ps
+- **With crosstalk (Miller factor** = `2x on Cc):`
+   - C_effective = 20 + 2*15 = 50 fF
+   - delay ~ 0.69 * 50 * 50fF = 1.73 ps
 
-Delta delay = 0.52 ps  (43% increase!)
-```
+- **Delta delay** = `0.52 ps  (43% increase!)`
 
 At advanced nodes with tight pitch (7nm: ~28nm pitch), coupling capacitance can be 50-70% of total wire capacitance, making SI-aware STA critical.
 
@@ -1186,7 +1178,7 @@ At advanced nodes with tight pitch (7nm: ~28nm pitch), coupling capacitance can 
 
 A glitch occurs when the aggressor switches but the victim is quiet. The coupling injects a voltage bump on the victim.
 
-```
+```text
 Glitch height = Cc / (Cc + C_ground + C_gate) * V_DD * f(slew_ratio)
 ```
 
@@ -1292,7 +1284,7 @@ After ECO, must re-verify:
 
 ### 10.1 Scenario: Video Processing SoC Block
 
-```
+```text
 Block: video_proc
 Clocks:
   - sys_clk:    500 MHz (from PLL, jitter 30ps)
@@ -1496,7 +1488,7 @@ set_clock_tree_options -use_shield_net VSS
 
 ### 11.4 Useful Skew in CTS
 
-```
+```text
 Before useful skew:
   Path A->B: slack = -50ps (FAIL)
   Path C->B: slack = +200ps (comfortable)
@@ -1510,7 +1502,7 @@ The CTS tool solves a global optimization problem: minimize total negative slack
 
 ### 11.5 Post-CTS Timing Closure
 
-```
+```text
 Post-CTS signoff checklist:
 1. set_propagated_clock [all_clocks]     ; # Use real clock tree
 2. Reduce set_clock_uncertainty (remove skew component, keep jitter)
@@ -1531,7 +1523,7 @@ Post-CTS signoff checklist:
 **Corners** = PVT (Process, Voltage, Temperature) operating conditions.
 **Modes** = Functional states (functional, scan, sleep, etc.)
 
-```
+```ascii-graph
 Typical PVT corners for a 7nm design:
 
 Corner           Process   Voltage   Temp     Parasitics   Primary Check
@@ -1603,7 +1595,7 @@ Typical signoff: 10-30 scenarios for a complex SoC
 
 ### 12.2 Signoff Criteria
 
-```
+```text
 All of the following must be clean at ALL signoff corners/modes:
 
 1. Setup slack >= 0        (all paths)
@@ -1623,7 +1615,7 @@ All of the following must be clean at ALL signoff corners/modes:
 
 ### 13.1 Library Structure
 
-```
+```text
 A .lib (Liberty) file is the ASCII representation of a standard cell timing library.
 It is the primary interface between the foundry cell library and EDA tools (STA, PnR).
 
@@ -1672,7 +1664,7 @@ A modern standard cell library (e.g., TSMC N5):
 
 ### 13.2 Cell Definition and Pin Descriptions
 
-```
+```text
 A typical combinational cell in .lib:
 
 cell (NAND2X1) {
@@ -1745,7 +1737,7 @@ cell (NAND2X1) {
 
 ### 13.3 Indexed Lookup Tables and Interpolation
 
-```
+```ascii-graph
 Each timing arc stores delay/slew as a 2D table indexed by:
   index_1 = input transition time (slew at the input pin)
   index_2 = output load capacitance (total cap seen at the output pin)
@@ -1775,7 +1767,7 @@ Table sizes:
 
 ### 13.4 NLDM vs CCS vs ECSM Timing Models
 
-```
+```text
 NLDM (Non-Linear Delay Model):
   - Stores: cell delay (ns) and output slew (ns) as 2D lookup tables
   - Model: voltage source with fixed rise/fall time driving lumped C load
@@ -1818,7 +1810,7 @@ Multi-corner libraries:
 
 ### 13.5 State-Dependent Timing (when Condition)
 
-```
+```text
 Some cells have different timing depending on the logic state of other pins.
 This is modeled with the "when" condition in the timing arc.
 
@@ -1866,7 +1858,7 @@ Sequential cells also use state-dependent setup/hold:
 
 ### 14.1 SPEF Format Header
 
-```
+```text
 SPEF (Standard Parasitic Exchange Format, IEEE 1481-1999):
   The interchange format for extracted parasitic RC data from layout to STA tools.
 
@@ -1890,7 +1882,7 @@ Units section (must match .lib time/voltage/current units):
 
 ### 14.2 Name Map Section
 
-```
+```text
 *NAME_MAP
 *1 u_core/u_alu/g127/Y
 *2 u_core/u_alu/g128/A
@@ -1910,7 +1902,7 @@ After name map, all references use *N instead of the full path:
 
 ### 14.3 Port Section
 
-```
+```text
 *PORTS
 *1 u_core/clk_in I *C 0.0023      /* Input port, cap = 2.3 fF */
 *2 u_core/data_out[0] O *C 0.0015  /* Output port, cap = 1.5 fF */
@@ -1930,7 +1922,7 @@ The *C value is the port's intrinsic capacitance (from the .lib pin cap).
 
 ### 14.4 Net Section (RC Parasitics)
 
-```
+```ascii-graph
 *D_NET *3 0.0523                   /* Net name_map_ref, total_cap = 52.3 fF */
 
 *CONN                              /* Connections to this net */
@@ -1975,7 +1967,7 @@ Total net capacitance = 10.2 + 8.7 + 15.6 + 7.8 + 10.0 = 52.3 fF (matches *D_NET
 
 ### 14.5 RC Parasitics and the Elmore Delay Model
 
-```
+```verilog
 Elmore delay: sum of (each resistance × downstream capacitance)
 
 For the above RC tree, delay from g127/Z to g128/A:
@@ -2004,22 +1996,21 @@ More accurate models used in signoff STA:
 
 ### 14.6 Distributed vs Lumped RC
 
-```
-Lumped RC model:
-  Entire wire modeled as a single R and single C.
-  Delay = R × C
-  Accurate only for very short wires (< 50 μm at 7nm).
+**Lumped RC model:**
+   - Entire wire modeled as a single R and single C.
+   - Delay = R × C
+   - Accurate only for very short wires (< 50 μm at 7nm).
 
-Distributed RC model (Pi, T, or ladder):
-  Wire broken into multiple RC segments.
-  For N segments: T_Elmore = R × C / (2N) → as N→∞: T = R × C / 2
+**Distributed RC model (Pi, T, or ladder):**
+   - Wire broken into multiple RC segments.
+   - For N segments: T_Elmore = R × C / (2N) → as N→∞: T = R × C / 2
 
-  Lumped:     T = R × C
-  Distributed: T = 0.38 × R × C (Elmore for uniform RC line, factor = 0.38)
+Lumped:     T = R × C
+Distributed: T = 0.38 × R × C (Elmore for uniform RC line, factor = 0.38)
 
-  The 0.38 factor comes from the integral:
-    T_Elmore = ∫₀ᴸ R(x) × C(x,L) dx = RC × L² / 2
-    Normalized to R×C = RC × L², so factor = 0.5 for one segment, 0.38 for continuous.
+The 0.38 factor comes from the integral:
+T_Elmore = ∫₀ᴸ R(x) × C(x,L) dx = RC × L² / 2
+Normalized to R×C = RC × L², so factor = 0.5 for one segment, 0.38 for continuous.
 
 SPEF represents the distributed RC explicitly (multiple R and C segments).
 The extraction tool (StarRC, Calibre xRC, QRC) determines how many segments
@@ -2027,7 +2018,6 @@ to use based on wire length, frequency, and accuracy requirements.
 
 For signoff STA: detailed SPEF with coupled RC (includes Cc between adjacent nets).
 For pre-route STA: estimated SPEF from wireload models or virtual route estimation.
-```
 
 ---
 
@@ -2035,7 +2025,7 @@ For pre-route STA: estimated SPEF from wireload models or virtual route estimati
 
 ### 15.1 What Are Clock Gating Checks
 
-```
+```ascii-graph
 Clock gating is used extensively to reduce dynamic power by disabling the clock
 to idle modules. The gating element is typically an Integrated Clock Gating (ICG)
 cell: a latch + AND gate combination.
@@ -2063,7 +2053,7 @@ These are formal timing checks in STA, similar to setup/hold on data FFs.
 
 ### 15.2 Clock Gating Setup Check
 
-```
+```verilog
 Setup check: EN must be stable BEFORE the clock rising edge (for positive-edge ICG).
 
   The latch must capture the final EN value before CLK goes high (latch closes).
@@ -2091,7 +2081,7 @@ Setup check: EN must be stable BEFORE the clock rising edge (for positive-edge I
 
 ### 15.3 Clock Gating Hold Check
 
-```
+```text
 Hold check: EN must remain stable AFTER the clock rising edge.
 
   After CLK goes high, the latch output must not change. The latch hold time
@@ -2120,7 +2110,7 @@ Hold check: EN must remain stable AFTER the clock rising edge.
 
 ### 15.4 How STA Tools Model Clock Gating Checks
 
-```
+```text
 The ICG cell in .lib contains specific timing arcs that trigger clock gating checks:
 
 cell (TLATNTSCAX4) {
@@ -2165,7 +2155,7 @@ In PrimeTime reports, clock gating checks appear as:
 
 ### 15.5 Why Clock Gating Checks Matter
 
-```
+```tcl
 Glitch on gated clock → metastability → data corruption:
 
   If EN changes during CLK rise:
@@ -2321,7 +2311,7 @@ Best practices:
 
 At N2 and beyond, Gate-All-Around (GAA / nanosheet) transistors introduce new variation sources beyond what FinFETs experienced:
 
-```
+```ascii-graph
 GAA nanosheet structure:
   ┌────────────────────────────────┐
   │         Gate Metal             │
@@ -2361,7 +2351,7 @@ New variation sources at N2:
 
 ### 17.2 POCV / LOCV at 2nm Nodes
 
-```
+```ascii-graph
 POCV at N2: Increased variability requires more sophisticated modeling
 
   Variation budget breakdown at N2 (VDD = 0.55V):
@@ -2400,7 +2390,7 @@ POCV at N2: Increased variability requires more sophisticated modeling
 
 ### 17.3 AI Accelerator STA
 
-```
+```tcl
 Multi-GPU die STA (e.g., B200 with dual-reticle GPU):
 
   Clock domains in a B200-class accelerator:
@@ -2436,7 +2426,7 @@ Multi-GPU die STA (e.g., B200 with dual-reticle GPU):
 
 ### 17.4 MCMM for Advanced Packaging
 
-```
+```ascii-graph
 Multi-chiplet signoff complexity:
 
   For a chiplet-based AI accelerator (e.g., AMD MI300X):
@@ -2468,7 +2458,7 @@ Multi-chiplet signoff complexity:
 
 ### 17.5 Incremental STA for ECO Flows
 
-```
+```verilog
 Incremental STA: Re-analyze only affected timing paths after ECO
 
   When to use:

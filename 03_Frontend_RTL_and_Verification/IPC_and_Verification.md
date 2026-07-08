@@ -6,7 +6,7 @@
 
 ### Bounded vs Unbounded with Blocking Behavior
 
-```systemverilog
+```verilog
 mailbox #(Transaction) mbx_unbounded = new();   // Unbounded: never blocks on put
 mailbox #(Transaction) mbx_bounded = new(4);    // Bounded: blocks put when 4 items stored
 
@@ -21,7 +21,7 @@ mailbox #(Transaction) mbx_bounded = new(4);    // Bounded: blocks put when 4 it
 
 ### Producer-Consumer with Timing
 
-```systemverilog
+```verilog
 class producer;
     mailbox #(Transaction) mbx;
     
@@ -69,7 +69,7 @@ end
 
 ### Type Safety
 
-```systemverilog
+```verilog
 // Parameterized mailbox ensures type safety at compile time
 mailbox #(Transaction) txn_mbx = new();
 mailbox #(int) int_mbx = new();
@@ -93,7 +93,7 @@ generic_mbx.get(t2);        // Runtime error if item isn't a Transaction
 
 ### Counting Semaphore -- Not Just a Mutex
 
-```systemverilog
+```verilog
 // Semaphore with N keys = counting semaphore
 // N=1: binary semaphore (mutex)
 // N>1: resource pool
@@ -126,7 +126,7 @@ end
 
 ### Semaphore Methods
 
-```systemverilog
+```verilog
 semaphore sem = new(3);  // 3 keys initially
 
 sem.get(2);     // Acquire 2 keys. Blocks if < 2 available.
@@ -141,7 +141,7 @@ s.put(100);     // Now 102 keys -- probably a bug
 
 ### Deadlock Scenario and Prevention
 
-```systemverilog
+```verilog
 semaphore sem_a = new(1);
 semaphore sem_b = new(1);
 
@@ -188,7 +188,7 @@ endtask
 
 ### The Race Between -> and @
 
-```systemverilog
+```verilog
 event done;
 
 // RACE: if trigger and wait happen in the same time step
@@ -231,7 +231,7 @@ end
 
 ### wait_order: Event Sequence Checking
 
-```systemverilog
+```verilog
 event e1, e2, e3;
 
 // Block until e1, e2, e3 fire in that exact order
@@ -249,7 +249,7 @@ end
 
 ### Component Hierarchy
 
-```
+```ascii-graph
 uvm_test (test_base)
   |
   +-- uvm_env (my_env)
@@ -274,25 +274,25 @@ uvm_test (test_base)
 All phases execute in this order. Build/connect are functions (zero-time).
 Run and its sub-phases are tasks (consume simulation time).
 
-```
-Build Phases (top-down):
-  build_phase          -- Create and configure components
-  connect_phase        -- Connect TLM ports/exports
-  end_of_elaboration   -- Final topology adjustments
-  start_of_simulation  -- Print topology, final checks
+``` text
+Build Phases (Top-Down):
+  - build_phase          : Create and configure components
+  - connect_phase        : Connect TLM ports/exports
+  - end_of_elaboration   : Final topology adjustments
+  - start_of_simulation  : Print topology, final checks
 
-Run Phase (parallel -- all components run simultaneously):
-  run_phase            -- Main simulation phase
-    Sub-phases (sequential within run):
-      reset_phase
-      configure_phase
-      main_phase
-      shutdown_phase
+Run Phase (Parallel -- All components run simultaneously):
+  - run_phase            : Main simulation phase
+    Sub-phases (Sequential within run):
+      - reset_phase
+      - configure_phase
+      - main_phase
+      - shutdown_phase
 
-Cleanup Phases (bottom-up):
-  extract_phase        -- Extract results from DUT/monitors
-  check_phase          -- Compare expected vs actual
-  report_phase         -- Print final summaries
+Cleanup Phases (Bottom-Up):
+  - extract_phase        : Extract results from DUT/monitors
+  - check_phase          : Compare expected vs actual
+  - report_phase         : Print final summaries
 ```
 
 **Why build is top-down:** Parent creates children. Parent must exist before it can create
@@ -308,7 +308,7 @@ is bottom-up for consistency.
 OR the sub-phases, not both. Sub-phases (reset, configure, main, shutdown) provide finer
 control for complex tests that need sequential phases of stimulus.
 
-```systemverilog
+```verilog
 // Simple approach: just use run_phase
 task run_phase(uvm_phase phase);
     phase.raise_objection(this);
@@ -336,19 +336,21 @@ endtask
 
 #### TLM 1.0: Ports, Exports, Imps
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PT["PORT<br/>(initiator)"] --> EX["EXPORT<br/>(pass-through)"] --> IM["IMP<br/>(implementation —<br/>provides the method)"]
+    classDef a fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class PT,EX,IM a
 ```
-PORT -----------> EXPORT -----------> IMP (implementation)
-(initiator)       (pass-through)       (provides the method)
 
-Producer                                Consumer
-  port.put(txn) -----> export -----> imp.put(txn) { // actual code }
-```
+A producer calls `port.put(txn)`, which routes through the export to `imp.put(txn) { … }`, where the actual code runs.
 
 **Blocking vs Non-Blocking:**
 - Blocking (`put`, `get`): task-based, can consume time, suspends caller until complete
 - Non-blocking (`try_put`, `try_get`): function-based, returns immediately, returns 0 on failure
 
-```systemverilog
+```verilog
 // Producer (driver) has a PORT -- it INITIATES communication
 class my_producer extends uvm_component;
     uvm_blocking_put_port #(my_txn) put_port;
@@ -386,7 +388,7 @@ endfunction
 
 #### Analysis Port: One-to-Many Broadcast
 
-```systemverilog
+```verilog
 // Monitor broadcasts to ALL subscribers (scoreboard, coverage, etc.)
 class my_monitor extends uvm_monitor;
     uvm_analysis_port #(my_txn) ap;  // Broadcast port
@@ -426,7 +428,7 @@ endfunction
 
 #### TLM FIFO: Decoupling Producer and Consumer
 
-```systemverilog
+```verilog
 // Without TLM FIFO: producer and consumer must synchronize directly
 // With TLM FIFO: producer puts, consumer gets at its own pace
 
@@ -467,7 +469,7 @@ endclass
 
 #### Complete Sequence with body() Task
 
-```systemverilog
+```verilog
 class my_sequence extends uvm_sequence #(my_txn);
     `uvm_object_utils(my_sequence)
 
@@ -507,7 +509,7 @@ endtask
 
 #### Sequencer Arbitration Modes
 
-```systemverilog
+```verilog
 // Set arbitration mode on sequencer:
 env.agent.sequencer.set_arbitration(UVM_SEQ_ARB_FIFO);
 
@@ -521,7 +523,7 @@ env.agent.sequencer.set_arbitration(UVM_SEQ_ARB_FIFO);
 
 #### Virtual Sequence for Multi-Agent Coordination
 
-```systemverilog
+```verilog
 class virtual_sequence extends uvm_sequence #(uvm_sequence_item);
     `uvm_object_utils(virtual_sequence)
 
@@ -570,27 +572,23 @@ endtask
 
 #### get_next_item / item_done Flow
 
-```
-Sequencer                           Driver
-    |                                  |
-    |  start_item(txn)                 |
-    |  [seq waits for arbitration]     |
-    |                                  |
-    |  finish_item(txn)                |
-    |  [txn queued in sequencer]       |
-    |                                  |
-    |         <--- get_next_item() ----|  Driver requests next item
-    |         ---- txn ------------->  |  Sequencer provides txn
-    |                                  |  Driver drives on bus
-    |                                  |  ...
-    |         <--- item_done() --------|  Driver signals completion
-    |  [seq's finish_item returns]     |
-    |                                  |
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+sequenceDiagram
+    participant S as Sequencer
+    participant D as Driver
+    Note over S: start_item(txn) — seq waits for arbitration
+    Note over S: finish_item(txn) — txn queued in sequencer
+    D->>S: get_next_item()
+    S-->>D: txn
+    Note over D: drives txn on the bus …
+    D->>S: item_done()
+    Note over S: seq's finish_item returns
 ```
 
 #### Complete Driver with Reset Handling
 
-```systemverilog
+```verilog
 class my_driver extends uvm_driver #(my_txn);
     `uvm_component_utils(my_driver)
 
@@ -655,7 +653,7 @@ endclass
 
 #### Pipelining with get/put (Advanced)
 
-```systemverilog
+```verilog
 // For pipelined protocols where you want to overlap address and data phases:
 task run_phase(uvm_phase phase);
     fork
@@ -680,7 +678,7 @@ endtask
 
 #### Structure
 
-```
+```ascii-graph
 uvm_reg_block (my_reg_block)
   |
   +-- uvm_reg (ctrl_reg)
@@ -701,7 +699,7 @@ uvm_reg_block (my_reg_block)
 
 #### Register Definition
 
-```systemverilog
+```verilog
 class ctrl_reg extends uvm_reg;
     `uvm_object_utils(ctrl_reg)
 
@@ -752,7 +750,7 @@ endclass
 
 #### Frontdoor vs Backdoor Access
 
-```systemverilog
+```verilog
 // FRONTDOOR: goes through the bus (driver/sequencer/monitor)
 //   Exercises the actual bus protocol -- realistic
 //   Slower (bus cycles)
@@ -782,25 +780,26 @@ endtask
 
 #### Mirror, Desired, and Actual Values
 
-```
-Three values tracked per register:
-  - DESIRED:  what the testbench intends the register to contain
-  - MIRROR:   what the model thinks the HW register contains
-  - ACTUAL:   what the HW register really contains (in RTL)
+``` text
+Three Values Tracked Per Register:
+  - DESIRED: What the testbench intends the register to contain
+  - MIRROR:  What the model thinks the HW register contains
+  - ACTUAL:  What the HW register really contains (in RTL)
 
-reg.write():       updates DESIRED and MIRROR, sends frontdoor write
-reg.set():         updates only DESIRED (no bus transaction)
-reg.update():      writes DESIRED to HW if DESIRED != MIRROR
-reg.read():        reads from HW, updates MIRROR
-reg.mirror():      reads from HW, checks against MIRROR prediction
-reg.predict():     updates MIRROR without bus transaction
-reg.get():         returns DESIRED value (no bus transaction)
-reg.get_mirrored_value(): returns MIRROR value (no bus transaction)
+Methods:
+  - reg.write()              : Updates DESIRED and MIRROR, sends frontdoor write
+  - reg.set()                : Updates only DESIRED (no bus transaction)
+  - reg.update()             : Writes DESIRED to HW if DESIRED != MIRROR
+  - reg.read()               : Reads from HW, updates MIRROR
+  - reg.mirror()             : Reads from HW, checks against MIRROR prediction
+  - reg.predict()            : Updates MIRROR without bus transaction
+  - reg.get()                : Returns DESIRED value (no bus transaction)
+  - reg.get_mirrored_value() : Returns MIRROR value (no bus transaction)
 ```
 
 #### Built-in Register Test Sequences
 
-```systemverilog
+```verilog
 // Hardware reset test: verify all registers have correct reset values
 class my_test extends uvm_test;
     task run_phase(uvm_phase phase);
@@ -825,7 +824,7 @@ endclass
 
 #### Complete Override Example
 
-```systemverilog
+```verilog
 // Base transaction (in reusable VIP)
 class apb_txn extends uvm_sequence_item;
     `uvm_object_utils(apb_txn)
@@ -860,13 +859,11 @@ endclass
 // It gets an apb_error_txn object (with parity_error field)
 ```
 
----
-
 ### Config DB
 
 #### Set/Get Mechanics
 
-```systemverilog
+```verilog
 // SET: parent sets config for children
 class my_test extends uvm_test;
     function void build_phase(uvm_phase phase);
@@ -901,23 +898,24 @@ endclass
 
 #### Scope Matching Rules
 
-```
-set(context, inst_path, field, value)
-get(context, inst_path, field, variable)
+``` text
+Syntax:
+  - set(context, inst_path, field, value)
+  - get(context, inst_path, field, variable)
 
-Full path = context.get_full_name() + "." + inst_path
-
-Matching: get's full path must be a prefix of set's scope
+Path Resolution:
+  - Full path = context.get_full_name() + "." + inst_path
+  - Matching  : get's full path must be a prefix of set's scope
 
 Example:
-  set(this, "env.agent.*", "vif", ...)  // this = "uvm_test_top"
-  // Effective scope: "uvm_test_top.env.agent.*"
+  set(this, "env.agent.*", "vif", ...)         // this = "uvm_test_top"
+  -> Effective scope: "uvm_test_top.env.agent.*"
 
-  get(this, "", "vif", vif)  // this = "uvm_test_top.env.agent.driver"
-  // Effective path: "uvm_test_top.env.agent.driver"
-  // Matches "uvm_test_top.env.agent.*" -- SUCCESS
+  get(this, "", "vif", vif)                    // this = "uvm_test_top.env.agent.driver"
+  -> Effective path: "uvm_test_top.env.agent.driver"
+  -> Matches "uvm_test_top.env.agent.*" (SUCCESS)
 
-Precedence (higher wins):
+Precedence (Higher Wins):
   1. Instance path specificity (more specific wins)
   2. Later set() calls override earlier ones at same specificity
 ```
@@ -926,7 +924,7 @@ Precedence (higher wins):
 
 ### Objection Mechanism
 
-```systemverilog
+```verilog
 // Objections prevent simulation from ending while work is in progress
 
 class my_test extends uvm_test;
@@ -970,7 +968,7 @@ endclass
 
 This shows all components wired together for a simple register-based DUT.
 
-```systemverilog
+```verilog
 //============================================================
 // Transaction
 //============================================================
@@ -1368,7 +1366,7 @@ endmodule
 
 ### Test Plan Structure
 
-```
+```ascii-graph
 Test Plan for [Block/Feature]
 |
 +-- Feature 1: Basic Read/Write
@@ -1580,16 +1578,20 @@ Coverage regression gates (typical): 95% functional coverage, 100% toggle, 100% 
 
 ### Testbench Architecture
 
-```
-Test -> Sequence -> Driver -> DUT -> Monitor -> Scoreboard
-               |                             ^
-               v                             |
-         Coverage Collector <--- (analysis port broadcast)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    T["Test"] --> S["Sequence"] --> D["Driver"] --> DUT["DUT"] --> M["Monitor"] --> SB["Scoreboard"]
+    M -->|"analysis port broadcast"| CC["Coverage collector"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef c fill:#fde68a,stroke:#b45309,color:#000
+    class T,S,D,DUT,M,SB s
+    class CC c
 ```
 
 ### Transaction Class
 
-```systemverilog
+```verilog
 class axi_lite_txn extends uvm_sequence_item;
     `uvm_object_utils(axi_lite_txn)
 
@@ -1613,7 +1615,7 @@ endclass
 
 ### Sequence Library
 
-```systemverilog
+```verilog
 // Sequential write-then-read for every register
 class rw_all_regs_seq extends uvm_sequence #(axi_lite_txn);
     `uvm_object_utils(rw_all_regs_seq)
@@ -1647,7 +1649,7 @@ endclass
 
 ### Coverage Model with Cross Coverage
 
-```systemverilog
+```verilog
 class axi_coverage extends uvm_subscriber #(axi_lite_txn);
     `uvm_component_utils(axi_coverage)
 
@@ -1680,7 +1682,7 @@ endclass
 
 ### Scoreboard Checking Logic
 
-```systemverilog
+```verilog
 class axi_scoreboard extends uvm_scoreboard;
     `uvm_component_utils(axi_scoreboard)
 

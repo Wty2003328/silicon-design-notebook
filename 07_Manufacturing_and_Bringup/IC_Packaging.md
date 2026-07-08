@@ -23,7 +23,7 @@
 
 ### 1.1 Why Packaging Matters
 
-```
+```ascii-graph
 The chip (die) is a fragile piece of silicon (~0.1-0.8mm thick).
 Packaging provides:
   1. Mechanical protection (encapsulation)
@@ -36,7 +36,7 @@ Packaging provides:
 
 ### 1.2 Package Types
 
-```
+```text
 Through-hole (legacy):
   DIP (Dual In-line Package): Through-hole pins
   PGA (Pin Grid Array): 2D array of pins on bottom
@@ -58,7 +58,7 @@ Advanced:
 
 ### 1.3 Package Substrate
 
-```
+```ascii-graph
 Package substrate: Multi-layer PCB between die and solder balls
 
   Die bumps → RDL → package substrate → BGA balls → PCB
@@ -82,7 +82,7 @@ Package substrate: Multi-layer PCB between die and solder balls
 
 ### 2.1 Process
 
-```
+```ascii-graph
 Wire bonding: Thin metal wire connects die pad to package lead frame
 
   Die pad (Al or Cu) → Gold or Cu wire (20-25 μm Ø) → Lead frame
@@ -106,27 +106,25 @@ Wire bonding: Thin metal wire connects die pad to package lead frame
 
 ### 2.2 Wire Bond Characteristics
 
-```
-Materials:
-  Gold wire:   Best bondability, most expensive, ~25μm Ø
-  Copper wire:  95% cheaper than Au, harder to bond, requires forming gas
-  Aluminum wire: Wedge bonding only, for power devices
+**Materials:**
+   - Gold wire:   Best bondability, most expensive, ~25μm Ø
+   - Copper wire:  95% cheaper than Au, harder to bond, requires forming gas
+   - Aluminum wire: Wedge bonding only, for power devices
 
-Performance:
-  Wire length:   1-5 mm typical
-  Inductance:    ~1 nH/mm → significant at GHz frequencies!
-  Resistance:    ~40-100 mΩ per wire
-  Current:       ~100-300 mA per wire
-  Frequency:     Limited to ~500 MHz-1 GHz (inductance bottleneck)
+**Performance:**
+   - Wire length:   1-5 mm typical
+   - Inductance:    ~1 nH/mm → significant at GHz frequencies!
+   - Resistance:    ~40-100 mΩ per wire
+   - Current:       ~100-300 mA per wire
+   - Frequency:     Limited to ~500 MHz-1 GHz (inductance bottleneck)
 
-Limitations:
-  - Peripheral I/O only (pads at die edge)
-  - High inductance → poor SI for high-speed signals
-  - Limited I/O count (perimeter-limited)
-  - Sequential process → slow for high pin-count
-  
-  Still used for: Low-cost packages, power devices, memory (HBM is exception)
-```
+**Limitations:**
+   - Peripheral I/O only (pads at die edge)
+   - High inductance → poor SI for high-speed signals
+   - Limited I/O count (perimeter-limited)
+   - Sequential process → slow for high pin-count
+
+Still used for: Low-cost packages, power devices, memory (HBM is exception)
 
 ---
 
@@ -134,7 +132,7 @@ Limitations:
 
 ### 3.1 C4 (Controlled Collapse Chip Connection)
 
-```
+```ascii-graph
 Flip chip: Die flipped face-down, solder bumps connect directly to substrate
 
   Traditional C4 bumps:
@@ -161,7 +159,7 @@ Advantages over wire bond:
 
 ### 3.2 Micro-Bumps
 
-```
+```text
 Micro-bumps (μbumps): For 2.5D/3D integration
 
   Diameter:  20-40 μm (vs C4: 80-100 μm)
@@ -186,7 +184,7 @@ Micro-bumps (μbumps): For 2.5D/3D integration
 
 ### 3.3 Copper Pillar Bumps
 
-```
+```ascii-graph
 Cu pillar: Replaces traditional solder bump at fine pitch
 
   Structure: Cu pillar (tall, narrow) + thin solder cap
@@ -217,7 +215,7 @@ Cu pillar: Replaces traditional solder bump at fine pitch
 
 ### 4.1 Fan-In WLP (WLCSP)
 
-```
+```ascii-graph
 Fan-in: Package size = die size (or very close)
 
   Die with redistribution layer (RDL):
@@ -239,7 +237,7 @@ Fan-in: Package size = die size (or very close)
 
 ### 4.2 Fan-Out WLP (FOWLP)
 
-```
+```ascii-graph
 Fan-out: Package larger than die → more I/O possible
 
   Process (eWLB):
@@ -267,7 +265,7 @@ Fan-out: Package larger than die → more I/O possible
 
 ### 5.1 Silicon Interposer
 
-```
+```ascii-graph
 2.5D: Multiple dies mounted side-by-side on a silicon interposer
 
                     ┌──────┐  ┌──────┐  ┌──────┐
@@ -287,7 +285,7 @@ Fan-out: Package larger than die → more I/O possible
                      PCB
 ```
 
-```
+```text
 Key features:
   RDL pitch:       0.4-2 μm L/S (much finer than organic substrate)
   TSV diameter:    5-10 μm
@@ -308,7 +306,7 @@ TSMC CoWoS (Chip-on-Wafer-on-Substrate):
 
 ### 5.2 Through-Silicon Via (TSV)
 
-```
+```ascii-graph
 TSV: Vertical electrical connection through a silicon wafer/die
 
   Fabrication:
@@ -344,7 +342,7 @@ TSV: Vertical electrical connection through a silicon wafer/die
 
 ### 5.3 Organic Interposer and Bridge
 
-```
+```ascii-graph
 Alternatives to expensive silicon interposer:
 
 Intel EMIB (Embedded Multi-die Interconnect Bridge):
@@ -376,7 +374,7 @@ Disadvantages: Limited bridge area, fewer die-to-die connections
 
 ### 6.1 Die-to-Die Stacking
 
-```
+```ascii-graph
 3D IC: Dies stacked vertically, connected by TSVs or hybrid bonding
 
   ┌──────────────┐
@@ -405,7 +403,7 @@ Challenges:
 
 ### 6.2 Hybrid Bonding
 
-```
+```ascii-graph
 Hybrid bonding: Cu-Cu direct bonding (no solder, no bumps)
 
   Process:
@@ -443,7 +441,7 @@ Hybrid bonding: Cu-Cu direct bonding (no solder, no bumps)
 
 ### 7.1 Why Chiplets
 
-```
+```ascii-graph
 Monolithic large die problems:
   1. Yield: Y = exp(-D*A) → large die = low yield = expensive
   2. Design cost: Full-chip reticle ~$100M+ at 3nm
@@ -469,7 +467,7 @@ Chiplet solution:
 
 ### 7.2 Chiplet Interconnect Standards
 
-```
+```ascii-graph
 UCIe (Universal Chiplet Interconnect Express):
   - Open standard (1.0: March 2022, 1.1: August 2023, 2.0: 2025)
   - Defines physical layer, die-to-die link layer, protocol layer
@@ -510,7 +508,7 @@ Comparison:
 
 ### 8.1 HBM Architecture
 
-```
+```ascii-graph
 HBM: DRAM dies stacked on top of each other, connected via TSVs
 
   Stack:
@@ -549,7 +547,7 @@ HBM: DRAM dies stacked on top of each other, connected via TSVs
 
 ### 8.2 HBM Integration
 
-```
+```ascii-graph
 HBM is ALWAYS mounted on an interposer (2.5D):
 
   ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐
@@ -572,48 +570,32 @@ HBM is ALWAYS mounted on an interposer (2.5D):
 
 ### 9.1 UCIe Protocol Stack
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    A["Application layer<br/>CXL, PCIe, AXI, custom"] --> P["Protocol layer<br/>flit packing, credit-based flow control"]
+    P --> L["Die-to-die link<br/>training, retry, CRC error detection"]
+    L --> PHY["Physical layer<br/>serialization, clock forwarding, electrical signaling"]
+    PHY --> B["Bump interface<br/>C4 (standard pkg) or μbump (advanced pkg)"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class A,P,L,PHY,B s
 ```
-UCIe protocol layers:
 
-  Application Layer:  CXL, PCIe, AXI, custom
-       │
-  Protocol Layer:    Flit packing, credit-based flow control
-       │
-  Die-to-Die Link:   Training, retry, CRC error detection
-       │
-  Physical Layer:    Serialization, clock forwarding, electrical signaling
-       │
-  Bump Interface:    C4 (standard pkg) or μbump (advanced pkg)
-
-Physical layer details:
-  - Source-synchronous clocking (forwarded clock)
-  - Single-ended signaling (not differential — saves bumps)
-  - Module: 16 data lanes + 2 clock lanes + sideband
-  - Standard module width: ~200 μm of die edge
-  - Multiple modules per die edge → scale bandwidth
-
-Link layer:
-  - CRC-based error detection
-  - Retry: replay last flit on CRC error
-  - Credit-based flow control (prevents overflow)
-  - Flit: 256 bits (standard) or 68 bits (latency-optimized)
-```
+Physical-layer details: source-synchronous (forwarded) clocking; single-ended signaling (not differential — saves bumps); a module is 16 data lanes + 2 clock lanes + sideband, occupying ~200 μm of die edge; multiple modules run per link.
 
 ### 9.2 Power and Signal Integrity in Die-to-Die
 
-```
-Die-to-die signaling challenges:
-  1. Low voltage swing: ~0.4V (saves power) → noise-sensitive
-  2. Crosstalk: dense bump array → significant coupling
-  3. Impedance matching: bump + trace must match PHY impedance
-  4. Power delivery: each die needs its own power bumps
-  5. Clock distribution: forwarded clock must have low jitter
+**Die-to-die signaling challenges:**
+   1. Low voltage swing: ~0.4V (saves power) → noise-sensitive
+2. Crosstalk: dense bump array → significant coupling
+3. Impedance matching: bump + trace must match PHY impedance
+4. Power delivery: each die needs its own power bumps
+5. Clock distribution: forwarded clock must have low jitter
 
-Power consumption:
-  UCIe: ~0.5 pJ/bit (advanced package)
-  Compare: PCIe Gen5: ~5 pJ/bit, DDR5: ~8 pJ/bit
-  Die-to-die is 10-20× more energy-efficient than board-level I/O
-```
+**Power consumption:**
+   - UCIe: ~0.5 pJ/bit (advanced package)
+   - Compare: PCIe Gen5: ~5 pJ/bit, DDR5: ~8 pJ/bit
+   - Die-to-die is 10-20× more energy-efficient than board-level I/O
 
 ---
 
@@ -621,7 +603,7 @@ Power consumption:
 
 ### 10.1 Thermal in Multi-Die Packages
 
-```
+```ascii-graph
 2.5D thermal challenge:
   - Multiple high-power dies on one interposer
   - Total power can exceed 1000W (GPU + HBMs)
@@ -648,7 +630,7 @@ Solutions:
 
 ### 10.2 Power Delivery in Multi-Die
 
-```
+```ascii-graph
 Challenge: Deliver clean power to each die through package/interposer
 
   Power path: VRM → PCB → BGA → Substrate → Interposer → Die
@@ -684,7 +666,7 @@ Decoupling strategy (multi-level):
 
 ### 11.1 Standard Wire-Bond / Molded Package Assembly
 
-```
+```verilog
 Step-by-step from wafer to finished package:
 
 1. Wafer Probe / Test
@@ -734,7 +716,6 @@ Step-by-step from wafer to finished package:
 
 ### 11.2 Flip-Chip Assembly Flow
 
-```
 1. Wafer-level bumping
    - UBM (Under-Bump Metallurgy) sputtered/evaporated on die pads
    - C4 solder bumps: evaporation or electroplating (SnAgCu, 130-200 μm pitch)
@@ -764,11 +745,9 @@ Step-by-step from wafer to finished package:
 7. BGA ball attach (if not pre-mounted on substrate)
 
 8. Marking and final test
-```
 
 ### 11.3 WLCSP (Wafer-Level Chip-Scale Package) Assembly Flow
 
-```
 1. RDL (Redistribution Layer) formation on wafer
    - Dielectric (polyimide or BCB) + Cu RDL patterning
    - Reroutes peripheral pads to area-array bumps
@@ -781,7 +760,6 @@ Step-by-step from wafer to finished package:
 
 5. Singulation (dicing to individual packaged dies)
    - Package size ≈ die size — no post-die-attach steps
-```
 
 ---
 
@@ -789,7 +767,7 @@ Step-by-step from wafer to finished package:
 
 ### 12.1 JEDEC Standards Framework
 
-```
+```ascii-graph
 Key JEDEC standards for IC package reliability:
 
 JESD22:     General reliability test methods (umbrella standard)
@@ -819,7 +797,7 @@ J-STD-020 MSL Classification:
 
 ### 12.2 Key Reliability Tests
 
-```
+```verilog
 Temperature Cycling (TC / JESD22-A104):
   Conditions: -65°C to +150°C (extreme), or -40°C to +125°C (standard)
   Dwell time: 10-15 min at each extreme
@@ -852,7 +830,7 @@ THB — Temperature Humidity Bias (JESD22-A101):
 
 ### 12.3 Failure Mechanisms
 
-```
+```ascii-graph
 Delamination:
   - Interface separation between die and mold compound, or mold compound and substrate
   - Caused by: moisture absorption → vapor expansion during reflow ("popcorn cracking")
@@ -885,36 +863,34 @@ Electromigration in Bumps:
 
 ### 12.4 FIT Rate and MTBF
 
-```
-FIT (Failures In Time):
-  Number of failures per 10^9 device-hours
+**FIT (Failures In Time):**
+   - Number of failures per 10^9 device-hours
 
-MTBF (Mean Time Between Failures):
-  For constant failure rate (exponential distribution):
-    MTBF = 1 / λ
-    FIT = λ × 10^9 = 10^9 / MTBF_hours
+**MTBF (Mean Time Between Failures):**
+   - For constant failure rate (exponential distribution):
+   - MTBF = 1 / λ
+   - FIT = λ × 10^9 = 10^9 / MTBF_hours
 
-Example:
-  If MTBF = 10,000,000 hours (1 million hours):
-  FIT = 10^9 / 10^7 = 100 FIT
+**Example:**
+   - If MTBF = 10,000,000 hours (1 million hours):
+   - FIT = 10^9 / 10^7 = 100 FIT
 
-Typical FIT rates:
-  Consumer IC:           10-100 FIT
-  Automotive (AEC-Q100): 1-10 FIT per component
-  Telecom infrastructure: 1-5 FIT
+**Typical FIT rates:**
+   - Consumer IC:           10-100 FIT
+   - Automotive (AEC-Q100): 1-10 FIT per component
+   - Telecom infrastructure: 1-5 FIT
 
-FIT accumulation for a system:
-  FIT_system = Σ FIT_i for all components
-  MTBF_system = 10^9 / FIT_system
+**FIT accumulation for a system:**
+   - FIT_system = Σ FIT_i for all components
+   - MTBF_system = 10^9 / FIT_system
 
-  Example: Board with 20 ICs at 50 FIT each
-  FIT_system = 1000 FIT
-  MTBF_system = 10^6 hours ≈ 114 years
-```
+Example: Board with 20 ICs at 50 FIT each
+FIT_system = 1000 FIT
+MTBF_system = 10^6 hours ≈ 114 years
 
 ### 12.5 AEC-Q100 Automotive Qualification
 
-```
+```text
 AEC-Q100 defines qualification requirements for automotive-grade ICs.
 
 Grade 0: -40°C to +150°C ambient (engine compartment, transmission)
@@ -938,7 +914,7 @@ Additional automotive requirements beyond JEDEC:
 
 ### 13.1 Root Cause: CTE Mismatch
 
-```
+```ascii-graph
 Warpage = out-of-plane deformation of the package during thermal excursions.
 
 Cause: Different materials expand at different rates (CTE mismatch).
@@ -966,29 +942,27 @@ Warpage magnitude:
 
 ### 13.2 Warpage Measurement
 
-```
-Shadow Moiré:
-  - Projects a reference grating pattern onto the sample surface
-  - Deformation of the grating (fringe pattern) = surface height map
-  - Resolution: ~1-5 μm height, full-field measurement
-  - Performed in temperature-controlled chamber (ramp -40°C to +250°C)
-  - Industry standard for package warpage characterization
+**Shadow Moiré:**
+   - Projects a reference grating pattern onto the sample surface
+   - Deformation of the grating (fringe pattern) = surface height map
+   - Resolution: ~1-5 μm height, full-field measurement
+   - Performed in temperature-controlled chamber (ramp -40°C to +250°C)
+   - Industry standard for package warpage characterization
 
-Digital Image Correlation (DIC):
-  - Speckle pattern on sample surface, tracked by dual cameras
-  - Full 3D displacement field (in-plane and out-of-plane)
-  - Higher spatial resolution than shadow moiré
-  - Can measure during reflow (infrared heating, real-time)
+**Digital Image Correlation (DIC):**
+   - Speckle pattern on sample surface, tracked by dual cameras
+   - Full 3D displacement field (in-plane and out-of-plane)
+   - Higher spatial resolution than shadow moiré
+   - Can measure during reflow (infrared heating, real-time)
 
-Interferometry (laser):
-  - Highest precision (~0.1 μm)
-  - Limited to small area and reflective surfaces
-  - Used for die-level warpage studies
-```
+**Interferometry (laser):**
+   - Highest precision (~0.1 μm)
+   - Limited to small area and reflective surfaces
+   - Used for die-level warpage studies
 
 ### 13.3 Impact on Assembly and Reliability
 
-```
+```ascii-graph
 Solder joint reliability:
   - Warpage causes non-planar BGA ball array → uneven solder joint height
   - Corner/edge balls under tension or compression
@@ -1010,7 +984,7 @@ Non-uniform underfill:
 
 ### 13.4 Warpage Mitigation
 
-```
+```ascii-graph
 Die overcoat / die coat:
   - Thin polymer layer (parylene, polyimide) over die surface
   - Reduces stress concentration at die edges
@@ -1135,10 +1109,10 @@ and advanced cooling (microfluidic channels).
 
 **Q9: What is the yield advantage of chiplets?**
 
-For Poisson defect model: Y = exp(-D×A). A monolithic 500mm² die at D=0.1/cm² yields
+For Poisson defect model: $Y = \exp(-D \times A)$. A monolithic 500mm² die at D=0.1/cm² yields
 60.7%. Two 250mm² chiplets each yield 77.9%, and the combined good-pair probability
 is 77.9%² = 60.7% — same if you need both to work. BUT: with testing, you only combine
-known-good dies (KGD), so yield = Y_chiplet × (1 - test_escape_rate) ≈ 77.9%. The real
+known-good dies (KGD), so yield $= Y_{chiplet} \times (1 - r_{esc}) \approx 77.9\%$ (with $r_{esc}$ the test-escape rate). The real
 advantage grows with more chiplets and higher defect density.
 
 **Q10: How does power delivery work in a multi-die package?**
@@ -1180,7 +1154,7 @@ probe individual bonds. (6) Design rules for keep-out and dummy patterns become 
 
 ### 16.1 UCIe Specification Evolution
 
-```
+```ascii-graph
 UCIe specification timeline:
   UCIe 1.0 (March 2022): Initial release
     - Standard package: 4-32 GT/s, 100-130 μm bump pitch
@@ -1217,7 +1191,7 @@ UCIe vs standard packaging vs advanced packaging:
 
 ## 17. TSMC SoIC (System on Integrated Chips)
 
-```
+```ascii-graph
 TSMC SoIC: 3D stacking using hybrid bonding
 
   SoIC variants:
@@ -1273,7 +1247,7 @@ TSMC SoIC: 3D stacking using hybrid bonding
 
 ### 18.1 Intel Foveros
 
-```
+```ascii-graph
 Intel Foveros Direct (Hybrid Bonding):
   - Cu-Cu hybrid bonding, face-to-face
   - Pitch: 1-10 μm (current), targeting sub-1 μm
@@ -1313,7 +1287,7 @@ Foveros vs TSMC SoIC comparison:
 
 ### 18.2 Samsung X-Cube 3D IC
 
-```
+```verilog
 Samsung X-Cube:
   - 3D IC stacking using TSVs
   - EUV-based 3D packaging technology
@@ -1341,7 +1315,7 @@ Samsung X-Cube:
 
 ## 19. Glass Substrates
 
-```
+```ascii-graph
 Glass core substrates: next-generation packaging substrate material
 
   Why glass:
@@ -1388,7 +1362,7 @@ Glass core substrates: next-generation packaging substrate material
 
 ## 20. Blackwell Case Study
 
-```
+```ascii-graph
 NVIDIA Blackwell (B200 / GB200) Packaging:
 
   Package configuration:
@@ -1444,7 +1418,7 @@ NVIDIA Blackwell (B200 / GB200) Packaging:
 
 ## 21. Advanced Packaging Roadmap
 
-```
+```ascii-graph
 Advanced packaging technology roadmap (2025-2030):
 
   Die-to-die bandwidth scaling:

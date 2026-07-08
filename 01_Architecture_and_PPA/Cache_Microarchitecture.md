@@ -43,24 +43,28 @@ tag using $N$ parallel equality comparators. The comparator outputs are OR-reduc
 a single `hit` signal. A multiplexer steered by the winning way selects the correct
 data word.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    ADDR["CPU address"] --> IDX["Index"]
+    IDX --> T0["Tag SRAM 0"] --> C0["Comparator 0"]
+    IDX --> T1["Tag SRAM 1"] --> C1["Comparator 1"]
+    C0 --> ORr["OR → hit / miss"]
+    C1 --> ORr
+    IDX --> D0["Data SRAM 0"]
+    IDX --> D1["Data SRAM 1"]
+    D0 --> MUX["Way-select MUX"]
+    D1 --> MUX
+    C0 -.->|winning way| MUX
+    C1 -.->|winning way| MUX
+    MUX --> OUT["Data out"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef l fill:#fde68a,stroke:#b45309,color:#000
+    class T0,T1,D0,D1 s
+    class C0,C1,ORr,MUX l
 ```
-CPU Address
-  |
-  +---> Index ---> +------+
-  |                | Tag   |--- tag_way_0 --+
-  |                | SRAM 0|                |
-  |                +------+                +--> Comparator 0 --+
-  |                                                            |
-  +---> Index ---> +------+                                   |
-  |                | Tag   |--- tag_way_1 --+                  |
-  |                | SRAM 1|                +--> Comparator 1 --+--> OR ---> hit/miss
-  |                +------+                                   |
-  |                                                            |
-  |                +------+                                   |
-  +---> Index ---> | Data  |--- data_way_0 --+                |
-                   | SRAM 0|                 +---> MUX <------+
-                   +------+       ...         (steered by winning way)
-```
+
+This is the one-cycle hit path of a 2-way set-associative cache: the index reads both tag SRAMs and both data SRAMs in parallel; comparators check each way's tag; the OR of the hits gives hit/miss, and the winning way steers the data MUX.
 
 **Timing constraint:** The tag SRAM read, comparator logic, and data MUX must all
 complete within one clock period. At 4 GHz this is 250 ps, which is tight. The tag
@@ -116,6 +120,7 @@ controller asserts `miss` to the MSHR subsystem. The entire resolution takes one
 multiplexer delay plus one OR gate delay after the tag SRAM outputs stabilize.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[CPU issues load address] --> B[Decode: Tag, Index, Offset]
     B --> C[Read all N tag SRAMs at Index]
@@ -159,7 +164,7 @@ entry contains:
 
 **MSHR entry size calculation (4-way 32KB cache, 64B lines, 7-bit phys reg IDs):**
 
-```
+```verilog
 1 (valid) + 26 (line_addr) + 16 (req_vector) + 16*7 (dest_reg) + 16 (word_valid)
 + 2 (state) + 2 (way) + 1 (dirty_victim)
 = 1 + 26 + 16 + 112 + 16 + 2 + 2 + 1 = 176 bits per MSHR entry
@@ -185,7 +190,7 @@ MSHR entries, comparing the incoming `line_addr` against stored `line_addr` valu
 
 **Secondary miss timing example:**
 
-```
+```ascii-graph
 Cycle 0:  Load R1, [0x1000]  -- miss, MSHR[0] allocated, fill issued
 Cycle 3:  Load R2, [0x1004]  -- miss to same line (0x1000-0x103F)
            MSHR[0] matches (line_addr = 0x1000)
@@ -220,27 +225,26 @@ decouples the writeback from the fill. The dirty victim is copied to the writeba
 in 1 cycle, and the fill request is issued immediately. The writeback buffer drains to
 the next level in the background. This reduces miss penalty by hiding the writeback latency:
 
-```
-Without writeback buffer:
-  Miss → writeback dirty victim (20-100 cycles) → fill new line (20-100 cycles)
-  Total: 40-200 cycles
+**Without writeback buffer:**
+   - Miss → writeback dirty victim (20-100 cycles) → fill new line (20-100 cycles)
+   - Total: 40-200 cycles
 
-With writeback buffer:
-  Miss → copy victim to WB buffer (1 cycle) → issue fill (20-100 cycles)
-  Total: 21-101 cycles (writeback happens in parallel with fill)
-```
+**With writeback buffer:**
+   - Miss → copy victim to WB buffer (1 cycle) → issue fill (20-100 cycles)
+   - Total: 21-101 cycles (writeback happens in parallel with fill)
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[Cache miss detected] --> B{MSHR exists for this line?}
     B -->|Yes: secondary miss| C[Merge request into existing MSHR]
     B -->|No: primary miss| D{Free MSHR available?}
-    D -->|Yes| E[Allocate MSHR, issue fill to next level]
-    D -->|No| F[Stall: all MSHRs occupied - struct hazard]
+    D -->|Yes| E[Allocate MSHR, issue fill to next<br/>level]
+    D -->|No| F[Stall: all MSHRs occupied - struct<br/>hazard]
     E --> G[Fill data returns from next level]
     C --> G
     G --> H[Write line into cache SRAM]
-    H --> I[Wake all dependent instructions in MSHR req_vector]
+    H --> I[Wake all dependent instructions in<br/>MSHR req_vector]
     I --> J[Free MSHR entry]
 ```
 
@@ -251,57 +255,26 @@ secondary misses, and deliver data to the correct destination registers when the
 returns. Below is a field-by-field analysis for a 4-way 32 KB L1D cache with 64 B lines
 and 7-bit physical register IDs (as found in a modern OoO core).
 
-```
-MSHR Entry Bit Map (176 bits total):
-  +--------+-----------+-------------+------------------+------------------+
-  | valid  | line_addr | req_vector  | dest_reg[0..15]  | word_valid[0..15]|
-  | 1 bit  | 26 bits   | 16 bits     | 16 x 7 = 112 bits| 16 bits          |
-  +--------+-----------+-------------+------------------+------------------+
-  +--------+------+-------------+-----------+
-  | state  | way  | dirty_victim| byte_mask |
-  | 2 bits | 2 b  | 1 bit       | 64 bits   |
-  +--------+------+-------------+-----------+
+**MSHR entry fields:**
 
-  line_addr:   Tag[18:0] concatenated with Index[6:0] = 26 bits.
-               (Block offset is zero by definition -- the MSHR tracks whole lines.)
-
-  req_vector:  One bit per 4-byte word within the 64 B line (64/4 = 16 words).
-               Bit[i] = 1 means word i at offset (i*4) has been requested.
-               On primary miss: only the requested word's bit is set.
-               On secondary miss merge: additional bits are ORed in.
-
-  dest_reg[]:  Physical register ID for each requesting instruction.
-               Max 16 entries (one per word). Width matches the PRF ID
-               (7 bits for 128-entry PRF, 8 bits for 256-entry PRF).
-
-  word_valid[]: 1 bit per dest_reg entry. Indicates whether dest_reg[i] contains
-                a valid register ID. Needed because some words may not have
-                been requested yet.
-
-  state:       FSM state for this MSHR.
-               00 = IDLE (free)
-               01 = WRITEBACK_PENDING (dirty victim being written back)
-               10 = FILL_ISSUED (fill request sent, awaiting data)
-               11 = FILL_RETURN (data arriving, being written to SRAM)
-
-  way:         Which way in the set has been allocated for the incoming line.
-               Determined at MSHR allocation time by the replacement policy.
-               2 bits for 4-way associativity.
-
-  dirty_victim: 1 if the evicted line in the allocated way is dirty (needs writeback
-                to next level before fill can proceed). 0 if clean or invalid.
-
-  byte_mask:   1 bit per byte in the line (64 bits for 64 B line). Tracks which
-               bytes have pending store data to merge into the fill. Used when
-               stores hit in an MSHR (write merging into a filling line).
-```
+| Field | Width | Meaning |
+|---|---|---|
+| valid | 1 bit | entry in use |
+| line_addr | 26 bits | Tag[18:0] · Index[6:0] (whole line; block offset is zero) |
+| req_vector | 16 bits | one bit per 4-byte word in the 64 B line |
+| dest_reg[0..15] | 16 × 7 = 112 bits | destination register per word |
+| word_valid[0..15] | 16 bits | which words have arrived |
+| state | 2 bits | MSHR state |
+| way | 2 bits | target way |
+| dirty_victim | 1 bit | victim needs write-back |
+| byte_mask | 64 bits | per-byte write mask |
 
 **CAM matching for secondary miss detection:**
 
 The MSHR array includes a content-addressable memory (CAM) on the `line_addr` field.
 On every new miss, the incoming line address is broadcast to all valid MSHR entries:
 
-```
+```verilog
 Secondary miss detection (combinational):
   match[i] = MSHR[i].valid && (MSHR[i].line_addr == incoming_line_addr)
 
@@ -336,7 +309,7 @@ This is modest compared to the 32 KB data SRAM (262,144 bits), representing only
 When a cache miss evicts a dirty line, the controller must write back the victim before
 installing the new line. The detailed sequence:
 
-```
+```verilog
 Cycle 0: Miss detected. Select victim way (LRU/PLRU).
 Cycle 1: Check victim dirty bit.
           If dirty:  copy victim data to writeback buffer (1-cycle SRAM read).
@@ -363,7 +336,7 @@ Cycle 4..N: Fill data returns from next level (N = memory latency).
 Without a writeback buffer, the dirty victim must complete its write to the next level
 before the fill can begin. This serializes:
 
-```
+```verilog
 Without WB buffer:
   Miss -> writeback dirty victim (L2 write latency = 20 cycles)
         -> fill new line (L2 read latency = 20 cycles)
@@ -514,37 +487,21 @@ $D$ lines, where $D$ is the **prefetch degree** (typically 1--4).
 
 #### Stream Prefetcher Hardware Implementation
 
-```
-Stream Detection Table (SDT): 16-32 entries
+**Stream Detection Table (SDT)** — 16–32 entries. Per-entry format:
 
-Per entry:
-  +----------+------------+----------+-------+----------+--------+
-  | Page Tag | Direction  | Head Ptr | Count | Valid    | Train  |
-  | (bits)   | (+1 or -1) | (line#)  |       |          | State  |
-  +----------+------------+----------+-------+----------+--------+
+| Page Tag | Direction | Head Ptr | Count | Valid | Train State |
+|---|---|---|---|---|---|
+| bits | +1 or −1 | line # | — | — | — |
 
 Detection FSM per entry:
-  IDLE:     No activity. Entry free for allocation.
-  TRAIN:    One access recorded (Head Ptr = line). Waiting for confirmation.
-  ACTIVE:   Two+ consecutive sequential accesses confirmed.
-            Begin prefetching ahead.
 
-On cache access to line L at page P:
-  1. Look up P in SDT
-  2. If hit and state == ACTIVE:
-       direction matches? Count++ and prefetch Head + direction * D
-  3. If hit and state == TRAIN:
-       If L == Head + direction: state -> ACTIVE, begin prefetching
-       Else: update Head and direction, stay in TRAIN
-  4. If miss: allocate entry, set Head = L, state = TRAIN
+- **IDLE** — entry free for allocation.
+- **TRAIN** — one access recorded (Head Ptr = line); waiting for confirmation.
+- **ACTIVE** — two or more consecutive sequential accesses confirmed; begin prefetching ahead.
 
-Prefetch generation when ACTIVE:
-  Prefetch_addr = (current_access) + direction * Degree
-  Issue prefetch if:
-    - Not already in cache (check tags)
-    - Not already in MSHR (check outstanding misses)
-    - Prefetch buffer has room
-```
+On a cache access to line L at page P: (1) look up P in the SDT; (2) if hit and ACTIVE with matching direction, `Count++` and prefetch `Head + direction × D`; (3) if hit and TRAIN, promote to ACTIVE when `L == Head + direction`, otherwise update Head/direction and stay in TRAIN; (4) on miss, allocate an entry with `Head = L`, state TRAIN.
+
+Prefetch when ACTIVE: `Prefetch_addr = current_access + direction × Degree`, issued only if the line is not already cached, not already in an MSHR, and the prefetch buffer has room.
 
 ### 5.2 Stride Prefetcher
 
@@ -561,40 +518,17 @@ Intel calls this the "stride prefetcher"; ARM Neoverse uses it in the L1.
 
 #### Stride Prefetcher Hardware (PC-Indexed Stride Table)
 
+```wavedrom
+{"reg":[
+  {"bits":1,"name":"Valid"},
+  {"bits":2,"name":"State"},
+  {"bits":16,"name":"Stride"},
+  {"bits":30,"name":"Last Addr"},
+  {"bits":10,"name":"PC Tag"}
+]}
 ```
-RPT (Reference Prediction Table): 64-256 entries, indexed by PC[11:2]
 
-Per entry:
-  +--------+----------+---------+---------+--------+
-  | PC Tag | Last Addr| Stride  | State   | Valid  |
-  | 10 bits| 30 bits  | 16 bits | 2 bits  | 1 bit  |
-  +--------+----------+---------+---------+--------+
-
-State machine:
-  00 = Initial:     No stride information. First access.
-  01 = Training:    One stride observed. Waiting for confirmation.
-  10 = Steady:      Two+ matching strides. Actively prefetching.
-  11 = No-prediction: Stride changed. Reset to training.
-
-On load/store at PC with address A:
-  1. Index RPT with PC (or PC XOR some address bits for set-associative RPT)
-  2. If tag match and valid:
-     delta = A - Last_Addr
-     if delta == Stride and State == Training:
-       State = Steady
-       Prefetch A + delta     // prefetch 1 ahead
-       Optionally: Prefetch A + 2*delta  // degree = 2
-     elif delta == Stride and State == Steady:
-       Prefetch A + delta
-       Prefetch A + 2*delta   // degree = 2
-     elif delta != Stride:
-       Stride = delta
-       State = Training
-     Last_Addr = A
-  3. If tag miss: allocate, set PC Tag, Last_Addr = A, State = Initial
-
-Storage: 64 entries x (10 + 30 + 16 + 2 + 1) = 3776 bits ≈ 472 bytes
-```
+RPT (Reference Prediction Table): 64–256 entries, indexed by `PC[11:2]`. `State`: `00` initial (first access), `01` training (one stride observed), `10` steady (two+ matching strides — actively prefetching), `11` no-prediction (irregular).
 
 ### 5.3 Delta Correlation Prefetcher
 
@@ -602,7 +536,7 @@ An advanced stride prefetcher that tracks sequences of deltas (stride difference
 rather than single strides. This captures complex repeating access patterns like
 A, A+8, A+16, A+32, A+40, A+48 (deltas: +8, +8, +16, +8, +8).
 
-```
+```verilog
 Delta History Buffer (DHB): circular buffer, 64-256 entries
   Each entry: {delta, PC, address}  // delta = current - previous address
 
@@ -633,7 +567,7 @@ than the data address to index its prediction table. This is critical because th
 data address accessed by different instructions may have different strides (e.g., one
 instruction walks an array forward, another walks it backward).
 
-```
+```verilog
 Worked example:
 
 Load instruction at PC = 0x4008A0:
@@ -662,7 +596,7 @@ The PC-indexed approach correctly handles:
 
 ### 5.3.2 Stride Prefetcher vs Stream Prefetcher — When to Use Each
 
-```
+```verilog
 Stride prefetcher:
   Detects: constant stride (any value: +64, -128, +256, etc.)
   Best for: array traversals, struct field accesses, strided BLAS
@@ -690,37 +624,21 @@ Records sequences of cache miss addresses (or page + offset pairs) in a history 
 When a miss occurs, the table is consulted to predict future misses based on past
 sequences.
 
-```
-Markov prefetch table: maps (miss_address) -> {next_miss_addresses with probabilities}
+**Markov prefetch table** — maps a miss address to likely next miss addresses with probabilities. Structure (direct-mapped or set-associative, 256–1024 entries):
 
-Table structure (direct mapped or set-associative, 256-1024 entries):
-  +-------------------+------------------+------------------+
-  | Miss Address Tag  | Next Addr[0]     | Next Addr[1]     |
-  | (partial)         | + confidence      | + confidence     |
-  +-------------------+------------------+------------------+
+| Miss Address Tag (partial) | Next Addr[0] + confidence | Next Addr[1] + confidence |
+|---|---|---|
 
-Training:
-  Record miss address stream: M0, M1, M2, M3, ...
-  For each pair (Mi, Mi+1):
-    Update table: increment confidence of Mi+1 as successor of Mi
+Training: record the miss stream M0, M1, M2, …; for each pair (Mᵢ, Mᵢ₊₁), increment the confidence of Mᵢ₊₁ as a successor of Mᵢ. Prediction: on a miss at address A, look it up and prefetch the highest-confidence successor(s).
 
-Prediction:
-  On miss at address A:
-    Look up A in table
-    If hit: prefetch highest-confidence successor(s)
-
-Advantage: Captures pointer-chasing patterns (linked list, tree traversal)
-  where the "stride" is the pointer value, not a constant.
-Disadvantage: Large storage; cold-start (needs many repetitions to train);
-  only predicts 1 step ahead (multi-step Markov is expensive).
-```
+Captures pointer-chasing patterns (linked lists, tree traversal) where the effective "stride" is the pointer value rather than a constant. Downsides: large storage, cold-start (needs repetition to train), and it predicts only one step ahead (multi-step Markov is expensive).
 
 ### 5.5 Bandwidth-Aware Prefetch Throttling
 
 Prefetches consume memory bandwidth. If prefetching is too aggressive, it can
 interfere with demand (non-prefetch) requests, increasing demand latency.
 
-```
+```verilog
 Prefetch Throttling Logic:
 
 Track per-cycle:
@@ -891,7 +809,7 @@ a binary tree. Each internal node stores 1 bit. The convention is:
 
 For $N=4$: 3 bits per set.
 
-```
+```verilog
         b0
        /  \
      b1    b2
@@ -993,7 +911,7 @@ cache holds only 4).
 Storage: $\lceil\log_2(N!)\rceil$ bits per set. For 4-way: 5 bits. For 8-way: 16 bits.
 For 16-way: 45 bits. Impractical beyond 8-way due to storage and update logic complexity.
 
-```
+```verilog
 Matrix method: M[i][j] = 1 if way i was accessed more recently than way j.
 On access to way k: set M[k][*] = 1, set M[*][k] = 0.
 Victim: way with all zeros in its row.
@@ -1124,7 +1042,7 @@ All four policies applied to the same access sequence on a 4-way set.
 
 #### LRU (Exact) — 5 bits/set, matrix method
 
-```
+```ascii-graph
 Access:  A  B  C  D  A  B  C  D  E  F  G  H
 MRU→LRU after each access:
   A:     A  _  _  _                        (miss, fill W0)
@@ -1146,7 +1064,7 @@ LRU thrashes once working set exceeds 4: E evicts A, F evicts B, etc.
 
 #### PLRU (Tree-Based) — 3 bits/set
 
-```
+```verilog
 PLRU evictions match LRU for this sequence (confirmed in Section 7.5).
 The tree approximation produces identical results for sequential cyclic patterns
 where the working set equals the associativity.
@@ -1156,7 +1074,7 @@ Hits: 4. Misses: 8. Same as LRU.
 
 #### Random — 0 bits/set
 
-```
+```verilog
 Expected hit rate after warmup is probabilistic.
 For each re-access of {A,B,C,D} after all 4 are loaded:
   P(hit) = 3/4 (3 out of 4 ways have useful data, assuming no prior eviction)
@@ -1174,7 +1092,7 @@ eviction of the next-needed line.
 
 #### SRRIP (2-bit) — 8 bits/set (2 bits x 4 ways)
 
-```
+```ascii-graph
 Insert at RRPV=2. On access, set RRPV=0. On eviction, pick max RRPV; if tie,
 increment all until one reaches 3.
 
@@ -1447,7 +1365,7 @@ variable, a single write can generate 126 messages.
 
 Consider a 4-core system with MESI. Line X is initially in memory only (all caches I).
 
-```
+```ascii-graph
 Step 1: Core 0 reads X (miss)
   BusRd issued. No other cache responds.
   Core 0: I --> E
@@ -1738,7 +1656,7 @@ the scalar core). The critical performance path is:
 
 1. Software loads a tile (16x16 FP16 = 512 bytes) from memory into AMX
    registers via AMX load instructions.
-2. AMX performs a matrix multiply-accumulate: `Z += X * Y^T`.
+2. AMX performs a matrix multiply-accumulate: $Z \mathrel{+}= X\,Y^{T}$.
 3. Software stores the result tile back to memory.
 
 Because each tile is 512 bytes (8 cache lines), the AMX unit's sustained

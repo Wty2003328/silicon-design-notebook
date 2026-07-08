@@ -98,19 +98,22 @@ In a fully-associative TLB, the incoming VPN is broadcast to every entry simulta
 Each entry contains a comparator, and the matching entry (if any) drives the output PPN
 onto a shared result bus.
 
-```
-                    VPN (27 bits)
-                        |
-          +-------------+-------------+--------- ... ----+
-          |             |             |                  |
-       [Entry 0]     [Entry 1]     [Entry 2]         [Entry N]
-        VPN==?        VPN==?        VPN==?            VPN==?
-          |             |             |                  |
-        hit_0        hit_1         hit_2             hit_N
-          |             |             |                  |
-          +------ Priority Encoder (one-hot select) ----+
-                              |
-                         PPN out (44 bits)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    VPN["VPN (27 bits)"] --> E0["Entry 0<br/>VPN == ?"]
+    VPN --> E1["Entry 1<br/>VPN == ?"]
+    VPN --> E2["Entry 2<br/>VPN == ?"]
+    VPN --> EN["Entry N<br/>VPN == ?"]
+    E0 --> PE["Priority encoder<br/>(one-hot select)"]
+    E1 --> PE
+    E2 --> PE
+    EN --> PE
+    PE --> PPN["PPN out (44 bits)"]
+    classDef v fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef e fill:#fde68a,stroke:#b45309,color:#000
+    class E0,E1,E2,EN e
+    class VPN,PE,PPN v
 ```
 
 - **Pros:** Zero conflict misses; optimal hit rate for a given capacity.
@@ -141,6 +144,7 @@ Modern high-performance cores use a two-level TLB hierarchy that mirrors the cac
 hierarchy:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     VA["Virtual Address from Core"]
     VA --> ITLB["L1 ITLB<br/>16-64 entries, FA<br/>1-cycle hit"]
@@ -183,13 +187,15 @@ $$
 
 Each Page Table Entry (PTE) is 64 bits (8 bytes):
 
+```wavedrom
+{"reg":[
+  {"bits":1,"name":"V"},{"bits":1,"name":"R"},{"bits":1,"name":"W"},{"bits":1,"name":"X"},
+  {"bits":1,"name":"U"},{"bits":1,"name":"G"},{"bits":1,"name":"A"},{"bits":1,"name":"D"},
+  {"bits":2,"name":"RSW"},{"bits":44,"name":"PPN"},{"bits":10,"name":"Reserved"}
+]}
 ```
-  63     54 53  10 9 8 7 6 5 4 3 2 1 0
-  +-------+------+--+-+-+-+-+-+-+-+---+
-  | PPN[2:0]     |RSV|D|A|G|U|X|W|R|V |
-  | (44 bits)     |   | | | | | | | | |
-  +-------+------+--+-+-+-+-+-+-+-+---+
-```
+
+RISC-V Sv39 PTE (64-bit): `V` valid, `R/W/X` permissions, `U` user, `G` global, `A` accessed, `D` dirty, `RSW` reserved-for-software, `PPN` physical page number.
 
 - **V (bit 0):** Valid. If 0, the PTE is invalid; any access causes a page fault.
 - **R, W, X (bits 1--3):** Permissions. R=0, W=0, X=0 at a non-leaf means "pointer to
@@ -202,19 +208,22 @@ Each Page Table Entry (PTE) is 64 bits (8 bytes):
 
 The page-table base is stored in the `satp` CSR:
 
+```wavedrom
+{"reg":[
+  {"bits":44,"name":"PPN (root table)"},
+  {"bits":16,"name":"ASID"},
+  {"bits":4,"name":"Mode"}
+]}
 ```
-  63       60 59        44 43                    0
-  +----------+-----------+-----------------------+
-  | Mode (4) | ASID (16) | PPN of root table(44) |
-  +----------+-----------+-----------------------+
-  Mode = 8 for Sv39
-```
+
+RISC-V `satp` register: `Mode` (4 bits, = 8 for Sv39) selects the paging scheme, `ASID` (16 bits) tags the address space, `PPN` (44 bits) points at the root page table.
 
 ### 3.2 Walk State Machine
 
 The hardware page walker is a small FSM that performs the following sequence:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     START["TLB Miss Detected<br/>Lock VPN, ASID, access type"]
     START --> L1["Level 1: Read PTE<br/>addr = satp.PPN + VPN[2] * 8<br/>from memory/cache"]
@@ -295,62 +304,45 @@ mapped.
 
 #### Sv39: 3-Level Radix Tree
 
+```wavedrom
+{"reg":[
+  {"bits":12,"name":"offset"},
+  {"bits":9,"name":"VPN[0]"},
+  {"bits":9,"name":"VPN[1]"},
+  {"bits":9,"name":"VPN[2]"}
+]}
 ```
-Virtual Address (39 bits):
-  [38:30] VPN[2] (9 bits) ── Level 1 index (root table)
-  [29:21] VPN[1] (9 bits) ── Level 2 index
-  [20:12] VPN[0] (9 bits) ── Level 3 index (leaf table)
-  [11:0]  offset  (12 bits)
 
-Each page table page: 4 KB = 512 entries x 8 bytes/entry
-Each entry (PTE): 8 bytes, maps one 4 KB page (at leaf level)
-
-Memory cost per level:
-  Level 1 (root): always present = 1 page = 4 KB
-  Level 2: one page per 512 mapped regions of 1 GB each
-  Level 3: one page per 512 mapped 4 KB pages = 4 KB per 2 MB of mapped memory
-
-For a process using 100 MB of virtual memory (contiguous):
-  Level 1: 1 page = 4 KB
-  Level 2: 1 page = 4 KB (only one 1 GB region is used)
-  Level 3: 100 MB / (512 x 4 KB) = 100 MB / 2 MB = 50 pages = 200 KB
-  Total page table: 4 + 4 + 200 = 208 KB
-
-  Flat table would need: 100 MB / 4 KB x 8 B = 200 MB
-  Savings: 208 KB vs 200 MB = ~1000x reduction!
-```
+Sv39 virtual address (39 bits): `VPN[2]` is the level-1 (root) index, `VPN[1]` level-2, `VPN[0]` level-3 (leaf), and the low 12 bits are the page offset. Each page-table page is 4 KB = 512 × 8-byte PTEs.
 
 #### Sv48: 4-Level Radix Tree (RISC-V)
 
+```wavedrom
+{"reg":[
+  {"bits":12,"name":"offset"},
+  {"bits":9,"name":"VPN[0]"},
+  {"bits":9,"name":"VPN[1]"},
+  {"bits":9,"name":"VPN[2]"},
+  {"bits":9,"name":"VPN[3]"}
+]}
 ```
-Virtual Address (48 bits):
-  [47:39] VPN[3] (9 bits) ── Level 1 (root)
-  [38:30] VPN[2] (9 bits) ── Level 2
-  [29:21] VPN[1] (9 bits) ── Level 3
-  [20:12] VPN[0] (9 bits) ── Level 4 (leaf)
-  [11:0]  offset  (12 bits)
 
-Adds one more level to support 256 TB virtual address space.
-Page walk depth: 4 memory accesses (3 non-leaf + 1 leaf) for 4 KB pages.
-2 MB superpages found at Level 3 (saves 1 memory access).
-1 GB superpages found at Level 2 (saves 2 memory accesses).
-```
+Sv48 virtual address (48 bits) adds one level (256 TB space). Page-walk depth: 4 accesses (3 non-leaf + 1 leaf) for 4 KB pages; 2 MB superpages at level 3 (saves 1 access), 1 GB superpages at level 2 (saves 2).
 
 #### Sv57: 5-Level Radix Tree (RISC-V)
 
+```wavedrom
+{"reg":[
+  {"bits":12,"name":"offset"},
+  {"bits":9,"name":"VPN[0]"},
+  {"bits":9,"name":"VPN[1]"},
+  {"bits":9,"name":"VPN[2]"},
+  {"bits":9,"name":"VPN[3]"},
+  {"bits":9,"name":"VPN[4]"}
+]}
 ```
-Virtual Address (57 bits):
-  [56:48] VPN[4] (9 bits) ── Level 1 (root)
-  [47:39] VPN[3] (9 bits) ── Level 2
-  [38:30] VPN[2] (9 bits) ── Level 3
-  [29:21] VPN[1] (9 bits) ── Level 4
-  [20:12] VPN[0] (9 bits) ── Level 5 (leaf)
-  [11:0]  offset  (12 bits)
 
-Supports 128 PB virtual address space.
-Page walk depth: 5 memory accesses for 4 KB pages.
-Used for extremely sparse address spaces (e.g., memory-mapped files, sandboxes).
-```
+Sv57 virtual address (57 bits) supports 128 PB. Page-walk depth: 5 accesses for 4 KB pages. Used for extremely sparse address spaces (memory-mapped files, sandboxes).
 
 #### Memory Cost Comparison Across VA Widths
 
@@ -379,7 +371,7 @@ flushed, and control transfers to a software exception handler. The handler manu
 walks the page table in software, constructs a TLB entry, and writes it using a
 dedicated instruction (e.g., `TLBWR` on MIPS).
 
-```
+```verilog
   TLB miss
     -> exception (pipeline flush, ~5 cycle overhead to enter handler)
     -> software handler reads page table (10-50 cycles depending on cache state)
@@ -405,7 +397,7 @@ A hardware page walker is a dedicated FSM inside the MMU. On a TLB miss, the wal
 automatically reads page-table entries from the cache/memory hierarchy, traverses the
 radix tree, and fills the TLB without software intervention.
 
-```
+```verilog
   TLB miss
     -> hardware walker FSM activated (0 cycle software overhead)
     -> walker issues cache/memory reads for PTEs (20-40 cycles typical)
@@ -465,7 +457,7 @@ $$
 The TLB translation and cache index lookup proceed in parallel. The physical tag arrives
 from the TLB just in time to compare against the tags read from the cache way.
 
-```
+```ascii-graph
   Virtual Address
        |
        +--------+----------+
@@ -607,7 +599,7 @@ $$
 \text{Sets} = \frac{32{,}768}{4 \times 64} = 128 \implies 7 \text{ index bits}
 $$
 
-```
+```verilog
 Address decomposition:
   Block offset = log2(64) = 6 bits  -> bits [5:0]
   Index        = log2(128) = 7 bits -> bits [11:5]
@@ -644,7 +636,7 @@ $$
 \text{Sets} = \frac{65{,}536}{2 \times 64} = 512 \implies 9 \text{ index bits}
 $$
 
-```
+```verilog
 Index occupies bits [14:6]. Bits 14, 13, 12 are ABOVE the page offset boundary (bit 11).
 
 Precise check: highest index bit = 6 + 9 - 1 = 14
@@ -746,19 +738,17 @@ that the bits of the physical frame number that overlap the cache index are iden
 the corresponding virtual bits. Effectively, the OS guarantees that all virtual aliases
 map to the same cache set.
 
-```
-Number of colors = 2^(index_bits - page_offset_bits_per_index)
+- **Number of colors** = `2^(index_bits - page_offset_bits_per_index)`
 For Example 2 (2-way 64KB): colors = 2^(14-12) = 4 colors
 Physical pages are partitioned into 4 color classes:
-  Color 0: PFN[13:12] = 00
-  Color 1: PFN[13:12] = 01
-  Color 2: PFN[13:12] = 10
-  Color 3: PFN[13:12] = 11
+Color 0: PFN[13:12] = 00
+Color 1: PFN[13:12] = 01
+Color 2: PFN[13:12] = 10
+Color 3: PFN[13:12] = 11
 
 The OS allocates a physical page whose color matches the virtual page's color bits.
 This wastes some physical pages (can't use all frames for every allocation) but
 guarantees VIPT correctness.
-```
 
 ---
 
@@ -787,7 +777,7 @@ invalidated -- a process called **TLB shootdown**.
 
 The standard mechanism used in Linux and most OS kernels:
 
-```
+```ascii-graph
 Step-by-step shootdown on a 4-core system:
 
 Initiator (Core 0)                           Targets (Cores 1, 2, 3)
@@ -827,24 +817,17 @@ Initiator (Core 0)                           Targets (Cores 1, 2, 3)
 
 **Timing breakdown (8-core system):**
 
-```
-Phase                           Cycles     Notes
-────────────────────────────── ───────── ───────────────────────
-IPI send latency               50-200     Depends on interconnect
-Interrupt entry overhead       20-50      Pipeline flush, save context
-TLB flush (full, 64 entries)   10-50      SFENCE.VMA execution
-Interrupt exit overhead        10-30      Restore context
-ACK send                       20-50      Atomic write to shared memory
-Initiator spin wait            varies     Until all N-1 cores respond
-────────────────────────────── ─────────
-Total per shootdown            200-1000   On an 8-core system
+| Phase | Cycles | Notes |
+|---|---|---|
+| IPI send latency | 50–200 | depends on interconnect |
+| Interrupt entry overhead | 20–50 | pipeline flush, save context |
+| TLB flush (full, 64 entries) | 10–50 | `SFENCE.VMA` execution |
+| Interrupt exit overhead | 10–30 | restore context |
+| ACK send | 20–50 | atomic write to shared memory |
+| Initiator spin-wait | varies | until all N−1 cores respond |
+| **Total per shootdown** | **200–1000** | on an 8-core system |
 
-On a 64-core system:
-  IPI fanout: 63 targets
-  Synchronization: all 63 must respond before initiator resumes
-  Total: 2,000-10,000+ cycles
-  During this time, ALL cores are stalled in the shootdown handler
-```
+On a 64-core system the IPI fans out to 63 targets, all of which must respond before the initiator resumes — total 2,000–10,000+ cycles, during which every core is stalled in the shootdown handler.
 
 **Scalability problem:** TLB shootdown cost scales linearly (or worse) with core count.
 On large systems (64-128 cores), shootdowns become a major performance bottleneck for
@@ -852,7 +835,7 @@ workloads with frequent mmap/munmap (databases, JVMs with GC, fork-heavy workloa
 
 #### TLB Shootdown Scalability — Quantitative Analysis
 
-```
+```verilog
 Shootdown cost model:
   T_shootdown(N_cores) = T_IPI_send + (N-1) * max(T_flush_per_core) + T_sync
 
@@ -883,7 +866,7 @@ This is why large-scale systems need alternatives to broadcast IPI shootdowns.
 
 #### Alternative Shootdown Mechanisms
 
-```
+```text
 1. Directed shootdown (TLB invalidation instruction with target core list):
    Instead of broadcasting to all N-1 cores, the OS sends invalidate only to
    cores that might have the stale mapping (tracked by a per-page "likely cached" bit).
@@ -914,7 +897,7 @@ This is why large-scale systems need alternatives to broadcast IPI shootdowns.
 
 #### Lazy TLB Switching for Kernel Threads — Detail
 
-```
+```text
 When switching from User Process A to a Kernel Thread:
   1. The kernel thread has no userspace mappings (it uses the kernel address space).
   2. Instead of flushing User A's TLB entries, the OS leaves them in place.
@@ -939,17 +922,15 @@ Instead of flushing the entire TLB immediately, a lazy approach defers the flush
 
 **ASID-based avoidance (primary optimization):**
 
-```
-Without ASID:
-  Every context switch: full TLB flush (10-50 cycles) + refill (hundreds of cycles)
-  Cost for 1000 switches/second: ~50,000-50,000,000 cycles/second
+**Without ASID:**
+   - Every context switch: full TLB flush (10-50 cycles) + refill (hundreds of cycles)
+   - Cost for 1000 switches/second: ~50,000-50,000,000 cycles/second
 
-With ASID:
-  Context switch: update satp.ASID to new process's ASID (0 cycles flush)
-  TLB entries are tagged with ASID; only matching entries are considered
-  No flush needed for context switch at all!
-  Only flush when ASID space exhausted (65,536 switches without recycle)
-```
+**With ASID:**
+   - Context switch: update satp.ASID to new process's ASID (0 cycles flush)
+   - TLB entries are tagged with ASID; only matching entries are considered
+   - No flush needed for context switch at all!
+   - Only flush when ASID space exhausted (65,536 switches without recycle)
 
 **Lazy shootdown for kernel threads:**
 
@@ -961,7 +942,7 @@ switches entirely.
 
 **Generation counter optimization:**
 
-```
+```c
 Shared structure:
   struct tlb_gen {
       uint64_t generation;  // monotonically increasing
@@ -1173,7 +1154,7 @@ address `0x80000000`). A process accesses virtual address `0x0000000080801000`. 
 
 **Step 0: Verify VA validity.**
 
-```
+```verilog
 VA = 0x0000000080801000
 ```
 
@@ -1182,7 +1163,7 @@ VA = `0x80801000` < 2^38, so bit[38] = 0 and bits[63:39] are all 0. **Valid.**
 
 **Step 1: Decompose the virtual address.**
 
-```
+```verilog
 VA = 0x80801000
 
 VPN[2] = VA[38:30] = VA >> 30           = 0x002 = 2
@@ -1195,7 +1176,7 @@ Verification: `(2 << 30) | (4 << 21) | (1 << 12) | 0 = 0x80000000 + 0x800000 + 0
 
 **Step 2: Level 2 (root) walk.**
 
-```
+```verilog
 PTE address = (satp.PPN << 12) + VPN[2] * 8
             = 0x80000000 + 2 * 8
             = 0x80000000 + 0x10
@@ -1208,7 +1189,7 @@ Read PTE `0x08000001` from `0x80000010`:
 
 **Step 3: Level 1 walk.**
 
-```
+```verilog
 PTE address = (L2_PPN << 12) + VPN[1] * 8
             = (0x20000 << 12) + 4 * 8
             = 0x20000000 + 0x20
@@ -1221,7 +1202,7 @@ Read PTE `0x08004001` from `0x20000020`:
 
 **Step 4: Level 0 walk.**
 
-```
+```verilog
 PTE address = (L1_PPN << 12) + VPN[0] * 8
             = (0x20010 << 12) + 1 * 8
             = 0x20010000 + 0x08
@@ -1234,7 +1215,7 @@ Read PTE `0x080080CF` from `0x20010008`:
 
 **Step 5: Compute the physical address.**
 
-```
+```verilog
 PA = (leaf_PPN << 12) | offset
    = (0x20020 << 12) | 0x000
    = 0x20020000
@@ -1428,7 +1409,7 @@ limit. 5-level paging extends the virtual address width to 57 bits (128 PiB).
 
 LA57 adds a fifth level (PML5) above PML4:
 
-```
+```verilog
 57-bit Virtual Address:
   [PML5 (9)] [PML4 (9)] [PDPT (9)] [PD (9)] [PT (9)] [Offset (12)]
   bits 56:48  bits 47:39  bits 38:30  bits 29:21  bits 20:12  bits 11:0
@@ -1574,7 +1555,7 @@ the hypervisor cannot access.
 AMD SME (introduced in EPYC Naples, 2017) uses a hardware memory encryption
 engine between the memory controller and the DRAM:
 
-```
+```verilog
 CPU Core
   |
   MMU (VA -> PA translation)

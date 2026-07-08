@@ -52,27 +52,27 @@ that nuance signals real flow experience.
 
 ### 1.3 UPF in the Design Flow
 
-```
-  RTL Design (Verilog/VHDL)
-      |
-      +---- UPF Power Intent ----+
-      |                          |
-      v                          v
-  Synthesis (DC/Genus)       Power-Aware Simulation
-      |  (inserts ISO, RET,     (VCS/Xcelium with UPF)
-      |   level shifters,       - Verifies power sequences
-      |   power switches)       - Outputs X for powered-off blocks
-      v                         - Catches cross-domain errors
-  Place & Route (ICC2/Innovus)
-      |  (places special cells,
-      |   routes power grid,
-      |   switch insertion)
-      v
-  Power Analysis (PrimeTime PX / Voltus)
-      |  (per-domain power,
-      |   IR drop per domain)
-      v
-  Signoff
+```text
+RTL Design (Verilog/VHDL)
+    |
+    +---- UPF Power Intent ----------------------+
+    |                                            |
+    v                                            v
+Synthesis (DC/Genus)                     Power-Aware Simulation
+    | (inserts ISO, RET,                 (VCS/Xcelium with UPF)
+    |  level shifters,                   - Verifies power sequences
+    |  power switches)                   - Outputs X for powered-off blocks
+    v                                    - Catches cross-domain errors
+Place & Route (ICC2/Innovus)
+    | (places special cells,
+    |  routes power grid,
+    |  switch insertion)
+    v
+Power Analysis (PrimeTime PX / Voltus)
+    | (per-domain power,
+    |  IR drop per domain)
+    v
+Signoff
 ```
 
 ---
@@ -81,7 +81,7 @@ that nuance signals real flow experience.
 
 ### 2.0A Isolation Cell Types -- Complete Reference
 
-```
+```ascii-graph
 When a power domain is powered off, its outputs become undefined (X/float).
 Isolation cells clamp these outputs to safe, known values.
 
@@ -154,7 +154,7 @@ Selection decision tree:
 
 ### 2.0B Level Shifter Types -- Complete Reference
 
-```
+```ascii-graph
 Level shifters convert signals between voltage domains.
 
 Type 1: Step-up level shifter (Low -> High)
@@ -261,7 +261,7 @@ UPF triggers insertion of special cells at domain boundaries and within gated do
 
 ### 3.1 Design Architecture
 
-```
+```ascii-graph
   +================================================================+
   |  PD_TOP (Always-On)                                            |
   |  - Bus fabric, interrupt controller, power management unit     |
@@ -571,21 +571,21 @@ UPF 2.0 introduced **supply set handles** as an abstraction layer between power 
 and physical supply nets. Instead of directly connecting nets to cells, you assign
 abstract "handles" to domains, and the handles resolve to physical nets.
 
-```
-  Power Domain
-      |
-      | has a primary supply set handle (PD.primary)
-      | has optional retention supply set handle (PD.retention)
-      | has optional isolation supply set handle (PD.isolation)
-      |
-      v
-  Supply Set (abstract bundle)
-      |
-      | contains: power function -> maps to a supply net
-      | contains: ground function -> maps to a supply net
-      |
-      v
-  Supply Net (physical net)
+```text
+Power Domain
+    |
+    |-- has a primary supply set handle (PD.primary)
+    |-- has optional retention supply set handle (PD.retention)
+    |-- has optional isolation supply set handle (PD.isolation)
+    |
+    v
+Supply Set (abstract bundle)
+    |
+    |-- contains: power function -> maps to a supply net
+    |-- contains: ground function -> maps to a supply net
+    |
+    v
+Supply Net (physical net)
 ```
 
 ### 4.2 Successive Refinement
@@ -593,7 +593,7 @@ abstract "handles" to domains, and the handles resolve to physical nets.
 UPF supports writing power intent at multiple levels of abstraction and refining it
 at each design stage:
 
-```
+```text
 RTL Level (UPF 1):
   - Define power domains and their elements
   - Specify isolation and retention strategies
@@ -688,7 +688,7 @@ correctly use them during synthesis and P&R:
 
 ### 6.1 Power Switch Cell
 
-```liberty
+```text
 cell(HEADER_SWITCH_1X) {
     switch_cell_type : coarse_grain;
     pg_pin(VDD) {
@@ -713,7 +713,7 @@ cell(HEADER_SWITCH_1X) {
 
 ### 6.2 Isolation Cell
 
-```liberty
+```text
 cell(ISO_AND_1X) {
     is_isolation_cell : true;
     dont_use : false;
@@ -745,7 +745,7 @@ cell(ISO_AND_1X) {
 
 ### 6.3 Retention Register
 
-```liberty
+```text
 cell(DFFR_RET_1X) {
     retention_cell : "ret_pair";
     dont_use : false;
@@ -780,7 +780,7 @@ cell(DFFR_RET_1X) {
 
 ### 6.4 Level Shifter Cell
 
-```liberty
+```text
 cell(LS_LH_1X) {
     is_level_shifter : true;
     level_shifter_type : LH;
@@ -806,7 +806,7 @@ cell(LS_LH_1X) {
 
 ### 6.5 Always-On Buffer
 
-```liberty
+```text
 cell(AO_BUF_1X) {
     always_on : true;
     /* This cell is powered by the always-on supply even in a gated domain */
@@ -831,7 +831,7 @@ cell(AO_BUF_1X) {
 
 Static checks verify UPF structural correctness WITHOUT simulation:
 
-```
+```verilog
 Checks performed:
   1. Every output of a gated domain has an isolation cell
      - Missing isolation -> outputs float when domain is off -> corruption
@@ -876,7 +876,7 @@ It verifies that:
 5. No functional failures during power transitions
 
 **How it works:**
-```
+```text
 Regular RTL simulation:
   - All signals have defined values (0 or 1) at all times
   - Cannot detect "reading from a powered-off domain" because everything looks functional
@@ -932,7 +932,7 @@ assign result = cpu_data + peri_data;  // Both from gated domains
 ```
 
 **Bug 3: Incorrect restore timing**
-```verilog
+```text
 // Testbench power-up sequence:
 #10 peri_sleep_n = 1;    // Turn on power
 #5  cpu_restore = 1;      // Restore retention -- TOO EARLY!
@@ -1023,97 +1023,97 @@ end_power_model_update
 
 ### Mistake 1: Missing Isolation on ALL Outputs
 
-```
-Problem: Designer isolates data_out but forgets about data_valid, interrupt,
-         error_flag, and other control signals.
+```text
+Problem:     Designer isolates data_out but forgets about data_valid, interrupt,
+             error_flag, and other control signals.
 
 Consequence: When domain powers off, these control signals float to X,
              potentially triggering false interrupts or bus errors.
 
-Fix: Use -applies_to outputs to catch ALL outputs. If some outputs need
-     different clamp values, use multiple set_isolation commands with
-     -elements to target specific signals.
+Fix:         Use -applies_to outputs to catch ALL outputs. If some outputs need
+             different clamp values, use multiple set_isolation commands with
+             -elements to target specific signals.
 ```
 
 ### Mistake 2: Wrong Clamp Value
 
-```
+```text
 Problem: Active-low signal clamped to 0 (asserted) instead of 1 (deasserted).
 
 Example: chip_select_n clamped to 0 -> external memory thinks it's selected
          when CPU is powered off -> bus contention.
 
-Fix: Use -clamp_value 1 for active-low signals, 0 for active-high.
-     Or use OR-type isolation for active-low signals.
+Fix:     Use -clamp_value 1 for active-low signals, 0 for active-high.
+         Or use OR-type isolation for active-low signals.
 ```
 
 ### Mistake 3: Missing Level Shifter on Cross-Voltage Signals
 
-```
-Problem: CPU runs at 0.75V, IO runs at 1.8V. Data bus between them has
-         no level shifter. 0.75V signal doesn't reach the logic-1 threshold
-         of 1.8V logic.
+```verilog
+Problem:     CPU runs at 0.75V, IO runs at 1.8V. Data bus between them has
+             no level shifter. 0.75V signal doesn't reach the logic-1 threshold
+             of 1.8V logic.
 
 Consequence: Functional failure -- the 1.8V receiver sees the 0.75V signal
              as indeterminate or logic-0.
 
-Fix: Ensure set_level_shifter covers ALL cross-voltage signals.
-     Use -rule both to catch signals in both directions.
+Fix:         Ensure set_level_shifter covers ALL cross-voltage signals.
+             Use -rule both to catch signals in both directions.
 ```
 
 ### Mistake 4: Retention Restore Before Power Stable
 
-```
-Problem: Power-up sequence asserts RESTORE before VDD_CPU has fully ramped up.
-         Shadow latch tries to transfer data at low voltage -> corrupted bits.
+```text
+Problem:     Power-up sequence asserts RESTORE before VDD_CPU has fully ramped up.
+             Shadow latch tries to transfer data at low voltage -> corrupted bits.
 
 Consequence: CPU wakes up with wrong register values -> silent data corruption
              (worst kind of bug -- may not crash immediately but produce wrong results).
 
-Fix: Insert sufficient delay or use a voltage detector to ensure supply is
-     within 90-95% of nominal before asserting RESTORE.
+Fix:         Insert sufficient delay or use a voltage detector to ensure supply is
+             within 90-95% of nominal before asserting RESTORE.
 ```
 
 ### Mistake 5: Isolation Asserted Too Late
 
-```
-Problem: Power switch turns off BEFORE isolation is asserted.
-         During the brief window: outputs are undefined AND not isolated.
+```text
+Problem:     Power switch turns off BEFORE isolation is asserted.
+             During the brief window: outputs are undefined AND not isolated.
 
 Consequence: Glitches/X values propagate to always-on domain for a few ns.
              Can cause spurious writes, false interrupts, bus errors.
 
-Fix: Assert isolation FIRST, wait for it to take effect (1-2 clock cycles),
-     THEN turn off power switch. UPF specifies the intent; the control
-     sequencing must be designed correctly in the power management FSM.
+Fix:         Assert isolation FIRST, wait for it to take effect (1-2 clock cycles),
+             THEN turn off power switch. UPF specifies the intent; the control
+             sequencing must be designed correctly in the power management FSM.
 ```
 
 ### Mistake 6: Forgetting Always-On Buffers
 
-```
-Problem: Clock signal enters a gated domain, gets buffered by standard cells
-         (which are powered by the gated supply), then reaches retention FFs.
+```text
+Problem:     Clock signal enters a gated domain, gets buffered by standard cells
+             (which are powered by the gated supply), then reaches retention FFs.
 
 Consequence: When domain is off, clock buffer is dead, clock cannot reach
              retention FFs for save/restore operations.
 
-Fix: Use always-on buffers for clock, save, restore, and isolation signals
-     within a gated domain. UPF set_repeater or manual instantiation.
+Fix:         Use always-on buffers for clock, save, restore, and isolation signals
+             within a gated domain. UPF set_repeater or manual instantiation.
 ```
 
 ### Mistake 7: Feedback Paths Across Domains
 
-```
-Problem: Signal goes from PD_A to PD_B and back to PD_A. When PD_B is off:
-         - PD_A -> PD_B: isolated (correctly clamped)
-         - PD_B -> PD_A: isolated (correctly clamped)
-         - But the clamped feedback value may not be what PD_A expects
+```verilog
+Problem:     Signal goes from PD_A to PD_B and back to PD_A. When PD_B is off:
+             - PD_A -> PD_B: isolated (correctly clamped)
+             - PD_B -> PD_A: isolated (correctly clamped)
+             - But the clamped feedback value may not be what PD_A expects
 
 Consequence: PD_A's logic receives a static clamped value instead of the
              dynamic feedback -> functional hang or incorrect behavior.
 
-Fix: Carefully analyze all cross-domain feedback paths. May need latch
-     isolation (to hold last valid value) instead of clamp isolation.
+Fix:         Carefully analyze all cross-domain feedback paths. May need latch
+             isolation (to hold last valid value) instead of clamp isolation.
 ```
 
 ---
@@ -1199,7 +1199,7 @@ end
 
 ### 11.2 Power-Aware Assertions
 
-```systemverilog
+```verilog
 // Assert that no X values reach always-on domain during power transitions
 property no_x_on_aon_bus;
     @(posedge clk) disable iff (!reset_n)

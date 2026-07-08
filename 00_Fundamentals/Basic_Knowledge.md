@@ -9,7 +9,7 @@
 
 The Shannon expansion theorem (also called Shannon decomposition or Boole's expansion theorem) states that any Boolean function can be decomposed with respect to any variable:
 
-```
+```text
 F(x1, x2, ..., xn) = x1' * F(0, x2, ..., xn) + x1 * F(1, x2, ..., xn)
 ```
 
@@ -21,7 +21,7 @@ Since the expression equals F for both possible values of x1, it equals F for al
 **This IS a 2:1 MUX.** The select line is x1, the two data inputs are the cofactors F|x1=0 and F|x1=1. This proves that any Boolean function of N variables can be implemented using a single (N-1)-variable-input MUX (with the most significant variable as select).
 
 **Recursive application:** Apply Shannon expansion repeatedly:
-```
+```text
 F(A,B,C) = A' * F(0,B,C) + A * F(1,B,C)
 
 F(0,B,C) = B' * F(0,0,C) + B * F(0,1,C)
@@ -36,7 +36,7 @@ This leads to a tree of 2:1 MUXes — an N-input function needs (2^N - 1) 2:1 MU
 **Optimization trick:** If the last variable is used as a data input (not as a select), an N-input function can be implemented with a single 2^(N-1):1 MUX. The data inputs are constants (0, 1) or the last variable and its complement.
 
 **Worked example — implement F(A,B,C) = sum(1,2,6,7) using a 4:1 MUX:**
-```
+```ascii-graph
 Use A,B as select lines. Evaluate cofactors:
   AB=00: F(0,0,C) = F(0,0,0)=0, F(0,0,1)=1 → C
   AB=01: F(0,1,C) = F(0,1,0)=1, F(0,1,1)=0 → C'
@@ -50,7 +50,7 @@ Use A,B as select lines. Evaluate cofactors:
 ### MUX as Universal Gate
 
 A 2:1 MUX can implement ANY logic gate:
-```
+```ascii-graph
 NOT:  Y = MUX(A, sel=A, d0=1, d1=0) → A ? 0 : 1 = A'
 AND:  Y = MUX(sel=A, d0=0, d1=B)   → A ? B : 0 = A*B
 OR:   Y = MUX(sel=A, d0=B, d1=1)   → A ? 1 : B = A+B
@@ -64,19 +64,17 @@ This makes the 2:1 MUX a **universal logic element** — any combinational circu
 
 **Why a naive MUX glitches on clocks:**
 
+```wavedrom
+{ "signal": [
+  { "name": "clk_a", "wave": "01010101" },
+  { "name": "clk_b", "wave": "10101010" },
+  { "name": "sel",   "wave": "0...1..." },
+  {},
+  { "name": "naive out (sel ? clk_b : clk_a)", "wave": "0101x010" }
+], "head": { "text": "Naive clock MUX: sel flips while clk_a HIGH and clk_b LOW -> runt pulse (x)" } }
 ```
-     clk_a:  _____|^^^^^|_____|^^^^^|_____|^^^^^|_____
-     clk_b:  __|^^^^^|_____|^^^^^|_____|^^^^^|_____
-     sel:    ________________|^^^^^^^^^^^^^^^^^^^^^^^^^
-                             ↑
-                  sel transitions here, clk_a=HIGH, clk_b=LOW
 
-     Naive MUX output (sel ? clk_b : clk_a):
-             _____|^^^^^|____|  |_____|^^^^^|_____
-                              ↑
-                    RUNT PULSE (partial high from clk_a,
-                    then abrupt drop when sel switches to clk_b which is LOW)
-```
+When `sel` switches while `clk_a` is HIGH and `clk_b` is LOW, the combinational MUX produces a partial (runt) pulse and the output drops abruptly. A glitch-free MUX gates each clock with a synchronized enable to avoid this.
 
 The runt pulse is shorter than a valid clock period. Downstream flip-flops may:
 1. Miss the edge entirely (setup violation)
@@ -85,36 +83,28 @@ The runt pulse is shorter than a valid clock period. Downstream flip-flops may:
 
 **The AND-OR-AND structure with feedback (industry standard):**
 
-```
-                     sel ──────────────┐
-                                       │
-           ┌─ [NOT] ─── sel_n ─┐      │
-           │                    │      │
-    ┌──────┼────────────────────┼──────┼──────────┐
-    │      │                    │      │          │
-    │  ┌───▼───┐   ┌───────┐   │  ┌───▼───┐  ┌──▼────┐
-    │  │2FF    │   │       │   │  │2FF    │  │       │
-    │  │sync   ├──►│ AND ──┼───┼──│sync   ├─►│ AND   │
-    │  │@clk_a │   │       │   │  │@clk_b │  │       │
-    │  └───────┘   └───┬───┘   │  └───────┘  └───┬───┘
-    │       ↑          │       │       ↑          │
-    │       │          │       │       │          │
-    │  en_a │    clk_a─┘       │  en_b │    clk_b─┘
-    │       │                  │       │
-    │       │    gated_a       │       │    gated_b
-    │       │       │          │       │       │
-    │       │       └────┐     │       │       │
-    │       │            ▼     │       │       │
-    │       │         ┌─OR─┐   │       │       │
-    │       │         │    │◄──┼───────┼───────┘
-    │       │         └──┬─┘   │       │
-    │       │            │     │       │
-    │       │         clk_out  │       │
-    │       │                  │       │
-    │  ┌────┴─ feedback ───────┘       │
-    │  │  en_b_sync feeds back         │
-    │  │  to en_a logic: AND with ~en_b│
-    │  └───────────────────────────────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    sel["sel"] --> na["AND<br/>sel &amp; ~en_b_sync"]
+    seln["sel_n = ~sel"] --> nb["AND<br/>sel_n &amp; ~en_a_sync"]
+    na --> ffa["2-FF sync<br/>@ clk_a"]
+    nb --> ffb["2-FF sync<br/>@ clk_b"]
+    ffa -->|en_a| ga["AND"]
+    clka["clk_a"] --> ga
+    ffb -->|en_b| gb["AND"]
+    clkb["clk_b"] --> gb
+    ga -->|gated_a| orr["OR"]
+    gb -->|gated_b| orr
+    orr --> out["clk_out"]
+    ffb -.->|"en_b_sync (break-before-make)"| na
+    ffa -.->|"en_a_sync (break-before-make)"| nb
+    classDef logic fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef sync fill:#fde68a,stroke:#b45309,color:#000
+    classDef clk fill:#dcfce7,stroke:#15803d,color:#000
+    class na,nb,ga,gb,orr logic
+    class ffa,ffb sync
+    class clka,clkb,out clk
 ```
 
 **Critical feedback path:** Each synchronizer's input is ANDed with the negation of the OTHER path's synchronized enable. This guarantees:
@@ -189,7 +179,7 @@ In floating-point normalization, after mantissa subtraction you need to find the
 The idea: divide the N-bit input into pairs, then combine results hierarchically.
 
 For each 2-bit group, encode:
-```
+```text
 Input   | Leading Zeros | Valid (has a 1)
   00    |      2        |       0
   01    |      1        |       1
@@ -198,7 +188,7 @@ Input   | Leading Zeros | Valid (has a 1)
 ```
 
 For combining two groups (Left, Right) each with count cL, cR and valid vL, vR:
-```
+```ascii-graph
 if (vL)       → count = cL,           valid = 1
 else if (vR)  → count = width_L + cR, valid = 1
 else          → count = total_width,   valid = 0
@@ -206,11 +196,9 @@ else          → count = total_width,   valid = 0
 
 **8-bit LZD tree structure:**
 
-```
-Level 0: 4 groups of 2 bits → 4 × (1-bit count, 1-bit valid)
-Level 1: 2 groups of 4 bits → 2 × (2-bit count, 1-bit valid)
-Level 2: 1 group of 8 bits  → 1 × (3-bit count, 1-bit valid)
-```
+1. **4 groups of 2 bits → 4 ×** (1-bit count, 1-bit valid)
+2. **2 groups of 4 bits → 2 ×** (2-bit count, 1-bit valid)
+3. **1 group of 8 bits  → 1 ×** (3-bit count, 1-bit valid)
 
 Total delay: O(log2(N)) — 3 levels for 8-bit, 5 levels for 32-bit.
 
@@ -266,7 +254,7 @@ A naive 64-bit comparator cascades bit comparisons MSB to LSB — O(N) delay. A 
 
 **Approach:** Divide into 8-bit blocks, compare each block in parallel, then combine with priority.
 
-```
+```ascii-graph
 64-bit A vs B:
   Block 7: A[63:56] vs B[63:56] → (gt7, eq7, lt7)
   Block 6: A[55:48] vs B[55:48] → (gt6, eq6, lt6)
@@ -280,7 +268,7 @@ Combine (MSB-priority tree):
 ```
 
 Each combine operation:
-```
+```text
 gt_combined = gt_left | (eq_left & gt_right)
 eq_combined = eq_left & eq_right
 lt_combined = lt_left | (eq_left & lt_right)
@@ -298,7 +286,7 @@ In practice, synthesis tools build optimal comparator trees automatically from `
 
 A D-latch can be built from a transmission gate and an inverter with feedback:
 
-```
+```ascii-graph
           CLK    CLK_bar
            |       |
     D ──►[TG]──►─┬──►[INV1]──► Q
@@ -319,7 +307,7 @@ The transmission gate passes both 0 and 1 cleanly (NMOS pulls low well, PMOS pul
 
 Two D-latches in series with complementary clocks:
 
-```
+```ascii-graph
           CLK_bar  CLK        CLK    CLK_bar
            |       |           |       |
     D ──►[TG1]──►[INV]──►──[TG2]──►[INV]──► Q
@@ -353,7 +341,7 @@ When CLK=1: Master is opaque (holding sampled D), Slave is transparent (outputti
 ### Time Borrowing with Latches
 
 In a latch-based pipeline:
-```
+```ascii-graph
     Latch1 (CLK) → Combinational → Latch2 (CLK_bar) → Combinational → Latch3 (CLK)
      open when      Logic Stage 1   open when           Logic Stage 2   open when
      CLK=1                          CLK=0                               CLK=1
@@ -364,7 +352,7 @@ If Stage 1 logic finishes late (takes more than half a clock period), Latch2 is 
 **Maximum borrowing:** One full half-cycle (minus setup time of the next latch).
 
 **STA complication:** The timing constraint becomes:
-```
+```text
 Tcq_latch1 + Tcomb1 + Tcomb2 + Tsu_latch3 <= 2 * Thalf_cycle
 ```
 Instead of the simpler per-stage constraint of flip-flop design. This makes timing closure harder but allows higher clock rates for unbalanced pipelines.
@@ -385,20 +373,20 @@ When setup/hold is violated, the internal node lands near VDD/2. The noise in th
 ### Derivation of Resolution Time Distribution
 
 The internal node voltage V(t) near the metastable point obeys (linearized):
-```
+```text
 dV/dt = (V - Vm) / tau
 ```
 where Vm is the metastable voltage and tau is the **metastability time constant** determined by the gain-bandwidth product of the cross-coupled inverter pair.
 
 **Solution:**
-```
+```text
 V(t) - Vm = (V(0) - Vm) * exp(t / tau)
 ```
 
 The node voltage moves exponentially away from the metastable point. Resolution occurs when |V(t) - Vm| exceeds a threshold Vth (enough for the downstream logic to interpret as a valid 0 or 1).
 
 **Probability of NOT resolving within time Tr:**
-```
+```text
 P(not resolved in Tr) = T0 * fdata * exp(-Tr / tau)
 ```
 
@@ -407,24 +395,24 @@ where T0 is the "setup window" — the time interval around the clock edge withi
 ### MTBF Derivation
 
 The probability of a metastability failure per clock cycle is:
-```
+```text
 P_fail = T0 * fdata * exp(-Tr / tau)
 ```
 
 With fclk clock cycles per second, the failure rate (failures per second) is:
-```
+```text
 lambda = fclk * T0 * fdata * exp(-Tr / tau)
 ```
 
 MTBF = 1/lambda:
-```
+```text
 MTBF = exp(Tr / tau) / (T0 * fclk * fdata)
 ```
 
 ### Actual Numbers for 7nm Technology
 
 Typical values for a standard-Vt flip-flop in 7nm FinFET:
-```
+```text
 tau  ≈ 8-12 ps
 T0   ≈ 40-80 ps
 ```
@@ -432,12 +420,12 @@ T0   ≈ 40-80 ps
 **Example calculation:** fclk = 2 GHz, fdata = 500 MHz, 2-FF synchronizer
 
 For a 2-FF synchronizer, the resolution time Tr equals one clock period minus Tc2q minus Tsu:
-```
+```text
 Tr = Tclk - Tc2q - Tsu = 500ps - 35ps - 20ps = 445 ps
 ```
 
 Using tau = 10 ps, T0 = 50 ps:
-```
+```text
 MTBF = exp(445/10) / (50e-12 * 2e9 * 500e6)
      = exp(44.5) / (50e-12 * 1e18)
      = 2.15e19 / 50e6
@@ -446,7 +434,7 @@ MTBF = exp(445/10) / (50e-12 * 2e9 * 500e6)
 ```
 
 **For a 3-FF synchronizer:** Tr doubles (two full periods of resolution time):
-```
+```text
 Tr = 2*Tclk - Tc2q - Tsu = 1000ps - 35ps - 20ps = 945ps
 MTBF = exp(94.5) / (50e6) ≈ 2.6e34 seconds ≈ 8.2e26 years
 ```
@@ -560,12 +548,12 @@ Using `next_state` (not `state`) eliminates the one-cycle latency that Moore mac
 ### Formal Definition
 
 The N-bit reflected Gray code G(i) for integer i is defined as:
-```
+```text
 G(i) = i XOR (i >> 1)
 ```
 
 In terms of individual bits, if B(i) = b_{n-1} b_{n-2} ... b_1 b_0 is the binary representation:
-```
+```text
 g_k = b_k XOR b_{k+1}    for k = 0, 1, ..., n-2
 g_{n-1} = b_{n-1}         (MSB stays the same)
 ```
@@ -579,7 +567,7 @@ g_{n-1} = b_{n-1}         (MSB stays the same)
 Let i and i+1 have binary representations B(i) and B(i+1). When we add 1 to i, the binary representation changes in a specific pattern: the lowest k bits flip (where bit k is the lowest 0-bit of i).
 
 Specifically, if i has trailing bits ...1...10...0 (j trailing ones followed by a zero at position j), then:
-```
+```text
 B(i)   = ...0 1 1 ... 1 (bits j, j-1, ..., 0)
 B(i+1) = ...1 0 0 ... 0 (carry propagates through j ones, flips the zero)
 ```
@@ -589,20 +577,20 @@ B(i+1) = ...1 0 0 ... 0 (carry propagates through j ones, flips the zero)
 The Gray code bit at position k is defined as g_k = b_k XOR b_{k+1}, where b_k are bits of the binary representation. We examine how each Gray code bit changes between i and i+1.
 
 When adding 1 to i, let j be the position of the lowest 0-bit in i. The binary addition flips bits 0 through j:
-```
+```text
 B(i)   = ...b_{j+1} 0 1 1 ... 1  (bit j = 0, bits j-1 through 0 = all 1s)
 B(i+1) = ...b_{j+1} 1 0 0 ... 0  (carry propagates through j ones, flips the zero)
 ```
 
 **Bit j (the flipping zero):** B(i)_j = 0, B(i+1)_j = 1. Bit j+1 is unchanged (b_{j+1}).
-```
+```ascii-graph
 G(i)_j   = 0 XOR b_{j+1}
 G(i+1)_j = 1 XOR b_{j+1}
 → G(i)_j differs from G(i+1)_j  (this bit FLIPS)
 ```
 
 **Bit j-1 (if j > 0):** Both B_{j-1} and B_j change (1→0 and 0→1 respectively).
-```
+```ascii-graph
 G(i)_{j-1}   = 1 XOR 0 = 1
 G(i+1)_{j-1} = 0 XOR 1 = 1
 → Same! (both XOR inputs flip, canceling out)
@@ -653,26 +641,22 @@ assign binary[5] = gray[7] ^ gray[6] ^ gray[5];
 **Example:** `F = AB' + BC`
 
 **Timing diagram showing the glitch:**
-```
-A = 1, C = 1, B transitions from 1 to 0:
-
-B:        ^^^^^\______
-B':       _____/^^^^^^
-
-AB':      _____/^^^^^^  (delayed by inverter propagation)
-BC:       ^^^^^\______  (falls immediately with B)
-
-F = AB'+BC:
-          ^^^^^\_/^^^^  ← GLITCH! BC falls before AB' rises
-                ↑
-           Static-1 hazard (output should stay 1 but dips to 0)
+```wavedrom
+{ "signal": [
+  { "name": "B",                 "wave": "1100" },
+  { "name": "B' = ~B (delayed)", "wave": "0011" },
+  { "name": "A.B'",              "wave": "0011" },
+  { "name": "B.C",               "wave": "1100" },
+  {},
+  { "name": "F = A.B' + B.C",    "wave": "1101" }
+], "head": { "text": "Static-1 hazard (A=1, C=1, B falls): B.C drops before A.B' rises -> F dips to 0" } }
 ```
 
 The glitch duration equals the propagation delay of the inverter generating B'.
 
 ### K-Map Detection Method
 
-```
+```ascii-graph
 F = AB' + BC
 
 K-map for F:
@@ -699,12 +683,12 @@ are in different groups with no overlap → HAZARD when B changes with A=1,C=1.
 The third term BC is the **consensus** of AB and A'C. It's redundant for logic but NOT redundant for timing.
 
 For hazard elimination, we ADD the consensus term:
-```
+```text
 F = AB' + BC + AC   (AC is the consensus term bridging the gap)
 ```
 
 Now when A=1, C=1 and B transitions:
-```
+```text
 AC = 1 (constant, does not depend on B)
 F = AB' + BC + 1 = 1   (no glitch possible)
 ```
@@ -715,15 +699,13 @@ F = AB' + BC + 1 = 1   (no glitch possible)
 
 Occurs in POS (product-of-sums) form when the output should stay 0 but glitches to 1.
 
-```
-F = (A+B')(B+C)    — POS form
+- **F** = `(A+B')(B+C)    — POS form`
 
 When A=0, C=0, B transitions 0→1:
-  (A+B') = (0+1) = 1 → (0+0) = 0  (falls)
-  (B+C)  = (0+0) = 0 → (1+0) = 1  (rises)
+(A+B') = (0+1) = 1 → (0+0) = 0  (falls)
+(B+C)  = (0+0) = 0 → (1+0) = 1  (rises)
 
-  F rises briefly before the first term falls → static-0 hazard
-```
+F rises briefly before the first term falls → static-0 hazard
 
 Fix: add consensus factor `(A+C)`.
 
@@ -748,17 +730,17 @@ Occur only in multi-level circuits. The output transitions multiple times (e.g.,
 **Problem:** Write clock = 200 MHz, Read clock = 150 MHz, Write pattern: 256 words written back-to-back. Read is continuous (no idle cycles). Calculate minimum FIFO depth.
 
 **Step 1:** Time to write the burst:
-```
+```text
 T_burst = 256 / 200 MHz = 1.28 us
 ```
 
 **Step 2:** Words read during the burst period:
-```
+```text
 Words_read = 150 MHz * 1.28 us = 192
 ```
 
 **Step 3:** Maximum FIFO occupancy:
-```
+```text
 Depth_min = 256 - 192 = 64
 ```
 
@@ -778,21 +760,21 @@ Effective write rate over one period: 80 words / 100 cycles = 0.8 words/cycle
 Since write rate (0.8) > read rate (0.5), FIFO accumulates data.
 
 **Step 3:** During the write burst (80 cycles):
-```
+```text
 Words written = 80
 Words read = 80 / 2 = 40
 Net accumulation = 80 - 40 = 40
 ```
 
 **Step 4:** During the idle period (20 cycles):
-```
+```text
 Words written = 0
 Words read = 20 / 2 = 10
 Net drain = 10
 ```
 
 **Step 5:** Net accumulation per period (100 cycles):
-```
+```text
 Net per period = 40 - 10 = 30
 ```
 
@@ -802,7 +784,7 @@ This means the FIFO NEVER FULLY DRAINS — data accumulates indefinitely! The sy
 
 **Correct problem statement would need:** Read rate >= average write rate. Let's fix: reader reads 1 word every cycle but pauses for 5 cycles after every 8 reads.
 
-Effective read rate: 8/(8+5) = 8/13 ≈ 0.615 words/cycle > 0.8? No, 0.615 < 0.8. Still unstable.
+Effective read rate: $8/(8+5) = 8/13 \approx 0.615$ words/cycle > 0.8? No, 0.615 < 0.8. Still unstable.
 
 **Lesson:** Always verify that average read rate >= average write rate BEFORE calculating FIFO depth. If it's not, no finite FIFO will work.
 
@@ -813,12 +795,12 @@ Effective read rate: 8/(8+5) = 8/13 ≈ 0.615 words/cycle > 0.8? No, 0.615 < 0.8
 Average write rate = 80/200 = 0.4 words/cycle. Read rate = 0.5 words/cycle. Viable (read > write on average).
 
 **Write burst phase (80 cycles):**
-```
+```text
 Written = 80, Read = 40, Net accumulation = 40
 ```
 
 **Idle phase (120 cycles):**
-```
+```text
 Written = 0, Read = 60, Net drain = 60
 ```
 
@@ -833,30 +815,30 @@ During idle, FIFO drains: 40 words drained over 40*2 = 80 cycles. FIFO is empty 
 **Problem:** Write clock = 133 MHz, Read clock = 100 MHz. Writer: 8 words per 10 write-clock cycles (8 writes then 2 idles, repeat). Reader: continuous. Find minimum FIFO depth for a burst of 200 words.
 
 **Step 1:** Effective write rate:
-```
+```text
 Write rate = 8/10 * 133 MHz = 106.4 MW/s
 ```
 
 **Step 2:** Read rate:
-```
+```text
 Read rate = 100 MW/s
 ```
 
 Since write rate (106.4) > read rate (100), the FIFO accumulates during the burst.
 
 **Step 3:** Time to write 200 words at effective rate:
-```
+```text
 200 words at 8 per 10 cycles = 200/8 * 10 = 250 write-clock cycles
 T_burst = 250 / 133 MHz = 1.879 us
 ```
 
 **Step 4:** Words read during that time:
-```
+```ascii-graph
 Words_read = 100 MHz * 1.879 us = 187.9 → 187 (floor, conservative)
 ```
 
 **Step 5:** Peak FIFO occupancy:
-```
+```text
 Depth_min = 200 - 187 = 13
 ```
 
@@ -866,7 +848,7 @@ But wait — we need to account for the bursty write pattern. The writes come in
 
 Write period = 10 cycles at 133 MHz = 75.19 ns
 During one write period: 8 writes happen in cycles 0-7, idle in cycles 8-9.
-Words read in 75.19 ns: 100 MHz * 75.19 ns = 7.519 → ~7 words
+Words read in 75.19 ns: $100\,\text{MHz} \times 75.19\,\text{ns} = 7.519$ → ~7 words
 
 Net per write period: 8 - 7 = 1 word accumulation (approximately)
 
@@ -884,13 +866,13 @@ Over 25 write periods: 25 * (8-7) = 25 words worst case.
 
 For a burst of B words, write clock fwr, read clock frd, write duty = Dw (fraction of cycles with actual writes), read duty = Dr (fraction of cycles with actual reads):
 
-```
+```text
 Depth >= B - floor(B * (frd * Dr) / (fwr * Dw))
 ```
 
 **Additional margin for async FIFO:** Add 2-3 words for synchronizer latency (the read pointer is always 2-3 cycles stale in the write domain), then round up to next power of 2.
 
-```
+```text
 Depth_async = next_power_of_2(Depth_min + 3)
 ```
 

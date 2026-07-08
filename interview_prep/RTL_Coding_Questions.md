@@ -16,7 +16,7 @@ Hardware interviews almost always include live RTL. The problem set is remarkabl
 
 **Q:** Detect a rising edge on slow asynchronous-ish input `din` (already synchronized); output a 1-cycle pulse.
 
-```systemverilog
+```verilog
 module edge_det (input logic clk, rst_n, din,
                  output logic rise, fall, toggle);
   logic d_q;
@@ -39,7 +39,7 @@ endmodule
 
 **Div-3, 50% duty (the classic trap):** counter alone gives 33/66%. Insight: **OR two waveforms offset by half an input period** — one flopped on posedge, one on negedge.
 
-```systemverilog
+```verilog
 module div3_50 (input logic clk, rst_n, output logic clk_o);
   logic [1:0] cnt;
   logic       p_q, n_q;
@@ -64,7 +64,7 @@ endmodule
 
 **Insight:** `gray = bin ^ (bin >> 1)`. Keep a binary counter as state; output gray. (Direct gray-state increment is also fine: `bin = gray2bin(gray); bin++; gray = bin2gray(bin)`.)
 
-```systemverilog
+```verilog
 module gray_cnt #(parameter W=4)
   (input logic clk, rst_n, en, output logic [W-1:0] gray);
   logic [W-1:0] bin;
@@ -86,7 +86,7 @@ endmodule
 
 **Insight:** keep a `mask` of "requests at or above the pointer." Grant from masked requests if any, else from unmasked (wrap). Fixed-priority encode both in parallel — no loops in the critical path. The double-`{req,req}` trick:
 
-```systemverilog
+```verilog
 module rr_arb #(parameter N=4)
  (input  logic clk, rst_n,
   input  logic [N-1:0] req,
@@ -109,7 +109,7 @@ endmodule
 
 ## 5. Synchronous FIFO + depth math
 
-```systemverilog
+```verilog
 module sfifo #(parameter W=32, D=16, A=$clog2(D))
  (input  logic clk, rst_n, push, pop,
   input  logic [W-1:0] din,
@@ -143,7 +143,7 @@ Worked: B=120 writes @ 200 MHz back-to-back, reads @ 80 MHz. Burst time = 120/20
 
 **Insight stack:** (1) pointers cross domains → gray-code them; (2) 2-FF synchronize the *gray* pointers; (3) compare synchronized pointer vs local pointer → conservative (pessimistic) full/empty — safe, never wrong-direction; (4) full: synced read-gray equals write-gray with top **two** bits inverted.
 
-```systemverilog
+```verilog
 module afifo #(parameter W=32, A=4)
  (input  logic wclk, wrst_n, push, input  logic [W-1:0] din,  output logic full,
   input  logic rclk, rrst_n, pop,  output logic [W-1:0] dout, output logic empty);
@@ -183,7 +183,7 @@ endmodule
 
 ## 7. Sequence detector FSM (e.g., detect `1011`, overlapping)
 
-```systemverilog
+```verilog
 module seq1011 (input logic clk, rst_n, din, output logic hit);
   typedef enum logic [2:0] {S0,S1,S10,S101} st_t;
   st_t st;
@@ -205,7 +205,7 @@ endmodule
 
 ## 8. Debouncer + 2-FF synchronizer
 
-```systemverilog
+```verilog
 module debounce #(parameter N=16) // ~N clk of stability required
  (input logic clk, rst_n, din_async, output logic q);
   logic s1, s2;                       // 2-FF synchronizer
@@ -234,7 +234,7 @@ Resolution time $t_r$ ≈ one clock period minus setup; adding the second FF add
 
 **Fast→slow pulse (toggle handshake):**
 
-```systemverilog
+```verilog
 // fast domain: convert pulse to level toggle
 always_ff @(posedge fclk) if (pulse_f) tgl <= ~tgl;
 // slow domain: 2FF sync + edge detect
@@ -249,7 +249,7 @@ assign pulse_s = t2 ^ t3;
 
 ## 10. Priority encoder / leading-zero count, parameterized
 
-```systemverilog
+```verilog
 module penc #(parameter W=8)
  (input logic [W-1:0] in, output logic [$clog2(W)-1:0] idx, output logic vld);
   always_comb begin
@@ -266,7 +266,7 @@ endmodule
 
 ## 11. Gearbox / width converter (e.g., 8→32 pack, 32→8 unpack)
 
-```systemverilog
+```verilog
 module pack8to32 (input logic clk, rst_n, in_vld, input logic [7:0] in,
                   output logic out_vld, output logic [31:0] out);
   logic [1:0]  cnt;
@@ -294,7 +294,7 @@ endmodule
 
 **Insight:** when you flop `ready`, upstream may send one more beat after you stall → need a 1-deep side buffer ("skid") to catch it.
 
-```systemverilog
+```verilog
 module skid #(parameter W=32)
  (input  logic clk, rst_n,
   input  logic         s_vld,  output logic s_rdy,  input  logic [W-1:0] s_dat,
@@ -343,7 +343,7 @@ Transition table (derive each entry from `(2·rem + b) mod 3`):
 | S1 (1)      | S2    | S0    |
 | S2 (2)      | S1    | S2    |
 
-```systemverilog
+```verilog
 module div3_detect (input logic clk, rst_n, vld, b, output logic out);
   typedef enum logic [1:0] {S0, S1, S2} state_t;
   state_t st, nxt;
@@ -360,7 +360,7 @@ module div3_detect (input logic clk, rst_n, vld, b, output logic out);
 endmodule
 ```
 
-**Follow-ups:** generalize to divisible-by-N (N states, `rem' = (2·rem+b) mod N`); LSB-first instead needs tracking `2^k mod N` (powers cycle) — harder, usually you reverse to MSB-first. Mealy vs Moore: Moore output (shown) is glitch-free and registered-clean.
+**Follow-ups:** generalize to divisible-by-N (N states, $rem' = (2\cdot rem+b) \bmod N$); LSB-first instead needs tracking `2^k mod N` (powers cycle) — harder, usually you reverse to MSB-first. Mealy vs Moore: Moore output (shown) is glitch-free and registered-clean.
 
 ---
 
@@ -370,7 +370,7 @@ endmodule
 
 **The bug — data misalignment:** `m` emerges from stage-1 one cycle *after* `A,B` were presented, but `C` is wired straight into stage-2 **undelayed**. So in any given cycle stage-2 compares `m = min(A,B)` computed from the inputs of cycle *t−1* against `C` from cycle *t* — two operands from **different** input vectors → wrong `min3`.
 
-```
+```verilog
 cycle:        t          t+1
 stage-1 in:   A,B(t)     A,B(t+1)
 stage-1 out:  --         m=min(A,B(t))      <- m is 1 cycle late
@@ -379,7 +379,7 @@ stage-2 in:               m(from t),  C(t+1)   <- MISMATCH: C should be C(t)
 
 **Fix:** delay `C` by one register stage so it lines up with `m` (balance the two paths to equal latency):
 
-```systemverilog
+```verilog
 // stage 1
 always_ff @(posedge clk) begin
   m_q <= min(A, B);     // 1-cycle latency

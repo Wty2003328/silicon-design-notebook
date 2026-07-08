@@ -54,80 +54,55 @@
 
 ### 2.2 APB State Machine (Complete)
 
-```
-                        ┌────────────────┐
-                        │                │
-                ┌──────>│     IDLE       │<──────────────────────┐
-                │       │  PSEL=0        │                       │
-                │       │  PENABLE=0     │                       │
-                │       └───────┬────────┘                       │
-                │               │                                │
-                │        Transfer requested                      │
-                │               │                                │
-                │       ┌───────v────────┐                       │
-                │       │                │                       │
-                │       │    SETUP       │   1 cycle exactly     │
-                │       │  PSEL=1        │                       │
-                │       │  PENABLE=0     │                       │
-                │       │  PADDR valid   │                       │
-                │       │  PWRITE valid  │                       │
-                │       │  PWDATA valid  │ (if write)            │
-                │       └───────┬────────┘                       │
-                │               │                                │
-                │          Always (1 cycle)                       │
-                │               │                                │
-                │       ┌───────v────────┐                       │
-                │       │                │     PREADY=0          │
-                │       │    ACCESS      │────────────┐          │
-                │       │  PSEL=1        │            │          │
-                │       │  PENABLE=1     │<───────────┘          │
-                │       │                │                       │
-                │       └───────┬────────┘                       │
-                │               │                                │
-                │          PREADY=1                               │
-                │          (transfer complete)                    │
-                │               │                                │
-                │    ┌──────────┴──────────┐                     │
-                │    │                     │                     │
-                │  No more              Another                  │
-                │  transfers            transfer                 │
-                │    │                     │                     │
-                └────┘                     └──> SETUP (back-to-back)
-                                                directly (no IDLE)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE: IDLE — PSEL=0, PENABLE=0
+    SETUP: SETUP — PSEL=1, PENABLE=0, PADDR/PWRITE/PWDATA valid
+    ACCESS: ACCESS — PSEL=1, PENABLE=1
+    IDLE --> SETUP: transfer requested
+    SETUP --> ACCESS: always (1 cycle)
+    ACCESS --> ACCESS: PREADY=0 (wait state)
+    ACCESS --> IDLE: PREADY=1, no more transfers
+    ACCESS --> SETUP: PREADY=1, another transfer (back-to-back, no IDLE)
+    note right of SETUP: exactly 1 cycle
 ```
 
 ### 2.3 APB Waveforms
 
 **Write without wait states:**
 
-```
-Cycle:      1         2         3
-PCLK:    _|‾‾‾|___|‾‾‾|___|‾‾‾|___
-PSEL:    ___|‾‾‾‾‾‾‾‾‾‾‾‾‾|_______
-PENABLE: _________|‾‾‾‾‾‾‾|_______
-PADDR:   ---<  ADDR  >-------------
-PWRITE:  ___|‾‾‾‾‾‾‾‾‾‾‾‾‾|_______
-PWDATA:  ---<  DATA  >-------------
-PREADY:  ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾  (slave always ready, tied high)
-State:      IDLE  SETUP  ACCESS  IDLE
+```wavedrom
+{ "config": { "hscale": 2 },
+  "signal": [
+  { "name": "PCLK",    "wave": "p..." },
+  { "name": "PSEL",    "wave": "0110" },
+  { "name": "PENABLE", "wave": "0010" },
+  { "name": "PADDR",   "wave": "x=.x", "data": ["ADDR"] },
+  { "name": "PWRITE",  "wave": "0110" },
+  { "name": "PWDATA",  "wave": "x=.x", "data": ["DATA"] },
+  { "name": "PREADY",  "wave": "1..." },
+  {},
+  { "name": "State",   "wave": "====", "data": ["IDLE","SETUP","ACCESS","IDLE"] }
+], "head": { "text": "APB write — slave always ready (no wait states)" } }
 ```
 
 **Read with 2 wait states:**
 
-```
-Cycle:      1         2         3         4         5
-PCLK:    _|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___
-PSEL:    ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______
-PENABLE: _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______
-PADDR:   ---<  ADDR  >-----------------------------
-PWRITE:  ___________________________________________  (low = read)
-PRDATA:  ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾<  DATA  >‾‾‾
-PREADY:  _________|___|___|‾‾‾‾‾‾‾|_______
-                   ^   ^   ^
-                   |   |   +-- Slave ready: transfer completes
-                   |   +------ Wait state 2
-                   +---------- Wait state 1
-State:      IDLE SETUP ----ACCESS----- IDLE
+```wavedrom
+{ "config": { "hscale": 2 },
+  "signal": [
+  { "name": "PCLK",    "wave": "p....." },
+  { "name": "PSEL",    "wave": "011110" },
+  { "name": "PENABLE", "wave": "001110" },
+  { "name": "PADDR",   "wave": "x=...x", "data": ["ADDR"] },
+  { "name": "PWRITE",  "wave": "0....." },
+  { "name": "PRDATA",  "wave": "x...=x", "data": ["DATA"] },
+  { "name": "PREADY",  "wave": "000010" },
+  {},
+  { "name": "State",   "wave": "===..=", "data": ["IDLE","SETUP","ACCESS","IDLE"] }
+], "head": { "text": "APB read with 2 wait states (PREADY low until slave ready)" } }
 ```
 
 ### 2.3.1 APB Signal Timing — PSEL/PENABLE/PWRITE/PREADY Relationship
@@ -136,11 +111,10 @@ The APB protocol's timing is defined by four key signals. Understanding their ex
 relationship is critical for both bridge design and interview questions.
 
 **Signal rules (strict, from AMBA spec):**
-
-```
-1. PSEL:   Asserted by the address decoder when a transfer targets this slave.
-           PSEL must be stable before PENABLE rises (setup in SETUP phase).
-           Deasserted only after the transfer completes (PREADY=1 in ACCESS).
+```text
+1. PSEL:    Asserted by the address decoder when a transfer targets this slave.
+            PSEL must be stable before PENABLE rises (setup in SETUP phase).
+            Deasserted only after the transfer completes (PREADY=1 in ACCESS).
 
 2. PENABLE: Always transitions 0->1 exactly one cycle after PSEL is asserted.
             The SETUP->ACCESS transition is unconditional and takes exactly 1 cycle.
@@ -160,30 +134,25 @@ relationship is critical for both bridge design and interview questions.
 
 **Timing diagram — all four signals for a write with 1 wait state:**
 
+```wavedrom
+{ "config": { "hscale": 2 },
+  "signal": [
+  { "name": "PCLK",    "wave": "p...." },
+  { "name": "PSEL",    "wave": "01110" },
+  { "name": "PENABLE", "wave": "00110" },
+  { "name": "PWRITE",  "wave": "01110" },
+  { "name": "PADDR",   "wave": "x=..x", "data": ["ADDR"] },
+  { "name": "PWDATA",  "wave": "x=..x", "data": ["DATA"] },
+  { "name": "PREADY",  "wave": "00010" },
+  {},
+  { "name": "State",   "wave": "===.=", "data": ["IDLE","SETUP","ACCESS","IDLE"] }
+], "head": { "text": "APB write with 1 wait state" } }
 ```
-           Cycle 1      Cycle 2      Cycle 3      Cycle 4
-           (IDLE)       (SETUP)      (ACCESS ws)  (ACCESS done)
-PCLK:    _|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___
-PSEL:    ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___
-PENABLE: ______________|‾‾‾‾‾‾‾‾‾‾‾‾‾|___
-PWRITE:  ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___     (high = write)
-PADDR:   ---<  ADDR  >--------------------------
-PWDATA:  ---<  DATA  >--------------------------
-PREADY:  ______________|_______|‾‾‾‾‾‾‾|___
-                               ^       ^
-                          wait state  transfer done
-State:      IDLE  SETUP  ACCESS(ws)  IDLE
 
-Key observations:
-  - PADDR and PWDATA are valid from SETUP through ACCESS (held during wait state).
-  - PENABLE is high for the entire ACCESS phase (both wait and done cycles).
-  - PREADY only matters when PENABLE=1 (not sampled in SETUP or IDLE).
-  - The minimum APB transfer is 2 cycles: SETUP (PSEL=1, PENABLE=0) + ACCESS (PSEL=1, PENABLE=1, PREADY=1).
-```
+Key points: `PADDR`/`PWDATA` stay valid from SETUP through ACCESS (held during the wait state); `PENABLE` is high for the whole ACCESS phase; `PREADY` is only sampled when `PENABLE=1`.
 
 **Common interview question: Can PREADY be combinational from PENABLE?**
-
-```
+```verilog
 Answer: Yes, but with caution.
 
 Legal: PREADY = PENABLE  (slave always ready when in ACCESS phase)
@@ -206,15 +175,13 @@ Timing hazard: If PREADY is combinational from PENABLE and PREADY feeds back
 
 **Write with PSLVERR:**
 
-```
-PSLVERR is sampled at the same time as PREADY (on the rising edge of
-PCLK when PENABLE=1 and PREADY=1). It indicates the transfer failed
-(e.g., write to read-only register, access to undefined address).
+`PSLVERR` is sampled on the same rising `PCLK` edge as `PREADY` (when `PENABLE=1` and `PREADY=1`). It flags a failed transfer (e.g. write to a read-only register, access to an undefined address). Both assert on the same cycle; the master decides how to handle it (ignore, retry, interrupt) — APB does not define error recovery.
 
-PSLVERR:  _________|‾‾‾‾‾‾‾|_______
-PREADY:   _________|‾‾‾‾‾‾‾|_______
-  Both assert on the same cycle. Master decides how to handle the error
-  (ignore, retry, interrupt, etc.). APB does NOT define error recovery.
+```wavedrom
+{ "signal": [
+  { "name": "PSLVERR", "wave": "001100" },
+  { "name": "PREADY",  "wave": "001100" }
+], "head": { "text": "PSLVERR asserted together with PREADY on a failed transfer" } }
 ```
 
 ### 2.4 APB Detailed Handshake Protocol
@@ -224,8 +191,7 @@ The APB protocol uses exactly three signals for flow control: `PSEL`, `PENABLE`,
 relationship is critical for bridge design and interview questions.
 
 **Signal behavior across phases:**
-
-```
+```text
 Phase      PSEL  PENABLE  PWRITE  PADDR  PWDATA/PRDATA  PREADY
 -----------------------------------------------------------------------
 IDLE       0     0        X       X      X               X
@@ -247,42 +213,39 @@ extend the ACCESS phase.
 
 **Back-to-back transfers (no IDLE cycle between):**
 
+```wavedrom
+{ "config": { "hscale": 2 },
+  "signal": [
+  { "name": "PCLK",    "wave": "p......" },
+  { "name": "PSEL",    "wave": "0111111" },
+  { "name": "PENABLE", "wave": "0010101" },
+  { "name": "PADDR",   "wave": "x=.=.=.", "data": ["A0","A1","A2"] },
+  { "name": "PWRITE",  "wave": "0111111" },
+  { "name": "PWDATA",  "wave": "x=.=.=.", "data": ["D0","D1","D2"] },
+  { "name": "PREADY",  "wave": "1......" }
+], "head": { "text": "Back-to-back APB — PENABLE staircase, PSEL stays high (PADDR/PWDATA show the 3 transfers)" } }
 ```
-Cycle:      1         2         3         4         5
-PCLK:    _|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___|‾‾‾|___
-PSEL:    ___|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|___
-PENABLE: _________|‾‾‾|_________|‾‾‾|_________|‾‾‾|___
-PADDR:   ---<  A0  >----<  A1  >----<  A2  >--------
-PWRITE:  ___|‾‾‾‾‾‾‾‾|___|‾‾‾‾‾‾‾‾|___|‾‾‾‾‾‾‾‾|___
-PWDATA:  ---<  D0  >----<  D1  >----<  D2  >--------
-PREADY:  ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ (always ready)
-State:      IDLE SETUP A0  SETUP A1  SETUP A2
 
-Note: PENABLE has a distinctive "staircase" pattern -- it pulses high for
-exactly one cycle per transfer (during ACCESS), then drops low for SETUP
-of the next transfer. PSEL stays high throughout the back-to-back sequence.
-```
+`PENABLE` pulses high for exactly one cycle per transfer (during ACCESS), then drops for the next SETUP; `PSEL` stays high across the whole back-to-back sequence.
 
 ### 2.5 APB Bridge Design (from AXI/AHB)
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    M["AHB / AXI<br/>Master side"] --> BR["APB Bridge<br/>· address decoder<br/>· state machine<br/>· wait-state generation"]
+    BR --> S0["APB Slave 0"]
+    BR --> S1["APB Slave 1"]
+    BR --> S2["APB Slave 2"]
+    classDef m fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef b fill:#fde68a,stroke:#b45309,color:#000
+    classDef s fill:#dcfce7,stroke:#15803d,color:#000
+    class M m
+    class BR b
+    class S0,S1,S2 s
 ```
-                    ┌─────────────────────────┐
-  AHB/AXI ────────>│     APB Bridge            │────> APB Slave 0
-  Master side      │                           │────> APB Slave 1
-                   │  - Address decoder        │────> APB Slave 2
-                   │  - State machine          │
-                   │  - Wait state generation  │
-                   └─────────────────────────┘
 
-The bridge:
-  1. Accepts an AHB/AXI transaction (address phase)
-  2. Decodes address to select the appropriate PSEL
-  3. Drives PADDR, PWRITE, PWDATA in SETUP phase
-  4. Asserts PENABLE in ACCESS phase
-  5. Waits for PREADY from slave
-  6. Returns HRDATA/RDATA and HRESP/BRESP to the master side
-  7. If the AXI side has burst, the bridge generates multiple APB transfers
-```
+The bridge: (1) accepts an AHB/AXI transaction (address phase); (2) decodes the address to select the appropriate `PSEL`; (3) drives `PADDR`, `PWRITE`, `PWDATA` in the SETUP phase; (4) asserts `PENABLE` in the ACCESS phase; (5) waits for `PREADY` from the slave; (6) returns `HRDATA`/`RDATA` and `HRESP`/`BRESP` to the master side; (7) if the AXI side issues a burst, the bridge generates multiple APB transfers.
 
 ---
 
@@ -321,39 +284,37 @@ The bridge:
 | 11          | SEQ    | Continuation of a burst. Address = previous + size. Control same as NONSEQ. |
 
 ### 3.3 AHB Pipelining -- Detailed Waveform
-
-```
+```text
 The key to AHB performance: address phase of transfer N+1 overlaps
 with data phase of transfer N.
 
-Cycle:       1       2       3       4       5       6
-HADDR:     [A0]    [A1]    [A2]    [A3]
-HTRANS:    [NONSEQ][SEQ]   [SEQ]   [SEQ]
-HWDATA:            [D0]    [D1]    [D2]    [D3]
-HREADY:      1       1       1       1       1
+Cycle                     :       1       2       3       4       5       6
+HADDR                     :     [A0]    [A1]    [A2]    [A3]
+HTRANS                    :    [NONSEQ][SEQ]   [SEQ]   [SEQ]
+HWDATA                    :            [D0]    [D1]    [D2]    [D3]
+HREADY                    :      1       1       1       1       1
 
-Transfer 0: Address in cycle 1, Data in cycle 2
-Transfer 1: Address in cycle 2, Data in cycle 3
-Transfer 2: Address in cycle 3, Data in cycle 4
-Transfer 3: Address in cycle 4, Data in cycle 5
+Transfer 0                : Address in cycle 1, Data in cycle 2
+Transfer 1                : Address in cycle 2, Data in cycle 3
+Transfer 2                : Address in cycle 3, Data in cycle 4
+Transfer 3                : Address in cycle 4, Data in cycle 5
 
-Effective bandwidth: 1 transfer per clock cycle (after initial 1-cycle latency)
+Effective bandwidth       : 1 transfer per clock cycle (after initial 1-cycle latency)
 Without pipelining (APB-style): 2 cycles per transfer -> half the bandwidth
 ```
 
 **With wait states:**
+```text
+Cycle    :       1       2       3       4       5       6       7
+HADDR    :     [A0]    [A1]    [A1]    [A2]    [A3]
+HTRANS   :    [NONSEQ][SEQ]   [SEQ]   [SEQ]   [SEQ]
+HWDATA   :            [D0]    [D0]    [D1]    [D2]    [D3]
+HREADY   :      1       0       1       1       1       1
 
-```
-Cycle:       1       2       3       4       5       6       7
-HADDR:     [A0]    [A1]    [A1]    [A2]    [A3]
-HTRANS:    [NONSEQ][SEQ]   [SEQ]   [SEQ]   [SEQ]
-HWDATA:            [D0]    [D0]    [D1]    [D2]    [D3]
-HREADY:      1       0       1       1       1       1
-
-Cycle 2-3: HREADY=0, slave inserts wait state.
+Cycle 2-3: HREADY                                        = 0, slave inserts wait state.
   - Master HOLDS address A1, data D0 (must remain stable!)
   - All pipeline stages stall
-  - Slave completes the slow operation in cycle 3 (HREADY=1)
+  - Slave completes the slow operation in cycle 3 (HREADY = 1)
 ```
 
 ### 3.4 Burst Types -- Address Calculation Examples
@@ -368,8 +329,7 @@ Cycle 2-3: HREADY=0, slave inserts wait state.
 | 011   | Dword   | 8     |
 
 **INCR4 burst (4-beat incrementing) with HSIZE=010 (word), start address 0x1000:**
-
-```
+```text
 Beat 0: Address = 0x1000  (NONSEQ)
 Beat 1: Address = 0x1004  (SEQ)  (+4 bytes)
 Beat 2: Address = 0x1008  (SEQ)  (+4 bytes)
@@ -378,9 +338,8 @@ Beat 3: Address = 0x100C  (SEQ)  (+4 bytes)
 
 **WRAP4 burst with HSIZE=010 (word), start address 0x1004:**
 
-```
 Wrap boundary: aligned to (burst_length * size) = 4 * 4 = 16 bytes
-Wrap boundary = 0x1000 (start address rounded down to 16-byte boundary)
+- **Wrap boundary** = `0x1000 (start address rounded down to 16-byte boundary)`
 Wrap range: 0x1000 to 0x100F
 
 Beat 0: Address = 0x1004  (NONSEQ) -- start here (critical word first)
@@ -389,26 +348,24 @@ Beat 2: Address = 0x100C  (SEQ)
 Beat 3: Address = 0x1000  (SEQ)  -- WRAPS back to boundary start!
 
 Use case: Cache line fill starting from the critical word.
-  CPU needs word at 0x1004, but cache line is 16 bytes (0x1000-0x100F).
-  WRAP4 fetches 0x1004 first (CPU can proceed immediately),
-  then fills the rest of the line (0x1008, 0x100C, 0x1000).
-```
+CPU needs word at 0x1004, but cache line is 16 bytes (0x1000-0x100F).
+WRAP4 fetches 0x1004 first (CPU can proceed immediately),
+then fills the rest of the line (0x1008, 0x100C, 0x1000).
 
 **WRAP8 burst with HSIZE=010 (word), start address 0x1014:**
-
-```
-Wrap size = 8 * 4 = 32 bytes
+```text
+Wrap size     = 8 * 4 = 32 bytes
 Wrap boundary = 0x1000 (aligned to 32-byte boundary)
 Wrap range: 0x1000 to 0x101F
 
-Beat 0: 0x1014  (NONSEQ)
-Beat 1: 0x1018  (SEQ)
-Beat 2: 0x101C  (SEQ)
-Beat 3: 0x1000  (SEQ)  -- WRAP!
-Beat 4: 0x1004  (SEQ)
-Beat 5: 0x1008  (SEQ)
-Beat 6: 0x100C  (SEQ)
-Beat 7: 0x1010  (SEQ)
+Beat 0    : 0x1014  (NONSEQ)
+Beat 1    : 0x1018  (SEQ)
+Beat 2    : 0x101C  (SEQ)
+Beat 3    : 0x1000  (SEQ) -- WRAP!
+Beat 4    : 0x1004  (SEQ)
+Beat 5    : 0x1008  (SEQ)
+Beat 6    : 0x100C  (SEQ)
+Beat 7    : 0x1010  (SEQ)
 ```
 
 ### 3.5 Split and Retry -- Why They Exist
@@ -416,13 +373,12 @@ Beat 7: 0x1010  (SEQ)
 **Problem:** A slow slave (e.g., external flash controller) takes 100 cycles to respond. During this time, the bus is blocked -- no other master can use it. This wastes bus bandwidth.
 
 **RETRY response:**
-
-```
-Cycle:    1      2      3      4      5      ...
-HADDR:   [A0]
-HTRANS:  [NONSEQ]
-HREADY:    1      0      1                   <- 2-cycle error response
-HRESP:            [RETRY][RETRY]             <- Must be 2 cycles!
+```text
+Cycle      :    1      2      3      4      5      ...
+HADDR      :   [A0]
+HTRANS     :  [NONSEQ]
+HREADY     :    1      0      1      <- 2-cycle error response
+HRESP      :            [RETRY][RETRY] <- Must be 2 cycles!
 
 After RETRY:
   - Master must retry the same transfer
@@ -432,45 +388,39 @@ After RETRY:
 
 **SPLIT response:**
 
-```
 Same as RETRY, but the slave tells the arbiter:
-  "I will signal you (via HSPLIT) when I'm ready for this master."
+"I will signal you (via HSPLIT) when I'm ready for this master."
 
-The arbiter:
-  1. Records which master was split
-  2. Grants bus to other masters
-  3. When slave signals HSPLIT for the original master, re-grants to it
+**The arbiter:**
+   1. Records which master was split
+2. Grants bus to other masters
+3. When slave signals HSPLIT for the original master, re-grants to it
 
 Advantage over RETRY: The split master doesn't keep retrying and wasting
 bus cycles. The arbiter only re-grants when the slave is actually ready.
-```
 
 ### 3.6 AHB-Lite Simplification
 
-```
-AHB-Lite removes:
-  - HBUSREQ, HGRANT, HLOCK (no arbitration, single master)
-  - SPLIT/RETRY (HRESP is 1-bit: 0=OKAY, 1=ERROR)
-  - HMASTER (only one master)
+**AHB-Lite removes:**
+   - HBUSREQ, HGRANT, HLOCK (no arbitration, single master)
+   - SPLIT/RETRY (HRESP is 1-bit: 0=OKAY, 1=ERROR)
+   - HMASTER (only one master)
 
 AHB-Lite is the most widely used AHB variant in modern SoCs.
 Each subsystem typically has one AHB-Lite master with multiple slaves.
-```
 
 ### 3.7 AHB Default Slave
 
-```
 Required by the spec: A default slave responds to accesses directed at
 unmapped address regions. It returns an ERROR response to prevent bus hangs.
 
-Without a default slave:
-  Access to unmapped address -> no slave drives HREADY -> bus hangs forever
+**Without a default slave:**
+   - Access to unmapped address -> no slave drives HREADY -> bus hangs forever
 
-Default slave implementation:
-  - Selected when no other slave is selected (decoder generates default HSEL)
-  - Always returns HREADY=1 and HRESP=ERROR
-  - Very simple (2-3 gates)
-```
+**Default slave implementation:**
+   - Selected when no other slave is selected (decoder generates default HSEL)
+   - Always returns HREADY=1 and HRESP=ERROR
+   - Very simple (2-3 gates)
 
 ---
 
@@ -551,7 +501,7 @@ Default slave implementation:
 
 **Rule 1: VALID must NOT depend on READY.**
 
-```
+```ascii-graph
 The source must assert VALID when it has data/address to send,
 REGARDLESS of whether READY is asserted. VALID cannot wait for READY.
 
@@ -567,62 +517,56 @@ READY ────────────────>  (may or may not be asse
 
 **Rule 2: READY MAY depend on VALID.**
 
-```
-This is allowed:
-  Slave sees VALID=1 -> asserts READY=1 on the same cycle
-  Transfer completes in 1 cycle (zero-wait-state)
+**This is allowed:**
+   - Slave sees VALID=1 -> asserts READY=1 on the same cycle
+   - Transfer completes in 1 cycle (zero-wait-state)
 
 But this creates a combinational path from VALID to READY,
 which can be a timing issue. Many slave implementations
 register READY to break this path (at the cost of 1 cycle latency).
-```
 
 **Rule 3: Once VALID is asserted, it must stay asserted until handshake completes.**
 
+```wavedrom
+{ "signal": [
+  { "name": "VALID", "wave": "011110" },
+  { "name": "READY", "wave": "000110" },
+  { "name": "DATA",  "wave": "x=...x", "data": ["data"] }
+], "head": { "text": "AXI handshake — data stable while VALID high; transfer when VALID & READY both high" } }
 ```
-VALID: _____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_____
-READY: _______________|‾‾‾‾|_____
-                        ^ transfer
 
-VALID cannot go low before READY goes high!
-Signal values (AWADDR, WDATA, etc.) must also remain stable while
-VALID is high and READY is low.
-```
+`VALID` cannot go low before `READY` goes high. Signal values (`AWADDR`, `WDATA`, …) must remain stable while `VALID` is high and `READY` is low.
 
 ### 4.3 VALID/READY Timing Diagrams
 
 **Case 1: VALID before READY (most common)**
 
-```
-Cycle:     1     2     3     4
-VALID:   __|‾‾‾‾‾‾‾‾‾‾‾‾‾|__
-READY:   ________|‾‾‾‾‾‾‾|__
-DATA:    --< STABLE DATA  >--
-              ^           ^
-              |           +-- Transfer completes (cycle 3 rising edge)
-              +-------------- VALID asserted, data stable
+```wavedrom
+{ "signal": [
+  { "name": "VALID", "wave": "01110" },
+  { "name": "READY", "wave": "00110" },
+  { "name": "DATA",  "wave": "x=..x", "data": ["data"] }
+], "head": { "text": "VALID asserted first; transfer completes when READY also high (cycle 3)" } }
 ```
 
 **Case 2: READY before VALID**
 
-```
-Cycle:     1     2     3     4
-READY:   __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾  (slave always ready)
-VALID:   ________|‾‾‾|________
-DATA:    --------< D >--------
-                   ^
-                   +-- Transfer completes immediately (cycle 3)
+```wavedrom
+{ "signal": [
+  { "name": "READY", "wave": "1111" },
+  { "name": "VALID", "wave": "0110" },
+  { "name": "DATA",  "wave": "x=.x", "data": ["D"] }
+], "head": { "text": "Slave always ready — transfer the moment VALID asserts" } }
 ```
 
 **Case 3: Simultaneous**
 
-```
-Cycle:     1     2     3
-VALID:   __|‾‾‾|________
-READY:   __|‾‾‾|________
-DATA:    --< D >--------
-            ^
-            +-- Transfer on cycle 2 rising edge (1-cycle transfer)
+```wavedrom
+{ "signal": [
+  { "name": "VALID", "wave": "010" },
+  { "name": "READY", "wave": "010" },
+  { "name": "DATA",  "wave": "x=x", "data": ["D"] }
+], "head": { "text": "VALID & READY same cycle — single-cycle transfer" } }
 ```
 
 ### 4.4 Ordering Model
@@ -645,13 +589,12 @@ DATA:    --< D >--------
 ### 4.5 Burst Address Calculation
 
 **INCR burst:**
-
-```
-Address_N = Start_Address + N * Number_Bytes
+```text
+Address_N          = Start_Address + N * Number_Bytes
 
 where Number_Bytes = 2^AXSIZE
 
-Example: ARADDR=0x1000, ARSIZE=3 (8 bytes), ARLEN=3 (4 beats)
+Example : ARADDR   = 0x1000, ARSIZE=3 (8 bytes), ARLEN=3 (4 beats)
   Beat 0: 0x1000
   Beat 1: 0x1008
   Beat 2: 0x1010
@@ -659,55 +602,53 @@ Example: ARADDR=0x1000, ARSIZE=3 (8 bytes), ARLEN=3 (4 beats)
 ```
 
 **WRAP burst:**
+```text
+Step 1      : Calculate number of bytes per beat: Number_Bytes = 2^AXSIZE
+Step 2      : Calculate total burst size: Burst_Length         = AXLEN + 1
+Step 3      : Calculate wrap boundary:
+  Wrap_Boundary                                                = (INT(Start_Address / (Number_Bytes * Burst_Length))) * Number_Bytes * Burst_Length
 
-```
-Step 1: Calculate number of bytes per beat: Number_Bytes = 2^AXSIZE
-Step 2: Calculate total burst size: Burst_Length = AXLEN + 1
-Step 3: Calculate wrap boundary:
-  Wrap_Boundary = (INT(Start_Address / (Number_Bytes * Burst_Length))) * Number_Bytes * Burst_Length
-
-Step 4: Calculate addresses:
+Step 4      : Calculate addresses:
   If Address_N < Wrap_Boundary + (Number_Bytes * Burst_Length):
-    Address_N = Start_Address + N * Number_Bytes
-  Else:
+    Address_N                                                  = Start_Address + N * Number_Bytes
+  Else      :
     Address_N wraps to Wrap_Boundary
 
-Example: ARADDR=0x34, ARSIZE=2 (4 bytes), ARLEN=3 (4 beats, WRAP4)
-  Number_Bytes = 4
-  Burst_Length = 4
-  Wrap size = 4 * 4 = 16 bytes
-  Wrap_Boundary = INT(0x34 / 16) * 16 = INT(3.25) * 16 = 3 * 16 = 0x30
+Example     : ARADDR                                           = 0x34, ARSIZE=2 (4 bytes), ARLEN=3 (4 beats, WRAP4)
+  Number_Bytes                                                 = 4
+  Burst_Length                                                 = 4
+  Wrap size                                                    = 4 * 4 = 16 bytes
+  Wrap_Boundary                                                = INT(0x34 / 16) * 16 = INT(3.25) * 16 = 3 * 16 = 0x30
   Wrap range: 0x30 to 0x3F
 
-  Beat 0: 0x34  (start)
-  Beat 1: 0x38  (+4)
-  Beat 2: 0x3C  (+4)
-  Beat 3: 0x30  (WRAP! back to boundary)
+  Beat 0    : 0x34  (start)
+  Beat 1    : 0x38  (+4)
+  Beat 2    : 0x3C  (+4)
+  Beat 3    : 0x30  (WRAP! back to boundary)
 ```
 
 ### 4.6 Narrow Transfers and Byte Strobes (WSTRB)
 
 A narrow transfer occurs when AWSIZE < data bus width.
+```text
+Example: 32-bit write on a 64-bit data bus (AWSIZE = 2, bus=64 bits)
 
-```
-Example: 32-bit write on a 64-bit data bus (AWSIZE=2, bus=64 bits)
-
-WSTRB for 64-bit bus = 8 bits (1 per byte lane)
+WSTRB for 64-bit bus                              = 8 bits (1 per byte lane)
 
 Beat at address 0x1000 (lower 4 bytes of 64-bit lane):
-  WSTRB = 8'b0000_1111  (bytes 0-3 active, bytes 4-7 inactive)
-  WDATA = {32'hXXXX_XXXX, 32'h12345678}
+  WSTRB                                           = 8'b0000_1111  (bytes 0-3 active, bytes 4-7 inactive)
+  WDATA                                           = {32'hXXXX_XXXX, 32'h12345678}
 
 Beat at address 0x1004 (upper 4 bytes):
-  WSTRB = 8'b1111_0000  (bytes 4-7 active, bytes 0-3 inactive)
-  WDATA = {32'hDEADBEEF, 32'hXXXX_XXXX}
+  WSTRB                                           = 8'b1111_0000  (bytes 4-7 active, bytes 0-3 inactive)
+  WDATA                                           = {32'hDEADBEEF, 32'hXXXX_XXXX}
 
 The slave uses WSTRB to determine which bytes to write.
 ```
 
 #### AXI Narrow Transfer — Cycle-by-Cycle on 128-bit Bus
 
-```
+```verilog
 Scenario: Master writes 32 bits (AWSIZE=2) to a 128-bit (16-byte) slave bus.
 INCR4 burst starting at address 0x1000.
 
@@ -746,7 +687,7 @@ With INCR4 narrow burst, the single AW channel transaction covers all 4 beats.
 
 #### AXI Unaligned Transfer — Detailed Example
 
-```
+```verilog
 Scenario: Write 16 bytes starting at unaligned address 0x1003 on a 64-bit (8-byte) bus.
 AWSIZE=3 (8 bytes per beat), ARLEN=2 (3 beats), INCR burst.
 
@@ -781,7 +722,7 @@ valid bytes than AWSIZE would suggest. The spec requires that the address of eac
 beat is calculated as if the burst were fully aligned, and WSTRB indicates which
 bytes are valid:
 
-```
+```text
 Example: INCR4 write burst, AWSIZE=3 (8 bytes/beat), 64-bit bus,
          unaligned start address 0x1004
 
@@ -822,7 +763,7 @@ Beat 3: Address = 0x101C
 
 #### WSTRB for WRAP Bursts with Unaligned Start
 
-```
+```verilog
 WRAP4 burst, AWSIZE=3 (8 bytes), ARADDR=0x1004, 64-bit bus:
   Wrap boundary = 0x1000 (aligned to 4 * 8 = 32 bytes)
   Wrap range: 0x1000-0x101F
@@ -841,7 +782,7 @@ with all five channels and exact cycle-by-cycle behavior.
 
 #### Write Burst: INCR4, 64-bit data, start address 0x1000
 
-```
+```verilog
 AW Channel:
   AWADDR=0x1000, AWLEN=3 (4 beats), AWSIZE=3 (8 B/beat),
   AWBURST=01 (INCR), AWID=0, AWVALID, AWQOS=0x8
@@ -931,7 +872,7 @@ Summary:
 
 #### Read Burst: INCR4, 64-bit data, start address 0x2000
 
-```
+```verilog
 AR Channel:
   ARADDR=0x2000, ARLEN=3, ARSIZE=3, ARBURST=01, ARID=1
 
@@ -967,7 +908,7 @@ Summary:
 
 Exclusive access implements atomic read-modify-write operations (like CAS, LL/SC):
 
-```
+```text
 Step 1: Exclusive Read
   ARLOCK = 1 (exclusive)
   Master reads address X -> gets value V
@@ -989,7 +930,7 @@ This is the hardware mechanism behind:
 
 ### 4.8 AXI QoS (Quality of Service)
 
-```
+```verilog
 AxQOS[3:0]: 4-bit priority signal
   0x0 = Lowest priority
   0xF = Highest priority
@@ -1011,7 +952,7 @@ Dynamic QoS: Some masters adjust QoS based on buffer fill level:
 
 #### AXI QoS Arbitration — Worked Example
 
-```
+```verilog
 Scenario: 3 masters competing for a shared DDR controller through an AXI interconnect.
 
 Request queue (arrival order):
@@ -1046,7 +987,7 @@ Dynamic QoS adjustment (display controller):
 
 ### 5.1 Outstanding Transactions -- Timing Diagram
 
-```
+```verilog
 Without outstanding (1 at a time):
 Cycle:  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16
 AR:    [A0]                     [A1]                     [A2]
@@ -1064,7 +1005,7 @@ Total: 12 cycles for 3 reads (latency of first hidden by subsequent addresses)
 
 **Throughput improvement:** Outstanding transactions hide the address-to-data latency. The bus stays busy while waiting for slow memory responses. For DDR with 10-cycle latency:
 
-```
+```verilog
 Without outstanding: Efficiency = burst_length / (burst_length + latency)
   = 4 / (4 + 10) = 28.6%
 
@@ -1076,7 +1017,7 @@ With 8 outstanding: Efficiency = 32 / (32 + 10) = 76.2%
 
 ### 5.2 Out-of-Order Completion with Different IDs
 
-```
+```verilog
 Master issues (all 1-beat reads for simplicity):
   Read A0 (ID=0) -> to fast SRAM (2-cycle latency)
   Read A1 (ID=1) -> to slow DDR (10-cycle latency)
@@ -1107,7 +1048,7 @@ Ordering maintained:
 
 ### 5.3 Write Interleaving (AXI3 Only, Removed in AXI4)
 
-```
+```verilog
 AXI3 allowed write data from different transactions to interleave on
 the W channel, identified by WID:
 
@@ -1146,23 +1087,19 @@ AXI4 removed this:
 
 ### 6.2 Retained Signals
 
-```
-AW channel: AWADDR, AWPROT, AWVALID, AWREADY
-W  channel: WDATA, WSTRB, WVALID, WREADY
-B  channel: BRESP, BVALID, BREADY
-AR channel: ARADDR, ARPROT, ARVALID, ARREADY
-R  channel: RDATA, RRESP, RVALID, RREADY
-```
+- **AW channel** — AWADDR, AWPROT, AWVALID, AWREADY
+- **W  channel** — WDATA, WSTRB, WVALID, WREADY
+- **B  channel** — BRESP, BVALID, BREADY
+- **AR channel** — ARADDR, ARPROT, ARVALID, ARREADY
+- **R  channel** — RDATA, RRESP, RVALID, RREADY
 
 ### 6.3 When to Use AXI4-Lite
 
-```
 - Control/status register interfaces (CSR) for IP blocks
 - Configuration registers (written once or infrequently)
 - Simple peripherals (UART, SPI, GPIO, timer)
 - Any interface where burst and outstanding are not needed
 - Reduces gate count of slave by 50-70% vs full AXI4
-```
 
 ---
 
@@ -1184,7 +1121,7 @@ R  channel: RDATA, RRESP, RVALID, RREADY
 
 ### 7.2 TKEEP and TSTRB Semantics
 
-```
+```verilog
 TKEEP[i] | TSTRB[i] | Meaning
 ---------|----------|--------
     1    |    1     | Data byte: valid data at this position
@@ -1195,7 +1132,7 @@ TKEEP[i] | TSTRB[i] | Meaning
 
 ### 7.3 Packet-Based Transfers
 
-```
+```ascii-graph
 Source ──TDATA/TVALID──> Sink
 
 Packet 1:
@@ -1290,7 +1227,7 @@ endmodule
 
 **Round-Robin:**
 
-```
+```verilog
 Cycle 1: Grant to Master 0
 Cycle 2: Grant to Master 1
 Cycle 3: Grant to Master 2
@@ -1304,7 +1241,7 @@ May not be optimal for real-time masters (no priority)
 
 **Fixed Priority:**
 
-```
+```verilog
 Master 0 > Master 1 > Master 2 > Master 3
 
 Master 0 always wins if it has a request.
@@ -1315,7 +1252,7 @@ Not suitable unless high-priority traffic is bursty (not sustained).
 
 **Weighted Round-Robin:**
 
-```
+```verilog
 Master 0: weight 4 (gets 4 out of 8 slots)
 Master 1: weight 2 (gets 2 out of 8 slots)
 Master 2: weight 1
@@ -1329,7 +1266,7 @@ Used in most commercial interconnects.
 
 ### 8.3 Address Decoding
 
-```
+```verilog
 Address map example:
   0x0000_0000 - 0x0FFF_FFFF: DDR Controller (Slave 0)
   0x1000_0000 - 0x1000_FFFF: SRAM (Slave 1)
@@ -1348,7 +1285,7 @@ Decoder logic:
 
 ### 8.4 ID Width Expansion in Interconnect
 
-```
+```text
 Master 0 issues: AWID = 4'b0101
 Master 1 issues: AWID = 4'b0101
 
@@ -1597,7 +1534,7 @@ endmodule
 
 ### 10.1 Theoretical Maximum Bandwidth
 
-```
+```verilog
 Bandwidth = Data_Width * Frequency / 8  (bytes/second)
 
 AXI4, 64-bit data, 200 MHz:
@@ -1616,7 +1553,7 @@ APB, 32-bit data, 50 MHz:
 
 ### 10.2 Effective Bandwidth with Burst
 
-```
+```verilog
 AXI4, 64-bit data, 200 MHz, burst length 16 (INCR16):
   Per burst: 16 * 8 = 128 bytes
   Burst time: 16 cycles (data) + 1 cycle (address) = 17 cycles (ideal)
@@ -1634,24 +1571,22 @@ Lesson: Use long bursts for high bandwidth.
 
 ### 10.3 Bandwidth with Outstanding Transactions (DDR example)
 
-```
 DDR4 controller: 64-bit data, 200 MHz AXI, 40-cycle read latency
 
-Without outstanding:
-  Read: 40 cycles wait + 16 cycles data = 56 cycles per 128-byte burst
-  BW = 128 / (56 * 5ns) = 457 MB/s  (28.6% of peak)
+**Without outstanding:**
+   - Read: 40 cycles wait + 16 cycles data = 56 cycles per 128-byte burst
+   - BW = 128 / (56 * 5ns) = 457 MB/s  (28.6% of peak)
 
-With 4 outstanding reads:
-  Read pipeline: issue 4 addresses, then data streams back-to-back
-  Average: ~16 cycles per burst (after pipeline fill)
-  BW = 128 / (16 * 5ns) = 1.6 GB/s  (~100% of peak, after initial latency)
+**With 4 outstanding reads:**
+   - Read pipeline: issue 4 addresses, then data streams back-to-back
+   - Average: ~16 cycles per burst (after pipeline fill)
+   - BW = 128 / (16 * 5ns) = 1.6 GB/s  (~100% of peak, after initial latency)
 
 Outstanding transactions are ESSENTIAL for DDR performance!
-```
 
 ### 10.4 Bandwidth for Dual-Channel DDR4-3200
 
-```
+```verilog
 DDR4-3200: 3200 MT/s (megatransfers per second)
 Bus width: 64 bits = 8 bytes per transfer
 Peak bandwidth per channel: 3200M * 8 = 25.6 GB/s
@@ -1758,6 +1693,7 @@ one wider port (512-bit) or higher frequency.
 In a typical SoC, a 500 MHz CPU core issues AXI transactions that must reach a 200 MHz peripheral subsystem. The master and slave operate in different clock domains. Directly connecting AXI signals across domains causes metastability: a signal sampled near its transition edge may resolve to an unpredictable voltage level, corrupting data or locking up the handshake state machines.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[CPU Core<br>500 MHz AXI Master] --> B[Async AXI Bridge<br>CDC Logic]
     B --> C[Peripheral Subsystem<br>200 MHz AXI Slave]
@@ -1781,6 +1717,7 @@ $$
 Because only one bit toggles per increment, a synchronizer capturing the pointer mid-transition will resolve to either the current or previous value -- never an invalid intermediate state.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TB
     subgraph Write Domain
         direction TB
@@ -1808,7 +1745,7 @@ flowchart TB
 
 Each bit of the Gray-coded pointer passes through a two-flop synchronizer:
 
-```
+```verilog
 clk_dest domain:
   flop1: sampled from clk_src domain (may be metastable)
   flop2: resolves metastability with one additional clock cycle
@@ -1841,6 +1778,7 @@ This is why a two-flop synchronizer is sufficient for most SoC clock crossings. 
 An AXI register slice inserts a pipeline register stage on each channel. When combined with async handshake synchronizers, it becomes a clock domain crossing bridge:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TB
     subgraph Source Domain
         direction TB
@@ -1860,7 +1798,7 @@ For a full AXI channel crossing, the pattern repeats for all five channels (AW, 
 
 A 128-bit master connected to a 32-bit slave requires a downsizer bridge. A single 128-bit beat produces four 32-bit beats on the narrow side.
 
-```
+```verilog
 Master side (128-bit):       Slave side (32-bit):
   AWADDR = 0x1000, AWLEN=3    AWADDR = 0x1000, AWLEN=15
   WDATA[127:0], WSTRB[15:0]   Beat 0: WDATA[31:0],  WSTRB[3:0],  AWADDR=0x1000
@@ -2004,6 +1942,7 @@ ARM TrustZone partitions the system into a Secure world and a Non-secure world. 
 **ARPROT** applies to read address transactions. **AWPROT** applies to write address transactions. These are separate signals, so a single master can issue both secure reads and non-secure writes if its security state changes.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     MASTER[AXI Master] -->|AxPROT[1]=0<br>Secure Transaction| INTERCONNECT[AXI Interconnect]
     MASTER2[AXI Master] -->|AxPROT[1]=1<br>Non-secure Transaction| INTERCONNECT
@@ -2017,7 +1956,7 @@ flowchart TD
 
 A secure master (AxPROT[1] = 0) runs code in the Secure world. It can access both secure and non-secure address regions:
 
-```
+```verilog
 Secure master:
   - Can issue AxPROT[1]=0 (secure) transactions -> access secure peripherals, secure DRAM
   - Can issue AxPROT[1]=1 (non-secure) transactions -> access non-secure peripherals, normal DRAM
@@ -2033,23 +1972,22 @@ Non-secure master (AxPROT[1] = 1 always):
 
 The TZC sits between the AXI interconnect and DRAM. It acts as a security firewall:
 
-```
 TZC configuration (programmed by secure firmware at boot):
-  Region 0: 0x0000_0000 - 0x0FFF_FFFF  -> Secure-only
-  Region 1: 0x1000_0000 - 0x2FFF_FFFF  -> Non-secure
-  Region 2: 0x3000_0000 - 0x3FFF_FFFF  -> Secure-only
-  Region 3: 0x4000_0000 - 0x7FFF_FFFF  -> Both secure and non-secure
+Region 0: 0x0000_0000 - 0x0FFF_FFFF  -> Secure-only
+Region 1: 0x1000_0000 - 0x2FFF_FFFF  -> Non-secure
+Region 2: 0x3000_0000 - 0x3FFF_FFFF  -> Secure-only
+Region 3: 0x4000_0000 - 0x7FFF_FFFF  -> Both secure and non-secure
 
-Filtering rules:
-  Transaction with AxPROT[1]=1 (non-secure) to Region 0 -> DENIED (SLVERR)
-  Transaction with AxPROT[1]=0 (secure)    to Region 0 -> GRANTED
-  Transaction with AxPROT[1]=1 (non-secure) to Region 1 -> GRANTED
-  Transaction with AxPROT[1]=0 (secure)    to Region 1 -> GRANTED
-```
+**Filtering rules:**
+   - Transaction with AxPROT[1]=1 (non-secure) to Region 0 -> DENIED (SLVERR)
+   - Transaction with AxPROT[1]=0 (secure)    to Region 0 -> GRANTED
+   - Transaction with AxPROT[1]=1 (non-secure) to Region 1 -> GRANTED
+   - Transaction with AxPROT[1]=0 (secure)    to Region 1 -> GRANTED
 
 The TZC checks AxPROT[1] against its region table on every transaction. A denied transaction triggers a BRESP/RRESP = SLVERR and raises a security violation interrupt to the secure interrupt controller.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     AXI_TXN[Incoming AXI Transaction<br>with AxPROT] --> CHECK_ADDR{Address matches<br>which TZC region?}
     CHECK_ADDR -->|Region marked<br>Secure-only| CHECK_NS{AxPROT[1] == ?}
@@ -2061,7 +1999,7 @@ flowchart TD
 
 ### 13.4 Use Case: Secure Boot and Rich OS
 
-```
+```verilog
 Boot sequence:
   1. ROM (secure) executes first -> verifies bootloader signature
   2. Secure bootloader runs in Secure world (AxPROT[1]=0)
@@ -2082,7 +2020,7 @@ Boot sequence:
 
 Debug access is also partitioned by TrustZone:
 
-```
+```verilog
 Debug authentication levels:
   Level 0: No debug access (production device, fuses blown)
   Level 1: Non-secure debug only (can debug rich OS, not secure world)
@@ -2121,7 +2059,7 @@ independent address spaces without requiring the master to know the full decoded
 PCIe devices expose multiple independent address spaces (Memory, I/O, Configuration,
 Message) through a single AXI slave interface. Region identifiers map naturally:
 
-```
+```text
 PCIe TLP Type          AXI Region   AXI Address Space
 -------------------------------------------------------
 Memory Read/Write      0x0          Memory-mapped BAR space
@@ -2145,29 +2083,27 @@ With regions:
 
 ### 14.3 Region vs Address Decoding
 
-```
 Scenario: An AXI interconnect with one slave port serving a complex peripheral.
 
-Without regions:
-  Interconnect decodes address:
-    0x0000_0000 - 0x0FFF_FFFF -> Slave 0, Data registers
-    0x1000_0000 - 0x1FFF_FFFF -> Slave 0, Control registers
-    0x2000_0000 - 0x2FFF_FFFF -> Slave 0, DMA descriptors
-  Slave 0 sees three non-contiguous address windows and must internally
-  decode which subsystem is targeted based on the full address.
+**Without regions:**
+   - Interconnect decodes address:
+   - 0x0000_0000 - 0x0FFF_FFFF -> Slave 0, Data registers
+   - 0x1000_0000 - 0x1FFF_FFFF -> Slave 0, Control registers
+   - 0x2000_0000 - 0x2FFF_FFFF -> Slave 0, DMA descriptors
+   - Slave 0 sees three non-contiguous address windows and must internally
+   - decode which subsystem is targeted based on the full address.
 
-With regions:
-  Interconnect routes ALL three address ranges to Slave 0 with:
-    AxREGION = 0 for Data registers
-    AxREGION = 1 for Control registers
-    AxREGION = 2 for DMA descriptors
-  Slave 0 uses AxREGION to index a register bank select, no address decoding.
-  Simpler slave design, lower latency.
-```
+**With regions:**
+   - Interconnect routes ALL three address ranges to Slave 0 with:
+   - AxREGION = 0 for Data registers
+   - AxREGION = 1 for Control registers
+   - AxREGION = 2 for DMA descriptors
+   - Slave 0 uses AxREGION to index a register bank select, no address decoding.
+   - Simpler slave design, lower latency.
 
 ### 14.4 Implementation Notes
 
-```
+```text
 1. AxREGION is driven by the interconnect, not the master. Masters typically
    tie AxREGION = 0 (or leave it unconnected).
 
@@ -2203,7 +2139,7 @@ With regions:
 
 #### AXI5 vs AXI4 Atomic Operations — Detailed Comparison
 
-```
+```verilog
 AXI4 mechanism: Exclusive access (ARLOCK/AWLOCK)
   1. Master issues exclusive read (ARLOCK=1) -> gets value V
   2. Master computes new value locally (ADD, XOR, etc.)
@@ -2267,7 +2203,7 @@ transaction to the same address completes. This is similar to PCIe posted writes
 
 ### 15.3 AtomicLoad Operations -- Worked Example
 
-```
+```verilog
 Scenario: 4 cores share a counter at address 0x5000. Each core increments it once.
 
 AXI4 (exclusive access):
@@ -2299,6 +2235,7 @@ Under contention (all 4 cores issue simultaneously):
 AXI5 introduces atomic operations via the AxATOP signal, eliminating the need for the two-phase exclusive access pattern (LDREX + STREX). A single AXI transaction can perform a read-modify-write at the target slave in one round trip.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[AXI5 Master<br>issues AxATOP != 0] --> B{ATOP Type?}
     B -->|AtomicLoad<br>AxATOP[5]=0| C[Slave reads old value<br>Modifies per operation<br>Returns old data on R channel]
@@ -2342,19 +2279,17 @@ flowchart TD
 
 ### 16.3 Advantage Over AXI4 Exclusive Access
 
-```
-AXI4 exclusive access (LDREX + STREX):
-  Phase 1: Exclusive read (ARLOCK=1) -> returns value V     [1 round trip]
-           Master computes new value locally
-  Phase 2: Exclusive write (AWLOCK=1) -> BRESP=EXOKAY/OKAY [1 round trip]
-  Total: 2 round trips, plus master-side computation between them
-  If EXOKAY fails (another writer intervened), must retry BOTH phases
+**AXI4 exclusive access (LDREX + STREX):**
+   - Phase 1: Exclusive read (ARLOCK=1) -> returns value V     [1 round trip]
+   - Master computes new value locally
+   - Phase 2: Exclusive write (AWLOCK=1) -> BRESP=EXOKAY/OKAY [1 round trip]
+   - Total: 2 round trips, plus master-side computation between them
+   - If EXOKAY fails (another writer intervened), must retry BOTH phases
 
-AXI5 ATOP (single transaction):
-  Phase 1: Write with AxATOP -> slave performs operation internally -> response
-  Total: 1 round trip
-  No retry loop needed: the operation is indivisible at the slave
-```
+**AXI5 ATOP (single transaction):**
+   - Phase 1: Write with AxATOP -> slave performs operation internally -> response
+   - Total: 1 round trip
+   - No retry loop needed: the operation is indivisible at the slave
 
 Latency comparison for a counter increment at DDR:
 
@@ -2372,7 +2307,7 @@ Where $p_{\text{retry}}$ is the probability of exclusive access failure under co
 
 The compare-and-swap operation is the foundation of lock-free data structures:
 
-```
+```verilog
 AtomicCompare (AxATOP = 0x14):
   W channel carries two values:
     WDATA = new value to write if comparison succeeds
@@ -2394,31 +2329,29 @@ AtomicCompare (AxATOP = 0x14):
 
 ### 16.5 Restrictions and Compatibility
 
-```
-ATOP is only defined in AXI5 (AMBA 5):
-  - AXI4-Lite: does NOT support ATOP (no AxATOP signal)
-  - AXI4-Stream: not applicable (no address/data write model)
-  - AXI4: no AxATOP signal; must use exclusive access (AxLOCK) instead
-  - AXI5: full support
+**ATOP is only defined in AXI5 (AMBA 5):**
+   - AXI4-Lite: does NOT support ATOP (no AxATOP signal)
+   - AXI4-Stream: not applicable (no address/data write model)
+   - AXI4: no AxATOP signal; must use exclusive access (AxLOCK) instead
+   - AXI5: full support
 
 Interconnect behavior with mixed AXI4/AXI5:
-  - If an AXI5 master issues AxATOP != 0 to an AXI4 slave:
-    The interconnect must either:
-      (a) Return SLVERR (ATOP not supported at this slave)
-      (b) Convert ATOP to an internal exclusive access sequence (complex)
+- If an AXI5 master issues AxATOP != 0 to an AXI4 slave:
+   - The interconnect must either:
+   - (a) Return SLVERR (ATOP not supported at this slave)
+   - (b) Convert ATOP to an internal exclusive access sequence (complex)
 
-  - Best practice: only issue ATOP to known AXI5-capable slaves.
-    Use a discovery mechanism or static system configuration to identify
-    which slaves support ATOP.
+- Best practice: only issue ATOP to known AXI5-capable slaves.
+   - Use a discovery mechanism or static system configuration to identify
+   - which slaves support ATOP.
 
-  - AxATOP signal defaults to 0 for AXI4 masters, ensuring backward
-    compatibility. An AXI4 master connected to an AXI5 interconnect
-    simply never asserts AxATOP.
-```
+- AxATOP signal defaults to 0 for AXI4 masters, ensuring backward
+   - compatibility. An AXI4 master connected to an AXI5 interconnect
+   - simply never asserts AxATOP.
 
 ### 16.6 ATOP and Transaction Ordering
 
-```
+```text
 An ATOP transaction has special ordering implications:
 
   1. An AtomicLoad/AtomicSwap/AtomicCompare uses BOTH the AW channel

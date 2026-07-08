@@ -33,7 +33,8 @@ At advanced nodes there are **thousands** of rules, plus **DPT/MPT coloring** ru
 LVS proves the **layout implements the intended netlist** — that the polygons, when extracted into devices and nets, are *electrically identical* to the schematic/netlist.
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     LAY["Layout (GDSII)"]:::a --> EXT["Extract devices+nets<br/>from polygons"]:::b
     EXT --> NL1["Layout netlist"]:::c
     SCH["Source netlist<br/>(from synthesis)"]:::d --> NL2["Schematic netlist"]:::c
@@ -84,9 +85,15 @@ DFM is "DRC-clean but better" — the gap between *manufacturable* and *high-yie
 
 ## 5. Where PV sits — the signoff gate
 
-```
-Routed layout ──► DRC ──► LVS ──► Antenna ──► DFM/fill ──► (clean) ──► GDSII tape-out
-                   └──── any unwaived violation blocks tape-out ────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    RL["Routed layout"] --> DRC["DRC"] --> LVS["LVS"] --> ANT["Antenna"] --> DFM["DFM / fill"] --> GDS["clean →<br/>GDSII tape-out"]
+    GDS -.->|"any unwaived violation blocks tape-out"| RL
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef g fill:#dcfce7,stroke:#15803d,color:#000
+    class RL,DRC,LVS,ANT,DFM s
+    class GDS g
 ```
 
 Physical verification is run on the **full-chip merged GDSII** (including IP, memories, analog) and must be **clean or fully waived** before the [tape-out](../07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md) hand-off. It's typically the last thing standing between "design done" and "send to fab."

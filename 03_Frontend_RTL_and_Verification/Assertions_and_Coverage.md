@@ -6,7 +6,7 @@
 
 Executed as procedural statements at the point they appear in code.
 
-```systemverilog
+```verilog
 // Simple immediate assertion
 always_comb begin
     assert (state != ILLEGAL_STATE)
@@ -32,7 +32,7 @@ end
 Standard immediate assertions fire in the Active region, so they can trigger on combinational
 glitches before values settle. Deferred assertions fix this.
 
-```systemverilog
+```verilog
 always_comb begin
     // #0: deferred to Observed region (after all Active/NBA settle)
     assert #0 (onehot(grant))
@@ -57,7 +57,7 @@ Concurrent assertions use **sampled values**: the value of a signal at the END o
 time step (technically, the Preponed region of the current time step). This avoids race
 conditions between assertion evaluation and RTL updates.
 
-```systemverilog
+```verilog
 // At posedge clk, the assertion sees the values that were STABLE
 // before the clock edge, not the values being computed in this cycle
 property p_stable;
@@ -72,13 +72,11 @@ always @(posedge clk) data <= new_data;  // NBA update
 
 ### Where Assertions Execute in the Scheduler
 
-```
-Preponed:   Sample signal values for assertions
-Active:     RTL logic executes
-NBA:        Non-blocking assignments
+- **Preponed** — Sample signal values for assertions
+- **Active** — RTL logic executes
+- **NBA** — Non-blocking assignments
 Observed:   CONCURRENT ASSERTIONS EVALUATED HERE (using Preponed samples)
-Reactive:   Program block code, assertion pass/fail actions
-```
+- **Reactive** — Program block code, assertion pass/fail actions
 
 ---
 
@@ -86,18 +84,18 @@ Reactive:   Program block code, assertion pass/fail actions
 
 ### ##N: Fixed Cycle Delay
 
-```
+```text
 ##N means "N clock cycles later"
 
-Signal:   req ----+          ack ----+
-                  |                  |
-Clock:    __|--|__|--|__|--|__|--|__|--|
-Cycle:      0     1     2     3     4
+Signal:   req ------+                   ack ------+
+                    |                             |
+Clock:    ___|---|___|---|___|---|___|---|___|---|___
+Cycle:          0       1       2       3       4
 
 req ##2 ack: req at cycle 0, ack at cycle 2
 ```
 
-```systemverilog
+```verilog
 sequence s_req_ack;
     req ##2 ack;  // req true now, ack true exactly 2 cycles later
 endsequence
@@ -105,7 +103,7 @@ endsequence
 
 ### ##[M:N]: Window (Range Delay)
 
-```systemverilog
+```verilog
 sequence s_window;
     req ##[1:3] ack;  // req now, ack true 1, 2, OR 3 cycles later
 endsequence
@@ -124,7 +122,7 @@ endsequence
 
 ### [*N]: Consecutive Repetition
 
-```systemverilog
+```verilog
 // Signal must be true for N consecutive cycles
 sequence s_stable;
     valid[*4];  // valid must be 1 for 4 consecutive cycles
@@ -141,18 +139,18 @@ endsequence
 
 ### [->N]: Goto Repetition (THE COMMON INTERVIEW QUESTION)
 
-```
+```text
 [->N] means: eventually true for the Nth time, AND the match point
 is at that Nth occurrence.
 
 Waveform for ack[->2]:
-Cycle:   1  2  3  4  5  6  7
-ack:     0  1  0  0  1  0  0
-              ^           ^
-              1st         2nd (MATCH POINT IS HERE -- cycle 5)
+Cycle:    1    2    3    4    5    6    7
+ack:      0    1    0    0    1    0    0
+               ^              ^
+               1st            2nd (MATCH POINT IS HERE -- cycle 5)
 ```
 
-```systemverilog
+```verilog
 sequence s_goto;
     req ##1 ack[->2];
     // req at cycle 0
@@ -163,29 +161,29 @@ endsequence
 
 ### [=N]: Non-Consecutive Repetition
 
-```
+```text
 [=N] means: true for N times total (not necessarily consecutive).
 Unlike [->N], the match does NOT have to end on the Nth occurrence.
 
 Waveform for ack[=2]:
-Cycle:   1  2  3  4  5  6  7
-ack:     0  1  0  0  1  0  0
-              ^        ^
-              1st      2nd occurrence met
-              But match point can be cycles 5, 6, OR 7
+Cycle:    1    2    3    4    5    6    7
+ack:      0    1    0    0    1    0    0
+               ^              ^
+               1st            2nd occurrence met
+               But match point can be cycles 5, 6, OR 7
 ```
 
 ### THE CRITICAL DIFFERENCE: [->2] vs [=2]
 
-```
+```text
 Consider: req ##1 ack[->2] ##1 done
 vs:       req ##1 ack[=2]  ##1 done
 
 Timeline:
 Cycle:    0    1    2    3    4    5    6
-req:      1
-ack:           0    1    0    1    0    0
-done:                                   ?
+req:      1    0    0    0    0    0    0
+ack:      0    0    1    0    1    0    0
+done:     0    0    0    0    0    ?    ?
 
 [->2]: Match point is cycle 4 (2nd ack). Then ##1 checks done at cycle 5.
 [=2]:  Match point is cycle 4 OR LATER. Then ##1 checks done at cycle 5, 6, 7...
@@ -196,7 +194,7 @@ Key: [->N] ENDS at Nth occurrence.
      [=N] requires N occurrences but allows trailing cycles.
 ```
 
-```systemverilog
+```verilog
 // Interview example: check that exactly 2 acks occur, then done on next cycle
 // Use [->2] (not [=2]) because you want the sequence to end at the 2nd ack:
 property p_two_acks_then_done;
@@ -210,37 +208,37 @@ endproperty
 
 ### |-> Overlapping (Same Cycle)
 
-```
+```text
 The consequent starts in the SAME cycle the antecedent completes.
 
 Timeline for: req |-> ack
-Cycle:  0    1    2
-req:    1
-ack:    1              <-- checked in same cycle as req
+Cycle:      0    1    2
+req:        1
+ack:        1              <-- checked in same cycle as req
 
 Timeline for: (req ##2 grant) |-> ack
-Cycle:  0    1    2
-req:    1
-grant:            1
-ack:              1    <-- checked at cycle 2 when grant completes
+Cycle:      0    1    2
+req:        1
+grant:                1
+ack:                  1    <-- checked at cycle 2 when grant completes
 ```
 
 ### |=> Non-Overlapping (Next Cycle)
 
-```
+```text
 The consequent starts ONE cycle AFTER the antecedent completes.
 Equivalent to: |-> ##1
 
 Timeline for: req |=> ack
-Cycle:  0    1    2
-req:    1
-ack:         1         <-- checked one cycle AFTER req
+Cycle:      0    1    2
+req:        1
+ack:             1         <-- checked one cycle AFTER req
 
 Timeline for: (req ##2 grant) |=> ack
-Cycle:  0    1    2    3
-req:    1
-grant:            1
-ack:                   1  <-- checked at cycle 3 (one after grant)
+Cycle:      0    1    2    3
+req:        1
+grant:                1
+ack:                       1  <-- checked at cycle 3 (one after grant)
 ```
 
 ### Vacuous Truth
@@ -248,7 +246,7 @@ ack:                   1  <-- checked at cycle 3 (one after grant)
 If the antecedent never matches, the implication is **vacuously true** (passes by default).
 This is correct mathematically but can hide bugs.
 
-```systemverilog
+```verilog
 // If req never goes high, this assertion ALWAYS passes -- no checking done!
 property p_req_ack;
     @(posedge clk) req |-> ##[1:5] ack;
@@ -263,7 +261,7 @@ cover property (@(posedge clk) req);
 
 ## first_match
 
-```systemverilog
+```verilog
 // Without first_match, ##[1:5] creates 5 threads:
 property p_multi_thread;
     @(posedge clk) req |-> ##[1:5] ack;
@@ -284,7 +282,7 @@ endproperty
 
 ## disable iff
 
-```systemverilog
+```verilog
 property p_handshake;
     @(posedge clk) disable iff (!rst_n)  // Disable during reset
     req |-> ##[1:10] ack;
@@ -310,7 +308,7 @@ endproperty
 
 ### $rose, $fell, $stable
 
-```systemverilog
+```verilog
 // $rose(sig): true if sig changed from 0 to 1 (based on SAMPLED values)
 // $fell(sig): true if sig changed from 1 to 0
 // $stable(sig): true if sig didn't change
@@ -327,7 +325,7 @@ endproperty
 
 ### $past
 
-```systemverilog
+```verilog
 // $past(signal, N) -- value of signal N cycles ago (default N=1)
 property p_data_held;
     @(posedge clk) valid && !ready |-> ##1 (data == $past(data));
@@ -341,7 +339,7 @@ endproperty
 
 ### $countones, $onehot, $isunknown
 
-```systemverilog
+```verilog
 // $onehot(expr): exactly one bit is 1
 property p_onehot_grant;
     @(posedge clk) |grant |-> $onehot(grant);
@@ -368,7 +366,7 @@ You CANNOT modify RTL source code to add verification assertions (IP may be encr
 need clean RTL for synthesis). `bind` lets you attach assertion modules to RTL modules from
 outside.
 
-```systemverilog
+```verilog
 // assertion module -- separate file
 module fifo_assertions (
     input logic        clk,
@@ -424,7 +422,7 @@ bind fifo_rtl fifo_assertions u_fifo_asserts (
 
 ### Bind to Specific Instance
 
-```systemverilog
+```verilog
 // Bind to ALL instances of a module type:
 bind fifo_rtl fifo_assertions u_assert (...);
 
@@ -438,7 +436,7 @@ bind tb.dut.u_tx_fifo fifo_assertions u_assert (...);
 
 ### AXI Handshake Protocol
 
-```systemverilog
+```verilog
 module axi_protocol_checker (
     input logic        ACLK,
     input logic        ARESETn,
@@ -497,7 +495,7 @@ endmodule
 
 ### Arbiter Assertions
 
-```systemverilog
+```verilog
 module arbiter_checker #(parameter N = 4) (
     input logic       clk,
     input logic       rst_n,
@@ -542,7 +540,7 @@ endmodule
 
 ### FIFO Data Integrity
 
-```systemverilog
+```verilog
 module fifo_data_checker #(parameter DEPTH = 16, WIDTH = 8) (
     input logic             clk,
     input logic             rst_n,
@@ -595,7 +593,7 @@ endmodule
 
 ### Covergroups and Coverpoints
 
-```systemverilog
+```verilog
 class my_coverage extends uvm_subscriber #(my_txn);
     `uvm_component_utils(my_coverage)
 
@@ -647,7 +645,7 @@ endclass
 
 ### Cross Coverage and the Explosion Problem
 
-```systemverilog
+```verilog
 covergroup cg_cross;
     cp_op:   coverpoint txn.opcode   { bins ops[] = {[0:7]}; }   // 8 bins
     cp_size: coverpoint txn.size     { bins sizes[] = {1,2,4,8}; } // 4 bins
@@ -682,7 +680,7 @@ endgroup
 
 ### Coverage Options
 
-```systemverilog
+```verilog
 covergroup cg_options;
     option.per_instance = 1;     // Track coverage per instance (not merged)
     option.at_least = 5;         // Each bin needs 5 hits (default: 1)
@@ -702,19 +700,21 @@ endgroup
 
 ### The Feedback Loop
 
-```
-+------------------+      +-------------------+      +------------------+
-| Write Coverage   | ---> | Run Regressions   | ---> | Analyze Coverage |
-| Model from Spec  |      | (random + directed)|      | Reports          |
-+------------------+      +-------------------+      +------------------+
-        ^                                                      |
-        |                                                      v
-        |                                             +------------------+
-        +------------ Identify Holes <-------------- | Coverage Holes?  |
-        |             Tune constraints                | Missing combos?  |
-        |             Add directed tests              +------------------+
-        |             Adjust weights                          |
-        +-----------------------------------------------------+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    W["Write coverage model<br/>from spec"] --> R["Run regressions<br/>(random + directed)"]
+    R --> A["Analyze coverage reports"]
+    A --> H{"Coverage holes?<br/>missing combos?"}
+    H -->|yes| ID["Identify holes —<br/>tune constraints,<br/>add directed tests,<br/>adjust weights"]
+    ID --> W
+    H -->|no| DONE["Coverage closure"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef d fill:#fde68a,stroke:#b45309,color:#000
+    classDef g fill:#dcfce7,stroke:#15803d,color:#000
+    class W,R,A,ID s
+    class H d
+    class DONE g
 ```
 
 ### Methodology Stages
@@ -739,7 +739,7 @@ endgroup
 
 ### Coverage Merging
 
-```systemverilog
+```verilog
 // Per-instance vs type coverage:
 // option.per_instance = 1: each component tracks its own coverage
 //   Useful: "did agent0 AND agent1 both see all opcodes?"
@@ -755,7 +755,7 @@ endgroup
 
 ## Multi-Clock Assertions
 
-```systemverilog
+```verilog
 // Sequence spanning two clock domains
 // (Use with caution -- multi-clock assertions are complex)
 sequence s_cross_domain;
@@ -775,7 +775,7 @@ One worked example per operator -- the cheat sheet you need in an interview.
 
 ### $rose / $fell / $stable
 
-```systemverilog
+```verilog
 // $rose(sig): true when sampled value changed from 0→1 since previous clock edge
 // $fell(sig): true when sampled value changed from 1→0
 // $stable(sig): true when sampled value is same as previous clock edge
@@ -794,7 +794,7 @@ endproperty
 
 ### $past
 
-```systemverilog
+```verilog
 // $past(expr, N, gate, clk): value of expr N clock ticks ago
 // Default N=1, gate=1 (ungated), clock = current clock
 
@@ -814,7 +814,7 @@ endproperty
 
 ### $onehot / $onehot0 / $countones / $isunknown
 
-```systemverilog
+```verilog
 // $onehot(expr): exactly one bit is 1
 // $onehot0(expr): at most one bit is 1 (zero or one)
 // $countones(expr): number of 1 bits
@@ -834,7 +834,7 @@ endproperty
 
 ### ##N (fixed delay) and ##[M:N] (range delay)
 
-```systemverilog
+```verilog
 // ##N: exact N cycles later
 // ##[M:N]: between M and N cycles later (creates N-M+1 threads)
 // ##[0:$]: zero or more cycles (unbounded)
@@ -852,7 +852,7 @@ endproperty
 
 ### [*N] (consecutive repetition) and [*M:N]
 
-```systemverilog
+```verilog
 // expr[*N]: expr true for N consecutive cycles
 // expr[*M:N]: expr true for M to N consecutive cycles
 // expr[*0]: empty match (matches immediately, zero-length)
@@ -870,7 +870,7 @@ endproperty
 
 ### [->N] (goto repetition)
 
-```systemverilog
+```verilog
 // expr[->N]: expr becomes true for the Nth time (non-consecutive OK)
 // Match point IS at the Nth occurrence.
 // Equivalent to: (!expr[*0:$] ##1 expr) repeated N times
@@ -884,7 +884,7 @@ endproperty
 
 ### [=N] (non-consecutive repetition)
 
-```systemverilog
+```verilog
 // expr[=N]: expr has been true N times (non-consecutive)
 // Unlike [->N], match continues AFTER the Nth occurrence
 // Allows trailing cycles where expr is 0
@@ -899,7 +899,7 @@ endproperty
 
 ### |-> (overlapping implication) and |=> (non-overlapping)
 
-```systemverilog
+```verilog
 // |-> : consequent evaluated SAME cycle as antecedent match
 // |=> : consequent evaluated NEXT cycle after antecedent match
 // |=> B  is equivalent to  |-> ##1 B
@@ -917,7 +917,7 @@ endproperty
 
 ### throughout
 
-```systemverilog
+```verilog
 // expr1 throughout sequence2: expr1 must hold continuously for the
 // entire duration of sequence2
 
@@ -931,7 +931,7 @@ endproperty
 
 ### intersect
 
-```systemverilog
+```verilog
 // seq1 intersect seq2: both sequences must start AND end at the same time
 // Both must match over the SAME number of cycles
 
@@ -952,7 +952,7 @@ endproperty
 
 ### within
 
-```systemverilog
+```verilog
 // seq1 within seq2: seq1 must complete entirely during seq2
 // seq1 can start AFTER seq2 starts and end BEFORE seq2 ends
 
@@ -966,7 +966,7 @@ endproperty
 
 ### first_match
 
-```systemverilog
+```verilog
 // first_match(seq): only the first matching thread of seq is kept
 // Critical for performance when ranges create many threads
 
@@ -980,7 +980,7 @@ endproperty
 
 ### ended
 
-```systemverilog
+```verilog
 // seq.ended: true at the clock tick where sequence seq completes
 // Useful for checking that one sequence ended when another event occurs
 
@@ -1003,28 +1003,26 @@ This is the single most common protocol assertion asked in interviews. It exerci
 
 ### Protocol Requirements
 
-```
-AXI4 Write Address (AW) channel:
-  AWVALID, AWREADY, AWADDR, AWLEN, AWSIZE, AWBURST
+**AXI4 Write Address (AW) channel:**
+   - AWVALID, AWREADY, AWADDR, AWLEN, AWSIZE, AWBURST
 
-AXI4 Write Data (W) channel:
-  WVALID, WREADY, WDATA, WSTRB, WLAST
+**AXI4 Write Data (W) channel:**
+   - WVALID, WREADY, WDATA, WSTRB, WLAST
 
-AXI4 Write Response (B) channel:
-  BVALID, BREADY, BRESP
+**AXI4 Write Response (B) channel:**
+   - BVALID, BREADY, BRESP
 
-Rules to check:
-  1. AW→W→B ordering: write address before or with write data; response last
-  2. WLAST must be asserted on the last W beat
-  3. BVALID must not assert until after WLAST handshake completes
-  4. Number of W transfers must equal AWLEN + 1
-  5. Once VALID asserted, it must stay high until READY handshake
-  6. Payload must be stable while VALID is high and READY is low
-```
+**Rules to check:**
+   1. AW→W→B ordering: write address before or with write data; response last
+2. WLAST must be asserted on the last W beat
+3. BVALID must not assert until after WLAST handshake completes
+4. Number of W transfers must equal AWLEN + 1
+5. Once VALID asserted, it must stay high until READY handshake
+6. Payload must be stable while VALID is high and READY is low
 
 ### Complete Assertion Module
 
-```systemverilog
+```verilog
 module axi4_write_protocol_checker #(
     parameter ADDR_WIDTH = 32,
     parameter DATA_WIDTH = 64,
@@ -1197,25 +1195,25 @@ endmodule
 
 ### Key Design Decisions Explained
 
-```
+```verilog
 1. Why reference model for beat counting instead of pure assertions?
-   The number of W transfers depends on AWLEN (runtime variable).
-   Pure SVA cannot express "count exactly AWLEN+1 W handshakes" without
-   auxiliary state. The always block acts as a reference model.
+   - The number of W transfers depends on AWLEN (runtime variable).
+   - Pure SVA cannot express "count exactly AWLEN+1 W handshakes" without
+     auxiliary state. The always block acts as a reference model.
 
 2. Why first_match on s_wlast_handshake?
-   WVALID && WREADY && WLAST could be true for multiple consecutive cycles
-   (if WREADY stays high). first_match ensures we only trigger on the
-   first occurrence.
+   - WVALID && WREADY && WLAST could be true for multiple consecutive cycles
+     (if WREADY stays high). first_match ensures we only trigger on the
+     first occurrence.
 
 3. Why p_b_after_wlast_alt uses $past with gating?
-   AXI4 allows pipelining: BVALID can appear several cycles after WLAST
-   handshake, not necessarily the very next cycle. The $past check with
-   gating allows a window of 1-3 cycles.
+   - AXI4 allows pipelining: BVALID can appear several cycles after WLAST
+     handshake, not necessarily the very next cycle. The $past check with
+     gating allows a window of 1-3 cycles.
 
 4. Why cover property on each handshake?
-   Without these covers, the assertions could pass vacuously if the
-   stimulus never exercises the protocol. The covers ensure test quality.
+   - Without these covers, the assertions could pass vacuously if the
+     stimulus never exercises the protocol. The covers ensure test quality.
 ```
 
 ---
@@ -1224,7 +1222,7 @@ endmodule
 
 ### Why You Cannot Assert at the Crossing Point
 
-```
+```ascii-graph
 Signal crossing from clk_a to clk_b:
 
   clk_a domain          CDC signal (metastable)     clk_b domain
@@ -1243,7 +1241,7 @@ clock domain.
 
 ### CDC Assertion Patterns
 
-```systemverilog
+```verilog
 // Pattern 1: Verify synchronizer output is stable (no glitches after sync)
 // After a 2-FF synchronizer, the signal should be clean in clk_b domain
 module cdc_assertions #(
@@ -1301,7 +1299,7 @@ endmodule
 
 ### Common CDC Mistake: Asserting Before the Synchronizer
 
-```systemverilog
+```verilog
 // WRONG: Asserting on the metastable signal
 property p_bad_cdc;
     @(posedge clk_b) disable iff (!rst_n)
@@ -1325,7 +1323,7 @@ endproperty
 
 ### Multi-bit CDC Assertion Strategy
 
-```systemverilog
+```verilog
 // For a multi-bit bus crossing clock domains:
 // Option 1: Verify gray-code encoding (async FIFO pointers)
 //   Adjacent gray-code values differ by exactly 1 bit
@@ -1372,7 +1370,7 @@ endmodule
 
 ## Assertion Coverage and Action Blocks
 
-```systemverilog
+```verilog
 // Track how often an assertion fires (antecedent matches)
 a_req_ack: assert property (
     @(posedge clk) req |-> ##[1:5] ack
@@ -1453,7 +1451,7 @@ auto-generated bins.
 
 ### Q8: Write an assertion that checks an AXI-style handshake.
 
-```systemverilog
+```verilog
 property p_axi_handshake(valid, ready, data);
     @(posedge clk) disable iff (!rst_n)
     valid && !ready |=> valid && $stable(data);
@@ -1488,7 +1486,7 @@ legal inputs, assert DUT behavior, cover interesting scenarios.
 
 ### Q12: How do you check for X/Z in assertions?
 
-```systemverilog
+```verilog
 // $isunknown returns 1 if any bit is X or Z
 property p_no_x;
     @(posedge clk) disable iff (!rst_n)
@@ -1512,7 +1510,7 @@ first_match can consume significant simulator memory.
 
 ### Q14: Write a coverage group for a cache controller.
 
-```systemverilog
+```verilog
 covergroup cg_cache @(posedge clk);
     cp_op: coverpoint cache_op {
         bins read     = {CACHE_READ};

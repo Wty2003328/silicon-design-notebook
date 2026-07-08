@@ -9,7 +9,7 @@
 4-state types hold values 0, 1, X (unknown), Z (high-impedance).
 2-state types hold only 0 and 1.
 
-```systemverilog
+```verilog
 // 4-state types: logic, reg, wire, integer, time
 logic       [7:0] data;       // Default value: 8'hxx
 reg         [7:0] old_style;  // Default value: 8'hxx
@@ -41,7 +41,7 @@ instructions. On large testbench data structures (scoreboards with thousands of 
 **X-pessimism**: when X feeds into data logic, it spreads aggressively. `0 & X = 0` is correct,
 but `X + 0 = X` means one uninitialized field corrupts an entire computation.
 
-```systemverilog
+```verilog
 // BUG EXAMPLE: 2-state misses uninitialized register
 module buggy_mux (input logic sel, input logic [7:0] a, b, output logic [7:0] y);
     logic [7:0] internal_reg; // OOPS: never assigned in one path
@@ -72,7 +72,7 @@ In Verilog, you needed `reg` for procedural blocks and `wire` for continuous ass
 The names were confusing -- `reg` does NOT mean register. SystemVerilog's `logic` works in both
 contexts with ONE restriction: it cannot have multiple drivers (use `wire` for that).
 
-```systemverilog
+```verilog
 logic [7:0] data;
 
 // Works in procedural context
@@ -97,7 +97,7 @@ single vector, bit-select into it, and pass it across module ports or DPI bounda
 **Unpacked arrays** are stored as arrays of elements -- each element may have its own memory
 alignment. The simulator is free to add padding between elements.
 
-```systemverilog
+```verilog
 // Packed: stored as one contiguous 32-bit vector
 logic [3:0][7:0] packed_data;   // 4 bytes packed into 32 bits
 // Memory: [byte3][byte2][byte1][byte0] -- one 32-bit word
@@ -117,7 +117,7 @@ Module ports that connect to RTL signals must be packed (or scalar). When callin
 via DPI-C, packed arrays map cleanly to C integer types or `svBitVecVal` arrays, while unpacked
 arrays require `svOpenArrayHandle` and complex accessor functions.
 
-```systemverilog
+```verilog
 // DPI-C import -- packed maps to simple C types
 import "DPI-C" function int c_checksum(input bit [31:0] data);
 // In C: int c_checksum(const svBitVecVal* data);  // simple pointer
@@ -130,7 +130,7 @@ import "DPI-C" function void c_process(input bit [7:0] data[]);
 
 ### Packed Array Bit-Select Gotcha
 
-```systemverilog
+```verilog
 logic [3:0][7:0] pdata;  // packed: 32 bits total
 pdata[2] = 8'hAB;        // Selects the THIRD byte (bits [23:16])
 pdata[2][3] = 1'b1;      // Selects bit 19 (byte 2, bit 3)
@@ -143,7 +143,7 @@ udata[2][3] = 1'b1;      // Selects bit 3 of element 2
 
 ### Mixed Packed/Unpacked
 
-```systemverilog
+```verilog
 // Packed dimensions are to the LEFT of the name, unpacked to the RIGHT
 logic [1:0][7:0] memory [256];
 // memory is: 256 entries (unpacked), each 16-bit (2 packed bytes)
@@ -158,7 +158,7 @@ logic [1:0][7:0] memory [256];
 
 ### Complete Lifecycle
 
-```systemverilog
+```verilog
 int dyn_arr[];              // Declare -- handle is null, size is 0
 
 initial begin
@@ -202,7 +202,7 @@ Associative arrays are implemented as hash tables (or balanced trees depending o
 simulator). They allocate memory only for indices that are actually used -- perfect for
 sparse data.
 
-```systemverilog
+```verilog
 // Syntax: type name [index_type];
 int scores [string];           // String-indexed
 bit [31:0] mem [bit [63:0]];   // 64-bit address indexed (sparse memory)
@@ -236,7 +236,7 @@ end
 
 ### Practical Use Case: Scoreboard Transaction Tracking
 
-```systemverilog
+```verilog
 class scoreboard extends uvm_scoreboard;
     // Track outstanding transactions by ID
     Transaction expected_txns [int];  // Associative array indexed by txn ID
@@ -280,7 +280,7 @@ endclass
 
 ### Complete API with Edge Cases
 
-```systemverilog
+```verilog
 int q[$];                     // Unbounded queue
 int bq[$:15];                 // Bounded queue: max 16 elements (0..15)
 
@@ -314,7 +314,7 @@ end
 
 ### Edge Cases That Cause Bugs
 
-```systemverilog
+```verilog
 // GOTCHA 1: Pop from empty queue
 int q[$];
 int val = q.pop_front();  // RUNTIME ERROR or returns default (0)
@@ -349,7 +349,7 @@ q3 = da;                    // OK -- copies dynamic array to queue
 
 ### Packed Struct for Register Modeling
 
-```systemverilog
+```verilog
 // Real-world register definition -- USB endpoint control register
 typedef struct packed {
     logic        ep_enable;    // Bit [31]
@@ -377,7 +377,7 @@ logic msb = ep0_ctrl[31];                  // Same as ep0_ctrl.ep_enable
 
 ### Tagged Union for Type Safety
 
-```systemverilog
+```verilog
 // Regular union -- NO type safety, you must track which member is valid
 typedef union packed {
     logic [31:0] raw;
@@ -407,7 +407,7 @@ endcase
 
 ### Struct Padding and Alignment
 
-```systemverilog
+```verilog
 // UNPACKED struct -- simulator may add padding
 typedef struct {
     byte  a;      // 8 bits + possible padding to 32-bit boundary
@@ -430,7 +430,7 @@ typedef struct packed {
 
 ### $cast for Class Hierarchy
 
-```systemverilog
+```verilog
 class Animal;
     virtual function string speak();
         return "...";
@@ -463,7 +463,7 @@ end
 
 ### The FAILURE Case in UVM (Factory Overrides)
 
-```systemverilog
+```verilog
 class base_txn extends uvm_sequence_item;
     `uvm_object_utils(base_txn)
     rand bit [7:0] addr;
@@ -498,7 +498,7 @@ endtask
 
 ### Static Cast for Basic Types
 
-```systemverilog
+```verilog
 // int'(), bit'(), signed'(), unsigned'() -- compile-time cast
 real r = 3.14;
 int i = int'(r);           // i = 3 (truncated)
@@ -518,7 +518,7 @@ int v = int'(c);            // v = 1
 
 ### Non-Trivial Examples
 
-```systemverilog
+```verilog
 // find_index with complex predicate
 int data[] = '{10, 25, 30, 45, 50, 65, 70};
 int idx[$] = data.find_index with (item > 40 && item < 60);
@@ -563,7 +563,7 @@ deck.shuffle();
 
 ### Wildcard Import Gotcha
 
-```systemverilog
+```verilog
 package pkg_a;
     typedef enum {READ, WRITE} op_e;
     function void hello(); $display("pkg_a::hello"); endfunction
@@ -596,7 +596,7 @@ endmodule
 
 ### Proper Package Pattern in UVM Environments
 
-```systemverilog
+```verilog
 package my_env_pkg;
     import uvm_pkg::*;
     `include "uvm_macros.svh"
@@ -622,7 +622,7 @@ endmodule
 
 ### The Classic Sign-Extension Bug
 
-```systemverilog
+```verilog
 logic signed [7:0] a = -3;    // 8'hFD (signed)
 logic signed [7:0] b = 5;     // 8'h05 (signed)
 
@@ -648,7 +648,7 @@ logic signed [8:0] good2 = a;  // Automatic sign extension: 9'h1FD = -3
    One unsigned operand makes the entire expression unsigned.
 3. **Concatenation** `{}` and **replication** `{{}}` are ALWAYS unsigned regardless of operands.
 
-```systemverilog
+```verilog
 logic signed [3:0] s4 = -1;   // 4'hF
 logic [3:0] u4 = 4'hF;        // 15
 
@@ -668,7 +668,7 @@ logic signed [15:0] z = x;    // z = 16'hFFFF = -1 (correct sign extension)
 
 ## Enums
 
-```systemverilog
+```verilog
 typedef enum logic [2:0] {
     IDLE   = 3'b000,
     SETUP  = 3'b001,
@@ -696,7 +696,7 @@ typedef enum bit [1:0] {D, E, F} def_e;    // 2-state base -> starts as 0 (D)
 
 ## String Type
 
-```systemverilog
+```verilog
 string s1 = "Hello";
 string s2 = "World";
 string s3 = {s1, " ", s2};       // Concatenation: "Hello World"
@@ -721,7 +721,7 @@ formatted = $sformatf("Addr: 0x%08h Data: 0x%08h", addr, data);
 
 ## Type Compatibility and Equivalence
 
-```systemverilog
+```verilog
 // Type-equivalent: same structure, possibly different names
 typedef logic [7:0] byte_a;
 typedef logic [7:0] byte_b;
@@ -759,7 +759,7 @@ for catching uninitialized or multiply-driven signals.
 **A:** X and Z bits are converted to 0. This is silent -- no warning or error. This is why
 using 2-state types for DUT-connected signals is dangerous: X-bugs become invisible.
 
-```systemverilog
+```verilog
 logic [3:0] four_state = 4'b10xz;
 bit [3:0] two_state = four_state;  // two_state = 4'b1000
 ```
@@ -775,7 +775,7 @@ arbitrary bit-slicing like `arr[15:8]`, unpacked does not.
 
 ### Q5: Write code to find the second-largest value in a dynamic array.
 
-```systemverilog
+```verilog
 function automatic int find_second_largest(int arr[]);
     int sorted_q[$];
     sorted_q = arr.unique;   // Remove duplicates
@@ -809,7 +809,7 @@ let automatic sign extension handle it via direct assignment to a wider signed v
 
 ### Q9: Write a parameterized FIFO using a queue.
 
-```systemverilog
+```verilog
 class fifo #(type T = int, int DEPTH = 16);
     T q[$:DEPTH-1];
 
@@ -841,7 +841,7 @@ endclass
 
 ### Q10: What is the output of this code?
 
-```systemverilog
+```verilog
 logic signed [7:0] a = -1;    // 8'hFF
 logic [15:0] b;
 b = a;
@@ -875,7 +875,7 @@ explicit loops:
 default value (0 for integral types, "" for strings, null for class handles) and returns it.
 This is a common bug source -- always use `.exists(key)` before reading.
 
-```systemverilog
+```verilog
 int aa [string];
 $display("%0d", aa["missing"]);  // Prints 0, AND creates the entry!
 $display("Num: %0d", aa.num());  // 1 -- the entry was created by the read
@@ -886,7 +886,7 @@ $display("Num: %0d", aa.num());  // 1 -- the entry was created by the read
 **A:** `==` is logical equality -- returns X if either operand contains X or Z.
 `===` is case equality -- compares all 4 states exactly, always returns 0 or 1.
 
-```systemverilog
+```verilog
 logic [3:0] a = 4'b10x1;
 logic [3:0] b = 4'b10x1;
 if (a == b)  // Result is X (unknown), treated as false in if
@@ -897,7 +897,7 @@ Use `===` in testbench assertions when checking for X. Use `==` in RTL (synthesi
 
 ### Q15: How do you properly pass a dynamic array to a function?
 
-```systemverilog
+```verilog
 // By value -- copies the ENTIRE array (expensive for large arrays)
 function void process_copy(int arr[]);
     arr[0] = 999;  // Modifies the COPY, not the original
@@ -917,7 +917,7 @@ endfunction
 
 ### Q16: Write code to implement a simple hash function for strings.
 
-```systemverilog
+```verilog
 function automatic int unsigned string_hash(string s);
     int unsigned hash = 5381;
     for (int i = 0; i < s.len(); i++) begin

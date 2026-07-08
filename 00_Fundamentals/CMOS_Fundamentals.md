@@ -23,7 +23,7 @@
 
 ### 1.1 NMOS Transistor — Regions of Operation
 
-```
+```ascii-graph
                   Gate (G)
                    |
             ───────┤ oxide (SiO2, tox)
@@ -34,7 +34,7 @@
 
 **Three operating regions (NMOS, VGS > 0, VDS > 0):**
 
-```
+```verilog
 Cutoff (VGS < Vth):
   IDS ≈ 0   (no channel formed)
   Transistor is OFF (acts as open switch)
@@ -52,7 +52,7 @@ Saturation (VGS > Vth, VDS ≥ VGS - Vth):
 ```
 
 **Key parameters:**
-```
+```text
 μn:    Electron mobility (~400 cm²/V·s for bulk Si at 300K)
 Cox:   Gate oxide capacitance = εox / tox
 W/L:   Width-to-length ratio (designer's knob)
@@ -63,7 +63,7 @@ Vth:   Threshold voltage (~0.3-0.5V for modern processes)
 ### 1.2 PMOS Transistor
 
 Same equations but with opposite signs/polarities:
-```
+```ascii-graph
 Cutoff:      VGS > Vth (Vth < 0 for PMOS, so |VGS| < |Vth|)
 Linear:      |VGS| > |Vth|, |VDS| < |VGS| - |Vth|
 Saturation:  |VGS| > |Vth|, |VDS| ≥ |VGS| - |Vth|
@@ -74,7 +74,7 @@ Hole mobility μp ≈ 150-200 cm²/V·s (about 2-3x lower than electrons)
 
 ### 1.3 Threshold Voltage
 
-```
+```text
 Vth = Vth0 + γ * (√(2*φF + VSB) - √(2*φF))
 
 Vth0:  Zero-bias threshold voltage
@@ -89,7 +89,7 @@ closest to VDD/GND has VSB = 0 but upper transistors have VSB > 0.
 
 ### 1.4 Short-Channel Effects (Modern Nodes)
 
-```
+```ascii-graph
 DIBL (Drain-Induced Barrier Lowering):
   Drain voltage reduces source-channel barrier → Vth decreases with VDS
   Vth(VDS) = Vth(long) - η * VDS
@@ -117,7 +117,7 @@ Gate Leakage (tunneling):
 
 ### 2.1 Circuit Structure
 
-```
+```ascii-graph
          VDD
           |
        ┌──┤ PMOS (W_p/L_p)
@@ -131,7 +131,7 @@ Gate Leakage (tunneling):
 
 ### 2.2 VTC Analysis — Five Regions
 
-```
+```ascii-graph
 Vout
  |
 VDD ─────────────╮
@@ -153,7 +153,7 @@ VDD ─────────────╮
 
 **Five operating regions as Vin sweeps 0 → VDD:**
 
-```
+```ascii-graph
 Region A (Vin < Vthn):
   NMOS: cutoff     PMOS: linear
   Vout = VDD (PMOS pulls up, NMOS is off)
@@ -180,7 +180,7 @@ Region E (Vin > VDD + Vthp, noting Vthp < 0):
 
 At VM, Vin = Vout = VM, and NMOS current = PMOS current (both in saturation):
 
-```
+```text
 (1/2) * kn * (VM - Vthn)² = (1/2) * kp * (VDD - VM - |Vthp|)²
 
 where kn = μn*Cox*(Wn/Ln), kp = μp*Cox*(Wp/Lp)
@@ -191,13 +191,13 @@ VM = (Vthn + r*(VDD - |Vthp|)) / (1 + r)
 ```
 
 **For symmetric VTC (VM = VDD/2):**
-```
+```ascii-graph
 kp/kn = 1  →  (μp*Wp/Lp) = (μn*Wn/Ln)
 Since μp ≈ μn/2.5:  Wp/Lp ≈ 2.5 * (Wn/Ln)
 ```
 
 **Numerical example (7nm):**
-```
+```text
 VDD = 0.7V, Vthn = 0.3V, |Vthp| = 0.3V
 r = 1 (symmetric sizing):
 VM = (0.3 + 1*(0.7-0.3)) / (1+1) = 0.7/2 = 0.35V = VDD/2  ✓
@@ -209,7 +209,6 @@ VM = (0.3 + 1*(0.7-0.3)) / (1+1) = 0.7/2 = 0.35V = VDD/2  ✓
 
 ### 3.1 Definition
 
-```
 VOH: Output high voltage (Vout when Vin = 0) = VDD
 VOL: Output low voltage (Vout when Vin = VDD) = 0
 VIH: Input high voltage (min Vin recognized as logic 1)
@@ -218,11 +217,10 @@ VIL: Input low voltage (max Vin recognized as logic 0)
 VIH and VIL are defined as the points where |dVout/dVin| = 1
 (unity gain points on the VTC)
 
-NMH (Noise Margin High) = VOH - VIH
-NML (Noise Margin Low)  = VIL - VOL
-```
+- **NMH (Noise Margin High)** = `VOH - VIH`
+- **NML (Noise Margin Low)** = `VIL - VOL`
 
-```
+```ascii-graph
 Vout
  |
 VOH ────╮
@@ -243,7 +241,7 @@ VOL                    Vin
 
 For a symmetric CMOS inverter (kn = kp, Vthn = |Vthp| = Vt):
 
-```
+```ascii-graph
 VIL ≈ (2*Vout + Vin - Vt) / (solving dVout/dVin = -1)
 
 For symmetric inverter (long-channel approximation, from region-by-region VTC analysis):
@@ -257,19 +255,17 @@ For symmetric inverter (long-channel approximation, from region-by-region VTC an
 ```
 
 **Numerical example:**
-```
-VDD = 0.7V, Vt = 0.3V:
-  NMH = NML = (3*0.7 + 2*0.3)/8 = (2.1 + 0.6)/8 = 0.3375V
+- **VDD** = `0.7V, Vt = 0.3V:`
+   - NMH = NML = (3*0.7 + 2*0.3)/8 = (2.1 + 0.6)/8 = 0.3375V
 
-  NM/VDD = 0.3375/0.7 = 48.2% of VDD
+NM/VDD = 0.3375/0.7 = 48.2% of VDD
 
-  This is high — ideal CMOS has excellent noise margins
-  Compare with: NMOS-only logic NM ≈ 20-30% of VDD
-```
+This is high — ideal CMOS has excellent noise margins
+Compare with: NMOS-only logic NM ≈ 20-30% of VDD
 
 ### 3.3 Factors That Degrade Noise Margins
 
-```
+```ascii-graph
 1. Vt mismatch (process variation):
    If Vthn ≠ |Vthp|, VM shifts away from VDD/2
    NMH and NML become unequal
@@ -295,17 +291,15 @@ VDD = 0.7V, Vt = 0.3V:
 A cascade of CMOS inverters restores logic levels because the gain in the transition
 region is much greater than 1:
 
-```
 |Gain| = |dVout/dVin| at VM
 
-For long-channel CMOS:
-  |Gain| = (kn + kp) * (VDD/2 - Vt) / (λn + λp) * VDD
+**For long-channel CMOS:**
+   - |Gain| = (kn + kp) * (VDD/2 - Vt) / (λn + λp) * VDD
 
-  Typically |Gain| > 10-50
+Typically |Gain| > 10-50
 
 This means: a signal degraded by noise gets "cleaned up" after
 passing through a few inverters → digital logic is noise-tolerant
-```
 
 ---
 
@@ -313,7 +307,7 @@ passing through a few inverters → digital logic is noise-tolerant
 
 ### 4.1 Propagation Delay
 
-```
+```text
 tpHL: Time for output to fall from VOH to VDD/2 (high-to-low)
 tpLH: Time for output to rise from VOL to VDD/2 (low-to-high)
 tp = (tpHL + tpLH) / 2
@@ -328,14 +322,14 @@ where:
 ```
 
 **For equal rise/fall (tpHL = tpLH):**
-```
+```ascii-graph
 Rn = Rp → kn(VDD - Vthn)² = kp(VDD - |Vthp|)²
 For Vthn = |Vthp|: kn = kp → Wp ≈ 2.5 * Wn (same as symmetric VM)
 ```
 
 ### 4.2 Delay Optimization
 
-```
+```ascii-graph
 1. Increase W/L: reduces R → faster, but increases C (area + power)
    Diminishing returns: doubling W doubles both drive and self-load
 
@@ -356,7 +350,7 @@ For Vthn = |Vthp|: kn = kp → Wp ≈ 2.5 * Wn (same as symmetric VM)
 
 ### 4.3 Power-Delay Product (PDP) and Energy-Delay Product (EDP)
 
-```
+```ascii-graph
 PDP = P_avg × tp
     = (α * CL * VDD² * f) × (k * CL * VDD / ID)
     ∝ CL * VDD²    (energy per transition)
@@ -374,7 +368,7 @@ At optimal VDD for minimum EDP:
 
 ### 5.1 Static CMOS (Complementary)
 
-```
+```ascii-graph
 Structure: Pull-Up Network (PMOS) + Pull-Down Network (NMOS)
            PUN and PDN are complementary (dual networks)
 
@@ -404,7 +398,7 @@ NOR gate (2-input):
 ```
 
 **NAND vs NOR performance:**
-```
+```ascii-graph
 NAND: NMOS in series → higher PDN resistance → slower pull-down
       PMOS in parallel → lower PUN resistance → faster pull-up
       Net: NAND is preferred over NOR because:
@@ -418,7 +412,7 @@ NOR:  PMOS in series → much higher PUN resistance (μp is already low)
 
 ### 5.2 Pseudo-NMOS
 
-```
+```ascii-graph
          VDD
           |
        ┌──┤ PMOS (always ON, gate tied to GND)
@@ -437,7 +431,7 @@ Disadvantages:
 
 ### 5.3 Transmission Gate Logic
 
-```
+```ascii-graph
          A ──┤├── B         NMOS
          A ──┤├── B         PMOS (complementary control)
               |
@@ -450,7 +444,7 @@ Disadvantage: no gain → signal degrades through chain of TGs
 
 ### 5.4 Dynamic Logic (Domino)
 
-```
+```ascii-graph
 Phase 1 (CLK = 0, precharge):
   PMOS precharges output node to VDD
   NMOS evaluation network is disconnected (footer off)
@@ -476,7 +470,7 @@ Domino: Add a static inverter after dynamic node
 ```
 
 **Domino issues:**
-```
+```ascii-graph
 1. Charge sharing: internal nodes discharge dynamic node → false evaluation
    Fix: precharge internal nodes, add keeper PMOS
 
@@ -537,7 +531,7 @@ Related: noise-margin basis (§3 above); reflections/termination + SerDes equali
 In a CMOS inverter, the n-well (for PMOS) and p-substrate (for NMOS) create a parasitic
 thyristor (SCR = Silicon Controlled Rectifier):
 
-```
+```ascii-graph
 Cross-section:
 
   VDD (to PMOS source)         GND (to NMOS source)
@@ -563,7 +557,7 @@ Parasitic BJTs formed:
   Rsub:  resistance of p-substrate (base of NPN)
 ```
 
-```
+```ascii-graph
 Equivalent circuit:
                 VDD
                  |
@@ -583,7 +577,7 @@ Equivalent circuit:
 
 ### 6.2 Latch-Up Triggering
 
-```
+```ascii-graph
 Normal operation: Both BJTs are OFF (no base current)
 
 Trigger conditions:
@@ -610,7 +604,7 @@ Trigger conditions:
 
 ### 6.3 Latch-Up Prevention
 
-```
+```ascii-graph
 1. Guard Rings:
    - P+ guard ring around NMOS (tied to GND): collects minority carriers
      from substrate, reduces Rsub
@@ -649,17 +643,15 @@ Trigger conditions:
 
 ### 6.4 Latch-Up Testing
 
-```
 JEDEC JESD78 standard:
-  - Positive and negative current injection test (±100 mA)
-  - Positive and negative voltage overstress (VDD + 1.5V)
-  - At elevated temperature (typically 125°C)
+- Positive and negative current injection test (±100 mA)
+- Positive and negative voltage overstress (VDD + 1.5V)
+- At elevated temperature (typically 125°C)
 
-Pass criteria:
-  - No latch-up (current returns to normal after trigger removed)
-  - Supply current < specified limit during test
-  - Device functional after test
-```
+1. Pass criteria:
+- No latch-up (current returns to normal after trigger removed)
+- Supply current < specified limit during test
+- Device functional after test
 
 ---
 
@@ -667,7 +659,7 @@ Pass criteria:
 
 ### 7.1 ESD Events
 
-```
+```text
 Human Body Model (HBM):
   - Models discharge from human finger
   - 100 pF charged to 2-4 kV, discharged through 1.5 kΩ
@@ -688,7 +680,7 @@ Machine Model (MM):
 
 ### 7.2 ESD Protection Circuits
 
-```
+```ascii-graph
 Basic I/O pad ESD protection:
 
          VDD ─────────────────────────
@@ -709,7 +701,7 @@ Additional elements:
   - Secondary protection (series resistor + smaller clamp closer to gate)
 ```
 
-```
+```ascii-graph
 Grounded-Gate NMOS (ggNMOS) clamp:
   - Large NMOS with gate/source/body tied to GND
   - Triggers via snapback: drain voltage exceeds BV → avalanche
@@ -722,14 +714,11 @@ Grounded-Gate NMOS (ggNMOS) clamp:
 
 ### 7.3 ESD Design Rules
 
-```
 1. All I/O pads must have primary ESD protection
 2. All power domains need power clamps
 3. No gate oxide directly connected to I/O pad without protection
 4. CDM protection for all cross-domain signals
-5. Antenna rules: long metal connected to gate during fabrication
-   can accumulate charge → gate oxide damage (same mechanism as ESD)
-```
+5. Antenna rules: long metal connected to gate during fabrication can accumulate charge → gate oxide damage (same mechanism as ESD)
 
 ---
 
@@ -737,7 +726,7 @@ Grounded-Gate NMOS (ggNMOS) clamp:
 
 ### 8.1 Why FinFET?
 
-```
+```text
 Planar MOSFET below 22nm:
   - Gate loses control of channel (short-channel effects dominate)
   - Subthreshold slope >> 60 mV/dec ideal
@@ -754,7 +743,7 @@ FinFET solution:
 
 ### 8.2 FinFET Structure
 
-```
+```ascii-graph
   Top view:                    Cross-section (perpendicular to fin):
 
                                        Gate
@@ -774,7 +763,7 @@ FinFET solution:
 
 ### 8.3 Fin Quantization
 
-```
+```text
 CRITICAL DIFFERENCE from planar MOSFET:
 
 Planar: W is continuous — designer can choose any W (e.g., 120nm, 135nm)
@@ -797,7 +786,7 @@ Impact on design:
 
 ### 8.4 GAAFET (Gate-All-Around) — Beyond FinFET
 
-```
+```ascii-graph
 3nm and below: GAA / Nanosheet FET
   - Gate wraps ALL 4 sides of the channel
   - Better electrostatic control than FinFET
@@ -827,26 +816,24 @@ Impact on design:
 
 ### 8.5 Back-End-of-Line (BEOL) Scaling
 
-```
 As transistors shrink, metal interconnects become the bottleneck:
 
-  Wire resistance: R = ρ * L / (W * H)
-    At 7nm: Cu resistivity increases due to grain boundary and
-    surface scattering (ρeff >> ρbulk when wire width ≈ electron mean free path)
+Wire resistance: R = ρ * L / (W * H)
+At 7nm: Cu resistivity increases due to grain boundary and
+surface scattering (ρeff >> ρbulk when wire width ≈ electron mean free path)
 
-  Wire capacitance: C = ε * L * H / S  (parallel plate between adjacent wires)
-    Spacing S shrinks → C increases → crosstalk worsens
+Wire capacitance: C = ε * L * H / S  (parallel plate between adjacent wires)
+Spacing S shrinks → C increases → crosstalk worsens
 
-  RC delay of interconnect:
-    τ = R × C ∝ ρ * ε * L² / (W * H * S)
-    Doubling wire length → 4× delay (quadratic!)
+RC delay of interconnect:
+τ = R × C ∝ ρ * ε * L² / (W * H * S)
+Doubling wire length → 4× delay (quadratic!)
 
-Solutions:
-  - Low-k dielectrics: reduce ε (k < 3.0, air gaps for ultra-low-k)
-  - Alternative metals: Co, Ru for narrow lines (better than Cu at < 20nm pitch)
-  - Repeater insertion: break long wires with buffers
-  - Metal layer count: 12-15+ layers at advanced nodes
-```
+**Solutions:**
+   - Low-k dielectrics: reduce ε (k < 3.0, air gaps for ultra-low-k)
+   - Alternative metals: Co, Ru for narrow lines (better than Cu at < 20nm pitch)
+   - Repeater insertion: break long wires with buffers
+   - Metal layer count: 12-15+ layers at advanced nodes
 
 ---
 
@@ -854,29 +841,27 @@ Solutions:
 
 ### 9.1 Types of Variation
 
-```
-Systematic variation:
-  - Predictable, depends on layout context
-  - Lithography: line-end shortening, corner rounding
-  - CMP (Chemical Mechanical Polishing): metal thickness varies with density
-  - Well proximity effect: Vth varies near well boundary
+**Systematic variation:**
+   - Predictable, depends on layout context
+   - Lithography: line-end shortening, corner rounding
+   - CMP (Chemical Mechanical Polishing): metal thickness varies with density
+   - Well proximity effect: Vth varies near well boundary
 
-Random variation:
-  - Unpredictable, follows statistical distributions
-  - Random Dopant Fluctuation (RDF): discrete dopant atoms cause Vth variation
-    σ(Vth) ∝ 1/√(W*L)  → worse for smaller transistors
-  - Line Edge Roughness (LER): random variation in gate length
-  - Oxide thickness variation (Tox)
+**Random variation:**
+   - Unpredictable, follows statistical distributions
+   - Random Dopant Fluctuation (RDF): discrete dopant atoms cause Vth variation
+   - σ(Vth) ∝ 1/√(W*L)  → worse for smaller transistors
+   - Line Edge Roughness (LER): random variation in gate length
+   - Oxide thickness variation (Tox)
 
-Within-die (WID) vs Die-to-die (D2D):
-  WID: transistors on the same chip differ from each other
-  D2D: average parameters differ between chips
-  Both must be accounted for in timing analysis (OCV, AOCV, POCV)
-```
+**Within-die (WID) vs Die-to-die (D2D):**
+   - WID: transistors on the same chip differ from each other
+   - D2D: average parameters differ between chips
+   - Both must be accounted for in timing analysis (OCV, AOCV, POCV)
 
 ### 9.2 Process Corners
 
-```
+```ascii-graph
 Traditional corners:
   TT: Typical NMOS, Typical PMOS (nominal)
   FF: Fast NMOS, Fast PMOS (low Vth, high μ)
@@ -895,7 +880,7 @@ Combined with voltage and temperature:
 
 ### 9.3 DTCO (Design-Technology Co-Optimization)
 
-```
+```ascii-graph
 DTCO: Simultaneously optimizing the process technology and the design methodology
 to achieve the best PPA (Power, Performance, Area).
 
@@ -932,30 +917,28 @@ Examples:
 
 ### 9.4 GAA Nanosheet Channel Width Modulation
 
-```
 Key advantage of GAA over FinFET: continuous width control
 
 FinFET width: W = N_fins * (2*H + W_fin), quantized in units of one fin
 GAA nanosheet: W = N_sheets * W_sheet, where W_sheet is continuously tunable
 
-  Example: 3 stacked nanosheets, each 30nm wide
-    Weff = 4 * 3 * 30nm = 360nm (gate wraps all 4 sides of each sheet)
-    Can also make W_sheet = 25nm for Weff = 300nm
-    Or W_sheet = 20nm for Weff = 240nm → continuous adjustment!
+Example: 3 stacked nanosheets, each 30nm wide
+Weff = 4 * 3 * 30nm = 360nm (gate wraps all 4 sides of each sheet)
+Can also make W_sheet = 25nm for Weff = 300nm
+Or W_sheet = 20nm for Weff = 240nm → continuous adjustment!
 
 Sheet width range: ~15nm to ~50nm per sheet (technology-dependent)
 Number of sheets: typically 3-5 stacked vertically
 
-Implications for standard cell design:
-  - Can tune drive strength more precisely than FinFET
-  - Library cells can have optimized widths, not just integer multiples
-  - Analog/mixed-signal benefits: better current mirror matching
-  - But: wider sheets → more gate capacitance (trade-off)
-```
+**Implications for standard cell design:**
+   - Can tune drive strength more precisely than FinFET
+   - Library cells can have optimized widths, not just integer multiples
+   - Analog/mixed-signal benefits: better current mirror matching
+   - But: wider sheets → more gate capacitance (trade-off)
 
 ### 9.5 Near-Threshold Computing
 
-```
+```verilog
 Operating transistors near Vth (VDD ≈ 0.4-0.6V) for extreme energy efficiency:
 
   Energy per operation ∝ VDD² (dominated by dynamic power)
@@ -995,8 +978,8 @@ PMOS saturation. Region E: NMOS linear, PMOS off, Vout=0.
 **Q2: Derive the switching threshold VM. How do you make VM = VDD/2?**
 
 Set IDn = IDp with both in saturation: kn(VM-Vthn)² = kp(VDD-VM-|Vthp|)². Solving gives
-VM = (Vthn + r(VDD-|Vthp|))/(1+r) where r = √(kp/kn). For VM = VDD/2 with equal
-thresholds: kp = kn, meaning Wp/Lp ≈ 2.5 × Wn/Ln (to compensate for lower hole mobility).
+$V_M = \dfrac{V_{thn} + r(V_{DD}-|V_{thp}|)}{1+r}$ where $r = \sqrt{k_p/k_n}$. For VM = VDD/2 with equal
+thresholds: kp = kn, meaning $W_p/L_p \approx 2.5 \times W_n/L_n$ (to compensate for lower hole mobility).
 
 **Q3: Why is NAND preferred over NOR in CMOS?**
 
@@ -1017,7 +1000,7 @@ well taps, and SOI processes (which eliminate latch-up entirely).
 **Q5: What is the body effect and when does it matter?**
 
 The body effect increases Vth when source-to-body voltage (VSB) is non-zero:
-Vth = Vth0 + γ(√(2φF+VSB) - √(2φF)). It matters in stacked transistors (e.g., 4-input
+$V_{th} = V_{th0} + \gamma\left(\sqrt{2\phi_F+V_{SB}} - \sqrt{2\phi_F}\right)$. It matters in stacked transistors (e.g., 4-input
 NAND: the NMOS closest to the output has its source above GND due to other NMOS below it,
 increasing VSB and thus Vth, which slows the gate). Also matters in source-follower
 circuits and transmission gates.
@@ -1051,7 +1034,7 @@ where temperature has no effect is called the zero-temperature-coefficient (ZTC)
 
 NMH = VOH - VIH (tolerance for high logic level). NML = VIL - VOL (tolerance for low
 level). VIH and VIL are defined as the points on the VTC where gain = -1. For a symmetric
-CMOS inverter with VDD = 0.7V and Vt = 0.3V, NMH = NML ≈ 0.34V (about 48% of VDD).
+CMOS inverter with $V_{DD} = 0.7$ V and $V_t = 0.3$ V, $N_{MH} = N_{ML} \approx 0.34$ V (about 48% of VDD).
 Ideal CMOS has VOH = VDD and VOL = 0, giving excellent noise margins.
 
 **Q10: What is velocity saturation and why does it matter?**
@@ -1089,7 +1072,7 @@ narrow widths.
 
 **Q14: What is the subthreshold slope and why can't it go below 60 mV/dec?**
 
-The subthreshold slope S = (kT/q) × ln(10) × (1 + Cd/Cox) defines how sharply the
+The subthreshold slope $S = (kT/q) \times \ln(10) \times (1 + C_d/C_{ox})$ defines how sharply the
 transistor turns off. The theoretical minimum at room temperature is (kT/q) × ln(10) ≈
 60 mV/decade (when Cd/Cox → 0, i.e., perfect gate control). This is the Boltzmann tyranny
 — set by thermal physics. It limits how low VDD can go while maintaining adequate
@@ -1222,7 +1205,7 @@ A 7nm inverter ($R_p = 10\,\text{k}\Omega$) drives a 1mm metal-4 wire
 ($r = 0.2\,\Omega/\mu\text{m} = 200\,\Omega/\text{mm}$, $c = 0.2\,\text{fF}/\mu\text{m}$)
 into a fanout of 4 ($C_L = 4 \times 0.5\,\text{fF} = 2\,\text{fF}$).
 
-```
+```text
 Rwire = 0.2 Ω/μm × 1000 μm = 200 Ω
 Cwire = 0.2 fF/μm × 1000 μm = 200 fF = 0.2 pF
 
@@ -1286,7 +1269,7 @@ $C_{\text{in},i} = g_i \cdot C_{\text{out},i} / f^*$.
 Design a path from a flip-flop output through a NAND2 and an inverter to drive a load
 of 20 unit inverters. Input capacitance budget: 1 unit inverter.
 
-```
+```text
 G = g_NAND2 × g_inv = (4/3) × 1 = 4/3
 H = 20 / 1 = 20  (no branching)
 N = 2,  P = 2 + 1 = 3
@@ -1339,7 +1322,7 @@ The delay of 13.32τ is the theoretical minimum for this path topology; any othe
 
 The 6-transistor SRAM cell is the fundamental building block of on-chip SRAM arrays.
 
-```
+```ascii-graph
           VDD                VDD
            |                  |
         ┌──┤ M1 (PMOS)    ┌──┤ M3 (PMOS)
@@ -1361,44 +1344,38 @@ The 6-transistor SRAM cell is the fundamental building block of on-chip SRAM arr
 
 ### 13.2 Read Operation
 
-```
 1. Precharge: BL and BLB are charged to VDD (precharge transistors ON)
 2. Assert WL: M5 and M6 turn on
 3. One bitline discharges through the access transistor and the "0" side:
-   - If Q = 0, Qb = 1: BL discharges through M5 (access) and M2 (pull-down)
-     BLB stays high (M6 connects to Qb = 1 = VDD)
+   - If Q = 0, Qb = 1: BL discharges through M5 (access) and M2 (pull-down) BLB stays high (M6 connects to Qb = 1 = VDD)
    - Differential voltage ΔV = V(BL) - V(BLB) develops
 4. Sense amplifier detects ΔV and amplifies to full-rail output
    - Sense amp offset ≈ 10-30 mV (determines minimum detectable ΔV)
 5. WL deasserted, bitlines precharged for next access
 
-Read time: t_read ≈ C_BL × ΔV / I_cell
-  where C_BL ≈ 1-5 pF (for 256-row array), I_cell = read current through M5+M2
-```
+- **Read time** — t_read ≈ C_BL × ΔV / I_cell
+where C_BL ≈ 1-5 pF (for 256-row array), I_cell = read current through M5+M2
 
 ### 13.3 Write Operation
 
-```
 1. Drive bitlines: set BL and BLB to opposite values
    - To write Q = 0: BL → 0, BLB → VDD
    - To write Q = 1: BL → VDD, BLB → 0
 2. Assert WL: M5 and M6 turn on
 3. Access transistors must overpower the cross-coupled inverters to flip the state
    - The access transistor connected to the "1" side pulls it toward 0
-   - Once the "1" node drops below the inverter trip point, positive feedback
-     completes the flip
+   - Once the "1" node drops below the inverter trip point, positive feedback completes the flip
 4. WL deasserted, new state is latched
 
 Write margin: depends on relative strength of access transistors vs pull-up PMOS
-  - Write requires: I(M5 or M6) > I(M1 or M3)
-  - Stronger access transistors improve write margin
-```
+   - Write requires: I(M5 or M6) > I(M1 or M3)
+   - Stronger access transistors improve write margin
 
 ### 13.4 Static Noise Margin (SNM)
 
 SNM is the maximum noise voltage tolerated without flipping the cell.
 
-```
+```text
 Graphically: the largest square that fits inside the "butterfly curves"
   (superimposed VTC of the two cross-coupled inverters, one plotted normally
    and one with axes swapped)
@@ -1414,7 +1391,7 @@ divider with the pull-down NMOS, raising the "0" node voltage during read.
 
 ### 13.5 Read Stability vs Write Margin Tradeoff
 
-```
+```ascii-graph
 This is the fundamental sizing tension in 6T SRAM:
 
   Access transistor strength (M5/M6):
@@ -1436,7 +1413,7 @@ Typical sizing ratio (β-ratio):  β = (W/L)_pull-down / (W/L)_access ≈ 1.5-3.
 
 ### 13.6 Key Numbers
 
-```
+```text
 6T cell area:         ≈ 0.04-0.08 μm² at N5
 Bitline capacitance:  ≈ 1-5 pF for 256-row array
 Sense amplifier offset: ≈ 10-30 mV
@@ -1451,7 +1428,7 @@ Typical array size:    128-512 rows × 64-256 columns per subarray
 
 ### 14.1 Four Leakage Components
 
-```
+```text
 Total leakage: I_total = I_sub + I_gate + I_junc + I_GIDL
 
 At advanced nodes (N5): total ≈ 10-100 nA/μm per device
@@ -1459,7 +1436,7 @@ At advanced nodes (N5): total ≈ 10-100 nA/μm per device
 
 ### 14.2 Subthreshold Leakage
 
-```
+```text
 I_sub = I0 × exp[(VGS - Vth) / (n × Vt)] × [1 - exp(-VDS / Vt)]
 
 where:
@@ -1478,7 +1455,7 @@ Mitigation: high-Vth transistors (HVT), power gating (sleep transistors),
 
 ### 14.3 Gate Oxide Leakage
 
-```
+```ascii-graph
 I_gate = A × (Vox / t_ox)² × exp(-B × t_ox / Vox)
 
 where:
@@ -1500,7 +1477,7 @@ Now ~5-10% of total leakage (was > 50% before high-k adoption at 45nm)
 
 ### 14.4 Junction (Reverse-Bias Diode) Leakage
 
-```
+```text
 I_junc = Js × A_junction × [exp(qV / kT) - 1]
 
 where:
@@ -1516,7 +1493,7 @@ Always present when source or drain junction is reverse-biased relative to body.
 
 ### 14.5 GIDL (Gate-Induced Drain Leakage)
 
-```
+```text
 I_GIDL ∝ exp(-B × Eg / (VDD - Vth))
 
 where:

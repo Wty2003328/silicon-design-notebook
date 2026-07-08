@@ -58,7 +58,7 @@ When the spreadsheet can't resolve a choice (contention, reordering, prefetcher 
 - **Sampling** makes long workloads tractable: **SimPoint** clusters program phases and simulates one representative per cluster; **SMARTS** does statistically-rigorous interval sampling. You simulate ~1% of instructions and extrapolate with bounded error — without it, a single SPEC run is weeks.
 - **Validation** is the catch: an unvalidated cycle "accurate" model can be 30% off. You calibrate against a known reference (silicon or RTL) on a few kernels before trusting it for DSE.
 
-```
+```text
 gem5 O3 config knobs that matter most for DSE:
   --cpu-clock, --issue-width, --rob-size, --num-iqs (issue queue)
   --l1d_size/--l1i_size/--l2_size, --l1d_assoc, cacheline
@@ -83,7 +83,8 @@ The deliverable is a **virtual platform**: software develops against it, and arc
 DSE = searching the parameter space (cache sizes, widths, depths, #cores, NoC topology) for the Pareto-optimal PPA points.
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     P["Parameter space<br/>(width, ROB, L2, f, Vt mix...)"]:::a --> S["Evaluate each point<br/>(analytical → cycle-sim)"]:::b
     S --> M["PPA metrics<br/>perf, power, area"]:::c
     M --> F["Pareto frontier<br/>(no point dominates)"]:::d
@@ -251,7 +252,7 @@ For **each tensor operator** it reports execution time, FLOPS, and memory traffi
 ### 11.2 The four-stage flow
 NeuSim deliberately separates concerns into four scripts, each consuming the previous stage's output (modular, so you can re-run power without re-running perf):
 
-```
+```ascii-graph
 run_sim.py                      → per-operator PERFORMANCE (cycles, FLOPS, traffic, bound-class) → CSV/JSON
 energy_operator_analysis_main.py → POWER/ENERGY per component (static + dynamic), reads perf CSVs
 carbon_analysis_main.py          → CARBON = embodied + operational, from energy × carbon-intensity × duty cycle

@@ -13,6 +13,7 @@ Beyond ~10–16 agents, shared buses and full crossbars stop scaling: bus bandwi
 ## 1. The layered view
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TB
     P[Protocol layer<br/>AXI / CHI transactions:<br/>reads, writes, snoops]:::p
     T[Transport layer<br/>packets → flits<br/>VCs, flow control, ordering]:::t
@@ -93,23 +94,24 @@ With a 3-cycle credit loop, < 3 buffers per VC throttles the link even with zero
 
 **The credit-counter circuit (per output VC).** The hardware is one small up/down counter per downstream VC, sitting in the upstream router's output unit:
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph up["Upstream router — output unit"]
+        CNT["credit_cnt[vc]<br/>up/down counter, init = d<br/>stall_send when cnt == 0"]
+    end
+    subgraph down["Downstream router — input unit"]
+        FIFO["per-VC flit FIFO (depth d)<br/>f0 · f1 · … · fd-1"]
+    end
+    CNT -->|"flit + vc"| FIFO
+    FIFO -.->|"credit pulse + vc id (reverse)"| CNT
+    classDef u fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef d fill:#fde68a,stroke:#b45309,color:#000
+    class CNT u
+    class FIFO d
 ```
- Upstream router (output unit)                 Downstream router (input unit)
- ┌───────────────────────────┐                 ┌────────────────────────────┐
- │  credit_cnt[vc]            │                 │   per-VC flit FIFO (depth d)│
- │   ┌──────────────────┐     │   flit + vc     │   ┌────┬────┬────┬────┐     │
- │   │ up/down counter  │─────┼────────────────▶│   │ f0 │ f1 │ .. │fd-1│     │
- │   │  init = d        │     │                 │   └────┴────┴────┴────┘     │
- │   └──────────────────┘     │                 │        │ flit departs       │
- │     ▲ +1        -1 ▲       │   credit pulse  │        ▼ (read out, SA win) │
- │     │ (return)  (send)│    │◀────────────────┼──── free_slot[vc]           │
- │  stall_send = (cnt==0)     │   vc id (rev)   │                             │
- └───────────────────────────┘                 └────────────────────────────┘
 
-  send a flit on VC v        : credit_cnt[v]-- ; if it would go <0, stall (no grant)
-  downstream frees a slot    : pulse credit + vc id back ; credit_cnt[v]++
-  counter init               : d (the downstream FIFO depth for that VC)
-```
+Sending a flit on VC *v* does `credit_cnt[v]--` and stalls if the count would go below zero (no grant). When the downstream router frees a slot it pulses a credit plus the VC id back upstream and `credit_cnt[v]++`. The counter is initialised to *d*, the downstream FIFO depth for that VC.
 
 So "credits" are not a bus — they are a per-VC count of *known-free downstream slots*. The switch allocator (§4) is only allowed to request an output for an input VC whose `credit_cnt > 0`; this is what makes backpressure lossless without ever dropping a flit. The reverse credit wire carries just a VC id (⌈log₂ v⌉ bits) per freed slot, which is why credit return is cheap but still costs the round-trip latency the formula above captures.
 
@@ -122,7 +124,8 @@ So "credits" are not a bus — they are a per-VC count of *known-free downstream
 A virtual-channel (VC) router is five things: **input units** (one per port, each holding the per-VC flit buffers and the per-VC control state), a **VC allocator**, a **switch allocator**, the **crossbar**, and **output units**. A 5-port (N/S/E/W/Local) router:
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     subgraph IN["Input unit ×5 (one per port)"]
         direction TB
         BUF["per-VC flit FIFOs<br/>v VCs × d flits"]
@@ -156,20 +159,21 @@ A head flit walks G from *Routing* (RC fills **R**) to *VC-Alloc* (VA fills **O*
 
 **Flit / packet format.** A packet is segmented into flits; only the head carries routing info, which is why RC/VA are head-only:
 
-```
-HEAD flit   | type=HEAD | VCID | dst_x,dst_y (or precomputed route) | length | payload... |
-BODY flit   | type=BODY | VCID |                                    payload...            |
-TAIL flit   | type=TAIL | VCID |                                    payload... | (frees VC)|
-            └─ 2–3 b ──┘└log2 v┘
-sideband (reverse): credit return = { valid, VCID }   ⌈log2 v⌉+1 bits per cycle
-```
+| Flit | Fields |
+|---|---|
+| HEAD | `type=HEAD` · VCID · dst_x,dst_y (or precomputed route) · length · payload |
+| BODY | `type=BODY` · VCID · payload |
+| TAIL | `type=TAIL` · VCID · payload (frees VC) |
+
+The `type` field is 2–3 bits and VCID is ⌈log₂ v⌉ bits. The reverse sideband carries a credit return `{ valid, VCID }` = ⌈log₂ v⌉+1 bits per cycle.
 
 `type` lets the router know when to run RC/VA (head) vs. inherit state (body), and when to release the VC (tail). `VCID` selects which input-VC FIFO the flit lands in. Everything else is payload the fabric never inspects.
 
 ### 4.1 Canonical 4/5-stage pipeline
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     BW[BW<br/>buffer write +<br/>route compute RC]:::s1 --> VA[VA<br/>VC allocation]:::s2
     VA --> SA[SA<br/>switch allocation]:::s2
     SA --> ST[ST<br/>switch traversal]:::s3
@@ -190,21 +194,42 @@ Per-hop latency = 2–4 router cycles + link cycles. Mesh corner-to-corner on a 
 
 VA and SA are the cycles-eaters and the part interviewers push on, because both are the same problem: **match a set of requesters to a set of resources, ≤1 each, fairly, in one cycle.** VA matches head flits to free *output VCs*; SA matches input VCs that hold a flit *and* have credits to *crossbar output ports*. Optimal bipartite matching is too slow for a single cycle, so routers use a **separable allocator** — two back-to-back stages of cheap arbiters:
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph S0["Requests R[in_vc][out]"]
+        in0["in0 · v reqs"]
+        in1["in1 · v reqs"]
+        in4["in4 · v reqs"]
+    end
+    subgraph S1["Stage 1 — input arbiters<br/>pick ≤1 of v VC reqs per input"]
+        ai0["arb_in0"]
+        ai1["arb_in1"]
+        ai4["arb_in4"]
+    end
+    subgraph S2["Stage 2 — output arbiters<br/>pick ≤1 of ≤5 inputs per output"]
+        ao0["arb_out0 → grant out0"]
+        ao1["arb_out1 → grant out1"]
+        ao4["arb_out4 → grant out4"]
+    end
+    in0 --> ai0
+    in1 --> ai1
+    in4 --> ai4
+    ai0 --> ao0
+    ai0 --> ao1
+    ai1 --> ao1
+    ai1 --> ao4
+    ai4 --> ao0
+    ai4 --> ao4
+    classDef i fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef a fill:#fde68a,stroke:#b45309,color:#000
+    classDef o fill:#dcfce7,stroke:#15803d,color:#000
+    class in0,in1,in4 i
+    class ai0,ai1,ai4 a
+    class ao0,ao1,ao4 o
 ```
-Separable input-first allocator (5 ports × v VCs):
 
-  requests R[in_vc][out]          STAGE 1: input arbiters      STAGE 2: output arbiters
-  (each input VC requests          (1 per input port:           (1 per output port:
-   one output port/VC)              pick ≤1 of its v VC reqs)    pick ≤1 of ≤5 inputs)
-
-   in0 ─▶┐                          ┌─[arb_in0]─┐                ┌─[arb_out0]─▶ grant out0
-   in1 ─▶┤  v requests each ─────▶  ├─[arb_in1]─┤  ≤1/input ───▶ ├─[arb_out1]─▶ grant out1
-   ...   │                          │   ...     │                │   ...
-   in4 ─▶┘                          └─[arb_in4]─┘                └─[arb_out4]─▶ grant out4
-
-  A grant requires winning BOTH stages → one input VC drives one crossbar input
-  to one output this cycle. Losers retry next cycle (state stays in G/R/O).
-```
+A grant requires winning both stages, so one input VC drives one crossbar input to one output this cycle; losers retry next cycle (their request state persists).
 
 Two structural details that matter:
 

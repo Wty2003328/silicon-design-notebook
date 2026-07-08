@@ -3,16 +3,16 @@
 The phrase "block activity power" covers one core idea at three different stages of a
 chip's life:
 
-```
-P_block = sum over nets ( alpha * C * Vdd^2 * f )  +  P_leak(block)
+```text
+P_block = sum over nets (alpha * C * Vdd^2 * f) + P_leak(block)
 
 A block's power is dominated by HOW ACTIVE it is (alpha, utilization),
 not just by what's instantiated. The same multiplier burns 10x different
 power at 5% vs 50% utilization.
 
-Stage 1 (design time):   PREDICT per-block power from estimated activity
-Stage 2 (verification):  MEASURE activity on real workloads, refine
-Stage 3 (silicon):       MONITOR activity live and CONTROL power with it
+Stage 1 (Design Time)  : PREDICT per-block power from estimated activity
+Stage 2 (Verification) : MEASURE activity on real workloads, refine
+Stage 3 (Silicon)      : MONITOR activity live and CONTROL power with it
 ```
 
 This note covers all three. Cross-reference: [Power_Fundamentals](Power_Fundamentals.md)
@@ -50,46 +50,42 @@ block's power model. The two communities meeting at this number is exactly where
 Every serious SoC maintains a power model long before RTL is complete -- a matrix of
 blocks (rows) vs operating modes (columns):
 
-```
-                 | Camera 4K | Video play | Gaming | Idle screen-on | Standby
------------------|-----------|------------|--------|----------------|--------
-CPU big cluster  |  450 mW   |   80 mW    | 900 mW |     15 mW      |  0 (PG)
-CPU LITTLE       |  200 mW   |  120 mW    | 250 mW |     40 mW      |  2 mW
-GPU              |  150 mW   |   60 mW    |1800 mW |      0 (PG)    |  0 (PG)
-NPU              |  800 mW   |    0 (PG)  |  50 mW |      0 (PG)    |  0 (PG)
-ISP              |  900 mW   |    0 (PG)  |   0    |      0 (PG)    |  0 (PG)
-Video codec      |  300 mW   |  250 mW    |  80 mW |      0 (PG)    |  0 (PG)
-Memory ctrl+DRAM |  700 mW   |  350 mW    | 950 mW |     90 mW      |  8 mW
-Display          |  250 mW   |  240 mW    | 280 mW |    180 mW      |  0
-Always-on island |   10 mW   |   10 mW    |  10 mW |     10 mW      |  3 mW
------------------|-----------|------------|--------|----------------|--------
-TOTAL            | ~3.8 W    |  ~1.1 W    | ~4.3 W |    ~0.34 W     | ~13 mW
-```
+|  | Camera 4K | Video play | Gaming | Idle screen-on | Standby |
+|---|---|---|---|---|---|
+| CPU big cluster | 450 mW | 80 mW | 900 mW | 15 mW | 0 (PG) |
+| CPU LITTLE | 200 mW | 120 mW | 250 mW | 40 mW | 2 mW |
+| GPU | 150 mW | 60 mW | 1800 mW | 0 (PG) | 0 (PG) |
+| NPU | 800 mW | 0 (PG) | 50 mW | 0 (PG) | 0 (PG) |
+| ISP | 900 mW | 0 (PG) | 0 | 0 (PG) | 0 (PG) |
+| Video codec | 300 mW | 250 mW | 80 mW | 0 (PG) | 0 (PG) |
+| Memory ctrl+DRAM | 700 mW | 350 mW | 950 mW | 90 mW | 8 mW |
+| Display | 250 mW | 240 mW | 280 mW | 180 mW | 0 |
+| Always-on island | 10 mW | 10 mW | 10 mW | 10 mW | 3 mW |
+| TOTAL | ~3.8 W | ~1.1 W | ~4.3 W | ~0.34 W | ~13 mW |
 
 Each cell = (block's C_eff and leakage) x (activity in that mode) x (V,f in that mode).
 This matrix drives: battery-life projections, thermal design, PMIC rail planning,
 per-block power BUDGETS handed to design teams, and the UPF power-state table.
 
-```
+```text
 Per-block budget flowdown (what a mid-level engineer owns):
   SoC budget 4.3W gaming -> GPU gets 1.8W -> shader array gets 1.2W
-  -> your block gets 85 mW at 800 MHz, 0.75V, with an assumed 40% activity
-  -> you sign off against it at every netlist drop, and explain every
-     regression (new feature? activity assumption broke? clock gating lost?)
+  -> Your block gets 85 mW at 800 MHz, 0.75V, with an assumed 40% activity.
+  -> You sign off against it at every netlist drop, and explain every
+     regression (new feature? activity assumption broke? clock gating lost?).
 ```
 
 ### 2.2 Where the Activity Numbers Come From (Before Silicon)
 
-```
+```text
 Quality ladder (worst to best):
-1. Analytical guess: utilization assumptions from performance models
-   (spreadsheet alpha per sub-block)                      error: 2x or worse
-2. Architectural simulator traces: per-block event counts (cache accesses,
-   ALU issues) x energy-per-event                          error: 30-50%
-3. RTL simulation activity (SAIF/FSDB) on short directed tests   20-30%
-4. RTL/gate activity from EMULATION on real software (boot, game frame,
-   LLM inference layer)                                    10-20%
-5. Gate-level + parasitics + real workload windows         5-15%
+1. Analytical guess                   : utilization assumptions from performance models
+                                        (spreadsheet alpha per sub-block)                      -> Error: 2x or worse
+2. Architectural simulator traces     : per-block event counts (cache accesses, ALU issues)
+                                        x energy-per-event                                     -> Error: 30-50%
+3. RTL simulation activity            : SAIF/FSDB on short directed tests                      -> Error: 20-30%
+4. RTL/gate activity from EMULATION   : on real software (boot, game frame, LLM inference)     -> Error: 10-20%
+5. Gate-level + parasitics            : real workload windows                                  -> Error: 5-15%
 ```
 
 The jump from (3) to (4) matters: short testbenches systematically OVERESTIMATE
@@ -110,16 +106,17 @@ industry runs power analysis from RTL onward. Current tool landscape (2025-2026)
 | PowerArtist | Keysight (acquired from Ansys, 2025 -- divested as a condition of the Synopsys-Ansys merger) | The classic RTL design-for-power platform: analysis + automatic reduction guidance |
 | PowerPro | Siemens EDA | Sequential/observability-based gating analysis and insertion (SLEC-verified) |
 
-```
+```verilog
 What RTL power tools actually do:
-1. Elaborate RTL, do a fast synthesis-like mapping to estimate gates/wires
-2. Read activity (RTL sim FSDB/SAIF, or emulation activity database)
+1. Elaborate RTL, do a fast synthesis-like mapping to estimate gates/wires.
+2. Read activity (RTL sim FSDB/SAIF, or emulation activity database).
 3. Report per-hierarchy: dynamic power, leakage, CLOCK power split,
-   clock-gating efficiency, memory access power
+   clock-gating efficiency, memory access power.
 4. Flag reduction opportunities:
-   - FFs clocking with stable D (wasted clock) -> gating candidates
-   - Memories read every cycle but data used rarely -> access gating
-   - High-toggle nets feeding disabled logic -> operand isolation
+   - FFs clocking with stable D (wasted clock)      -> Gating candidates
+   - Memories read every cycle but data used rarely -> Access gating
+   - High-toggle nets feeding disabled logic        -> Operand isolation
+
 Accuracy: typically within 10-20% of gate-level if activity is realistic --
 good enough to TREND and to catch architecture-level regressions.
 ```
@@ -137,18 +134,18 @@ A glitch is a spurious transition: a gate output toggles 2+ times in one cycle b
 its inputs arrive at different times, before settling to the final value. The wasted
 charge is real power.
 
-```
-       a ----\
+```verilog
+       a ----\ 
               XOR ---- y        a and b both rise, but b arrives 80 ps late:
        b ----/                  y pulses high for 80 ps -> 2 extra transitions
 
-Glitch generation: unequal arrival times at reconvergent logic
-Glitch PROPAGATION: downstream gates re-toggle too (amplifies through
-                    arithmetic: adder carry chains, multiplier arrays
-                    are the worst -- deep reconvergent structures)
-Inertial filtering: a pulse shorter than a gate's switching delay dies out;
-                    at advanced nodes gates are FAST, so more glitches
-                    survive and propagate further.
+Glitch Generation  : Unequal arrival times at reconvergent logic.
+Glitch PROPAGATION : Downstream gates re-toggle too (amplifies through arithmetic: 
+                     adder carry chains, multiplier arrays are the worst -- deep 
+                     reconvergent structures).
+Inertial Filtering : A pulse shorter than a gate's switching delay dies out; 
+                     at advanced nodes gates are FAST, so more glitches survive 
+                     and propagate further.
 ```
 
 **Why it's a headline topic now:** at 7nm and below, glitch power is commonly **25-40%
@@ -157,14 +154,16 @@ It grew because logic got faster (less filtering), wires got relatively slower (
 arrival-time spread), and datapaths got wider.
 
 **Measurement subtlety (interview checkpoint):**
-```
+```text
 Zero-delay RTL simulation CANNOT see glitches (all transitions instantaneous)
   -> RTL-based power UNDERESTIMATES datapath power systematically
+
 Options:
-  - Gate-level sim with SDF timing -> real glitches, but slow
-  - Vectorless/statistical glitch estimation in power tools (propagate
-    arrival-time windows; PrimePower/Joules support glitch modes)
-  - Delay-annotated emulation hybrids
+  - Gate-level sim with SDF timing          : Real glitches, but slow.
+  - Vectorless/statistical glitch estimation: In power tools (propagate arrival-time windows; 
+                                              PrimePower/Joules support glitch modes).
+  - Delay-annotated emulation hybrids       : Alternative solution.
+
 A "transparent" (full-swing) vs "filtered" (partial-swing) glitch split is
 reported by signoff tools; filtered glitches still burn partial CV^2.
 ```
@@ -181,23 +180,23 @@ datapaths free-run on invalid data (the same valid-gating that helps clock power
 Simulation gives you microseconds of activity; real power questions need *seconds* of
 software: OS boot, a game frame, an LLM inference pass, a 5G call.
 
-```
+```text
 Flow (all vendors have an equivalent):
-  1. Map RTL onto emulator (Cadence Palladium, Siemens Veloce, Synopsys ZeBu)
-  2. Run REAL workload: billions of cycles
-  3. Emulator streams a compact activity database (toggle counts per net
-     per time window -- e.g., Palladium DPA, "Dynamic Power Analysis")
-  4. Power tool (Joules / PrimePower / PowerArtist) converts windowed
-     activity -> power-over-time waveform per block
-  5. Find: peak windows (which 10 us window draws max power?), average per
-     phase, idle residency, CGE on real software
+  1. Map RTL onto emulator (Cadence Palladium, Siemens Veloce, Synopsys ZeBu).
+  2. Run REAL workload: billions of cycles.
+  3. Emulator streams a compact activity database (toggle counts per net per time 
+     window -- e.g., Palladium DPA, "Dynamic Power Analysis").
+  4. Power tool (Joules / PrimePower / PowerArtist) converts windowed activity 
+     -> power-over-time waveform per block.
+  5. Find: peak windows (which 10 us window draws max power?), average per phase, 
+     idle residency, CGE on real software.
 
 What it catches that simulation never will:
-  - The OS timer tick that keeps a "mostly idle" cluster at 30% clock activity
-  - A driver bug that never lets the GPU enter its low-power state
-  - DVFS governor thrash between operating points
-  - The true peak window to feed dynamic IR drop signoff (vectors that
-    actually happen, vs synthetic worst-case)
+  - The OS timer tick that keeps a "mostly idle" cluster at 30% clock activity.
+  - A driver bug that never lets the GPU enter its low-power state.
+  - DVFS governor thrash between operating points.
+  - The true peak window to feed dynamic IR drop signoff (vectors that actually 
+    happen, vs synthetic worst-case).
 ```
 
 ---
@@ -208,43 +207,34 @@ Once the chip exists, activity becomes something you MEASURE and CONTROL against
 
 ### 6.1 The Monitoring Stack
 
-```
-Level 1: Performance/activity counters (per block)
-  - issue counts, cache accesses, FLOP counts, busy/idle residency
-  - free byproduct of the microarchitecture; coarse but cheap
+1. **Performance/activity counters** (per block)
+   - issue counts, cache accesses, FLOP counts, busy/idle residency
+   - free byproduct of the microarchitecture; coarse but cheap
 
-Level 2: Digital power meters (DPM) / energy counters
-  - Hardware computes a POWER PROXY each cycle: a weighted sum of selected
-    activity signals, weights fit during characterization so the proxy
-    tracks true power within a few %
-      P_proxy = w0 + sum_i ( w_i * event_i )    (per block, per cycle)
-  - Accumulated into energy counters firmware can read (e.g., the model
-    behind Intel RAPL energy reporting on modern parts)
-  - Fast (ns-us) and per-block -- this IS "block activity power" in silicon
+2. **Digital power meters** (DPM) / energy counters
+   - Hardware computes a POWER PROXY each cycle: a weighted sum of selected activity signals, weights fit during characterization so the proxy tracks true power within a few % P_proxy = w0 + sum_i ( w_i * event_i )    (per block, per cycle)
+   - Accumulated into energy counters firmware can read (e.g., the model behind Intel RAPL energy reporting on modern parts)
+   - Fast (ns-us) and per-block -- this IS "block activity power" in silicon
 
-Level 3: Analog telemetry
-  - VRM/PMIC current sense (board-level truth, but ms-slow and per-rail)
-  - On-die voltage droop monitors, thermal sensor grids (10s per die)
+3. **Analog telemetry**
+   - VRM/PMIC current sense (board-level truth, but ms-slow and per-rail)
+   - On-die voltage droop monitors, thermal sensor grids (10s per die)
 
-Level 4: Speed monitors
-  - Ring oscillators / critical-path replicas: how fast IS this silicon
-    at this V,T -- closes the AVS/AVFS loop
-```
+4. **Speed monitors**
+   - Ring oscillators / critical-path replicas: how fast IS this silicon at this V,T -- closes the AVS/AVFS loop
 
 ### 6.2 Closed-Loop Uses
 
-```
-Power capping:    firmware keeps a sliding-window average below a limit
-                  (Intel RAPL power limits; NVIDIA power limit / nvidia-smi;
-                  AMD PPT). Enforced by DVFS backoff.
-Current limiting: protect the VRM and package: peak current (EDC) and
-                  sustained current (TDC) limits trigger fast clock throttle.
-Thermal control:  sensor grid -> throttle or migrate work before Tj_max.
-Energy attribution: per-block energy counters let the OS/scheduler bill
-                  energy to processes/VMs and let cloud operators meter it.
-Turbo/boost:      the INVERSE use -- spend the headroom: if telemetry says
-                  power/thermal/current budgets have slack, raise V/f
-                  (all modern boost algorithms are telemetry-driven).
+```text
+Power capping      : Firmware keeps a sliding-window average below a limit (Intel RAPL power limits; 
+                     NVIDIA power limit / nvidia-smi; AMD PPT). Enforced by DVFS backoff.
+Current limiting   : Protect the VRM and package: peak current (EDC) and sustained current (TDC) 
+                     limits trigger fast clock throttle.
+Thermal control    : Sensor grid -> throttle or migrate work before Tj_max.
+Energy attribution : Per-block energy counters let the OS/scheduler bill energy to processes/VMs 
+                     and let cloud operators meter it.
+Turbo/boost        : The INVERSE use -- spend the headroom: if telemetry says power/thermal/current 
+                     budgets have slack, raise V/f (all modern boost algorithms are telemetry-driven).
 ```
 
 **The reaction-time hierarchy (memorize this -- it organizes every PM interview answer):**
@@ -259,22 +249,21 @@ Turbo/boost:      the INVERSE use -- spend the headroom: if telemetry says
 
 ### 6.3 Worked Example: Power Proxy Design
 
-```
-Task: build a power proxy for a matrix-multiply engine block.
-Candidate events: mac_issue_count, operand_sram_rd, operand_sram_wr,
-                  accum_writeback, clk_enabled_cycles
+```text
+Task: Build a power proxy for a matrix-multiply engine block.
+Candidate events: mac_issue_count, operand_sram_rd, operand_sram_wr, accum_writeback, clk_enabled_cycles
 
-1. Run characterization workloads on silicon (or gate-level power on the
-   same windows), recording true block power + event counts per window
-2. Least-squares fit weights w_i  (per voltage/frequency point, or
-   normalize events by f and fit in energy units)
-3. Validate on held-out workloads: target within ~3-5% of measured power
-4. Hardware: multiply-accumulate of ~5-10 counters x constants per window
-   -- trivial area, runs continuously
+1. Run characterization workloads on silicon (or gate-level power on the same windows), 
+   recording true block power + event counts per window.
+2. Least-squares fit weights w_i (per voltage/frequency point, or normalize events by 
+   f and fit in energy units).
+3. Validate on held-out workloads: target within ~3-5% of measured power.
+4. Hardware: multiply-accumulate of ~5-10 counters x constants per window (trivial area, 
+   runs continuously).
 
-Why not just measure current? Per-block attribution (one rail feeds many
-blocks), and speed (proxy updates every window; VRM telemetry is ms-slow
-and noisy). The proxy plus occasional analog calibration is the standard.
+Why not just measure current? Per-block attribution (one rail feeds many blocks), and 
+speed (proxy updates every window; VRM telemetry is ms-slow and noisy). The proxy plus 
+occasional analog calibration is the standard.
 ```
 
 ---
@@ -287,17 +276,19 @@ primitives*, each with its own model and its own source for the three inputs (C,
 leakage). This is exactly how McPAT/Wattch (architectural) and PrimePower/Joules (RTL)
 decompose a block.
 
-```
-For each component:  P = P_dyn + P_leak,  P_dyn = E_op * (access rate)  OR  alpha*C*Vdd^2*f
-                                          P_leak = N_dev * I_leak(Vt,V,T) * Vdd
+```verilog
+For each component:  P = P_dyn + P_leak
+                     P_dyn = E_op * (access rate)  OR  alpha * C * Vdd^2 * f
+                     P_leak = N_dev * I_leak(Vt, V, T) * Vdd
+
 Where each input comes from:
-  C            <- parasitic extraction (RC) for gate-level; library C_load + wire-load
-                  models for RTL; analytical area*cap-density for architectural
-  E_op         <- characterized .lib energy tables (per-cell switching energy),
-                  or CACTI/closed-form for arrays
+  C            <- Parasitic extraction (RC) for gate-level; library C_load + wire-load
+                  models for RTL; analytical area * cap-density for architectural.
+  E_op         <- Characterized .lib energy tables (per-cell switching energy),
+                  or CACTI/closed-form for arrays.
   alpha (act.) <- SAIF/FSDB annotation (sim/emulation), or event counts from a perf
-                  simulator (architectural), or assumed utilization (spreadsheet)
-  I_leak       <- .lib leakage tables, per Vt flavor, scaled by state + temperature
+                  simulator (architectural), or assumed utilization (spreadsheet).
+  I_leak       <- .lib leakage tables, per Vt flavor, scaled by state + temperature.
 ```
 
 | Component | Dynamic model | Leakage / static | Where the inputs come from |
@@ -341,16 +332,14 @@ rung needs both a structural model (what's instantiated) and an activity source.
 | **Gate-level** | **PrimePower** / PrimeTime-PX (Synopsys), Cadence Voltus/Joules gate mode | ±5-10% (signoff) | hours-days | SDF-annotated gate sim VCD/SAIF (captures glitch) |
 | **SPICE / circuit** | HSPICE, Spectre, FineSim | golden (per-cell) | impractical above small blocks | actual transient waveforms |
 
-```
-Architectural (McPAT-style) = sum over components ( events_c * E_op,c ) + leakage
+- **Architectural (McPAT-style)** = `sum over components ( events_c * E_op,c ) + leakage`
    - bottom-up: each component's E_op from CACTI/closed-form, area-derived caps
    - activity = performance-counter / simulator event counts (NOT real toggles)
    - used in early DSE: power as a first-class axis alongside perf and area
-RTL power = fast-map RTL to gates, annotate real toggles -> per-hierarchy power
-Gate PrimePower = mapped netlist + .spef parasitics + .lib energy + SDF activity
+- **RTL power** = `fast-map RTL to gates, annotate real toggles -> per-hierarchy power`
+- **Gate PrimePower** = `mapped netlist + .spef parasitics + .lib energy + SDF activity`
    - this is signoff; the only rung that sees real glitch power (Section 4)
-SPICE = ground truth, used to CHARACTERIZE the .lib tables the upper rungs trust
-```
+- **SPICE** = `ground truth, used to CHARACTERIZE the .lib tables the upper rungs trust`
 
 **The calibration chain:** SPICE characterizes the `.lib` energy/leakage tables; those
 feed gate-level PrimePower; gate-level results calibrate the RTL-power models; RTL/silicon
@@ -376,23 +365,17 @@ A power-manageable component is modeled as a finite-state machine. Each **state*
 power level; each **transition** has an energy and a latency cost (you pay to go to sleep
 and, more expensively, to wake up).
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+stateDiagram-v2
+    direction LR
+    ACTIVE: ACTIVE · P_on
+    SLEEP: SLEEP · P_off
+    ACTIVE --> SLEEP: sleep (T_sl, E_sl)
+    SLEEP --> ACTIVE: wake (T_wake, E_wake)
 ```
-Power State Machine (generic):
-                 wake (T_wake, E_wake)
-   +--------+  <----------------------  +--------+
-   | ACTIVE |                           | SLEEP  |   states carry: P_state
-   | P_on   |  ---------------------->  | P_off  |   edges carry:  T_trans, E_trans
-   +--------+   sleep (T_sl, E_sl)      +--------+
 
-Real components have MANY inactive states (idle/clock-gated, retention, deep-sleep, off):
-  deeper state -> lower P_state  BUT  longer T_wake and larger E_wake.
-
-Example -- StrongARM SA-1100 (the survey's canonical PSM):
-  RUN   ~400 mW   |  IDLE ~50 mW (fast exit)  |  SLEEP ~0.16 mW (slow, costly wake-up)
-  Idle is cheap to enter/exit; Sleep saves ~3000x power but its wake cost is large.
-  In the survey's two-state (On/Off) reduction, the SA-1100 Sleep state has a
-  break-even time of ~160 ms -- only idle gaps longer than that pay off (Section 9.2).
-```
+States carry `P_state`; edges carry `T_trans, E_trans`. Real components have many inactive states (idle/clock-gated, retention, deep-sleep, off): a deeper state means lower `P_state` but longer `T_wake` and larger `E_wake`. Example — StrongARM SA-1100: RUN ≈ 400 mW, IDLE ≈ 50 mW (fast exit), SLEEP ≈ 0.16 mW (slow, costly wake-up). Idle is cheap to enter/exit; Sleep saves ~3000× power but its wake cost is large — in a two-state On/Off reduction the SA-1100 Sleep break-even time is ~160 ms, so only idle gaps longer than that pay off.
 
 ### 9.2 Break-Even Time -- When Is Sleeping Worth It?
 
@@ -401,7 +384,7 @@ which entering a low-power state actually saves energy, after paying the transit
 If an idle period is shorter than `T_be`, sleeping *costs* more than it saves (you burn
 wake-up energy for nothing) -- you must stay awake.
 
-```
+```text
 Two-state derivation (ACTIVE P_on <-> SLEEP P_off, transition time T_tr, transition power P_tr):
 
   Energy if you STAY AWAKE for idle time T_idle:     E_stay  = P_on  * T_idle
@@ -437,10 +420,11 @@ You don't know the future idle length, so a **policy** must guess. The survey's 
 | **Predictive** | Predict the idle length from history (e.g. short busy => long idle), sleep *immediately* if predicted idle > T_be | no wasted timeout window; can wake *before* the request (hide T_wake) | mispredicts: **over-prediction** = performance penalty (woke late), **under-prediction** = wasted power. Quality = safety vs efficiency |
 | **Stochastic (MDP)** | Model workload + PSM as a Markov Decision Process; solve for the policy minimizing expected energy under a performance constraint | provably optimal for the modeled distribution; handles multi-state and constraints natively | needs a workload model; optimum only as good as the model; non-stationary workloads need adaptation |
 
-```
+```text
 Energy accounting for ANY policy over a run:
-  E_total = sum over states ( residency_s * P_state,s )  +  sum over transitions ( N_trans * E_trans )
-            \________________ time IN states ________/      \____ cost of MOVING between states ____/
+  E_total = sum over states (residency_s * P_state,s) + sum over transitions (N_trans * E_trans)
+            \________________ time IN states _______/   \____ cost of MOVING between states ____/
+
   A good policy maximizes residency in deep states for idle gaps > T_be while keeping the
   transition-energy term (and the latency it implies) small.
 ```
@@ -449,26 +433,24 @@ Energy accounting for ANY policy over a run:
 
 The CPU is the most-engineered DPM instance, split into two orthogonal axes:
 
-```
-ACPI C-states = the IDLE PSM (DPM proper -- "how asleep when not running")
-  C0 = active (executing).  C1 = halt (clock-gated core).  C3/C6/C7... = deeper:
-       flush caches, power-gate the core, save state -> lower P_off but larger T_wake.
-  Deeper C-state <-> larger break-even time: the OS/firmware idle governor (e.g. Linux
-  'menu'/'TEO' cpuidle) PREDICTS the idle duration and picks the deepest C-state whose
-  T_be fits -- a literal predictive DPM governor (Section 9.3).
+- **ACPI C-states** = `the IDLE PSM (DPM proper -- "how asleep when not running")`
+   - C0 = active (executing).  C1 = halt (clock-gated core).  C3/C6/C7... = deeper:
+   - flush caches, power-gate the core, save state -> lower P_off but larger T_wake.
+   - Deeper C-state <-> larger break-even time: the OS/firmware idle governor (e.g. Linux
+   - 'menu'/'TEO' cpuidle) PREDICTS the idle duration and picks the deepest C-state whose
+   - T_be fits -- a literal predictive DPM governor (Section 9.3).
 
-ACPI P-states = DVFS while ACTIVE (voltage/frequency operating points, NOT idle)
-  P0 highest V/f ... Pn lowest. Reduces alpha*C*V^2*f when running but slower.
-  (DVFS is detailed in Power_Reduction_Techniques; counters drive P-state choice -- see Q8.)
+- **ACPI P-states** = `DVFS while ACTIVE (voltage/frequency operating points, NOT idle)`
+   - P0 highest V/f ... Pn lowest. Reduces alpha*C*V^2*f when running but slower.
+   - (DVFS is detailed in Power_Reduction_Techniques; counters drive P-state choice -- see Q8.)
 
 Package C-states (PC2/PC6...) = the WHOLE-PACKAGE PSM: once ALL cores are in a deep
-  core C-state, the UNCORE (LLC, ring/mesh, memory controller, PLLs) can also retire to
-  a package-level low-power state. Bigger savings, bigger wake cost -- a higher-T_be PSM.
+core C-state, the UNCORE (LLC, ring/mesh, memory controller, PLLs) can also retire to
+a package-level low-power state. Bigger savings, bigger wake cost -- a higher-T_be PSM.
 
 The PCU (Power Control Unit) / PMU = the on-die microcontroller running these governors:
-  reads telemetry + counters (Section 6.2), enforces C-state/P-state transitions, power
-  caps (RAPL), and turbo. It IS the hardware power manager of the PSM.
-```
+reads telemetry + counters (Section 6.2), enforces C-state/P-state transitions, power
+caps (RAPL), and turbo. It IS the hardware power manager of the PSM.
 
 This makes Section 6's telemetry and Section 9's PSM one loop: the PCU *measures* activity
 (proxies/counters) and *acts* on the PSM (C/P-states) -- estimate -> monitor -> manage.
@@ -482,9 +464,10 @@ than analog current sense. The answer is a **power proxy**: a weighted sum of ac
 counters whose weights are fit (offline) so the proxy tracks true power. This generalizes
 the digital power meter of Section 6.2 and is the standard industrial mechanism.
 
-```
-P_proxy = w0 + sum_i ( w_i * event_i )      events = issue counts, cache/SRAM accesses,
-                                            FP-width usage, clk-enabled cycles, ...
+```text
+P_proxy = w0 + sum_i (w_i * event_i)
+
+events = issue counts, cache/SRAM accesses, FP-width usage, clk-enabled cycles, ...
 Weights w_i fit by least-squares against measured/gate-level power per (V,f) point;
 accumulated into an ENERGY counter firmware reads. Accuracy ~3-5% on held-out workloads.
 ```
@@ -503,41 +486,41 @@ rail telemetry). Standard practice pairs a fast proxy with occasional analog cal
 
 ## 11. Per-Architecture Block Power -- CPU, GPU, NPU
 
-The same `P = alpha*C*V^2*f + leak` and PSM machinery, instantiated per architecture.
+The same $P = \alpha C V^2 f + \text{leak}$ and PSM machinery, instantiated per architecture.
 The art is mapping *occupancy/utilization* (the architecture team's number) to per-block
 alpha (the power team's number) -- the bridge this whole page is about.
 
 > **Composing these per-block numbers into a full chip** (CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod) — plus the contention, overlap, DVFS-budget, and thermal-coupling layers that make it a *chip* model, not a sum of blocks — is [Full_Chip_Modeling](../01_Architecture_and_PPA/Full_Chip_Modeling.md).
 
-```
-CPU  (P_core + P_caches + P_uncore)
-  core    : fetch/decode/rename/issue/ALU/FPU/LSU -- per-unit E_op * access counts
-            (McPAT decomposition); clock tree 30-40% (Section 7)
-  caches  : L1/L2 per-access (CACTI) + LLC leakage/retention (often power-gated down)
-  uncore  : ring/mesh NoC, memory controller, PLLs -- significant FIXED + idle floor;
-            only retired in package C-states (Section 9.4)
-  activity from: perf counters (issue/access rates) -> proxy (Section 10)
+```text
+CPU (P_core + P_caches + P_uncore)
+  core           : fetch/decode/rename/issue/ALU/FPU/LSU -- per-unit E_op * access counts
+                   (McPAT decomposition); clock tree 30-40% (Section 7)
+  caches         : L1/L2 per-access (CACTI) + LLC leakage/retention (often power-gated down)
+  uncore         : ring/mesh NoC, memory controller, PLLs -- significant FIXED + idle floor;
+                   only retired in package C-states (Section 9.4)
+  activity from  : perf counters (issue/access rates) -> proxy (Section 10)
 
-GPU  (SM/CU array + register file + shared mem + L2 + HBM)
-  SM array      : thousands of lanes; power scales with OCCUPANCY (active warps/SM) ->
-                  alpha. Low occupancy = idle lanes = wasted leakage + clock
-  register file : huge, multi-ported SRAM -- a top energy consumer (CACTI-modeled);
-                  read/write per instruction operand
-  shared mem/L2 : per-access energy; bank-conflict stalls lower effective activity
-  HBM           : pJ/bit * bytes moved -- bandwidth-bound phases are HBM-power-bound
-  capping       : NVIDIA power limit / nvidia-smi enforce a board cap via DVFS (Section 6.2)
+GPU (SM/CU array + register file + shared mem + L2 + HBM)
+  SM array       : thousands of lanes; power scales with OCCUPANCY (active warps/SM) ->
+                   alpha. Low occupancy = idle lanes = wasted leakage + clock
+  register file  : huge, multi-ported SRAM -- a top energy consumer (CACTI-modeled);
+                   read/write per instruction operand
+  shared mem/L2  : per-access energy; bank-conflict stalls lower effective activity
+  HBM            : pJ/bit * bytes moved -- bandwidth-bound phases are HBM-power-bound
+  capping        : NVIDIA power limit / nvidia-smi enforce a board cap via DVFS (Section 6.2)
 
-NPU  (systolic/MAC array + vector unit + on-chip SRAM + HBM + ICI)
-  systolic array: alpha ~ MAC-array utilization for the operator (a 256x256 array at 40%
-                  mapping efficiency burns clock+leakage on 60% idle PEs)
-  vector/SFU    : activation/normalization -- bursty, lower duty cycle
-  SRAM (scratch): weight/activation buffers -- CACTI per-access + retention
-  HBM + ICI     : off-chip + inter-chip (NVLink/ICI) energy per byte; collective/comm
-                  phases are interconnect-power-bound, compute idle
+NPU (systolic/MAC array + vector unit + on-chip SRAM + HBM + ICI)
+  systolic array : alpha ~ MAC-array utilization for the operator (a 256x256 array at 40%
+                   mapping efficiency burns clock+leakage on 60% idle PEs)
+  vector/SFU     : activation/normalization -- bursty, lower duty cycle
+  SRAM (scratch) : weight/activation buffers -- CACTI per-access + retention
+  HBM + ICI      : off-chip + inter-chip (NVLink/ICI) energy per byte; collective/comm
+                   phases are interconnect-power-bound, compute idle
+                   
   POWER IS OPERATOR-LEVEL: each layer (GEMM vs attention vs elementwise) has a distinct
   block-activity signature -- exactly what an operator-level perf+power model predicts.
-  Cross-link: the NeuSim operator-level example in
-  [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/Performance_Modeling_and_DSE.md)
+  Cross-link: the NeuSim operator-level example in [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/Performance_Modeling_and_DSE.md)
   produces the per-operator activity these NPU block-power numbers consume.
 ```
 
@@ -553,21 +536,21 @@ policy -- it decides which tiles sleep when, and for how long (must exceed the t
 
 ## 12. Peak Power, Power Virus, and TDP -- Block Activity at Its Worst
 
-```
+```text
 Hierarchy of power numbers for one chip (illustrative ratios):
-  Idle                                ~0.05-0.15x TDP
-  Typical application                 ~0.4-0.7x TDP
-  TDP (thermal design power)           1.0x  -- sustained cooling design point
-  Electrical design max (Pmax/EDP)     1.3-2.5x TDP -- worst realistic burst
-  Power virus ceiling                  up to ~2-3x TDP -- adversarial
+  Idle                               ~0.05-0.15x TDP
+  Typical application                ~0.4-0.7x TDP
+  TDP (thermal design power)          1.0x  -- sustained cooling design point
+  Electrical design max (Pmax/EDP)    1.3-2.5x TDP -- worst realistic burst
+  Power virus ceiling                 up to ~2-3x TDP -- adversarial
 
-Power virus: a synthetic workload that maximizes alpha everywhere at once --
+Power virus: A synthetic workload that maximizes alpha everywhere at once --
 all lanes computing, all caches missing, maximum toggle data patterns.
 Used ON PURPOSE for: dynamic IR signoff vectors, VRM/package stress test,
 throttling-mechanism validation. Guarded against in production by EDC/TDC
 current limits and fast throttle (chips are NOT built to sustain it).
 
-Why TDP < Pmax is fine: thermal time constants are long (the heatsink
+Why TDP < Pmax is fine: Thermal time constants are long (the heatsink
 averages over seconds), but the POWER DELIVERY must survive the burst --
 hence different limits enforced at different timescales (PL1/PL2-style
 sustained vs burst limits, peak current throttle at us scale).

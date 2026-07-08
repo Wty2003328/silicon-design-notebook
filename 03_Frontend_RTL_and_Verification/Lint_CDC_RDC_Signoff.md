@@ -43,6 +43,7 @@ A CDC exists wherever a signal launched by one clock is captured by an asynchron
 ### 2.2 The two halves of CDC signoff
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["CDC setup:<br/>define clocks + groups"]:::a --> B["Structural CDC<br/>every crossing has a sync?"]:::b
     B --> C["Functional CDC<br/>does the sync work logically?"]:::c
@@ -75,9 +76,15 @@ The under-appreciated sibling of CDC. An RDC exists when a flop reset by **reset
 
 Static checks are **shift-left**: they run on RTL, before/alongside simulation, and re-run on every change.
 
-```
-RTL change ──► lint ──► CDC ──► RDC ──► (clean) ──► trusted for sim/synth
-                 └────────── any violation blocks hand-off ──────────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    C["RTL change"] --> L["lint"] --> CDC["CDC"] --> RDC["RDC"] --> OK["clean →<br/>trusted for sim / synth"]
+    OK -.->|"any violation blocks hand-off"| C
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef g fill:#dcfce7,stroke:#15803d,color:#000
+    class C,L,CDC,RDC s
+    class OK g
 ```
 
 This is cheaper than finding the same bug in [gate-level sim](Gate_Level_Sim_and_Emulation.md), far cheaper than in [bring-up](../07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md), and effectively un-findable in plain RTL simulation.

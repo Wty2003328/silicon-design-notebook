@@ -30,7 +30,7 @@ After release: the foundry does **mask data prep** — fracturing, **OPC** (opti
 
 ## 2. The respin economics that govern everything
 
-```
+```text
 Outcome of first silicon        cost / schedule
   Works (maybe metal-ECO fixes)  best case — ship / minor fix
   Metal-layer respin (ECO)       ~weeks, ~$1–5M (re-mask few layers)
@@ -44,6 +44,7 @@ This curve is *why* the whole flow obsesses over signoff: a bug caught in [RTL s
 ## 3. Bring-up — first silicon in the lab
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     P["Parts arrive<br/>(packaged)"]:::a --> POW["Power-on<br/>(currents sane? shorts?)"]:::b
     POW --> CLK["Clocks / PLL lock<br/>resets release"]:::b

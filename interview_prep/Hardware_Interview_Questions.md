@@ -156,7 +156,7 @@ Naming the *verification cost* of each rung is what separates senior answers ([S
 
 "Write: after `req` rises, `gnt` must rise within 1–8 cycles, and `req` must hold until `gnt`."
 
-```systemverilog
+```verilog
 property p_handshake;
   @(posedge clk) disable iff (!rst_n)
   $rose(req) |-> req throughout (##[1:8] $rose(gnt));

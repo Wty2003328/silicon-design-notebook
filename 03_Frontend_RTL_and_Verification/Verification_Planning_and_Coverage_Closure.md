@@ -32,6 +32,7 @@ The vplan is **executable**: modern tools link each vplan item to the coverage o
 "Coverage" is several different measurements; you need them all because each is blind to what the others catch.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     COV["Coverage"]:::r --> CODE["Code coverage<br/>(automatic)"]:::a
     COV --> FUNC["Functional coverage<br/>(you write it)"]:::b
@@ -56,7 +57,8 @@ flowchart TD
 ## 3. Closure — the loop that ends verification
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     R["Run regression<br/>(random + directed)"]:::a --> M["Merge coverage<br/>across all runs"]:::b
     M --> H["Find holes<br/>(un-hit cover points)"]:::c
     H -->|holes exist| W["Close the hole:<br/>new seed? new constraint?<br/>new directed test? RTL/cov bug?"]:::d

@@ -52,17 +52,19 @@ The shallow instinct is: model the CPU core, model the cache, model the DRAM —
 
 So a full-chip model has three parts, not one:
 
-```
-  ┌─────────────────────────────────────────────────┐
-  │  POWER / THERMAL BUDGET LAYER  (shared TDP cap,  │  <- §2.4, later budget §
-  │  DVFS, throttle: solves for the operating point) │
-  ├─────────────────────────────────────────────────┤
-  │  CONTENTION / SHARING LAYER  (LLC, NoC, DRAM      │  <- §2.2, §2.3
-  │  channels, coherence: couples the leaves)        │
-  ├─────────────────────────────────────────────────┤
-  │  LEAF MODELS  (per-unit energy × activity;       │  <- §1.5, §2.1
-  │  McPAT/CACTI, DRAMPower, DSENT — see leaf pages)  │
-  └─────────────────────────────────────────────────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    P["Power / thermal budget layer (§2.4)<br/>shared TDP cap, DVFS, throttle —<br/>solves for the operating point"]
+    C["Contention / sharing layer (§2.2, §2.3)<br/>LLC, NoC, DRAM channels, coherence —<br/>couples the leaves"]
+    L["Leaf models (§1.5, §2.1)<br/>per-unit energy × activity —<br/>McPAT / CACTI, DRAMPower, DSENT"]
+    P --> C --> L
+    classDef top fill:#fee2e2,stroke:#b91c1c,color:#000
+    classDef mid fill:#fde68a,stroke:#b45309,color:#000
+    classDef leaf fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class P top
+    class C mid
+    class L leaf
 ```
 
 **A full-chip model is defined by the questions it must answer** — none of which a leaf model can: *What is SoC power at TDP? What sustained clock survives the thermal cap? What memory bandwidth is actually achieved once N cores contend?* If your model cannot answer these, it is a pile of leaf models, not a chip model. The rest of this page builds the two upper layers on top of the leaf models the sibling pages already gave you.
@@ -111,13 +113,18 @@ Bottom-up **composes energy × activity** analytically (this page's focus). Top-
 
 Every architectural number is only trustworthy because it is anchored, level by level, to a lower-fidelity-but-more-accurate reference. The chain runs from transistor SPICE up to the architectural model, each level calibrating the one above:
 
-```
- SPICE (transistor)  ──►  .lib cell characterization  ──►  gate-level power
-   golden, slowest         per-cell E, leakage @PVT       (PrimeTime-PX, SDF+SAIF)
-        │                                                        │
-        └──── CACTI (arrays fit to SPICE) ──┐                    ▼
-                                            ├──► McPAT / architectural
-        RTL power (PowerArtist, SAIF) ──────┘     energy × activity, ±20-30%
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    SPICE["SPICE (transistor)<br/>golden, slowest"] --> LIB[".lib cell characterization<br/>per-cell E, leakage @ PVT"]
+    LIB --> GLP["Gate-level power<br/>PrimeTime-PX, SDF+SAIF"]
+    SPICE --> CACTI["CACTI<br/>arrays fit to SPICE"]
+    CACTI --> MCPAT["McPAT / architectural<br/>energy × activity, ±20–30%"]
+    RTL["RTL power<br/>PowerArtist, SAIF"] --> MCPAT
+    classDef gold fill:#fef9c3,stroke:#a16207,color:#000
+    classDef tool fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class SPICE gold
+    class LIB,GLP,CACTI,MCPAT,RTL tool
 ```
 
 | Level | Tool | Accuracy vs silicon | Speed |
@@ -296,14 +303,12 @@ $$P_{chip} = \underbrace{\sum_i P_{core,i}}_{\S 2.1\text{-}2.2} + \underbrace{P_
 
 **Mode-power matrix** (the deliverable, like [Block_Activity §2.1](../02_Power_and_Low_Power/Block_Activity_and_Power.md)):
 
-```
-              | Idle | Active (all-core, base f) | Turbo (few-core, high f)
-Cores         |  low | Σ per-unit @ base V,f      | fewer cores @ high V,f
-Uncore        | floor| activity-scaled           | high (BW-bound)
-VRM+PDN loss  |  ~η  | ~η                        | ~η (higher abs. loss)
-------------- |------|---------------------------|-------------------------
-TOTAL         | <TDP | ≈ TDP (sustained)         | ≈ TDP, redistributed
-```
+|  | Idle | Active (all-core, base f) | Turbo (few-core, high f) |
+|---|---|---|---|
+| Cores | low | Σ per-unit @ base V,f | fewer cores @ high V,f |
+| Uncore | floor | activity-scaled | high (BW-bound) |
+| VRM+PDN loss | ~η | ~η | ~η (higher abs. loss) |
+| TOTAL | <TDP | ≈ TDP (sustained) | ≈ TDP, redistributed |
 
 **Shared-TDP turbo interaction (flagged, handed off).** Turbo is the §1.6 budget layer biting: the package has a *fixed* watt/thermal budget, so raising a few cores' $f$/$V$ (cubic-ish power cost) is only possible by keeping others idle/gated — the chip *redistributes* a fixed budget rather than adding to it. Sustained all-core clock is the frequency at which $\sum P = \text{TDP}$; burst turbo exploits thermal capacitance above TDP for milliseconds (link [Block_Activity §Pmax vs TDP](../02_Power_and_Low_Power/Block_Activity_and_Power.md)). The *solving-for-operating-point* mechanics (DVFS control loop, per-domain allocation, thermal RC) are the subject of the dedicated **power-budgeting §** in a later pass — here we only flag that the roll-up total is not a free sum but a **budget-constrained** one.
 
@@ -566,31 +571,30 @@ Pull §5.1–§5.4 together. A performance number depends on the clock $f$; $f$ 
 
 The full-chip model is therefore four parts wired in a loop, not one:
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    GOV["Control loop / governor (§5.3)<br/>DVFS + throttle: pick V,f per domain,<br/>gate idle blocks (RAPL / Boost)"]
+    PWR["Power / thermal budget layer (§5.4)<br/>Tj = Tamb + P·Rθ (+ transient Cθ)<br/>P ≤ TDP/RAPL cap; leakage(T) loop"]
+    CON["Contention / overlap layer (§5.1, §5.2)<br/>achieved = min(Σd, R); t = max(·), not Σ"]
+    LEAF["Leaf models<br/>CACTI / McPAT / DRAMPower / DSENT"]
+    GOV -->|"sets V, f"| PWR
+    PWR -->|config| CON
+    CON -->|config| LEAF
+    LEAF -->|"per-event energy × activity"| CON
+    CON -->|"activity @ (V,f)"| PWR
+    PWR -->|"P, Tj  (P = Σ leaves)"| GOV
+    classDef g fill:#fde68a,stroke:#b45309,color:#000
+    classDef p fill:#fee2e2,stroke:#b91c1c,color:#000
+    classDef c fill:#dcfce7,stroke:#15803d,color:#000
+    classDef l fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class GOV g
+    class PWR p
+    class CON c
+    class LEAF l
 ```
-              ┌───────────────────────────────────────────────┐
-              │  CONTROL LOOP / GOVERNOR                        │
-              │  (DVFS + throttle: pick V,f per domain,         │
-              │   gate idle blocks — RAPL/Boost, §5.3)          │
-              └───────────────┬───────────────────────┬────────┘
-                    sets V,f   │                       │ reads P, Tj
-                               ▼                       │
-   ┌───────────────────────────────────────────┐      │
-   │  POWER / THERMAL BUDGET LAYER              │      │
-   │  Tj = Tamb + P·Rθ (+ transient Cθ), §5.4  │──────┘
-   │  P ≤ TDP/RAPL cap, §5.3 ; leakage(T) loop │
-   └───────────────┬───────────────────────────┘
-             P = Σ leaves │ ▲ activity @ (V,f)
-                          ▼ │
-   ┌───────────────────────────────────────────┐
-   │  CONTENTION / OVERLAP LAYER  (§5.1, §5.2)  │
-   │  achieved = min(Σd, R); t = max(·) not Σ  │  <- couples the leaves
-   └───────────────┬───────────────────────────┘
-             config │ ▲ per-event energy × activity
-                    ▼ │
-   ┌───────────────────────────────────────────┐
-   │  LEAF MODELS  (CACTI/McPAT/DRAMPower/DSENT)│  <- §1.5, per-unit E × A
-   └───────────────────────────────────────────┘
-```
+
+Perf and power must be co-modelled because they form a loop: the governor sets `(V,f)`, the power/thermal layer turns activity into `P` and `Tj`, and the contention layer turns leaf energies into achieved throughput and activity. Control flows down; computed quantities flow back up.
 
 The solve: pick $(V,f)$ → leaves emit activity → contention/overlap turn activity into achieved performance *and* the true activity counts → those give $P$ → $P$ gives $T_j$ (with the leakage-$T$ loop) → the governor checks $P\le$ budget and $T_j\le T_{j,max}$, adjusts $(V,f)$, and iterates to a **self-consistent operating point**. Only then is a perf *or* power number meaningful.
 

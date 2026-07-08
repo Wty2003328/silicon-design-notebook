@@ -6,7 +6,7 @@
 
 A divide-by-2 is a toggle flip-flop. To build it from a D-FF:
 
-```
+```ascii-graph
         ┌──────────────┐
         │              │
         │   D ──► Q ───┼──► clk_out
@@ -23,16 +23,14 @@ D = Q' (output fed back inverted)
 **Transistor-level implementation:** A standard D-FF (master-slave, ~20 transistors) with Q_bar routed back to D. Total: 20 transistors + routing.
 
 **Exact duty cycle analysis:**
-```
 clk_out goes HIGH on a rising edge of clk (let's call it edge 0)
 clk_out goes LOW on the NEXT rising edge of clk (edge 1)
 clk_out goes HIGH on edge 2
 ...
 
-High time = 1 clock period of input clk
-Low time  = 1 clock period of input clk
-Duty cycle = 50% EXACTLY (by construction)
-```
+- **High time** = `1 clock period of input clk`
+- **Low time** = `1 clock period of input clk`
+- **Duty cycle** = `50% EXACTLY (by construction)`
 
 There is no duty cycle error because the toggle happens on every rising edge, and the output is held by the flip-flop for exactly one full input period.
 
@@ -81,17 +79,17 @@ endmodule
 ```
 
 **Duty cycle analysis for divide-by-6:**
-```
+```verilog
 HALF = 3. Counter counts 0, 1, 2 then toggles.
 
-clk:        |_|^|_|^|_|^|_|^|_|^|_|^|_|^|_|^|_|^|
-cnt:         0   1   2   0   1   2   0   1   2
-clk_out:     ___________^^^^^^^^^^^^^^^___________^^^
+clk:         |_|^|_|^|_|^|_|^|_|^|_|^|_|^|_|^|_|^|
+cnt:          0   1   2   0   1   2   0   1   2
+clk_out:      ___________^^^^^^^^^^^^^^^___________^^^
 
-High time = 3 input clock periods
-Low time  = 3 input clock periods
+High time    = 3 input clock periods
+Low time     = 3 input clock periods
 Total period = 6 input clock periods = DIV
-Duty cycle = 3/6 = 50% EXACTLY
+Duty cycle   = 3/6 = 50% EXACTLY
 ```
 
 ---
@@ -128,7 +126,7 @@ endmodule
 ```
 
 **For divide-by-5:**
-```
+```ascii-graph
 cnt:     0   1   2   3   4   0   1   2   3   4
 clk_out: ^^  ^^  __  __  __  ^^  ^^  __  __  __
 
@@ -152,18 +150,18 @@ Duty cycle: 2/5 = 40%
 Define T = input clock period. The output period must be 5T.
 
 **Posedge clock (clk_pos):** Toggles at cnt_pos=0 and cnt_pos=3 (=(DIV+1)/2):
-```
+```verilog
 Input clk edges:  0    T    2T   3T   4T   5T   6T   7T   8T   9T   10T
 cnt_pos:          0    1    2    3    4    0    1    2    3    4    0
 clk_pos toggle:   ↑              ↓              ↑              ↓
 clk_pos:          ^^^^^^^^^^^^^_______         ^^^^^^^^^^^^^_______
-                  |--- 3T ---|--2T--|         |--- 3T ---|--2T--|
-                  HIGH=3T    LOW=2T           Period = 5T
+                  |--- 3T ---|--2T--|          |--- 3T ---|--2T--|
+                  HIGH=3T    LOW=2T            Period = 5T
                   Duty = 3/5 = 60%
 ```
 
 **Negedge clock (clk_neg):** Same pattern but triggered on falling edges (shifted by T/2):
-```
+```verilog
 Input clk falling:  T/2  3T/2  5T/2  7T/2  9T/2  11T/2 ...
 cnt_neg:            0    1     2     3     4     0     ...
 clk_neg toggle:     ↑                ↓                 ↑
@@ -176,21 +174,17 @@ clk_neg:            ^^^^^^^^^^^^^_______
 
 Let's draw the exact waveforms (T = one input clock period):
 
-```
-Time:      0   T/2   T   3T/2  2T  5T/2  3T  7T/2  4T  9T/2  5T
-clk_pos:   ^^^^^^^^^^^^^^^^^^^^^^^^^^^_______________^^^^^^^^^^^
-                     HIGH from 0 to 3T        LOW 3T-5T
-
-clk_neg:   ________^^^^^^^^^^^^^^^^^^^^^^^________________^^^^^
-                    HIGH from T/2 to 7T/2     LOW 7T/2-9T/2
-
-clk_out:   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^_______________^^^^^^
-           (OR)   HIGH from 0 to 7T/2        LOW 7T/2-5T
+```wavedrom
+{ "signal": [
+  { "name": "clk_pos (div on posedge)", "wave": "1.....0..." },
+  { "name": "clk_neg (div on negedge)", "wave": "0.1....0.." },
+  { "name": "clk_out = pos OR neg",     "wave": "1......0.." }
+], "head": { "text": "Combining posedge- and negedge-triggered dividers (OR) to shape the duty cycle" } }
 ```
 
 Wait, let me be more careful. Let me set toggle points precisely.
 
-```
+```ascii-graph
 clk_pos: toggles HIGH at t=0, toggles LOW at t=3T, toggles HIGH at t=5T, etc.
   HIGH intervals: [0, 3T), [5T, 8T), [10T, 13T), ...
   LOW intervals:  [3T, 5T), [8T, 10T), [13T, 15T), ...
@@ -220,7 +214,7 @@ I need to reconsider the toggle points. For a correct divide-by-5 with 50% duty 
 
 **Correct approach:** Each sub-clock should have HIGH for (N-1)/2 cycles and LOW for (N+1)/2 cycles (or vice versa). For N=5: HIGH=2T, LOW=3T.
 
-```
+```ascii-graph
 clk_pos: toggle at cnt=0 (go HIGH), toggle at cnt=(N-1)/2=2 (go LOW)
   HIGH: [0, 2T), LOW: [2T, 5T)   → duty = 2/5
 
@@ -251,7 +245,7 @@ The OR of the two sub-clocks is HIGH when at least one is HIGH:
 - Total HIGH = 1/2 + (N-2)/2 + 1/2 = N/2 periods
 
 Wait, let me be exact:
-```
+```verilog
 clk_pos HIGH: [0, (N-1)/2 * T)
 clk_neg HIGH: [T/2, T/2 + (N-1)/2 * T) = [T/2, (N-1)/2 * T + T/2)
 
@@ -263,7 +257,7 @@ Union of HIGH:
 HIGH duration = N/2 * T
 LOW duration  = NT - N/2 * T = N/2 * T
 
-Duty cycle = (N/2 * T) / (NT) = 1/2 = 50%  ✓
+Duty cycle    = (N/2 * T) / (NT) = 1/2 = 50%  ✓
 ```
 
 **This proves the OR of the two sub-clocks gives exactly 50% duty for any odd N.** QED.
@@ -350,8 +344,8 @@ endmodule
 ### Dual-Modulus Approach for Divide-by-3.5
 
 Alternate between divide-by-3 and divide-by-4:
-```
-Average period = (3T + 4T) / 2 = 3.5T
+```verilog
+Average period    = (3T + 4T) / 2 = 3.5T
 Average frequency = f_in / 3.5
 ```
 
@@ -397,7 +391,7 @@ endmodule
 
 **Jitter analysis:**
 
-```
+```ascii-graph
 Period 1 (div-3 half-period): 3T
 Period 2 (div-4 half-period): 4T
 Full output cycle: 3T + 4T = 7T → output frequency = f_in / 7 * 2 = f_in / 3.5
@@ -419,10 +413,10 @@ This jitter is HUGE — one full input clock period. For 100 MHz input, 10 ns of
 ### Divide-by-1.5
 
 Even more problematic — alternate between divide-by-1 and divide-by-2:
-```
+```verilog
 Periods: T, 2T, T, 2T, ...
 Average = 1.5T
-Jpp = T = 66.7% of average period!
+Jpp     = T = 66.7% of average period!
 ```
 
 **In practice, non-integer division ratios below ~3 should use a PLL** (phase-locked loop) to synthesize the exact target frequency. The PLL's loop filter smooths out the jitter to sub-picosecond levels.
@@ -431,21 +425,19 @@ Jpp = T = 66.7% of average period!
 
 For fine frequency resolution, modern PLLs use a sigma-delta modulator to control the feedback divider ratio:
 
-```
 Target frequency: f_out = f_ref * (N + K/F)
 
-Where:
-  N = integer part of division ratio
-  K = fractional numerator
-  F = fractional denominator (typically 2^M for M-bit modulator)
-```
+**Where:**
+   - N = integer part of division ratio
+   - K = fractional numerator
+   - F = fractional denominator (typically 2^M for M-bit modulator)
 
 **Operation:**
-```
+```verilog
 Each VCO cycle, the sigma-delta modulator outputs N or N+1:
   - Accumulate K each cycle
   - If accumulator overflows (>= F): output N+1, subtract F
-  - Else: output N
+  - Else:                            output N
 
 Over F cycles: outputs N+1 exactly K times, and N exactly (F-K) times
 Average ratio = (K*(N+1) + (F-K)*N) / F = N + K/F
@@ -454,7 +446,7 @@ Average ratio = (K*(N+1) + (F-K)*N) / F = N + K/F
 **Sigma-delta noise shaping:** A first-order sigma-delta modulator produces a sequence of N and N+1 with the quantization noise shaped to high frequencies. Higher-order modulators (MASH 1-1-1 is common) push more noise to higher frequencies, where the PLL's loop filter attenuates it.
 
 **Phase noise impact:**
-```
+```ascii-graph
 Without sigma-delta: Fixed-N PLL, f_ref must be = f_step (desired resolution)
   If f_step = 1 kHz and f_out = 2.4 GHz: N = 2,400,000 → very high in-band noise
 
@@ -474,63 +466,50 @@ With sigma-delta: f_ref = 20-50 MHz (much higher), N = 48-120
 The dual-modulus prescaler is the classic RF/communications technique for achieving
 fine frequency steps without requiring the reference frequency to equal the step size.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PS["Dual-modulus prescaler<br/>÷P or ÷(P+1)"] --> SW["Swallow counter<br/>(counts to A)"]
+    PS --> MC["Main counter N<br/>(counts to N)"]
+    SW --> RL["Both reach zero →<br/>reload cycle → output"]
+    MC --> RL
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class PS,SW,MC,RL s
 ```
-Target: f_out = f_ref × (N + P/A)
-  where N = main divider (programmable)
-        P = prescaler modulus (P or P+1)
-        A = swallow counter (0 to P-1)
 
-Components:
-  ┌──────────────┐
-  │ Dual-Modulus  │ ← select: divide by P or P+1
-  │  Prescaler    │────► (f_vco / P or P+1)
-  └──────┬───────┘
-         │
-         ├──────────────────────────────┐
-         │                              │
-  ┌──────▼───────┐               ┌─────▼───────┐
-  │ Swallow Cntr │               │ Main Cntr N  │
-  │ (counts to A)│               │ (counts to N)│
-  └──────┬───────┘               └─────┬───────┘
-         │                              │
-         └──────────┬───────────────────┘
-                    │
-               Both reach zero → reload cycle → output to PFD
-```
+Target: $f_{out} = f_{ref} \times (N + P/A)$, where N is the main (programmable) divider, P is the prescaler modulus (P or P+1), and A is the swallow counter (0 … P−1).
 
 ### How P/(P+1) Averaging Works
 
-```
-Each reload cycle consists of TWO phases:
+**Each reload cycle consists of TWO phases:**
 
-Phase 1 (A counts of P+1):
-  - Dual-modulus prescaler divides by P+1
-  - Swallow counter counts A pulses of f_vco/(P+1)
-  - After A pulses, swallow counter reaches zero
-  - Swallow counter output switches prescaler to divide-by-P
-  - Duration: A × (P+1) / f_vco
+**Phase 1 (A counts of P+1):**
+   - Dual-modulus prescaler divides by P+1
+   - Swallow counter counts A pulses of f_vco/(P+1)
+   - After A pulses, swallow counter reaches zero
+   - Swallow counter output switches prescaler to divide-by-P
+   - Duration: A × (P+1) / f_vco
 
-Phase 2 (N-A counts of P):
-  - Dual-modulus prescaler divides by P
-  - Main counter counts remaining (N-A) pulses of f_vco/P
-  - After (N-A) pulses, main counter reaches zero → reload all counters
-  - Duration: (N-A) × P / f_vco
+**Phase 2 (N-A counts of P):**
+   - Dual-modulus prescaler divides by P
+   - Main counter counts remaining (N-A) pulses of f_vco/P
+   - After (N-A) pulses, main counter reaches zero → reload all counters
+   - Duration: (N-A) × P / f_vco
 
-Total division ratio per reload cycle:
-  Total input cycles = A × (P+1) + (N-A) × P
-                     = A × P + A + N × P - A × P
-                     = A + N × P
+**Total division ratio per reload cycle:**
+   - Total input cycles = A × (P+1) + (N-A) × P
+   - = A × P + A + N × P - A × P
+   - = A + N × P
 
-  Division ratio = N × P + A
+Division ratio = N × P + A
 
-  Example: P = 64, N = 10, A = 5
-    Division = 10 × 64 + 5 = 645
-    f_out = f_vco / 645
-```
+Example: P = 64, N = 10, A = 5
+Division = 10 × 64 + 5 = 645
+f_out = f_vco / 645
 
 ### Constraints
 
-```
+```ascii-graph
 1. N must be >= A (main counter must not underflow before swallow counter)
    Typically: N >= P (ensures N > A for all valid A values)
 
@@ -549,7 +528,7 @@ Total division ratio per reload cycle:
 
 ### Worked Example: Dividing by 10.5
 
-```
+```ascii-graph
 Problem: Generate f_out = f_vco / 10.5 using dual-modulus approach
 
 Since 10.5 is not an integer, we need fractional-N techniques:
@@ -612,7 +591,7 @@ Method 3: PLL-based (zero jitter)
 
 ### Sigma-Delta Modulator for Fractional-N (MASH 1-1-1)
 
-```
+```ascii-graph
 First-order sigma-delta (accumulator-based):
   Produces pattern: 0,0,...,0,1,0,...,0,1,...
   The "1" appears every F/K cycles on average
@@ -652,14 +631,13 @@ using a single-edge counter. The dual-edge OR technique is required.
 
 ### State Machine Design
 
-```
 States (3 states, encoding chosen to minimize logic):
 
-State | Output (clk_pos) | Next State (posedge clk)
-------|------------------|------------------------
-  S0  |        1         |    S1
-  S1  |        1         |    S2
-  S2  |        0         |    S0
+| State | Output (clk_pos) | Next State (posedge clk) |
+|---|---|---|
+| S0 | 1 | S1 |
+| S1 | 1 | S2 |
+| S2 | 0 | S0 |
 
 Output clk_pos: 1, 1, 0, 1, 1, 0, ...  (duty = 2/3 = 66.7%)
 
@@ -672,18 +650,16 @@ State | Output (clk_neg) | Next State (negedge clk)
   S2  |        0         |    S0
 
 clk_neg: same 1,1,0 pattern but shifted by T/2 relative to clk_pos
-```
 
 ### State Encoding and Gate-Level Implementation
 
-```
 One-hot encoding (minimal combinational logic):
 
-State | Q0 | Q1 | Q2 | Output
-------|----|----|----|-------
-  S0  |  1 |  0 |  0 |   1
-  S1  |  0 |  1 |  0 |   1
-  S2  |  0 |  0 |  1 |   0
+| State | Q0 | Q1 | Q2 | Output |
+|---|---|---|---|---|
+| S0 | 1 | 0 | 0 | 1 |
+| S1 | 0 | 1 | 0 | 1 |
+| S2 | 0 | 0 | 1 | 0 |
 
 Next state logic:
   D0 = Q2              (S0 follows S2)
@@ -698,7 +674,6 @@ Gate count:
   For clk_neg: 3 more D-FFs (negedge) + 1 OR gate
   Final output: 1 OR gate (clk_pos | clk_neg)
   Total: 6 D-FFs + 3 OR gates
-```
 
 ### Complete RTL
 
@@ -748,7 +723,7 @@ endmodule
 
 ### Duty Cycle Proof
 
-```
+```ascii-graph
 Input clk period = T
 
 Posedge state machine (S0=1, S1=1, S2=0):
@@ -889,7 +864,7 @@ State | Output | Duration
 
 ### Revised State Machine for 1T HIGH / 2T LOW
 
-```
+```ascii-graph
 State encoding (one-hot, 3 states):
 
 State | Q0 | Q1 | Q2 | Output
@@ -913,7 +888,7 @@ This matches the generic odd divider formula:
 
 ### Gate Count and Timing Summary
 
-```
+```ascii-graph
 Component             | Count | Notes
 ----------------------|-------|----------------------------------
 Posedge D-FFs         |   3   | One-hot state register
@@ -1023,21 +998,17 @@ assign clk_out = sel ? clk_b : clk_a;
 
 **Scenario: sel transitions from 0 to 1 while clk_a=1, clk_b=0:**
 
+```wavedrom
+{ "signal": [
+  { "name": "clk_a",   "wave": "01010101" },
+  { "name": "clk_b",   "wave": "10101010" },
+  { "name": "sel",     "wave": "0....1.." },
+  {},
+  { "name": "clk_out", "wave": "0101x01." }
+], "head": { "text": "Naive MUX runt pulse -- width = sel transition to clk_a falling edge (0 to half-period)" } }
 ```
-clk_a:   _____|^^^^^^^^^|__________|^^^^^^^^^|_____
-clk_b:   __|^^^^^^^^^|__________|^^^^^^^^^|________
-sel:     ____________________________|^^^^^^^^^^^^^^^^^
 
-clk_out: _____|^^^^^^^^|???|__________|^^^^^^^^^|____
-                        ↑
-              RUNT PULSE: clk_a was driving HIGH,
-              sel switches to clk_b which is LOW,
-              output drops from 1 to 0 abruptly
-
-              The "???" pulse is shorter than either clock's half-period.
-              Its width = time from sel transition to clk_a falling edge.
-              Could be anywhere from 0 to a full half-period.
-```
+The runt (`x`) is shorter than either clock's half-period; its width is the time from the `sel` transition to `clk_a`'s falling edge, anywhere from 0 to a full half-period.
 
 **Runt pulse consequences:**
 - **Setup violation:** A flip-flop clocked by clk_out might see the rising edge of the runt pulse, try to capture data, but the pulse is too short for the data to propagate through the master latch → metastable output.
@@ -1048,37 +1019,33 @@ clk_out: _____|^^^^^^^^|???|__________|^^^^^^^^^|____
 
 **Architecture:**
 
-```
-               ┌────────────────────────────────────┐
-               │                                    │
-    sel ──────►├──► [NOT] ──► sel_n                 │
-               │                                    │
-               │   ┌──────────────────────────┐     │
-               │   │  clk_a domain            │     │
-               │   │                          │     │
-    sel_n ─────┼──►│  AND  ──► FF1 ──► FF2 ──┼──► en_a
-               │   │   ↑                      │     │
-    ~en_b ─────┼──►│  AND (feedback from B)   │     │
-               │   └──────────────────────────┘     │
-               │                                    │
-               │   ┌──────────────────────────┐     │
-               │   │  clk_b domain            │     │
-               │   │                          │     │
-    sel ───────┼──►│  AND  ──► FF3 ──► FF4 ──┼──► en_b
-               │   │   ↑                      │     │
-    ~en_a ─────┼──►│  AND (feedback from A)   │     │
-               │   └──────────────────────────┘     │
-               │                                    │
-               └────────────────────────────────────┘
-
-    clk_out = (clk_a & en_a) | (clk_b & en_b)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    sel["sel"] --> na["AND<br/>(clk_a path)"]
+    sel --> NOT["NOT"] --> seln["sel_n"] --> nb["AND<br/>(clk_b path)"]
+    na --> FA1["FF1 @ clk_a"] --> FA2["FF2 @ clk_a"] --> ena["en_a"]
+    nb --> FB1["FF1 @ clk_b"] --> FB2["FF2 @ clk_b"] --> enb["en_b"]
+    FB2 -.->|"~en_b feedback"| na
+    FA2 -.->|"~en_a feedback"| nb
+    ena --> ga["AND"] --> orr["OR"]
+    clka["clk_a"] --> ga
+    enb --> gb["AND"] --> orr
+    clkb["clk_b"] --> gb
+    orr --> out["clk_out"]
+    classDef l fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef s fill:#fde68a,stroke:#b45309,color:#000
+    classDef c fill:#dcfce7,stroke:#15803d,color:#000
+    class na,nb,NOT,ga,gb,orr l
+    class FA1,FA2,FB1,FB2 s
+    class sel,seln,clka,clkb,out,ena,enb c
 ```
 
 ### Timing Diagram — Showing the Safe Switching Sequence
 
 **Switching from clk_a to clk_b (sel goes from 0 to 1):**
 
-```
+```ascii-graph
 Time →     t0    t1    t2    t3    t4    t5    t6    t7    t8    t9
            ├─────┤─────┤─────┤─────┤─────┤─────┤─────┤─────┤─────┤
 
@@ -1120,28 +1087,27 @@ This is SAFE: downstream flip-flops simply don't clock for a few cycles.
 ### Proving No Runt Pulses — Exhaustive Case Analysis
 
 **Case 1: en_a=1, en_b=0**
-```
+```verilog
 clk_out = clk_a & 1 | clk_b & 0 = clk_a
 Pure clk_a, no glitch possible.
 ```
 
 **Case 2: en_a=0, en_b=0 (dead time)**
-```
+```verilog
 clk_out = clk_a & 0 | clk_b & 0 = 0
 Output is constant 0. No edges, no glitches.
 ```
 
 **Case 3: en_a=0, en_b=1**
-```
+```verilog
 clk_out = clk_a & 0 | clk_b & 1 = clk_b
 Pure clk_b, no glitch possible.
 ```
 
 **Case 4: en_a=1, en_b=1 (IMPOSSIBLE)**
-```
-The feedback cross-coupling prevents this:
-  en_a = FF2(FF1(sel_n & ~en_b))
-  en_b = FF4(FF3(sel & ~en_a))
+**The feedback cross-coupling prevents this:**
+   - en_a = FF2(FF1(sel_n & ~en_b))
+   - en_b = FF4(FF3(sel & ~en_a))
 
 If en_a=1, then ~en_a=0, so the input to en_b's path is (sel & 0) = 0.
 en_b will become 0 after 2 clk_b cycles.
@@ -1151,7 +1117,6 @@ en_a will become 0 after 2 clk_a cycles.
 
 At most, there's a transient overlap of ~2 cycles during initial reset release,
 which is covered by the reset logic (en_a defaults to 1, en_b defaults to 0).
-```
 
 ### What If One or Both Clocks Stop?
 
@@ -1162,7 +1127,7 @@ which is covered by the reset logic (en_a defaults to 1, en_b defaults to 0).
 - **System is stuck.** No clock output.
 
 **Solution:** Use the negedge of the stuck clock (if it stopped high), or add a timeout circuit:
-```
+```ascii-graph
 If clk_a has no edge for N cycles of a reference clock → force en_a = 0
 ```
 
@@ -1182,7 +1147,7 @@ In practice, clock switching in SoCs assumes both clocks are running (or use a c
 
 ### Clock Gating (ICG Cell)
 
-```
+```ascii-graph
              ┌──────────────┐
      en ────►│ Latch (neg)  ├──► en_latched ──┐
              └──────┬───────┘                  │
@@ -1257,7 +1222,7 @@ Clock division reduces f. For a block that needs to run at half speed, gating ev
 ### Q11: A common tapeout bug related to clock dividers — what is it?
 
 **A:** Forgetting to constrain the generated clock from a divider in SDC. If you write a divide-by-4 and don't tell the STA tool about it:
-```
+```tcl
 # Missing this constraint:
 create_generated_clock -name clk_div4 -source [get_ports clk] \
     -divide_by 4 [get_pins div4_inst/clk_out]
@@ -1270,29 +1235,15 @@ The tool treats the divider output as a regular signal, not a clock. Paths from 
 
 ### Block Diagram
 
-```
-                   ┌───────────────────────────────────────────────┐
-                   │                                               │
-  f_ref ──►┌─────┐│  ┌──────┐   ┌──────────┐   ┌────────────┐   │  f_out
-           │ PFD ├┼─►│Charge├──►│Loop Filter├──►│    VCO     ├───┼──────►
-  f_fb ──►│     ││  │ Pump │   │(LPF)      │   │            │   │
-           └─────┘│  └──────┘   └──────────┘   └─────┬──────┘   │
-              ▲   │                                    │          │
-              │   │  ┌───────────────────┐             │          │
-              │   │  │ Feedback Divider  │◄────────────┘          │
-              │   │  │    ÷ N            │                        │
-              │   └──│                   │                        │
-              │      └───────┬───────────┘                        │
-              │              │                                    │
-              └──────────────┘                                    │
-                   f_fb = f_out / N                               │
-                                                                  │
-                   When locked: f_fb = f_ref                      │
-                   Therefore: f_out = N * f_ref                   │
-                   └──────────────────────────────────────────────┘
-
-  Optional: Reference divider ÷ M before PFD:
-    f_out = (N / M) * f_ref
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    REF["f_ref"] --> PFD["PFD"]
+    FB["f_fb"] --> PFD
+    PFD --> CP["Charge pump"] --> LF["Loop filter (LPF)"] --> VCO["VCO"] --> OUT["f_out"]
+    VCO --> DIV["Feedback divider ÷N"] --> FB
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class REF,PFD,CP,LF,VCO,OUT,DIV,FB s
 ```
 
 ### Phase-Frequency Detector (PFD)
@@ -1301,7 +1252,7 @@ The PFD compares the phase AND frequency of the reference clock (f_ref) and the 
 
 **3-State State Machine:**
 
-```
+```ascii-graph
 States: IDLE, UP_ACTIVE, DOWN_ACTIVE
 
 Transitions:
@@ -1354,7 +1305,7 @@ endmodule
 
 The charge pump converts the PFD's UP/DOWN pulses into a current that charges or discharges the loop filter:
 
-```
+```ascii-graph
             VDD
              │
          ┌───┴───┐
@@ -1372,19 +1323,17 @@ The charge pump converts the PFD's UP/DOWN pulses into a current that charges or
 
 **Charge pump mismatch:** Ideally I_up = I_dn. In practice, PMOS and NMOS current sources have different characteristics:
 
-```
-Mismatch sources:
-  1. Process variation: PMOS and NMOS have different threshold voltages
-  2. Channel-length modulation: output impedance differs
-  3. Charge sharing: parasitic capacitance at the output node
-  4. Clock feedthrough: switching transients couple through gate-drain capacitance
+**Mismatch sources:**
+   1. Process variation: PMOS and NMOS have different threshold voltages
+2. Channel-length modulation: output impedance differs
+3. Charge sharing: parasitic capacitance at the output node
+4. Clock feedthrough: switching transients couple through gate-drain capacitance
 
 Consequence: net charge injected per reference cycle is nonzero even when locked.
-  If I_up > I_dn: positive charge accumulates → VCO control voltage drifts up
-  The PFD compensates by adjusting the phase offset until average charge = 0
-  This creates a static phase offset between ref and fb
-  The periodic charge injection at f_ref creates REFERENCE SPURS at f_out ± k*f_ref
-```
+If I_up > I_dn: positive charge accumulates → VCO control voltage drifts up
+The PFD compensates by adjusting the phase offset until average charge = 0
+This creates a static phase offset between ref and fb
+The periodic charge injection at f_ref creates REFERENCE SPURS at f_out ± k*f_ref
 
 **Reference spurs:** These are spectral peaks at offsets of f_ref (and harmonics) from the carrier. Specification: typically -40 to -80 dBc depending on application. Reducing spurs requires: matched current sources, careful layout (symmetric PMOS/NMOS), charge cancellation circuits, and narrow PLL bandwidth.
 
@@ -1394,7 +1343,7 @@ The loop filter converts the charge pump current into a voltage that controls th
 
 **2nd-order loop filter (most common):**
 
-```
+```ascii-graph
 From charge pump ──┬── R1 ──┬── C1 ──┬── GND
                    │        │        │
                    └── C2 ──┘        │
@@ -1408,13 +1357,13 @@ The resistor R1 provides a zero that ensures loop stability (phase margin > 45 d
 
 **Component values determine PLL behavior:**
 
-```
+```verilog
 Loop bandwidth ≈ (I_cp * Kvco * R1) / (2π * N)
   Where:
     I_cp = charge pump current
     Kvco = VCO gain (Hz/V)
-    R1 = loop filter resistor
-    N = feedback divider ratio
+    R1   = loop filter resistor
+    N    = feedback divider ratio
 
 Phase margin ≈ atan(ω_bw * R1 * C1) - atan(ω_bw * R1 * C1 * C2 / (C1 + C2))
   Typical target: 55-65 degrees for good stability
@@ -1440,7 +1389,7 @@ Lock time ≈ 2π * N / (ω_bw) * ln(Δf / f_tolerance)
 
 **Ring oscillator (digital PLL / DPLL):**
 
-```
+```ascii-graph
 ┌───► INV ──► INV ──► INV ──► INV ──► INV ──┐
 │                                              │
 └──────────────────────────────────────────────┘
@@ -1463,7 +1412,7 @@ Tuning: adjust inverter delay by changing supply voltage (current-starved)
 
 **LC oscillator (analog PLL):**
 
-```
+```verilog
 Uses an inductor (L) and capacitor (C) tank circuit:
   f_osc = 1 / (2π * sqrt(L * C))
 
@@ -1481,8 +1430,7 @@ Tuning: use varactors (voltage-variable capacitors) to change C
 
 **Kvco (VCO gain):**
 
-```
-Kvco = df_out / dV_ctrl  [Hz/V]
+- **Kvco** = `df_out / dV_ctrl  [Hz/V]`
 
 Ring oscillator Kvco: typically 0.5-5 GHz/V (high, wide range)
 LC oscillator Kvco: typically 100-500 MHz/V (lower, narrower range)
@@ -1491,8 +1439,7 @@ High Kvco: more sensitive to supply noise → worse jitter
 Low Kvco: less sensitive → better jitter, but narrower tuning range
 
 Design approach: use coarse digital tuning (switched capacitor banks) for
-  wide range + fine analog tuning (varactor) for low Kvco near the target.
-```
+wide range + fine analog tuning (varactor) for low Kvco near the target.
 
 ### Lock Detection
 
@@ -1557,7 +1504,7 @@ endmodule
 
 **Lock time:** Time from enabling the PLL (or changing the divider ratio) until the output frequency is within tolerance. Typical: 5-50 us for general-purpose PLLs, 1-5 us for fast-lock designs.
 
-```
+```ascii-graph
 Lock time ≈ (2π / ω_n) * ln(Δf_initial / f_tolerance) * damping_factor_correction
   Where ω_n = natural frequency of the loop
 
@@ -1567,22 +1514,22 @@ Faster lock: wider bandwidth, higher charge pump current
 
 **Jitter types:**
 
-```
+```verilog
 1. Cycle-to-cycle jitter (J_cc):
    Difference between consecutive output periods.
-   J_cc = |T_{n+1} - T_n|
-   Spec: typically < 1-5% of output period
+   J_cc          = |T_{n+1} - T_n|
+   Spec:         typically < 1-5% of output period
    Dominated by: VCO phase noise
 
 2. Period jitter (J_per):
    Deviation of any single period from the ideal period.
-   J_per = T_n - T_ideal
-   RMS value: typically 1-20 ps for PLL outputs
+   J_per         = T_n - T_ideal
+   RMS value:    typically 1-20 ps for PLL outputs
    Includes contributions from VCO, reference, and loop noise
 
 3. Long-term (accumulated) jitter (J_lt):
    Phase deviation accumulated over N cycles.
-   J_lt(N) = sum(T_i - T_ideal) for i = 1 to N
+   J_lt(N)       = sum(T_i - T_ideal) for i = 1 to N
    Grows as sqrt(N) for random jitter (Gaussian)
    Bounded for deterministic jitter (e.g., reference spurs)
    Important for: SerDes (eye diagram), ADC sampling
@@ -1590,39 +1537,35 @@ Faster lock: wider bandwidth, higher charge pump current
 
 **Phase noise:**
 
-```
 Phase noise is the frequency-domain representation of jitter.
 Measured in dBc/Hz at a given offset from the carrier.
 
-Typical specs:
-  Ring oscillator PLL: -80 to -100 dBc/Hz at 1 MHz offset
-  LC oscillator PLL:   -110 to -130 dBc/Hz at 1 MHz offset
+**Typical specs:**
+   - Ring oscillator PLL: -80 to -100 dBc/Hz at 1 MHz offset
+   - LC oscillator PLL:   -110 to -130 dBc/Hz at 1 MHz offset
 
-Relationship to jitter:
-  J_rms = (1 / (2π * f_out)) * sqrt(2 * integral(L(f) * df, f_low, f_high))
-  Where L(f) is the single-sideband phase noise PSD
-```
+**Relationship to jitter:**
+   - J_rms = (1 / (2π * f_out)) * sqrt(2 * integral(L(f) * df, f_low, f_high))
+   - Where L(f) is the single-sideband phase noise PSD
 
 ### PLL Bandwidth Considerations
 
-```
 PLL bandwidth (f_bw) is the -3 dB point of the closed-loop transfer function.
 
 Rule of thumb: f_bw should be ~1/10 to 1/20 of f_ref for stability.
-  Too wide (> f_ref/5): loop becomes unstable, reference spurs increase
-  Too narrow (< f_ref/50): lock time becomes excessively long
+Too wide (> f_ref/5): loop becomes unstable, reference spurs increase
+Too narrow (< f_ref/50): lock time becomes excessively long
 
-Within the bandwidth:
-  - PLL tracks the reference: reference noise passes through
-  - VCO noise is suppressed (PLL corrects VCO wander)
+**Within the bandwidth:**
+   - PLL tracks the reference: reference noise passes through
+   - VCO noise is suppressed (PLL corrects VCO wander)
 
-Outside the bandwidth:
-  - VCO free-runs: VCO noise dominates
-  - Reference noise is filtered out
+**Outside the bandwidth:**
+   - VCO free-runs: VCO noise dominates
+   - Reference noise is filtered out
 
 Optimal bandwidth: set f_bw at the frequency where reference noise
-  (multiplied by N^2) equals VCO noise. This minimizes total output jitter.
-```
+(multiplied by N^2) equals VCO noise. This minimizes total output jitter.
 
 ---
 
@@ -1630,28 +1573,22 @@ Optimal bandwidth: set f_bw at the frequency where reference noise
 
 ### DLL Architecture
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    REF["f_ref"] --> PFD["PFD"]
+    FB["f_fb"] --> PFD
+    PFD --> CP["Charge pump"] --> LF["Loop filter (simple)"] --> VCDL["VCDL"] --> OUT["f_out"]
+    VCDL --> FB
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class REF,PFD,CP,LF,VCDL,OUT,FB s
 ```
-                   ┌───────────────────────────────────────┐
-                   │                                       │
-  f_ref ──►┌─────┐│  ┌──────┐   ┌──────────┐   ┌──────┐ │
-           │ PFD ├┼─►│Charge├──►│Loop Filter├──►│ VCDL ├─┼──► f_out
-           │     ││  │ Pump │   │(simple)   │   │      │ │
-  f_fb ──►│     ││  └──────┘   └──────────┘   └──┬───┘ │
-           └─────┘│                                │      │
-              ▲   │                                │      │
-              │   └────────────────────────────────┘      │
-              │         f_fb = f_out (delayed f_ref)      │
-              └───────────────────────────────────────────┘
-              
-  VCDL = Voltage-Controlled Delay Line
-  The VCDL delays f_ref by a controlled amount.
-  When locked: total delay = 1 period of f_ref (or exact fraction)
-  f_out has the SAME frequency as f_ref, but phase-shifted.
-```
+
+VCDL = voltage-controlled delay line: it delays `f_ref` by a controlled amount, with `f_fb = f_out` (a delayed `f_ref`).
 
 **VCDL (Voltage-Controlled Delay Line):**
 
-```
+```ascii-graph
 f_ref ──► [Delay Cell 1] ──► [Delay Cell 2] ──► ... ──► [Delay Cell N] ──► f_out
                                                                               │
                                                                               ▼ feedback
@@ -1706,7 +1643,7 @@ Multiphase outputs available at each tap:
 
 **H-tree:**
 
-```
+```ascii-graph
                         ┌───────────────────┐
                         │    Root buffer     │
                         └─────────┬─────────┘
@@ -1730,7 +1667,7 @@ Properties:
 
 **Spine (fishbone):**
 
-```
+```ascii-graph
   Clock source
        │
        ▼
@@ -1750,7 +1687,7 @@ Properties:
 
 **Mesh (grid):**
 
-```
+```ascii-graph
   ──────┬──────┬──────┬──────
         │      │      │
   ──────┼──────┼──────┼──────
@@ -1774,7 +1711,7 @@ Properties:
 
 A modern SoC has multiple clock domains, each with its own PLL or clock generator:
 
-```
+```ascii-graph
 ┌─────────────────────────────────────────────────────────┐
 │  SoC                                                     │
 │                                                          │
@@ -1812,27 +1749,25 @@ A modern SoC has multiple clock domains, each with its own PLL or clock generato
 
 **CTS (Clock Tree Synthesis) buffers:**
 
-```
-Properties of dedicated clock buffers:
-  1. Balanced rise/fall times: t_rise ≈ t_fall (within 5%)
-     Regular buffers may have 10-20% rise/fall imbalance
-     This imbalance would cause duty cycle distortion as the clock
-     propagates through many levels of buffers
-  
-  2. Low insertion delay: optimized transistor sizing for fast edge propagation
-  
-  3. High drive strength: clock nets have large fanout (thousands of FFs)
-  
-  4. Special characterization: timing libraries have detailed models
-     for clock buffers including pulse-width-dependent delay
-  
-  5. Low power: some clock buffers use smaller transistors with
-     special threshold voltage (HVT for reduced leakage)
-```
+**Properties of dedicated clock buffers:**
+   1. Balanced rise/fall times: t_rise ≈ t_fall (within 5%)
+Regular buffers may have 10-20% rise/fall imbalance
+This imbalance would cause duty cycle distortion as the clock
+propagates through many levels of buffers
+
+2. Low insertion delay: optimized transistor sizing for fast edge propagation
+
+3. High drive strength: clock nets have large fanout (thousands of FFs)
+
+4. Special characterization: timing libraries have detailed models
+for clock buffers including pulse-width-dependent delay
+
+5. Low power: some clock buffers use smaller transistors with
+special threshold voltage (HVT for reduced leakage)
 
 **Clock inverters vs clock buffers:**
 
-```
+```ascii-graph
 Clock inverters: CLK → INV → INV → ... → leaf
   - Each inverter inverts the signal; pairs cancel out
   - Slightly lower delay than buffers (inverter = 1 stage, buffer = 2 stages)
@@ -1851,20 +1786,18 @@ Clock buffers: CLK → BUF → BUF → ... → leaf
 
 In STA, OCV (on-chip variation) accounts for the fact that different parts of the chip may operate at slightly different speeds due to local process/voltage/temperature variations. For data paths, OCV is applied by derating the launch and capture clock paths differently:
 
-```
-Normal OCV application:
-  Launch clock path: derated "slow" (worst case for setup)
-  Capture clock path: derated "fast" (worst case for setup)
-  Data path: derated "slow" (worst case for setup)
+**Normal OCV application:**
+   - Launch clock path: derated "slow" (worst case for setup)
+   - Capture clock path: derated "fast" (worst case for setup)
+   - Data path: derated "slow" (worst case for setup)
 
-  This can create pessimistic results because the shared portion
-  of the launch and capture clock paths is derated in OPPOSITE
-  directions, even though it's the same physical wire/buffers.
-```
+This can create pessimistic results because the shared portion
+of the launch and capture clock paths is derated in OPPOSITE
+directions, even though it's the same physical wire/buffers.
 
 **CPPR / CRPR (Clock Path Pessimism Removal):**
 
-```
+```ascii-graph
 Common clock path: the portion of the clock tree shared by both
   the launch and capture flip-flops.
 
@@ -1894,7 +1827,7 @@ With CPPR: Remove the OCV derate on the common path
 
 A clock gating check ensures that the enable signal to an ICG cell (or any AND/OR gate on the clock path) is stable during the clock transition that could create a glitch.
 
-```
+```ascii-graph
         ┌─────────┐
   EN ──►│ Latch   ├──► EN_latched ──┐
         │ (neg)   │                  │
@@ -1912,45 +1845,39 @@ Clock gating hold:  EN must remain stable after CLK falls (with margin)
 
 **Active-high gating (AND gate):**
 
-```
-GCLK = CLK & EN_latched
+- **GCLK** = `CLK & EN_latched`
 
-EN must be stable when CLK transitions HIGH → LOW (falling edge of CLK = 
+EN must be stable when CLK transitions HIGH → LOW (falling edge of CLK =
 rising edge of latch clock). A glitch on EN while CLK is HIGH would create
 a runt pulse on GCLK.
 
 Check: EN setup before falling edge of CLK
-       EN hold after falling edge of CLK
-```
+EN hold after falling edge of CLK
 
 **Active-low gating (OR gate):**
 
-```
-GCLK = CLK | EN_latched
+- **GCLK** = `CLK | EN_latched`
 
 EN must be stable when CLK transitions LOW → HIGH (rising edge of CLK).
 A glitch on EN while CLK is LOW would create a runt pulse on GCLK.
 
 Check: EN setup before rising edge of CLK
-       EN hold after rising edge of CLK
-```
+EN hold after rising edge of CLK
 
 ### Setup and Hold for Clock Gating — Why It Differs from Data Path
 
 In a normal data path, setup and hold are measured relative to the capturing clock edge:
 
-```
-Data path: data must be stable before/after the FF's active clock edge
-  Setup: data stable T_setup before posedge CLK
-  Hold:  data stable T_hold after posedge CLK
-```
+- **Data path** — data must be stable before/after the FF's active clock edge
+- **Setup** — data stable T_setup before posedge CLK
+- **Hold** — data stable T_hold after posedge CLK
 
 In clock gating, the "data" is the enable signal, and the "clock" is the gating clock itself. But the timing reference is different:
 
-```
+```text
 Clock gating check: EN must be stable around the INACTIVE edge of CLK
   For AND gate (active-high): inactive edge = falling edge
-  For OR gate (active-low):   inactive edge = rising edge
+  For OR  gate (active-low):  inactive edge = rising edge
 
 This is the OPPOSITE edge from normal data capture!
 The reason: EN must be settled before CLK becomes active (high for AND)
@@ -1959,7 +1886,7 @@ to prevent glitches on the gated clock.
 
 **Timing report example (clock gating setup violation):**
 
-```
+```ascii-graph
 Clock gating setup check:
   Startpoint: reg_en (rising edge CLK, launch)
   Endpoint:   ICG_cell/EN (falling edge CLK, clock gating check)
@@ -2223,39 +2150,37 @@ endmodule
 
 **Jitter analysis of fractional-N divider:**
 
-```
 For N.K (where K = k_frac / 2^FRAC_WIDTH):
 
 The divider alternates between N and N+1 counts per half-period.
 Over 2^FRAC_WIDTH output cycles:
-  K cycles use N+1
-  (2^FRAC_WIDTH - K) cycles use N
-  Average = N + K / 2^FRAC_WIDTH = N.K (correct)
+K cycles use N+1
+(2^FRAC_WIDTH - K) cycles use N
+Average = N + K / 2^FRAC_WIDTH = N.K (correct)
 
-Instantaneous period variation:
-  Period = 2*N*T or 2*(N+1)*T (for half-periods N vs N+1)
-  Peak-to-peak jitter = 2*T (two input clock periods, since half-period varies by 1)
-  
-  More precisely, half-period is either N*T or (N+1)*T:
-    J_pp (half-period) = T
-    J_pp (full period) = can be 0 (if both halves use same N) or T or 2T
+**Instantaneous period variation:**
+   - Period = 2*N*T or 2*(N+1)*T (for half-periods N vs N+1)
+   - Peak-to-peak jitter = 2*T (two input clock periods, since half-period varies by 1)
 
-RMS jitter (first-order modulator):
-  The sequence of N/N+1 from a first-order accumulator is deterministic.
-  The jitter spectrum is shaped: low-frequency jitter is suppressed,
-  high-frequency jitter dominates.
-  
-  J_rms ≈ T / sqrt(12) ≈ 0.289 * T
-  
-  For T = 10 ns (100 MHz input): J_rms ≈ 2.89 ns
+More precisely, half-period is either N*T or (N+1)*T:
+J_pp (half-period) = T
+J_pp (full period) = can be 0 (if both halves use same N) or T or 2T
 
-Higher-order sigma-delta modulators:
-  Use MASH (Multi-stAge noise SHaping) modulator instead of simple accumulator.
-  The divider ratio sequence still alternates between N-1, N, N+1, N+2
-  (wider range), but noise is pushed to higher frequencies.
-  
-  After PLL loop filtering, effective jitter can be reduced to < 1 ps.
-```
+**RMS jitter (first-order modulator):**
+   - The sequence of N/N+1 from a first-order accumulator is deterministic.
+   - The jitter spectrum is shaped: low-frequency jitter is suppressed,
+   - high-frequency jitter dominates.
+
+J_rms ≈ T / sqrt(12) ≈ 0.289 * T
+
+For T = 10 ns (100 MHz input): J_rms ≈ 2.89 ns
+
+**Higher-order sigma-delta modulators:**
+   - Use MASH (Multi-stAge noise SHaping) modulator instead of simple accumulator.
+   - The divider ratio sequence still alternates between N-1, N, N+1, N+2
+   - (wider range), but noise is pushed to higher frequencies.
+
+After PLL loop filtering, effective jitter can be reduced to < 1 ps.
 
 ---
 
@@ -2265,55 +2190,49 @@ Higher-order sigma-delta modulators:
 
 During Dynamic Voltage and Frequency Scaling, the clock frequency must change to match the new voltage:
 
-```
-Voltage UP transition (increase speed):
-  1. Raise voltage first (takes 10-100 us for voltage regulator to settle)
-  2. Wait for voltage stable
-  3. Switch clock to higher frequency
-  (Frequency before voltage → timing violations from too-fast clock at low voltage)
+**Voltage UP transition (increase speed):**
+   1. Raise voltage first (takes 10-100 us for voltage regulator to settle)
+2. Wait for voltage stable
+3. Switch clock to higher frequency
+(Frequency before voltage → timing violations from too-fast clock at low voltage)
 
-Voltage DOWN transition (decrease speed):
-  1. Switch clock to lower frequency first
-  2. Wait for frequency stable
-  3. Lower voltage
-  (Voltage before frequency → timing violations from too-slow voltage at high frequency)
+**Voltage DOWN transition (decrease speed):**
+   1. Switch clock to lower frequency first
+2. Wait for frequency stable
+3. Lower voltage
+(Voltage before frequency → timing violations from too-slow voltage at high frequency)
 
 Rule: ALWAYS ensure voltage and frequency are compatible.
-  V_high + f_high: OK (design target)
-  V_high + f_low:  OK (over-designed, wastes power)
-  V_low + f_low:   OK (design target for low-power mode)
-  V_low + f_high:  VIOLATION (setup time failures!)
-```
+V_high + f_high: OK (design target)
+V_high + f_low:  OK (over-designed, wastes power)
+V_low + f_low:   OK (design target for low-power mode)
+V_low + f_high:  VIOLATION (setup time failures!)
 
 **DVFS clock switching implementation:**
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PF["PLL_fast (2 GHz)"] --> MUX["Glitch-free MUX"]
+    PS["PLL_slow (1 GHz)"] --> MUX
+    RO["Ring OSC (200 MHz)"] --> MUX
+    MUX --> CLK["clk_cpu"]
+    PMC["Power-management controller"] -->|"sel[1:0]"| MUX
+    classDef src fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef m fill:#fde68a,stroke:#b45309,color:#000
+    class PF,PS,RO,CLK src
+    class MUX m
 ```
-                    ┌──────────┐
-  PLL_fast (2GHz) ──►          │
-                    │ Glitch-  ├──► clk_cpu
-  PLL_slow (1GHz) ──► free    │
-                    │ MUX      │
-  Ring OSC (200M) ──►          │
-                    └────┬─────┘
-                         │
-                    sel [1:0] ← Power Management Controller
 
-Switching sequence (fast → slow):
-  1. PMC asserts sel = Ring_OSC (safe intermediate frequency)
-  2. MUX switches to Ring_OSC (dead time ~2-5 us)
-  3. PMC programs PLL_slow to new frequency
-  4. Wait for PLL_slow lock (lock_detect asserted)
-  5. PMC asserts sel = PLL_slow
-  6. MUX switches to PLL_slow
-  7. PMC can now lower voltage
-```
+Switching sequence (fast → slow): (1) PMC asserts `sel = Ring_OSC` (safe intermediate frequency); (2) the MUX switches to Ring OSC (dead time ~2–5 µs); (3) PMC reprograms PLL_slow to the new frequency; then the MUX switches to PLL_slow.
 
 ### Glitch-Free MUX with Power Domain Considerations
 
 When clock MUX inputs come from different power domains, additional challenges arise:
 
-```
-Problem: If one clock source's power domain is turned off,
+```text
+Problem:
+  If one clock source's power domain is turned off,
   the clock signal may float to an undefined level.
   
   A floating input to the MUX can cause:
@@ -2339,16 +2258,19 @@ Solution: Power-aware clock MUX design
 
 When clock signals cross between voltage domains, level shifters are needed:
 
-```
-Low-voltage domain (0.5V)          High-voltage domain (0.8V)
-                                   
-  clk_low ──► [Level Shifter] ──► clk_high
-  (0 to 0.5V)                     (0 to 0.8V)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    LO["clk_low<br/>(0 to 0.5 V)"] --> LS["Level shifter"] --> HI["clk_high<br/>(0 to 0.8 V)"]
+    classDef l fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef h fill:#dcfce7,stroke:#15803d,color:#000
+    class LO,LS l
+    class HI h
 ```
 
 **Special requirements for clock level shifters:**
 
-```
+```text
 1. Balanced delay: rise and fall delays must be matched
    - Regular level shifters may have 2:1 rise/fall ratio
    - Clock level shifters are designed with symmetric pull-up/pull-down
@@ -2416,7 +2338,7 @@ Low-voltage domain (0.5V)          High-voltage domain (0.8V)
 ### Q21: How do you constrain a divided clock in SDC?
 
 **A:** Use `create_generated_clock`:
-```
+```tcl
 # For a divide-by-4 from a flip-flop based divider:
 create_generated_clock -name clk_div4 \
     -source [get_pins div_reg/C] \

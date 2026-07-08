@@ -13,6 +13,7 @@ UVM (Universal Verification Methodology, IEEE 1800.2) is the industry-standard c
 ## 1. Canonical testbench architecture
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TB
     TEST[uvm_test<br/>configures + selects sequences]:::test
     ENV[uvm_env<br/>integration container]:::env
@@ -50,7 +51,7 @@ Separation of concerns: **stimulus generation** (sequences — *what* to send) i
 
 ## 2. Class hierarchy — object vs component
 
-```
+```ascii-graph
 uvm_void
 └── uvm_object                  // transient data; no hierarchy, no phases
     ├── uvm_transaction → uvm_sequence_item     // the stimulus payload
@@ -80,7 +81,7 @@ The split that matters: **components** are built once at time 0, form a parent-c
 
 Build must be top-down — a parent constructs its children before they can build *their* children. Run-phase termination is governed by **objections**: simulation's run phase ends when all raised objections drop.
 
-```systemverilog
+```verilog
 task run_phase(uvm_phase phase);
   phase.raise_objection(this, "main stimulus");
   seq.start(env.agt.sqr);          // blocks until sequence completes
@@ -99,6 +100,7 @@ Classic hangs: (1) a component raises and never drops (test never ends → watch
 ### 4.1 The protocol
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 sequenceDiagram
     participant S as sequence::body()
     participant Q as sequencer
@@ -134,7 +136,7 @@ Multi-interface coordination: a **virtual sequence** runs on a virtual sequencer
 
 ## 5. The factory — why `create()` not `new()`
 
-```systemverilog
+```verilog
 class axi_item extends uvm_sequence_item;
   `uvm_object_utils(axi_item)            // registers with factory
   ...
@@ -146,7 +148,7 @@ req = axi_item::type_id::create("req");
 
 Registration macros (`` `uvm_object_utils ``/`` `uvm_component_utils ``) put the type in a global registry. `create()` looks up the registry and returns *whatever type is currently overriding* the requested one:
 
-```systemverilog
+```verilog
 // in an error-injection test, no env code changes:
 axi_item::type_id::set_type_override(bad_parity_axi_item::get_type());
 // or per-instance:
@@ -160,7 +162,7 @@ This is **test-controlled polymorphic substitution**: derived items/drivers/scor
 
 ## 6. uvm_config_db — hierarchical configuration
 
-```systemverilog
+```verilog
 // at tb_top (setting a virtual interface):
 uvm_config_db#(virtual axi_if)::set(null, "uvm_test_top.env.agt.*", "vif", axi_vif);
 // in the driver's build_phase:
@@ -208,7 +210,7 @@ Interview one-liner: *RAL decouples "which register/field am I touching" from "w
 
 ## 9. Minimal complete skeleton (memorize the shape)
 
-```systemverilog
+```verilog
 class axi_item extends uvm_sequence_item;
   rand bit [31:0] addr, data;  rand bit write;
   constraint c_align { addr[1:0] == 0; }

@@ -24,78 +24,24 @@
 
 ### 1.1 Complete Flow Diagram
 
-```
-                          ASIC Physical Design Flow
-  ============================================================================
-
-  Synthesized Netlist (.v)  +  SDC Constraints  +  LEF/Tech Files  +  Libraries
-                                     |
-                                     v
-                         +------------------------+
-                         |     FLOORPLANNING      |
-                         | - Die size estimation  |
-                         | - Macro placement      |
-                         | - Power grid planning  |
-                         | - IO/Pin placement     |
-                         +------------------------+
-                                     |
-                                     v
-                         +------------------------+
-                         |      POWER PLAN        |
-                         | - VDD/VSS rings        |
-                         | - Power stripes/mesh   |
-                         | - Via stacks           |
-                         | - Decap insertion      |
-                         +------------------------+
-                                     |
-                                     v
-                         +------------------------+
-                         |      PLACEMENT         |
-                         | - Global placement     |
-                         | - Legalization         |
-                         | - Optimization         |
-                         | - Scan reorder         |
-                         +------------------------+
-                                     |
-                                     v
-                         +------------------------+
-                         |   CLOCK TREE SYNTHESIS |
-                         | - Tree construction    |
-                         | - Buffer insertion     |
-                         | - Skew balancing       |
-                         | - Post-CTS opt         |
-                         +------------------------+
-                                     |
-                                     v
-                         +------------------------+
-                         |       ROUTING          |
-                         | - Global routing       |
-                         | - Track assignment     |
-                         | - Detail routing       |
-                         | - Post-route opt       |
-                         +------------------------+
-                                     |
-                                     v
-                         +------------------------+
-                         |    CHIP FINISHING      |
-                         | - Filler cell insert   |
-                         | - Metal fill (dummy)   |
-                         | - Via optimization     |
-                         +------------------------+
-                                     |
-                                     v
-                         +------------------------+
-                         |   SIGNOFF CHECKS       |
-                         | - STA (PrimeTime)      |
-                         | - DRC (Calibre/ICV)    |
-                         | - LVS (Calibre/ICV)    |
-                         | - IR drop (RedHawk)    |
-                         | - EM check             |
-                         +------------------------+
-                                     |
-                                     v
-                               GDSII / OASIS
-                             (to foundry tapeout)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    IN["Synthesized netlist (.v) + SDC constraints<br/>+ LEF/tech files + libraries"] --> FP
+    FP["Floorplanning<br/>die-size estimation, macro placement,<br/>power-grid planning, IO/pin placement"]
+    FP --> PP["Power plan<br/>VDD/VSS rings, stripes/mesh,<br/>via stacks, decap insertion"]
+    PP --> PL["Placement<br/>global placement, legalization,<br/>optimization, scan reorder"]
+    PL --> CTS["Clock-tree synthesis<br/>tree construction, buffer insertion,<br/>skew balancing, post-CTS opt"]
+    CTS --> RT["Routing<br/>global routing, track assignment,<br/>detail routing, post-route opt"]
+    RT --> CF["Chip finishing<br/>filler cells, metal (dummy) fill,<br/>via optimization"]
+    CF --> SO["Signoff checks<br/>STA, DRC, LVS, IR drop, EM"]
+    SO --> GDS["GDSII / OASIS"]
+    classDef io fill:#e2e8f0,stroke:#475569,color:#000
+    classDef ph fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef sign fill:#dcfce7,stroke:#15803d,color:#000
+    class IN,GDS io
+    class FP,PP,PL,CTS,RT,CF ph
+    class SO sign
 ```
 
 ### 1.2 Tools Landscape
@@ -132,7 +78,7 @@
 
 The most fundamental calculation in physical design:
 
-```
+```text
 Core Area = Total Standard Cell Area / Target Utilization
 
 Where:
@@ -142,7 +88,7 @@ Where:
 
 **Numerical Example:**
 
-```
+```text
 Given:
   - Synthesized netlist has 2M standard cells
   - Average cell area = 0.5 um^2 (at 7nm)
@@ -169,7 +115,7 @@ Seal ring, scribe line add another ~50 um per side.
 
 ### 2.2 Aspect Ratio
 
-```
+```text
 Aspect Ratio (AR) = Height / Width
 
 Ideal AR = 1.0 (square die)
@@ -183,7 +129,7 @@ Acceptable range: 0.7 to 1.4
 
 ### 2.3 Core Area vs Die Area
 
-```
+```ascii-graph
   +--------------------------------------------------+
   |  Scribe Line / Dicing Area                       |
   |  +--------------------------------------------+  |
@@ -226,7 +172,7 @@ Acceptable range: 0.7 to 1.4
 **Fly-line analysis:**
 Before finalizing macro positions, check fly-lines (virtual connections from netlist) to estimate wire congestion:
 
-```
+```ascii-graph
   Fly-Line Analysis (before macro placement optimization)
   
   +--------+                    +--------+
@@ -254,7 +200,7 @@ Before finalizing macro positions, check fly-lines (virtual connections from net
 
 **Power grid structure:**
 
-```
+```text
   Top-level power grid (M9-M10 or top metals):
   
   VDD ========================================== (horizontal strap, M10)
@@ -274,41 +220,39 @@ Before finalizing macro positions, check fly-lines (virtual connections from net
 
 **Power grid design parameters — Numerical Example:**
 
-```
-Given:
-  - Total chip power = 2W
-  - VDD = 0.75V (7nm)
-  - Target IR drop budget = 5% of VDD = 37.5 mV
-  - Total current = P/V = 2/0.75 = 2.67 A
+**Given:**
+   - Total chip power = 2W
+   - VDD = 0.75V (7nm)
+   - Target IR drop budget = 5% of VDD = 37.5 mV
+   - Total current = P/V = 2/0.75 = 2.67 A
 
-IR Drop = I * R_grid
+- **IR Drop** = `I * R_grid`
 
-For a simplified 1D model:
-  R_grid = rho * L / (W * T)
-  
-  Where:
-    rho = sheet resistance of metal layer
-    L = length of power strap
-    W = width of power strap
-    T = thickness (built into sheet resistance)
+**For a simplified 1D model:**
+   - R_grid = rho * L / (W * T)
 
-Example M9 strap:
-  Sheet resistance (Rs) = 0.02 ohm/sq (for thick top metal)
-  Strap width = 4 um
-  Strap length = 1500 um (across chip)
-  Number of squares = 1500/4 = 375
-  R per strap = 0.02 * 375 = 7.5 ohm
-  
-  But many straps in parallel:
-  If 50 VDD straps: R_effective = 7.5/50 = 0.15 ohm
-  IR drop from one end = 2.67A * 0.15 = 0.4V  (way too much!)
-  
-  But current enters from both ends and is distributed:
-  Effective IR drop ≈ I*R/8 for distributed load = 2.67*0.15/8 = 50 mV
-  
-  Still above 37.5 mV target → need more straps or wider straps.
-  Solution: 80 VDD straps, each 5 um wide, plus rings on all edges.
-```
+Where:
+rho = sheet resistance of metal layer
+L = length of power strap
+W = width of power strap
+T = thickness (built into sheet resistance)
+
+**Example M9 strap:**
+   - Sheet resistance (Rs) = 0.02 ohm/sq (for thick top metal)
+   - Strap width = 4 um
+   - Strap length = 1500 um (across chip)
+   - Number of squares = 1500/4 = 375
+   - R per strap = 0.02 * 375 = 7.5 ohm
+
+But many straps in parallel:
+If 50 VDD straps: R_effective = 7.5/50 = 0.15 ohm
+IR drop from one end = 2.67A * 0.15 = 0.4V  (way too much!)
+
+But current enters from both ends and is distributed:
+Effective IR drop ≈ I*R/8 for distributed load = 2.67*0.15/8 = 50 mV
+
+Still above 37.5 mV target → need more straps or wider straps.
+Solution: 80 VDD straps, each 5 um wide, plus rings on all edges.
 
 **Power strap pitch and width guidelines (7nm example):**
 
@@ -329,7 +273,7 @@ Example M9 strap:
 
 **Power rings:**
 
-```
+```ascii-graph
   +--VDD-ring---------------------------------------+
   | +--VSS-ring-----------------------------------+ |
   | |                                             | |
@@ -381,25 +325,23 @@ Example M9 strap:
 
 **Objective function -- Quadratic Wirelength:**
 
-```
-The placement problem minimizes:
-  
-  W = Sum over all nets [ Sum over all pin pairs (i,j) in net ]
-      of ( (xi - xj)^2 + (yi - yj)^2 )
+**The placement problem minimizes:**
+
+W = Sum over all nets [ Sum over all pin pairs (i,j) in net ]
+of ( (xi - xj)^2 + (yi - yj)^2 )
 
 This is a quadratic function -> solvable via linear system:
-  dW/dx_i = 0  for all cells i
-  
+dW/dx_i = 0  for all cells i
+
 This produces a system of linear equations:
-  Q * x = b_x    (for x-coordinates)
-  Q * y = b_y    (for y-coordinates)
+Q * x = b_x    (for x-coordinates)
+Q * y = b_y    (for y-coordinates)
 
 Where Q is a connectivity matrix (Laplacian of the hypergraph).
-```
 
 **Quadratic Placement (Force-Directed):**
 
-```
+```text
   Interpretation: connected cells exert "forces" pulling them together.
   The force between cells i and j connected by a net is proportional to
   their distance (like a spring: F = k * d, where k = connectivity weight).
@@ -433,7 +375,7 @@ Where Q is a connectivity matrix (Laplacian of the hypergraph).
 
 **Simulated Annealing Placement:**
 
-```
+```text
   Used in older tools and for detailed placement refinement.
   Still relevant conceptually for understanding placement trade-offs.
 
@@ -474,7 +416,7 @@ Where Q is a connectivity matrix (Laplacian of the hypergraph).
 
 **Numerical Example -- HPWL Calculation:**
 
-```
+```text
 Given a net with 4 pins at coordinates:
   Pin A: (10, 20)
   Pin B: (50, 30)
@@ -494,7 +436,7 @@ Actual routed wirelength is typically 1.0-1.5x HPWL.
 
 After global placement, cells overlap and are not aligned to rows:
 
-```
+```text
   Before Legalization:          After Legalization:
   
   Row 4: | A  [C]  B    |      Row 4: | A   C   B       |
@@ -507,7 +449,7 @@ After global placement, cells overlap and are not aligned to rows:
 
 **Legalization algorithms:**
 
-```
+```ascii-graph
   Minimum Perturbation Legalization (most common):
   ──────────────────────────────────────────────────
   Goal: move cells as LITTLE as possible to achieve a legal placement.
@@ -556,7 +498,7 @@ After global placement, cells overlap and are not aligned to rows:
 
 After global placement, cells overlap and are not aligned to rows:
 
-```
+```ascii-graph
   Before Legalization:          After Legalization:
   
   Row 4: | A  [C]  B    |      Row 4: | A   C   B       |
@@ -593,7 +535,7 @@ After global placement, cells overlap and are not aligned to rows:
 
 ### 3.4 Cell Padding
 
-```
+```text
   Without padding:        With padding (1 site each side):
   
   |A|B|C|D|E|F|          |A| |B| |C| |D| |E| |F|
@@ -609,7 +551,7 @@ After global placement, cells overlap and are not aligned to rows:
 
 Keep related cells physically close for timing or matching:
 
-```
+```ascii-graph
   RPGroup "critical_mux":
   +-------------------+
   | mux_sel_buf       |
@@ -629,7 +571,7 @@ Nets with fanout > 100-1000 are special:
 - Reset nets: buffer tree inserted during placement or post-placement
 - Enable signals: buffered to meet transition time requirements
 
-```
+```text
   Before buffering (fanout = 500):
   
   driver ---+--- sink1
@@ -650,7 +592,7 @@ Nets with fanout > 100-1000 are special:
 
 **GRC (Global Routing Congestion) Map:**
 
-```
+```ascii-graph
   Congestion map (color-coded):
   
   +------+------+------+------+
@@ -692,7 +634,7 @@ Nets with fanout > 100-1000 are special:
 
 ### 4.2 Key Definitions
 
-```
+```ascii-graph
   Clock Source (PLL output or port)
        |
        | insertion delay = 800ps
@@ -721,7 +663,7 @@ Nets with fanout > 100-1000 are special:
 ### 4.3 Tree Topologies
 
 **H-Tree:**
-```
+```ascii-graph
   Balanced H-tree for symmetric clock distribution:
   
             CLK_IN
@@ -738,7 +680,7 @@ Nets with fanout > 100-1000 are special:
 ```
 
 **Balanced CTS (Standard Cell Based):**
-```
+```ascii-graph
   Most common in ASIC designs.
   Tool builds a buffer tree top-down or bottom-up.
   
@@ -754,7 +696,7 @@ Nets with fanout > 100-1000 are special:
 ```
 
 **Clock Mesh:**
-```
+```ascii-graph
   +-------+-------+-------+-------+
   |       |       |       |       |
   +---+---+---+---+---+---+---+---+   Horizontal mesh wires
@@ -770,7 +712,7 @@ Nets with fanout > 100-1000 are special:
 ```
 
 **Fishbone:**
-```
+```ascii-graph
   Central spine with branches:
   
           CLK_IN
@@ -787,7 +729,7 @@ Nets with fanout > 100-1000 are special:
 
 **Bottom-up clustering (Deferred Merge Embedding - DME):**
 
-```
+```text
 Step 1: Start with sink locations
   FF_A(10,20), FF_B(50,20), FF_C(30,60), FF_D(70,60)
 
@@ -810,7 +752,7 @@ Step 4: Insert buffers at merge points
 
 **Method of Means and Medians (MMM):**
 
-```
+```text
   A top-down approach for clock tree construction:
   
   1. Given N sinks, compute the center of mass (mean):
@@ -847,7 +789,7 @@ Step 4: Insert buffers at merge points
 
 **Geometric Matching (Top-Down Merging):**
 
-```
+```text
   A bottom-up approach that pairs sinks to minimize total wirelength:
   
   1. Compute pairwise Manhattan distances between all sinks (O(N^2))
@@ -885,7 +827,7 @@ Step 4: Insert buffers at merge points
 
 **DME (Deferred Merge Embedding) -- Zero-Skew Merge Point Computation:**
 
-```
+```ascii-graph
   DME is the industry-standard CTS algorithm. Key idea: defer the exact
   placement of merge points until the entire tree topology is known,
   then embed them optimally bottom-up.
@@ -976,7 +918,7 @@ CTS uses special library cells optimized for:
 - **Low skew**: tight process variation control
 - **Multiple drive strengths**: CTS library typically has 8-16 buffer sizes
 
-```
+```text
   Typical CTS cell library:
   CLKBUF_X1, CLKBUF_X2, CLKBUF_X4, CLKBUF_X8, CLKBUF_X16
   CLKINV_X1, CLKINV_X2, CLKINV_X4, CLKINV_X8, CLKINV_X16
@@ -989,7 +931,7 @@ CTS uses special library cells optimized for:
 
 ### 4.6 Non-Default Rules (NDR) for Clock
 
-```
+```verilog
   Standard signal wire:       Clock wire with NDR:
   
   |-w-|  |-s-|  |-w-|         |-2w-|  |-2s-|  |-2w-|
@@ -1012,7 +954,7 @@ CTS uses special library cells optimized for:
 - **Multi-cut vias**: mandatory for clock nets for reliability
 
 **Numerical impact:**
-```
+```verilog
 Standard wire: R = 10 ohm/um, C = 0.2 fF/um, RC = 2.0 fF*ohm/um^2
 NDR 2W wire:   R = 5 ohm/um,  C = 0.25 fF/um, RC = 1.25 fF*ohm/um^2  (37.5% less)
 NDR 2W2S wire: R = 5 ohm/um,  C = 0.15 fF/um, RC = 0.75 fF*ohm/um^2  (62.5% less)
@@ -1022,7 +964,7 @@ NDR 2W2S wire: R = 5 ohm/um,  C = 0.15 fF/um, RC = 0.75 fF*ohm/um^2  (62.5% less
 
 **Concept: borrowing time from adjacent pipeline stages:**
 
-```
+```ascii-graph
   Without useful skew:
   
   FF_A --[combo: 3ns]-- FF_B --[combo: 1ns]-- FF_C
@@ -1049,7 +991,7 @@ NDR 2W2S wire: R = 5 ohm/um,  C = 0.15 fF/um, RC = 0.75 fF*ohm/um^2  (62.5% less
 ```
 
 **Useful skew constraints:**
-```
+```text
 Setup: T_combo < T_clk + skew   (more time for slow paths)
 Hold:  T_combo > T_hold - skew  (must still meet hold with the skew)
 ```
@@ -1096,7 +1038,7 @@ For clock mesh designs:
 
 ### 5.1 Global Routing
 
-```
+```ascii-graph
   Chip divided into Global Routing Cells (GCells):
   
   +------+------+------+------+
@@ -1118,7 +1060,7 @@ For clock mesh designs:
 
 **Congestion Estimation:**
 
-```
+```text
   For each GCell boundary edge, compute:
     Demand = number of nets that must cross this edge
     Supply = number of available routing tracks on this edge
@@ -1140,7 +1082,7 @@ For clock mesh designs:
 
 **Maze Routing (Lee's Algorithm / BFS):**
 
-```
+```text
   For a 2-pin net that must be routed through the GCell grid:
 
   1. Start from source GCell (S), label it 0
@@ -1168,7 +1110,7 @@ For clock mesh designs:
 
 **A*-Based Routing:**
 
-```
+```ascii-graph
   A* uses a priority queue with cost function:
     f(n) = g(n) + h(n)
   
@@ -1218,7 +1160,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 
 **Design Rules Enforced by Detail Router:**
 
-```
+```ascii-graph
   Minimum Width:
     Each metal layer has a minimum feature width (e.g., M1: 28nm at 7nm)
     Wire must be at least this wide along its entire length
@@ -1260,7 +1202,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 
 **Antenna Rule Checking:**
 
-```
+```text
   Antenna ratio = (total metal area on a specific layer that is connected
                    to a gate oxide, with no connection to higher layers)
                   / (gate oxide area)
@@ -1290,7 +1232,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 
 ### 5.4 Routing Layer Usage
 
-```
+```ascii-graph
   Metal stack (typical 7nm, 13 metal layers):
   
   M13 (AP)  ─── Ultra-thick, redistribution layer (bumps)
@@ -1315,7 +1257,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 
 ### 5.5 Antenna Effect
 
-```
+```verilog
   During fabrication (plasma etching), metal layers are built bottom-up.
   When M3 is being etched, M3 wire collects charge from plasma.
   If M3 wire is long and connects to a gate (through M2, M1, poly):
@@ -1342,24 +1284,24 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 **Antenna Fixing Methods:**
 
 1. **Diode insertion**: add reverse-biased diode near the gate to discharge accumulated charge
-   ```
+```verilog
    Long M3 wire --- gate
                  |
                  diode (to substrate) ← bleeds off charge
-   ```
+```
 
 2. **Layer jumping**: break the long wire by jumping to a higher metal layer
-   ```
+```text
    M3 ----+    +---- M3
           |    |
           M5---M5      (M5 processed later, breaks antenna path)
-   ```
+```
 
 3. **Bridge insertion**: route part of the net on a different layer
 
 ### 5.6 Crosstalk
 
-```
+```ascii-graph
   Coupling capacitance between adjacent wires:
   
   Signal A ─────────────────────── (aggressor)
@@ -1372,7 +1314,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 **Two impacts:**
 
 1. **Functional noise (glitch)**:
-   ```
+```ascii-graph
    Victim is stable at logic 0.
    Aggressor transitions 0→1.
    Coupling injects positive voltage bump on victim.
@@ -1383,10 +1325,10 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
    Example: Cc = 0.5fF, Cground = 1.5fF, Vdd = 0.75V
    Glitch ≈ 0.5/(0.5+1.5) * 0.75 = 0.25 * 0.75 = 0.1875V
    If noise margin = 0.2V → marginal! Need to fix.
-   ```
+```
 
 2. **Timing impact**:
-   ```
+```ascii-graph
    Same-direction switching (aggressor and victim switch same way):
      Effective Cc is reduced → victim appears faster (speed-up)
      
@@ -1396,7 +1338,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
    Miller effect: Cc_effective = Cc * (1 + delta_V_aggressor/delta_V_victim)
      Same direction: Cc_eff ≈ 0 (best case)
      Opposite direction: Cc_eff ≈ 2*Cc (worst case)
-   ```
+```
 
 **Crosstalk Fixing:**
 
@@ -1411,7 +1353,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 
 ### 5.7 Via Optimization
 
-```
+```ascii-graph
   Single-cut via:        Multi-cut via (2x1):      Multi-cut via (2x2):
   
   +---+                  +---+ +---+                +---+ +---+
@@ -1439,7 +1381,7 @@ Post-signoff changes (Engineering Change Order):
 3. Tools perform incremental routing: fix only changed nets
 4. Critical: verify LVS, DRC, timing only for changed region + neighbors
 
-```
+```ascii-graph
   ECO flow:
   Functional bug found → RTL fix → re-synthesize affected logic
   → incremental placement (using spare cells or minimal cell swaps)
@@ -1455,7 +1397,7 @@ Post-signoff changes (Engineering Change Order):
 
 **Fundamental DRC rules:**
 
-```
+```ascii-graph
   Minimum width:    |<- w ->|     w >= w_min (e.g., 36nm for M1 at 7nm)
                     |=======|
   
@@ -1481,7 +1423,7 @@ Post-signoff changes (Engineering Change Order):
 **Advanced Node DRC (7nm and below):**
 
 - **LELE double patterning**: features on one layer split into two masks (colors)
-  ```
+```ascii-graph
   Original M2:    |A| |B| |C| |D|
   
   Mask 1 (blue):  |A|     |C|      (every other wire)
@@ -1489,7 +1431,7 @@ Post-signoff changes (Engineering Change Order):
   
   Coloring constraint: adjacent wires must be on different masks.
   If 3 mutually adjacent wires → coloring conflict → DRC error!
-  ```
+```
 
 - **SADP (Self-Aligned Double Patterning)**: mandrel+spacer technique, creates very specific design rules
   - Tip-to-tip spacing rules (different for same-color vs different-color)
@@ -1499,7 +1441,7 @@ Post-signoff changes (Engineering Change Order):
 
 ### 6.2 LVS (Layout Versus Schematic)
 
-```
+```ascii-graph
   LVS Flow:
   
   Layout (GDSII)                    Schematic (Netlist from synthesis)
@@ -1539,7 +1481,7 @@ Post-signoff changes (Engineering Change Order):
 
 ### 6.4 Metal Density Checks and Dummy Fill
 
-```
+```ascii-graph
   CMP (Chemical Mechanical Polishing) during fabrication:
   
   Without fill:                    With fill:
@@ -1560,7 +1502,7 @@ Post-signoff changes (Engineering Change Order):
 ### 6.5 Electromigration (EM)
 
 **Black's Equation:**
-```
+```text
   MTTF = A * (J)^(-n) * exp(Ea / (k*T))
   
   Where:
@@ -1574,7 +1516,7 @@ Post-signoff changes (Engineering Change Order):
 ```
 
 **Numerical Example:**
-```
+```ascii-graph
 Given:
   Wire on M3 at 7nm: width = 36nm, thickness = 50nm
   Wire area = 36nm * 50nm = 1800 nm^2 = 1.8e-11 cm^2
@@ -1605,7 +1547,7 @@ Given:
 
 **Power Grid Modeling (Resistance Network):**
 
-```
+```ascii-graph
   The power delivery network is modeled as a resistive mesh:
 
   VDD pad ──[R_bump]──┬──[R_M10]──┬──[R_M10]──┬── ... (top metal grid)
@@ -1646,7 +1588,7 @@ Given:
 ```
 
 **Static IR Drop:**
-```
+```verilog
   Average current consumption -> DC voltage drop across power grid.
 
   V_drop = I_avg * R_grid
@@ -1684,7 +1626,7 @@ Given:
 ```
 
 **Dynamic IR Drop:**
-```
+```text
   Considers simultaneous switching of many cells (worst-case transient).
 
   V_drop_dynamic = L * di/dt + R * i(t)
@@ -1716,7 +1658,7 @@ Given:
 
 **Electromigration Limits:**
 
-```
+```verilog
   For each power grid segment and via:
     J = I / A  (current density)
 
@@ -1754,7 +1696,7 @@ Given:
 
 **Typical Power Grid Design Parameters:**
 
-```
+```ascii-graph
   Mesh density (for a 10mm x 10mm die, 7nm, 2W total power):
   
   M10 (top metal):  stripes every 20 um, width 5 um
@@ -1789,7 +1731,7 @@ Given:
 ```
 
 **IR Drop Map (ASCII representation):**
-```
+```ascii-graph
   +------+------+------+------+
   | 15mV | 20mV | 25mV | 18mV |   Voltage drop values at grid nodes
   +------+------+------+------+
@@ -1807,7 +1749,7 @@ Given:
 
 ### 7.1 MCMM (Multi-Corner Multi-Mode)
 
-```
+```ascii-graph
   Corners (process/voltage/temperature):
   
   Corner Name     Process    Voltage     Temperature    Purpose
@@ -1831,7 +1773,7 @@ Given:
 
 ### 7.2 Extraction Corners
 
-```
+```ascii-graph
   Parasitic extraction produces SPEF (Standard Parasitic Exchange Format)
   
   Extraction Corner   Resistance    Capacitance    When to Use
@@ -1850,7 +1792,7 @@ Given:
 ### 7.3 OCV, AOCV, POCV
 
 **On-Chip Variation (OCV):**
-```
+```text
   Cells on the same die don't all have the same delay.
   Process variation, voltage drop, temperature gradient cause differences.
   
@@ -1865,7 +1807,7 @@ Given:
 ```
 
 **AOCV (Advanced OCV):**
-```
+```ascii-graph
   Derate depends on:
   1. Path depth (number of stages): more stages → smaller derate
   2. Physical distance: cells far apart → larger derate
@@ -1884,7 +1826,7 @@ Given:
 ```
 
 **POCV (Parametric OCV):**
-```
+```text
   Statistical approach: each cell delay has a mean and sigma.
   
   Path delay = sum of (mean_i + k * sigma_i)
@@ -1915,7 +1857,7 @@ Given:
 
 ### 7.4 SI Timing
 
-```
+```ascii-graph
   Crosstalk impacts timing:
   
   Setup (late arrival on data):
@@ -1935,7 +1877,7 @@ Given:
 
 ### 7.5 ECO Flow
 
-```
+```verilog
   ECO Types:
   
   1. Functional ECO:
@@ -1966,7 +1908,7 @@ Given:
 ### 8.1 FinFET-Specific Physical Design
 
 **Fin Quantization:**
-```
+```text
   In FinFET technology, transistor width is quantized:
   
   W_eff = N_fins * W_fin
@@ -1988,7 +1930,7 @@ Given:
 ```
 
 **CPODE (Continuous Poly on Diffusion Edge) / PODE:**
-```
+```ascii-graph
   In FinFET, cell boundaries have specific diffusion rules:
   
   Without CPODE:
@@ -2007,7 +1949,7 @@ Given:
 ### 8.2 Multi-Patterning
 
 **LELE (Litho-Etch-Litho-Etch):**
-```
+```ascii-graph
   For metal pitch below lithography resolution:
   
   Step 1: Print Mask A (blue features)
@@ -2030,7 +1972,7 @@ Given:
 ```
 
 **SADP (Self-Aligned Double Patterning):**
-```
+```ascii-graph
   Uses mandrels and spacers:
   
   Step 1: Create mandrel
@@ -2054,7 +1996,7 @@ Given:
 
 ### 8.3 3D IC / Chiplet Design
 
-```
+```ascii-graph
   Traditional 2D:          2.5D (Interposer):         3D (stacked dies):
   
   +----------+             +----+ +----+               +--------+
@@ -2067,7 +2009,7 @@ Given:
 ```
 
 **TSV (Through-Silicon Via):**
-```
+```ascii-graph
   TSV parameters (typical):
   - Diameter: 5-10 um
   - Pitch: 20-50 um
@@ -2083,7 +2025,7 @@ Given:
 ```
 
 **Micro-bumps:**
-```
+```ascii-graph
   Pitch: 40-100 um (much finer than C4 bumps at 130-200 um)
   Used for die-to-die connections in 3D/2.5D
   Thousands of connections possible → enables high-bandwidth interfaces
@@ -2096,37 +2038,21 @@ Given:
 
 For designs > 500M gates:
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph SoC["Full-chip SoC — hierarchical P&R"]
+        CPU["CPU block<br/>100M"]
+        GPU["GPU block<br/>200M"]
+        NPU["NPU block<br/>50M"]
+        MC["Memory controller"]
+        NoC["Interconnect / NoC<br/>100M gates"]
+    end
+    classDef b fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class CPU,GPU,NPU,MC,NoC b
 ```
-  Full-chip SoC:
-  +--------------------------------------------+
-  |  +---------+  +---------+  +---------+     |
-  |  | CPU     |  | GPU     |  | NPU     |     |
-  |  | Block   |  | Block   |  | Block   |     |
-  |  | (100M)  |  | (200M)  |  | (50M)   |     |
-  |  +---------+  +---------+  +---------+     |
-  |                                             |
-  |  +---------+  +-------------------------+  |
-  |  | Memory  |  |   Interconnect (NoC)    |  |
-  |  | Ctrl    |  |   (100M gates)          |  |
-  |  +---------+  +-------------------------+  |
-  +--------------------------------------------+
-  
-  Hierarchical approach:
-  1. Each block is implemented independently (own floorplan, P&R)
-  2. Top-level integrates blocks as "black boxes" (LEF abstracts)
-  3. Interface timing budgeted between blocks (timing assertions)
-  
-  Advantages:
-  - Parallel implementation by different teams
-  - Manageable database sizes (ICC2 struggles with >200M gates flat)
-  - Faster iteration per block
-  
-  Challenges:
-  - Interface timing budgeting must be accurate
-  - Power grid continuity across hierarchy boundaries
-  - Clock tree balancing across partitions
-  - Feedthrough routing: signals passing through a block to reach another
-```
+
+Hierarchical approach: each block is implemented independently (its own floorplan and P&R), then assembled and closed at the top level.
 
 ---
 
@@ -2303,7 +2229,7 @@ Additionally: power analysis confirms total power within package/board thermal l
 
 ### Parasitic Extraction (SPEF)
 
-```
+```ascii-graph
 Parasitic extraction: Convert physical layout geometry into electrical RC network
 
 Tools: StarRC (Synopsys), Quantus QRC (Cadence), xACT (Mentor/Siemens)
@@ -2344,7 +2270,7 @@ Extraction corners:
 
 ### Advanced Parasitic Considerations
 
-```
+```text
 1. Field solver vs pattern matching:
    Pattern matching: Pre-characterizes common geometries, fast (~1 hour for 50M gates)
    Field solver: 3D Maxwell equations, slow but accurate (~10-100× slower)
@@ -2368,7 +2294,7 @@ Extraction corners:
 
 ### Design for Manufacturability (DFM) Deep Dive
 
-```
+```ascii-graph
 DFM is the practice of designing layouts that are robust to manufacturing variation
 and maximize yield, beyond minimum DRC compliance.
 
@@ -2414,7 +2340,7 @@ and maximize yield, beyond minimum DRC compliance.
 
 ### Multi-Patterning Coloring Constraints
 
-```
+```ascii-graph
 At 7nm and below, SADP/LELE requires "coloring" — assigning each feature to a mask.
 
 Rules:
@@ -2447,7 +2373,7 @@ For LELE:
 
 ### Advanced CTS Topics
 
-```
+```ascii-graph
 1. Clock Mesh:
    - Grid of clock wires covering entire block
    - All mesh points shorted → inherent low skew
@@ -2489,17 +2415,14 @@ For LELE:
 
 ### ECO (Engineering Change Order) Flow
 
-```
 Types of ECOs:
 
 1. Functional ECO:
    - Fix RTL bugs found late in the flow (post-layout)
    - Modified netlist → minimal physical changes
    - Goal: Change as few cells as possible (minimize mask cost)
-   - Spare cell approach: Pre-placed unused cells → can be repurposed
-     without changing placement
-   - Metal-only ECO: Only change metal layers (cheapest mask set)
-     Requires spare cells in the right locations
+   - Spare cell approach: Pre-placed unused cells → can be repurposed without changing placement
+   - Metal-only ECO: Only change metal layers (cheapest mask set) Requires spare cells in the right locations
 
 2. Timing ECO:
    - Fix timing violations found during signoff
@@ -2509,17 +2432,9 @@ Types of ECOs:
    - Useful skew: Adjust clock buffer placement
    - All changes must be legalized (no overlap, on-grid)
 
-3. ECO flow:
-   Read post-route design → Apply netlist changes →
-   ECO placement (place new cells in whitespace) →
-   ECO routing (connect new cells, minimum wire disturbance) →
-   Re-extract → Re-run STA → Re-verify LEC, DRC, LVS
+3. ECO flow: Read post-route design → Apply netlist changes → ECO placement (place new cells in whitespace) → ECO routing (connect new cells, minimum wire disturbance) → Re-extract → Re-run STA → Re-verify LEC, DRC, LVS
 
-4. Metal-only ECO mask costs:
-   Full mask set: $5-15M at 7nm (60+ masks)
-   Metal-only ECO: $1-3M (only metal layer masks changed)
-   → Huge cost savings if ECO can be done in metal layers only
-```
+4. Metal-only ECO mask costs: Full mask set: $5-15M at 7nm (60+ masks) Metal-only ECO: $1-3M (only metal layer masks changed) → Huge cost savings if ECO can be done in metal layers only
 
 ---
 
@@ -2599,7 +2514,7 @@ DREAMPlace reformulates analytical placement as a differentiable optimization pr
 
 Modern AI accelerators push power delivery to unprecedented levels:
 
-```
+```ascii-graph
 Power budget evolution:
   NVIDIA A100:   ~400W (2020)
   NVIDIA H100:   ~700W (2022)
@@ -2628,7 +2543,7 @@ IR drop challenge at 1000W:
 
 ### 11.2 Reticle-Limit Dies and Multi-Reticle Stitching
 
-```
+```ascii-graph
 Reticle size limits (lithography field):
   N5 (5nm):  ~830 mm² maximum single die
   N3 (3nm):  ~700 mm² (tighter due to EUV constraints)
@@ -2660,7 +2575,7 @@ Multi-reticle die stitching:
 
 ### 11.3 HBM Floorplanning
 
-```
+```ascii-graph
 Typical AI accelerator floorplan (B200-class):
 
   ┌──────────────────────────────────────────────┐
@@ -2691,7 +2606,7 @@ Typical AI accelerator floorplan (B200-class):
 
 ### 11.4 CTS for Massive Dies
 
-```
+```ascii-graph
 Clock tree for 800-1600 mm² dies:
 
   Challenges:
@@ -2735,7 +2650,7 @@ Clock tree for 800-1600 mm² dies:
 
 ### 11.5 Thermal Hotspot Management
 
-```
+```ascii-graph
 Thermal hotspots in AI accelerators:
 
   Sources:
@@ -2764,7 +2679,7 @@ Thermal hotspots in AI accelerators:
 
 ### 11.6 3D IC Place-and-Route
 
-```
+```ascii-graph
 3D IC (face-to-face or face-to-back):
 
   Face-to-face (F2F) bonding:
@@ -2797,7 +2712,7 @@ Thermal hotspots in AI accelerators:
 
 ### 11.7 TSMC InFO and CoWoS Design Flows
 
-```
+```ascii-graph
 TSMC InFO (Integrated Fan-Out) Design Flow:
   ─────────────────────────────────────────
   Used for: Mobile SoCs, mid-range AI chips
@@ -2865,7 +2780,7 @@ TSMC CoWoS Design Flow:
 
 ### 11.8 Advanced Node PnR: DPT, SADP/SAQP
 
-```
+```ascii-graph
 Double Patterning Technology (DPT) at N5/N3:
 
   At 7nm and below, minimum pitch requires EUV or DUV+DPT:

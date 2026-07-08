@@ -58,7 +58,8 @@ Booting Linux on an RTL sim could take *years*; on an emulator, minutes. That ga
 ## 3. Where they sit in the flow
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     RTLs["RTL sim<br/>(intent)"]:::a --> EMU["Emulation/FPGA<br/>(SW-scale, HW/SW)"]:::b
     SYN["Synthesis"]:::d --> LEC["Formal LEC<br/>(netlist==RTL)"]:::c
     LEC --> GLS["GLS<br/>(timing, X, scan)"]:::c

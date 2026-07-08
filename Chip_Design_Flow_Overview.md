@@ -16,6 +16,7 @@ This page gives the end-to-end flow, the hand-off contract at each boundary, the
 ## 1. The flow at a glance
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     SPEC["Spec / PPA targets<br/>(power, perf, area, cost, schedule)"]:::s0
     subgraph FRONT["Front end"]
@@ -73,7 +74,7 @@ The single most useful habit: **every stage writes down what it guarantees to th
 
 Loops get more expensive the further back they reach — the "cost of a late change" curve:
 
-```
+```ascii-graph
  Stage a bug is found at →   relative cost to fix
  RTL sim                     1×      (edit RTL, re-sim)
  Gate sim / formal           ~3×     (re-synthesize)

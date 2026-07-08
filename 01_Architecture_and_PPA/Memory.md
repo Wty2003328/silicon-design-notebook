@@ -10,81 +10,59 @@
 The 6T SRAM cell uses six transistors organized as two cross-coupled CMOS inverters
 (storage) plus two access transistors (read/write port):
 
-```
-Transistor | Type  | Role
------------|-------|--------------------------------------------------
-M1         | NMOS  | Pull-down for INV1. Holds Q=0 when Q_bar=1.
-           |       | Sized STRONG (W/L=2/1) for read stability (high CR).
-M2         | NMOS  | Pull-down for INV2. Holds Q_bar=0 when Q=1.
-           |       | Same sizing as M1.
-M3         | PMOS  | Pull-up for INV1. Drives Q_bar to VDD when Q=0.
-           |       | Sized WEAK (W/L=1/1) to allow write to overpower it (high PR).
-M4         | PMOS  | Pull-up for INV2. Drives Q to VDD when Q_bar=0.
-           |       | Same sizing as M3.
-M5         | NMOS  | Access transistor for BL (connects BL to Q). Gate = WL.
-           |       | Sized INTERMEDIATE (W/L=1.5/1). Must be weaker than M1 (CR > 1)
-           |       | but stronger than M3 (PR > 1).
-M6         | NMOS  | Access transistor for BL_bar (connects BL_bar to Q_bar). Gate = WL.
-           |       | Same sizing as M5.
-```
+| Transistor | Type | Role |
+|---|---|---|
+| M1 | NMOS | Pull-down for INV1. Holds Q=0 when Q_bar=1. Sized STRONG (W/L=2/1) for read stability (high CR). |
+| M2 | NMOS | Pull-down for INV2. Holds Q_bar=0 when Q=1. Same sizing as M1. |
+| M3 | PMOS | Pull-up for INV1. Drives Q_bar to VDD when Q=0. Sized WEAK (W/L=1/1) to allow write to overpower it (high PR). |
+| M4 | PMOS | Pull-up for INV2. Drives Q to VDD when Q_bar=0. Same sizing as M3. |
+| M5 | NMOS | Access transistor for BL (connects BL to Q). Gate = WL. Sized INTERMEDIATE (W/L=1.5/1). Must be weaker than M1 (CR > 1) but stronger than M3 (PR > 1). |
+| M6 | NMOS | Access transistor for BL_bar (connects BL_bar to Q_bar). Gate = WL. Same sizing as M5. |
 
 **Sizing ratio constraints (the "6T triangle"):**
 
-```
-Cell Ratio (CR) = (W/L)_pulldown / (W/L)_access = 2.0 / 1.5 = 1.33
-  CR > 1 required for read stability (M1 must overpower M5 during read)
-  Typical: CR = 1.2 - 2.0
+- **Cell Ratio (CR)** = `(W/L)_pulldown / (W/L)_access = 2.0 / 1.5 = 1.33`
+   - CR > 1 required for read stability (M1 must overpower M5 during read)
+   - Typical: CR = 1.2 - 2.0
 
-Pull-up Ratio (PR) = (W/L)_access / (W/L)_pullup = 1.5 / 1.0 = 1.5
-  PR > 1 required for write-ability (M5 must overpower M3 during write)
-  Typical: PR = 1.2 - 2.0
+- **Pull-up Ratio (PR)** = `(W/L)_access / (W/L)_pullup = 1.5 / 1.0 = 1.5`
+   - PR > 1 required for write-ability (M5 must overpower M3 during write)
+   - Typical: PR = 1.2 - 2.0
 
-Fundamental tension:
-  Increasing access transistor strength (M5/M6) → improves PR (write)
-                                           → degrades CR (read)
-  Must find a sizing that gives adequate margin for BOTH simultaneously.
-  This becomes harder at low VDD where transistor I-V curves compress.
-```
+**Fundamental tension:**
+   - Increasing access transistor strength (M5/M6) → improves PR (write) → degrades CR (read)
+   - Must find a sizing that gives adequate margin for BOTH simultaneously.
+   - This becomes harder at low VDD where transistor I-V curves compress.
 
 ### Read Operation Sequence (Step-by-Step Timing)
 
 Reading a 6T SRAM cell follows this precise sequence. We read from a cell storing Q=0, Q_bar=1:
 
-```
-Step 1: PRECHARGE (t_precharge ~200-500 ps)
-  - Precharge circuit drives both BL and BL_bar to VDD
-  - Equalize transistor (between BL and BL_bar) ensures BL = BL_bar = VDD
-  - WL remains LOW (M5, M6 off)
-
-Step 2: WORD LINE ASSERTION (t_WL_rise ~50-100 ps)
-  - WL goes HIGH, turning on access transistors M5 and M6
-  - BL connects to Q through M5; BL_bar connects to Q_bar through M6
-
-Step 3: BITLINE DEVELOPMENT (t_develop ~100-300 ps)
-  - Cell has Q=0: BL (at VDD) begins to discharge through M5 and M1 toward GND
-  - Cell has Q_bar=1: BL_bar (at VDD) stays near VDD (M6 connects to Q_bar=VDD,
-    so no discharge path)
-  - Differential voltage develops: BL drops, BL_bar stays high
-  - Delta_V grows to ~100-200 mV (enough for sense amplifier)
-
-Step 4: SENSE AMPLIFIER FIRING (t_sense ~100-200 ps)
-  - Sense amplifier enable signal goes HIGH
-  - Cross-coupled latch amplifies the small differential to full rail:
-    BL → 0 (GND), BL_bar → VDD
-  - Positive feedback completes in ~100 ps
-
-Step 5: DATA OUTPUT and WRITE-BACK
-  - Sense amplifier output (BL_bar) is the read data (logic "1" = cell stored Q_bar)
-  - Full-rail voltage on BL/BL_bar is also driven back through M5/M6, reinforcing
-    the cell's stored value (non-destructive read -- cell was already at Q=0)
-  - Column mux selects this bitline pair for output to the read data bus
-
-Step 6: WORD LINE DE-ASSERTION
-  - WL goes LOW, disconnecting cell from bitlines
-  - Precharge circuit re-asserts, preparing for next read
+1. **PRECHARGE** (t_precharge ~200-500 ps)
+   - Precharge circuit drives both BL and BL_bar to VDD
+   - Equalize transistor (between BL and BL_bar) ensures BL = BL_bar = VDD
+   - WL remains LOW (M5, M6 off)
+2. **WORD LINE ASSERTION** (t_WL_rise ~50-100 ps)
+   - WL goes HIGH, turning on access transistors M5 and M6
+   - BL connects to Q through M5; BL_bar connects to Q_bar through M6
+3. **BITLINE DEVELOPMENT** (t_develop ~100-300 ps)
+   - Cell has Q=0: BL (at VDD) begins to discharge through M5 and M1 toward GND
+   - Cell has Q_bar=1: BL_bar (at VDD) stays near VDD (M6 connects to Q_bar=VDD, so no discharge path)
+   - Differential voltage develops: BL drops, BL_bar stays high
+   - Delta_V grows to ~100-200 mV (enough for sense amplifier)
+4. **SENSE AMPLIFIER FIRING** (t_sense ~100-200 ps)
+   - Sense amplifier enable signal goes HIGH
+   - Cross-coupled latch amplifies the small differential to full rail: BL → 0 (GND), BL_bar → VDD
+   - Positive feedback completes in ~100 ps
+5. **DATA OUTPUT and WRITE-BACK**
+   - Sense amplifier output (BL_bar) is the read data (logic "1" = cell stored Q_bar)
+   - Full-rail voltage on BL/BL_bar is also driven back through M5/M6, reinforcing the cell's stored value (non-destructive read -- cell was already at Q=0)
+   - Column mux selects this bitline pair for output to the read data bus
+6. **WORD LINE DE-ASSERTION**
+   - WL goes LOW, disconnecting cell from bitlines
+   - Precharge circuit re-asserts, preparing for next read
 
 Total read access time: t_precharge + t_WL_rise + t_develop + t_sense ≈ 0.5-1.5 ns
-```
 
 **Critical observation:** The read is non-destructive (unlike DRAM). The cell's cross-coupled
 inverters fight the bitline discharge and maintain their state. But the cell voltage does
@@ -95,38 +73,31 @@ dip slightly during Step 3, which is the source of read-disturb risk at low VDD.
 Writing a 6T SRAM cell requires overpowering the feedback loop. We write Q=0 to a cell
 currently storing Q=1:
 
-```
-Step 1: DRIVE BITLINES (write driver activation ~50-100 ps)
-  - Write driver forces BL = 0 (GND) for writing "0" to Q
-  - Write driver forces BL_bar = VDD (reinforcing Q_bar = 1)
-  - BL and BL_bar are driven STRONGLY by the write driver (much larger transistors
-    than the cell's pull-up/pull-down)
-
-Step 2: WORD LINE ASSERTION
-  - WL goes HIGH, connecting BL to Q (through M5) and BL_bar to Q_bar (through M6)
-
-Step 3: FLIP Q NODE (t_write ~200-500 ps)
-  - BL = 0 pulls Q down through M5 (access transistor)
-  - M3 (PMOS pull-up, gate = Q_bar = 0 initially, so M3 is ON) fights back,
-    trying to keep Q at VDD
-  - M5 must overpower M3: requires PR = (W/L)_access / (W/L)_pullup > threshold
-  - With PR = 1.5, M5 wins: Q drops below the switching threshold of INV1 (Q_bar inverter)
-  - INV1 input (Q) drops → INV1 output (Q_bar) rises → M3 gate goes HIGH → M3 turns OFF
-  - Feedback is broken: Q continues to drop to 0, Q_bar rises to VDD
-  - Cell has flipped: Q=0, Q_bar=1
-
-Step 4: STABILIZATION
-  - Cross-coupled inverters reinforce the new state
-  - Q_bar = VDD keeps M1 (pull-down) ON, holding Q = 0
-  - Q = 0 keeps M4 (pull-up) ON, holding Q_bar = VDD
-
-Step 5: WORD LINE DE-ASSERTION
-  - WL goes LOW, disconnecting cell from bitlines
-  - Cell retains new state
+1. **DRIVE BITLINES** (write driver activation ~50-100 ps)
+   - Write driver forces BL = 0 (GND) for writing "0" to Q
+   - Write driver forces BL_bar = VDD (reinforcing Q_bar = 1)
+   - BL and BL_bar are driven STRONGLY by the write driver (much larger transistors than the cell's pull-up/pull-down)
+2. **WORD LINE ASSERTION**
+   - WL goes HIGH, connecting BL to Q (through M5) and BL_bar to Q_bar (through M6)
+3. **FLIP Q NODE** (t_write ~200-500 ps)
+   - BL = 0 pulls Q down through M5 (access transistor)
+   - M3 (PMOS pull-up, gate = Q_bar = 0 initially, so M3 is ON) fights back, trying to keep Q at VDD
+   - M5 must overpower M3: requires PR = (W/L)_access / (W/L)_pullup > threshold
+   - With PR = 1.5, M5 wins: Q drops below the switching threshold of INV1 (Q_bar inverter)
+   - INV1 input (Q) drops → INV1 output (Q_bar) rises → M3 gate goes HIGH → M3 turns OFF
+   - Feedback is broken: Q continues to drop to 0, Q_bar rises to VDD
+   - Cell has flipped: Q=0, Q_bar=1
+4. **STABILIZATION**
+   - Cross-coupled inverters reinforce the new state
+   - Q_bar = VDD keeps M1 (pull-down) ON, holding Q = 0
+   - Q = 0 keeps M4 (pull-up) ON, holding Q_bar = VDD
+5. **WORD LINE DE-ASSERTION**
+   - WL goes LOW, disconnecting cell from bitlines
+   - Cell retains new state
 
 Total write time: t_drive + t_WL + t_flip ≈ 0.5-2.0 ns
-  (longer than read because of the feedback fight)
-```
+
+(longer than read because of the feedback fight)
 
 **Write margin:** The worst case is writing the opposite state (flipping the cell). If VDD
 is too low, M3 may overpower M5, preventing the flip. Write margin is defined as the
@@ -167,7 +138,7 @@ NMOS as VDD approaches Vth.
 
 ### Transistor Schematic with Sizing
 
-```
+```ascii-graph
                    VDD                    VDD
                     |                      |
                ┌────┴────┐           ┌────┴────┐
@@ -205,7 +176,7 @@ NMOS as VDD approaches Vth.
 ```
 
 **Typical sizing ratios (65nm reference):**
-```
+```verilog
 Pull-down NMOS (M1, M2):  W/L = 2/1    (strongest, for read stability)
 Access NMOS (M5, M6):     W/L = 1.5/1  (intermediate)
 Pull-up PMOS (M3, M4):    W/L = 1/1    (weakest, for write-ability)
@@ -222,7 +193,7 @@ Pull-Up Ratio (PR) = (W/L)_access / (W/L)_pullup = 1.5/1 = 1.5
 
 **Voltage divider between M5 (access) and M1 (pull-down):**
 
-```
+```ascii-graph
                 BL (VDD)
                   │
              ┌────┴────┐
@@ -242,7 +213,7 @@ Pull-Up Ratio (PR) = (W/L)_access / (W/L)_pullup = 1.5/1 = 1.5
 
 **Simplified DC analysis (both in linear region for small V_Q):**
 
-```
+```verilog
 I_M5 = Kn_access * [(VDD - Vth) * V_Q - V_Q^2/2]
 I_M1 = Kn_pulldown * [(VDD - Vth) * V_Q - V_Q^2/2]
 ```
@@ -251,17 +222,17 @@ Wait — M1's gate is at Q_bar = VDD (assuming Q_bar hasn't changed), and M1's s
 M5's gate is at VDD (WL=VDD), source is Q (lower voltage), drain is BL (VDD).
 
 For M5 (in saturation if VDD - V_Q > VDD - Vth, i.e., V_Q < Vth... initially yes):
-```
+```verilog
 I_M5 ≈ (Kn_access/2) * (VDD - Vth)^2   (in saturation)
 ```
 
-For M1 (in linear region since V_GS = VDD and V_DS = V_Q ≈ 0):
-```
+For M1 (in linear region since $V_{GS} = V_{DD}$ and $V_{DS} = V_Q \approx 0$):
+```verilog
 I_M1 ≈ Kn_pulldown * [(VDD - Vth) * V_Q - V_Q^2/2]
 ```
 
 At equilibrium, I_M5 = I_M1:
-```
+```verilog
 (Kn_access/2) * (VDD - Vth)^2 = Kn_pulldown * (VDD - Vth) * V_Q
 
 V_Q = (Kn_access / (2 * Kn_pulldown)) * (VDD - Vth)
@@ -269,7 +240,7 @@ V_Q = (Kn_access / (2 * Kn_pulldown)) * (VDD - Vth)
 ```
 
 **Numerical example with 65nm parameters:**
-```
+```verilog
 VDD = 1.0V, Vth = 0.3V, CR = 1.33
 
 V_Q = (1 / (2 * 1.33)) * (1.0 - 0.3) = 0.375 * 0.7 = 0.263V
@@ -277,10 +248,10 @@ V_Q = (1 / (2 * 1.33)) * (1.0 - 0.3) = 0.375 * 0.7 = 0.263V
 
 **Is this safe?** For the cell to flip, V_Q must exceed the switching threshold of INV2 (which has Q as its input). The switching threshold of INV2 ≈ VDD * sqrt(Kn_pd/Kp_pu) / (1 + sqrt(Kn_pd/Kp_pu)). For our sizing with pull-down 2x stronger than pull-up, Vm_inv ≈ 0.4V.
 
-V_Q = 0.263V < Vm_inv = 0.4V → **SAFE** (with margin of 0.137V).
+$V_Q = 0.263$ V $< V_{m,inv} = 0.4$ V → **SAFE** (with margin of 0.137V).
 
 **When does the cell flip?** If CR is reduced:
-```
+```ascii-graph
 CR = 1.0: V_Q = 0.5 * 0.7 = 0.35V  (margin = 0.05V — dangerously close!)
 CR = 0.8: V_Q = 0.625 * 0.7 = 0.44V > 0.4V → CELL FLIPS! Read-disturb failure!
 ```
@@ -293,7 +264,7 @@ CR = 0.8: V_Q = 0.625 * 0.7 = 0.44V > 0.4V → CELL FLIPS! Read-disturb failure!
 
 **The fight:** M5 (access, WL=VDD) tries to pull Q from VDD to 0 through BL=0. But M3 (PMOS pull-up, gate=Q_bar=0, so M3 is ON) tries to keep Q at VDD.
 
-```
+```ascii-graph
                 VDD
                  │
             ┌────┴────┐
@@ -314,7 +285,7 @@ CR = 0.8: V_Q = 0.625 * 0.7 = 0.44V > 0.4V → CELL FLIPS! Read-disturb failure!
 For write to succeed: M5 must overpower M3, pulling Q below the switching threshold of INV1.
 
 **Voltage divider:**
-```
+```verilog
 V_Q = VDD * R_access / (R_access + R_pullup)
 
 For V_Q < Vm_inv (must pull Q below switching threshold):
@@ -330,7 +301,7 @@ This translates to: `(W/L)_access / (W/L)_pullup > some threshold`, which is the
 
 ### The Fundamental 6T Trade-Off
 
-```
+```ascii-graph
 Read stability wants: Strong pull-down, WEAK access → HIGH CR
 Write-ability wants:  Strong access, WEAK pull-up   → HIGH PR
 
@@ -343,20 +314,18 @@ But increasing access transistor strength IMPROVES PR and DEGRADES CR!
 
 The butterfly curve is constructed by plotting the voltage transfer characteristics (VTC) of the two cross-coupled inverters:
 
-```
-INV1: V_Qbar = f(V_Q)      (input Q, output Q_bar)
-INV2: V_Q = g(V_Qbar)      (input Q_bar, output Q)
+- **INV1** — V_Qbar = f(V_Q)      (input Q, output Q_bar)
+- **INV2** — V_Q = g(V_Qbar)      (input Q_bar, output Q)
 
-Plot both on the same axes: V_Q (x-axis) vs V_Qbar (y-axis)
-  INV1: V_Qbar = f(V_Q)     → plot normally
-  INV2: V_Q = g(V_Qbar)     → plot as V_Qbar vs V_Q (mirror)
-```
+- **Plot both on the same axes** — V_Q (x-axis) vs V_Qbar (y-axis)
+- **INV1** — V_Qbar = f(V_Q)     → plot normally
+- **INV2** — V_Q = g(V_Qbar)     → plot as V_Qbar vs V_Q (mirror)
 
 The two curves intersect at three points: two stable states (Q=0, Qbar=VDD) and (Q=VDD, Qbar=0), and one metastable point (both ≈ VDD/2).
 
 **SNM = side of the largest square that fits inside either "eye" of the butterfly curve.**
 
-```
+```ascii-graph
                 V_Qbar
                   |
             VDD --+              /--------+
@@ -389,7 +358,7 @@ The two curves intersect at three points: two stable states (Q=0, Qbar=VDD) and 
 
 ### 8T SRAM Cell — Read-Decoupled Port
 
-```
+```ascii-graph
 Standard 6T write port (same as above):
   M1-M6 as before, with WL_write controlling M5, M6
 
@@ -418,7 +387,7 @@ Additional 2T read port:
 **Write operation:** Same as 6T — uses the original access transistors M5, M6.
 
 **Why 8T is preferred for low-VDD:**
-```
+```verilog
 6T at VDD = 0.6V: Read SNM ≈ 20 mV (essentially zero)
 8T at VDD = 0.6V: Read SNM ≈ 250 mV (same as hold SNM, very robust)
 ```
@@ -490,7 +459,7 @@ Cosmic rays (neutrons) and alpha particles (from packaging materials) can flip S
 
 ### 1T1C Cell — Charge Sharing Equation
 
-```
+```ascii-graph
     BL (precharged to VDD/2)
      │
   ┌──┴──┐
@@ -507,7 +476,7 @@ Cosmic rays (neutrons) and alpha particles (from packaging materials) can flip S
 Before WL assert: V_BL = VDD/2, V_Cs = VDD (stored "1") or 0 (stored "0").
 
 After WL assert, charge sharing between Cs and C_BL (bitline parasitic, ~200-400 fF):
-```
+```verilog
 Q_total = C_s * V_Cs + C_BL * V_BL(precharge)
 
 V_BL_final = Q_total / (C_s + C_BL)
@@ -515,7 +484,7 @@ V_BL_final = Q_total / (C_s + C_BL)
 ```
 
 **For stored "1" (V_Cs = VDD):**
-```
+```verilog
 V_BL_final = (C_s * VDD + C_BL * VDD/2) / (C_s + C_BL)
            = VDD/2 + (C_s / (C_s + C_BL)) * VDD/2
            = VDD/2 + delta_V
@@ -524,14 +493,14 @@ delta_V = C_s / (C_s + C_BL) * VDD/2
 ```
 
 **For stored "0" (V_Cs = 0):**
-```
+```verilog
 V_BL_final = (C_s * 0 + C_BL * VDD/2) / (C_s + C_BL)
            = VDD/2 - (C_s / (C_s + C_BL)) * VDD/2
            = VDD/2 - delta_V
 ```
 
 **Numerical example:**
-```
+```verilog
 Cs = 25 fF, C_BL = 250 fF, VDD = 1.0V
 
 delta_V = 25/(25+250) * 0.5 = 25/275 * 0.5 ≈ 45.5 mV
@@ -541,7 +510,7 @@ Only ~45 mV of signal! This is why DRAM needs sensitive sense amplifiers.
 
 ### Sense Amplifier — Cross-Coupled Latch
 
-```
+```ascii-graph
           VDD
            │
       ┌────┴────┐     ┌────┴────┐
@@ -575,7 +544,7 @@ mode**. It detects the voltage difference between BL and BL_bar after charge sha
 
 **Bitline swing time calculation:**
 
-```
+```verilog
 The sense amplifier detects when delta_V >= V_sense_threshold (~10-20 mV).
 
 Bitline development time (voltage-mode):
@@ -606,7 +575,7 @@ equally into both BL and BL_bar, appearing as a common-mode shift. The sense amp
 responds only to the **difference** between BL and BL_bar, rejecting the common-mode
 component. This is why DRAM can detect a ~45 mV signal in a noisy array environment:
 
-```
+```verilog
 BL signal:      VDD/2 + 45 mV + noise
 BL_bar signal:  VDD/2 - 45 mV + noise
 Difference:     90 mV (noise cancels!)
@@ -620,28 +589,26 @@ Common-mode rejection ratio (CMRR) of cross-coupled sense amp:
 
 An alternative that detects current flow rather than voltage swing:
 
-```
 Instead of waiting for bitline voltage to develop:
-  Current-mode sense amp measures the difference in discharge current
-  between BL and BL_bar.
+Current-mode sense amp measures the difference in discharge current
+between BL and BL_bar.
 
-  I_BL  (stored "1") = C_s * VDD / (C_s + C_BL) * (discharge rate)
-  I_BL_bar (stored "0") ≈ 0
+I_BL  (stored "1") = C_s * VDD / (C_s + C_BL) * (discharge rate)
+I_BL_bar (stored "0") ≈ 0
 
-  The current difference appears in ~50-100 ps (much faster than voltage-mode).
+The current difference appears in ~50-100 ps (much faster than voltage-mode).
 
-Advantages:
-  - Faster detection: 50-100 ps vs 150+ ps for voltage-mode
-  - Less bitline swing required (lower power)
+**Advantages:**
+   - Faster detection: 50-100 ps vs 150+ ps for voltage-mode
+   - Less bitline swing required (lower power)
 
-Disadvantages:
-  - More complex circuit (requires matched current mirrors)
-  - Higher offset sensitivity (transistor mismatch affects current more)
-  - Typically used only in fast SRAM (register files) not DRAM
+**Disadvantages:**
+   - More complex circuit (requires matched current mirrors)
+   - Higher offset sensitivity (transistor mismatch affects current more)
+   - Typically used only in fast SRAM (register files) not DRAM
 
 Most DRAM uses voltage-mode due to simplicity and robustness.
 Fast SRAM register files may use current-mode for sub-ns read latency.
-```
 
 ### Multi-Port Register File Design -- Detailed Implementation
 
@@ -653,7 +620,7 @@ the additional bitline routing and access transistors.
 
 **1R1W register file (6T cell):**
 
-```
+```ascii-graph
                    VDD
                 ┌──┴──┐
         BL ──── M5    M6 ──── BL_bar
@@ -669,29 +636,27 @@ the additional bitline routing and access transistors.
 
 **3R2W register file (16T cell):**
 
-```
-Write ports: 2 independent write paths
-  Write Port A: WLA, BLA/BLA_bar (access transistors M5a, M6a)
-  Write Port B: WLB, BLB/BLB_bar (access transistors M5b, M6b)
+- **Write ports** — 2 independent write paths
+- **Write Port A** — WLA, BLA/BLA_bar (access transistors M5a, M6a)
+- **Write Port B** — WLB, BLB/BLB_bar (access transistors M5b, M6b)
 
-Read ports: 3 independent read-only paths (8T-style read-decoupled)
-  Read Port 0: RWL0, RBL0 (transistors M7a, M8a -- gated by Q_bar)
-  Read Port 1: RWL1, RBL1 (transistors M7b, M8b -- gated by Q_bar)
-  Read Port 2: RWL2, RBL2 (transistors M7c, M8c -- gated by Q_bar)
+- **Read ports** — 3 independent read-only paths (8T-style read-decoupled)
+- **Read Port 0** — RWL0, RBL0 (transistors M7a, M8a -- gated by Q_bar)
+- **Read Port 1** — RWL1, RBL1 (transistors M7b, M8b -- gated by Q_bar)
+- **Read Port 2** — RWL2, RBL2 (transistors M7c, M8c -- gated by Q_bar)
 
-Total transistors: 6 (storage) + 2x2 (write ports) + 3x2 (read ports) = 16T
-Total wordlines: 2 write + 3 read = 5
-Total bitlines: 2 write pairs + 3 read singles = 7
+- **Total transistors** — 6 (storage) + 2x2 (write ports) + 3x2 (read ports) = 16T
+- **Total wordlines** — 2 write + 3 read = 5
+- **Total bitlines** — 2 write pairs + 3 read singles = 7
 
 Area per cell ≈ 16T/6T * 0.05 um^2 ≈ 0.13 um^2 (in 7nm)
-```
 
 #### Write Conflict Resolution
 
 When two write ports target the same address simultaneously, the result is undefined
 without arbitration. A multi-port register file controller must implement:
 
-```
+```verilog
 Write conflict detection:
   For all pairs of write ports (i, j):
     if (W_addr[i] == W_addr[j]) && W_enable[i] && W_enable[j]:
@@ -712,7 +677,7 @@ Alternative: some designs allow simultaneous writes to the same address
 
 #### Area Scaling With Ports
 
-```
+```verilog
 Cell area scales approximately as O(Ports^2):
   Each port adds 1 wordline (horizontal) + 1-2 bitlines (vertical)
   Cell must grow in BOTH dimensions to route the additional wires
@@ -745,66 +710,54 @@ Typical OoO CPU configurations:
 
 #### DRAM Read Sequence (Step-by-Step)
 
-```
-Step 1: PRECHARGE (tRP ~13.75 ns for DDR4-3200)
-  - Bitlines BL and BL_bar are equalized to VDD/2 by precharge circuit
-  - All sense amplifiers in the bank are reset
-
-Step 2: ACTIVATE (wordline assertion)
-  - Controller issues ACT command with row address
-  - Wordline for the selected row goes HIGH
-  - All access transistors in the row turn on simultaneously
-  - Charge sharing begins between each cell capacitor (Cs) and its bitline (C_BL)
-  - For a stored "1": BL rises above VDD/2 by delta_V ≈ 45 mV
-  - For a stored "0": BL drops below VDD/2 by delta_V ≈ 45 mV
-  - Sense amplifier detects the differential: BL vs BL_bar diverge
-
-Step 3: SENSE AND RESTORE (tRCD includes this)
-  - Sense amplifier fires, amplifying the ~45 mV signal to full rail
-  - Full-rail voltage is driven back through the access transistor into the cell
-    capacitor, RESTORING the charge (destructive read requires restore)
-  - The entire row is now latched in the sense amplifier array (row buffer)
-
-Step 4: COLUMN READ (tCL ~13.75 ns)
-  - Controller issues READ command with column address
-  - Column decoder selects the appropriate sense amplifier output
-  - Selected data is driven onto the DQ pins through the I/O gating and output driver
-  - Burst of 8 data transfers (BL8) on both clock edges over 4 clock cycles
-
-Step 5: PRECHARGE (if closing the row)
-  - Controller issues PRECHARGE command
-  - Wordline goes LOW, disconnecting cells
-  - Bitlines equalized back to VDD/2
-  - Row buffer data is lost (cells have been restored in Step 3)
+1. **PRECHARGE** (tRP ~13.75 ns for DDR4-3200)
+   - Bitlines BL and BL_bar are equalized to VDD/2 by precharge circuit
+   - All sense amplifiers in the bank are reset
+2. **ACTIVATE** (wordline assertion)
+   - Controller issues ACT command with row address
+   - Wordline for the selected row goes HIGH
+   - All access transistors in the row turn on simultaneously
+   - Charge sharing begins between each cell capacitor (Cs) and its bitline (C_BL)
+   - For a stored "1": BL rises above VDD/2 by delta_V ≈ 45 mV
+   - For a stored "0": BL drops below VDD/2 by delta_V ≈ 45 mV
+   - Sense amplifier detects the differential: BL vs BL_bar diverge
+3. **SENSE AND RESTORE** (tRCD includes this)
+   - Sense amplifier fires, amplifying the ~45 mV signal to full rail
+   - Full-rail voltage is driven back through the access transistor into the cell capacitor, RESTORING the charge (destructive read requires restore)
+   - The entire row is now latched in the sense amplifier array (row buffer)
+4. **COLUMN READ** (tCL ~13.75 ns)
+   - Controller issues READ command with column address
+   - Column decoder selects the appropriate sense amplifier output
+   - Selected data is driven onto the DQ pins through the I/O gating and output driver
+   - Burst of 8 data transfers (BL8) on both clock edges over 4 clock cycles
+5. **PRECHARGE** (if closing the row)
+   - Controller issues PRECHARGE command
+   - Wordline goes LOW, disconnecting cells
+   - Bitlines equalized back to VDD/2
+   - Row buffer data is lost (cells have been restored in Step 3)
 
 Total read latency (row miss): tRP + tRCD + tCL = ~41 ns (DDR4-3200)
+
 Total read latency (row hit):  tCL only = ~13.75 ns
-```
 
 #### DRAM Write Sequence (Step-by-Step)
 
-```
-Step 1: ACTIVATE (same as read)
-  - Open the row, sense amplifiers latch row data
-
-Step 2: COLUMN WRITE (tCWL ~12 ns)
-  - Controller issues WRITE command with column address
-  - Write driver forces the selected bitline pair to the new data value
-  - The sense amplifier for the selected column is overridden by the write driver
-  - The cell capacitor is charged/discharged to the new value through the access transistor
-
-Step 3: WRITE RECOVERY (tWR ~15 ns)
-  - After the write burst completes, the written cell needs time to fully charge
-    the capacitor to the correct voltage level
-  - The sense amplifier must hold the written value during this time
-  - The row must remain open for tWR before precharge
-
-Step 4: PRECHARGE
-  - After tWR has elapsed, controller can issue PRECHARGE
-  - Row buffer data (with the updated column) is written back to all cells in the row
+1. **ACTIVATE** (same as read)
+   - Open the row, sense amplifiers latch row data
+2. **COLUMN WRITE** (tCWL ~12 ns)
+   - Controller issues WRITE command with column address
+   - Write driver forces the selected bitline pair to the new data value
+   - The sense amplifier for the selected column is overridden by the write driver
+   - The cell capacitor is charged/discharged to the new value through the access transistor
+3. **WRITE RECOVERY** (tWR ~15 ns)
+   - After the write burst completes, the written cell needs time to fully charge the capacitor to the correct voltage level
+   - The sense amplifier must hold the written value during this time
+   - The row must remain open for tWR before precharge
+4. **PRECHARGE**
+   - After tWR has elapsed, controller can issue PRECHARGE
+   - Row buffer data (with the updated column) is written back to all cells in the row
 
 Total write latency (row miss): tRP + tRCD + tCWL + tWR = ~54 ns
-```
 
 ### DRAM Refresh -- Detailed Mechanism
 
@@ -813,39 +766,37 @@ Total write latency (row miss): tRP + tRCD + tCWL + tWR = ~54 ns
 A DRAM cell stores a bit as charge on a capacitor (Cs ≈ 25-30 fF). This charge leaks
 away through several paths:
 
-```
-Leakage current sources:
-  1. Subthreshold leakage through the access transistor (NMOS gate = off, but
-     small Ids flows): I_sub ≈ 1-10 fA per cell (temperature dependent)
+**Leakage current sources:**
+   1. Subthreshold leakage through the access transistor (NMOS gate = off, but
+small Ids flows): I_sub ≈ 1-10 fA per cell (temperature dependent)
 
-  2. Gate leakage through the access transistor dielectric: I_gate ≈ 0.1-1 fA
-     (reduced in high-k metal gate processes)
+2. Gate leakage through the access transistor dielectric: I_gate ≈ 0.1-1 fA
+(reduced in high-k metal gate processes)
 
-  3. Junction leakage at the drain of the access transistor: I_junc ≈ 0.5-5 fA
+3. Junction leakage at the drain of the access transistor: I_junc ≈ 0.5-5 fA
 
-  4. Capacitor dielectric leakage (tunneling through the capacitor dielectric):
-     I_cap ≈ 0.1-2 fA (worse with thinner dielectrics for higher density)
+4. Capacitor dielectric leakage (tunneling through the capacitor dielectric):
+I_cap ≈ 0.1-2 fA (worse with thinner dielectrics for higher density)
 
 Total leakage: I_total ≈ 2-20 fA per cell (at 85°C)
 
 Time to lose 50% of charge (from VDD to VDD/2):
-  t_leak = Cs * (VDD/2) / I_total
-         = 25 fF * 0.5V / 10 fA
-         = 12.5 fC / 10 fA
-         = 1.25 seconds (at room temperature)
+t_leak = Cs * (VDD/2) / I_total
+= 25 fF * 0.5V / 10 fA
+= 12.5 fC / 10 fA
+= 1.25 seconds (at room temperature)
 
 But the sense amplifier threshold is much tighter than 50%:
-  The cell must retain enough charge for the sense amplifier to distinguish
-  "1" from "0" reliably. If delta_V < V_sense_min (~15 mV), the cell is "lost."
+The cell must retain enough charge for the sense amplifier to distinguish
+"1" from "0" reliably. If delta_V < V_sense_min (~15 mV), the cell is "lost."
 
-  Effective retention time: ~64 ms at 85°C (JEDEC standard)
-  At 45°C: retention time is ~2-4x longer (lower leakage)
-  At 105°C: retention time is ~2-4x shorter (higher leakage)
-```
+Effective retention time: ~64 ms at 85°C (JEDEC standard)
+At 45°C: retention time is ~2-4x longer (lower leakage)
+At 105°C: retention time is ~2-4x shorter (higher leakage)
 
 #### Refresh Commands
 
-```
+```verilog
 1. All-Bank Refresh (RAS-only refresh):
    Command: CS_n=0, RAS_n=0, CAS_n=0, WE_n=0, A10=1
    All banks must be precharged (idle) before refresh
@@ -889,7 +840,7 @@ But the sense amplifier threshold is much tighter than 50%:
 
 #### Refresh Overhead at Different Densities
 
-```
+```verilog
 Refresh overhead = tRFC / tREFI (fraction of time DRAM is unavailable)
 
 | Density | tRFC (ns) | tREFI (us) | Overhead | Bandwidth Lost |
@@ -915,18 +866,16 @@ Same-bank refresh (DDR5) mitigates this:
 
 ### Refresh Requirements and Power Impact
 
-```
 Retention time: time for Cs to leak enough charge for the sense amp to misread
-  Typical: 64 ms (DDR4), 32 ms (LPDDR5 at high temperature)
+Typical: 64 ms (DDR4), 32 ms (LPDDR5 at high temperature)
 
 Refresh cycle: each row must be read and restored within the retention time
-  For a 16 Gb DRAM with 128K rows:
-    Refresh all rows in 64 ms → 1 row every 64ms / 128K ≈ 488 ns
-    Each refresh takes ~50 ns (tRC)
+For a 16 Gb DRAM with 128K rows:
+Refresh all rows in 64 ms → 1 row every 64ms / 128K ≈ 488 ns
+Each refresh takes ~50 ns (tRC)
 
-Refresh bandwidth overhead:
-  50 ns / 488 ns ≈ 10.2% of total bandwidth consumed by refresh
-```
+**Refresh bandwidth overhead:**
+   - 50 ns / 488 ns ≈ 10.2% of total bandwidth consumed by refresh
 
 **Power impact:** In mobile DRAM (LPDDR), refresh power can be 30-40% of total DRAM power during idle (self-refresh). Techniques to reduce:
 - **Per-bank refresh:** Only one bank is being refreshed at a time; other banks can be accessed
@@ -935,7 +884,7 @@ Refresh bandwidth overhead:
 
 #### DRAM Refresh Bandwidth Overhead — Worked Calculation
 
-```
+```verilog
 For DDR4-3200 single channel (25.6 GB/s peak) with 16 Gb chips:
 
 Refresh parameters:
@@ -968,37 +917,35 @@ With same-bank refresh (DDR5 SBR):
 
 #### Auto-Refresh vs Self-Refresh — Detailed Comparison
 
-```
-Auto-refresh (controller-managed):
-  Controller issues REFRESH command every tREFI (7.8 us average).
-  DRAM internally increments a row counter and refreshes the next set of rows.
-  Controller must track timing: can postpone up to 8x tREFI, but must catch up.
-  DRAM is fully operational between refreshes (commands to other banks allowed).
+**Auto-refresh (controller-managed):**
+   - Controller issues REFRESH command every tREFI (7.8 us average).
+   - DRAM internally increments a row counter and refreshes the next set of rows.
+   - Controller must track timing: can postpone up to 8x tREFI, but must catch up.
+   - DRAM is fully operational between refreshes (commands to other banks allowed).
 
-  Pros: Controller controls when refresh happens (can schedule during idle).
-  Cons: Controller complexity; must guarantee all refreshes within tREFW.
+Pros: Controller controls when refresh happens (can schedule during idle).
+Cons: Controller complexity; must guarantee all refreshes within tREFW.
 
-Self-refresh (DRAM-managed):
-  Controller asserts CKE low and issues SELFREF command.
-  DRAM enters low-power mode with internal oscillator.
-  Internal refresh counter generates refreshes autonomously.
-  No controller involvement; all I/O pins are quiescent (maximum power savings).
-  Exit latency: tXSR = 100-200 ns (must complete any in-progress refresh before exit).
+**Self-refresh (DRAM-managed):**
+   - Controller asserts CKE low and issues SELFREF command.
+   - DRAM enters low-power mode with internal oscillator.
+   - Internal refresh counter generates refreshes autonomously.
+   - No controller involvement; all I/O pins are quiescent (maximum power savings).
+   - Exit latency: tXSR = 100-200 ns (must complete any in-progress refresh before exit).
 
-  Pros: Maximum power saving; no controller overhead during sleep.
-  Cons: Long exit latency; no external access during self-refresh.
+Pros: Maximum power saving; no controller overhead during sleep.
+Cons: Long exit latency; no external access during self-refresh.
 
-Power comparison:
-  Active idle (CKE high, no commands):  ~80 mW per x8 device (DDR4-3200)
-  Auto-refresh (periodic REF):          ~65 mW average (refresh spikes to ~200 mW)
-  Self-refresh (CKE low):               ~15-30 mW (DRAM handles refresh internally)
-  Power-down (CKE low, no refresh):     ~5 mW (data lost! Only for deep sleep)
+**Power comparison:**
+   - Active idle (CKE high, no commands):  ~80 mW per x8 device (DDR4-3200)
+   - Auto-refresh (periodic REF):          ~65 mW average (refresh spikes to ~200 mW)
+   - Self-refresh (CKE low):               ~15-30 mW (DRAM handles refresh internally)
+   - Power-down (CKE low, no refresh):     ~5 mW (data lost! Only for deep sleep)
 
-Typical mobile use:
-  Active → auto-refresh during normal operation
-  Screen off → enter self-refresh (DRAM retains data, minimal power)
-  Deep sleep → power-down (DRAM data lost, restore from flash on wake)
-```
+**Typical mobile use:**
+   - Active → auto-refresh during normal operation
+   - Screen off → enter self-refresh (DRAM retains data, minimal power)
+   - Deep sleep → power-down (DRAM data lost, restore from flash on wake)
 
 ---
 
@@ -1006,26 +953,29 @@ Typical mobile use:
 
 ### Architecture Overview
 
-```
-         Write Clock Domain          │         Read Clock Domain
-                                     │
-  wdata ──► ┌─────────────────┐      │     ┌─────────────────┐ ──► rdata
-  wen   ──► │  Write Logic    │      │     │  Read Logic      │ ◄── ren
-  wrst_n──► │                 │      │     │                  │ ◄── rrst_n
-            │  wr_ptr_bin     │      │     │  rd_ptr_bin      │
-            │  wr_ptr_gray ───┼──sync──►   │  rd_ptr_gray ────┼──sync──►
-            │                 │    │ ◄──sync┼──                │       │
-            │  rd_ptr_gray_s2 │◄───┼────   │  wr_ptr_gray_s2  │◄──────┘
-            │                 │    │       │                   │
-  full  ◄── │  Full Logic     │    │       │  Empty Logic      │ ──► empty
-  afull ◄── │  Almost Full    │    │       │  Almost Empty     │ ──► aempty
-            └────────┬────────┘    │       └────────┬─────────┘
-                     │             │                │
-                     ▼             │                ▼
-              ┌──────────────────────────────────────┐
-              │      Dual-Port RAM (2^ADDR_W deep)    │
-              │      Write Port A    Read Port B       │
-              └──────────────────────────────────────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph WD["Write clock domain"]
+        WL["Write logic<br/>wr_ptr_bin · wr_ptr_gray<br/>Full / Almost-Full logic"]
+    end
+    subgraph RD["Read clock domain"]
+        RL["Read logic<br/>rd_ptr_bin · rd_ptr_gray<br/>Empty / Almost-Empty logic"]
+    end
+    win["wdata / wen / wrst_n"] --> WL
+    WL --> wflags["full / afull"]
+    rin["ren / rrst_n"] --> RL
+    RL --> rout["rdata / empty / aempty"]
+    WL -->|"wr_ptr_gray (2-FF sync)"| RL
+    RL -->|"rd_ptr_gray (2-FF sync)"| WL
+    WL --> DPR["Dual-port RAM (2^ADDR_W deep)<br/>write port A · read port B"]
+    RL --> DPR
+    classDef w fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef r fill:#dcfce7,stroke:#15803d,color:#000
+    classDef m fill:#fde68a,stroke:#b45309,color:#000
+    class WL,win,wflags w
+    class RL,rin,rout r
+    class DPR m
 ```
 
 ### Complete Synthesizable Verilog
@@ -1208,7 +1158,7 @@ endmodule
 
 **Timing diagram showing what happens when the write pointer changes during read-domain sampling:**
 
-```
+```ascii-graph
 Write domain (wclk):
   wr_gray_reg:   0100 ──────► 0110  (single bit change: bit[1] 0→1)
                            ↑
@@ -1247,12 +1197,10 @@ Read domain (rclk):
 
 **Why the top-2-bit inversion?** In binary, full means wr_ptr - rd_ptr = DEPTH (wr has wrapped around exactly once more). In binary, this means the MSBs differ and the rest are equal. In Gray code:
 
-```
 Binary wr_ptr = rd_ptr + DEPTH
 If rd_ptr = 0000, wr_ptr = 10000 (5-bit for depth-16)
-Gray(0000) = 0000
+- **Gray(0000)** = `0000`
 Gray(10000) = 11000  (note: top two bits are inverted, rest same!)
-```
 
 This pattern holds for all pointer values because of how Gray code reflects at the MSB boundary. The top two MSBs of Gray code encode the "quadrant" of the binary counter, and being one full wrap apart means being in the diametrically opposite quadrant, which differs in exactly the top 2 Gray bits.
 
@@ -1266,7 +1214,6 @@ This pattern holds for all pointer values because of how Gray code reflects at t
 
 Memory compilers (e.g., ARM Artisan, Synopsys, TSMC Memory Compiler) take these inputs:
 
-```
 - Word count (depth): e.g., 1024
 - Word width (bits): e.g., 32
 - Number of ports: 1 (single-port), 2 (dual-port), 1R/1W
@@ -1275,11 +1222,9 @@ Memory compilers (e.g., ARM Artisan, Synopsys, TSMC Memory Compiler) take these 
 - Power mode: high-speed, high-density, low-leakage
 - Redundancy: spare rows/columns for repair
 - Corner: process corners to generate .lib files for (SS, TT, FF, etc.)
-```
 
 ### What You Get Back
 
-```
 1. .lib (Liberty): Timing models for STA
    - Setup/hold times for address, data, write-enable relative to clock
    - Clock-to-Q (access time) for read data output
@@ -1301,11 +1246,10 @@ Memory compilers (e.g., ARM Artisan, Synopsys, TSMC Memory Compiler) take these 
 5. .sdf (Standard Delay Format): Back-annotated timing for gate-level sim
 
 6. .spice: Transistor-level netlist for analog simulation (optional)
-```
 
 ### How to Read a Memory .lib File
 
-```
+```verilog
 Key parameters in a .lib timing group:
 
 cell (SRAM_1024x32) {
@@ -1378,7 +1322,7 @@ cell (SRAM_1024x32) {
 
 Notation: ↑ = ascending address, ↓ = descending address, (r0) = read expecting 0, (w1) = write 1.
 
-```
+```verilog
 Step 0: ↑↓(w0)         — Write 0 to all addresses (any order)
 Step 1: ↑(r0, w1)      — Ascending: read 0 (verify), write 1
 Step 2: ↑(r1, w0)      — Ascending: read 1 (verify), write 0
@@ -1426,13 +1370,13 @@ If addresses A and B map to the same physical cell: writing 1 to A then 0 to B o
 - Line size: 64 bytes
 
 **Derived parameters:**
-```
+```verilog
 Number of lines = 32768 / 64 = 512 lines total
 Number of sets = 512 / 4 = 128 sets
 ```
 
 **Address breakdown for 32-bit address:**
-```
+```verilog
 Offset bits = log2(64) = 6 bits  (byte within a line)
 Index bits  = log2(128) = 7 bits  (selects the set)
 Tag bits    = 32 - 6 - 7 = 19 bits
@@ -1441,7 +1385,7 @@ Address: [31:13 tag | 12:6 index | 5:0 offset]
 ```
 
 **Hardware structure per set:**
-```
+```verilog
 Set k:
   Way 0: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
   Way 1: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
@@ -1451,18 +1395,16 @@ Set k:
 ```
 
 **Total storage:**
-```
-Data:  512 lines × 64 bytes = 32 KB (the actual cache data)
-Tags:  512 lines × 19 bits = 9728 bits = 1.19 KB
-Valid: 512 bits
-Dirty: 512 bits
-LRU:   128 sets × 3 bits = 384 bits (pseudo-LRU)
+- **Data** — 512 lines × 64 bytes = 32 KB (the actual cache data)
+- **Tags** — 512 lines × 19 bits = 9728 bits = 1.19 KB
+- **Valid** — 512 bits
+- **Dirty** — 512 bits
+- **LRU** — 128 sets × 3 bits = 384 bits (pseudo-LRU)
 
-Total overhead: ~1.2 KB for 32 KB cache = ~3.7% overhead
-```
+- **Total overhead** — ~1.2 KB for 32 KB cache = ~3.7% overhead
 
 **Read operation (hit path):**
-```
+```verilog
 1. Extract index [12:6], tag [31:13], offset [5:0] from address
 2. Use index to read all 4 ways simultaneously:
    - 4 tag comparisons (19-bit each): tag == stored_tag[way_i] AND valid[way_i]
@@ -1478,19 +1420,17 @@ Latency: Tag read + comparator + MUX ≈ 2-4 cycles for L1 cache
 
 **True LRU for 4-way:**
 
-Track the full ordering of 4 ways. There are 4! = 24 possible orderings → need 5 bits (ceil(log2(24)) = 5).
+Track the full ordering of 4 ways. There are $4! = 24$ possible orderings → need 5 bits ($\lceil \log_2(24) \rceil = 5$).
 
 In practice, use a 4×4 matrix:
 
-```
 Matrix M[i][j] = 1 if way i was accessed more recently than way j
 
-On access to way k:
-  Set M[k][*] = 1  (row k, all columns)
-  Set M[*][k] = 0  (column k, all rows)
+**On access to way k:**
+   - Set M[k][*] = 1  (row k, all columns)
+   - Set M[*][k] = 0  (column k, all rows)
 
-LRU victim = way with all 0s in its row (accessed least recently)
-```
+- **LRU victim** = `way with all 0s in its row (accessed least recently)`
 
 Storage: 4×4 matrix, but diagonal is unused and matrix is antisymmetric → 4*3/2 = 6 bits per set.
 
@@ -1499,7 +1439,7 @@ For 8-way: 8*7/2 = 28 bits per set — expensive!
 **Pseudo-LRU (Tree PLRU) for 4-way:**
 
 Use a binary tree with 3 bits:
-```
+```verilog
           bit[0]
          /      \
       bit[1]   bit[2]
@@ -1520,7 +1460,7 @@ Each bit points toward the "less recently used" subtree:
 For 8-way: 7 bits (vs 28 for true LRU). This is why PLRU is universally used for associativity ≥ 4.
 
 **PLRU vs true LRU miss rate comparison (SPEC benchmarks, 32KB 4-way):**
-```
+```verilog
 True LRU miss rate:   ~4.2%
 Pseudo-LRU miss rate: ~4.4%
 Random replacement:   ~5.1%
@@ -1531,7 +1471,7 @@ For 8-way, the gap widens slightly but PLRU is still >90% as effective.
 
 ### Write-Back State Machine
 
-```
+```ascii-graph
 States: IDLE → TAG_CHECK → {HIT_UPDATE | MISS_ALLOCATE} → WRITEBACK → REFILL → IDLE
 
 IDLE:
@@ -1572,17 +1512,15 @@ REFILL:
 
 MESI (Modified, Exclusive, Shared, Invalid) handles cache coherence in multi-core systems:
 
-```
-States per cache line:
-  M (Modified):  Line is dirty, only copy, owned by this cache
-  E (Exclusive): Line is clean, only copy, can write without bus transaction
-  S (Shared):    Line is clean, multiple copies may exist
-  I (Invalid):   Line is not valid in this cache
-```
+**States per cache line:**
+   - M (Modified):  Line is dirty, only copy, owned by this cache
+   - E (Exclusive): Line is clean, only copy, can write without bus transaction
+   - S (Shared):    Line is clean, multiple copies may exist
+   - I (Invalid):   Line is not valid in this cache
 
 **State transitions:**
 
-```
+```ascii-graph
 I → E: CPU read miss, no other cache has the line
         (Bus read, memory responds, line loaded as Exclusive)
 
@@ -1688,7 +1626,7 @@ Multi-port SRAM extends the basic 6T/8T cell by adding additional access transis
 
 The simplest configuration. A standard 6T cell with a single pair of access transistors (M5, M6) and a single wordline. Read and write share the same port and cannot occur simultaneously. One complete memory access (read or write) occupies one clock cycle. The bitline pair (BL, BL_bar) is shared between read and write operations.
 
-```
+```verilog
 6T cell with single port:
   1 wordline (WL)
   1 bitline pair (BL, BL_bar)
@@ -1700,7 +1638,7 @@ The simplest configuration. A standard 6T cell with a single pair of access tran
 
 Requires separate read and write access paths. The write port uses the standard M5/M6 access transistors with WL_write. The two read ports each add a dedicated 2T read stack (similar to the 8T read port), with independent read wordlines (RWL0, RWL1) and read bitlines (RBL0, RBL1).
 
-```
+```verilog
 2R1W cell topology:
   Write: M5, M6 + WL_write, BL/BL_bar (from 6T core)
   Read port 0: M7, M8 + RWL0, RBL0
@@ -1715,15 +1653,13 @@ The read ports are read-decoupled: they do not disturb the storage nodes Q and Q
 
 Two completely independent ports, each capable of reading or writing. This requires two full write paths and two full read paths. The cell has two write wordlines (WL_A, WL_B) and two write bitline pairs (BLA/BLA_bar, BLB/BLB_bar), plus two read wordlines and two read bitlines if read-decoupled ports are used.
 
-```
 Full dual-port (8T cell variant):
-  Port A write: WL_A, BLA, BLA_bar (M5, M6)
-  Port B write: WL_B, BLB, BLB_bar (M5b, M6b)
-  Read port A: RWL_A, RBL_A (2T)
-  Read port B: RWL_B, RBL_B (2T)
-  Total: 10-12 transistors
-  Area: ~0.10 um^2 (7nm)
-```
+- **Port A write** — WL_A, BLA, BLA_bar (M5, M6)
+- **Port B write** — WL_B, BLB, BLB_bar (M5b, M6b)
+- **Read port A** — RWL_A, RBL_A (2T)
+- **Read port B** — RWL_B, RBL_B (2T)
+- **Total** — 10-12 transistors
+- **Area** — ~0.10 um^2 (7nm)
 
 Concurrent write conflict: if both ports write to the same address in the same cycle, the result is indeterminate. A multi-port SRAM controller must implement write-conflict detection (compare addresses of both write ports) and arbitration logic.
 
@@ -1738,6 +1674,7 @@ where $P$ is the total port count and $\alpha \approx 0.05$--$0.10$ depends on t
 **Practical limits:** Beyond 8--12 ports, the cell area and wire delay become prohibitive. A 16-port SRAM cell in 7nm would be approximately 8--10x the area of a single-port cell, and the resistive-capacitive (RC) delay on the long wordlines and heavily loaded bitlines would push access time beyond 2--3 ns, negating the benefit of parallel access.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["Port Requirement"] --> B{"Port count P"}
     B -->|"P <= 2"| C["Single/bank SRAM: 6T-10T cell, direct implementation"]
@@ -1754,18 +1691,14 @@ flowchart TD
 
 Column multiplexing reduces the number of sense amplifiers by sharing one sense amplifier across multiple adjacent columns. A column mux ratio of $M$ means $M$ cells in a row share a single sense amplifier.
 
-```
 Column mux = 4:
-  Physical columns: 128 (128 bitcells per row)
-  Logical words: 32 bits (128 / 4 = 32 words per row, each 32 bits wide)
-  Sense amplifiers: 128 / 4 = 32
+- **Physical columns** — 128 (128 bitcells per row)
+- **Logical words** — 32 bits (128 / 4 = 32 words per row, each 32 bits wide)
+- **Sense amplifiers** — 128 / 4 = 32
 
-  Read: WL asserted, all 128 bitlines develop differential,
-        4:1 MUX selects one of every 4 bitlines for each sense amplifier
+- **Read** — WL asserted, all 128 bitlines develop differential, 4:1 MUX selects one of every 4 bitlines for each sense amplifier
 
-  Address: extra 2 bits (log2(4)) in column address select which
-           of the 4 bitlines routes to the sense amplifier
-```
+- **Address** — extra 2 bits (log2(4)) in column address select which of the 4 bitlines routes to the sense amplifier
 
 Column multiplexing trades sense amplifier area for taller memory (more rows for the same capacity). Common mux ratios: 2, 4, 8, 16. Higher mux ratios produce physically narrower and taller memories, which can improve floorplan fit in some SoC layouts but increase bitline length and access time.
 
@@ -1773,12 +1706,10 @@ Column multiplexing trades sense amplifier area for taller memory (more rows for
 
 GPU shader cores require register files with very high port counts. A typical GPU thread in a warp/wavefront issues multiple operands per cycle, requiring simultaneous reads of several source registers.
 
-```
-Example: 4-wide GPU SIMD lane, 3-source instruction format
-  Per-cycle register access: 4 threads x 3 sources = 12 reads
-  Plus results: 4 threads x 1 result = 4 writes
-  Total: 12R + 4W = 16 ports (if implemented as monolithic SRAM)
-```
+- **Example** — 4-wide GPU SIMD lane, 3-source instruction format
+- **Per-cycle register access** — 4 threads x 3 sources = 12 reads
+- **Plus results** — 4 threads x 1 result = 4 writes
+- **Total** — 12R + 4W = 16 ports (if implemented as monolithic SRAM)
 
 This is far beyond practical SRAM port limits. The solution is **banking**: divide the register file into $B$ banks, each with $P/B$ ports. A 16-bank register file with 1R1W per bank can service up to 16 reads and 16 writes per cycle, provided no two accesses target the same bank (bank conflict). The compiler or hardware scheduler inserts bank-conflict avoidance by assigning registers to banks in a round-robin or conflict-free pattern.
 
@@ -1790,7 +1721,7 @@ This is far beyond practical SRAM port limits. The solution is **banking**: divi
 
 A superscalar processor with issue width $W$ needs to read $W$ source operands and write back up to $W/2$ results per cycle (assuming roughly half the instructions produce results). The architectural register file therefore requires at least $W$ read ports and $W/2$ write ports.
 
-```
+```verilog
 Port count derivation for a 4-wide out-of-order machine:
   Instructions per cycle: up to 4 (integer + FP mix)
   Source operands per instruction: 2 (typical RISC: src1, src2)
@@ -1801,20 +1732,18 @@ Port count derivation for a 4-wide out-of-order machine:
 
 For a physical register file with register renaming (typical in modern OoO cores), the file is larger because all committed and in-flight destination registers occupy physical entries.
 
-```
 Physical register file parameters (example: ARM Cortex-A78 class):
-  Entry count: 128-160 physical registers (32 arch + 96-128 rename buffers)
-  Data width: 64 bits per entry
-  Read ports: 8-10 (for 4-5 issue width, 2 sources each)
-  Write ports: 4-6 (for execution unit writebacks)
-  Total ports: 12-16
-```
+- **Entry count** — 128-160 physical registers (32 arch + 96-128 rename buffers)
+- **Data width** — 64 bits per entry
+- **Read ports** — 8-10 (for 4-5 issue width, 2 sources each)
+- **Write ports** — 4-6 (for execution unit writebacks)
+- **Total ports** — 12-16
 
 ### Register File Banking
 
 To avoid the area and delay explosion of a monolithic 12+ port SRAM, the register file is split into multiple banks with fewer ports each. The key trade-off is port count reduction versus bank-conflict stalls.
 
-```
+```verilog
 Monolithic: 128 entries x 8R4W, 12 ports
   Area (7nm): ~0.015 mm^2
   Access time: ~1.5 ns (heavily loaded bitlines)
@@ -1836,7 +1765,7 @@ The optimal banking factor balances area savings against the performance loss fr
 
 When a write and a read target the same register in the same cycle, the read does not need to wait for the write to complete and propagate through the SRAM. Instead, a **bypass network** (also called forwarding or write-through) compares the read address against all pending write addresses. If a match is found, the write data is forwarded directly to the read port, saving one cycle of latency.
 
-```
+```verilog
 Bypass logic per read port:
   For each read address R_addr[i]:
     For each write port j (0 to W-1):
@@ -1868,7 +1797,7 @@ Small register files (16--32 entries) with high port counts are almost always im
 
 **Area calculation example: 32-entry 8R4W register file in 7nm**
 
-```
+```verilog
 Flip-flop approach:
   32 entries x 64 bits = 2048 flip-flops
   Each DFF in 7nm: ~0.25 um^2 (with clock gating)
@@ -1896,7 +1825,7 @@ Single Error Correction, Double Error Detection (SECDED) is the most common ECC 
 
 The code word structure places check bits at power-of-2 positions ($2^0, 2^1, 2^2, \ldots, 2^7$) within a 72-bit code word. Data bits fill the remaining 64 positions.
 
-```
+```verilog
 Bit positions (1-indexed):
   Check bits:  1,  2,  4,  8, 16, 32, 64  (7 Hamming check bits)
   Parity bit:  0 (overall parity, position 0 or appended at MSB)
@@ -1920,7 +1849,7 @@ The syndrome $S$ is a 7-bit value (8-bit if including overall parity $P$):
 
 **Single-bit error correction example:**
 
-```
+```verilog
 Stored code word (64 data + 8 check/parity):
   [P C1 C2 D3 C4 D5 D6 D7 C8 D9 D10 ... D64]
 
@@ -1935,6 +1864,7 @@ Readback:
 ```
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["Read code word from memory"] --> B["Compute syndrome S from received data"]
     B --> C{"S == 0?"}
@@ -1950,7 +1880,7 @@ flowchart TD
 
 For a 64-bit data path with SECDED, 8 check bits are stored alongside each 64-bit word. This represents a 12.5% storage overhead.
 
-```
+```verilog
 L1 data cache (32KB, 64B lines):
   Per line: 64 bytes = 512 bits data
   ECC: 512/64 x 8 = 64 check bits = 8 bytes per line
@@ -1972,7 +1902,7 @@ L2 cache (256KB, 64B lines):
 
 Bose--Chaudhuri--Hocquenghem (BCH) codes generalize Hamming codes to correct $t$ bit errors, where $t > 1$. The number of check bits grows as $m \cdot t$ where $m = \lceil \log_2(n) \rceil$ and $n$ is the code word length.
 
-```
+```verilog
 BCH(511, 484) for t=2 (double-bit correction):
   Data bits: 484
   Check bits: 511 - 484 = 27
@@ -1992,25 +1922,23 @@ Soft errors (caused by alpha particles, cosmic rays, or neutron strikes) can fli
 
 **Scrubbing** periodically reads every memory location, checks the ECC, and corrects any single-bit errors before a second error can accumulate in the same code word.
 
-```
-Scrubbing rate calculation:
-  Soft error rate (SER): 100 FIT per Mb (Failures In Time = errors per 10^9 device-hours)
+**Scrubbing rate calculation:**
+   - Soft error rate (SER): 100 FIT per Mb (Failures In Time = errors per 10^9 device-hours)
 
-  For a 32 MB L3 cache:
-    Total bits: 32 x 10^6 x 8 = 256 Mbits (data)
-    With ECC: 256 x 1.125 = 288 Mbits (total)
+For a 32 MB L3 cache:
+Total bits: 32 x 10^6 x 8 = 256 Mbits (data)
+With ECC: 256 x 1.125 = 288 Mbits (total)
 
-    Expected errors: 288 Mbits x 100 FIT / 10^9 = 0.0288 errors/hour
-                     = 1 error every ~34.7 hours
+Expected errors: 288 Mbits x 100 FIT / 10^9 = 0.0288 errors/hour
+= 1 error every ~34.7 hours
 
-  For SECDED to work, we need to scrub fast enough that the
-  probability of TWO errors in the same 72-bit word between
-  scrubs is negligibly small.
+For SECDED to work, we need to scrub fast enough that the
+probability of TWO errors in the same 72-bit word between
+scrubs is negligibly small.
 
-  With full scrub every 24 hours:
-    Mean errors between scrubs: 0.0288 x 24 = 0.69 errors (across ALL 4M words)
-    Probability of any double error: ~10^-7 per scrub cycle (very safe)
-```
+With full scrub every 24 hours:
+Mean errors between scrubs: 0.0288 x 24 = 0.69 errors (across ALL 4M words)
+Probability of any double error: ~10^-7 per scrub cycle (very safe)
 
 Hardware scrubbers walk through the cache or SRAM array during idle cycles, reading each line, checking the syndrome, and writing back corrected data if a single-bit error is found. This is transparent to software and has no performance impact if scheduled during idle periods.
 
@@ -2018,16 +1946,14 @@ Hardware scrubbers walk through the cache or SRAM array during idle cycles, read
 
 When the ECC detects an error but cannot correct it (multi-bit error exceeding the correction capability), the system must decide how to respond. The worst outcome is **silent data corruption**: the error is not detected at all, and corrupted data propagates to the processor and potentially to persistent storage.
 
-```
-SDC scenarios:
-  No ECC: any single or multi-bit error is SDC
-  Parity only: single-bit error detected, multi-bit may be SDC (even number of flips)
-  SECDED: single-bit corrected, double-bit detected (CE), triple+ may be SDC
-  BCH(t=3): up to 3-bit corrected, 4-bit detected, 5+ may be SDC
+**SDC scenarios:**
+   - No ECC: any single or multi-bit error is SDC
+   - Parity only: single-bit error detected, multi-bit may be SDC (even number of flips)
+   - SECDED: single-bit corrected, double-bit detected (CE), triple+ may be SDC
+   - BCH(t=3): up to 3-bit corrected, 4-bit detected, 5+ may be SDC
 
-  SDC rate target for server processors: < 1 SDC per 10^17 device-hours
-  (roughly 1 SDC per 10 million server-years)
-```
+SDC rate target for server processors: < 1 SDC per 10^17 device-hours
+(roughly 1 SDC per 10 million server-years)
 
 Mitigation strategies for SDC include: chipkill (distributing each memory word across multiple DRAM chips so a single-chip failure causes at most 1 bit per code word), end-to-end data integrity (CRC/ECC checked at every transfer point from DRAM to cache to register file), and lockstep execution (two cores execute the same code and compare results).
 
@@ -2060,17 +1986,15 @@ As SRAM scales from 5nm to 3nm and 2nm (gate-all-around / GAA nanosheet transist
 
 5. **Assist circuits:** Read-assist (wordline under-drive: reduce WL voltage during read to weaken the access transistor, increasing CR) and write-assist (negative bitline: drive BL below GND during write to strengthen the access transistor's pull-down) are mandatory at 3nm/2nm. These add 5-10% area overhead for charge pump circuits.
 
-```
-Read-assist wordline under-drive:
-  Normal read: V_WL = VDD = 0.55V -> access transistor strong -> CR ~1.1
-  With under-drive: V_WL = VDD - 0.15V = 0.40V -> access weaker -> effective CR ~1.4
-  Read SNM improvement: ~30-40 mV (significant at these margins)
+**Read-assist wordline under-drive:**
+   - Normal read: V_WL = VDD = 0.55V -> access transistor strong -> CR ~1.1
+   - With under-drive: V_WL = VDD - 0.15V = 0.40V -> access weaker -> effective CR ~1.4
+   - Read SNM improvement: ~30-40 mV (significant at these margins)
 
-Write-assist negative bitline:
-  Normal write: BL = 0V (GND) -> access pulls Q toward GND
-  With negative BL: BL = -0.2V -> stronger pull on Q -> write margin +50 mV
-  Implementation: on-chip charge pump generates -0.2V rail, gated to BL during write
-```
+**Write-assist negative bitline:**
+   - Normal write: BL = 0V (GND) -> access pulls Q toward GND
+   - With negative BL: BL = -0.2V -> stronger pull on Q -> write margin +50 mV
+   - Implementation: on-chip charge pump generates -0.2V rail, gated to BL during write
 
 ---
 
@@ -2080,24 +2004,22 @@ Write-assist negative bitline:
 
 Compute-in-Memory (CIM) or Processing-in-Memory (PIM) integrates arithmetic operations directly into the memory array, eliminating the data movement between memory and processor that dominates energy consumption in data-intensive workloads (AI inference, graph analytics, scientific computing).
 
-```
-Traditional von Neumann:
-  Memory Array -> Read data -> Bus -> ALU -> Result -> Bus -> Write back
-  Energy per operation: ~100-1000 pJ (dominated by data movement)
-  Data movement energy: ~10-100x the energy of the computation itself
+**Traditional von Neumann:**
+   - Memory Array -> Read data -> Bus -> ALU -> Result -> Bus -> Write back
+   - Energy per operation: ~100-1000 pJ (dominated by data movement)
+   - Data movement energy: ~10-100x the energy of the computation itself
 
-Compute-in-Memory:
-  Memory Array + integrated compute logic
-  Input applied to wordlines/bitlines -> result appears on sense amplifiers
-  Energy per operation: ~1-10 pJ (10-100x improvement)
-  No data leaves the memory array for the computation
-```
+**Compute-in-Memory:**
+   - Memory Array + integrated compute logic
+   - Input applied to wordlines/bitlines -> result appears on sense amplifiers
+   - Energy per operation: ~1-10 pJ (10-100x improvement)
+   - No data leaves the memory array for the computation
 
 ### SRAM-Based CIM: Bitline Computing
 
 SRAM-based CIM performs analog accumulation directly on the bitlines by simultaneously activating multiple wordlines and interpreting the resulting bitline voltage as a multi-bit analog value.
 
-```
+```verilog
 Basic SRAM CIM operation (1-bit multiply-accumulate):
 
   Bitline computing:
@@ -2133,46 +2055,42 @@ Basic SRAM CIM operation (1-bit multiply-accumulate):
 
 **SRAM CIM energy model:**
 
-```
 Energy per binary MAC operation in SRAM CIM:
-  RBL discharge: ~0.5 fJ (capacitance x voltage swing)
-  ADC per column: ~5 fJ (moderate-resolution SAR ADC)
-  WL driver: ~0.1 fJ per WL
+RBL discharge: ~0.5 fJ (capacitance x voltage swing)
+ADC per column: ~5 fJ (moderate-resolution SAR ADC)
+WL driver: ~0.1 fJ per WL
 
-  Total per MAC: ~5-10 fJ (vs ~100 pJ for SRAM read + ALU + writeback)
-  CIM advantage: 10,000x lower energy per MAC
+Total per MAC: ~5-10 fJ (vs ~100 pJ for SRAM read + ALU + writeback)
+CIM advantage: 10,000x lower energy per MAC
 
-Limitations:
-  - ADC precision limits compute precision: 3-4 bit ADC is practical
-  - Process variation causes column-to-column offset (requires calibration)
-  - Limited to integer/fixed-point; floating-point requires software decomposition
-  - Analog noise accumulates with array size (practical limit: 128-256 columns)
-```
+**Limitations:**
+   - ADC precision limits compute precision: 3-4 bit ADC is practical
+   - Process variation causes column-to-column offset (requires calibration)
+   - Limited to integer/fixed-point; floating-point requires software decomposition
+   - Analog noise accumulates with array size (practical limit: 128-256 columns)
 
 ### ReRAM/RRAM for In-Memory Computing
 
 Resistive RAM (ReRAM or RRAM) stores data as resistance states (low-resistance = "1", high-resistance = "0") and naturally supports analog computation because Ohm's law provides multiplication ($V \times G = I$, where G = conductance = stored weight) and Kirchhoff's current law provides accumulation (currents sum at a node).
 
-```
 RRAM crossbar array for matrix-vector multiplication:
 
-  Input voltages V[0]..V[N-1] applied to wordlines
-  RRAM cells at crosspoints store conductance G[i][j]
-  Bitline currents: I[j] = sum(V[i] * G[i][j], i=0..N-1)
+Input voltages V[0]..V[N-1] applied to wordlines
+RRAM cells at crosspoints store conductance G[i][j]
+Bitline currents: I[j] = sum(V[i] * G[i][j], i=0..N-1)
 
-  This computes Y = G * X in a single step (O(1) time complexity)
-  where G is the weight matrix, X is the input vector
+This computes Y = G * X in a single step (O(1) time complexity)
+where G is the weight matrix, X is the input vector
 
-  Energy per MAC: ~1 fJ (current-based, no ADC needed for binary)
-  Array size: 128x128 crossbar practical (~2x2 um per cell)
+Energy per MAC: ~1 fJ (current-based, no ADC needed for binary)
+Array size: 128x128 crossbar practical (~2x2 um per cell)
 
-Challenges:
-  - Limited endurance: 10^6 - 10^9 write cycles (vs 10^15+ for SRAM)
-  - Conductance drift: resistance changes over time (retention error)
-  - Non-ideal linearity: conductance does not scale perfectly with voltage
-  - Fabrication: RRAM requires additional mask layers beyond CMOS logic
-  - Programming: write-verify cycles needed for precise weight setting
-```
+**Challenges:**
+   - Limited endurance: 10^6 - 10^9 write cycles (vs 10^15+ for SRAM)
+   - Conductance drift: resistance changes over time (retention error)
+   - Non-ideal linearity: conductance does not scale perfectly with voltage
+   - Fabrication: RRAM requires additional mask layers beyond CMOS logic
+   - Programming: write-verify cycles needed for precise weight setting
 
 ### MRAM: STT-MRAM and SOT-MRAM for Last-Level Cache
 
@@ -2180,7 +2098,7 @@ MRAM (Magnetoresistive RAM) uses magnetic tunnel junctions (MTJs) to store data 
 
 **STT-MRAM (Spin-Transfer Torque MRAM):**
 
-```
+```verilog
 STT-MRAM cell:
   1T + 1 MTJ (Magnetic Tunnel Junction)
   MTJ structure: Free layer / MgO tunnel barrier / Fixed layer
@@ -2217,7 +2135,7 @@ Area: ~30-50 nm^2 per MTJ + 1 NMOS access transistor
 
 **SOT-MRAM (Spin-Orbit Torque MRAM):**
 
-```
+```verilog
 SOT-MRAM cell:
   1T + 1 SOT channel + 1 MTJ
   Write: current through heavy-metal SOT channel (not through MTJ)
@@ -2242,7 +2160,7 @@ SOT-MRAM is projected to replace SRAM in last-level caches (L3/L4) in advanced n
 
 Embedded MRAM (eMRAM) uses STT-MRAM technology integrated into the logic CMOS process as an on-chip non-volatile memory replacement for embedded flash (eFlash).
 
-```
+```verilog
 eMRAM characteristics:
   Capacity: 8-64 MB per die (integrated in Back-End-Of-Line BEOL metal stack)
   Read latency: 10-30 ns (random access, byte-addressable)
@@ -2271,41 +2189,25 @@ eMRAM characteristics:
 
 HBM-PIM integrates programmable compute logic directly into the HBM (High Bandwidth Memory) stack, adjacent to the DRAM banks. This enables computation to occur where the data resides, avoiding the energy and latency of moving data across the HBM-to-host interface.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph HBM["HBM stack — 8-high 3D-stacked DRAM (layers 0–7)"]
+        B0["Bank 0"] --- P0["PIM-0<br/>ALU + MAC"]
+        B1["Bank 1"] --- P1["PIM-1<br/>ALU + MAC"]
+        B2["Bank 2"] --- P2["PIM-2<br/>ALU + MAC"]
+    end
+    classDef b fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef p fill:#fde68a,stroke:#b45309,color:#000
+    class B0,B1,B2 b
+    class P0,P1,P2 p
 ```
-HBM-PIM architecture:
 
-  +------------------------------------------+
-  | HBM Stack (8-high 3D-stacked DRAM)       |
-  |                                          |
-  |  Layer 0-7: DRAM banks (standard)        |
-  |  Each bank has an adjacent PIM unit:     |
-  |                                          |
-  |  +--------+  +--------+  +--------+     |
-  |  | Bank 0 |  | Bank 1 |  | Bank 2 | ... |
-  |  +--------+  +--------+  +--------+     |
-  |       |           |           |          |
-  |  +--------+  +--------+  +--------+     |
-  |  | PIM-0  |  | PIM-1  |  | PIM-2  | ... |
-  |  | (ALU + |  | (ALU + |  | (ALU + |     |
-  |  |  MAC)  |  |  MAC)  |  |  MAC)  |     |
-  |  +--------+  +--------+  +--------+     |
-  |                                          |
-  |  PIM units access local bank data at     |
-  |  DRAM internal bandwidth (~256 GB/s per  |
-  |  bank group), not limited by HBM I/O BW  |
-  +------------------------------------------+
-
-HBM-PIM compute capabilities per PIM unit:
-  - 16-bit integer MAC (multiply-accumulate)
-  - 8-bit integer MAC (for quantized inference)
-  - SIMD: 32 elements in parallel per PIM unit
-  - Local register file: 256-1024 bytes per PIM unit
-  - Instruction memory: microcoded operations (load, MAC, store, reduce)
-```
+Each DRAM bank has an adjacent PIM unit that reads local bank data at DRAM-internal bandwidth (~256 GB/s per bank group), not limited by HBM I/O bandwidth. Per-PIM compute: 16-bit and 8-bit integer MAC (quantized inference), SIMD over 32 elements in parallel, a 256–1024 B local register file, and a microcoded instruction memory (load, MAC, store, reduce).
 
 **HBM-PIM performance model:**
 
-```
+```verilog
 Samsung Aquabolt-XL HBM-PIM (HBM2E-based):
   HBM stack bandwidth: 460 GB/s (host interface)
   Internal DRAM bank bandwidth: ~4x host BW = ~1.8 TB/s
@@ -2340,7 +2242,7 @@ Key use case: AI inference where model parameters are too large for on-chip SRAM
 
 The DRAM storage capacitor must maintain sufficient charge (~25-30 fF) for reliable sensing despite shrinking cell area. At 1znm and beyond, capacitor scaling is approaching fundamental limits.
 
-```
+```verilog
 DRAM capacitor scaling approaches:
 
   1x nm node: ~15.5 um^2 cell footprint, 25 fF capacitor
@@ -2367,25 +2269,23 @@ DRAM capacitor scaling approaches:
 
 The DRAM access transistor (1T in the 1T1C cell) faces scaling challenges similar to logic transistors, but with additional DRAM-specific constraints.
 
-```
-Access transistor requirements:
-  - Low leakage: must hold capacitor charge for 64+ ms
-    I_off < 1 fA per cell (extremely low compared to logic transistors)
-  - Sufficient I_on for sense amplifier detection
-    I_on > 30 uA per cell (to discharge bitline in ~10 ns)
-  - Low Vth variation: sense margin is tiny, so Vth spread must be < 50 mV
+**Access transistor requirements:**
+   - Low leakage: must hold capacitor charge for 64+ ms
+   - I_off < 1 fA per cell (extremely low compared to logic transistors)
+   - Sufficient I_on for sense amplifier detection
+   - I_on > 30 uA per cell (to discharge bitline in ~10 ns)
+   - Low Vth variation: sense margin is tiny, so Vth spread must be < 50 mV
 
-  Scaling challenge: reducing transistor size increases I_off (leakage).
-  DRAM uses high-Vth transistors (~0.8V threshold) to minimize leakage,
-  but this limits I_on and slows access time.
+Scaling challenge: reducing transistor size increases I_off (leakage).
+DRAM uses high-Vth transistors (~0.8V threshold) to minimize leakage,
+but this limits I_on and slows access time.
 
-  Solutions:
-    - Recessed channel array transistor (RCAT): wrap gate around a recessed
-      channel to increase effective channel length without increasing footprint.
-    - Saddle-fin / U-shape gate: 3D gate structure for increased drive current
-      at the same footprint.
-    - These are DRAM-specific transistor architectures not used in logic CMOS.
-```
+Solutions:
+- Recessed channel array transistor (RCAT): wrap gate around a recessed
+   - channel to increase effective channel length without increasing footprint.
+   - Saddle-fin / U-shape gate: 3D gate structure for increased drive current
+   - at the same footprint.
+   - These are DRAM-specific transistor architectures not used in logic CMOS.
 
 ### Implications for Memory Controllers
 
@@ -2404,7 +2304,7 @@ As DRAM scaling slows (doubling time increasing from ~2 years to ~4+ years), mem
 
 A CAM cell stores a data bit and compares it against an input search bit in parallel across all entries. The basic binary CAM cell is built from a standard 6T SRAM cell with an additional 4T comparison circuit.
 
-```
+```verilog
 10T CAM cell (6T SRAM core + 4T compare):
 
   Storage: M1-M6 (standard 6T cross-coupled inverters + access)
@@ -2433,24 +2333,23 @@ For an $N$-entry CAM, the match line spans all $N$ entries. If ANY entry has a m
 
 **Ternary CAM (TCAM):** Each cell stores one of three states -- 0, 1, or X (don't care). The X state matches any input value. TCAM is implemented with two storage bits per cell, encoding the three states.
 
-```
 TCAM cell encoding (2 storage bits per cell):
-  Stored value  | Bit_A | Bit_B | Matches
-  ------------- | ----- | ----- | ----------
-  0             |   0   |   1   | search = 0 only
-  1             |   1   |   0   | search = 1 only
-  X (don't care)|   0   |   0   | search = 0 or 1 (always match)
-  (invalid)     |   1   |   1   | not used
+
+| Stored value | Bit_A | Bit_B | Matches |
+|---|---|---|---|
+| 0 | 0 | 1 | search = 0 only |
+| 1 | 1 | 0 | search = 1 only |
+| X (don't care) | 0 | 0 | search = 0 or 1 (always match) |
+| (invalid) | 1 | 1 | not used |
 
 TCAM cell: 12T-16T (two SRAM storage cells + compare logic)
   Area: ~2x binary CAM cell
-```
 
 ### TCAM Application: IP Routing (Longest Prefix Match)
 
 IP routing tables store destination prefixes of varying lengths. A prefix 192.168.0.0/16 means "match the first 16 bits exactly, ignore the last 16 bits." This maps directly to TCAM: the first 16 bits are stored as 0/1 values, and the remaining 16 bits are stored as X (don't care).
 
-```
+```verilog
 Routing table example:
   Entry 0: 10.0.0.0/8     -> Port A  (8-bit prefix, 24 X's)
   Entry 1: 10.1.0.0/16    -> Port B  (16-bit prefix, 16 X's)
@@ -2469,6 +2368,7 @@ Search for 10.1.2.5:
 ```
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["Incoming packet: Destination IP 10.1.2.5"] --> B["TCAM Search: broadcast search key to all entries"]
     B --> C["Parallel compare across all entries"]
@@ -2481,7 +2381,7 @@ flowchart TD
 
 TCAM is extremely power-hungry because every entry compares its stored value against the search key simultaneously. All match lines are precharged every cycle, and mismatching entries discharge their match lines through the comparison transistors.
 
-```
+```verilog
 Power comparison (per bit, same process node):
   SRAM read (1 port):  1x (reference)
   Binary CAM search:   5-8x
@@ -2502,7 +2402,7 @@ Reason for high TCAM power:
 
 ### TCAM Sizing in Networking Chips
 
-```
+```verilog
 Typical TCAM allocations in a datacenter switch ASIC (2024 generation):
   IPv4 routing table:     128K entries x 32-bit key = 4 Mb
   IPv6 routing table:     32K entries x 128-bit key = 4 Mb
@@ -2521,7 +2421,7 @@ Typical TCAM allocations in a datacenter switch ASIC (2024 generation):
 
 For applications where exact match suffices (or where multiple hash probes are acceptable), SRAM with hash-based lookup offers much lower power at the cost of variable lookup latency.
 
-```
+```verilog
 Hash lookup vs TCAM comparison:
 
   TCAM:

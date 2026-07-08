@@ -32,23 +32,23 @@ reading ARM reference manuals.
 
 ## 1. The Coherence Problem in Multi-Core SoCs
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    C0["Core 0 L1$<br/>writes X = 99<br/>(write-back, cached locally)"]:::dirty
+    C1["Core 1 L1$<br/>still reads X = 42<br/>(stale!)"]:::stale
+    M["Main Memory<br/>X = 42"]:::mem
+    C0 -.->|"write not visible to Core 1"| C1
+    C1 --> M
+    classDef dirty fill:#fee2e2,stroke:#b91c1c,color:#000
+    classDef stale fill:#fef9c3,stroke:#a16207,color:#000
+    classDef mem fill:#e2e8f0,stroke:#475569,color:#000
 ```
-Without hardware coherence:
 
-  Core 0 L1$        Core 1 L1$        Main Memory
-  +---------+       +---------+       +---------+
-  | X = 42  |       | X = 42  |       | X = 42  |
-  +---------+       +---------+       +---------+
-       |                                  |
-  Core 0 writes X=99                 Stale! Core 1
-  (write-back, cached locally)       still reads 42
+**Solutions**
 
-Solutions:
-  1. Software: cache maintenance instructions (clean, invalidate) -- slow,
-     error-prone, not scalable.
-  2. Hardware: snooping protocol on the interconnect -- transparent to
-     software, the whole point of ACE/CHI.
-```
+1. Software — cache-maintenance instructions (clean, invalidate): slow, error-prone, not scalable.
+2. Hardware — snooping protocol on the interconnect: transparent to software, the whole point of ACE/CHI.
 
 ---
 
@@ -67,7 +67,7 @@ channels plus two acknowledgment signals:
 | RACK    | Read Acknowledge     | Master -> Interconnect | Confirms master has consumed read data           |
 | WACK    | Write Acknowledge    | Master -> Interconnect | Confirms master has consumed write response      |
 
-```
+```ascii-graph
 ACE Master (e.g., CPU core with L1$)
 
   AW, W, B  -->  (write channels, same as AXI4)
@@ -87,21 +87,19 @@ any master issues a coherence transaction.
 ACE-Lite provides one-way coherence: an IO master (DMA, GPU) can participate
 in coherence **without** being snooped. It has no AC/CR/CD channels.
 
-```
 ACE-Lite master indicates shareability on each transaction:
-  ARCACHE/AWCACHE encode cacheability and shareability attributes.
-  The interconnect performs snooping of full ACE masters on behalf of
-  the ACE-Lite master, ensuring the IO device sees coherent data.
+ARCACHE/AWCACHE encode cacheability and shareability attributes.
+The interconnect performs snooping of full ACE masters on behalf of
+the ACE-Lite master, ensuring the IO device sees coherent data.
 
-Use cases:
-  - DMA engine reading/writing shared memory
-  - GPU reading textures that the CPU may have modified
-  - Network processor accessing shared packet buffers
+**Use cases:**
+   - DMA engine reading/writing shared memory
+   - GPU reading textures that the CPU may have modified
+   - Network processor accessing shared packet buffers
 
-ACE-Lite master requirements:
-  - No cache of its own (or cache that does not need snooping)
-  - Correctly marks shareability domain on every transaction
-```
+**ACE-Lite master requirements:**
+   - No cache of its own (or cache that does not need snooping)
+   - Correctly marks shareability domain on every transaction
 
 ### 2.3 Shareability Domains
 
@@ -114,22 +112,29 @@ ACE defines four shareability domains, carried in AxCACHE and AxDOMAIN:
 | Outer Shareable  | 11       | Shared across inner and outer domains (e.g., multiple clusters). |
 | System           | (N/A)    | Shared across the entire system.                             |
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph cl0["Cluster 0 — Inner Shareable"]
+        A0["A78 ×4 (ACE masters)"]
+    end
+    subgraph cl1["Cluster 1 — Inner Shareable"]
+        A1["A55 ×4 (ACE masters)"]
+    end
+    A0 --> CCI["Coherent Interconnect (CCI / CMN)"]
+    A1 --> CCI
+    CCI --> DDR["DDR Controller"]
+    classDef cl fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef ic fill:#fde68a,stroke:#b45309,color:#000
+    classDef mem fill:#e2e8f0,stroke:#475569,color:#000
+    class A0,A1 cl
+    class CCI ic
+    class DDR mem
 ```
-Typical ARM big.LITTLE SoC:
 
-  +---------------------------+    +---------------------------+
-  | Cluster 0 (Inner Domain)  |    | Cluster 1 (Inner Domain)  |
-  |  A78 x 4  (ACE masters)   |    |  A55 x 4  (ACE masters)   |
-  +---------------------------+    +---------------------------+
-  |                                                              |
-  +----------- Coherent Interconnect (CCI/CMN) -----------------+
-                    |
-              DDR Controller
-
-  Inner Shareable: data only coherent within one cluster
-  Outer Shareable: data coherent across both clusters
-  Non-shareable: private to one core (e.g., stack, TLB)
-```
+- **Inner Shareable** — data coherent only within one cluster
+- **Outer Shareable** — data coherent across both clusters
+- **Non-shareable** — private to one core (e.g., stack, TLB)
 
 ### 2.4 Barrier Transactions
 
@@ -141,7 +146,7 @@ ACE carries barrier semantics as first-class transactions:
 | DSB     | Data Synchronization Barrier | Like DMB, but also waits for cache maintenance and TLB ops |
 | Read/Write Barrier | Per-transaction | AxBAR signals indicate barrier ordering requirements |
 
-```
+```verilog
 Why barriers on the bus?
 
   CPU executes:  STR [X], DMB, STR [Y]
@@ -175,58 +180,43 @@ specific MESI state transition:
 
 ### 3.2 ReadShared Transaction Flow
 
-```
-When a core misses on a read and intends to hold the line read-only:
-
-  Core 0 L1$          Interconnect          Core 1 L1$          Memory
-      |                     |                     |                  |
-      |  AR (ReadShared X)  |                     |                  |
-      |-------------------->|                     |                  |
-      |                     |  AC (Snoop X)       |                  |
-      |                     |-------------------->|                  |
-      |                     |  CR (Shared, Hit)   |                  |
-      |                     |<--------------------| Core 1 has copy  |
-      |                     |                     |  (E->S or S->S)  |
-      |                     |  CD (data from      |                  |
-      |                     |   Core 1 cache)     |                  |
-      |                     |<--------------------|                  |
-      |  R (data, Shared)   |                     |                  |
-      |<--------------------|                     |                  |
-      |  RACK               |                     |                  |
-      |-------------------->|                     |                  |
-
-If no other master has the line, Core 0 gets Exclusive (E) state
-and the interconnect fetches data from memory instead.
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+sequenceDiagram
+    participant C0 as Core 0 L1$
+    participant IC as Interconnect
+    participant C1 as Core 1 L1$
+    participant M as Memory
+    C0->>IC: AR (ReadShared X)
+    IC->>C1: AC (Snoop X)
+    C1-->>IC: CR (Shared, Hit) — Core 1 has copy, E→S or S→S
+    C1-->>IC: CD (data from Core 1 cache)
+    IC-->>C0: R (data, Shared)
+    C0->>IC: RACK
+    Note over C0,M: If no other master has the line, Core 0 gets Exclusive (E)<br/>and the interconnect fetches data from memory instead.
 ```
 
 ### 3.3 ReadUnique Transaction Flow (Before Write)
 
-```
-When a core wants to write to a line it does not own exclusively:
-
-  Core 0 L1$          Interconnect          Core 1 L1$          Memory
-      |                     |                     |                  |
-      |  AR (ReadUnique X)  |                     |                  |
-      |-------------------->|                     |                  |
-      |                     |  AC (Snoop X)       |                  |
-      |                     |-------------------->|                  |
-      |                     |  CR (Data, Dirty)   |                  |
-      |                     |<--------------------| Core 1 had M     |
-      |                     |  CD (cache line)    |  copy: M->I      |
-      |                     |<--------------------|                  |
-      |  R (data, Unique)   |                     |                  |
-      |<--------------------|                     |                  |
-      |  RACK               |                     |                  |
-      |-------------------->|                     |                  |
-      |                     |                     |                  |
-  Core 0 now has Unique/Modified state.
-  Core 1's copy was invalidated.
-  If Core 1 had dirty data, it was passed via CD (cache-to-cache).
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+sequenceDiagram
+    participant C0 as Core 0 L1$
+    participant IC as Interconnect
+    participant C1 as Core 1 L1$
+    participant M as Memory
+    C0->>IC: AR (ReadUnique X)
+    IC->>C1: AC (Snoop X)
+    C1-->>IC: CR (Data, Dirty) — Core 1 had M copy: M→I
+    C1-->>IC: CD (cache line)
+    IC-->>C0: R (data, Unique)
+    C0->>IC: RACK
+    Note over C0,M: Core 0 now has Unique/Modified; Core 1's copy invalidated.<br/>Dirty data was passed via CD (cache-to-cache).
 ```
 
 ### 3.4 MakeUnique and CleanUnique
 
-```
+```verilog
 MakeUnique (full-line write -- core will overwrite all bytes):
   Core 0 sends MakeUnique -> Interconnect sends AC to all other masters
   Other masters invalidate their copies (CR = PassDirty if they had M)
@@ -252,6 +242,7 @@ Why two variants?
 ### 4.1 Three-Core Trace: ReadShared, ReadShared, ReadUnique
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["Core 0: cache miss on address X
 issues ReadShared on AR channel"] --> B["Interconnect receives ReadShared
@@ -291,7 +282,7 @@ Core 0 can now write freely"]
 
 ### 4.2 Channel Activity Timing Diagram
 
-```
+```verilog
 Cycle:    1     2     3     4     5     6     7     8     9    10    11
 
 --- ReadShared X (Core 0) ---
@@ -327,7 +318,7 @@ AR(C0):  |RS X |
 
 ### 5.1 Why CHI Replaces ACE for Large Systems
 
-```
+```verilog
 ACE limitation: bus-based snooping.
   Every coherence transaction broadcasts an AC snoop to ALL masters.
   With N masters, snoop bandwidth = O(N) per transaction.
@@ -346,6 +337,7 @@ CHI solution: packet-based, directory-assisted coherence.
 ### 5.2 CHI Component Model
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph Request Nodes
         RN0["RN-F 0
@@ -412,7 +404,7 @@ CHI uses four logical channels, each with dedicated credit-based flow control:
 | RSP     | RN -> HN, HN -> RN | Responses (acknowledgments, snoop responses)    | SrcID, TgtID, Opcode, Resp       |
 | DAT     | SN -> HN, HN -> RN | Data transfer (cache lines, write data)          | SrcID, TgtID, Data, BE, CC       |
 
-```
+```text
 A "flit" (flow control unit) is one packet on a channel.
 CHI packets are wider than AXI signals (typically 128-256 bits per flit)
 and carry all fields in a single cycle (single-flit packets for most ops).
@@ -446,67 +438,45 @@ but this was replaced by credit-based flow control from Issue B onward.
 
 ### 5.5 CHI Transaction Flow -- ReadShared
 
-```
-  RN0                  HN-F                    RN1                 SN (Memory)
-   |                     |                      |                      |
-   |  REQ: ReadShared X  |                      |                      |
-   |-------------------->|                      |                      |
-   |                     |  Check directory:    |                      |
-   |                     |  RN1 has X in S/E/M  |                      |
-   |                     |                      |                      |
-   |                     |  SNP: SnpShared X    |                      |
-   |                     |--------------------->|                      |
-   |                     |                      | RN1: S -> S          |
-   |                     |  RSP: SnpResp (Hit,  | (if M, writeback     |
-   |                     |        Shared)        |  via DAT first)      |
-   |                     |<---------------------|                      |
-   |                     |                      |                      |
-   |                     |  (if RN1 had dirty data: DAT from RN1)       |
-   |                     |                      |                      |
-   |                     |  (if no cached copy: fetch from memory)       |
-   |                     |  REQ: Read X          |                      |
-   |                     |--------------------------------------->|      |
-   |                     |  DAT: data from memory                      |
-   |                     |<---------------------------------------|      |
-   |                     |                      |                      |
-   |  DAT: data (Shared) |                      |                      |
-   |<--------------------|                      |                      |
-   |  RSP: CompAck       |                      |                      |
-   |-------------------->|  (directory updated) |                      |
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+sequenceDiagram
+    participant RN0
+    participant HNF as HN-F
+    participant RN1
+    participant SN as SN · Memory
+    RN0->>HNF: REQ: ReadShared X
+    Note over HNF: Directory: RN1 has X in S/E/M
+    HNF->>RN1: SNP: SnpShared X
+    RN1-->>HNF: RSP: SnpResp (Hit, Shared), RN1 S→S
+    Note over RN1,HNF: If RN1 was M, it writes back dirty data via DAT first
+    alt No cached copy — fetch from memory
+        HNF->>SN: REQ: Read X
+        SN-->>HNF: DAT: data from memory
+    end
+    HNF-->>RN0: DAT: data (Shared)
+    RN0->>HNF: RSP: CompAck (directory updated)
 ```
 
 ### 5.6 CHI Transaction Flow -- ReadUnique (Write Miss)
 
-```
-  RN0                  HN-F                    RN1                 SN (Memory)
-   |                     |                      |                      |
-   |  REQ: ReadUnique X  |                      |                      |
-   |-------------------->|                      |                      |
-   |                     |  Directory: X shared |                      |
-   |                     |  in RN1 (S state)    |                      |
-   |                     |                      |                      |
-   |                     |  SNP: SnpUnique X    |                      |
-   |                     |--------------------->|                      |
-   |                     |                      | RN1: S -> I          |
-   |                     |  RSP: SnpResp (I)    | (invalidate local    |
-   |                     |<---------------------|  copy)               |
-   |                     |                      |                      |
-   |                     |  No dirty data (S state, not M)              |
-   |                     |  Fetch from memory:   |                      |
-   |                     |  REQ: Read X          |                      |
-   |                     |--------------------------------------->|      |
-   |                     |  DAT: data            |                      |
-   |                     |<---------------------------------------|      |
-   |                     |                      |                      |
-   |  DAT: data (Unique) |                      |                      |
-   |<--------------------|  Directory: RN0=Unique                      |
-   |  RSP: CompAck       |                      |                      |
-   |-------------------->|                      |                      |
-
-If RN1 had M state instead of S:
-  RN1 returns dirty data via DAT channel (cache-to-cache transfer)
-  HN-F forwards data to RN0 and writes back to memory
-  No separate memory read needed -- saves latency and bandwidth.
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+sequenceDiagram
+    participant RN0
+    participant HNF as HN-F
+    participant RN1
+    participant SN as SN · Memory
+    RN0->>HNF: REQ: ReadUnique X
+    Note over HNF: Directory: X shared in RN1 (S state)
+    HNF->>RN1: SNP: SnpUnique X
+    RN1-->>HNF: RSP: SnpResp (I) — invalidate local copy, RN1 S→I
+    Note over HNF: No dirty data (S, not M) — fetch from memory
+    HNF->>SN: REQ: Read X
+    SN-->>HNF: DAT: data
+    HNF-->>RN0: DAT: data (Unique), directory RN0=Unique
+    RN0->>HNF: RSP: CompAck
+    Note over RN1,SN: If RN1 had M: returns dirty via DAT (cache-to-cache);<br/>HN-F forwards to RN0 and writes back — no separate memory read.
 ```
 
 ### 5.7 CHI Credit-Based Flow Control
@@ -515,7 +485,7 @@ CHI uses credit-based flow control instead of AXI-style valid/ready
 handshakes. This is a fundamental architectural difference with important
 implications for latency, buffering, and deadlock avoidance.
 
-```
+```text
 Why credits instead of valid/ready?
 
   AXI valid/ready: sender and sender must both be ready in the same cycle.
@@ -549,7 +519,7 @@ Why credits instead of valid/ready?
 | RXREQFLIT (receive) | REQ     | Receiver gets a request flit                     | --                      |
 | TXREQLCRDV          | REQ     | Credit return: receiver returns a REQ credit     | --                      |
 
-```
+```verilog
 Typical credit allocations for an RN-F (CPU core):
 
   REQ credits (from RN-F to HN-F):  2-4 credits
@@ -574,7 +544,7 @@ Typical credit allocations for an RN-F (CPU core):
 
 **Credit Starvation and Deadlock:**
 
-```
+```python
 Credit starvation scenario:
   1. RN-F has 4 DAT credits, sends 4 write-back data flits to HN-F
   2. HN-F is congested processing snoops, doesn't drain DAT buffer
@@ -622,7 +592,7 @@ Instead, it actively sends back a **RetryAck**, telling the requester to
 hold off and retry later. This prevents head-of-line blocking in the
 interconnect.
 
-```
+```text
 Why retry instead of stalling?
 
   In AXI: if a slave is busy, it holds READY=0 on the AW/AR channel.
@@ -644,7 +614,7 @@ Why retry instead of stalling?
 
 **Retry Flow:**
 
-```
+```text
 Step 1: RN-F sends a request
   RN0 -> HN:  REQ {Opcode=ReadShared, Addr=X, SrcID=RN0, TgtID=HN0,
                 DBID=unassigned, ReturnNID=RN0}
@@ -676,31 +646,29 @@ Step 5: RN-F re-sends the original request
 
 **Retry Ordering Guarantees:**
 
-```
-CHI guarantees about retry ordering:
+**CHI guarantees about retry ordering:**
 
-  1. Once an RN-F receives PCrdGrant, it MUST retry the same request
-     (same opcode, address, size). It cannot substitute a different request.
+1. Once an RN-F receives PCrdGrant, it MUST retry the same request
+(same opcode, address, size). It cannot substitute a different request.
 
-  2. The retried request must be the oldest pending request of that
-     credit type at the RN-F. This prevents starvation.
+2. The retried request must be the oldest pending request of that
+credit type at the RN-F. This prevents starvation.
 
-  3. An HN-F may issue multiple RetryAcks to the same RN-F if
-     resources remain unavailable. The RN-F must not retry until
-     it receives PCrdGrant.
+3. An HN-F may issue multiple RetryAcks to the same RN-F if
+resources remain unavailable. The RN-F must not retry until
+it receives PCrdGrant.
 
-  4. PCrdGrant is sent in order per RN-F. The HN-F will not skip
-     ahead to a different RN-F's retry indefinitely (fairness).
+4. PCrdGrant is sent in order per RN-F. The HN-F will not skip
+ahead to a different RN-F's retry indefinitely (fairness).
 
-  5. The RN-F must not send any new requests of the same credit
-     type between RetryAck and PCrdGrant. This prevents the retry
-     queue from growing unboundedly.
+5. The RN-F must not send any new requests of the same credit
+type between RetryAck and PCrdGrant. This prevents the retry
+queue from growing unboundedly.
 
-Credit types for retry:
-  - PCrdType values correspond to different resource classes
-    (e.g., request MSHRs, snoop MSHRs, data buffers)
-  - This allows the HN-F to manage contention per resource type
-```
+**Credit types for retry:**
+   - PCrdType values correspond to different resource classes
+   - (e.g., request MSHRs, snoop MSHRs, data buffers)
+   - This allows the HN-F to manage contention per resource type
 
 **Comparison with AXI:**
 
@@ -720,7 +688,7 @@ even when the data is available in another RN-F's cache. DCT allows
 data to be sent directly from one RN-F to another without going through
 the HN-F or memory, reducing latency and interconnect bandwidth.
 
-```
+```verilog
 Standard path (non-DCT):
   RN0 wants cache line X, RN1 has X in Modified state
   RN1 -> HN-F -> SN-F (writeback to memory)
@@ -736,7 +704,7 @@ DCT path:
 
 **How DCT Works in the Protocol:**
 
-```
+```text
 Step 1: RN0 sends request
   RN0 -> HN:  REQ {Opcode=ReadShared, Addr=X, SrcID=RN0}
 
@@ -770,7 +738,7 @@ Key protocol signals for DCT:
 
 **Snoop Filter Implications:**
 
-```
+```text
 The Snoop Filter (SF) in the HN-F must track ownership even during DCT:
 
   1. Before DCT: SF shows RN1 has X in Modified state
@@ -803,7 +771,7 @@ The Snoop Filter (SF) in the HN-F must track ownership even during DCT:
 
 **DCT vs Non-DCT Comparison:**
 
-```
+```verilog
 Metric                  Non-DCT                    DCT
 --------------------    -----------------------    --------------------------
 Latency (typical)       40-80 ns                   15-30 ns
@@ -828,6 +796,7 @@ DCT savings estimate for a 64-core server:
 ## 6. ACE vs CHI -- Architecture Comparison
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph ACE_System["ACE System (Bus-Based Snooping)"]
         direction TB
@@ -893,7 +862,7 @@ Targeted snoops only"]
 ARM TrustZone partitions the system into Secure and Non-secure worlds.
 The security attribute is carried on the bus:
 
-```
+```verilog
 AxPROT[1] (NS bit):
   0 = Secure access
   1 = Non-secure access
@@ -904,40 +873,40 @@ Read path:   ARPROT[1] = NS attribute for read address
 
 ### 7.2 TrustZone Controller (TZC)
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    S["CPU (Secure)"]:::sec --> TZC
+    NS["CPU (Non-secure)"]:::nsec --> TZC
+    DMA["DMA (Non-secure)"]:::nsec --> TZC
+    TZC["TZC<br/>(Address Filter)"]:::filt
+    TZC --> SDRAM["Secure DRAM<br/>0x0000_0000 – 0x0FFF_FFFF"]:::sec
+    TZC --> NSDRAM["Non-secure DRAM<br/>0x1000_0000 – 0x1FFF_FFFF"]:::nsec
+    classDef sec fill:#fee2e2,stroke:#b91c1c,color:#000
+    classDef nsec fill:#dcfce7,stroke:#15803d,color:#000
+    classDef filt fill:#fde68a,stroke:#b45309,color:#000
 ```
-                    +---------+
-  CPU (Secure) ---->|         |
-                    |   TZC   |----> Secure DRAM (0x0000_0000 - 0x0FFF_FFFF)
-  CPU (Non-sec) --> |  (Addr  |
-                    |  Filter)|----> Non-secure DRAM (0x1000_0000 - 0x1FFF_FFFF)
-  DMA (Non-sec) --> |         |
-                    +---------+
 
-TZC rules:
-  1. Secure master (AWPROT[1]=0): can access ALL memory regions
-  2. Non-secure master (AWPROT[1]=1): can only access Non-secure regions
-  3. Non-secure access to Secure region: TZC returns SLVERR (access denied)
-  4. TZC-400: up to 9 regions, each configurable as Secure or Non-secure
+**TZC rules**
 
-Signal path for a DMA read of Secure memory:
-  DMA engine -> ARPROT[1] = 1 (Non-secure) -> Interconnect -> TZC
-  TZC checks address against region map -> falls in Secure region
-  TZC blocks access -> returns DECERR to DMA -> DMA gets bus error
-```
+1. Secure master (`AWPROT[1]=0`) can access all memory regions.
+2. Non-secure master (`AWPROT[1]=1`) can access only Non-secure regions.
+3. Non-secure access to a Secure region returns `SLVERR` (access denied).
+4. TZC-400 supports up to 9 regions, each configurable as Secure or Non-secure.
+
+Signal path for a DMA read of Secure memory: DMA engine drives `ARPROT[1]=1` → interconnect → TZC checks the address against the region map → address falls in a Secure region → TZC blocks the access and returns `DECERR`, so the DMA gets a bus error.
 
 ### 7.3 TrustZone Across ACE/CHI
 
-```
-In ACE:
-  AC snoop carries AxPROT. A Non-secure snoop cannot interrogate
-  Secure cache lines. The interconnect filters based on security domain.
+**In ACE:**
+   - AC snoop carries AxPROT. A Non-secure snoop cannot interrogate
+   - Secure cache lines. The interconnect filters based on security domain.
 
-In CHI:
-  Each flit carries an NS (Non-secure) bit in the opcode fields.
-  The Home Node checks security attributes before responding.
-  A Non-secure RN cannot receive data belonging to a Secure address range.
-  The HN-F enforces isolation -- no software involvement needed.
-```
+**In CHI:**
+   - Each flit carries an NS (Non-secure) bit in the opcode fields.
+   - The Home Node checks security attributes before responding.
+   - A Non-secure RN cannot receive data belonging to a Secure address range.
+   - The HN-F enforces isolation -- no software involvement needed.
 
 ---
 
@@ -945,19 +914,17 @@ In CHI:
 
 ### 8.1 Motivation
 
-```
-Without ATOP: atomic increment at address X
-  1. CPU reads X (AR channel)
-  2. CPU computes X + 1
-  3. CPU writes X + 1 (AW + W + B channels)
-  Total: 2 round-trips, ~4-8 bus transactions
-  Problem: between step 1 and step 3, another master might modify X
+- **Without ATOP** — atomic increment at address X
+1. CPU reads X (AR channel)
+2. CPU computes X + 1
+3. CPU writes X + 1 (AW + W + B channels)
+- **Total** — 2 round-trips, ~4-8 bus transactions
+- **Problem** — between step 1 and step 3, another master might modify X
 
-With ATOP: atomic increment at address X
-  1. CPU sends AtomicStore with ADD opcode on AW channel + W channel
-  2. Slave reads X, computes X + 1, writes back, returns old value (optional)
-  Total: 1 round-trip, atomicity guaranteed by the slave
-```
+- **With ATOP** — atomic increment at address X
+4. CPU sends AtomicStore with ADD opcode on AW channel + W channel
+5. Slave reads X, computes X + 1, writes back, returns old value (optional)
+- **Total** — 1 round-trip, atomicity guaranteed by the slave
 
 ### 8.2 ATOP Operations
 
@@ -968,7 +935,7 @@ With ATOP: atomic increment at address X
 | AtomicSwap    | SWAP (write new value, return old)                 | Yes          |
 | AtomicCompare | CAS (compare and swap: match -> swap, else return) | Yes          |
 
-```
+```verilog
 AxATOP signal (2 bits on AW channel):
   00 = Normal (non-atomic) transaction
   01 = AtomicStore (no data returned on R channel)
@@ -987,7 +954,7 @@ Use cases:
 
 ### 8.3 ATOP vs Exclusive Access
 
-```
+```verilog
 Exclusive Access (LDREX/STREX, AXI4):
   Two separate transactions. Software manages the retry loop.
   Works with any AXI4 slave.
@@ -1045,7 +1012,7 @@ For SoC design:
 
 **Answer:**
 
-```
+```verilog
 Initial state: address X not cached anywhere.
 
 --- Phase 1: Core 0 ReadShared X ---
@@ -1088,7 +1055,7 @@ Key observations:
 
 **Answer:**
 
-```
+```verilog
 Given:
   Cache line size: 64 bytes
   Shared L3 size: 4 MB = 4 * 1024 * 1024 = 4,194,304 bytes
@@ -1138,7 +1105,7 @@ Answer: 65,536 entries, ~24 bits each, ~192 KB storage (4.7% of L3 size).
 
 **Answer:**
 
-```
+```verilog
 Initial state:
   RN0: does not cache address X
   RN1: X in Modified state (dirty, sole valid copy, memory stale)
@@ -1204,71 +1171,33 @@ Key observations:
 
 **Answer:**
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+sequenceDiagram
+    participant DMA as DMA Engine
+    participant IC as AXI Interconnect
+    participant TZC as TZC-400
+    participant DRAM
+    DMA->>IC: ARADDR=0x0000_1000, ARPROT[1]=1 (Non-sec), ARVALID=1
+    Note over IC: Route to TZC based on address map
+    IC->>TZC: ARADDR=0x0000_1000, ARPROT[1]=1
+    Note over TZC: Region 0x0000_0000–0x0FFF_FFFF = Secure.<br/>NS=1 into a Secure region → DENY
+    TZC-->>IC: RRESP = DECERR (11)
+    IC-->>DMA: RRESP = DECERR
+    Note over DMA,DRAM: DMA receives a bus error. Secure data never left DRAM — no leak.
 ```
-Scenario: A Non-secure DMA engine attempts to read address 0x0000_1000,
-which is configured as Secure memory by the TZC.
 
-Signal path:
+**How the TZC decides.** Input: address + `ARPROT[1]` (or `AWPROT[1]` for writes). Region config: Region 0 `0x0000_0000–0x0FFF_FFFF` Secure-only; Region 1 `0x1000_0000–0x1FFF_FFFF` Non-secure OK; Region 2 `0x2000_0000–0x2FFF_FFFF` Non-secure OK.
 
-  DMA Engine                AXI Interconnect              TZC-400            DRAM
-     |                           |                         |                  |
-     | ARADDR = 0x0000_1000      |                         |                  |
-     | ARPROT[1] = 1 (Non-sec)   |                         |                  |
-     | ARVALID = 1               |                         |                  |
-     |-------------------------->|                         |                  |
-     |                           | Route to TZC based on   |                  |
-     |                           | address map             |                  |
-     |                           |                         |                  |
-     |                           | ARADDR = 0x0000_1000    |                  |
-     |                           | ARPROT[1] = 1           |                  |
-     |                           |------------------------>|                  |
-     |                           |                         |                  |
-     |                           |                         | Check region:    |
-     |                           |                         | 0x0000_0000-     |
-     |                           |                         | 0x0FFF_FFFF =    |
-     |                           |                         | Secure region    |
-     |                           |                         |                  |
-     |                           |                         | NS=1 but region  |
-     |                           |                         | is Secure:       |
-     |                           |                         | DENY!            |
-     |                           |                         |                  |
-     |                           | RRESP = DECERR (11)     |                  |
-     |                           |<------------------------|                  |
-     |                           |                         |                  |
-     | RRESP = DECERR            |                         |                  |
-     |<--------------------------|                         |                  |
-     |                           |                         |                  |
-  DMA receives bus error. No data from Secure memory was returned.
-  The Secure data never left the DRAM. No information leaked.
-
-How the TZC decides:
-
-  Input: Address + ARPROT[1] (or AWPROT[1] for writes)
-  TZC Region Config:
-    Region 0: 0x0000_0000 - 0x0FFF_FFFF, Secure only
-    Region 1: 0x1000_0000 - 0x1FFF_FFFF, Non-secure OK
-    Region 2: 0x2000_0000 - 0x2FFF_FFFF, Non-secure OK
-
-  Rule:
-    if (ARPROT[1] == 0)  // Secure master
-      -> Allow all regions (Secure can access everything)
-    else if (ARPROT[1] == 1)  // Non-secure master
-      -> Allow only Non-secure regions
-      -> Region 0 access -> DECERR
-
-  This is enforced in hardware. No software is involved in the
-  permission check. It is impossible for a Non-secure master to
-  bypass the TZC by software means.
-
-  Additional protection layers:
-  1. Interconnect filtering: the AXI interconnect may also check
-     AxPROT and refuse to route Non-secure transactions to Secure
-     slaves (e.g., Secure debug port, Secure peripherals).
-  2. In ACE/CHI: snoop responses are also tagged with security.
-     A Non-secure master's snoop cannot interrogate Secure cache lines.
-  3. SMMU (System MMU): provides per-device memory translation and
-     permission checking, complementary to TrustZone.
+```verilog
+if (ARPROT[1] == 0)        // Secure master
+    -> allow all regions
+else if (ARPROT[1] == 1)   // Non-secure master
+    -> allow only Non-secure regions
+    -> Region 0 access -> DECERR
 ```
+
+Enforced in hardware, so a Non-secure master cannot bypass the TZC by software means. Additional layers: (1) the AXI interconnect may also check `AxPROT` and refuse to route Non-secure transactions to Secure slaves; (2) in ACE/CHI, snoop responses are tagged with security so a Non-secure snoop cannot interrogate Secure lines; (3) the SMMU provides per-device translation and permission checks, complementary to TrustZone.
 
 ---
 
@@ -1294,7 +1223,7 @@ CHI Issue E (the latest revision as of 2025) introduces features specifically ta
 
 In a chiplet system, each die may contain CPU cores (RN-F nodes) and a slice of the shared LLC (HN-F nodes). When a core on die 0 reads data that is dirty in a core on die 1's private cache, the coherence transaction must traverse the D2D link. CHI Issue E optimizes this path:
 
-```
+```verilog
 Without Issue E:
   RN-F (die 0) -> HN-F (die 0) -> HN-F (die 1) -> RN-F (die 1) -> HN-F (die 1) -> HN-F (die 0) -> RN-F (die 0)
   Latency: 4 D2D link crossings
@@ -1308,25 +1237,25 @@ This reduces cross-die coherence latency by 40-60% in the common case of two-die
 
 ### D2D Link Integration with CHI
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph d0["Die 0"]
+        R0["RN-F0 / RN-F1"]
+        H0["HN-F0"]
+        N0["SN-F0"]
+    end
+    subgraph d1["Die 1"]
+        R1["RN-F4 / RN-F5"]
+        H1["HN-F1"]
+        N1["SN-F1"]
+    end
+    d0 <==>|"UCIe / D2D link · CHI flits over UCIe<br/>256–512 bit width, 16–32 GT/s"| d1
+    classDef die fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class R0,H0,N0,R1,H1,N1 die
 ```
-+-----------+    UCIe / D2D Link    +-----------+
-|  Die 0    |<====================>|  Die 1    |
-|  RN-F0    |  CHI flits over      |  RN-F4    |
-|  RN-F1    |  UCIe transport      |  RN-F5    |
-|  HN-F0    |  (typically 256-512  |  HN-F1    |
-|  SN-F0    |   bit width, 16-32   |  SN-F1    |
-|           |   GT/s)              |           |
-+-----------+                       +-----------+
 
-CHI packets are encapsulated in UCIe flits:
-  REQ flit: ~128 bits (opcode, src/tgt ID, addr, size)
-  SNP flit: ~96 bits
-  RSP flit: ~64 bits
-  DAT flit: ~256+ bits (data payload + BE + CC + poison)
-
-UCIe 256-bit x 16 GT/s = 64 GB/s per direction (bandwidth-matched to PCIe 6.0 x4)
-UCIe 512-bit x 32 GT/s = 256 GB/s per direction (for high-performance chiplets)
-```
+CHI packets are encapsulated in UCIe flits: REQ ≈ 128 bits (opcode, src/tgt ID, addr, size), SNP ≈ 96 bits, RSP ≈ 64 bits, DAT ≈ 256+ bits (payload + BE + CC + poison). Bandwidth: UCIe 256-bit × 16 GT/s = 64 GB/s per direction (matched to PCIe 6.0 ×4); UCIe 512-bit × 32 GT/s = 256 GB/s per direction (high-performance chiplets).
 
 The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management across the D2D link, link-level retry (UCIe CRC + replay), and protocol-level flow control mapping between CHI valid/ready and UCIe credits.
 
@@ -1338,27 +1267,28 @@ The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management a
 
 CXL.cache allows an accelerator (CXL Type-1 or Type-2 device) to participate in the host's coherence domain. When the host interconnect uses CHI, the CXL.cache protocol must be bridged to CHI transactions at the system-level interconnect.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    G["GPU core"] <--> C["GPU L1/L2$"] <--> A["CXL.cache agent"] <--> L["CXL link"] <--> H["Host CHI interconnect"]
+    classDef g fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class G,C,A,L,H g
 ```
-CXL Type-2 Device (e.g., GPU with cache):
 
-  GPU Core <-> GPU L1/L2$ <-> CXL.cache Agent <-> CXL Link <-> Host CHI Interconnect
+CXL.cache operations map onto CHI:
 
-  CXL.cache protocol operations mapped to CHI:
-    CXL.cache SnpData     --> CHI SNP: SnpShared
-    CXL.cache SnpInv      --> CHI SNP: SnpUnique / SnpInv
-    CXL.cache RdShared    --> CHI REQ: ReadShared
-    CXL.cache RdUnique    --> CHI REQ: ReadUnique
-    CXL.cache ClnFull/WB   --> CHI REQ: WriteBackFull / Evict
-    CXL.cache DataPull     --> CHI REQ: ReadNoSnp (non-coherent read from device memory)
-
-  The CXL agent at the host side translates between CXL.cache packets
-  and CHI REQ/SNP/RSP/DAT flits, maintaining coherence by acting as
-  an RN-F proxy for the CXL device.
-```
+| CXL.cache op | CHI mapping |
+|---|---|
+| SnpData | SNP: SnpShared |
+| SnpInv | SNP: SnpUnique / SnpInv |
+| RdShared | REQ: ReadShared |
+| RdUnique | REQ: ReadUnique |
+| ClnFull / WB | REQ: WriteBackFull / Evict |
+| DataPull | REQ: ReadNoSnp (non-coherent read) |
 
 **Coherence flow example: CXL GPU reads host memory**
 
-```
+```verilog
 1. GPU misses in local cache -> CXL.cache issues RdShared to host
 2. CXL-to-CHI bridge translates RdShared -> CHI REQ ReadShared
 3. CHI HN-F checks directory: line is in S state on CPU core 0
@@ -1399,7 +1329,7 @@ PCIe 6.0 (ratified 2022) represents the most significant PHY change in PCIe hist
 
 **PAM-4 encoding:** Each UI (Unit Interval) carries 2 bits instead of 1:
 
-```
+```ascii-graph
 NRZ (PCIe 5.0):
   Signal level: 0 or 1  --> 1 bit per UI
   At 32 GT/s: 32 Gbps per lane per direction
@@ -1414,24 +1344,22 @@ PAM-4 (PCIe 6.0):
 
 PCIe 6.0 replaces the 128b/130b encoding with FLIT (Flow Control Unit) mode:
 
-```
-FLIT structure:
-  236 bytes payload + 6 bytes CRC + 4 bytes FEC = 246 bytes total
-  Overhead: (6 + 4) / 246 = 4.1% (vs 128b/130b = 1.5%)
-  But: no per-packet disparity or skip requirements, better efficiency at
-  the transaction level due to no scrambling synchronization overhead.
+**FLIT structure:**
+   - 236 bytes payload + 6 bytes CRC + 4 bytes FEC = 246 bytes total
+   - Overhead: (6 + 4) / 246 = 4.1% (vs 128b/130b = 1.5%)
+   - But: no per-packet disparity or skip requirements, better efficiency at
+   - the transaction level due to no scrambling synchronization overhead.
 
-  FEC: 3-bit Gray-coded FEC corrects 1-bit errors per FLIT
-  Retry: if FEC fails (multi-bit error), receiver requests FLIT retransmit
-  This is lighter-weight than Ethernet FEC (which uses Reed-Solomon)
+FEC: 3-bit Gray-coded FEC corrects 1-bit errors per FLIT
+Retry: if FEC fails (multi-bit error), receiver requests FLIT retransmit
+This is lighter-weight than Ethernet FEC (which uses Reed-Solomon)
 
 FLIT mode is MANDATORY in PCIe 6.0: all transactions must use FLIT encoding.
 NRZ mode is still supported for backward compatibility (PCIe 1.0-5.0 fallback).
-```
 
 **Forward Error Correction (FEC) detail:**
 
-```
+```verilog
 PCIe 6.0 uses a lightweight FEC + CRC scheme:
   CRC-6: detects errors in the FLIT
   FEC-3: corrects single-bit errors within the FLIT
@@ -1469,23 +1397,20 @@ PCIe 6.0/7.0 are directly relevant to DDR controller and system interconnect des
 
 CXL runs three protocols over a single PCIe/CXL link:
 
-```
-+---------------------------------------------------+
-|                CXL 3.0 / 3.1 Link                  |
-|                                                    |
-|  CXL.io     |    CXL.cache      |    CXL.mem       |
-|  (PCIe-like |  (coherent cache  |  (coherent mem   |
-|   config,   |   access from     |   access to      |
-|   MMIO,     |   device to host  |   device-attached|
-|   DMA)      |   memory)         |   memory)        |
-|             |                    |                  |
-|  Based on   |  New protocol:    |  New protocol:   |
-|  PCIe TLP   |  256B cache lines |  MemRd/MemWr     |
-|  ecosystem  |  D2H/H2D req/rsp  |  with coherence  |
-+---------------------------------------------------+
-|            PCIe 6.0 PHY (64 GT/s)                  |
-|            or PCIe 5.0 PHY (32 GT/s)               |
-+---------------------------------------------------+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph link["CXL 3.0 / 3.1 Link"]
+        direction LR
+        io["CXL.io<br/>PCIe-like config, MMIO, DMA<br/>· based on PCIe TLP ecosystem"]
+        cache["CXL.cache<br/>coherent cache access,<br/>device → host memory<br/>· 256 B lines · D2H/H2D req/rsp"]
+        mem["CXL.mem<br/>coherent mem access to<br/>device-attached memory<br/>· MemRd/MemWr with coherence"]
+    end
+    link --> phy["PCIe 6.0 PHY (64 GT/s)<br/>or PCIe 5.0 PHY (32 GT/s)"]
+    classDef sub fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef p fill:#e2e8f0,stroke:#475569,color:#000
+    class io,cache,mem sub
+    class phy p
 ```
 
 ### CXL Device Types
@@ -1500,23 +1425,35 @@ CXL runs three protocols over a single PCIe/CXL link:
 
 CXL 3.0 introduces **fabric switching**, enabling multi-level topologies beyond the simple tree of CXL 1.1/2.0:
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph v2["CXL 2.0 — tree only"]
+        direction LR
+        H0["Host CPU 0"] --> SW["CXL Switch"]
+        SW --> E0["Type-3 Mem Expander 0"]
+        SW --> E1["Type-3 Mem Expander 1"]
+    end
+    subgraph v3["CXL 3.0 — fabric"]
+        direction LR
+        HA["Host CPU 0"] --> S0["Switch 0"]
+        HB["Host CPU 1"] --> S0
+        S0 --> M0["Type-3 Mem 0"]
+        S0 --> M1["Type-3 Mem 1"]
+        S0 --> G0["Type-2 GPU 0"]
+        S0 --> S1["Switch 1"]
+        S1 --> M2["Type-3 Mem 2"]
+        S1 --> NIC["Type-1 NIC 0"]
+    end
+    classDef host fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef sw fill:#fde68a,stroke:#b45309,color:#000
+    classDef dev fill:#dcfce7,stroke:#15803d,color:#000
+    class H0,HA,HB host
+    class SW,S0,S1 sw
+    class E0,E1,M0,M1,M2,G0,NIC dev
 ```
-CXL 2.0 (tree only):
-  Host CPU 0 ----+---- CXL Switch ---- Type-3 Mem Expander 0
-                  |                    |
-                  +---- Type-3 Mem Expander 1
 
-CXL 3.0 (fabric):
-  Host CPU 0 ----+----+---- Switch 0 ----+---- Type-3 Mem 0
-  Host CPU 1 ----+    |                  +---- Type-3 Mem 1
-                      |                  +---- Type-2 GPU 0
-                      +---- Switch 1 ----+---- Type-3 Mem 2
-                                          +---- Type-1 NIC 0
-
-  Key: Multiple hosts can share Type-3 memory pools via the fabric.
-  A fabric manager (software agent) configures routing, access permissions,
-  and bandwidth allocation across the fabric.
-```
+Multiple hosts can share Type-3 memory pools via the fabric. A fabric manager (software agent) configures routing, access permissions, and bandwidth allocation across the fabric.
 
 ### CXL 3.1 Enhancements over CXL 3.0
 
@@ -1527,56 +1464,44 @@ CXL 3.0 (fabric):
 
 ### CXL.cache Protocol Operations
 
-```
-CXL.cache Device-to-Host (D2H) requests:
-  RdShared:   Device requests shared (read-only) access to a host cache line
-  RdUnique:   Device requests exclusive (read-write) access to a host cache line
-  RdOwn:      Device wants ownership (exclusive, data from host or memory)
-  ClnFull:    Device writes back a clean line (no data, just surrender ownership)
-  ClnInv:     Device invalidates its copy (no write-back)
-  DirtyWB:    Device writes back dirty data to host
-  RdCurr:     Device reads current value without changing coherence state
+**CXL.cache Device-to-Host (D2H) requests:**
+   - RdShared:   Device requests shared (read-only) access to a host cache line
+   - RdUnique:   Device requests exclusive (read-write) access to a host cache line
+   - RdOwn:      Device wants ownership (exclusive, data from host or memory)
+   - ClnFull:    Device writes back a clean line (no data, just surrender ownership)
+   - ClnInv:     Device invalidates its copy (no write-back)
+   - DirtyWB:    Device writes back dirty data to host
+   - RdCurr:     Device reads current value without changing coherence state
 
-CXL.cache Host-to-Device (H2D) snoops:
-  SnpData:    Host asks device to return data if cached (for another reader)
-  SnpInv:     Host asks device to invalidate its copy (for exclusive access)
-  SnpCur:     Host asks device for current state (coherence query)
+**CXL.cache Host-to-Device (H2D) snoops:**
+   - SnpData:    Host asks device to return data if cached (for another reader)
+   - SnpInv:     Host asks device to invalidate its copy (for exclusive access)
+   - SnpCur:     Host asks device for current state (coherence query)
 
-CXL.cache Data Response:
-  Data:       Device returns cache line data to host
-  DataInv:    Device returns data and invalidates its copy
-```
+**CXL.cache Data Response:**
+   - Data:       Device returns cache line data to host
+   - DataInv:    Device returns data and invalidates its copy
 
 ### Memory Pooling with CXL 3.0/3.1
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    H0["Host 0"] --> SW["CXL 3.0 / 3.1<br/>Fabric Switch"]
+    H1["Host 1"] --> SW
+    H2["Host 2"] --> SW
+    SW --> P0["Pool 0<br/>256 GB DDR5"]
+    SW --> P1["Pool 1<br/>512 GB DDR5"]
+    SW --> P2["Pool 2<br/>1 TB CXL.mem"]
+    classDef host fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef sw fill:#fde68a,stroke:#b45309,color:#000
+    classDef pool fill:#dcfce7,stroke:#15803d,color:#000
+    class H0,H1,H2 host
+    class SW sw
+    class P0,P1,P2 pool
 ```
-CXL memory pooling scenario:
 
-  +--------+  +--------+  +--------+
-  | Host 0 |  | Host 1 |  | Host 2 |
-  +---+----+  +---+----+  +---+----+
-      |           |           |
-      +----+------+-----------+
-           |
-      CXL 3.0/3.1 Fabric Switch
-           |
-      +----+------+----------+
-      |           |          |
-  +---+---+  +---+---+  +---+---+
-  |Pool 0 |  |Pool 1 |  |Pool 2 |
-  |256 GB |  |512 GB |  |1 TB   |
-  |DDR5   |  |DDR5   |  |CXL.mem|
-  +-------+  +-------+  +-------+
-
-  Fabric manager assigns memory regions:
-    Host 0: Pool 0 (256 GB) + 128 GB from Pool 1 = 384 GB total
-    Host 1: 256 GB from Pool 1 + 256 GB from Pool 2 = 512 GB total
-    Host 2: 768 GB from Pool 2 = 768 GB total
-
-  Dynamic reassignment: when Host 2 is idle, Pool 2 can be
-  reassigned to Host 0 for a batch job. No reboot needed.
-  The OS sees CXL-attached memory as a separate NUMA node.
-```
+Fabric manager assigns memory regions: Host 0 → Pool 0 (256 GB) + 128 GB of Pool 1 = 384 GB; Host 1 → 256 GB of Pool 1 + 256 GB of Pool 2 = 512 GB; Host 2 → 768 GB of Pool 2. Dynamic reassignment: when Host 2 is idle, Pool 2 can be reassigned to Host 0 for a batch job with no reboot — the OS sees CXL-attached memory as a separate NUMA node.
 
 ---
 

@@ -18,6 +18,7 @@ By the end you should be able to sketch a complete OoO datapath from fetch to co
 The diagram below shows a canonical 4-wide out-of-order pipeline. Data flows left to right; control feedback (branch redirects, CDB wakeup) flows right to left.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph Frontend["Frontend"]
         FETCH["Fetch\n(PC + Branch Predictor)"]
@@ -124,7 +125,7 @@ Renaming eliminates WAW and WAR by giving every new destination a fresh physical
 
 The RAT is a lookup table with one entry per architectural register. Each entry holds the physical register tag currently mapped to that arch register.
 
-```
+```verilog
 RAT layout (32 entries, one per arch reg):
   arch_reg | phys_tag
   ---------+----------
@@ -193,7 +194,7 @@ queue for its other source operand.
 
 There are two common approaches:
 
-```
+```text
 Approach 1: ROB-based recycling (most common)
 
   When instruction I commits and its phys_dst_old = P_k:
@@ -232,7 +233,7 @@ Approach 2: Counter-based recycling
 
 **How incorrect recycling leads to wrong values:**
 
-```
+```verilog
 Scenario: P_k freed too early
 
   I1: ADD x1, x2, x3   -> phys_dst = P_k     (new mapping for x1)
@@ -252,7 +253,7 @@ Scenario: P_k freed too early
 
 **Register recycling timeline -- concrete cycle-by-cycle example:**
 
-```
+```verilog
 Initial state: RAT[x1] = P5, FreeList = {P20, P21, P22, ...}
 
 Cycle 0 (rename):
@@ -307,7 +308,7 @@ table and free list to the state before the branch. Two approaches exist:
 
 **Checkpoint-based recovery (used in Intel, AMD, ARM high-performance cores):**
 
-```
+```verilog
 Mechanism:
   On branch rename:
     1. Snapshot the entire frontend RAT (32 entries x 7 bits = 224 bits)
@@ -329,7 +330,7 @@ Mechanism:
 
 **ROB-walk recovery (used in area-constrained designs, early MIPS R10000):**
 
-```
+```verilog
 Mechanism:
   Each ROB entry stores the old physical mapping (phys_dst_old) at rename time.
 
@@ -481,7 +482,7 @@ Each IQ entry stores source operand tags (`src_tag_0`, `src_tag_1`, optionally
 `src_tag_2`). Each entry contains a dynamic CAM cell per source that compares
 the stored tag against all CDB broadcast tags simultaneously.
 
-```
+```verilog
 CAM cell operation (per source operand per IQ entry):
 
   Stored tag: src_tag_i[6:0]    (7-bit physical register tag)
@@ -497,20 +498,18 @@ CAM cell operation (per source operand per IQ entry):
 
 For a 64-entry IQ with 4 CDB lines and 2 source operands per entry:
 
-```
-Total CAM comparisons per cycle = 64 entries * 2 sources * 4 CDB lines = 512
+- **Total CAM comparisons per cycle** = `64 entries * 2 sources * 4 CDB lines = 512`
 
 Each comparison is a 7-bit XOR + 7-input NOR + OR across CDB lines:
-  XOR delay:  ~1.5 FO4 per bit (dynamic CMOS match line)
-  NOR delay:  ~1 FO4 (dynamic NOR of mismatch lines)
-  OR across CDB: ~0.5 FO4
+XOR delay:  ~1.5 FO4 per bit (dynamic CMOS match line)
+NOR delay:  ~1 FO4 (dynamic NOR of mismatch lines)
+OR across CDB: ~0.5 FO4
 
-  Total CAM comparison delay: ~3 FO4
-```
+Total CAM comparison delay: ~3 FO4
 
 **Wake-up timing budget (at 3 GHz, ~12 FO4 per cycle):**
 
-```
+```verilog
   CDB tag broadcast driver:     ~1.5 FO4 (wire fanout to N entries)
   CAM tag comparison:           ~3.0 FO4 (dynamic match-line discharge)
   Ready OR reduction:           ~1.0 FO4 (combine src_rdy_0, src_rdy_1)
@@ -526,27 +525,33 @@ which depends on $P_k$ can be woken up at the end of cycle $T$ and issue in cycl
 $T+1$ only if the wakeup-select loop closes in one cycle. But what if $A$ is a
 multi-cycle operation (e.g., a 3-cycle multiplier)?
 
-```
-  Cycle T:   MUL issues. Result will be available at end of cycle T+2.
-  Cycle T+1: Consumer of MUL's result should be woken up...
+```text
+Cycle T:     MUL issues. Result will be available at end of cycle T+2.
+Cycle T+1:   Consumer of MUL's result should be woken up...
              but result isn't ready yet!
 
 Solution: Speculative wake-up (latency-aware scheduling)
+
   - When MUL issues, the issue logic records that the result will be
     available at cycle T + latency. A "speculative completion event" is
     scheduled for cycle T + latency - 1 (one cycle before result arrival).
+
   - At cycle T + latency - 1: the dependent instruction's source operand
     is marked ready (woken up speculatively).
+
   - At cycle T + latency: the dependent instruction issues, and MUL's
     result is available on the CDB in the same cycle.
-  - If MUL completes on schedule: zero bubbles between dependent instructions
-    (back-to-back issue despite multi-cycle latency).
+
+  - If MUL completes on schedule: zero bubbles between dependent
+    instructions (back-to-back issue despite multi-cycle latency).
+
   - If MUL is delayed (e.g., cache miss on a load turns into a longer
     latency than predicted): speculatively issued consumers are cancelled
     and re-issued when the result actually arrives.
-  - Implementation: each IQ entry stores a per-source "expected ready cycle"
-    counter, decremented each cycle. When it reaches zero, the source is
-    speculatively marked ready.
+
+  - Implementation: each IQ entry stores a per-source "expected ready
+    cycle" counter, decremented each cycle. When it reaches zero, the
+    source is speculatively marked ready.
 ```
 
 This technique hides the wakeup latency for multi-cycle operations. The risk is
@@ -582,32 +587,30 @@ oldest), finding the oldest ready entry is equivalent to finding the first set b
 -- a leading-one search, implemented as a leading-zero detector on the inverted
 vector.
 
-```
-Ready vector (8-entry IQ example):
-  ready = [0, 1, 0, 0, 1, 1, 0, 1]   (entries 1, 4, 5, 7 are ready)
+**Ready vector (8-entry IQ example):**
+   - ready = [0, 1, 0, 0, 1, 1, 0, 1]   (entries 1, 4, 5, 7 are ready)
 
-Leading-one search (oldest ready):
-  First 1 at position 1 -> select entry 1
+**Leading-one search (oldest ready):**
+   - First 1 at position 1 -> select entry 1
 
-For W-wide issue, repeat with masking:
-  1. grant_0 = leading_one(ready) = entry 1
-  2. ready' = ready & ~(1 << 1) = [0, 0, 0, 0, 1, 1, 0, 1]
-  3. grant_1 = leading_one(ready') = entry 4
-  4. Check resource availability for each grant (execution port matching)
+**For W-wide issue, repeat with masking:**
+   1. grant_0 = leading_one(ready) = entry 1
+2. ready' = ready & ~(1 << 1) = [0, 0, 0, 0, 1, 1, 0, 1]
+3. grant_1 = leading_one(ready') = entry 4
+4. Check resource availability for each grant (execution port matching)
 
-LZD implementation (priority encoder):
-  Dynamic CMOS: precharge, then evaluate from LSB (oldest) to MSB (youngest)
-  First match discharges the evaluate chain -> grant signal
+**LZD implementation (priority encoder):**
+   - Dynamic CMOS: precharge, then evaluate from LSB (oldest) to MSB (youngest)
+   - First match discharges the evaluate chain -> grant signal
 
-  Delay: O(log N) using a tree-structured priority encoder
-  For N=64: ~2-3 FO4 for the tree + ~0.5 FO4 for resource check
-```
+Delay: O(log N) using a tree-structured priority encoder
+For N=64: ~2-3 FO4 for the tree + ~0.5 FO4 for resource check
 
 **Select arbiter with resource constraint checking:**
 
 The select logic must also respect execution unit availability:
 
-```
+```verilog
 Select for W=4 issue, resources: 3 ALU, 1 MUL, 2 AGU, 1 DIV:
 
   For each ready entry:
@@ -628,7 +631,7 @@ Select for W=4 issue, resources: 3 ALU, 1 MUL, 2 AGU, 1 DIV:
 
 **Wake-up -> Select critical path:**
 
-```
+```ascii-graph
 Full wake-up + select timing (FO4 breakdown at 3 GHz):
 
   CDB tag broadcast:         1.5 FO4
@@ -689,6 +692,7 @@ The LSQ enforces memory ordering -- it ensures that loads and stores appear to e
 The LSQ is split into two sub-queues:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TB
     subgraph LSQ_Structure["LSQ"]
         direction LR
@@ -784,6 +788,7 @@ A branch instruction is resolved in the Execute stage when its condition (taken/
 When a misprediction is detected at ROB index $B$:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     DETECT["Branch Resolves\n(Prediction != Actual)"]
     FLUSH_ROB["Flush ROB entries\nwith index > B"]
@@ -850,7 +855,7 @@ The ALU computes comparison results as a byproduct of subtraction. For `SLT rd, 
 (set if less than, signed), the result is 1 if `rs1 - rs2` produces a negative result
 in signed arithmetic:
 
-```
+```verilog
 SLT flag computation:
   {Carry_out, Sum} = rs1 + ~rs2 + 1   (subtraction via two's complement)
 
@@ -876,7 +881,7 @@ SLT flag computation:
 
 Barrel shifter implemented as a log-stage multiplexer network:
 
-```
+```verilog
 64-bit barrel shifter:
   Stage 1: shift by 0 or 32 positions (MUX, select = shamt[5])
   Stage 2: shift by 0 or 16 positions (MUX, select = shamt[4])
@@ -907,7 +912,7 @@ CDB, and the issue queue CAM picks up the tags for dependent instructions.
 Booth encoding examines overlapping groups of 3 bits of the multiplier $Y$ to
 determine the multiplicand multiple (0, +X, -X, +2X, -2X) for each partial product:
 
-```
+```ascii-graph
 Booth recoding table (radix-4):
   Y[i+1:i-1]  |  Action     |  Partial Product
   -----------  |  ---------- |  ---------------
@@ -944,7 +949,7 @@ For a 64-bit multiplier Y:
 The Wallace tree reduces 32 partial products to 2 vectors (sum and carry) through
 a cascade of (3:2) carry-save adders (full adders) and (4:2) compressors:
 
-```
+```verilog
 Wallace tree reduction stages (32 PPs):
   At each stage, group inputs into sets of 3 and apply a (3:2) CSA.
   Leftover 1 or 2 inputs pass through unmodified.
@@ -978,20 +983,18 @@ Dadda tree alternative:
 The final sum and carry vectors are added using a fast 128-bit adder (Kogge-Stone
 or Han-Carlson) to produce the 128-bit product:
 
-```
-CPA for 128-bit result:
-  Kogge-Stone adder: O(log N) stages, N=128 -> 7 stages of prefix computation
-  Delay: ~6-8 FO4 for the carry prefix tree + ~2 FO4 for sum generation
+**CPA for 128-bit result:**
+   - Kogge-Stone adder: O(log N) stages, N=128 -> 7 stages of prefix computation
+   - Delay: ~6-8 FO4 for the carry prefix tree + ~2 FO4 for sum generation
 
-  For a 64-bit lower result (MUL instruction): only the lower 64 bits of the
-  CPA are needed, saving ~50% of the adder area.
+For a 64-bit lower result (MUL instruction): only the lower 64 bits of the
+CPA are needed, saving ~50% of the adder area.
 
-  For a 128-bit full result (MULH instruction): full CPA required.
-```
+For a 128-bit full result (MULH instruction): full CPA required.
 
 **Pipeline example (3-cycle multiplier):**
 
-```
+```verilog
   Cycle 1: Booth encode + first 3 stages of Wallace tree
   Cycle 2: Remaining Wallace tree stages + partial CPA
   Cycle 3: Final CPA + result register
@@ -1012,7 +1015,7 @@ CPA for 128-bit result:
 SRT (Sweeney-Robertson-Tocher) division generates 2 quotient bits per iteration,
 converging in $\lceil 64/2 \rceil = 32$ iterations for a 64-bit dividend:
 
-```
+```text
 SRT radix-4 iteration:
   Input:  Partial remainder r_j (64 bits), divisor d
   Output: 2 quotient bits q_{j+1}, new partial remainder r_{j+1}
@@ -1039,7 +1042,7 @@ The quotient digit is selected by inspecting the top 4--6 bits of the shifted pa
 remainder and the top 4--5 bits of the divisor. The following table shows a simplified
 version for normalized divisors ($d \in [0.5, 1.0)$ in fractional representation):
 
-```
+```ascii-graph
 Partial  |  Divisor d (top 4 bits, fractional)
 Remainder|  0.5000  0.6250  0.7500  0.8750  1.0000
 r_j' top |
@@ -1083,7 +1086,7 @@ r_j' top |
 
 **SRT radix-4 worked example (8-bit division, simplified):**
 
-```
+```verilog
 Compute 57 / 7 (dividend = 57 = 0b00111001, divisor = 7 = 0b00000111)
 
 Normalize: d = 7/8 = 0.875 (fractional)
@@ -1110,7 +1113,7 @@ The redundant Q and Q-1 registers are resolved by a final CPA.
 
 **Newton-Raphson reciprocal approximation (used for FP division):**
 
-```
+```text
 To compute Q = N/D:
   1. Compute R = 1/D (reciprocal) using Newton-Raphson:
      R_{i+1} = R_i * (2 - D * R_i)
@@ -1142,18 +1145,16 @@ entry waiting for that tag wakes up. For same-unit bypass (back-to-back multipli
 the multiplier's pipeline register can forward directly to the Booth encoder input
 in the next cycle, avoiding the round-trip through the CDB and PRF:
 
-```
-Same-unit bypass:
-  MUL issues at cycle T -> result available end of cycle T+2
-  Dependent MUL can issue at cycle T+3 (CDB wake-up in T+2, select in T+3)
-  With internal bypass: the dependent MUL receives its source from the
-  multiplier's output register directly, without waiting for CDB broadcast.
+**Same-unit bypass:**
+   - MUL issues at cycle T -> result available end of cycle T+2
+   - Dependent MUL can issue at cycle T+3 (CDB wake-up in T+2, select in T+3)
+   - With internal bypass: the dependent MUL receives its source from the
+   - multiplier's output register directly, without waiting for CDB broadcast.
 
-Cross-unit bypass:
-  ALU produces result at end of cycle T
-  Dependent MUL needs it as source -> CDB broadcast at T, MUL issues at T+1
-  No extra bypass path needed; the CDB handles all cross-unit forwarding.
-```
+**Cross-unit bypass:**
+   - ALU produces result at end of cycle T
+   - Dependent MUL needs it as source -> CDB broadcast at T, MUL issues at T+1
+   - No extra bypass path needed; the CDB handles all cross-unit forwarding.
 
 ### 7.4 Floating-Point Unit (FPU)
 
@@ -1203,6 +1204,7 @@ SMT (called Hyper-Threading by Intel) allows a single OoO core to execute instru
 ### 8.1 What is Shared vs. Replicated
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph SMT_Core["SMT Core (2-Thread)"]
         subgraph Shared["Shared Resources"]
@@ -1354,7 +1356,7 @@ These are the typical parameters for a modern high-performance 4-wide OoO core (
 
 **Trace the following instruction sequence through rename and issue queue wakeup. Assume RAT starts with x1=p1, x2=p2, x3=p3, x4=p4, x5=p5, x6=p6, x7=p7, x8=p8. Free list = {p9, p10, p11, p12, ...}.**
 
-```
+```verilog
 I1: ADD  x1, x2, x3    // x1 = x2 + x3
 I2: MUL  x4, x1, x5    // x4 = x1 * x5
 I3: ADD  x6, x7, x8    // x6 = x7 + x8
@@ -1452,7 +1454,7 @@ $$N_{max\_commit} = N_{occupied} = 51$$
 
 **Given the following memory operations in program order:**
 
-```
+```verilog
 I1: SW   x5, 100(x0)    // store WORD at addr 100, data = x5 = 0xDEADBEEF
 I2: SW   x6, 104(x0)    // store WORD at addr 104, data = x6 = 0xCAFEBABE
 I3: LW   x7, 100(x0)    // load WORD from addr 100

@@ -14,6 +14,7 @@ Synthesis, place-and-route, and STA are all just optimization/checking engines �
 ## 1. The five things SDC must define
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["1 · Clocks<br/>create_clock / generated"]:::a
     B["2 · Clock uncertainty<br/>jitter + skew margin"]:::a
@@ -102,7 +103,8 @@ set_multicycle_path 2 -hold  -from [get_pins mac/*] -to [get_pins acc/*]  ;# the
 ## 6. SDC discipline across the flow
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     AUTH["Author SDC<br/>(synthesis)"]:::a --> SYN["Synthesis<br/>optimizes to it"]:::b
     SYN --> PNR["P&R<br/>(post-CTS: real latency)"]:::b
     PNR --> STA["Signoff STA<br/>(MCMM corners)"]:::c

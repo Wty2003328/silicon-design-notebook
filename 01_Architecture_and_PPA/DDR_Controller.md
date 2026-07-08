@@ -48,7 +48,7 @@ Commands are encoded by the combination of several control pins:
 
 **Command encoding by pin combination (DDR4):**
 
-```
+```text
 CS_n  ACT_n  RAS_n  CAS_n  WE_n  | Command
 ---------------------------------------------
  0      0      X      X      X   | ACTIVATE
@@ -81,11 +81,11 @@ delay-locked loop (DLL) to center the capture clock within the data eye.
 
 **Per-byte-lane structure (x8 device):**
 
-```
-DQ[7:0]   ---- data bits for byte lane 0
-DQS_t     ---- differential strobe positive
-DQS_c     ---- differential strobe negative
-DM_n      ---- data mask for byte lane 0
+```text
+DQ[7:0] ---- data bits for byte lane 0
+DQS_t   ---- differential strobe positive
+DQS_c   ---- differential strobe negative
+DM_n    ---- data mask for byte lane 0
 
 A 72-bit DIMM (64 data + 8 ECC):
   9 x8 devices, each contributing 8 DQ + 1 DQS pair + 1 DM
@@ -109,7 +109,7 @@ delay calibration.
 **Write leveling:** The controller adjusts the DQS launch time relative to CK so that DQS
 arrives at the DRAM aligned with the clock, meeting setup/hold at the DRAM's receiver.
 
-```
+```text
 DDR4-3200 data eye (per byte lane):
   UI (Unit Interval) = 1/3200 MHz = 312.5 ps
   Total eye width    ~250 ps (after jitter and ISI)
@@ -169,41 +169,39 @@ The DFI protocol connects the DDR controller to the PHY (physical layer). It def
 
 Opens a row in a specific bank. The row address is provided on the address bus.
 
-```
-Cycle 0:  CS_n=0, ACT_n=0, A[17:0]=row_addr, BA[1:0]=bank, BG[1:0]=bank_group
+1. **CS_n=0, ACT_n=0, A[17:0]=row_addr, BA[1:0]=bank, BG[1:0]=bank_group**
 
 After ACTIVATE:
-  - The wordline for the selected row goes high
-  - All bitlines in that bank develop differential voltage (charge sharing)
-  - Sense amplifiers latch the row data
-  - The row is now "open" and columns can be read/written
-  - The bank must wait tRCD before accepting a READ or WRITE command
-```
+- The wordline for the selected row goes high
+- All bitlines in that bank develop differential voltage (charge sharing)
+- Sense amplifiers latch the row data
+- The row is now "open" and columns can be read/written
+- The bank must wait tRCD before accepting a READ or WRITE command
 
 ### 2.2 READ
 
 Reads one or more columns from the currently open row.
 
-```
-Cycle 0:  CS_n=0, ACT_n=1, RAS_n=0, CAS_n=0, WE_n=1
-          A[17:0]=column_addr (lower bits), BA=bank, BG=bank_group
-          A10=0 (don't auto-precharge) or A10=1 (auto-precharge after read)
+```text
+Cycle 0:  CS_n    = 0, ACT_n=1, RAS_n=0, CAS_n=0, WE_n=1
+          A[17:0] = column_addr (lower bits), BA=bank, BG=bank_group
+          A10     = 0 (don't auto-precharge) or A10=1 (auto-precharge after read)
 
 Data appears on DQ after CAS Latency (CL) clock cycles:
   DDR4-3200 CL22: data appears 22 clock cycles after READ command
   At 1600 MHz clock: 22 * 0.625 ns = 13.75 ns from READ to first data
 
 Burst length 8 (BL8): 8 data transfers on both clock edges = 4 clock cycles
-  Total data: 8 transfers * 8 bytes = 64 bytes per READ command
+  Total data: 8 transfers * 8 bytes                        = 64 bytes per READ command
 ```
 
 ### 2.3 WRITE
 
 Writes data to one or more columns in the currently open row.
 
-```
-Cycle 0:  CS_n=0, ACT_n=1, RAS_n=0, CAS_n=1, WE_n=0
-          A[17:0]=column_addr, BA=bank, BG=bank_group
+```text
+Cycle 0:  CS_n    = 0, ACT_n=1, RAS_n=0, CAS_n=1, WE_n=0
+          A[17:0] = column_addr, BA=bank, BG=bank_group
 
 Write latency is typically CL-1 or CWL (CAS Write Latency).
   DDR4-3200 CWL16: data must be driven 16 clock cycles after WRITE command
@@ -216,36 +214,32 @@ DM_n per byte lane: DM_n=1 masks that byte (not written).
 
 Closes the open row in a bank, preparing it for a new ACTIVATE.
 
-```
 Cycle 0:  CS_n=0, ACT_n=1, RAS_n=0, CAS_n=1, WE_n=1
-          A10=0, BA=bank (single bank precharge)
-          A10=1 (precharge ALL banks)
+A10=0, BA=bank (single bank precharge)
+A10=1 (precharge ALL banks)
 
-After PRECHARGE:
-  - Bitlines are equalized back to VDD/2
-  - Sense amplifiers are turned off
-  - The row is closed (data is destroyed unless restored by sense amp write-back)
-  - Must wait tRP before next ACTIVATE to the same bank
-```
+**After PRECHARGE:**
+   - Bitlines are equalized back to VDD/2
+   - Sense amplifiers are turned off
+   - The row is closed (data is destroyed unless restored by sense amp write-back)
+   - Must wait tRP before next ACTIVATE to the same bank
 
 ### 2.5 REFRESH (REF)
 
 Refreshes charge in DRAM cells to prevent data loss from leakage.
 
-```
-All-bank refresh:
-  CS_n=0, ACT_n=1, RAS_n=1, CAS_n=0, WE_n=0, A10=1
-  All banks must be precharged (idle) before REFRESH
-  Duration: tRFC (typically 350 ns for 8 Gb, 550 ns for 16 Gb DDR4)
-  During tRFC, NO commands can be issued to any bank
+**All-bank refresh:**
+   - CS_n=0, ACT_n=1, RAS_n=1, CAS_n=0, WE_n=0, A10=1
+   - All banks must be precharged (idle) before REFRESH
+   - Duration: tRFC (typically 350 ns for 8 Gb, 550 ns for 16 Gb DDR4)
+   - During tRFC, NO commands can be issued to any bank
 
-Per-bank refresh (DDR4 only):
-  A10=0, BA=bank
-  Only the specified bank is unavailable; other banks can serve requests
+**Per-bank refresh (DDR4 only):**
+   - A10=0, BA=bank
+   - Only the specified bank is unavailable; other banks can serve requests
 
 Refresh rate: 8192 refresh commands per tREFW (64 ms)
-  tREFI = 64 ms / 8192 = 7.8 us average interval between refreshes
-```
+tREFI = 64 ms / 8192 = 7.8 us average interval between refreshes
 
 ### 2.6 Mode Register Set (MRS)
 
@@ -296,7 +290,7 @@ The entire initialization sequence takes 1--10 ms depending on the training algo
 WRITE. This is the time for the wordline to fully assert, charge sharing to occur on
 all bitlines, and the sense amplifiers to fully latch the row data.
 
-```
+```text
 tRCD = t_wordline_assert + t_charge_sharing + t_sense_amp_latch
 
 Typical: 12-18 ns (DDR4-3200: ~13.75 ns = 22 tCK at 1600 MHz)
@@ -305,7 +299,7 @@ Typical: 12-18 ns (DDR4-3200: ~13.75 ns = 22 tCK at 1600 MHz)
 **tCL (CAS Latency):** Number of clock cycles from READ command to first data appearing
 on DQ. This includes column decode, sense amplifier output driver, and data path to pins.
 
-```
+```text
 tCL (CAS Latency, in clock cycles):
   DDR4-3200 CL22: 22 tCK = 13.75 ns
   DDR5-5600 CL30: 30 tCK = 10.71 ns
@@ -318,7 +312,7 @@ Note: tCL is specified in clock cycles (tCK), not nanoseconds.
 **tRP (Row Precharge Time):** Time from PRECHARGE to when the bank can accept a new
 ACTIVATE. This is the time to equalize bitlines and de-assert the wordline.
 
-```
+```text
 tRP = t_bitline_equalize + t_wordline_deassert
 
 Typical: 12-18 ns (same ballpark as tRCD)
@@ -327,7 +321,7 @@ Typical: 12-18 ns (same ballpark as tRCD)
 **tRAS (Row Active Time):** Minimum time a row must remain active (from ACTIVATE to
 PRECHARGE). Ensures sense amplifiers have enough time to fully restore cell charge.
 
-```
+```text
 tRAS > t_sense_restore_min
 
 Typical: 28-40 ns
@@ -335,7 +329,7 @@ Typical: 28-40 ns
 
 **tRC (Row Cycle Time):** Minimum time between two ACTIVATE commands to the SAME bank.
 
-```
+```text
 tRC = tRAS + tRP
 
 Derivation: ACT(row A) -> wait tRAS -> PRE(row A) -> wait tRP -> ACT(row B)
@@ -347,7 +341,7 @@ Typical: 45-55 ns
 **tCCD (Column-to-Column Delay):** Minimum time between two column commands (READ or
 WRITE) to the same bank group or different bank groups.
 
-```
+```text
 tCCD_L (Long, same bank group): 8 tCK (DDR4), 8 tCK (DDR5)
 tCCD_S (Short, different bank group): 4 tCK (DDR4), 4 tCK (DDR5)
 
@@ -357,7 +351,7 @@ Same bank group is slower because the internal data path is shared within a BG.
 
 **tFAW (Four Activate Window):** No more than 4 ACTIVATE commands in any tFAW window.
 
-```
+```text
 tFAW typical: 16-40 ns
 Sliding window constraint: 4 ACTs in tFAW ns, then must wait.
 
@@ -368,7 +362,7 @@ Each ACT charges ~8K bitlines simultaneously (~10 mA per ACT).
 
 **tRRD (Row-to-Row Delay):** Minimum time between ACTIVATE commands to different banks.
 
-```
+```text
 tRRD_L (same bank group): ~6 ns
 tRRD_S (different bank group): ~4 ns
 
@@ -377,7 +371,7 @@ Purpose: stagger ACTIVATE commands to spread current draw over time.
 
 #### Complete Timing Diagram: ACT -> READ -> PRE -> ACT on the Same Bank
 
-```
+```ascii-graph
 DDR4-3200 (tCK = 0.625 ns), Bank 0
 tRCD = 13.75 ns (22 tCK), tCL = 13.75 ns (22 tCK), tRP = 13.75 ns (22 tCK)
 tRAS = 35 ns (56 tCK), tRC = 48.75 ns (78 tCK)
@@ -422,7 +416,7 @@ Summary of labeled intervals:
 
 **tRFC (Refresh Cycle Time):** Duration of an all-bank refresh operation.
 
-```
+```text
 tRFC scales with DRAM density (more rows = more time to refresh):
 
 | Density | tRFC (ns) | tREFI (us) | Refresh overhead |
@@ -443,7 +437,7 @@ DRAM is unavailable is tRFC / tREFI.
 
 **tRRD (Row-to-Row Delay):** Minimum time between ACTIVATE commands to DIFFERENT banks.
 
-```
+```text
 tRRD_L (same bank group, DDR4): ~6 ns  (Long, more restrictive)
 tRRD_S (diff bank group, DDR4): ~4 ns  (Short, less restrictive)
 
@@ -454,20 +448,18 @@ to charge all bitlines. Staggering ACTIVATEs spreads the current draw.
 **tFAW (Four Activate Window):** No more than 4 ACTIVATE commands may be issued within
 any window of tFAW duration.
 
-```
 tFAW typical: 16-40 ns (scales with density and data rate)
 
-This is a sliding window constraint:
-  If ACT_0, ACT_1, ACT_2, ACT_3 are issued at times t0, t1, t2, t3,
-  then ACT_4 cannot be issued until t0 + tFAW.
+**This is a sliding window constraint:**
+   - If ACT_0, ACT_1, ACT_2, ACT_3 are issued at times t0, t1, t2, t3,
+   - then ACT_4 cannot be issued until t0 + tFAW.
 
 Purpose: limits peak current draw from the power supply.
 4 simultaneous ACTIVATEs could draw > 1A peak on the VDD supply.
-```
 
 ### 3.4 Timing Diagram: Interleaved Bank Access
 
-```
+```text
 Timing: ACT bank0 row5 -> READ bank0 col10 -> ACT bank1 row3 -> READ bank1 col20
 
                 |<-- tRCD -->|            |<-- tRCD -->|
@@ -502,6 +494,7 @@ currently open row. This is analogous to a fully-associative cache with exactly 
 per bank.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[CPU issues read/write] --> B{Row buffer hit?}
     B -->|Yes, row open| C[Issue READ or WRITE directly]
@@ -520,25 +513,23 @@ flowchart TD
 **Open-page policy:** Keep the row open after an access, hoping subsequent accesses
 hit the same row (spatial locality within the row, which is typically 8 KB).
 
-```
-Advantages:
-  - Row hits have zero extra latency (just tCAS)
-  - Great for sequential/streaming access patterns
-  - Simple implementation: don't issue PRECHARGE after every access
+**Advantages:**
+   - Row hits have zero extra latency (just tCAS)
+   - Great for sequential/streaming access patterns
+   - Simple implementation: don't issue PRECHARGE after every access
 
-Disadvantages:
-  - If next access is to a DIFFERENT row in the same bank, must
-    pay tRP (precharge) + tRCD (activate) = ~30 ns penalty
-  - Wastes energy keeping the row buffer powered
-  - Worse for random access patterns
+**Disadvantages:**
+   - If next access is to a DIFFERENT row in the same bank, must
+   - pay tRP (precharge) + tRCD (activate) = ~30 ns penalty
+   - Wastes energy keeping the row buffer powered
+   - Worse for random access patterns
 
 Typical row buffer hit rate: 40-60% for server workloads
-                            30-40% for random client workloads
-```
+30-40% for random client workloads
 
 **Close-page policy:** Automatically precharge the row after each access.
 
-```
+```text
 Advantages:
   - Every access starts from a clean state (no row open)
   - Predictable latency: always tRCD + tCAS (no tRP wait, bank is pre-precharged)
@@ -554,7 +545,7 @@ Disadvantages:
 
 #### Open-Page vs Close-Page — Hit Rate Modeling with Numerical Examples
 
-```
+```text
 Access latency model:
   Row hit:   tCAS = 13.75 ns (DDR4-3200)
   Row miss:  tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
@@ -604,25 +595,23 @@ Break-even hit rate where open-page = close-page:
 | Pointer chasing (linked list) | Fully random | <10% | Close-page |
 | Mixed (server) | Combination of above | 30-50% | Adaptive |
 
-```
-Track per-bank access history:
-  - If the last N accesses to a bank all hit the same row -> keep open
-  - If the last access was a miss -> precharge after a timeout
+**Track per-bank access history:**
+   - If the last N accesses to a bank all hit the same row -> keep open
+   - If the last access was a miss -> precharge after a timeout
 
-Timeout-based:
-  - After serving a request, start a timer
-  - If no new request to the same bank/row arrives within timeout -> PRECHARGE
-  - If a request arrives -> serve it (hit) and reset timer
+**Timeout-based:**
+   - After serving a request, start a timer
+   - If no new request to the same bank/row arrives within timeout -> PRECHARGE
+   - If a request arrives -> serve it (hit) and reset timer
 
-Threshold-based:
-  - Count consecutive row hits in the current open row
-  - If count > threshold: high locality detected, keep open
-  - If count == 0 (miss): precharge immediately (close-page behavior)
-```
+**Threshold-based:**
+   - Count consecutive row hits in the current open row
+   - If count > threshold: high locality detected, keep open
+   - If count == 0 (miss): precharge immediately (close-page behavior)
 
 #### Row Buffer Hit Rate Modeling
 
-```
+```text
 For a workload with uniform random access to B banks, R rows per bank,
 and a working set of W rows:
 
@@ -665,6 +654,7 @@ Break-even hit rate where open-page beats close-page:
 ### 5.1 Bank and Bank Group Structure
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph DDR4_Channel["DDR4 Channel: 16 Banks"]
         BG0["Bank Group 0"]
@@ -694,7 +684,7 @@ flowchart TD
 the external data rate. Bank groups allow the controller to issue commands to banks in
 different groups with shorter timing (tCCD_S) than banks within the same group (tCCD_L).
 
-```
+```text
 tCCD_S (short, different bank group): ~4 clock cycles between column commands
 tCCD_L (long, same bank group):       ~8 clock cycles between column commands
 
@@ -707,7 +697,7 @@ than reads within the same bank group.
 Cache-line interleaving maps consecutive cache lines to different banks (and bank groups)
 so that multiple requests can be served in parallel.
 
-```
+```text
 Address mapping (example for DDR4, 64-byte cache lines, 16 banks):
 
   Physical Address bits:
@@ -727,26 +717,24 @@ For sequential accesses to addresses 0x0000, 0x0040, 0x0080, 0x00C0, ...:
 
 ### 5.3 DDR5 Subchannel Architecture
 
-```
-DDR5 DIMM (single-rank, x8 devices):
+**DDR5 DIMM (single-rank, x8 devices):**
 
 Subchannel A (40-bit):                Subchannel B (40-bit):
-  BG[0:3] x 4 banks each              BG[0:3] x 4 banks each
-  = 16 banks total                     = 16 banks total
-  Data: DQ[31:0] + ECC[7:0]           Data: DQ[31:0] + ECC[7:0]
+BG[0:3] x 4 banks each              BG[0:3] x 4 banks each
+= 16 banks total                     = 16 banks total
+Data: DQ[31:0] + ECC[7:0]           Data: DQ[31:0] + ECC[7:0]
 
 Total per DIMM: 32 banks (2x16), 64 data bits + 16 ECC bits
 
-Advantage over DDR4 single channel:
-  - 2x more banks available for scheduling
-  - Independent command streams (controller can issue to both subchannels)
-  - Higher scheduling flexibility for FR-FCFS
+**Advantage over DDR4 single channel:**
+   - 2x more banks available for scheduling
+   - Independent command streams (controller can issue to both subchannels)
+   - Higher scheduling flexibility for FR-FCFS
 
 Constraint: C/A bus is shared between subchannels on standard DIMMs.
-  Only one command per clock cycle, so the controller must alternate
-  between subchannel A and B on the shared command bus.
-  Some designs use dual-C/A DIMMs to eliminate this bottleneck.
-```
+Only one command per clock cycle, so the controller must alternate
+between subchannel A and B on the shared command bus.
+Some designs use dual-C/A DIMMs to eliminate this bottleneck.
 
 ---
 
@@ -754,30 +742,28 @@ Constraint: C/A bus is shared between subchannels on standard DIMMs.
 
 ### 6.1 Refresh Timing Model
 
-```
-Refresh parameters:
-  tREFW = 64 ms       (refresh window)
-  8192 refresh commands must be issued within tREFW
-  tREFI = 64ms / 8192 = 7.8125 us (average interval)
-  tRFC = 350 ns (8 Gb DDR4) or 550 ns (16 Gb DDR4)
+**Refresh parameters:**
+   - tREFW = 64 ms       (refresh window)
+   - 8192 refresh commands must be issued within tREFW
+   - tREFI = 64ms / 8192 = 7.8125 us (average interval)
+   - tRFC = 350 ns (8 Gb DDR4) or 550 ns (16 Gb DDR4)
 
-Refresh overhead = tRFC / tREFI
+- **Refresh overhead** = `tRFC / tREFI`
 
-For 8 Gb DDR4:
-  Overhead = 350 ns / 7812.5 ns = 4.48%
-  During each tRFC, ALL banks are idle -> 350 ns of dead time
+**For 8 Gb DDR4:**
+   - Overhead = 350 ns / 7812.5 ns = 4.48%
+   - During each tRFC, ALL banks are idle -> 350 ns of dead time
 
-For 16 Gb DDR4:
-  Overhead = 550 ns / 7812.5 ns = 7.04%
-  Getting worse with each generation!
-```
+**For 16 Gb DDR4:**
+   - Overhead = 550 ns / 7812.5 ns = 7.04%
+   - Getting worse with each generation!
 
 ### 6.2 Refresh Scheduling Strategies
 
 **Postponed refresh:** The controller can delay a refresh by up to 8x tREFI (for DDR4)
 to serve pending requests. The delayed refreshes must be made up later.
 
-```
+```text
 Normal schedule: REF at t=7.8, 15.6, 23.4, ... us
 Postponed:       REF delayed to serve pending reads
                  Accumulated debt: up to 8 REF commands can be postponed
@@ -790,7 +776,7 @@ the end of the 64 ms window, causing a burst of long latency spikes.
 **Sneak refresh:** When the request queue is empty, issue a refresh early (ahead of
 schedule). This fills idle time and reduces the chance of refresh storms later.
 
-```
+```text
 if (request_queue_empty && refresh_pending_within_window) {
     issue_refresh();
     // No performance impact: no requests are delayed
@@ -799,25 +785,23 @@ if (request_queue_empty && refresh_pending_within_window) {
 
 **Per-bank refresh (DDR4):** Refresh one bank at a time instead of all banks.
 
-```
-All-bank refresh:
-  All 16 banks blocked for tRFC = 350 ns
-  Other requests must wait
+**All-bank refresh:**
+   - All 16 banks blocked for tRFC = 350 ns
+   - Other requests must wait
 
-Per-bank refresh:
-  Bank 0 refreshed: only bank 0 blocked for tRFC_pb (~140 ns)
-  Banks 1-15 can still serve requests!
-  16 per-bank refreshes needed to cover all banks
-  tREFI_pb = 7.8 us / 16 = 488 ns
+**Per-bank refresh:**
+   - Bank 0 refreshed: only bank 0 blocked for tRFC_pb (~140 ns)
+   - Banks 1-15 can still serve requests!
+   - 16 per-bank refreshes needed to cover all banks
+   - tREFI_pb = 7.8 us / 16 = 488 ns
 
 Per-bank refresh overhead: 140 ns / 488 ns = 28.7% for the single bank,
 but other 15 banks are free -> system-level overhead is much lower.
-```
 
 **Same-bank refresh (DDR5):** Refresh the same bank number across all bank groups
 simultaneously.
 
-```
+```text
 Same-bank refresh (SBR):
   Refresh bank 0 of BG0, BG1, BG2, BG3 simultaneously
   Other banks (1, 2, 3) in each BG can still serve requests
@@ -835,17 +819,15 @@ FR-FCFS is the standard DDR scheduling algorithm used in virtually all modern co
 
 **Priority ordering:**
 
-```
 1. REFRESH (highest priority, if refresh is due)
 2. WRITE (if write buffer exceeds threshold, drain writes)
 3. ROW HIT (read or write to the currently open row in a bank)
 4. OLDEST ready request (first come, first served among ready commands)
 
-Why row hits are prioritized:
-  Row hit latency:  ~13.75 ns (tCAS only)
-  Row miss latency: ~44 ns    (tRP + tRCD + tCAS)
-  A row hit is 3x faster -> prioritize to maximize throughput
-```
+**Why row hits are prioritized:**
+   - Row hit latency:  ~13.75 ns (tCAS only)
+   - Row miss latency: ~44 ns    (tRP + tRCD + tCAS)
+   - A row hit is 3x faster -> prioritize to maximize throughput
 
 ### 7.2 Read-Write Batching
 
@@ -853,30 +835,35 @@ Switching between reads and writes on the data bus incurs a turnaround penalty
 (bus reversal, DLL re-sync). The controller batches reads and writes to minimize
 switches.
 
-```
-Read-to-write turnaround:  tRTW = ~7.5 ns (CL + CWL + burst_time + margin)
-Write-to-read turnaround:  tWTR = ~10 ns
+```text
+Read from DDR:
+  data0
+  data1
+  data2
+  ...
+  Read-to-Write turnaround (tRTW) = CL - CWL + burst_length + guard_band
+  ...
+  Write to DDR:
+  dataA
+  dataB
 
-Strategy:
-  - Accumulate writes in a write buffer (typically 32-64 entries)
-  - When write buffer fill level exceeds threshold (e.g., 75%) -> drain writes
-  - During write draining, reads are queued (starved temporarily)
-  - After write buffer drains below low threshold -> switch back to reads
-  - This minimizes read-write switches to ~1 per batch
-
-Batch scheduling:
-  Time:  |<-- reads -->|<-- writes -->|<-- reads -->|
-         R R R R R R R  W W W W W W W  R R R R R R R
-         ^                               ^
-         |--- one switch per batch ------|
+Typical tRTW: ~5-10 ns.
+During this time, the data bus is idle.
 ```
+
+**Strategy:**
+   - Accumulate writes in a write buffer (typically 32-64 entries)
+   - When write buffer fill level exceeds threshold (e.g., 75%) -> drain writes
+   - During write draining, reads are queued (starved temporarily)
+   - After write buffer drains below low threshold -> switch back to reads
+   - This minimizes read-write switches to ~1 per batch
 
 ### 7.3 Quality of Service (QoS)
 
 In a system with multiple requestors (CPU, GPU, DMA, display controller), the scheduler
 must ensure critical traffic is not starved.
 
-```
+```text
 QoS levels (typical):
   QoS 3 (Critical):  Display controller, real-time DMA
     -> Guaranteed bandwidth, max latency bound
@@ -902,6 +889,7 @@ Implementation:
 ### 7.4 Controller Microarchitecture Block Diagram
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     AXI_IN["AXI Request Interface"] --> REQ_QUEUE["Request Queue (64-128 entries)"]
     REQ_QUEUE --> SCHEDULER["FR-FCFS Scheduler"]
@@ -934,10 +922,12 @@ flowchart TD
 
 ### 8.1 Peak Bandwidth
 
+```text
+Peak bandwidth = frequency x transfers_per_clock x bus_width / 8 (for bytes)
+               = 1600 MHz x 2 (DDR) x 64 bits / 8
+               = 25.6 GB/s
 ```
-Peak bandwidth per channel = Data_Rate (MT/s) x Bus_Width (bytes)
-
-DDR4-3200: 3200 MT/s x 8 bytes = 25,600 MB/s = 25.6 GB/s
+```text
 DDR5-5600: 5600 MT/s x 8 bytes = 44,800 MB/s = 44.8 GB/s
 
 Note: DDR5 has 2 subchannels of 4 bytes each, so:
@@ -946,7 +936,7 @@ Note: DDR5 has 2 subchannels of 4 bytes each, so:
 
 ### 8.2 Effective Bandwidth
 
-```
+```text
 Effective BW = Peak BW
              x (1 - refresh_overhead)
              x (1 - tFAW_overhead)
@@ -955,14 +945,14 @@ Effective BW = Peak BW
 
 Numerical example: DDR4-3200 single channel
   Peak:                  25.6 GB/s
-  Refresh overhead:      4.5%  -> 0.955
-  tFAW overhead:         ~3%   -> 0.97
+  Refresh overhead:      4.5% -> 0.955
+  tFAW overhead:         ~3%  -> 0.97
   Row buffer hit rate:   50% of accesses hit, 50% miss
-    Hit time:  tCAS = 13.75 ns  (transfer 64 bytes)
+    Hit time:  tCAS              = 13.75 ns  (transfer 64 bytes)
     Miss time: tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
-    Average access time = 0.5*13.75 + 0.5*41.25 = 27.5 ns
-    Ideal hit-only time = 13.75 ns
-    Row buffer efficiency = 13.75 / 27.5 = 0.50
+    Average access time          = 0.5*13.75 + 0.5*41.25 = 27.5 ns
+    Ideal hit-only time          = 13.75 ns
+    Row buffer efficiency        = 13.75 / 27.5 = 0.50
   Read/write switch:     ~2%   -> 0.98
 
 Effective BW = 25.6 x 0.955 x 0.97 x 0.50 x 0.98
@@ -974,14 +964,14 @@ Typical real-world efficiency: 40-60% of peak
 
 ### 8.3 DDR5 Bandwidth Implications
 
-```
+```text
 DDR5-5600 dual-channel system:
   Peak per channel: 44.8 GB/s
   Dual channel:     89.6 GB/s peak
 
   But with 2 subchannels per DIMM, the controller has 32 banks
   (vs 16 for DDR4) to schedule across. More banks -> better
-  bank-level parallelism -> higher effective utilization.
+  bank-level parallelism                          -> higher effective utilization.
 
   DDR5 BL16 mode: 16 transfers per READ = 128 bytes per command
   (vs DDR4 BL8: 64 bytes per command)
@@ -996,16 +986,16 @@ DDR5-5600 dual-channel system:
 
 SECDED = Single Error Correction, Double Error Detection.
 
-```
+```text
 Hamming code for 64-bit data:
   Data bits:       64
   Check bits:       8  (log2(72) rounded up, with overall parity)
   Total code word: 72 bits per 64-bit word
 
   Syndrome decoding:
-    Syndrome = 0:           no error
-    Syndrome = power of 2:  single-bit error in check bit (correctable)
-    Syndrome = other:       single-bit error in data bit (correctable)
+    Syndrome                        = 0:           no error
+    Syndrome                        = power of 2:  single-bit error in check bit (correctable)
+    Syndrome                        = other:       single-bit error in data bit (correctable)
     Overall parity error + Syndrome = 0: double-bit error (detectable, NOT correctable)
 
 ECC DIMM: 72-bit bus (64 data + 8 ECC) implemented as 9 x8 devices
@@ -1016,41 +1006,37 @@ ECC DIMM: 72-bit bus (64 data + 8 ECC) implemented as 9 x8 devices
 SECDED can correct 1-bit errors within a 72-bit word. But if an entire DRAM chip fails
 (a "chip kill"), every word has 8 bit errors -- far beyond SECDED's capability.
 
-```
 Chipkill solution: spread each ECC code word across multiple chips
-  so that a single chip failure affects at most 1 bit per code word.
+so that a single chip failure affects at most 1 bit per code word.
 
-Implementation (AMD, IBM, Intel variants):
-  - Use 36 x4 chips instead of 9 x8 chips
-  - Each x4 chip contributes 4 bits to a 144-bit wide code word
-  - One chip failure -> 4 bits corrupted in 4 different 72-bit code words
-  - Each code word has at most 1 corrupted bit -> SECDED can correct
+**Implementation (AMD, IBM, Intel variants):**
+   - Use 36 x4 chips instead of 9 x8 chips
+   - Each x4 chip contributes 4 bits to a 144-bit wide code word
+   - One chip failure -> 4 bits corrupted in 4 different 72-bit code words
+   - Each code word has at most 1 corrupted bit -> SECDED can correct
 
-  Or: use Reed-Solomon coding across x4 chips
-  - Correct up to 4 symbols (4 nibbles = 16 bits) per code word
-  - Tolerates complete failure of up to 4 x4 chips
-```
+Or: use Reed-Solomon coding across x4 chips
+- Correct up to 4 symbols (4 nibbles = 16 bits) per code word
+   - Tolerates complete failure of up to 4 x4 chips
 
 ### 9.3 On-Die ECC (DDR5)
 
 DDR5 adds internal ECC within each DRAM chip, independent of the system-level ECC
 on the controller side.
 
-```
-On-die ECC purpose:
-  - Protect against single-bit errors caused by radiation, charge leakage,
-    or manufacturing defects WITHIN the DRAM chip
-  - Each 128-bit internal word has 8 bits of on-die ECC
-  - Error correction happens transparently before data leaves the chip
+**On-die ECC purpose:**
+   - Protect against single-bit errors caused by radiation, charge leakage,
+   - or manufacturing defects WITHIN the DRAM chip
+   - Each 128-bit internal word has 8 bits of on-die ECC
+   - Error correction happens transparently before data leaves the chip
 
 Why both on-die AND system-level ECC?
-  - On-die ECC: corrects internal single-bit errors before they propagate
-  - System ECC: corrects errors on the bus, multi-bit chip failures
-  - They are independent layers; neither makes the other redundant
+- On-die ECC: corrects internal single-bit errors before they propagate
+   - System ECC: corrects errors on the bus, multi-bit chip failures
+   - They are independent layers; neither makes the other redundant
 
-  Analogy: on-die ECC is like CRC on an Ethernet cable (corrects bit errors
-  on the link). System ECC is like TCP checksum (end-to-end protection).
-```
+Analogy: on-die ECC is like CRC on an Ethernet cable (corrects bit errors
+on the link). System ECC is like TCP checksum (end-to-end protection).
 
 ---
 
@@ -1058,7 +1044,7 @@ Why both on-die AND system-level ECC?
 
 ### 10.1 Dual Independent Subchannels
 
-```
+```text
 DDR4 DIMM:
   1x 72-bit channel (64 data + 8 ECC)
   Controller sees one 72-bit port
@@ -1081,7 +1067,7 @@ Impact on controller design:
 
 #### DDR5 Dual Subchannel — Scheduler Impact
 
-```
+```text
 With 32 banks (2x16), the FR-FCFS scheduler can keep more requests in flight:
 
 DDR4 scheduling example (16 banks, open-page):
@@ -1111,7 +1097,7 @@ Command bus contention:
 
 ### 10.2 Decision Feedback Equalization (DFE)
 
-```
+```text
 At DDR5 speeds (4400-6400+ MT/s), the data eye is extremely narrow.
 Traditional CTLE (Continuous-Time Linear Equalization) is insufficient.
 
@@ -1134,37 +1120,35 @@ DDR5 introduces **Same-Bank Refresh (SBR)**, which refreshes the same bank numbe
 across all bank groups simultaneously. This is fundamentally different from DDR4's
 all-bank refresh (which blocks ALL banks).
 
-```
-DDR5 bank structure (per subchannel):
-  4 bank groups (BG0-BG3), 4 banks each = 16 banks
+**DDR5 bank structure (per subchannel):**
+   - 4 bank groups (BG0-BG3), 4 banks each = 16 banks
 
-Same-Bank Refresh:
-  Refreshes bank 0 of BG0, BG1, BG2, BG3 at the same time
-  Banks 1, 2, 3 in each BG remain available for normal access
+**Same-Bank Refresh:**
+   - Refreshes bank 0 of BG0, BG1, BG2, BG3 at the same time
+   - Banks 1, 2, 3 in each BG remain available for normal access
 
-  tRFC_sb (same-bank refresh time): ~200-300 ns
-  Compare: tRFC (all-bank): ~450-550 ns
+tRFC_sb (same-bank refresh time): ~200-300 ns
+Compare: tRFC (all-bank): ~450-550 ns
 
-  Refresh scheduling:
-    16 SBR commands needed per refresh cycle (one per bank number: 0-3 x 4 BGs)
-    But each SBR covers 4 banks (one per BG), so only 4 SBR rounds needed
-    for bank 0, then 4 for bank 1, etc.
+Refresh scheduling:
+16 SBR commands needed per refresh cycle (one per bank number: 0-3 x 4 BGs)
+But each SBR covers 4 banks (one per BG), so only 4 SBR rounds needed
+for bank 0, then 4 for bank 1, etc.
 
-  Effective overhead:
-    4 bank numbers x tRFC_sb per bank / tREFI
-    = 4 x 250 ns / 7812 ns = 12.8% for the specific bank being refreshed
-    But 3/4 of banks remain available, so system-level overhead is much lower
+Effective overhead:
+4 bank numbers x tRFC_sb per bank / tREFI
+= 4 x 250 ns / 7812 ns = 12.8% for the specific bank being refreshed
+But 3/4 of banks remain available, so system-level overhead is much lower.
 
-  Impact on controller:
-    - Must track which bank number is being refreshed
-    - Cannot issue commands to bank N of ANY bank group during SBR of bank N
-    - Can issue commands to banks 0, 1, 2, 3 of the non-refreshing bank numbers
-    - Requires more complex bank state tracking (per-bank-number state machine)
-```
+Impact on controller:
+- Must track which bank number is being refreshed
+   - Cannot issue commands to bank N of ANY bank group during SBR of bank N
+   - Can issue commands to banks 0, 1, 2, 3 of the non-refreshing bank numbers
+   - Requires more complex bank state tracking (per-bank-number state machine)
 
 ### 10.4 DDR5 On-Die ECC -- Detailed
 
-```
+```verilog
 DDR5 adds internal ECC within each DRAM chip (not visible to the controller):
 
   Internal word: 128 data bits + 8 ECC bits per 136-bit internal code word
@@ -1200,7 +1184,7 @@ DDR5 adds internal ECC within each DRAM chip (not visible to the controller):
 
 ### 10.3 PMIC on DIMM
 
-```
+```text
 DDR4: PMIC on motherboard, shared across all DIMMs
   - Power delivery must be routed from motherboard VRM to each DIMM slot
   - Limited per-DIMM power management granularity
@@ -1215,7 +1199,7 @@ DDR5: PMIC (Power Management IC) on each DIMM
 
 ### 10.4 Higher Density Chips
 
-```
+```text
 DDR5 supports 16 Gb and 24 Gb chips (vs DDR4 max 16 Gb):
 
   16 Gb, x8: 2 GB per chip, 16 GB per rank (8 chips x 2 GB)
@@ -1225,11 +1209,14 @@ DDR5 supports 16 Gb and 24 Gb chips (vs DDR4 max 16 Gb):
   Quad-rank (3DS) DDR5: 96+ GB per DIMM
 
 Impact on refresh:
-  24 Gb chip has more rows -> tRFC increases
-  tRFC(24Gb) ~ 700 ns -> refresh overhead = 700/7812.5 = 8.96%
-  Almost 9% of bandwidth lost to refresh!
-  Same-bank refresh (SBR) becomes critical to maintain usable bandwidth.
+T = 85C: tREFW = 32 ms -> tREFI = 3.9 us
+T = 95C: tREFW = 16 ms -> tREFI = 1.95 us
+
+Refresh overhead doubles (8.9%) and quadruples (17.8%)!
+A hot DIMM loses almost 20% of its performance just to refresh.
 ```
+
+Same-bank refresh (SBR) becomes critical to maintain usable bandwidth.
 
 ---
 
@@ -1248,7 +1235,7 @@ LPDDR (Low-Power DDR) targets mobile and embedded systems where power efficiency
 
 LPDDR5 introduces a separate WCK (Write Clock) that runs at 2x the command clock:
 
-```
+```verilog
 CK (command clock):  used for command/address sampling
 WCK (write clock):   used for data synchronization, runs at 2x CK frequency
 
@@ -1269,7 +1256,6 @@ WCK-to-CK ratio:
 
 #### LPDDR5X WCK Training — Detailed Sequence
 
-```
 WCK training aligns the WCK clock at the DRAM receiver:
 
 1. Controller sends WCK toggle pattern (alternating 0/1 on WCK).
@@ -1277,87 +1263,82 @@ WCK training aligns the WCK clock at the DRAM receiver:
 3. DRAM reports which tap gives the best alignment (via mode register readback).
 4. Controller adjusts WCK delay to center the sampling point.
 
-WCK frequency ratio training (LPDDR5X):
-  At 4:1 ratio, the DRAM internally divides WCK by 4 to recover the data phase.
-  Training determines the correct phase relationship between WCK and CK.
-  This is more complex than DDR5's DQS training because WCK is a continuous
-  clock (not a strobe that toggles only during data bursts).
+**WCK frequency ratio training (LPDDR5X):**
+   - At 4:1 ratio, the DRAM internally divides WCK by 4 to recover the data phase.
+   - Training determines the correct phase relationship between WCK and CK.
+   - This is more complex than DDR5's DQS training because WCK is a continuous
+   - clock (not a strobe that toggles only during data bursts).
 
-Power advantage of WCK gating:
-  During idle periods, WCK is driven to a static level (no toggling).
-  WCK driver power = C_load * V_swing^2 * f_WCK
-  At 3200 MHz with 5 pF load and 0.4V swing: ~25 mW per pin
-  Gating WCK saves this power during idle (30-50% of DRAM I/O power).
-  DDR5 DQS toggles on every burst, consuming power even at low utilization.
-```
+**Power advantage of WCK gating:**
+   - During idle periods, WCK is driven to a static level (no toggling).
+   - WCK driver power = C_load * V_swing^2 * f_WCK
+   - At 3200 MHz with 5 pF load and 0.4V swing: ~25 mW per pin
+   - Gating WCK saves this power during idle (30-50% of DRAM I/O power).
+   - DDR5 DQS toggles on every burst, consuming power even at low utilization.
 
 #### LPDDR5X Masked Writes (Write-X) — Detailed Operation
 
-```
-Standard DDR5 WRITE:
-  Controller issues WRITE with full burst data.
-  All bytes in the burst are written to the selected columns.
-  To update a single byte: must READ the row, modify in controller, WRITE back.
-  Cost: 1 READ + 1 WRITE = 2 commands for a partial update.
+**Standard DDR5 WRITE:**
+   - Controller issues WRITE with full burst data.
+   - All bytes in the burst are written to the selected columns.
+   - To update a single byte: must READ the row, modify in controller, WRITE back.
+   - Cost: 1 READ + 1 WRITE = 2 commands for a partial update.
 
-LPDDR5X Write-X (Masked Write):
-  Controller issues WRITE with data + byte mask (DBI pins repurposed).
-  DRAM internally reads the current column value.
-  DRAM merges: for each byte, if mask=1, keep existing value; if mask=0, write new.
-  DRAM writes the merged result back.
-  Cost: 1 command for a partial update.
+**LPDDR5X Write-X (Masked Write):**
+   - Controller issues WRITE with data + byte mask (DBI pins repurposed).
+   - DRAM internally reads the current column value.
+   - DRAM merges: for each byte, if mask=1, keep existing value; if mask=0, write new.
+   - DRAM writes the merged result back.
+   - Cost: 1 command for a partial update.
 
-Signal mapping during Write-X:
-  DQ[7:0]:  new data (driven by controller)
-  DM[7:0]:  byte mask (0=write new data, 1=keep existing)
+**Signal mapping during Write-X:**
+   - DQ[7:0]:  new data (driven by controller)
+   - DM[7:0]:  byte mask (0=write new data, 1=keep existing)
 
 Example: Update bytes 2-3 of an 8-byte column, keep bytes 0-1 and 4-7:
-  DQ = [XX, XX, 0x42, 0x85, XX, XX, XX, XX]
-  DM = [ 1,   1,   0,     0,     1,   1,   1,   1  ]
-  Result in DRAM: bytes 0-1 unchanged, bytes 2-3 = 0x42, 0x85, bytes 4-7 unchanged.
+DQ = [XX, XX, 0x42, 0x85, XX, XX, XX, XX]
+DM = [ 1,   1,   0,     0,     1,   1,   1,   1  ]
+Result in DRAM: bytes 0-1 unchanged, bytes 2-3 = 0x42, 0x85, bytes 4-7 unchanged.
 
 Use case: GPU rendering partially updating a framebuffer pixel.
-  Without Write-X: 50% of writes to framebuffer are partial (only alpha channel changed).
-  Each partial write needs read-modify-write: 2x the bandwidth.
-  With Write-X: 1x bandwidth, 50% reduction in DRAM bus utilization for this workload.
-```
+Without Write-X: 50% of writes to framebuffer are partial (only alpha channel changed).
+Each partial write needs read-modify-write: 2x the bandwidth.
+With Write-X: 1x bandwidth, 50% reduction in DRAM bus utilization for this workload.
 
 #### LPDDR5X DBI (Data Bus Inversion) — Power Saving Detail
 
-```
 DBI reduces I/O power by minimizing the number of transitions on the DQ bus:
 
 Write DBI (controller -> DRAM):
-  For each byte of write data:
-    Count number of '0' bits.
-    If count > 4 (more zeros than ones): invert the byte, set DBI_n=0.
-    If count <= 4: send as-is, set DBI_n=1.
-  DRAM receives: if DBI_n=0, invert the byte back before writing.
+For each byte of write data:
+Count number of '0' bits.
+If count > 4 (more zeros than ones): invert the byte, set DBI_n=0.
+If count <= 4: send as-is, set DBI_n=1.
+DRAM receives: if DBI_n=0, invert the byte back before writing.
 
 Read DBI (DRAM -> controller):
-  Same logic applied by the DRAM before transmitting.
-  Controller checks DBI_n and inverts if needed.
+Same logic applied by the DRAM before transmitting.
+Controller checks DBI_n and inverts if needed.
 
-Power saving analysis (per byte lane):
-  Without DBI: average 4 transitions per byte (50% of 8 bits toggle).
-  With DBI:    average 3 transitions per byte (at most 4 zeros, after inversion).
+**Power saving analysis (per byte lane):**
+   - Without DBI: average 4 transitions per byte (50% of 8 bits toggle).
+   - With DBI:    average 3 transitions per byte (at most 4 zeros, after inversion).
 
-  I/O dynamic power per pin: P = C * V_swing^2 * f * transition_rate
-  LPDDR5X at 8533 MT/s, 5 pF load, 0.3V swing:
-    Without DBI: P = 5e-12 * 0.09 * 4266e6 * 0.5 = 0.96 mW/pin
-    With DBI:    P = 5e-12 * 0.09 * 4266e6 * 0.375 = 0.72 mW/pin
-    Saving: 0.24 mW/pin * 16 pins (x16 device) = 3.84 mW per device
+I/O dynamic power per pin: P = C * V_swing^2 * f * transition_rate
+LPDDR5X at 8533 MT/s, 5 pF load, 0.3V swing:
+Without DBI: P = 5e-12 * 0.09 * 4266e6 * 0.5 = 0.96 mW/pin
+With DBI:    P = 5e-12 * 0.09 * 4266e6 * 0.375 = 0.72 mW/pin
+Saving: 0.24 mW/pin * 16 pins (x16 device) = 3.84 mW per device
 
-  For a 4-device LPDDR5X package: ~15 mW savings from DBI alone.
-  Combined with WCK gating and lower VDD (0.9V vs 1.1V for DDR5):
-    LPDDR5X total I/O power: ~60-80 mW per channel
-    DDR5 total I/O power: ~120-180 mW per channel
-    LPDDR5X uses ~50% less I/O power at equivalent data rates.
-```
+For a 4-device LPDDR5X package: ~15 mW savings from DBI alone.
+Combined with WCK gating and lower VDD (0.9V vs 1.1V for DDR5):
+LPDDR5X total I/O power: ~60-80 mW per channel
+DDR5 total I/O power: ~120-180 mW per channel
+LPDDR5X uses ~50% less I/O power at equivalent data rates.
 
 ### LPDDR5X Specific Features
 
-```
+```verilog
 LPDDR5X extends LPDDR5 with higher data rates (up to 8533 MT/s) and
 improved power efficiency:
 
@@ -1460,7 +1441,7 @@ tRCD = 13.75 ns, tRP = 13.75 ns, and 2% read-write switch overhead.
 
 **Solution:**
 
-```
+```verilog
 Peak bandwidth:
   Single channel: 3200 MT/s x 8 bytes = 25.6 GB/s
   Dual channel:   25.6 x 2 = 51.2 GB/s
@@ -1498,7 +1479,7 @@ burst length = 8, tCK = 0.625 ns.
 
 **Solution:**
 
-```
+```ascii-graph
 Time (ns):   0       13.75    16      27.5    29.75   41.25   43.5
              |         |       |        |        |       |       |
 CMD:         ACT_B0    READ_B0  ACT_B1   --       READ_B1  --      --
@@ -1538,52 +1519,50 @@ tCCD_S = 4 tCK = 2.5 ns (minimum gap between column commands).
 
 **Solution:**
 
-```
-Per-request service time:
-  Row hit:  tCAS = 13.75 ns  (data appears after CAS latency)
-  Row miss: tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
+**Per-request service time:**
+   - Row hit:  tCAS = 13.75 ns  (data appears after CAS latency)
+   - Row miss: tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
 
-  Each READ returns BL8 x 8 bytes = 64 bytes
+Each READ returns BL8 x 8 bytes = 64 bytes
 
-  Data transfer time per request: BL8 / 2 = 4 clocks = 2.5 ns
-    (but overlapped with next request's CAS latency in pipelined operation)
+Data transfer time per request: BL8 / 2 = 4 clocks = 2.5 ns
+(but overlapped with next request's CAS latency in pipelined operation)
 
-Naive total (no pipelining):
-  Total time = 40 x 13.75 + 60 x 41.25
-             = 550 + 2475
-             = 3025 ns
+**Naive total (no pipelining):**
+   - Total time = 40 x 13.75 + 60 x 41.25
+   - = 550 + 2475
+   - = 3025 ns
 
-  Data transferred = 100 x 64 bytes = 6400 bytes
-  Average BW = 6400 / 3025 ns = 2.12 GB/s
+Data transferred = 100 x 64 bytes = 6400 bytes
+Average BW = 6400 / 3025 ns = 2.12 GB/s
 
 With bank pipelining (assuming requests go to different banks):
-  The limiting factor is the data bus utilization.
-  Each READ occupies the data bus for 2.5 ns (4 tCK).
-  Minimum gap between column commands: tCCD_S = 2.5 ns.
+The limiting factor is the data bus utilization.
+Each READ occupies the data bus for 2.5 ns (4 tCK).
+Minimum gap between column commands: tCCD_S = 2.5 ns.
 
-  But sequential READs must be separated by at least tCCD_S = 2.5 ns:
-    Effective throughput = 64 bytes / 2.5 ns = 25.6 GB/s (matches peak!)
+But sequential READs must be separated by at least tCCD_S = 2.5 ns:
+Effective throughput = 64 bytes / 2.5 ns = 25.6 GB/s (matches peak!)
 
-  Total data bus time = 100 x 2.5 ns = 250 ns
-  But row activations and precharges take time OFF the data bus.
-  The row management time is hidden by bank-level parallelism.
+Total data bus time = 100 x 2.5 ns = 250 ns
+But row activations and precharges take time OFF the data bus.
+The row management time is hidden by bank-level parallelism.
 
-  For 60 row misses: need 60 x (tRP + tRCD) = 60 x 27.5 = 1650 ns of
-  row management, but this can be overlapped with data transfers to
-  other banks. With 16 banks, the row management overhead is largely hidden.
+For 60 row misses: need 60 x (tRP + tRCD) = 60 x 27.5 = 1650 ns of
+row management, but this can be overlapped with data transfers to
+other banks. With 16 banks, the row management overhead is largely hidden.
 
-  Realistic total time for a well-scheduled controller:
-    ~250 ns (data bus time) + ~500 ns (row management overhead not fully hidden)
-    = ~750 ns
-    Effective BW = 6400 / 750 = 8.5 GB/s (about 33% of peak)
-```
+Realistic total time for a well-scheduled controller:
+~250 ns (data bus time) + ~500 ns (row management overhead not fully hidden)
+= ~750 ns
+Effective BW = 6400 / 750 = 8.5 GB/s (about 33% of peak)
 
 ### Problem 4: FR-FCFS Scheduler Walkthrough
 
 **Question:** Given 8 pending requests in the controller queue, determine the scheduling
 order using FR-FCFS. Assume 4 banks (B0-B3), open-page policy, and the following state:
 
-```
+```verilog
 Currently open rows: B0=row5, B1=row2, B2=no row, B3=row8
 
 Pending requests (in arrival order):
@@ -1601,7 +1580,7 @@ Write buffer threshold not reached, so reads and writes can be interleaved.
 
 **Solution:**
 
-```
+```text
 Step 1: Classify each request
 
   R0: READ B0 row5 - Row HIT (B0 has row5 open)
@@ -1673,25 +1652,28 @@ Step 3: Schedule accounting for bank conflicts
 
 MRDIMM is a JEDEC-standardized extension for DDR5 that addresses the bandwidth gap between standard DIMMs and HBM in server platforms. It introduces a **multiplexing register (MRCD/MDB)** on the DIMM that aggregates data from multiple ranks and presents a wider logical interface to the memory controller.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph std["Standard DDR5 RDIMM"]
+        direction LR
+        C1["Controller"] <--> RCD["Register Clock<br/>Driver (RCD)"] <--> R["2 ranks of<br/>DRAM chips"]
+    end
+    subgraph mr["MRDIMM — Multiplexed Rank DIMM"]
+        direction LR
+        C2["Controller"] <--> MRCD["MRCD<br/>(Multiplexed RCD)"]
+        MRCD --> RK0["Rank 0<br/>data buffer MDB0"]
+        MRCD --> RK1["Rank 1<br/>data buffer MDB1"]
+    end
+    classDef c fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef reg fill:#fde68a,stroke:#b45309,color:#000
+    classDef r fill:#dcfce7,stroke:#15803d,color:#000
+    class C1,C2 c
+    class RCD,MRCD reg
+    class R,RK0,RK1 r
 ```
-Standard DDR5 RDIMM:
-  Controller <---> Register Clock Driver (RCD) <---> 2 ranks of DRAM chips
-  Data bus: 2 x 40-bit subchannels (80-bit total with ECC)
 
-MRDIMM (Multiplexed Rank DIMM):
-  Controller <---> MRCD (Multiplexed Register Clock Driver)
-                     |
-                     +---> Rank 0 (data buffer 0, MDB0)
-                     +---> Rank 1 (data buffer 1, MDB1)
-
-  Key difference: MDB (Multiplexed Data Buffer) sits between the RCD and DRAM chips.
-  The MDB can buffer and re-time data, allowing the DRAM cores to operate at a
-  different frequency than the external data bus.
-
-  MRDIMM mode: DRAM core runs at one frequency, external bus runs at 1.5x or 2x
-  The MDB multiplexes data from two ranks onto the same data bus, effectively
-  doubling the data rate seen by the controller without doubling the DRAM core speed.
-```
+The standard RDIMM data bus is 2 × 40-bit subchannels (80-bit with ECC). In an MRDIMM the **MDB** (Multiplexed Data Buffer) sits between the RCD and the DRAM chips; it buffers and re-times data so the DRAM cores can run at a different frequency than the external bus (external bus at 1.5× or 2× the core). The MDB multiplexes data from two ranks onto the same bus, effectively doubling the controller-visible data rate without doubling DRAM core speed.
 
 **MRDIMM signaling and timing:**
 
@@ -1713,18 +1695,21 @@ MRDIMM (Multiplexed Rank DIMM):
 
 MCR DIMMs are Micron's implementation of multiplexed-rank technology (closely related to MRDIMM). MCR stacks two ranks behind a data-buffer chip that time-division multiplexes their data onto the external bus at 2x the per-rank data rate.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    C["Controller"] <--> MDB["MCR Data Buffer (MDB)"]
+    MDB <-->|even edges| R0["Rank 0 (×8 chips)"]
+    MDB <-->|odd edges| R1["Rank 1 (×8 chips)"]
+    classDef c fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef b fill:#fde68a,stroke:#b45309,color:#000
+    classDef r fill:#dcfce7,stroke:#15803d,color:#000
+    class C c
+    class MDB b
+    class R0,R1 r
 ```
-MCR DIMM structure:
-  Controller <---> MCR Data Buffer (MDB) <---> Rank 0 (8 Gb or 16 Gb x8 chips)
-                                            <---> Rank 1 (8 Gb or 16 Gb x8 chips)
 
-  The MCR buffer alternates between Rank 0 and Rank 1 on successive clock edges:
-    Even clock edges: data from Rank 0
-    Odd clock edges:  data from Rank 1
-
-  Net effect: 2x the bandwidth of a single-rank DIMM at the same DRAM core frequency.
-  Example: DDR5-5600 core --> MCR-11200 effective data rate to controller
-```
+The MCR buffer alternates ranks on successive clock edges (even → Rank 0, odd → Rank 1), giving 2× the bandwidth of a single-rank DIMM at the same DRAM core frequency — e.g. a DDR5-5600 core yields an MCR-11200 effective rate to the controller.
 
 **MCR vs MRDIMM:**
 
@@ -1746,20 +1731,17 @@ Both MRDIMM and MCR target the same problem: extracting more bandwidth from the 
 
 CXL (Compute Express Link) Type-3 devices provide **coherent memory expansion** -- allowing a server to attach additional DRAM (or persistent memory) via the PCIe/CXL interface, appearing as system-manageable memory rather than I/O-mapped storage.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    HOST["Host CPU<br/>(CXL.cache + CXL.mem host)"] <==>|"CXL 3.0/3.1 link · 64 GT/s (PCIe 6.0 PHY)<br/>×16 = 64 GB/s bidirectional"| DEV["CXL Type-3 memory expander<br/>DDR5, 4–8 channels<br/>256–512 GB DRAM"]
+    classDef h fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef d fill:#dcfce7,stroke:#15803d,color:#000
+    class HOST h
+    class DEV d
 ```
-CXL memory expansion topology:
 
-  +-------------------+     CXL 3.0/3.1 link      +-------------------+
-  |  Host CPU         |<------------------------->|  CXL Type-3       |
-  |  (CXL.cache +     |   64 GT/s (PCIe 6.0 PHY)  |  Memory Expander  |
-  |   CXL.mem host)   |   x16 = 64 GB/s bidir     |  DDR5 channels    |
-  +-------------------+                            |  (4-8 channels)   |
-                                                   |  256-512 GB DRAM  |
-                                                   +-------------------+
-
-  The Type-3 device exposes its attached DRAM as coherent memory via CXL.mem.
-  The host CPU accesses it with near-local-latency (cache-coherent reads/writes).
-```
+The Type-3 device exposes its attached DRAM as coherent memory via CXL.mem, so the host CPU accesses it with near-local latency (cache-coherent reads and writes).
 
 **CXL 3.0/3.1 Type-3 protocol stack:**
 
@@ -1789,7 +1771,7 @@ CXL memory expansion topology:
 
 ### Bandwidth and Latency Considerations
 
-```
+```verilog
 Typical CXL 3.0 Type-3 memory expansion (x16 link):
 
   Link bandwidth: 64 GB/s bidirectional (64 GT/s x 16 lanes / 8 bits/byte)
@@ -1827,7 +1809,7 @@ LPDDR5X is an extension of LPDDR5 that increases data rates from 6400 MT/s to 85
 
 **LPDDR5X low-power features critical for mobile:**
 
-```
+```verilog
 DVFS (Dynamic Voltage and Frequency Scaling):
   LPDDR5X supports fine-grained DVFS with multiple operating points:
     8533 MT/s: VDD = 0.9V, VDDQ = 0.35V

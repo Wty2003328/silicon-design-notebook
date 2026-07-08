@@ -50,28 +50,28 @@ six encoding formats. The bit-field layout for each is shown below.
 
 **R-type (Register-register ALU)**
 
-```
+```verilog
 [31:25]  [24:20]  [19:15]  [14:12]  [11:7]   [6:0]
 funct7    rs2       rs1     funct3     rd     opcode
 ```
 
 **I-type (Immediate ALU / Load / JALR)**
 
-```
+```verilog
 [31:20]       [19:15]  [14:12]  [11:7]   [6:0]
 imm[11:0]      rs1     funct3     rd     opcode
 ```
 
 **S-type (Store)**
 
-```
+```verilog
 [31:25]        [24:20]  [19:15]  [14:12]  [11:7]        [6:0]
 imm[11:5]       rs2       rs1     funct3   imm[4:0]     opcode
 ```
 
 **B-type (Branch)**
 
-```
+```verilog
 [31]   [30:25]     [24:20]  [19:15]  [14:12]  [11:8]      [7]     [6:0]
 imm[12] imm[10:5]   rs2       rs1     funct3   imm[4:1]  imm[11]  opcode
 ```
@@ -81,7 +81,7 @@ scattered: `imm[12|10:5|4:1|11]`.
 
 **U-type (Upper immediate)**
 
-```
+```verilog
 [31:12]           [11:7]   [6:0]
 imm[31:12]         rd      opcode
 ```
@@ -91,7 +91,7 @@ low 12 bits are zero. Used by LUI and AUIPC.
 
 **J-type (Jump)**
 
-```
+```verilog
 [31]    [30:21]       [20]     [19:12]      [11:7]   [6:0]
 imm[20] imm[10:1]    imm[11]   imm[19:12]    rd      opcode
 ```
@@ -291,7 +291,7 @@ instructions use opcode `0101111`.
 ### 3.1 Load Reserved / Store Conditional
 
 **LR.W / LR.D (Load Reserved):**
-```
+```verilog
 lr.{w,d} rd, (rs1)
 ```
 Loads a word (32-bit) or doubleword (64-bit) from the address in `rs1` and
@@ -302,7 +302,7 @@ Encoding: I-type sub-format. `rs2 = 0`, `funct3 = 010` (W) or `011` (D),
 `funct7 = 00010{aq}{rl}` where aq and rl are single-bit ordering hints.
 
 **SC.W / SC.D (Store Conditional):**
-```
+```verilog
 sc.{w,d} rd, rs2, (rs1)
 ```
 Attempts to store `rs2` to the address in `rs1`. If the reservation is still
@@ -493,7 +493,7 @@ operations (not the non-quiet `minNum`/`maxNum`).
 
 ### 4.8 FCLASS — Classify Floating-Point Number
 
-```
+```verilog
 FCLASS.S / FCLASS.D  x[rd] = classify(f[rs1])
 ```
 
@@ -662,6 +662,7 @@ control to a trap handler at a higher privilege level. The trap sequence for
 a machine-mode trap:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[Exception or Interrupt occurs] --> B[Save PC to mepc]
     B --> C[Set mcause to trap cause]
@@ -801,6 +802,7 @@ Bits 63:39 must equal bit 38 (sign extension of the 39-bit address), otherwise
 a page fault occurs. The translation proceeds through three levels:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["satp.PPN (root table base)"] --> B["Level 1: index with VPN[2]"]
     B --> C{"PTE.V = 1?"}
@@ -991,7 +993,7 @@ set according to the tail policy (undisturbed or agnostic).
 Most vector instructions accept an optional mask operand (always v0). A masked
 instruction operates only on elements where the corresponding bit in v0 is 1:
 
-```
+```verilog
 vadd.vv v2, v4, v6, v0.t    # add only where v0[i] = 1
 ```
 
@@ -1004,7 +1006,7 @@ The fundamental software pattern for processing arrays longer than VLMAX is
 **stripmining**: each iteration processes `vl` elements, where `vl` is set by
 `vsetvli`.
 
-```asm
+```verilog
 # a0 = element count, a1 = src pointer, a2 = dst pointer
 loop:
     vsetvli  t0, a0, e32, m1    # SEW=32, LMUL=1, t0 = min(a0, VLMAX)
@@ -1085,7 +1087,7 @@ crypto workloads.
 **Example -- population count without B extension vs. with:**
 
 Without B:
-```asm
+```verilog
 # Classic Hamming weight: shift-xor-tree, ~15 instructions
 li    a1, 0x5555555555555555
 and   a2, a0, a1
@@ -1096,7 +1098,7 @@ add   a0, a2, a3
 ```
 
 With B:
-```asm
+```verilog
 cpop  a0, a0     # 1 instruction, 1 cycle on most implementations
 ```
 
@@ -1187,7 +1189,7 @@ The CLINT generates two types of interrupts per hart:
 
 **Timer interrupt generation:**
 
-```
+```text
 mtime increments at a fixed frequency (e.g., 10 MHz on SiFive, ~1 GHz on fast SoCs).
 When mtime >= mtimecmp[hart], the timer interrupt pending bit is set in mip.MTIP (bit 7).
 The interrupt fires if mie.MTIE (bit 7) = 1 and mstatus.MIE = 1.
@@ -1235,7 +1237,7 @@ reserved), each with configurable priority.
 
 **Interrupt processing flow:**
 
-```
+```verilog
 1. Device asserts interrupt source N.
 2. PLIC sets Pending[N] = 1.
 3. If Enable[ctx][N] = 1 and Priority[N] > Threshold[ctx],
@@ -1263,6 +1265,7 @@ interrupts.
 The interrupt path through the CSR state machine:
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A["Device / Timer / Software event"] --> B{"Which controller?"}
     B -- "CLINT timer" --> C["Set mip.MTIP (bit 7)"]
@@ -1462,7 +1465,7 @@ significant bit to least significant bit.
 **Solution:**
 
 Convert to binary:
-```
+```verilog
 0000000 00101 00010 000 00101 0110011
 funct7  rs2   rs1   f3  rd    opcode
 ```
@@ -1490,12 +1493,12 @@ ADDI uses I-type format: `imm[11:0] rs1 funct3 rd opcode`
 - opcode = 0010011
 
 Assemble:
-```
+```verilog
 111111111111 01010 000 00101 0010011
 ```
 
 Group into 4-bit nibbles from MSB:
-```
+```verilog
 1111 1111 1111 0101 0000 0010 1001 0011
    F    F    F    5    0    2    9    3
 ```
@@ -1520,7 +1523,7 @@ In binary: `0000...0000 1010 1011 1100 1101 1110 1111 1000 0000`
 
 Bits 63:39 are all zero, matching bit 38 (which is 0). No sign-extension fault.
 
-```
+```verilog
 VA[38:30] = VPN[2] = 0x0A = 10
 VA[29:21] = VPN[1] = 0x5E = 94
 VA[20:12] = VPN[0] = 0x0F = 15
@@ -1693,7 +1696,7 @@ Three configuration CSRs set the vector operating parameters:
 The `vsetvli` / `vsetivli` / `vsetvl` instructions configure SEW, LMUL, and VL
 simultaneously:
 
-```
+```verilog
 vsetvli rd, rs1, vtypei   // rd = old VL; VL = min(rs1, VLMAX); vtype = imm
 vsetvl  rd, rs1, rs2      // rd = old VL; VL = min(rs1, VLMAX); vtype = rs2
 ```
@@ -1879,7 +1882,7 @@ ratified in 2021 and enables virtualization without binary translation.
 Without the H extension, the MMU performs a single translation: VA -> PA. With
 the H extension active, the MMU performs **two-stage translation**:
 
-```
+```verilog
 Guest Virtual Address (GVA)
         |
    [Stage 1: Guest VM page table]     <-- controlled by guest OS
@@ -1907,7 +1910,7 @@ latency doubles: 3 memory accesses for Stage 1 + 3 for Stage 2 = 6 accesses
 Analogous to ASID for processes, the **VMID** tags Stage-2 TLB entries to avoid
 flushing the entire TLB on VM context switches.
 
-```
+```verilog
 hgatp CSR format:
   [Mode (4 bits)] [VMID (14 bits)] [PPN of Stage-2 root table (44 bits)]
 ```

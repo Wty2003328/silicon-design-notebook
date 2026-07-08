@@ -21,7 +21,7 @@ Modern digital design is **synchronous**: state changes only on a clock edge, an
 4. **Drive every output in every branch.** Default assignments at the top of a combinational block prevent inferred latches.
 5. **Separate sequential from combinational** intent: `always_ff` for state, `always_comb` for logic. The SystemVerilog `_ff`/`_comb`/`_latch` variants make the tool *check* your intent ([Procedural_and_Processes](Procedural_and_Processes.md)).
 
-```systemverilog
+```verilog
 // Latch-free combinational block: default first, full assignment
 always_comb begin
     next_state = state;          // default avoids inferred latch
@@ -86,7 +86,8 @@ Separating them makes both verifiable: control is a small state space you can co
 ## 6. The frontend quality gates (what "done" means before hand-off)
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
     RTL["RTL written"]:::a --> L["Lint clean"]:::b --> C["CDC/RDC clean"]:::b --> SIM["Functional cov closed"]:::c --> SYN["Synthesizable + timing-feasible"]:::d --> HO["Hand off to synthesis"]:::e
     classDef a fill:#fde68a,stroke:#b45309,color:#000
     classDef b fill:#bbf7d0,stroke:#15803d,color:#000

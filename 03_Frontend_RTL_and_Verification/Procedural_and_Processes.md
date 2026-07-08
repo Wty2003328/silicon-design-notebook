@@ -12,30 +12,25 @@ which region executes when.
 
 Each simulation time step is divided into these ordered regions:
 
-```
-    +-----------------------+
-    | Preponed              |  Sample values for assertions (read-only)
-    +-----------------------+
-    | Active                |  always, always_comb, assign, blocking assigns
-    | Inactive              |  #0 delayed assignments
-    | NBA (Non-Blocking     |  <= assignments execute here
-    |      Assignment)      |
-    +-----------------------+
-    | Observed              |  Concurrent assertions evaluated here
-    +-----------------------+
-    | Reactive              |  program block code, pass/fail of assertions
-    | Re-Inactive           |  #0 in program blocks
-    | Re-NBA                |  <= in program blocks
-    +-----------------------+
-    | Postponed             |  $monitor, $strobe execute here (read-only)
-    +-----------------------+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    P["Preponed — sample values for assertions (read-only)"]
+    A["Active — always, always_comb, assign, blocking assigns"]
+    I["Inactive — #0 delayed assignments"]
+    N["NBA — non-blocking (&lt;=) assignments execute"]
+    O["Observed — concurrent assertions evaluated"]
+    R["Reactive — program blocks"]
+    P --> A --> I --> N --> O --> R
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class P,A,I,N,O,R s
 ```
 
 Within Active/Reactive, events iterate until no more are pending (delta cycle convergence).
 
 ### How This Matters in Practice
 
-```systemverilog
+```verilog
 module scheduler_demo;
     logic clk = 0;
     logic [7:0] a, b, c;
@@ -71,7 +66,7 @@ endmodule
 The NBA region exists to prevent race conditions in sequential logic. All RHS values are
 captured in Active, then all LHS updates happen together in NBA. This ensures:
 
-```systemverilog
+```verilog
 always @(posedge clk) begin
     a <= b;   // Captures b's current value
     b <= a;   // Captures a's current value (not the one just assigned!)
@@ -87,7 +82,7 @@ end
 
 **Difference 1: always_comb triggers at time 0**
 
-```systemverilog
+```verilog
 module time_zero_demo;
     logic [7:0] a = 8'hFF;
     logic [7:0] y1, y2;
@@ -109,7 +104,7 @@ endmodule
 
 **Difference 2: always_comb is sensitive to function contents**
 
-```systemverilog
+```verilog
 logic [7:0] lut [256];    // Lookup table
 logic [7:0] addr, result1, result2;
 
@@ -128,7 +123,7 @@ always @(*) result2 = lookup(addr);
 
 ### Other always_comb Restrictions
 
-```systemverilog
+```verilog
 always_comb begin
     // These are all ILLEGAL in always_comb:
     // #10 y = a;            // No delays
@@ -150,7 +145,7 @@ always_comb y = a & b;
 
 ### Single-Clock Enforcement
 
-```systemverilog
+```verilog
 // CORRECT: single clock edge, optional async reset
 always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)
@@ -184,7 +179,7 @@ end
 
 ## always_latch
 
-```systemverilog
+```verilog
 always_latch begin
     if (enable)
         q <= d;
@@ -201,7 +196,7 @@ end
 
 ### Three Variants
 
-```systemverilog
+```verilog
 // fork-join: waits for ALL child processes to complete
 fork
     begin task_A(); end   // Process 1
@@ -227,22 +222,22 @@ join_none                 // Returns immediately, tasks run in background
 
 ### Timing Diagram Example
 
-```
+```text
 Time:    0   10   20   30   40   50
 Task A:  |=========|                   (finishes at t=20)
 Task B:  |==================|          (finishes at t=30)
 Task C:  |===========================| (finishes at t=50)
 
-fork-join:      parent resumes at t=50
-fork-join_any:  parent resumes at t=20 (A finishes first)
-fork-join_none: parent resumes at t=0  (immediate)
+fork-join      : parent resumes at t=50
+fork-join_any  : parent resumes at t=20 (A finishes first)
+fork-join_none : parent resumes at t=0  (immediate)
 ```
 
 ### THE CLASSIC BUG: For-Loop + Fork
 
 This is one of the most common interview questions and real-world bugs.
 
-```systemverilog
+```verilog
 // BUG: All spawned processes see the SAME variable i
 initial begin
     for (int i = 0; i < 4; i++) begin
@@ -260,7 +255,7 @@ end
 // By the time #10 passes, the for loop is done and i == 4.
 ```
 
-```systemverilog
+```verilog
 // FIX 1: Automatic variable captures a copy
 initial begin
     for (int i = 0; i < 4; i++) begin
@@ -296,7 +291,7 @@ end
 
 ### The Problem: disable fork Kills TOO Much
 
-```systemverilog
+```verilog
 initial begin
     fork
         begin  // Background monitor -- should run forever
@@ -315,7 +310,7 @@ end
 
 ### The Fix: Isolation Wrapper Pattern
 
-```systemverilog
+```verilog
 initial begin
     fork
         begin  // Background monitor
@@ -346,7 +341,7 @@ the timeout and the transaction -- not the background monitor.
 
 ### Complete Watchdog Timer Using process::self()
 
-```systemverilog
+```verilog
 class watchdog;
     process proc_handle;
     int timeout_ns;
@@ -414,7 +409,7 @@ endtask
 - **Tasks** can consume time. They can have delays, waits, event controls, fork-join.
   They do not return values (use output/inout arguments instead).
 
-```systemverilog
+```verilog
 // Function: zero-time computation
 function logic [7:0] compute_crc(logic [31:0] data);
     // Cannot have: #10, @(posedge clk), wait(signal), fork-join
@@ -446,7 +441,7 @@ end
 A `void function` returns nothing but is still a FUNCTION -- zero time, no delays. It is NOT
 equivalent to a task. You can call void functions from always_comb; you cannot call tasks.
 
-```systemverilog
+```verilog
 function void log_event(string msg);  // No return value, but zero-time
     $display("T=%0t: %s", $time, msg);
 endfunction
@@ -458,11 +453,11 @@ end
 
 ### Functions Can Call Functions, Tasks Can Call Both
 
-```
-Function -> Function:    OK
-Function -> Task:        ERROR (task may consume time)
-Task -> Function:        OK
-Task -> Task:            OK
+```text
+Function -> Function : OK
+Function -> Task     : ERROR (task may consume time)
+Task     -> Function : OK
+Task     -> Task     : OK
 ```
 
 ---
@@ -477,7 +472,7 @@ Task -> Task:            OK
 
 ### The Critical Bug With Static Tasks
 
-```systemverilog
+```verilog
 module static_bug;
     task count(input int id);  // DEFAULT: static!
         int local_var;          // Shared across all concurrent calls!
@@ -504,7 +499,7 @@ endmodule
 // T=20 ID=2 count=4   <- Expected 2, got 4!
 ```
 
-```systemverilog
+```verilog
 // FIX: declare as automatic
 module fixed;
     task automatic count(input int id);
@@ -527,7 +522,7 @@ endmodule
 
 ### Making an Entire Module Automatic
 
-```systemverilog
+```verilog
 module automatic my_module;  // ALL tasks/functions in this module are automatic
     // ...
 endmodule
@@ -544,7 +539,7 @@ away clock edges and skew. `input #1step` samples in the Preponed region — i.e
 current time slot *before* the Active region evaluates, capturing DUT state as it was
 immediately before the clock edge. `output #0` drives at the exact clock edge (Re-Nba region).
 
-```systemverilog
+```verilog
 interface bus_if (input logic clk);
     logic [7:0] data;
     logic       valid;
@@ -571,7 +566,7 @@ endinterface
 
 ### Using Clocking Blocks in a Testbench
 
-```systemverilog
+```verilog
 class driver;
     virtual bus_if.driver_mp vif;
 
@@ -609,7 +604,7 @@ region with clocking block scheduling, this ensures proper ordering.
 
 ### Why It Exists: Race-Free Testbench Execution
 
-```systemverilog
+```verilog
 program automatic test (bus_if.driver_mp drv_if);
     initial begin
         // This executes in the REACTIVE region
@@ -635,7 +630,7 @@ endprogram
 
 ## Wait Statements and Event Control
 
-```systemverilog
+```verilog
 // Edge-triggered wait
 @(posedge clk);           // Wait for rising edge of clk
 @(negedge rst_n);         // Wait for falling edge of rst_n
@@ -663,7 +658,7 @@ wait (done.triggered);     // Catches same-time-step triggers
 
 ## Disable Statement
 
-```systemverilog
+```verilog
 // Disable a named block
 begin : my_block
     forever begin
@@ -803,7 +798,7 @@ logic (`always_ff`).
 
 ### Q9: How do you implement a timeout with fork-join_any?
 
-```systemverilog
+```verilog
 task run_with_timeout(int timeout_cycles);
     fork
         begin  // Main work
@@ -852,7 +847,7 @@ guessing.
 current process to complete, including those from previous `fork-join_none` or still-running
 processes from `fork-join_any`. `wait fork` has broader scope.
 
-```systemverilog
+```verilog
 initial begin
     fork task_a(); join_none  // Spawns task_a
     fork task_b(); join_none  // Spawns task_b

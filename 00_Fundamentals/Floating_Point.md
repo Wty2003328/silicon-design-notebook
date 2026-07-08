@@ -7,13 +7,13 @@
 For 8-bit exponent, exponent values 0 and 255 are reserved (for denorms/zero and inf/NaN respectively). Usable exponent range: 1 to 254.
 
 The actual exponent range is: `E_actual = E_stored - bias`, so:
-```
+```text
 E_actual_min = 1 - bias
 E_actual_max = 254 - bias
 ```
 
 We want the range to be roughly symmetric around 0. With bias = 127:
-```
+```text
 E_actual_min = 1 - 127 = -126
 E_actual_max = 254 - 127 = +127
 ```
@@ -21,7 +21,7 @@ E_actual_max = 254 - 127 = +127
 Range: [-126, +127] — nearly symmetric, with one more positive value.
 
 With bias = 128:
-```
+```text
 E_actual_min = 1 - 128 = -127
 E_actual_max = 254 - 128 = +126
 ```
@@ -36,21 +36,21 @@ Range: [-127, +126] — biased toward negative exponents.
 ### Actual Bit Patterns for Edge Cases (Single Precision)
 
 **Positive zero: +0**
-```
+```text
 S=0, E=0000_0000, M=000_0000_0000_0000_0000_0000
 Hex: 0x00000000
 Value: +0
 ```
 
 **Negative zero: -0**
-```
+```text
 S=1, E=0000_0000, M=000_0000_0000_0000_0000_0000
 Hex: 0x80000000
 Value: -0 (compares equal to +0 by IEEE rules, but sign bit differs)
 ```
 
 **Smallest positive denormal:**
-```
+```text
 S=0, E=0000_0000, M=000_0000_0000_0000_0000_0001
 Hex: 0x00000001
 Value: 0.000...001 (binary) * 2^(-126) = 2^(-23) * 2^(-126) = 2^(-149)
@@ -58,7 +58,7 @@ Value: 0.000...001 (binary) * 2^(-126) = 2^(-23) * 2^(-126) = 2^(-149)
 ```
 
 **Largest denormal:**
-```
+```text
 S=0, E=0000_0000, M=111_1111_1111_1111_1111_1111
 Hex: 0x007FFFFF
 Value: 0.111...111 * 2^(-126) = (1 - 2^(-23)) * 2^(-126)
@@ -66,7 +66,7 @@ Value: 0.111...111 * 2^(-126) = (1 - 2^(-23)) * 2^(-126)
 ```
 
 **Smallest positive normal:**
-```
+```text
 S=0, E=0000_0001, M=000_0000_0000_0000_0000_0000
 Hex: 0x00800000
 Value: 1.0 * 2^(1-127) = 2^(-126)
@@ -74,9 +74,9 @@ Value: 1.0 * 2^(1-127) = 2^(-126)
 ```
 
 **Transition from denormal to normal:**
-```
-Largest denorm: 0.111...111 * 2^(-126) = (1 - 2^(-23)) * 2^(-126)
-Smallest normal: 1.000...000 * 2^(-126) = 1.0 * 2^(-126)
+```text
+Largest denorm: 0.111...111 * 2^(-126)                = (1 - 2^(-23)) * 2^(-126)
+Smallest normal: 1.000...000 * 2^(-126)               = 1.0 * 2^(-126)
 
 Gap between them: 2^(-126) - (1 - 2^(-23)) * 2^(-126) = 2^(-23) * 2^(-126) = 2^(-149)
 This equals exactly 1 ULP of the denormal range — CONTINUOUS! No gap.
@@ -85,7 +85,7 @@ This equals exactly 1 ULP of the denormal range — CONTINUOUS! No gap.
 This is the entire point of denormals: **gradual underflow**. Without denormals, there would be a gap from 0 to 2^(-126), and the property `a - b == 0 implies a == b` would break.
 
 **Largest normal:**
-```
+```text
 S=0, E=1111_1110 (=254), M=111_1111_1111_1111_1111_1111
 Hex: 0x7F7FFFFF
 Value: 1.111...111 * 2^(254-127) = (2 - 2^(-23)) * 2^127
@@ -93,20 +93,20 @@ Value: 1.111...111 * 2^(254-127) = (2 - 2^(-23)) * 2^127
 ```
 
 **Positive infinity:**
-```
+```text
 S=0, E=1111_1111, M=000_0000_0000_0000_0000_0000
 Hex: 0x7F800000
 ```
 
 **Quiet NaN (canonical):**
-```
+```ascii-graph
 S=0, E=1111_1111, M=100_0000_0000_0000_0000_0000
 Hex: 0x7FC00000
 MSB of mantissa = 1 → quiet (does not trap)
 ```
 
 **Signaling NaN:**
-```
+```ascii-graph
 S=0, E=1111_1111, M=010_0000_0000_0000_0000_0000
 Hex: 0x7FA00000
 MSB of mantissa = 0, rest ≠ 0 → signaling (raises exception when used)
@@ -118,7 +118,7 @@ MSB of mantissa = 0, rest ≠ 0 → signaling (raises exception when used)
 
 ### Hardware Architecture: 5-Stage Pipeline
 
-```
+```ascii-graph
 Stage 1: EXPONENT COMPARE + SWAP
   - Subtract exponents: d = E_A - E_B (8-bit subtractor)
   - If d < 0: swap operands (A becomes the larger-exponent operand)
@@ -160,7 +160,7 @@ When |d| >= 2, the alignment shift discards many bits of the smaller operand. Af
 
 **Dual-path architecture:**
 
-```
+```ascii-graph
 FAR PATH (|d| >= 2):
   - Full alignment shift
   - Add/subtract
@@ -186,15 +186,15 @@ SELECT: based on |d|, choose far or close path result
 The LZA predicts the leading-zero count from the two mantissa inputs BEFORE the subtraction completes.
 
 **Key insight:** For subtraction A - B (with |d| <= 1), define for each bit position i:
-```
-T_i = A_i XOR B_i       (transfer: bits differ)
+```text
+T_i = A_i XOR B_i           (transfer: bits differ)
 G_i = A_i AND NOT B_i   (generate: A > B at this position)
 Z_i = NOT A_i AND B_i   (zero: A < B at this position)
 ```
 
 The leading zero pattern of A - B can be predicted from the T/G/Z pattern with at most 1 bit of error:
 
-```
+```text
 LZA pattern bit f_i = T_{i+1} XOR (G_i | Z_i)  (approximately)
 ```
 
@@ -217,19 +217,19 @@ The prefix tree computes carries for A + (~B) + 1 (which is A - B). Simultaneous
 ### Step-by-Step Pipeline
 
 **Stage 1: Sign computation**
-```
+```text
 s_result = s_A XOR s_B
 ```
 Single XOR gate. Trivial delay.
 
 **Stage 2: Exponent addition**
-```
+```text
 e_result = e_A + e_B - bias
 ```
 The bias subtraction compensates for double-counting: each input already has bias added, so adding both exponents counts bias twice. For FP32: e_result = e_A + e_B - 127.
 
 **Stage 3: Mantissa multiplication**
-```
+```text
 m_result = m_A * m_B    (m_A, m_B in [1, 2), with implicit 1)
 ```
 Product is in [1, 4). This is the critical path -- implemented via a Wallace/Dadda tree followed by a CPA. For FP32, this is a 24x24-bit unsigned multiply.
@@ -242,11 +242,11 @@ Product is in [1, 4). This is the critical path -- implemented via a Wallace/Dad
 Apply the rounding mode using GRS bits from the multiplication. This may cause a second normalization if rounding increments the mantissa to 10.000...0.
 
 **Stage 6: Special case handling**
-```
-0 * anything  = 0 (with appropriate sign per XOR rule)
-inf * finite  = inf
+```text
+0 * anything   = 0 (with appropriate sign per XOR rule)
+inf * finite   = inf
 NaN * anything = NaN
-inf * 0       = NaN (invalid operation)
+inf * 0        = NaN (invalid operation)
 ```
 
 ### Typical FP32 Pipeline Stages
@@ -262,25 +262,25 @@ Total: 4-5 cycles at ~1 GHz in modern processes.
 
 ### Worked Example: 1.5 * 3.0 in FP32
 
-```
-A = 0 01111111 10000000000000000000000  (= 1.5)
-B = 0 10000000 10000000000000000000000  (= 3.0)
+```text
+A                         = 0 01111111 10000000000000000000000  (= 1.5)
+B                         = 0 10000000 10000000000000000000000  (= 3.0)
 
-Sign:  0 XOR 0 = 0
+Sign:  0 XOR 0            = 0
 
 Exponent: 127 + 128 - 127 = 128 (biased) = +1 (unbiased)
 
 Mantissa: 1.100...0 * 1.100...0
-  = 1.1 * 1.1 (binary multiplication)
-  = 10.01 (binary) = 2.25 (decimal)
+                          = 1.1 * 1.1 (binary multiplication)
+                          = 10.01 (binary) = 2.25 (decimal)
   Full precision: 10.010000000000000000000000 (= 4.5 in [1,4))
 
 Normalize: product >= 2, shift right 1
   1.0010000000000000000000000
-  Exponent: 128 + 1 = 129 (biased) = +2 (unbiased)
+  Exponent: 128 + 1       = 129 (biased) = +2 (unbiased)
 
 Result: 0 10000001 00100000000000000000000
-  = 1.125 * 2^2 = 4.5  ✓
+                          = 1.125 * 2^2 = 4.5  ✓
 ```
 
 ---
@@ -308,16 +308,14 @@ Result: 0 10000001 00100000000000000000000
 - Integers > 2^24 cannot all be represented exactly in FP32.
 
 **Worked example:**
-```
 int 16777217 = 2^24 + 1
 
-FP32 representation:
-  Mantissa must fit in 24 bits, but 2^24 + 1 requires 25 bits.
-  Rounded to nearest-even: 2^24 = 16777216.
-  The +1 is lost -- it falls beyond the 24-bit mantissa precision.
+**FP32 representation:**
+   - Mantissa must fit in 24 bits, but 2^24 + 1 requires 25 bits.
+   - Rounded to nearest-even: 2^24 = 16777216.
+   - The +1 is lost -- it falls beyond the 24-bit mantissa precision.
 
 Verify: 16777217 -> FP32 -> back to int = 16777216.
-```
 
 ### RISC-V FCVT Instruction
 
@@ -339,7 +337,7 @@ Three extra bits (Guard, Round, Sticky) are sufficient to correctly round the in
 ### Proof Sketch
 
 After alignment and addition, the infinitely-precise result is:
-```
+```text
 R = r_{n-1} r_{n-2} ... r_1 r_0 . g r s_{k} s_{k-1} ... s_0
                                     ^
                           rounding point (between bit 0 and guard bit)
@@ -365,7 +363,7 @@ We need to round R to n bits. The question is: does the exact truncated value `T
 
 ### Implementation of Round-to-Nearest-Even
 
-```verilog
+```text
 // Inputs: mantissa (n bits), guard, round, sticky, sign
 // Output: whether to increment mantissa
 
@@ -391,7 +389,7 @@ wire [n-1:0] rounded_mantissa = mantissa + round_up;
 Produces 2 quotient bits per iteration. Quotient digits: {-2, -1, 0, +1, +2}.
 
 **Recurrence:**
-```
+```text
 w_{j+1} = 4 * w_j - q_{j+1} * D
 ```
 
@@ -405,7 +403,7 @@ The selection is based on a truncated estimate of w_j (typically top 7-8 bits) a
 
 The table entries for specific (w_hat, D_hat) regions:
 
-```
+```ascii-graph
 D range: [0.5, 1.0) (normalized divisor)
 
          D_hat →    0.5    0.625   0.75    0.875
@@ -441,29 +439,29 @@ The bug caused errors starting at the 4th significant decimal digit in approxima
 
 **Define the error:** e_i = 1/B - X_i (the difference from the true reciprocal).
 
-```
-X_{i+1} = X_i * (2 - B * X_i)
-        = X_i * (2 - B * X_i)
+```text
+X_{i+1}        = X_i * (2 - B * X_i)
+               = X_i * (2 - B * X_i)
 
 Substitute X_i = 1/B - e_i:
-X_{i+1} = (1/B - e_i) * (2 - B * (1/B - e_i))
-        = (1/B - e_i) * (2 - 1 + B*e_i)
-        = (1/B - e_i) * (1 + B*e_i)
-        = 1/B + B*e_i/B - e_i - B*e_i^2
-        = 1/B + e_i - e_i - B*e_i^2
-        = 1/B - B*e_i^2
+X_{i+1}        = (1/B - e_i) * (2 - B * (1/B - e_i))
+               = (1/B - e_i) * (2 - 1 + B*e_i)
+               = (1/B - e_i) * (1 + B*e_i)
+               = 1/B + B*e_i/B - e_i - B*e_i^2
+               = 1/B + e_i - e_i - B*e_i^2
+               = 1/B - B*e_i^2
 
 Therefore:
-e_{i+1} = 1/B - X_{i+1} = B * e_i^2
+e_{i+1}        = 1/B - X_{i+1} = B * e_i^2
 ```
 
 **This is quadratic convergence:** the error is SQUARED each iteration (times B).
 
 If the initial approximation has k correct bits (|e_0| < 2^{-k}):
-```
+```text
 After iteration 1: |e_1| < B * 2^{-2k} ≈ 2^{-2k+1}  (~2k bits correct)
-After iteration 2: |e_2| < 2^{-4k+3}                    (~4k bits correct)
-After iteration 3: |e_3| < 2^{-8k+7}                    (~8k bits correct)
+After iteration 2: |e_2| < 2^{-4k+3}                                  (~4k bits correct)
+After iteration 3: |e_3| < 2^{-8k+7}                                  (~8k bits correct)
 ```
 
 **Practical convergence:**
@@ -480,9 +478,9 @@ Each iteration requires: 1 multiplication (B * X_i), 1 subtraction (2 - result),
 ### Goldschmidt vs Newton-Raphson
 
 **Goldschmidt iteration:**
-```
-N_0 = A, D_0 = B  (numerator, denominator)
-F_i = 2 - D_i
+```text
+N_0     = A, D_0 = B  (numerator, denominator)
+F_i     = 2 - D_i
 N_{i+1} = N_i * F_i
 D_{i+1} = D_i * F_i
 ```
@@ -490,14 +488,14 @@ D_{i+1} = D_i * F_i
 As D → 1, N → A/B.
 
 **Convergence:** Same as N-R (quadratic). Let e_i = 1 - D_i:
-```
-D_{i+1} = D_i * (2 - D_i) = D_i * (1 + (1 - D_i)) = D_i + D_i*(1-D_i)
+```text
+D_{i+1}     = D_i * (2 - D_i) = D_i * (1 + (1 - D_i)) = D_i + D_i*(1-D_i)
 
 1 - D_{i+1} = 1 - D_i*(2-D_i) = 1 - 2*D_i + D_i^2 = (1 - D_i)^2 = e_i^2
 ```
 
 **Key advantage:** N_{i+1} = N_i * F_i and D_{i+1} = D_i * F_i are INDEPENDENT multiplications. With two multipliers, both can execute in parallel, halving the latency:
-```
+```text
 N-R per iteration: 3 serial multiplications
 Goldschmidt per iteration: 1 mul for F + 2 parallel muls (N*F, D*F) = 2 serial muls
 ```
@@ -513,7 +511,7 @@ Goldschmidt per iteration: 1 mul for F + 2 parallel muls (N*F, D*F) = 2 serial m
 ### Why FMA Is Critical for Dot Products
 
 Without FMA, computing a dot product a0*b0 + a1*b1 + ... + a_{n-1}*b_{n-1}:
-```
+```text
 temp0 = round(a0 * b0)        // 1 rounding
 temp1 = round(temp0 + a1*b1)  // 2 roundings (1 for mul, 1 for add)... wait
 ```
@@ -532,7 +530,7 @@ In an FMA computing A*B + C:
 - Alignment of C relative to the product can require shifting by up to 2*E_max positions
 
 The adder in the FMA must handle the full product width PLUS the alignment range:
-```
+```text
 Adder width ≈ 2p + 2 (for product) + p (for C alignment overshoot)
             ≈ 3p + 2 bits
 
@@ -545,24 +543,24 @@ This is why FMA is area-expensive — the adder is much wider than a normal FP a
 ### FMA for Division and Square Root
 
 **Division via FMA:**
-```
+```text
 1. X_0 = LUT(B)                    // initial approximation of 1/B
-2. X_1 = fma(-B, X_0, 2) * X_0    // N-R iteration (single rounding!)
+2. X_1 = fma(-B, X_0, 2) * X_0     // N-R iteration (single rounding!)
    More precisely:
-   r = fma(-B, X_0, 1)             // r = 1 - B*X_0 (exact with FMA)
-   X_1 = fma(X_0, r, X_0)         // X_1 = X_0 + X_0*r = X_0*(1+r) ≈ X_0*(2-B*X_0)
+   r   = fma(-B, X_0, 1)             // r = 1 - B*X_0 (exact with FMA)
+   X_1 = fma(X_0, r, X_0)          // X_1 = X_0 + X_0*r = X_0*(1+r) ≈ X_0*(2-B*X_0)
 3. Repeat until converged
-4. Q = fma(A, X_final, 0)          // Q = A * (1/B) = A/B
+4. Q   = fma(A, X_final, 0)          // Q = A * (1/B) = A/B
 ```
 
 The FMA ensures each N-R iteration loses NO precision from intermediate rounding.
 
 **Square root via FMA:**
-```
-1. Y_0 = LUT(A)                    // initial approximation of 1/sqrt(A)
-2. h = 0.5 * Y_0
-   r = fma(-A, Y_0*Y_0, 1)        // r = 1 - A*Y_0^2
-   Y_1 = fma(h, r, Y_0)           // Y_1 = Y_0 + 0.5*Y_0*r (N-R for reciprocal sqrt)
+```text
+1. Y_0     = LUT(A)                    // initial approximation of 1/sqrt(A)
+2. h       = 0.5 * Y_0
+   r       = fma(-A, Y_0*Y_0, 1)        // r = 1 - A*Y_0^2
+   Y_1     = fma(h, r, Y_0)           // Y_1 = Y_0 + 0.5*Y_0*r (N-R for reciprocal sqrt)
 3. Repeat
 4. sqrt(A) = A * Y_final
 ```
@@ -584,18 +582,18 @@ IEEE 754 specifies:
 ### Signed Zero Semantics
 
 IEEE 754 has both +0 and -0. Key rules:
-```
+```text
 +0 == -0  is TRUE
 +0 < -0   is FALSE (they compare equal)
-1/(+0) = +inf
-1/(-0) = -inf
-log(+0) = -inf
-log(-0) = NaN (negative input to log)
+1/(+0)      = +inf
+1/(-0)      = -inf
+log(+0)     = -inf
+log(-0)     = NaN (negative input to log)
 
 (-0) + (-0) = -0
 (-0) + (+0) = +0 (in default rounding mode)
--(+0) = -0
--(-0) = +0
+-(+0)       = -0
+-(-0)       = +0
 ```
 
 **Why signed zero matters:** In complex analysis and branch cuts. For example, `sqrt(-1 + 0i)` and `sqrt(-1 - 0i)` produce different results on different sides of the branch cut. The sign of zero determines which side.
@@ -629,37 +627,37 @@ Denormal numbers have exponent = 0 (minimum) and no implicit leading 1. This cre
 ### Compute 1.5 + 0.125 in IEEE 754 Single Precision
 
 **Step 0: Encode operands**
-```
-A = 1.5 = 1.1 (binary) = 1.1 * 2^0
+```text
+A               = 1.5 = 1.1 (binary) = 1.1 * 2^0
   S=0, E_stored = 0+127 = 127 = 0111_1111
-  M = 10000...0 (23 bits, implicit leading 1)
+  M             = 10000...0 (23 bits, implicit leading 1)
   Hex: 0x3FC00000
 
-B = 0.125 = 0.001 (binary) = 1.0 * 2^(-3)
+B               = 0.125 = 0.001 (binary) = 1.0 * 2^(-3)
   S=0, E_stored = -3+127 = 124 = 0111_1100
-  M = 00000...0 (23 bits, implicit leading 1)
+  M             = 00000...0 (23 bits, implicit leading 1)
   Hex: 0x3E000000
 ```
 
 **Step 1: Exponent comparison**
-```
+```text
 d = E_A - E_B = 127 - 124 = 3
 A has the larger exponent. No swap needed.
 ```
 
 **Step 2: Alignment shift**
-```
-M_A = 1.10000000000000000000000 (1 + 23 bits)
-M_B = 1.00000000000000000000000
+```text
+M_A         = 1.10000000000000000000000 (1 + 23 bits)
+M_B         = 1.00000000000000000000000
 
 Right-shift M_B by 3:
 M_B_aligned = 0.00100000000000000000000|0|0|0
                                           G R S (all shifted-out bits)
-G = 0, R = 0, S = 0
+G           = 0, R = 0, S = 0
 ```
 
 **Step 3: Mantissa addition**
-```
+```text
   1.10000000000000000000000
 + 0.00100000000000000000000
 = 1.10100000000000000000000
@@ -668,18 +666,18 @@ No overflow (result < 2.0), no leading zeros.
 ```
 
 **Step 4: Normalization**
-```
+```ascii-graph
 Result is already in [1, 2) → no shift needed.
 E_result = 127 (same as A)
 ```
 
 **Step 5: Rounding**
-```
+```ascii-graph
 GRS = 000 → truncate (no rounding needed)
 ```
 
 **Step 6: Encode result**
-```
+```text
 S=0, E_stored=127=0111_1111, M=10100000000000000000000
 Value = 1.101 * 2^0 = 1.625
 Hex: 0x3FD00000
@@ -690,7 +688,7 @@ Verify: 1.5 + 0.125 = 1.625. Correct.
 ### Trickier Example: 1.0 - 0.9999999 (Near-Cancellation)
 
 This demonstrates the close-path scenario:
-```
+```text
 A = 1.0     = 1.000...0 * 2^0  (E=127)
 B = 0.99999 ≈ 1.111...1 * 2^(-1) (E=126)
 
@@ -698,13 +696,13 @@ d = 127 - 126 = 1 (close path, |d| <= 1)
 ```
 
 Alignment: shift B right by 1:
-```
-M_A =      1.00000000000000000000000
+```text
+M_A         =      1.00000000000000000000000
 M_B_aligned = 0.11111111111111111111111|1|0|0  (approximately, for 0.99999...)
 ```
 
 Subtraction:
-```
+```text
   1.00000000000000000000000
 - 0.11111111111111111111111 1
 = 0.00000000000000000000000 1...  (massive cancellation!)
@@ -774,7 +772,7 @@ This is why the dual-path adder exists — only the close path handles this mass
 
 **Why subnormals exist:** Without subnormals, the smallest positive normal number is 2^(-126) for single precision. Numbers smaller than this would flush to zero, creating a large gap between 0 and 2^(-126). This gap breaks the fundamental property:
 
-```
+```text
 a != b  implies  a - b != 0
 ```
 
@@ -782,31 +780,27 @@ Without subnormals, two distinct small normal numbers could subtract to zero (be
 
 **Gradual underflow:** Subnormals fill the gap [0, 2^(-126)] with evenly-spaced values:
 
-```
-Spacing in subnormal range = 2^(-149) (for single precision)
-  = 2^(-126) * 2^(-23) = E_min * epsilon
+- **Spacing in subnormal range** = `2^(-149) (for single precision)`
+   - = 2^(-126) * 2^(-23) = E_min * epsilon
 
 Subnormal values: k * 2^(-149) for k = 1, 2, ..., 2^23 - 1
-  Smallest: 1 * 2^(-149) ≈ 1.4e-45
-  Largest:  (2^23 - 1) * 2^(-149) ≈ 1.175e-38
+Smallest: 1 * 2^(-149) ≈ 1.4e-45
+Largest:  (2^23 - 1) * 2^(-149) ≈ 1.175e-38
 
 Normal values start at: 2^23 * 2^(-149) = 2^(-126) ≈ 1.175e-38
-```
 
 The transition is seamless — the largest subnormal is exactly 1 ULP below the smallest normal.
 
 **Representation details:**
 
-```
-Subnormal format: (-1)^S * 0.M * 2^(1 - bias) = (-1)^S * 0.M * 2^(-126)
-  - Exponent field is all zeros (stored exponent = 0)
-  - No implicit leading 1 (mantissa starts with 0.)
-  - Effective exponent is FIXED at E_min = -126 (not -127!)
-  - This E_min = 1 - bias choice ensures continuity with normals
+- **Subnormal format** — (-1)^S * 0.M * 2^(1 - bias) = (-1)^S * 0.M * 2^(-126)
+- Exponent field is all zeros (stored exponent = 0)
+- No implicit leading 1 (mantissa starts with 0.)
+- Effective exponent is FIXED at E_min = -126 (not -127!)
+- This E_min = 1 - bias choice ensures continuity with normals
 
-Normal format:    (-1)^S * 1.M * 2^(E_stored - bias)
-  - Smallest normal: 1.0 * 2^(1 - 127) = 2^(-126)
-```
+- **Normal format** — (-1)^S * 1.M * 2^(E_stored - bias)
+- Smallest normal: 1.0 * 2^(1 - 127) = 2^(-126)
 
 **Hardware performance penalty:**
 
@@ -847,7 +841,7 @@ Subnormals cause problems in every FPU pipeline stage:
 
 **Propagation rules (IEEE 754-2008/2019):**
 
-```
+```ascii-graph
 Rule 1: If any operand is SNaN → raise invalid exception → return QNaN
   The returned QNaN is typically the SNaN with its quiet bit set.
 
@@ -900,53 +894,53 @@ IEEE 754 defines precise results for all operations involving infinity:
 
 **Addition and subtraction:**
 
-```
+```text
 (+inf) + (+inf) = +inf
 (-inf) + (-inf) = -inf
-(+inf) + (-inf) = NaN  (indeterminate)
-(-inf) + (+inf) = NaN  (indeterminate)
+(+inf) + (-inf) = NaN   (indeterminate)
+(-inf) + (+inf) = NaN   (indeterminate)
 (+inf) + x      = +inf  (for any finite x)
 (-inf) + x      = -inf  (for any finite x)
 
 (+inf) - (-inf) = +inf
 (-inf) - (+inf) = -inf
-(+inf) - (+inf) = NaN  (indeterminate)
-(-inf) - (-inf) = NaN  (indeterminate)
+(+inf) - (+inf) = NaN   (indeterminate)
+(-inf) - (-inf) = NaN   (indeterminate)
 ```
 
 **Multiplication:**
 
-```
+```text
 (+inf) * (+inf) = +inf
 (+inf) * (-inf) = -inf
 (-inf) * (-inf) = +inf
 (+inf) * x      = +inf  (for finite x > 0)
 (+inf) * x      = -inf  (for finite x < 0)
-(+inf) * 0      = NaN   (indeterminate: 0 * inf)
-(-inf) * 0      = NaN   (indeterminate)
+(+inf) * 0      = NaN    (indeterminate: 0 * inf)
+(-inf) * 0      = NaN    (indeterminate)
 ```
 
 **Division:**
 
-```
-(+inf) / (+inf) = NaN   (indeterminate: inf/inf)
-x / (+inf)      = +0    (for finite x >= 0)
-x / (-inf)      = -0    (for finite x >= 0)
+```text
+(+inf) / (+inf) = NaN    (indeterminate: inf/inf)
+x / (+inf)      = +0      (for finite x >= 0)
+x / (-inf)      = -0      (for finite x >= 0)
 x / (+0)        = +inf  (for finite x > 0, division by zero exception)
 x / (-0)        = -inf  (for finite x > 0, division by zero exception)
-(+0) / (+0)     = NaN   (indeterminate: 0/0)
+(+0) / (+0)     = NaN    (indeterminate: 0/0)
 (+inf) / x      = +inf  (for finite x > 0)
 (+inf) / (+0)   = +inf
 ```
 
 **Other operations:**
 
-```
+```text
 sqrt(+inf)      = +inf
-sqrt(-inf)      = NaN   (invalid)
+sqrt(-inf)      = NaN    (invalid)
 log(+inf)       = +inf
 log(0)          = -inf  (division by zero exception)
-log(-x)         = NaN   (invalid, for x > 0)
+log(-x)         = NaN    (invalid, for x > 0)
 exp(+inf)       = +inf
 exp(-inf)       = +0
 ```
@@ -957,7 +951,7 @@ exp(-inf)       = +0
 
 **Complete signed zero rules:**
 
-```
+```ascii-graph
 Arithmetic:
   (+0) + (+0)  = +0
   (-0) + (-0)  = -0
@@ -1005,7 +999,7 @@ This requires a small truth table (about 8 entries) encoded as combinational log
 
 The standard IEEE comparison returns one of four results: less, equal, greater, or **unordered** (when at least one operand is NaN). This creates non-intuitive behavior:
 
-```
+```ascii-graph
 NaN == NaN  → false (unordered)
 NaN != NaN  → true  (the ONLY value that is not equal to itself)
 NaN < 1.0   → false
@@ -1022,7 +1016,7 @@ Consequence: sorting algorithms that assume trichotomy (a < b, a == b, or a > b)
 
 **totalOrder (IEEE 754-2008):** A total ordering that IS reflexive and handles NaN:
 
-```
+```text
 totalOrder places all values in a single chain:
   -NaN < -inf < -finite < -0 < +0 < +finite < +inf < +NaN
   
@@ -1071,21 +1065,19 @@ wire ieee_lt = ~unordered & (
 
 Why "banker's rounding" prevents statistical bias: simple round-half-up always rounds 0.5 upward, introducing a systematic positive bias over many operations. RNE rounds ties to the nearest EVEN value, so half the ties round up and half round down (statistically). Over millions of operations, the accumulated rounding error averages to approximately zero.
 
-```
-Examples (decimal analogy):
-  2.5 → rounds to 2 (nearest even)
-  3.5 → rounds to 4 (nearest even)
-  4.5 → rounds to 4 (nearest even)
-  5.5 → rounds to 6 (nearest even)
-  
-  Average rounding direction: 2 up, 2 down → zero bias
-```
+**Examples (decimal analogy):**
+   - 2.5 → rounds to 2 (nearest even)
+   - 3.5 → rounds to 4 (nearest even)
+   - 4.5 → rounds to 4 (nearest even)
+   - 5.5 → rounds to 6 (nearest even)
+
+Average rounding direction: 2 up, 2 down → zero bias
 
 **Mode 2: Round toward +infinity (ceiling)**
 
 Always rounds toward positive infinity. Non-exact positive results round up; non-exact negative results round toward zero (which is toward +inf).
 
-```
+```ascii-graph
 +1.1 → +2    (rounded up)
 -1.1 → -1    (rounded toward +inf, i.e., toward zero)
 +1.0 → +1    (exact, no rounding)
@@ -1095,7 +1087,7 @@ Always rounds toward positive infinity. Non-exact positive results round up; non
 
 Always rounds toward negative infinity. Non-exact positive results round toward zero (toward -inf); non-exact negative results round down (more negative).
 
-```
+```ascii-graph
 +1.1 → +1    (rounded toward -inf, i.e., toward zero)
 -1.1 → -2    (rounded down, more negative)
 ```
@@ -1104,7 +1096,7 @@ Always rounds toward negative infinity. Non-exact positive results round toward 
 
 Always rounds toward zero — simply discard the fractional bits. Positive numbers round down, negative numbers round up (toward zero).
 
-```
+```ascii-graph
 +1.9 → +1    (truncated)
 -1.9 → -1    (truncated toward zero)
 ```
@@ -1115,17 +1107,17 @@ Always rounds toward zero — simply discard the fractional bits. Positive numbe
 
 **Setup:**
 
-```
-A = 1.0  = 1.00000000000000000000000 * 2^0     (E=127)
-B = 2^(-24) = 1.00000000000000000000000 * 2^(-24)  (E=103)
+```text
+A                      = 1.0  = 1.00000000000000000000000 * 2^0     (E=127)
+B                      = 2^(-24) = 1.00000000000000000000000 * 2^(-24)  (E=103)
 
 Exponent difference: d = 127 - 103 = 24
 ```
 
 **Alignment shift (shift B right by 24):**
 
-```
-M_A = 1.00000000000000000000000  (24 bits: 1 implicit + 23 stored)
+```text
+M_A         = 1.00000000000000000000000  (24 bits: 1 implicit + 23 stored)
 M_B before shift: 1.00000000000000000000000
 
 Shift right by 24:
@@ -1133,12 +1125,12 @@ M_B_aligned = 0.00000000000000000000000 | 1 | 0 | 0
                                            G   R   S
 
 The implicit 1 of B lands exactly in the Guard bit position.
-G = 1, R = 0, S = 0
+G           = 1, R = 0, S = 0
 ```
 
 **Mantissa addition:**
 
-```
+```text
   1.00000000000000000000000   (A)
 + 0.00000000000000000000000   (B aligned, truncated to 24 bits)
 = 1.00000000000000000000000
@@ -1148,22 +1140,20 @@ The aligned B contributes 0 to the 24-bit mantissa. All its information is in GR
 
 **Infinitely precise result:**
 
-```
-True result = 1.00000000000000000000000 1  (binary)
-                                         ^-- this is the 25th bit (Guard position)
+- **True result** = `1.00000000000000000000000 1  (binary)`
+   - ^-- this is the 25th bit (Guard position)
 = 1.0 + 2^(-24)  = 1 + 2^(-24)
 
-The representable neighbors are:
-  Lower: 1.00000000000000000000000 * 2^0  = 1.0
-  Upper: 1.00000000000000000000001 * 2^0  = 1.0 + 2^(-23)
+**The representable neighbors are:**
+   - Lower: 1.00000000000000000000000 * 2^0  = 1.0
+   - Upper: 1.00000000000000000000001 * 2^0  = 1.0 + 2^(-23)
 
 The true result is EXACTLY halfway between them:
-  1.0 + 2^(-24) = 1.0 + (2^(-23))/2 = midpoint
-```
+1.0 + 2^(-24) = 1.0 + (2^(-23))/2 = midpoint
 
 **Rounding decisions:**
 
-```
+```ascii-graph
 GRS = 100 (Guard=1, Round=0, Sticky=0) → exact tie (halfway case)
 LSB of truncated mantissa = bit 0 = 0 (even)
 
@@ -1194,7 +1184,7 @@ Mode 4 — Round toward zero:
 
 **Compute 1.0 + 1.5 * 2^(-24) in single precision (RNE):**
 
-```
+```ascii-graph
 A = 1.0 = 1.00000000000000000000000 * 2^0
 B = 1.5 * 2^(-24) = 1.10000000000000000000000 * 2^(-24)
 
@@ -1224,21 +1214,21 @@ Result: 1.00000000000000000000001 * 2^0 = 1.0 + 2^(-23)
 
 The simplest form of SRT (Sweeney, Robertson, Tocher) division. Quotient digits are from {-1, 0, +1} — a redundant signed-digit representation.
 
-```
+```text
 Recurrence: w_{j+1} = 2 * w_j - q_{j+1} * D
 
 Where:
-  w_j = partial remainder (initially = dividend N)
+  w_j               = partial remainder (initially = dividend N)
   D = divisor (normalized: 0.5 <= D < 1)
-  q_{j+1} = quotient digit selected from {-1, 0, +1}
+  q_{j+1}           = quotient digit selected from {-1, 0, +1}
 ```
 
 Quotient digit selection for radix-2 SRT is trivial — based on the sign and magnitude of the partial remainder:
 
-```
-If w_j >= D/2:    q = +1  (subtract D from shifted remainder)
+```text
+If w_j >= D/2:    q = +1      (subtract D from shifted remainder)
 If -D/2 <= w_j < D/2:  q = 0   (no correction, just shift)
-If w_j < -D/2:   q = -1  (add D to shifted remainder)
+If w_j < -D/2:   q = -1       (add D to shifted remainder)
 ```
 
 **Key advantage of redundancy:** The selection of q only depends on a few MSBs of w_j (typically 3-4 bits) because the regions overlap. Without redundancy (non-restoring division, q in {-1, +1}), the selection boundary is exactly at w=0, requiring full-precision comparison.
@@ -1247,13 +1237,13 @@ If w_j < -D/2:   q = -1  (add D to shifted remainder)
 
 Produces 2 bits per iteration. Quotient digits: {-2, -1, 0, +1, +2}.
 
-```
+```text
 Recurrence: w_{j+1} = 4 * w_j - q_{j+1} * D
 ```
 
 The quotient digit selection function is more complex — it's a 2D function of (truncated w, truncated D). This is the P-D diagram (partial remainder vs divisor):
 
-```
+```ascii-graph
 P-D Diagram for Radix-4 SRT:
 
   Partial            The diagram shows selection regions.
@@ -1277,14 +1267,14 @@ P-D Diagram for Radix-4 SRT:
 
 The partial remainder w is maintained in carry-save (redundant) form to avoid long carry propagation chains:
 
-```
-w = w_sum + w_carry  (two vectors, no carry propagation)
+```text
+w                                                                = w_sum + w_carry  (two vectors, no carry propagation)
 
 Each iteration:
   1. Truncate w_sum and w_carry to get w_hat (top 7-8 bits)
-     w_hat = w_sum[MSBs] + w_carry[MSBs]  (short CPA, ~8 bits)
+     w_hat                                                       = w_sum[MSBs] + w_carry[MSBs]  (short CPA, ~8 bits)
   2. Look up q_{j+1} in the selection table using (w_hat, D_hat)
-  3. Compute: [w_sum_new, w_carry_new] = CSA(4*w_sum, 4*w_carry, -q*D)
+  3. Compute: [w_sum_new, w_carry_new]                           = CSA(4*w_sum, 4*w_carry, -q*D)
      The 4x is a 2-bit left shift (free in hardware)
      -q*D is: 0 (q=0), -D (q=+1), +D (q=-1), -2D (q=+2), +2D (q=-2)
      2D is D left-shifted by 1 (also free)
@@ -1297,7 +1287,7 @@ Typically 1 clock cycle per iteration at high frequency.
 
 The signed-digit quotient {-2,-1,0,+1,+2} must be converted to standard binary. This is done on-the-fly using two registers QP (positive running quotient) and QM (QP minus 1 ULP):
 
-```
+```text
 On each new digit q:
   If q >= 0: QP_new = QP_old << 2 | q;   QM_new = QP_old << 2 | (q-1)
   If q < 0:  QP_new = QM_old << 2 | (4+q); QM_new = QM_old << 2 | (4+q-1)
@@ -1309,7 +1299,7 @@ At the end: if final remainder >= 0, result = QP, else result = QM.
 
 **Algorithm:**
 
-```
+```ascii-graph
 Given: compute Q = N / D, where 0.5 <= D < 1 (normalized)
 
 Step 0: Initial approximation
@@ -1326,7 +1316,7 @@ Step 1-k: Iterate
 
 **Quadratic convergence proof:**
 
-```
+```ascii-graph
 Let e_i = 1 - D_i  (error in D from the target value 1)
 
 D_{i+1} = D_i * F_i = D_i * (2 - D_i)
@@ -1362,40 +1352,36 @@ If |e_0| < 2^(-8)  (8-bit initial approximation):
 
 The initial reciprocal approximation comes from a ROM lookup table indexed by the top bits of the divisor:
 
-```
-Table parameters:
-  Input:  top k bits of D (after normalization, D in [0.5, 1))
-  Output: m bits approximating 1/D
+**Table parameters:**
+   - Input:  top k bits of D (after normalization, D in [0.5, 1))
+   - Output: m bits approximating 1/D
 
-Common configurations:
-  8-bit input → 8-bit output:  256 entries * 8 bits = 256 bytes
-    Accuracy: ~8 correct bits of 1/D
-    Sufficient for SP with 2 N-R iterations
+**Common configurations:**
+   - 8-bit input → 8-bit output:  256 entries * 8 bits = 256 bytes
+   - Accuracy: ~8 correct bits of 1/D
+   - Sufficient for SP with 2 N-R iterations
 
-  10-bit input → 10-bit output: 1024 entries * 10 bits = 1.25 KB
-    Accuracy: ~10 correct bits
-    Sufficient for DP with 3 N-R iterations
+10-bit input → 10-bit output: 1024 entries * 10 bits = 1.25 KB
+Accuracy: ~10 correct bits
+Sufficient for DP with 3 N-R iterations
 
-  8-bit input → 16-bit output:  256 entries * 16 bits = 512 bytes
-    Accuracy: ~15+ correct bits (lookup can exceed input precision
-    by using fine-grained tabulation + linear interpolation)
-    Can reduce DP to 2 iterations
+8-bit input → 16-bit output:  256 entries * 16 bits = 512 bytes
+Accuracy: ~15+ correct bits (lookup can exceed input precision
+by using fine-grained tabulation + linear interpolation)
+Can reduce DP to 2 iterations
 
-Error bound for k-bit lookup:
-  Maximum table error ≈ 2^(-(k+1)) (half an ULP of the table output)
-  With linear interpolation between entries: error ≈ 2^(-2k)
-```
+**Error bound for k-bit lookup:**
+   - Maximum table error ≈ 2^(-(k+1)) (half an ULP of the table output)
+   - With linear interpolation between entries: error ≈ 2^(-2k)
 
 **Bipartite table optimization:** Instead of a single large table, use two smaller tables whose outputs are added:
 
-```
 Table A: indexed by top k1 bits of D → coarse approximation
 Table B: indexed by top k1 bits AND next k2 bits → correction term
-Result = Table_A[D_high] + Table_B[D_high][D_mid]
+- **Result** = `Table_A[D_high] + Table_B[D_high][D_mid]`
 
 Total entries: 2^k1 + 2^(k1+k2) (much less than 2^(k1+k2) for a single table)
 Accuracy: comparable to a single (k1+k2)-bit table
-```
 
 This technique reduces table area by 50-70% for the same accuracy and is widely used in production FPU designs.
 
@@ -1419,51 +1405,32 @@ The FMA computes `round(a * b + c)` with a **single rounding** at the end, inste
 
 ### Hardware Architecture — Pipeline Stages
 
-```
-                      a (p bits)    b (p bits)    c (p bits, with exponent)
-                      │              │              │
-                ┌─────▼──────────────▼─────┐       │
- Stage 1:       │   p x p Multiplier Array │       │ Exponent compare
-                │   (partial product tree) │       │ & alignment shift
-                │   Result: 2p bits        │       │ calculation
-                └──────────┬───────────────┘       │
-                           │ (2p-bit product       │
-                           │  in carry-save)       │
-                ┌──────────▼───────────────────────▼──────┐
- Stage 2:       │  Alignment: shift c by (Ea+Eb-Ec)      │
-                │  positions to align with product        │
-                │  Adder width: ~3p bits                  │
-                │  3-input carry-save adder (product_sum, │
-                │  product_carry, aligned_c)              │
-                └──────────┬──────────────────────────────┘
-                           │
-                ┌──────────▼──────────────────────────────┐
- Stage 3:       │  Carry-propagate addition (3p bits)     │
-                │  Leading-zero anticipator (parallel)    │
-                └──────────┬──────────────────────────────┘
-                           │
-                ┌──────────▼──────────────────────────────┐
- Stage 4:       │  Normalization shift (up to 2p+1 bits) │
-                │  Exponent adjustment                    │
-                └──────────┬──────────────────────────────┘
-                           │
-                ┌──────────▼──────────────────────────────┐
- Stage 5:       │  Rounding (single rounding!)            │
-                │  Post-normalization (if round overflow)  │
-                │  Special case handling (NaN, inf, zero)  │
-                └──────────┬──────────────────────────────┘
-                           │
-                        result
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    A["a (p bits)"] --> S1
+    B["b (p bits)"] --> S1
+    C["c (p bits, with exponent)"] --> EC["Exponent compare<br/>&amp; alignment-shift calc"]
+    S1["Stage 1 — p×p multiplier array<br/>(partial-product tree)<br/>result: 2p bits (carry-save)"]
+    S1 -->|"2p-bit product (carry-save)"| S2
+    EC --> S2
+    S2["Stage 2 — Alignment: shift c by (Ea+Eb−Ec)<br/>3-input carry-save adder, ~3p bits"]
+    S2 --> S3["Stage 3 — Carry-propagate add (3p bits)<br/>leading-zero anticipator (parallel)"]
+    S3 --> S4["Stage 4 — Normalization shift (≤ 2p+1 bits)<br/>exponent adjustment"]
+    S4 --> S5["Stage 5 — Rounding (single!)<br/>post-normalization + special cases (NaN, inf, 0)"]
+    S5 --> R["result"]
+    classDef st fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef io fill:#e2e8f0,stroke:#475569,color:#000
+    class S1,S2,S3,S4,S5 st
+    class A,B,C,EC,R io
 ```
 
 **Key widths (double precision, p = 53):**
 
-```
-Multiplier array: 53 x 53 = 106-bit product (in carry-save: two 106-bit vectors)
-Alignment shift: c can be shifted by up to 2*E_max ≈ 2048 positions
-Adder: ~161 bits wide (106 for product + 53 for c alignment + guard bits)
-Normalizer: barrel shifter up to 161 bits
-```
+- **Multiplier array** — 53 x 53 = 106-bit product (in carry-save: two 106-bit vectors)
+- **Alignment shift** — c can be shifted by up to 2*E_max ≈ 2048 positions
+- **Adder** — ~161 bits wide (106 for product + 53 for c alignment + guard bits)
+- **Normalizer** — barrel shifter up to 161 bits
 
 **The (p_a + p_b) bit multiplier product:**
 
@@ -1473,21 +1440,19 @@ For p-bit mantissa inputs (including implicit 1), the exact product is (2p)-bit.
 
 The addend c must be aligned so its binary point matches the product's binary point. The shift amount is:
 
-```
-shift = (E_a + E_b - bias) - E_c + p
+- **shift** = `(E_a + E_b - bias) - E_c + p`
 
 Where E_a + E_b - bias is the product's exponent.
 Shift can be from -(2p) to +(2*E_max):
-  - Large positive shift: c is much smaller than product → shift c right (lose precision of c)
-  - Large negative shift: c is much larger than product → product is effectively zero
-  - Small shift: both contribute significantly → this is the hard case
-```
+- Large positive shift: c is much smaller than product → shift c right (lose precision of c)
+   - Large negative shift: c is much larger than product → product is effectively zero
+   - Small shift: both contribute significantly → this is the hard case
 
 ### Latency and Critical Path Analysis
 
 Typical FMA pipeline: **4-5 stages**, total latency **4-5 cycles** at 1-2 GHz in modern process nodes.
 
-```
+```text
 Stage 1 (Multiply): Booth-encoded partial product generation + Wallace tree reduction
   Latency: ~1.5 ns (in 7nm)
   This is the same as a standalone multiplier's critical path
@@ -1515,20 +1480,20 @@ Stage 5 (Round): Incrementer + special-case MUX
 
 **Division using FMA (Newton-Raphson):**
 
-```
-Goal: Q = A / B
+```text
+Goal: Q                         = A / B
 
-Step 0: x0 = LUT(B)           // ~8-10 bit approximation of 1/B
-Step 1: e0 = fma(-B, x0, 1.0) // e0 = 1 - B*x0 (exact with FMA!)
-        x1 = fma(x0, e0, x0)  // x1 = x0 + x0*e0 = x0*(1+e0) ≈ 1/B
-Step 2: e1 = fma(-B, x1, 1.0) // e1 = 1 - B*x1
-        x2 = fma(x1, e1, x1)  // x2 = x1*(1+e1) ≈ 1/B (more accurate)
-Step 3 (for DP): e2 = fma(-B, x2, 1.0)
-                 x3 = fma(x2, e2, x2)
-Final:  Q = fma(A, x3, 0.0)   // Q = A * (1/B)
-        (or: Q = A * x3 with a separate multiply)
+Step 0: x0                      = LUT(B)           // ~8-10 bit approximation of 1/B
+Step 1: e0                      = fma(-B, x0, 1.0) // e0 = 1 - B*x0 (exact with FMA!)
+        x1                      = fma(x0, e0, x0)  // x1 = x0 + x0*e0 = x0*(1+e0) ≈ 1/B
+Step 2: e1                      = fma(-B, x1, 1.0) // e1 = 1 - B*x1
+        x2                      = fma(x1, e1, x1)  // x2 = x1*(1+e1) ≈ 1/B (more accurate)
+Step 3 (for DP): e2             = fma(-B, x2, 1.0)
+                 x3             = fma(x2, e2, x2)
+Final:  Q                       = fma(A, x3, 0.0)   // Q = A * (1/B)
+        (or: Q                  = A * x3 with a separate multiply)
 
-Residual check: r = fma(-B, Q, A)  // r = A - B*Q (exact residual!)
+Residual check: r               = fma(-B, Q, A)  // r = A - B*Q (exact residual!)
   If |r| > 0.5 ULP: Q_corrected = Q + sign(r) * ULP
 ```
 
@@ -1536,32 +1501,30 @@ The FMA is crucial here because `fma(-B, x_i, 1.0)` computes `1 - B*x_i` with no
 
 **Square root using FMA:**
 
-```
-Goal: S = sqrt(A)
+```text
+Goal: S                   = sqrt(A)
 
 Strategy: compute 1/sqrt(A) first, then multiply by A.
 
-Step 0: y0 = LUT(A)              // ~8-bit approximation of 1/sqrt(A)
-Step 1: h0 = 0.5 * y0
-        r0 = fma(-A, y0*y0, 1.0) // r0 = 1 - A*y0^2
-        y1 = fma(h0, r0, y0)     // y1 = y0 + 0.5*y0*r0
-Step 2: h1 = 0.5 * y1
-        r1 = fma(-A, y1*y1, 1.0)
-        y2 = fma(h1, r1, y1)
+Step 0: y0                = LUT(A)              // ~8-bit approximation of 1/sqrt(A)
+Step 1: h0                = 0.5 * y0
+        r0                = fma(-A, y0*y0, 1.0) // r0 = 1 - A*y0^2
+        y1                = fma(h0, r0, y0)     // y1 = y0 + 0.5*y0*r0
+Step 2: h1                = 0.5 * y1
+        r1                = fma(-A, y1*y1, 1.0)
+        y2                = fma(h1, r1, y1)
 ...
-Final: S = fma(A, y_final, 0.0)  // S = A * (1/sqrt(A)) = sqrt(A)
+Final: S                  = fma(A, y_final, 0.0)  // S = A * (1/sqrt(A)) = sqrt(A)
 
-Residual: r = fma(-S, S, A)      // r = A - S^2 (exact residual)
+Residual: r               = fma(-S, S, A)      // r = A - S^2 (exact residual)
   Correction: S_corrected = fma(r, 0.5*y_final, S)
 ```
 
 **Latency comparison (double precision):**
 
-```
-SRT radix-4 division:    ~27 cycles (53/2 = ~27 iterations)
-Newton-Raphson with FMA: ~16-20 cycles (3 iterations * 2 FMA + setup)
-Goldschmidt with FMA:    ~14-16 cycles (3 iterations, parallelized)
-```
+- **SRT radix-4 division** — ~27 cycles (53/2 = ~27 iterations)
+- **Newton-Raphson with FMA** — ~16-20 cycles (3 iterations * 2 FMA + setup)
+- **Goldschmidt with FMA** — ~14-16 cycles (3 iterations, parallelized)
 
 ---
 
@@ -1573,7 +1536,7 @@ Goldschmidt with FMA:    ~14-16 cycles (3 iterations, parallelized)
 
 DesignWare provides parameterizable, synthesizable floating-point operators:
 
-```
+```verilog
 DW_fp_add   — FP adder (configurable precision, pipeline stages)
 DW_fp_mult  — FP multiplier
 DW_fp_div   — FP divider (SRT or N-R selectable)
@@ -1620,7 +1583,7 @@ When DesignWare is not available (open-source projects, FPGA with non-Synopsys t
 
 The FP unit's pipeline depth directly affects achievable clock frequency and throughput:
 
-```
+```ascii-graph
 Single-precision FP adder:
   1 stage (combinational): ~2-4 ns critical path → max 250-500 MHz
   3 stages: ~0.8-1.0 ns → 1.0-1.25 GHz
@@ -1638,7 +1601,7 @@ Double-precision FP multiplier:
 
 **Trade-off considerations:**
 
-```
+```ascii-graph
 More pipeline stages:
   + Higher clock frequency (shorter critical path)
   + Better throughput (operations per second)
@@ -1659,18 +1622,16 @@ Fewer pipeline stages:
 
 Approximate gate counts and silicon area for key operations (in a modern 7nm-class process):
 
-```
-Operation          | Gate count (approx) | Relative area
--------------------+---------------------+--------------
-INT32 add          | ~200                | 1x (baseline)
-INT32 multiply     | ~3,000              | 15x
-FP32 add           | ~2,500              | 12x
-FP32 multiply      | ~8,000              | 40x
-FP32 FMA           | ~15,000             | 75x
-FP64 add           | ~5,000              | 25x
-FP64 multiply      | ~25,000             | 125x
-FP64 FMA           | ~50,000             | 250x
-```
+| Operation | Gate count (approx) | Relative area |
+|---|---|---|
+| INT32 add | ~200 | 1× (baseline) |
+| INT32 multiply | ~3,000 | 15× |
+| FP32 add | ~2,500 | 12× |
+| FP32 multiply | ~8,000 | 40× |
+| FP32 FMA | ~15,000 | 75× |
+| FP64 add | ~5,000 | 25× |
+| FP64 multiply | ~25,000 | 125× |
+| FP64 FMA | ~50,000 | 250× |
 
 **FP32 multiply vs INT32 multiply — why 5-8x more area:**
 
@@ -1688,16 +1649,14 @@ The mantissa multiplier alone is ~1.3x the area of an INT32 multiplier (24-bit v
 
 Modern AI/ML workloads have driven the creation of reduced-precision FP formats:
 
-```
-Format    | Sign | Exponent | Mantissa | Total bits | Dynamic range | Precision
-----------+------+----------+----------+------------+---------------+-----------
-FP32      | 1    | 8        | 23       | 32         | ±3.4e38       | ~7.2 decimal digits
-TF32      | 1    | 8        | 10       | 19         | ±3.4e38       | ~3.6 decimal digits
-bfloat16  | 1    | 8        | 7        | 16         | ±3.4e38       | ~2.4 decimal digits
-FP16      | 1    | 5        | 10       | 16         | ±6.5e4        | ~3.6 decimal digits
-FP8 (E4M3)| 1    | 4        | 3        | 8          | ±240          | ~1.2 decimal digits
-FP8 (E5M2)| 1    | 5        | 2        | 8          | ±5.7e4        | ~0.9 decimal digits
-```
+| Format | Sign | Exponent | Mantissa | Total bits | Dynamic range | Precision |
+|---|---|---|---|---|---|---|
+| FP32 | 1 | 8 | 23 | 32 | ±3.4e38 | ~7.2 decimal digits |
+| TF32 | 1 | 8 | 10 | 19 | ±3.4e38 | ~3.6 decimal digits |
+| bfloat16 | 1 | 8 | 7 | 16 | ±3.4e38 | ~2.4 decimal digits |
+| FP16 | 1 | 5 | 10 | 16 | ±6.5e4 | ~3.6 decimal digits |
+| FP8 (E4M3) | 1 | 4 | 3 | 8 | ±240 | ~1.2 decimal digits |
+| FP8 (E5M2) | 1 | 5 | 2 | 8 | ±5.7e4 | ~0.9 decimal digits |
 
 **bfloat16 (Brain Float 16):**
 - Created by Google Brain for ML training
@@ -1721,7 +1680,7 @@ FP8 (E5M2)| 1    | 5        | 2        | 8          | ±5.7e4        | ~0.9 deci
 
 **Hardware savings in AI accelerators:**
 
-```
+```ascii-graph
 Multiplier area scales roughly as O(mantissa_bits^2):
   FP32 multiply:    24 * 24 = 576 "multiply units"
   bfloat16 multiply: 8 * 8  = 64  "multiply units"  → ~9x smaller
@@ -1749,7 +1708,7 @@ This is why AI chips report massive TOPS/TFLOPS for lower precisions.
 
 ### FP8 (E4M3 and E5M2) — OCP Standard for AI
 
-```
+```ascii-graph
 FP8 was standardized by the Open Compute Project (OCP) in late 2022, with
 broad industry adoption (NVIDIA, AMD, Intel, ARM, Qualcomm, Google, Microsoft).
 
@@ -1788,36 +1747,34 @@ Hardware implementation:
 
 ### FP4 and Sub-Byte Formats for AI Inference
 
-```
 FP4 (multiple competing formats, not yet standardized):
 
-NVFP4 (NVIDIA Blackwell, 2024):
-  1-bit sign + 2-bit exponent + 1-bit mantissa = 4 bits
-  Very limited range: approximately ±6
-  Must be used with block scaling (MX format, see below)
+**NVFP4 (NVIDIA Blackwell, 2024):**
+   - 1-bit sign + 2-bit exponent + 1-bit mantissa = 4 bits
+   - Very limited range: approximately ±6
+   - Must be used with block scaling (MX format, see below)
 
-FP4 with E2M1 encoding:
-  Sign | Exponent (2) | Mantissa (1) = 4 bits
-  Representable values (positive): 0, 1, 1.5, 2, 3, 4, 6
-  Only 7 distinct positive values!
-  Requires per-block scaling factor to be useful
+**FP4 with E2M1 encoding:**
+   - Sign | Exponent (2) | Mantissa (1) = 4 bits
+   - Representable values (positive): 0, 1, 1.5, 2, 3, 4, 6
+   - Only 7 distinct positive values!
+   - Requires per-block scaling factor to be useful
 
-Why FP4 works for neural networks:
-  - Neural network weights are approximately normally distributed
-  - Most values cluster near zero → coarse quantization acceptable
-  - Per-block scaling compensates for limited dynamic range
-  - 2x throughput and 2x memory savings vs FP8
-  - Accuracy loss: 1-3% on most tasks (acceptable for inference)
+**Why FP4 works for neural networks:**
+   - Neural network weights are approximately normally distributed
+   - Most values cluster near zero → coarse quantization acceptable
+   - Per-block scaling compensates for limited dynamic range
+   - 2x throughput and 2x memory savings vs FP8
+   - Accuracy loss: 1-3% on most tasks (acceptable for inference)
 
-Hardware approach:
-  - FP4 stored in memory, decompressed to FP8/FP16 for compute
-  - Or: native FP4 MAC units (very small: 2x2 = 4 multiply units)
-  - NVIDIA Blackwell: FP4 tensor core support
-```
+**Hardware approach:**
+   - FP4 stored in memory, decompressed to FP8/FP16 for compute
+   - Or: native FP4 MAC units (very small: 2x2 = 4 multiply units)
+   - NVIDIA Blackwell: FP4 tensor core support
 
 ### MX (Microscaling) Formats — Block-Scaled Arithmetic
 
-```
+```ascii-graph
 MX (Microscaling) formats: OCP standard (2023) for block-scaled floating point.
 Jointly developed by AMD, ARM, Intel, NVIDIA, Qualcomm, and others.
 
@@ -1863,7 +1820,7 @@ Hardware implementation:
 
 ### BF16 Training — Industry Standard for Deep Learning
 
-```
+```ascii-graph
 Key shift: BF16 has replaced FP32 for most deep learning training workloads.
 
 Why BF16 won over FP16 for training:

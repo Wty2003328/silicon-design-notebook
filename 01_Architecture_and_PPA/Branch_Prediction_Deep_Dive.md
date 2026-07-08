@@ -42,20 +42,16 @@ is decoded and its offset computed -- a delay of 1--3 stages.
 
 ### 1.2 Set-Associative Structure
 
+```wavedrom
+{"reg":[
+  {"bits":1,"name":"Valid"},
+  {"bits":3,"name":"BrType"},
+  {"bits":32,"name":"Target PC"},
+  {"bits":18,"name":"Tag"}
+]}
 ```
-BTB Entry Format (typical 28--36 bits):
-+----------+-----------+----------+--------+
-| Tag      | Target PC | BrType   | Valid  |
-| [17:0]   | [31:0]    | [2:0]    | [0]    |
-+----------+-----------+----------+--------+
 
-BrType encoding:
-  000 = conditional branch
-  001 = unconditional jump
-  010 = CALL (push to RAS)
-  011 = RETURN (pop from RAS)
-  100 = indirect jump (target may vary)
-```
+BTB entry (typical 28–36 bits). `BrType` encoding: `000` conditional branch, `001` unconditional jump, `010` CALL (push to RAS), `011` RETURN (pop from RAS), `100` indirect jump (target may vary).
 
 **Indexing**: `PC[11:2]` provides a 10-bit index into 1024 sets. The tag is
 `PC[31:12]` (upper 20 bits). A hit requires both tag match and valid bit set.
@@ -103,27 +99,25 @@ When a branch is resolved (execute stage):
 The simplest dynamic predictor: each branch maps to a 2-bit saturating counter
 that tracks recent behavior.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+stateDiagram-v2
+    direction LR
+    ST: Strongly Taken (11) · predict T
+    WT: Weakly Taken (10) · predict T
+    WNT: Weakly Not-Taken (01) · predict NT
+    SNT: Strongly Not-Taken (00) · predict NT
+    ST --> ST: Taken
+    ST --> WT: Not Taken
+    WT --> ST: Taken
+    WT --> WNT: Not Taken
+    WNT --> WT: Taken
+    WNT --> SNT: Not Taken
+    SNT --> WNT: Taken
+    SNT --> SNT: Not Taken
 ```
-State Machine:
 
-         mispredict          mispredict
-   +---> Strongly Taken (11) -------> Weakly Taken (10) ---+
-   |          ^                              |              |
-   |      correct                        correct           |
-   |          |                              v              |
-   |    Weakly Taken (10) <--- Strongly Taken (11)          |
-   |                                                          |
-   |          mispredict          mispredict                 |
-   |    Weakly Not-Taken (01) <--- Strongly Not-Taken (00) <-+
-   |          ^                              |
-   |      correct                        correct
-   |          |                              v
-   +--- Strongly Not-Taken (00) <--- Weakly Not-Taken (01)
-
-Prediction rule:
-  Counter >= 2 (10 or 11) --> predict Taken
-  Counter <= 1 (00 or 01) --> predict Not Taken
-```
+Prediction rule: counter ≥ 2 (10 or 11) → predict **Taken**; counter ≤ 1 (00 or 01) → predict **Not Taken**.
 
 The 2-bit counter requires two consecutive mispredictions before changing the
 prediction direction. This provides hysteresis against noisy branches (e.g.,
@@ -135,7 +129,7 @@ The GHR is an $N$-bit shift register recording the outcomes of the most recent
 $N$ branches. Convention: bit 0 is the most recent outcome; 1 = taken, 0 =
 not-taken.
 
-```
+```verilog
 GHR (8-bit example):
   GHR[7:0] = 1 0 1 1 0 1 0 0
               |             |
@@ -152,7 +146,7 @@ Typical GHR sizes: 8--16 bits for gshare; up to 500+ bits for TAGE components.
 gshare XORs the GHR with the PC to produce the BHT index. This combines global
 history with the branch address to reduce aliasing.
 
-```
+```verilog
 Index computation:
   index = PC[11:2] XOR GHR[9:0]     (for a 10-bit index, 1024-entry BHT)
 
@@ -195,7 +189,7 @@ chips ranging from the SiFive P870 to the Xiangshan Nanhu (open-source RISC-V).
 TAGE consists of one **base predictor** (bimodal) and $M$ **tagged components**
 with geometrically increasing history lengths.
 
-```
+```verilog
 Component layout (M = 4 example):
 
   Base (bimodal):  history length = 0,    1024 entries, no tag
@@ -209,18 +203,16 @@ History length geometric ratio: alpha = 2  (each is ~2x the previous)
 
 Each tagged component entry stores:
 
+```wavedrom
+{"reg":[
+  {"bits":1,"name":"Pred"},
+  {"bits":2,"name":"Useful"},
+  {"bits":3,"name":"Counter"},
+  {"bits":8,"name":"Tag"}
+]}
 ```
-+------+--------+---------+--------+
-| Tag  | Counter| Useful  | Pred   |
-| [7:0]| [2:0]  | [1:0]   | [0]    |
-+------+--------+---------+--------+
-  Tag:     partial tag for matching (not full PC)
-  Counter: 3-bit saturating counter for prediction direction
-  Useful:  2-bit counter tracking how often this entry provided a
-           correct prediction (confidence)
-  Pred:    stored prediction (redundant with counter sign, some
-           implementations omit this)
-```
+
+`Tag` — partial tag for matching (not the full PC). `Counter` — 3-bit saturating counter for prediction direction. `Useful` — 2-bit confidence counter (how often this entry gave a correct prediction). `Pred` — stored prediction (redundant with the counter sign; some implementations omit it).
 
 ### 3.2 Detailed Algorithm Walkthrough
 
@@ -230,33 +222,31 @@ Each component $T_i$ uses a different geometric history length $L_i$. The index
 for component $T_i$ is computed by folding the branch history to the table width
 and XORing with the PC:
 
-```
-Index computation for component T_i:
-  1. Take the global history register (GHR), which is a shift register of
-     recent branch outcomes (1 = taken, 0 = not-taken)
-  2. For component T_i with history length L_i, use only the most recent L_i bits
-     of the GHR
-  3. Fold the L_i-bit history to the table index width (log2(N_entries) bits):
-        folded_hash = 0
-        for j = 0 to L_i-1:
-          if GHR[j] == 1:
-            folded_hash ^= (PC ^ j) >> (log2(N_entries) * (j / log2(N_entries)))
-        Simplified: hash_i = fold(GHR[L_i-1:0], log2(N_entries)) XOR PC[index_bits-1:0]
+**Index computation for component T_i:**
+   1. Take the global history register (GHR), which is a shift register of
+recent branch outcomes (1 = taken, 0 = not-taken)
+2. For component T_i with history length L_i, use only the most recent L_i bits
+of the GHR
+3. Fold the L_i-bit history to the table index width (log2(N_entries) bits):
+folded_hash = 0
+for j = 0 to L_i-1:
+if GHR[j] == 1:
+folded_hash ^= (PC ^ j) >> (log2(N_entries) * (j / log2(N_entries)))
+Simplified: hash_i = fold(GHR[L_i-1:0], log2(N_entries)) XOR PC[index_bits-1:0]
 
-  4. Tag computation:
-        tag_i = fold(GHR[L_i-1:0], tag_width) XOR PC[tag_bits+index_bits-1:index_bits]
+4. Tag computation:
+tag_i = fold(GHR[L_i-1:0], tag_width) XOR PC[tag_bits+index_bits-1:index_bits]
 
-  The "folding" is a series of XOR operations that compress a long history into
-  a short index/tag. For example, folding a 256-bit history into a 7-bit index:
-    index = GHR[6:0] XOR GHR[13:7] XOR GHR[20:14] XOR ... XOR GHR[255:249]
-```
+The "folding" is a series of XOR operations that compress a long history into
+a short index/tag. For example, folding a 256-bit history into a 7-bit index:
+index = GHR[6:0] XOR GHR[13:7] XOR GHR[20:14] XOR ... XOR GHR[255:249]
 
 **How the "useful" counter works (periodic decay):**
 
 The 2-bit useful counter ($u$) per entry tracks whether the entry is providing
 value. Its semantics:
 
-```
+```text
   u = 0: entry is newly allocated or has not been useful recently
   u = 1: entry has been useful at least once
   u = 2: entry has been useful multiple times recently
@@ -287,7 +277,7 @@ Periodic decay (every 2^18 predictions, ~256K):
 
 **Provider selection (longest matching history):**
 
-```
+```python
 Given: M tagged components T_1..T_M with history lengths L_1 < L_2 < ... < L_M
 
 Lookup result for each component:
@@ -317,7 +307,7 @@ the most specific prediction -- but only if it has been trained enough
 
 When a misprediction occurs and the provider is not the base:
 
-```
+```text
 Allocation policy:
   1. Identify the components that did NOT hit (no tag match): set Miss = {T_i : tag miss}
   2. From Miss, select up to 3 components for allocation (random selection or
@@ -357,7 +347,7 @@ The Xiangshan Nanhu processor extends TAGE with a Statistical Corrector (SC):
 
 **TAGE-SC mechanism in detail:**
 
-```
+```verilog
 SC input features (one set per TAGE component):
   - Provider prediction (1 bit: taken/not-taken)
   - Provider useful counter value (2 bits)
@@ -392,7 +382,7 @@ that a single provider/alt selection cannot capture.
 
 Each tagged component has 128 entries, requiring 7 index bits and 8 tag bits.
 
-```
+```text
 Branch PC = 0x0040_2000
 GHR (64 bits) = 0xB59A_3F0C_7D12_E481 (binary shown LSB-first for history):
   bit 0 (newest) = 1, bit 1 = 0, bit 2 = 0, bit 3 = 0, ...
@@ -440,6 +430,7 @@ Hardware implementation of the folding:
 ### 3.5 Lookup
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[PC arrives at predictor] --> B[Base predictor: index by PC]
     A --> C[T1: index by folded_hist_4 XOR PC]
@@ -461,7 +452,7 @@ flowchart TD
     J -->|Yes| P[T3 hits: pred3, u3]
     K -->|No| M
     K -->|Yes| Q[T4 hits: pred4, u4]
-    N --> R[Select provider: longest history with tag hit]
+    N --> R[Select provider: longest history<br/>with tag hit]
     O --> R
     P --> R
     Q --> R
@@ -522,7 +513,7 @@ The perceptron predictor treats branch prediction as a binary classification
 problem. For each branch (indexed by PC), a set of $N$ weights is maintained,
 where $N$ equals the GHR length.
 
-```
+```verilog
 Prediction:
   GHR = {b_1, b_2, ..., b_N}  where b_i in {-1, +1}
   W_j = {w_1, w_2, ..., w_N}  weights for branch j
@@ -565,7 +556,7 @@ designs use $N = 16$--$64$). Weights are 8-bit signed integers ($-128$ to $+127$
 A branch at PC = `0x4000` has the following weight vector (trained over many
 iterations):
 
-```
+```verilog
 Weight table for branch at PC=0x4000:
   w_0 (bias) = +18
   w_1        = -30
@@ -583,7 +574,7 @@ $$
 y_{out} = w_0 \cdot (+1) + \sum_{i=1}^{4} w_i \cdot b_i
 $$
 
-```
+```verilog
   y_out = w_0 * (+1) + w_1 * b_1 + w_2 * b_2 + w_3 * b_3 + w_4 * b_4
         = (+18)*(+1) + (-30)*(+1) + (+45)*(-1) + (-12)*(+1) + (+25)*(+1)
         =    18       +   (-30)     +   (-45)     +   (-12)     +   25
@@ -597,7 +588,7 @@ $$
 \text{threshold} = \lfloor 1.93 \cdot N + 14 \rfloor = \lfloor 1.93 \cdot 4 + 14 \rfloor = 21
 $$
 
-```
+```verilog
   y_out = -44
   |y_out| = 44 > threshold = 21  -> high confidence prediction
   y_out < 0 -> predict NOT TAKEN
@@ -614,7 +605,7 @@ $$
 where $t = +1$ if actual was taken, $t = -1$ if not-taken. Note: update only
 when mispredicted OR when $|y_{out}| \leq \text{threshold}$ (low confidence).
 
-```
+```verilog
   t = +1  (actual was taken)
 
   w_0 = 18  + (+1)*(+1) = 19
@@ -628,7 +619,7 @@ when mispredicted OR when $|y_{out}| \leq \text{threshold}$ (low confidence).
 
 **Next occurrence of the same branch, same GHR pattern:**
 
-```
+```verilog
   y_out = 19*(+1) + (-29)*(+1) + 44*(-1) + (-11)*(+1) + 26*(+1)
         = 19 - 29 - 44 - 11 + 26
         = -39
@@ -639,7 +630,7 @@ when mispredicted OR when $|y_{out}| \leq \text{threshold}$ (low confidence).
 
 **After several more corrections (same GHR pattern, actual always TAKEN):**
 
-```
+```verilog
   After 5 updates total for this pattern:
 
   Weights converge toward positive y_out:
@@ -677,7 +668,7 @@ from the same history.
 
 **Setup:** N = 3 history bits, 8-bit signed weights, threshold = 21.
 
-```
+```verilog
 Initial state (all weights zero):
   Branch A (PC=0x1000): w0=0, w1=0, w2=0, w3=0
   Branch B (PC=0x2000): w0=0, w1=0, w2=0, w3=0
@@ -686,7 +677,7 @@ Initial state (all weights zero):
 
 **Execution sequence (showing correlation learning):**
 
-```
+```ascii-graph
 Step 1: Branch A at PC=0x1000, GHR = [0, 0, 0]
   y_A = 0*1 + 0*(-1) + 0*(-1) + 0*(-1) = 0
   |y_A| = 0 <= threshold -> low confidence, eligible for update
@@ -769,6 +760,7 @@ The tournament predictor (Alpha 21264, 1996) maintains three sub-predictors and
 a per-branch selector that chooses which predictor to trust.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     A[PC + GHR] --> B[Bimodal Predictor]
     A --> C[Global Predictor -- gshare]
@@ -778,7 +770,7 @@ flowchart TD
     C --> G[Pred_global]
     D --> H[Pred_local]
     E --> I{Selector counter >= 2?}
-    I -->|Yes| J[Choose global or local based on counter value]
+    I -->|Yes| J[Choose global or local based on<br/>counter value]
     I -->|No| K[Choose bimodal]
     J --> L[MUX: final prediction]
     K --> L
@@ -835,7 +827,7 @@ RAS provides a single-cycle, cycle-accurate prediction for returns.
 
 ### 6.2 Circular Buffer Implementation
 
-```
+```ascii-graph
 RAS: circular buffer of 16--32 entries (most common: 16 for mobile, 32 for
      desktop/server). Top pointer (4--5 bits).
 
@@ -886,7 +878,7 @@ save the current Top pointer in the reorder buffer (ROB) entry. On a pipeline
 flush, walk the ROB or use the checkpoint from the mispredicted branch to
 restore Top.
 
-```
+```ascii-graph
 Example: 32-entry RAS, speculative depth = 3
 
 Initial state:  Top = 4, RAS = {_, _, _, _, 0x8000, ...}
@@ -908,7 +900,7 @@ Misprediction detected at the second CALL (bar):
 
 There are two approaches to making the RAS speculative:
 
-```
+```verilog
 Approach 1: Top-pointer checkpoint only (most common, used in ARM and RISC-V cores)
 
   - Save only the Top pointer in the ROB on each CALL/RETURN
@@ -947,7 +939,7 @@ Approach 2: Free checkpoint RAS (used in Intel P-cores)
   return address is lost. Mitigation: increase RAS depth (32--64 is typical),
   or add a secondary overflow buffer in L2.
 
-```
+```verilog
 Overflow detection and handling:
 
   On push: Top_new = (Top + 1) mod DEPTH
@@ -970,7 +962,7 @@ Overflow detection and handling:
 - **Underflow**: When a RETURN is encountered with Top = 0. The RAS is empty;
   fall back to BTB prediction. Rare in practice (indicates unbalanced CALL/RET).
 
-```
+```verilog
 Underflow handling:
 
   On pop: Top_new = (Top - 1) mod DEPTH
@@ -1008,7 +1000,7 @@ In a deeply speculative processor with 16+ outstanding branch predictions, the
 RAS must be rolled back on any misprediction among the 16. The interaction between
 RAS checkpointing and the branch predictor's checkpoint mechanism is as follows:
 
-```
+```verilog
 Checkpoint structure (per branch prediction):
   branch_checkpoint[k] = {
     RAT_snapshot,           // register alias table
@@ -1058,7 +1050,7 @@ Some designs (notably ARM Cortex-X series) use a "shadow RAS" approach where
 each checkpoint stores a complete copy of the RAS rather than just the Top
 pointer. This eliminates corruption entirely but costs:
 
-```
+```verilog
 16 checkpoints x (32 entries x 64 bits + 5-bit Top) = ~4 KB
 vs. pointer-only: 16 x 69 bits = ~140 bytes
 ```
@@ -1084,15 +1076,16 @@ that have multiple targets.
 A small fully-associative or set-associative cache that stores multiple
 targets per branch PC. Indexed by PC + partial history.
 
+```wavedrom
+{"reg":[
+  {"bits":1,"name":"Valid"},
+  {"bits":32,"name":"Target PC"},
+  {"bits":4,"name":"Hist"},
+  {"bits":16,"name":"Tag"}
+]}
 ```
-Indirect Target Cache Entry:
-+----------+------+-----------+--------+
-| Tag      | Hist | Target PC | Valid  |
-| [15:0]   | [3:0]| [31:0]    | [0]    |
-+----------+------+-----------+--------+
 
-Lookup:  match on (Tag == PC[31:16]) AND (Hist == recent_target_history)
-```
+Indirect-target cache entry. Lookup matches on `(Tag == PC[31:16])` AND `(Hist == recent_target_history)`.
 
 A 2-bit history of recent targets (which of 4 possible targets was used last)
 helps disambiguate. Accuracy for indirect branches: ~85--92% with this scheme.
@@ -1119,7 +1112,7 @@ The fetch unit is a pipeline of prediction structures that must all produce
 results in a single cycle (or be carefully pipelined). Here is the per-cycle
 interaction:
 
-```
+```verilog
 Fetch cycle timing:
 
   Clock edge: PC register updated
@@ -1161,7 +1154,7 @@ Fetch cycle timing:
 
 **Sequential fetch vs taken-path redirect:**
 
-```
+```verilog
 Sequential fetch (no branch or not-taken prediction):
   Cycle 0: PC=0x1000, fetch 4 instructions, next_PC=0x1010
   Cycle 1: PC=0x1010, fetch 4 instructions, next_PC=0x1020
@@ -1201,7 +1194,7 @@ multiple branches.
 When a 32-byte fetch block (8 instructions) contains 2 or more branches, the
 fetch unit must resolve them in priority order:
 
-```
+```verilog
 Fetch block at PC=0x1000 (8 instructions):
 
   0x1000: ADD  ...       (not a branch)
@@ -1252,7 +1245,7 @@ RAS must be updated multiple times in a single cycle. This creates a sequencing
 problem: the CALL pushes a return address, and a subsequent RETURN pops it, but
 both happen in the same fetch cycle.
 
-```
+```verilog
 Fetch block (8 instructions):
   0x1000: CALL foo   <- push 0x1004
   0x1004: CALL bar   <- push 0x1008
@@ -1298,7 +1291,7 @@ The branch predictor provides the next-PC *before* the I-cache is accessed.
 This allows the fetch unit to prefetch the target cache line in parallel with
 the current fetch.
 
-```
+```verilog
 Cycle 0: Fetch PC=0x1000.  BTB hit: target=0x2000.
           I-cache access for 0x1000.
           Issue prefetch for I-cache line containing 0x2000.
@@ -1420,7 +1413,7 @@ before the branch and redirects to the target for the next cycle.
 
 **Solution**:
 
-```
+```ascii-graph
 Step 1: Extract PC[11:2]
   PC = 0x0040_1A3C = 0000_0000_0100_0000_0001_1010_0011_1100
   Bits 11..2:  10_1000_1111 = 0x28F
@@ -1443,7 +1436,7 @@ Step 5: Predict
 ```
 
 If the actual outcome is Not-Taken:
-```
+```verilog
 Update: counter = max(counter - 1, 0) = max(2 - 1, 0) = 1 (binary 01)
 GHR update: shift left, insert 0 at bit 0
   New GHR = 0110100110
@@ -1471,7 +1464,7 @@ GHR update: shift left, insert 0 at bit 0
 
 **Solution**:
 
-```
+```ascii-graph
 Step 1: Identify all tag hits
   T1: tag hit (history length 4)
   T2: tag miss
@@ -1497,7 +1490,7 @@ Step 5: Final prediction
 
 If the branch is actually Not-Taken (mispredict):
 
-```
+```verilog
 Step 6: Update
   - T3 counter: decrement, 3-bit counter 2 -> 1 (still weakly taken)
   - T3 useful: already 0, no decrement below 0
@@ -1528,7 +1521,7 @@ misprediction repair.
 
 **Solution**:
 
-```
+```verilog
 Initial state:
   Top = 4
   RAS[4] = 0x8000
@@ -1580,7 +1573,7 @@ in cycles?
 
 **Solution**:
 
-```
+```verilog
 Stage timeline (cycle by cycle for the mispredicted branch):
 
 Cycle 0: Branch enters F1
@@ -1647,7 +1640,7 @@ How many mispredictions occur per 12 iterations (3 full pattern repetitions)?
 
 **Part A: Bimodal (2-bit counter, initial = 0 "strongly not-taken")**
 
-```
+```ascii-graph
 Pattern iteration 1:  T T T NT
   Step 1: Counter=0, predict NT, actual=T  --> MISPREDICT. Counter -> 1
   Step 2: Counter=1, predict NT, actual=T  --> MISPREDICT. Counter -> 2
@@ -1686,40 +1679,36 @@ this branch -- which is not the case here.
 
 **Part C: TAGE (base + T1 with history length 4 + T2 with history length 8)**
 
-```
 Consider why a single component with history length 4 is NOT sufficient:
 
-  With history length 4, the GHR for each step of the T,T,T,NT pattern is:
-    Step 1: last 4 bits = [?, ?, ?, ?] -> depends on prior iteration
-    Step 2: last 4 bits = [T, T, T, T]  (1 T from step 1, plus 3 from before)
-    Step 3: last 4 bits = [T, T, T, T]  (2 T's from steps 1-2, plus 2 from before)
-    Step 4: last 4 bits = [T, T, T, T]  (3 T's from steps 1-3, plus 1 from before)
+With history length 4, the GHR for each step of the T,T,T,NT pattern is:
+Step 1: last 4 bits = [?, ?, ?, ?] -> depends on prior iteration
+Step 2: last 4 bits = [T, T, T, T]  (1 T from step 1, plus 3 from before)
+Step 3: last 4 bits = [T, T, T, T]  (2 T's from steps 1-2, plus 2 from before)
+Step 4: last 4 bits = [T, T, T, T]  (3 T's from steps 1-3, plus 1 from before)
 
-  Steps 2, 3, and 4 all see "TTTT" -- they ALIAS with history length 4!
-  T1 cannot distinguish the 3rd T from the NT.
+Steps 2, 3, and 4 all see "TTTT" -- they ALIAS with history length 4!
+T1 cannot distinguish the 3rd T from the NT.
 
 With history length 8 (covering 2 full loop iterations), each step IS unique:
-  Step 1: last 8 = ...NT,T,T,T,NT,T,T,T  (two iterations ending in NT visible)
-    -> pattern: the 4th-from-last is NT, this is position 1 -> predict T
-  Step 2: last 8 = ...T,NT,T,T,T,NT,T,T   (shifted by one T)
-    -> different from step 1 -> predict T
-  Step 3: last 8 = ...T,T,NT,T,T,T,NT,T    -> predict T
-  Step 4: last 8 = ...T,T,T,NT,T,T,T,NT    -> predict NT (the NT at position -4
-    and position -8 reveal this is the loop exit)
+Step 1: last 8 = ...NT,T,T,T,NT,T,T,T  (two iterations ending in NT visible) → pattern: the 4th-from-last is NT, this is position 1 -> predict T
+Step 2: last 8 = ...T,NT,T,T,T,NT,T,T   (shifted by one T) → different from step 1 -> predict T
+Step 3: last 8 = ...T,T,NT,T,T,T,NT,T    -> predict T
+Step 4: last 8 = ...T,T,T,NT,T,T,T,NT    -> predict NT (the NT at position -4
+and position -8 reveal this is the loop exit)
 
 After warmup, T2 (history length 8) learns all 4 positions correctly:
 
-Pattern iteration 1 (assuming warm):
-  Step 1: T2 hits with unique 8-bit pattern -> predicts T  --> correct
-  Step 2: T2 hits with different 8-bit pattern -> predicts T  --> correct
-  Step 3: T2 hits with yet another pattern -> predicts T  --> correct
-  Step 4: T2 hits with the "exit" pattern -> predicts NT --> correct
+**Pattern iteration 1 (assuming warm):**
+   - Step 1: T2 hits with unique 8-bit pattern -> predicts T  --> correct
+   - Step 2: T2 hits with different 8-bit pattern -> predicts T  --> correct
+   - Step 3: T2 hits with yet another pattern -> predicts T  --> correct
+   - Step 4: T2 hits with the "exit" pattern -> predicts NT --> correct
 
 All subsequent iterations: 0 mispredictions.
 
 TAGE result: 0 mispredictions per 12 branches (after warmup)
-Accuracy = 12/12 = 100%
-```
+- **Accuracy** = `12/12 = 100%`
 
 **Summary**:
 

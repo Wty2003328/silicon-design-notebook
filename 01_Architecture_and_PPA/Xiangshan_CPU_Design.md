@@ -92,6 +92,7 @@ Physical pipeline stages (simplified):
 ### 2.2 Block Diagram
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph Frontend
         BPU[BPU: TAGE-SC + ITTAGE + RAS]
@@ -384,6 +385,7 @@ Issue width: up to **6 uops/cycle** total, distributed across execution units
 ### 5.4 Issue Queue Flow
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     DISP[Dispatch: 6 uops/cycle] --> ENQ[Enqueue into IQ]
     ENQ --> IQ["Issue Queue Entries"]
@@ -477,7 +479,7 @@ happens only when the store reaches the head of the ROB and commits.
 
 When a load executes, it searches the SQ for matching addresses:
 
-```
+```ascii-graph
 Load at LQ[8], addr = 0x1000
   Check SQ entries newer than LQ[8]:
     SQ[5]: addr = 0x1000  --> MATCH (same address)
@@ -667,6 +669,7 @@ Xiangshan uses a **TileLink-based** interconnect (Nanhu) or **CHI-based**
 (Kunminghu) to connect cores, caches, and peripherals.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     CORE0["Core 0 (Xiangshan)"]
     CORE1["Core 1 (Xiangshan)"]
@@ -770,7 +773,7 @@ through:
 
 ### 12.1 Chisel Code Organization
 
-```
+```verilog
 XiangShan/
   src/main/scala/xiangshan/
     frontend/           # BPU, FTQ, ICache, IBuf
@@ -796,16 +799,16 @@ Xiangshan's key parameters are exposed as Chisel `Config` values:
 ```scala
 // Simplified example of parameterization
 new Config((site, here, up) => {
-  case DecodeWidth    => 6
-  case RenameWidth    => 6
-  case CommitWidth    => 6
-  case RobSize        => 192  // or 256 for Kunminghu
-  case IntPregSize    => 128
-  case FpPregSize     => 96
-  case IntIQSize      => 32
-  case FpIQSize       => 16
-  case MemIQSize      => 16
-  case L2Size         => 1024 // KB
+  case DecodeWidth          => 6
+  case RenameWidth          => 6
+  case CommitWidth          => 6
+  case RobSize              => 192  // or 256 for Kunminghu
+  case IntPregSize          => 128
+  case FpPregSize           => 96
+  case IntIQSize            => 32
+  case FpIQSize             => 16
+  case MemIQSize            => 16
+  case L2Size               => 1024 // KB
 })
 ```
 
@@ -870,7 +873,7 @@ path. How many cycles are lost?
 Consider a conditional branch at ROB index 40 that is predicted taken but
 resolves as not-taken in the execute stage.
 
-```
+```text
 Cycle:    1    2    3    4    5    6    7    8    9    10
 Branch:  IF0  IF1  DEC  REN  DSP  ISS  EX   --   --   --
            (predicted taken, target=0x2000)

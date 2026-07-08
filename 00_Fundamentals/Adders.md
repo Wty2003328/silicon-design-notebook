@@ -4,7 +4,7 @@
 
 Two single-bit inputs A, B produce Sum and Carry:
 
-```
+```text
 Sum   = A XOR B
 Carry = A AND B
 ```
@@ -36,7 +36,7 @@ Gate count: 1 XOR + 1 AND = 2 gates, 6 transistors in CMOS.
 | 1 | 1 |  1  |  1  |  1   |
 
 From the truth table, using K-map or algebraic simplification:
-```
+```text
 Sum  = A XOR B XOR Cin
 Cout = A*B + Cin*(A XOR B)
 ```
@@ -44,24 +44,24 @@ Cout = A*B + Cin*(A XOR B)
 ### Derivation of G and P
 
 Let's define:
-```
+```text
 G_i = A_i AND B_i        (Generate: carry is produced regardless of incoming carry)
 P_i = A_i XOR B_i        (Propagate: incoming carry passes through)
 ```
 
 **Why these definitions?** Look at Cout:
-```
+```text
 Cout = A*B + Cin*(A XOR B)
      = G_i + P_i * Cin
 ```
 
 This is the **fundamental carry recurrence:**
-```
+```text
 C_{i+1} = G_i + P_i * C_i
 ```
 
 And Sum:
-```
+```text
 S_i = A_i XOR B_i XOR C_i = P_i XOR C_i
 ```
 
@@ -98,7 +98,7 @@ To compute A - B using an adder, exploit 2's complement: A - B = A + (~B) + 1.
 
 **Implementation:** Invert all bits of B (NOT gate per bit) and set the carry-in of the LSB full adder to 1. The carry-in = 1 completes the 2's complement negation of B.
 
-```
+```text
     A[N-1:0]   ~B[N-1:0]
        |           |
      [  Adder, Cin = 1  ]
@@ -119,14 +119,14 @@ assign {cout, sum} = a + b_effective + cin_effective;
 Overflow occurs when two same-sign numbers produce a different-sign result.
 
 **Method 1 — Carry XOR:**
-```
+```text
 Overflow = carry_in[MSB] XOR carry_out[MSB]
 ```
 
 Why: carry_in[MSB] and carry_out[MSB] disagree exactly when the sign of the result is wrong. If both are 1, the MSB propagated a carry correctly. If both are 0, no carry was involved. Only when they differ did a carry appear or disappear in a way that flipped the sign unexpectedly.
 
 **Method 2 — Sign check:**
-```
+```text
 Overflow = (A[MSB] == B[MSB]) AND (Sum[MSB] != A[MSB])
 ```
 
@@ -153,7 +153,7 @@ To compare A and B: compute A - B and examine the carry-out of the subtractor.
 
 Chain N full adders, Cout[i] → Cin[i+1]:
 
-```
+```ascii-graph
     A[0] B[0]    A[1] B[1]    A[2] B[2]        A[N-1] B[N-1]
       |   |        |   |        |   |              |     |
      [FA_0]-------[FA_1]-------[FA_2]--- ... ---[FA_{N-1}]
@@ -165,13 +165,13 @@ Chain N full adders, Cout[i] → Cin[i+1]:
 
 **Critical path:** Carry from bit 0 to bit N-1, then final sum.
 
-```
+```text
 T_RCA = T_PG_generation + (N-1) * T_carry_propagation + T_final_sum
       = T_XOR + (N-1) * T_AOI + T_XOR
 ```
 
 Using our delay model:
-```
+```text
 T_PG = 2.0 (XOR for P_i)
 T_carry = 1.5 (AOI/OAI compound gate for G + P*C)
 T_final_sum = 2.0 (XOR for P XOR C)
@@ -221,7 +221,7 @@ endmodule
 
 Starting from `C_{i+1} = G_i + P_i * C_i`:
 
-```
+```text
 C1 = G0 + P0 * C0                                              ... (1)
 
 C2 = G1 + P1 * C1
@@ -245,7 +245,7 @@ C4 = G3 + P3 * C3
 ### Fan-In Explosion Problem
 
 For a flat (non-hierarchical) 16-bit CLA:
-```
+```text
 C16 = G15 + P15*G14 + P15*P14*G13 + ... + P15*P14*...*P0*C0
 ```
 
@@ -260,7 +260,7 @@ This defeats the purpose of O(1) look-ahead!
 Group 4-bit CLA blocks, then apply look-ahead again at the group level.
 
 **Group Generate and Propagate for bits i:j (e.g., bits 3:0):**
-```
+```text
 G_{3:0} = G3 + P3*G2 + P3*P2*G1 + P3*P2*P1*G0
 P_{3:0} = P3 * P2 * P1 * P0
 ```
@@ -268,7 +268,7 @@ P_{3:0} = P3 * P2 * P1 * P0
 These are computed within each 4-bit CLA block (fan-in ≤ 4, feasible).
 
 **Second-level CLA computes group carries:**
-```
+```text
 C4  = G_{3:0}  + P_{3:0}  * C0
 C8  = G_{7:4}  + P_{7:4}  * C4
 C12 = G_{11:8} + P_{11:8} * C8
@@ -276,7 +276,7 @@ C16 = G_{15:12}+ P_{15:12}* C12
 ```
 
 Or, expanded:
-```
+```text
 C8  = G_{7:4} + P_{7:4}*G_{3:0} + P_{7:4}*P_{3:0}*C0
 C12 = G_{11:8} + P_{11:8}*G_{7:4} + P_{11:8}*P_{7:4}*G_{3:0} + ...
 C16 = ... (still only 5-input fan-in at the second level)
@@ -284,17 +284,15 @@ C16 = ... (still only 5-input fan-in at the second level)
 
 ### Delay of Hierarchical CLA
 
-```
-Level 0: PG generation (XOR, AND)               = 2.0 gate delays
-Level 1: 4-bit CLA block (2 gate levels: AND-OR) = 2.0 gate delays
-Level 2: Second-level CLA (group carries)        = 2.0 gate delays
-Level 3: Carry back into blocks + final sum      = 2.0 gate delays
+1. **PG generation** (XOR, AND)               = 2.0 gate delays
+2. **4-bit CLA block** (2 gate levels: AND-OR) = 2.0 gate delays
+3. **Second-level CLA** (group carries)        = 2.0 gate delays
+4. **Carry back into blocks + final sum      = 2.0 gate delays**
 
-Total for 16-bit: ~8 gate delays
-```
+- **Total for 16-bit** — ~8 gate delays
 
 For 64-bit (3 levels of hierarchy):
-```
+```text
 Total for 64-bit: ~12 gate delays  (vs. 98.5 for RCA)
 ```
 
@@ -318,26 +316,24 @@ Total for 64-bit: ~12 gate delays  (vs. 98.5 for RCA)
 
 Divide N-bit adder into blocks. For each block except the first, compute two sums in parallel (assuming Cin=0 and Cin=1), then select the correct one with a MUX when the actual carry arrives.
 
-```
-Block 0: [0:k-1]    Compute normally (RCA)
-Block 1: [k:2k-1]   Two RCAs + MUX
-Block 2: [2k:3k-1]  Two RCAs + MUX
+- **Block 0** — [0:k-1]    Compute normally (RCA)
+- **Block 1** — [k:2k-1]   Two RCAs + MUX
+- **Block 2** — [2k:3k-1]  Two RCAs + MUX
 ...
-Block m: [...:N-1]   Two RCAs + MUX
-```
+- **Block m** — [...:N-1]   Two RCAs + MUX
 
 ### Delay with Uniform Block Size k
 
-```
+```text
 T_CSLA = T_RCA(k) + (N/k - 1) * T_MUX
 ```
 
-Where T_RCA(k) = 4.0 + 1.5*(k-1) and T_MUX ≈ 1.0-1.5.
+Where $T_{RCA}(k) = 4.0 + 1.5(k-1)$ and $T_{MUX} \approx 1.0\text{–}1.5$.
 
 ### Optimal Block Size — Calculus Derivation
 
 For uniform blocks:
-```
+```text
 T(k) = T_RCA(k) + (N/k - 1) * T_MUX
      = [4.0 + 1.5(k-1)] + (N/k - 1) * 1.5
      = 2.5 + 1.5k + 1.5N/k - 1.5
@@ -345,21 +341,21 @@ T(k) = T_RCA(k) + (N/k - 1) * T_MUX
 ```
 
 Minimize by taking derivative and setting to zero:
-```
+```text
 dT/dk = 1.5 - 1.5N/k^2 = 0
 k^2 = N
 k_opt = sqrt(N)
 ```
 
 **Optimal delay:**
-```
+```text
 T_opt = 1.0 + 1.5*sqrt(N) + 1.5*sqrt(N) = 1.0 + 3.0*sqrt(N)
 ```
 
 This is **O(sqrt(N))**.
 
 **Numerical example for N=32:**
-```
+```ascii-graph
 k_opt = sqrt(32) ≈ 5.66 → use k=6 (or try 5 and 6)
 
 k=5: T = 1.0 + 1.5*5 + 1.5*32/5 = 1.0 + 7.5 + 9.6 = 18.1
@@ -371,26 +367,26 @@ k=6: T = 1.0 + 1.5*6 + 1.5*32/6 = 1.0 + 9.0 + 8.0 = 18.0
 The insight: block 0 doesn't need to be fast because it has no MUX chain to feed. Later blocks can be larger because by the time their carry arrives, they've had more time to compute.
 
 Use increasing block sizes: k1, k1+1, k1+2, ... such that:
-```
+```text
 T_RCA(k_j) = T_RCA(k_1) + j * T_MUX
 ```
 
 This balances the RCA delay of each block with the accumulated MUX chain delay.
 
-```
+```text
 T_RCA(k_j) - T_RCA(k_1) = j * T_MUX
 1.5 * (k_j - k_1) = j * 1.5
 k_j = k_1 + j
 ```
 
 So block sizes are: k1, k1+1, k1+2, ..., covering N total bits:
-```
+```text
 sum = k1 + (k1+1) + (k1+2) + ... + (k1+m-1) = m*k1 + m*(m-1)/2 = N
 ```
 
 For N=16, k1=2: blocks of 2, 3, 4, 5, 2 spare → total = 2+3+4+5 = 14 (need 2 more in last block = 7), or readjust: 2, 2, 3, 4, 5 = 16.
 
-```
+```text
 T = T_RCA(2) + 4 * T_MUX = 5.5 + 6.0 = 11.5 gate delays
 ```
 
@@ -403,12 +399,12 @@ vs. uniform k=4: T = T_RCA(4) + 3*T_MUX = 8.5 + 4.5 = 13.0. The variable sizing 
 ### Skip Condition
 
 For a block of k bits (positions i to i+k-1):
-```
+```text
 Block Propagate: BP = P_i * P_{i+1} * ... * P_{i+k-1}
 ```
 
 If BP = 1, **every bit in the block propagates**, so:
-```
+```text
 Cout_block = Cin_block (carry passes through unchanged)
 ```
 
@@ -416,7 +412,7 @@ If BP = 0, at least one bit generates or kills, and the block carry comes from t
 
 ### Implementation
 
-```
+```text
 Cout_block = (BP * Cin_block) | (~BP * Cout_RCA)
            = BP ? Cin_block : Cout_RCA
 ```
@@ -430,13 +426,13 @@ Critical path goes through:
 2. Middle blocks: skip path (AND gate for BP + MUX)
 3. Last block: full RCA delay (must compute final sum, can't skip)
 
-```
+```text
 T_skip = T_RCA(k) + (N/k - 2) * T_skip_MUX + T_RCA(k)
        = 2 * T_RCA(k) + (N/k - 2) * T_skip
 ```
 
 Using our model:
-```
+```text
 T_skip = 2 * [4.0 + 1.5(k-1)] + (N/k - 2) * 1.5
        = 2 * (2.5 + 1.5k) + 1.5N/k - 3.0
        = 5.0 + 3.0k + 1.5N/k - 3.0
@@ -445,14 +441,14 @@ T_skip = 2 * [4.0 + 1.5(k-1)] + (N/k - 2) * 1.5
 
 ### Optimal Block Size — sqrt(N) Proof
 
-```
+```text
 dT/dk = 3.0 - 1.5N/k^2 = 0
 k^2 = N/2
 k_opt = sqrt(N/2)
 ```
 
 **Optimal delay:**
-```
+```text
 T_opt = 2.0 + 3.0*sqrt(N/2) + 1.5*sqrt(2N)
       = 2.0 + 3.0*sqrt(N/2) + 3.0*sqrt(N/2)     [since 1.5*sqrt(2N) = 3.0*sqrt(N/2)]
       = 2.0 + 6.0*sqrt(N/2) = 2.0 + 3.0*sqrt(2N)
@@ -461,7 +457,7 @@ T_opt = 2.0 + 3.0*sqrt(N/2) + 1.5*sqrt(2N)
 This is O(sqrt(N)), same asymptotic class as carry select, but with less area (no dual computation).
 
 **For N=32:** k_opt = sqrt(16) = 4
-```
+```text
 T = 2.0 + 3.0*4 + 1.5*32/4 = 2.0 + 12.0 + 12.0 = 26.0 gate delays
 ```
 
@@ -478,7 +474,7 @@ The optimal variable-block skip adder achieves delay proportional to O(sqrt(N)) 
 ### The Prefix Operator
 
 Define the carry operator "o" on (G, P) pairs:
-```
+```text
 (G_L, P_L) o (G_R, P_R) = (G_L + P_L * G_R, P_L * P_R)
 ```
 
@@ -489,7 +485,7 @@ Define the carry operator "o" on (G, P) pairs:
 We must show: `[(G_a, P_a) o (G_b, P_b)] o (G_c, P_c) = (G_a, P_a) o [(G_b, P_b) o (G_c, P_c)]`
 
 **Left side:**
-```
+```text
 (G_a, P_a) o (G_b, P_b) = (G_a + P_a*G_b, P_a*P_b)
 
 [(G_a + P_a*G_b, P_a*P_b)] o (G_c, P_c)
@@ -498,7 +494,7 @@ We must show: `[(G_a, P_a) o (G_b, P_b)] o (G_c, P_c) = (G_a, P_a) o [(G_b, P_b)
 ```
 
 **Right side:**
-```
+```text
 (G_b, P_b) o (G_c, P_c) = (G_b + P_b*G_c, P_b*P_c)
 
 (G_a, P_a) o [(G_b + P_b*G_c, P_b*P_c)]
@@ -515,7 +511,7 @@ Associativity means we can evaluate the prefix computation in ANY order — this
 ### The Parallel Prefix Problem
 
 Given N individual (G_i, P_i) pairs, compute all PREFIX results:
-```
+```text
 (G_{0:0}, P_{0:0}) = (G_0, P_0)
 (G_{1:0}, P_{1:0}) = (G_1, P_1) o (G_0, P_0)
 (G_{2:0}, P_{2:0}) = (G_2, P_2) o (G_1, P_1) o (G_0, P_0)
@@ -524,7 +520,7 @@ Given N individual (G_i, P_i) pairs, compute all PREFIX results:
 ```
 
 Each (G_{i:0}, P_{i:0}) directly gives carry C_{i+1}:
-```
+```text
 C_{i+1} = G_{i:0} + P_{i:0} * C_0
 ```
 
@@ -532,7 +528,7 @@ If C_0 = 0 (typical): `C_{i+1} = G_{i:0}`.
 
 ### 8-bit Kogge-Stone — Detailed Computation Graph
 
-```
+```ascii-graph
 Bit position:    7      6      5      4      3      2      1      0
                  |      |      |      |      |      |      |      |
 Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
@@ -562,7 +558,7 @@ Wire tracks: at level k, wires cross 2^(k-1) bit positions → level 3 has wires
 
 ### 8-bit Brent-Kung — Detailed Computation Graph
 
-```
+```ascii-graph
 Bit position:    7      6      5      4      3      2      1      0
                  |      |      |      |      |      |      |      |
 Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
@@ -599,7 +595,7 @@ Wire tracks: much lower than Kogge-Stone
 
 The Sklansky adder uses a fan-out doubling scheme: at level i, prefix results from row i-1 are broadcast to all higher rows.
 
-```
+```text
 Bit position:    7      6      5      4      3      2      1      0
                  |      |      |      |      |      |      |      |
 Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
@@ -735,7 +731,7 @@ endmodule
 
 A 3:2 CSA (carry-save adder) is simply a full adder used differently: it takes 3 input bits at the same bit position and produces 2 output bits (Sum and Carry). The critical property: **the carry is NOT propagated to the next column** -- it is "saved" and shifted left by 1 position (its weight is 2x).
 
-```
+```text
 Inputs:  A[i], B[i], C_in[i]
 Outputs: Sum[i], Carry[i-1]  (Carry has weight of position i+1)
 
@@ -777,7 +773,7 @@ A straightforward N×N multiplier generates N partial products, each N bits wide
 
 Recode the multiplier B to use digits from {-1, 0, +1} instead of {0, 1}:
 
-```
+```text
 Scanning from LSB, examine overlapping pairs (b_{i}, b_{i-1}) where b_{-1} = 0:
   b_i  b_{i-1}  |  Booth digit  |  Action
    0      0     |       0       |  No partial product (skip)
@@ -794,7 +790,7 @@ Scanning from LSB, examine overlapping pairs (b_{i}, b_{i-1}) where b_{-1} = 0:
 
 Scan the multiplier in overlapping groups of 3 bits: (b_{2i+1}, b_{2i}, b_{2i-1}):
 
-```
+```ascii-graph
 b_{2i+1}  b_{2i}  b_{2i-1}  |  Booth digit  |  Partial product
    0        0        0       |       0        |  0
    0        0        1       |      +1        |  +A
@@ -837,7 +833,7 @@ After Booth encoding, an N-bit multiplier has N/2 partial products, each ~N+1 bi
 
 **For 8×8 multiplier (with Booth: 4 partial products):**
 
-```
+```ascii-graph
 Level 0: Partial products (max column height = 4)
          4   4   4   4   4   4   3   2   1  (bit column heights, approximately)
 
@@ -857,7 +853,7 @@ Level 3: Final CPA (2 → 1)
 **Strategy:** Reduce the minimum number of entries per column at each level to a predetermined sequence: ..., 6, 4, 3, 2. At each stage, only reduce columns that exceed the target height.
 
 **Dadda sequence:** d_1 = 2, d_{j+1} = floor(1.5 * d_j)
-```
+```text
 2, 3, 4, 6, 9, 13, 19, 28, 42, 63, ...
 ```
 
@@ -880,7 +876,7 @@ In practice, the difference is small. Synthesis tools choose the optimal reducti
 
 A common building block that compresses 4 bits + carry-in into 2 bits + carry-out:
 
-```
+```text
 Inputs:  x1, x2, x3, x4, cin
 Outputs: sum, carry, cout
 
@@ -908,7 +904,7 @@ Keep a single `2N`-bit *product* register; load the multiplier into its low half
 
 After `N` cycles the multiplier bits are exhausted and the `2N`-bit product register holds `multiplicand × multiplier`.
 
-```
+```text
 init:  P[2N-1:N] = 0 ;  P[N-1:0] = multiplier ;  M = multiplicand
 repeat N times:
     if (P[0]) P[2N:N] = P[2N-1:N] + M     // extra bit catches the add carry
@@ -943,7 +939,7 @@ Rule of thumb: pick the architecture from the required multiply throughput. If y
 
 In modern ASIC flows (Synopsys Design Compiler with DesignWare, Cadence Genus):
 
-```verilog
+```text
 // This is the RIGHT way for 99% of cases:
 assign sum = a + b;
 // The tool selects the optimal adder from its library
@@ -959,7 +955,7 @@ assign sum = a + b;
 3. **Critical path engineering:** If the tool's adder choice creates a critical path through one specific bit position, you might restructure the prefix tree to balance delays differently.
 
 4. **DesignWare override:** You can hint to the tool:
-```
+```verilog
 // Synopsys DesignWare pragmas:
 // synopsys dc_script_begin
 // set_implementation DW01_add/cla [find cell "add_instance"]
@@ -992,18 +988,16 @@ These are representative numbers — actual values depend on the specific librar
 
 Neural network inference is inherently error-tolerant — small arithmetic errors in individual additions are absorbed by the network's redundancy and activation functions. This creates an opportunity to trade arithmetic accuracy for speed, area, and power using **approximate adders**.
 
-```
 Error tolerance in neural networks:
-  - ReLU activation clips negative values to 0 → errors on small values don't propagate
-  - Sigmoid/tanh saturate for large values → errors on large values don't propagate
-  - Weight regularization (L2, dropout) already introduces noise → approximate arithmetic fits naturally
-  - Quantization to INT8/FP8 already loses 90%+ of precision → adder errors are secondary
-  - Typical accuracy impact: < 1% drop in top-1 accuracy for 8-bit approximate adders
-```
+- ReLU activation clips negative values to 0 → errors on small values don't propagate
+- Sigmoid/tanh saturate for large values → errors on large values don't propagate
+- Weight regularization (L2, dropout) already introduces noise → approximate arithmetic fits naturally
+- Quantization to INT8/FP8 already loses 90%+ of precision → adder errors are secondary
+- Typical accuracy impact: < 1% drop in top-1 accuracy for 8-bit approximate adders
 
 ### Truncated Carry Chain Adder
 
-```
+```ascii-graph
 Idea: Only propagate carries for the lower K bits instead of all N bits.
 
   Standard N-bit RCA: carries propagate through all N bit positions
@@ -1029,7 +1023,7 @@ Idea: Only propagate carries for the lower K bits instead of all N bits.
 
 ### Error-Tolerant Adder (ETA)
 
-```
+```ascii-graph
 The Error-Tolerant Adder splits the adder into accurate and approximate regions:
 
   For an N-bit adder, split at bit position N/2:
@@ -1056,7 +1050,7 @@ The Error-Tolerant Adder splits the adder into accurate and approximate regions:
 
 ### Lower-Part-OR Adder (LOA)
 
-```
+```ascii-graph
 Simple approximate adder where the lower bits use OR instead of addition:
 
   N-bit adder split at position K:
@@ -1083,7 +1077,7 @@ Simple approximate adder where the lower bits use OR instead of addition:
 
 ### Speculative Carry-Lookahead Approximate Adder
 
-```
+```ascii-graph
 Combines speculative execution with approximation:
 
   Strategy:
@@ -1112,35 +1106,33 @@ Combines speculative execution with approximation:
 
 ### Practical Application in AI Accelerators
 
-```
-Where approximate adders are used:
+**Where approximate adders are used:**
 
 1. MAC (Multiply-Accumulate) units in neural network inference:
-   - Partial sums: approximate addition of accumulator and product
+- Partial sums: approximate addition of accumulator and product
    - Accumulator width: typically 24-32 bits
    - Lower 8-12 bits can use approximation with minimal accuracy impact
    - Upper bits (which determine the output value) remain accurate
 
 2. Softmax and attention mechanisms:
-   - Exponent subtraction for attention scores: approximate subtraction acceptable
+- Exponent subtraction for attention scores: approximate subtraction acceptable
    - Reduces critical path in attention computation by 30-50%
 
 3. ReLU / activation functions:
-   - Only need to determine sign (positive or negative) for ReLU
+- Only need to determine sign (positive or negative) for ReLU
    - Approximate addition sufficient for sign detection in most cases
 
 4. Pooling layers:
-   - Average pooling: sum followed by division
+- Average pooling: sum followed by division
    - Approximate sum has negligible effect after division
 
-Design considerations:
-  - Always keep the MSB (sign bit) computation accurate
-  - Error should be unbiased (zero mean) to avoid systematic drift
-  - Use accurate adders for the first and last layers of a network
-    (where errors have the most impact on final output)
-  - Quantization-aware training (QAT) can compensate for approximate hardware
-    by training the network with injected adder errors
-```
+**Design considerations:**
+   - Always keep the MSB (sign bit) computation accurate
+   - Error should be unbiased (zero mean) to avoid systematic drift
+   - Use accurate adders for the first and last layers of a network
+   - (where errors have the most impact on final output)
+   - Quantization-aware training (QAT) can compensate for approximate hardware
+   - by training the network with injected adder errors
 
 ---
 

@@ -9,7 +9,7 @@
 
 ## Proposed flow taxonomy (numbered so Obsidian sorts them in flow order)
 
-```
+```ascii-graph
 hardware_design/
   00_Fundamentals/                  device + logic + arithmetic prerequisites
   01_Architecture_and_PPA/          early power/perf analysis + architecture exploration

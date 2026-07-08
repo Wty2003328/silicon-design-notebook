@@ -31,7 +31,7 @@
 The fundamental DFT building block replaces every functional flip-flop with a
 scan-capable version. A 2:1 multiplexer is added in front of the D input.
 
-```
+```ascii-graph
                  Mux-D Scan Flip-Flop
                  =====================
 
@@ -66,7 +66,7 @@ captures the combinational logic output, behaving as a normal functional FF.
 
 **Gate-level implementation of the MUX:**
 
-```
+```ascii-graph
   SI ────┐
          ├── AND ──┐
   SE ────┘         │
@@ -88,19 +88,17 @@ unified cell (SDFF -- Scan D Flip-Flop) to minimize area and timing penalty.
 
 All scan flip-flops in a design are connected in one or more serial chains.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    SI["scan_in"] --> F1["FF1"] --> F2["FF2"] --> F3["FF3"] --> DOTS["…"] --> FN["FFn"] --> SO["scan_out"]
+    classDef ff fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef io fill:#dcfce7,stroke:#15803d,color:#000
+    class F1,F2,F3,FN ff
+    class SI,SO io
 ```
-  Scan Chain (Single Chain Example)
-  =================================
 
-  scan_in ──> [FF1] ──> [FF2] ──> [FF3] ──> ... ──> [FFn] ──> scan_out
-              SI  SO    SI  SO    SI  SO              SI  SO
-
-  During SHIFT (SE=1):
-    Data flows: scan_in -> FF1 -> FF2 -> FF3 -> ... -> FFn -> scan_out
-
-  During CAPTURE (SE=0):
-    Each FF captures its own functional D input independently
-```
+During **shift** (SE=1) data flows scan_in → FF1 → … → FFn → scan_out. During **capture** (SE=0) each flop captures its own functional D input independently.
 
 **Stitching Ordering Strategies:**
 
@@ -118,31 +116,13 @@ and power domains to minimize wire length and timing violations.
 
 ### 1.3 Shift Mode vs Capture Mode -- Timing Diagrams
 
-```
-  Shift Mode (SE = 1): Loading test pattern / Unloading response
-  ───────────────────────────────────────────────────────────────
-                    ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
-  CLK     ─────────┘  └──┘  └──┘  └──┘  └──┘  └──┘  └───
-          ─────────────────────────────────────────────────
-  SE      ─────────────────────────────────────────────────  (HIGH)
-
-  scan_in ──┤ b0 ├──┤ b1 ├──┤ b2 ├──┤ b3 ├──┤ b4 ├──────
-                                                      
-  scan_out ──────────┤ r0 ├──┤ r1 ├──┤ r2 ├──┤ r3 ├──┤ r4 ├
-
-  b0-b4: stimulus bits shifted in
-  r0-r4: response bits shifted out (from previous capture)
-
-
-  Capture Mode (SE = 0): One or two functional clock pulses
-  ──────────────────────────────────────────────────────────
-                              ┌──┐        ┌──┐
-  CLK     ────────────────────┘  └────────┘  └─────────────
-                                                           
-  SE      ─────────────────────────────────────────────────  (LOW)
-                              ^            ^
-                          launch clk   capture clk
-                           (for LOC at-speed test)
+```wavedrom
+{ "signal": [
+  { "name": "CLK",      "wave": "p......" },
+  { "name": "SE",       "wave": "1......" },
+  { "name": "scan_in",  "wave": "x=====.", "data": ["b0","b1","b2","b3","b4"] },
+  { "name": "scan_out", "wave": "x.=====", "data": ["r0","r1","r2","r3","r4"] }
+], "head": { "text": "Shift mode (SE=1): stimulus b0..b4 shifted in while response r0..r4 (from the previous capture) shifts out" } }
 ```
 
 **Critical timing constraint during shift:** SE must be stable (HIGH) before
@@ -154,7 +134,7 @@ buffering the SE tree is a major physical design task.
 
 If a design has N scan flip-flops and C scan chains:
 
-```
+```text
   Chain length L = N / C  (assuming balanced chains)
 
   Shift cycles per pattern = L
@@ -197,44 +177,23 @@ internal chain count from external pin count.
 domain to a negative-edge triggered domain (or between two asynchronous
 domains), timing violations can occur during shift.
 
-```
-  Without Lockup Latch -- Timing Problem
-  =======================================
-
-  CLK_A (posedge)    ──┐  ┌──────┐  ┌──────┐  ┌──
-                       └──┘      └──┘      └──┘
-
-  CLK_B (negedge)    ┐  ┌──────┐  ┌──────┐  ┌─────
-                     └──┘      └──┘      └──┘
-
-  FF_A (clk_A) ──> [data changes at posedge A] ──> FF_B (clk_B)
-
-  Problem: FF_A output changes at posedge CLK_A.
-           FF_B captures at negedge CLK_B.
-           If CLK_A posedge and CLK_B negedge are close, setup/hold violated!
+```wavedrom
+{ "signal": [
+  { "name": "CLK_A (posedge)", "wave": "01010101" },
+  { "name": "CLK_B (negedge)", "wave": "10101010" },
+  { "name": "FF_A out",        "wave": "x=.=.=.=", "data": ["d0","d1","d2","d3"] }
+], "head": { "text": "No lockup latch: FF_A changes on CLK_A posedge but FF_B samples on CLK_B negedge -- if the edges are close, setup/hold is violated" } }
 ```
 
 **Solution:** Insert a transparent latch (lockup latch) between the two domains.
 
-```
-  With Lockup Latch
-  =================
-
-  FF_A ──> [ Lockup Latch (active-high transparent) ] ──> FF_B
-           (latch on CLK_A)
-
-  CLK_A     ──┐  ┌──────┐  ┌──────┐  ┌──
-              └──┘      └──┘      └──┘
-
-  FF_A out  ────X────────X────────X────────  (changes at posedge CLK_A)
-
-  Latch out ──────X────────X────────X──────  (passes through while CLK_A high,
-                                               latches at negedge CLK_A)
-
-  CLK_B     ┐  ┌──────┐  ┌──────┐  ┌──────
-            └──┘      └──┘      └──┘
-
-  FF_B captures at negedge CLK_B -- now has full half-cycle margin!
+```wavedrom
+{ "signal": [
+  { "name": "CLK_A",     "wave": "01010101" },
+  { "name": "FF_A out",  "wave": "x=.=.=.=", "data": ["d0","d1","d2","d3"] },
+  { "name": "Latch out", "wave": "x..=.=.=", "data": ["d0","d1","d2"] },
+  { "name": "CLK_B",     "wave": "10101010" }
+], "head": { "text": "Lockup latch (transparent while CLK_A high, latches on its negedge) delays FF_A's change by a half cycle, giving FF_B full setup/hold margin" } }
 ```
 
 The lockup latch converts a race condition (near-zero timing margin) into a
@@ -260,7 +219,7 @@ For a circuit with N signal lines: total possible single stuck-at faults = 2N.
 
 **Example -- 2-input AND gate:**
 
-```
+```ascii-graph
      a ──┐
          ├── AND ── z
      b ──┘
@@ -277,16 +236,14 @@ possible input combinations.
 
 **Proof for AND gate:**
 
-```
-  a  b | z(good) | z(a/SA0) | z(b/SA0) | z(z/SA0)
-  ─────┼─────────┼──────────┼──────────┼──────────
-  0  0 |    0    |    0     |    0     |    0
-  0  1 |    0    |    0     |    0     |    0
-  1  0 |    0    |    0     |    0     |    0
-  1  1 |    1    |    0     |    0     |    0
+| a | b | z (good) | z (a/SA0) | z (b/SA0) | z (z/SA0) |
+|---|---|---|---|---|---|
+| 0 | 0 | 0 | 0 | 0 | 0 |
+| 0 | 1 | 0 | 0 | 0 | 0 |
+| 1 | 0 | 0 | 0 | 0 | 0 |
+| 1 | 1 | 1 | 0 | 0 | 0 |
 
-  a/SA0 ≡ b/SA0 ≡ z/SA0  (all three produce identical faulty outputs)
-```
+`a/SA0 ≡ b/SA0 ≡ z/SA0` — all three faults produce identical faulty outputs, so they form one fault-equivalence class.
 
 Similarly: a/SA1 ≡ z/SA1 for an OR gate (output SA1 = input SA1 on any input).
 
@@ -305,7 +262,7 @@ set of tests detecting fault f.
 **checkpoints** (primary inputs and fanout branches) is sufficient to test all
 faults in the circuit.
 
-```
+```text
   Before collapsing: 2N faults (N = number of signal lines)
   After equivalence collapsing: typically reduced by 50-60%
   After dominance collapsing: further 10-20% reduction
@@ -329,7 +286,7 @@ Total TDF faults = 2N (same count as stuck-at, different model).
 
 **Two-pattern test requirement:**
 
-```
+```text
   Pattern V1 (initialization): Sets the target line to the INITIAL value
   Pattern V2 (launch/capture):  Causes the transition and captures result
 
@@ -353,7 +310,7 @@ Models the cumulative delay along an entire sensitizable path from PI to PO
 
 **Problem:** Number of paths can be **exponential** in circuit size.
 
-```
+```ascii-graph
   Example: A circuit with N stages, each with 2 reconverging paths:
 
        ┌── gate_a1 ──┐     ┌── gate_a2 ──┐
@@ -376,7 +333,7 @@ In practice, path delay testing is applied selectively to critical timing paths.
 
 Models unintended shorts between two signal lines.
 
-```
+```ascii-graph
   AND-bridge: shorted lines behave as if ANDed
     line_a ──┬── effective value = a AND b
     line_b ──┘
@@ -398,17 +355,15 @@ intended values: one must be 0, the other must be 1.
 (only leakage). A defect (bridge, gate oxide short, stuck-open) creates a
 DC path from VDD to GND, causing elevated quiescent supply current.
 
-```
-  Defect-free:  IDDQ ≈ nA to uA range (leakage only)
-  Defective:    IDDQ ≈ uA to mA range (defect current + leakage)
+- **Defect-free** — IDDQ ≈ nA to uA range (leakage only)
+- **Defective** — IDDQ ≈ uA to mA range (defect current + leakage)
 
-  Test procedure:
-    1. Apply input vector
-    2. Wait for circuit to settle
-    3. Measure IDD (supply current)
-    4. Compare against threshold
-    5. Repeat for multiple vectors
-```
+Test procedure:
+1. Apply input vector
+2. Wait for circuit to settle
+3. Measure IDD (supply current)
+4. Compare against threshold
+5. Repeat for multiple vectors
 
 **Practical limitations at advanced nodes (< 28nm):**
 - Leakage current increases exponentially with each node
@@ -425,7 +380,7 @@ at cell boundaries (inputs/outputs). But at advanced nodes, **intra-cell
 defects** (opens/shorts within the transistor-level layout) can cause failures
 not modeled by pin-level faults.
 
-```
+```ascii-graph
   Standard cell internal view (simplified NAND2):
 
     VDD ──┬── PMOS_A ──┬── PMOS_B ──┬── OUT
@@ -452,7 +407,7 @@ Synopsys TetraMAX, Cadence Modus, and Siemens Tessent all support it.
 
 ### 2.7 Fault Coverage Calculation
 
-```
+```ascii-graph
   Fault Coverage (FC) = (Detected Faults) / (Total Faults - Untestable Faults)
 
   Where:
@@ -487,7 +442,7 @@ Synopsys TetraMAX, Cadence Modus, and Siemens Tessent all support it.
 The **D-algorithm** (Roth, 1966) was the first complete ATPG algorithm. It uses
 a **5-valued logic system**: {0, 1, D, D', X}.
 
-```
+```text
   D  = 1 in good circuit, 0 in faulty circuit (fault effect)
   D' = 0 in good circuit, 1 in faulty circuit (complement of D)
   X  = unknown / unassigned
@@ -515,7 +470,7 @@ a **5-valued logic system**: {0, 1, D, D', X}.
 
 #### Worked Example: 3-Gate Circuit (Successful Detection)
 
-```
+```ascii-graph
   Circuit:
 
     a ──┐
@@ -587,7 +542,7 @@ a **5-valued logic system**: {0, 1, D, D', X}.
 
 #### Worked Example: Backtracking (Redundant Fault Identification)
 
-```
+```ascii-graph
   Circuit (same topology, different fault target):
 
     a ──┐
@@ -638,7 +593,7 @@ a **5-valued logic system**: {0, 1, D, D', X}.
 
 #### Worked Example: Backtracking Required
 
-```
+```ascii-graph
   Circuit:
 
     a ──┐
@@ -700,7 +655,7 @@ a **5-valued logic system**: {0, 1, D, D', X}.
 **Key improvement over D-algorithm:** PODEM makes decisions ONLY at primary
 inputs, never at internal lines. This drastically reduces the search space.
 
-```
+```ascii-graph
   PODEM Algorithm:
   ================
   1. Determine an objective (line value needed for activation/propagation)
@@ -734,20 +689,18 @@ FAN (Fanout-Oriented Test Generation) enhances PODEM with:
 
 **Performance comparison:**
 
-```
-  Typical ATPG speed (patterns/second on industrial circuits):
-  
-  D-Algorithm:  ~100-1,000 (rarely used today)
-  PODEM:        ~10,000-50,000
-  FAN:          ~50,000-200,000
-  Modern tools: ~1,000,000+ (use enhanced FAN + learning + parallelism)
-```
+Typical ATPG speed (patterns/second on industrial circuits):
+
+- **D-Algorithm** — ~100-1,000 (rarely used today)
+- **PODEM** — ~10,000-50,000
+- **FAN** — ~50,000-200,000
+- **Modern tools** — ~1,000,000+ (use enhanced FAN + learning + parallelism)
 
 ### 3.4 ATPG Fault Classifications
 
 After ATPG runs, every fault is classified:
 
-```
+```ascii-graph
   ┌─────────────────────────────────────────────────────────┐
   │                    Total Faults                         │
   ├──────────────────┬──────────────────────────────────────┤
@@ -777,32 +730,14 @@ After ATPG runs, every fault is classified:
 
 Also called "skewed-load" or "launch-from-shift."
 
+```wavedrom
+{ "signal": [
+  { "name": "CLK (shift → capture)", "wave": "01010.1010" },
+  { "name": "SE",                     "wave": "1....0...." }
+], "head": { "text": "LOS (Launch-Off-Shift): the last shift clock launches; capture is one at-speed T_func later; SE must drop between launch and capture (tight)" } }
 ```
-  LOS Timing Diagram
-  ==================
 
-  Shift phase (SE=1)           Capture (SE=0)
-  ──────────────────────────── ─────────────────
-        ┌──┐  ┌──┐  ┌──┐  ┌──┐           ┌──┐
-  CLK   ┘  └──┘  └──┘  └──┘  └───────────┘  └──
-                            ^              ^
-                            │              │
-                       LAUNCH edge    CAPTURE edge
-                       (last shift     (at-speed,
-                        clock)         T_func later)
-
-        ─────────────────┐  ┌──────────────────
-  SE                     └──┘
-                         ^ must go LOW between launch and capture
-                         (tight timing requirement!)
-
-  Sequence:
-    1. Shift N-1 bits with SE=1 (slow shift clock)
-    2. SE goes LOW
-    3. Last shift clock edge = LAUNCH (still shifting data into FFs)
-    4. After one functional clock period T_func: CAPTURE edge
-    5. Response captured, then shifted out
-```
+Sequence: shift N-1 bits with `SE=1` (slow clock) → `SE` goes LOW → launch (last shift edge) → capture at-speed.
 
 **V1 pattern** = state after N-1 shift clocks
 **V2 pattern** = state after the last (Nth) shift clock = V1 shifted by one position
@@ -813,31 +748,14 @@ the tightest timing constraint in LOS.
 
 ### 4.2 Launch-Off-Capture (LOC / Broadside)
 
+```wavedrom
+{ "signal": [
+  { "name": "CLK (shift → launch/capture)", "wave": "01010..1010" },
+  { "name": "SE",                            "wave": "1.0........" }
+], "head": { "text": "LOC (Launch-Off-Capture): SE goes LOW well before the launch clock (relaxed); launch then capture one T_func later" } }
 ```
-  LOC Timing Diagram
-  ==================
 
-  Shift phase (SE=1)        Capture (SE=0)
-  ──────────────────── ──────────────────────────
-        ┌──┐  ┌──┐  ┌──┐       ┌──┐       ┌──┐
-  CLK   ┘  └──┘  └──┘  └───────┘  └───────┘  └──
-                     ^           ^           ^
-                  last shift   LAUNCH     CAPTURE
-                   clock       clock      clock
-                               <── T_func ──>
-
-  SE    ────────────────┐
-                        └──────────────────────────
-                        ^ SE goes LOW well before launch clock
-                        (relaxed timing requirement)
-
-  Sequence:
-    1. Shift all N bits with SE=1 (slow shift clock)
-    2. SE goes LOW (plenty of time, no tight constraint)
-    3. LAUNCH clock: FFs capture functional D inputs (this is V2's setup)
-    4. After T_func: CAPTURE clock: FFs capture response
-    5. Response shifted out
-```
+Sequence: shift all N bits with `SE=1` → `SE` goes LOW (no tight constraint) → launch clock → capture clock one T_func later.
 
 **V1 pattern** = directly loaded via scan shift
 **V2 pattern** = functional response to V1 (what the combinational logic
@@ -845,40 +763,18 @@ produces from V1)
 
 ### 4.3 LOS vs LOC Comparison
 
-```
-  ┌────────────────────┬──────────────────┬──────────────────┐
-  │ Attribute          │ LOS              │ LOC              │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ V1-V2 relationship │ V2 = V1 shifted  │ V2 = func(V1)   │
-  │                    │ by 1 bit         │                  │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ V1 controllability │ Full (shift any  │ Full (shift any  │
-  │                    │ value)           │ value)           │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ V2 controllability │ Limited (V2 is   │ Very limited     │
-  │                    │ V1 shifted)      │ (func of V1)     │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ TDF coverage       │ Higher (~5-10%   │ Lower            │
-  │                    │ more)            │                  │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ SE timing          │ TIGHT (must      │ RELAXED (SE low  │
-  │                    │ switch in 1 clk) │ well before)     │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ Shift power        │ Lower (shift     │ Higher (full     │
-  │ during capture     │ pattern in FFs)  │ functional toggle│
-  │                    │                  │ at capture)      │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ Tester requirement │ More expensive   │ Standard         │
-  │                    │ (tight SE ctrl)  │                  │
-  ├────────────────────┼──────────────────┼──────────────────┤
-  │ Industry preference│ Less common      │ More common      │
-  │                    │ (SE timing risk) │ (safer, simpler) │
-  └────────────────────┴──────────────────┴──────────────────┘
-```
+| Attribute | LOS | LOC |
+|---|---|---|
+| V1–V2 relationship | V2 = V1 shifted by 1 bit | V2 = func(V1) |
+| V1 controllability | full (shift any value) | full (shift any value) |
+| V2 controllability | constrained (1-bit shift of V1) | low (depends on circuit function) |
+| Clock speed | fast scan enable needed | only functional clock at-speed |
+| Test generation | harder (correlated V1/V2) | easier (combinational ATPG) |
+| Coverage | higher | slightly lower |
 
 ### 4.4 At-Speed Test Setup
 
-```
+```ascii-graph
   On-chip at-speed test infrastructure:
   ======================================
 
@@ -918,7 +814,7 @@ produces from V1)
 
 ### 5.1 The Problem
 
-```
+```ascii-graph
   Without compression:
     Scan cells: 2,000,000
     Patterns:   5,000 (stuck-at) + 10,000 (TDF)
@@ -931,35 +827,20 @@ produces from V1)
 
 ### 5.2 EDT / DFTMAX Architecture
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    T["Tester<br/>scan_in[0:3]<br/>(4 external channels)"] --> DEC["Decompressor<br/>(LFSR + phase shifters)"]
+    DEC --> CH["200 internal scan chains<br/>(~10K FFs each)"]
+    CH --> CMP["Compressor<br/>(MISR / XOR network)"]
+    CMP --> TO["scan_out<br/>(few external channels)"]
+    classDef ext fill:#dcfce7,stroke:#15803d,color:#000
+    classDef int fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class T,TO ext
+    class DEC,CH,CMP int
 ```
-  Test Compression Architecture
-  =============================
 
-           External                    Internal
-           (Tester)                    (On-chip)
-
-                      ┌──────────────────────────────────────┐
-                      │            Chip                       │
-  scan_in[0:3] ──────>│ ┌──────────────┐   ┌──────────────┐ │
-  (4 external  ──────>│ │ Decompressor │   │  200 internal│ │
-   channels)   ──────>│ │              ├──>│  scan chains │ │
-               ──────>│ │ LFSR + Phase │   │  (10K FFs    │ │
-                      │ │ Shifters     │   │   each)      │ │
-                      │ └──────────────┘   └──────┬───────┘ │
-                      │                           │         │
-                      │                    ┌──────┴───────┐ │
-  scan_out[0:3] <─────│                    │  Compactor   │ │
-  (4 external   <─────│                    │              │ │
-   channels)    <─────│                    │ XOR network  │ │
-                <─────│                    │ / MISR       │ │
-                      │                    └──────────────┘ │
-                      └──────────────────────────────────────┘
-
-  Compression Ratio = Internal_chains / External_channels
-                    = 200 / 4 = 50x
-
-  Typical: 100x - 200x compression in production designs
-```
+A few tester channels drive a decompressor that fans out to hundreds of short internal chains; the responses are compacted back to a few channels — this is what makes scan test feasible despite limited tester pins.
 
 **Decompressor (LFSR + Phase Shifters):**
 
@@ -977,7 +858,7 @@ rest with pseudo-random values.
 The compactor compresses responses from 200 internal chains down to 4 external
 channels using an XOR tree network.
 
-```
+```ascii-graph
   Example: 8 internal chains → 2 external outputs
 
   chain[0] ──┐
@@ -996,7 +877,7 @@ channels using an XOR tree network.
 **Problem:** Unknown (X) values in scan chain responses corrupt the compactor
 output. One X can mask multiple good bits.
 
-```
+```text
   Without X-masking:
     chain[0] response: 1 0 1 1 0  (good)
     chain[1] response: X 1 0 1 X  (two unknowns)
@@ -1025,33 +906,16 @@ quality.
 
 ### 6.1 Architecture
 
-```
-  Logic BIST Architecture
-  =======================
-
-  ┌─────────────────────────────────────────────────────┐
-  │                                                     │
-  │  ┌──────────┐     ┌──────────────┐    ┌──────────┐ │
-  │  │   LFSR   │────>│   Circuit    │───>│   MISR   │ │
-  │  │ (Pattern │     │  Under Test  │    │(Signature│ │
-  │  │  Gen)    │     │   (CUT)      │    │ Analyzer)│ │
-  │  └────┬─────┘     └──────────────┘    └────┬─────┘ │
-  │       │                                    │       │
-  │       │         ┌──────────┐               │       │
-  │       └────────>│   BIST   │<──────────────┘       │
-  │                 │Controller│                        │
-  │                 │   FSM    │──> PASS/FAIL           │
-  │                 └──────────┘                        │
-  │                      ^                              │
-  │                  bist_enable                         │
-  └─────────────────────────────────────────────────────┘
-
-  BIST Controller FSM:
-    IDLE → INIT → PATTERN_GEN → APPLY → CAPTURE → CHECK_COUNT
-      ↑                                              │
-      │            ┌─────────────────────────────────┘
-      │            v
-      └──── COMPARE_SIGNATURE → PASS/FAIL
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    LFSR["LFSR<br/>(pattern generator)"] --> CUT["Circuit under test (CUT)"] --> MISR["MISR<br/>(signature analyzer)"]
+    CTRL["BIST controller"] --> LFSR
+    MISR --> CTRL
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef c fill:#fde68a,stroke:#b45309,color:#000
+    class LFSR,CUT,MISR s
+    class CTRL c
 ```
 
 ### 6.2 LFSR Theory
@@ -1059,7 +923,7 @@ quality.
 An LFSR is a shift register with feedback through XOR gates defined by a
 **characteristic polynomial**.
 
-```
+```ascii-graph
   4-bit LFSR with polynomial x^4 + x + 1  (primitive)
   =====================================================
 
@@ -1127,7 +991,7 @@ An LFSR is a shift register with feedback through XOR gates defined by a
 
 Common primitive polynomials:
 
-```
+```ascii-graph
   Bits  Polynomial            Taps
   ────  ──────────────────    ──────
    4    x^4 + x + 1          [4,1]
@@ -1160,7 +1024,7 @@ endmodule
 specific input combinations that have extremely low probability of occurrence
 in random patterns.
 
-```
+```text
   Example: An AND gate with 20 inputs
     To detect SA0 on the output, ALL 20 inputs must be 1.
     Probability with random patterns: (1/2)^20 = 1 in 1,048,576
@@ -1176,7 +1040,7 @@ in random patterns.
 
 To reach >95% LBIST coverage, **test points** are inserted into the logic.
 
-```
+```ascii-graph
   Control Point (AND-type):
   ─────────────────────────
   Before: signal_a ──────────────> (to logic)
@@ -1214,7 +1078,7 @@ Area overhead: 2-5% for test points to reach 95%+ LBIST coverage.
 **Multiple-Input Signature Register (MISR):** An LFSR-like structure that
 compresses all CUT responses into a single signature.
 
-```
+```ascii-graph
   k-bit MISR with m inputs:
   
   response[0] ──> XOR ─┐
@@ -1244,7 +1108,7 @@ compresses all CUT responses into a single signature.
 If the MISR has n bits, the probability that a faulty circuit produces the
 same signature as the good circuit (aliasing) is:
 
-```
+```ascii-graph
   P(alias) = 2^(-n)
 
   For n = 32: P(alias) = 2^(-32) ≈ 2.3 x 10^(-10) ≈ 0.23 ppb
@@ -1265,7 +1129,7 @@ every address.
 
 **Notation:**
 
-```
+```text
   ↕  = address order doesn't matter (ascending or descending)
   ↑  = ascending address order (0, 1, 2, ..., N-1)
   ↓  = descending address order (N-1, N-2, ..., 1, 0)
@@ -1277,7 +1141,7 @@ every address.
 
 ### 7.2 March C- Algorithm
 
-```
+```text
   March C- = {↕(w0); ↑(r0,w1); ↑(r1,w0); ↓(r0,w1); ↓(r1,w0); ↕(r0)}
 
   Element 0: ↕(w0)       -- Initialize all cells to 0
@@ -1295,7 +1159,7 @@ every address.
 
 **Execution trace for 4-word memory:**
 
-```
+```ascii-graph
   Address:    0    1    2    3    Operation
   ─────────────────────────────────────────
   E0 ↕w0:    w0   w0   w0   w0   Initialize
@@ -1330,7 +1194,7 @@ every address.
 
 ### 7.3 Fault Coverage Table
 
-```
+```ascii-graph
   ┌───────────────────┬─────────┬──────────┬──────────┬──────────┐
   │ Fault Type        │March C- │ March SS │ March B  │ MATS+    │
   ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
@@ -1360,56 +1224,25 @@ every address.
 
 ### 7.4 MBIST Controller FSM
 
-```
-  MBIST Controller Block Diagram
-  ==============================
-
-  ┌────────────────────────────────────────────────────┐
-  │              MBIST Controller                       │
-  │                                                    │
-  │  ┌──────────┐  ┌───────────┐  ┌────────────────┐  │
-  │  │ March    │  │ Address   │  │ Data           │  │
-  │  │ Algorithm│  │ Generator │  │ Background     │  │
-  │  │ Sequencer│─>│ (up/down  │─>│ Pattern Gen    │  │
-  │  │ (FSM)   │  │  counter) │  │ (0x00, 0xFF,   │  │
-  │  └────┬─────┘  └─────┬─────┘  │  checkerboard) │  │
-  │       │              │        └───────┬────────┘  │
-  │       │              │                │           │
-  │       v              v                v           │
-  │  ┌─────────────────────────────────────────────┐  │
-  │  │          Memory Interface                    │  │
-  │  │   addr[M:0]  wdata[W:0]  wen  ren  cs      │  │
-  │  └─────────────────────┬───────────────────────┘  │
-  │                        │                           │
-  │  ┌─────────────────────v───────────────────────┐  │
-  │  │          Comparator                          │  │
-  │  │   rdata vs expected → pass/fail             │  │
-  │  └─────────────────────────────────────────────┘  │
-  │                                                    │
-  │  Outputs: done, fail, fail_address, fail_data      │
-  └────────────────────────────────────────────────────┘
-         │                    │
-         v                    v
-      Memory               Status
-      (SRAM)              Registers
-
-  FSM States:
-    IDLE → INIT → RUN_ELEMENT_0 → RUN_ELEMENT_1 → ... → 
-    RUN_ELEMENT_N → COMPARE_RESULT → DONE
-    
-    Each RUN_ELEMENT state:
-      - Set address counter direction (up/down)
-      - For each address:
-        - Execute operations (r0, w1, r1, w0, etc.)
-        - Compare read data with expected
-        - Flag fail if mismatch
-      - Advance to next element
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    subgraph MC["MBIST controller"]
+        direction LR
+        SEQ["March-algorithm<br/>sequencer (FSM)"] --> AG["Address generator<br/>(up/down counter)"] --> DBG["Data-background<br/>pattern gen<br/>(0x00, 0xFF, checkerboard)"]
+    end
+    DBG --> MEM["Memory under test"]
+    MEM --> CMP["Comparator → pass / fail"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef m fill:#fde68a,stroke:#b45309,color:#000
+    class SEQ,AG,DBG s
+    class MEM,CMP m
 ```
 
 **Data background patterns:** Testing with a single data pattern (all 0s/1s) is
 insufficient. Multiple backgrounds are needed:
 
-```
+```ascii-graph
   Pattern    Value      Purpose
   ─────────────────────────────────────────
   Solid 0    0x0000...  Basic stuck-at
@@ -1421,7 +1254,7 @@ insufficient. Multiple backgrounds are needed:
 
 ### 7.5 Memory Repair (BISR)
 
-```
+```ascii-graph
   BISR (Built-In Self-Repair) Flow
   =================================
 
@@ -1469,67 +1302,65 @@ insufficient. Multiple backgrounds are needed:
 The **Test Access Port (TAP)** controller is a 16-state FSM driven by TCK
 (clock) and TMS (mode select).
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+stateDiagram-v2
+    [*] --> TLR
+    TLR: Test-Logic-Reset
+    RTI: Run-Test/Idle
+    SDR: Select-DR-Scan
+    CDR: Capture-DR
+    ShDR: Shift-DR
+    E1DR: Exit1-DR
+    PDR: Pause-DR
+    E2DR: Exit2-DR
+    UDR: Update-DR
+    SIR: Select-IR-Scan
+    CIR: Capture-IR
+    ShIR: Shift-IR
+    E1IR: Exit1-IR
+    PIR: Pause-IR
+    E2IR: Exit2-IR
+    UIR: Update-IR
+    TLR --> TLR: TMS=1
+    TLR --> RTI: TMS=0
+    RTI --> RTI: TMS=0
+    RTI --> SDR: TMS=1
+    SDR --> CDR: TMS=0
+    SDR --> SIR: TMS=1
+    CDR --> ShDR: TMS=0
+    CDR --> E1DR: TMS=1
+    ShDR --> ShDR: TMS=0
+    ShDR --> E1DR: TMS=1
+    E1DR --> PDR: TMS=0
+    E1DR --> UDR: TMS=1
+    PDR --> PDR: TMS=0
+    PDR --> E2DR: TMS=1
+    E2DR --> ShDR: TMS=0
+    E2DR --> UDR: TMS=1
+    UDR --> RTI: TMS=0
+    UDR --> SDR: TMS=1
+    SIR --> CIR: TMS=0
+    SIR --> TLR: TMS=1
+    CIR --> ShIR: TMS=0
+    CIR --> E1IR: TMS=1
+    ShIR --> ShIR: TMS=0
+    ShIR --> E1IR: TMS=1
+    E1IR --> PIR: TMS=0
+    E1IR --> UIR: TMS=1
+    PIR --> PIR: TMS=0
+    PIR --> E2IR: TMS=1
+    E2IR --> ShIR: TMS=0
+    E2IR --> UIR: TMS=1
+    UIR --> RTI: TMS=0
+    UIR --> SDR: TMS=1
 ```
-  TAP Controller State Diagram
-  ============================
 
-                    TMS=1
-         ┌──────────────────────────────┐
-         │                              │
-         v          TMS=0               │
-  ┌─────────────┐ ──────> ┌──────────────────┐
-  │ Test-Logic- │         │   Run-Test/      │
-  │   Reset     │ <────── │     Idle         │<──┐
-  └──────┬──────┘  TMS=1  └───────┬──────────┘   │
-         │                        │ TMS=0         │TMS=0
-         │ TMS=0                  │               │
-         v                        v               │
-  (same as Run-Test/Idle)                         │
-                                                  │
-  From Run-Test/Idle, TMS=1:                      │
-                                                  │
-  ┌──────────────┐  TMS=1   ┌──────────────┐     │
-  │ Select-DR-   │────────>│ Select-IR-   │     │
-  │   Scan       │          │   Scan       │     │
-  └──────┬───────┘          └──────┬───────┘     │
-         │ TMS=0                   │ TMS=0       │
-         v                         v             │
-  ┌──────────────┐          ┌──────────────┐     │
-  │  Capture-DR  │          │  Capture-IR  │     │
-  └──────┬───────┘          └──────┬───────┘     │
-         │ TMS=0                   │ TMS=0       │
-         v                         v             │
-  ┌──────────────┐          ┌──────────────┐     │
-  │   Shift-DR   │<──┐      │   Shift-IR   │<──┐│
-  └──────┬───────┘   │      └──────┬───────┘   ││
-         │TMS=0 ─────┘             │TMS=0 ─────┘│
-         │ TMS=1                   │ TMS=1       │
-         v                         v             │
-  ┌──────────────┐          ┌──────────────┐     │
-  │   Exit1-DR   │          │   Exit1-IR   │     │
-  └──┬───────┬───┘          └──┬───────┬───┘     │
-     │TMS=0  │TMS=1            │TMS=0  │TMS=1    │
-     v       v                 v       v         │
-  ┌────────┐ ┌──────────┐  ┌────────┐ ┌────────┐│
-  │Pause-DR│ │Update-DR │  │Pause-IR│ │Update-IR││
-  └───┬────┘ └────┬─────┘  └───┬────┘ └────┬───┘│
-      │TMS=1      │             │TMS=1      │    │
-      v           │             v           │    │
-  ┌────────┐      │         ┌────────┐      │    │
-  │Exit2-DR│      │         │Exit2-IR│      │    │
-  └──┬──┬──┘      │         └──┬──┬──┘      │    │
-     │  │TMS=1    │            │  │TMS=1    │    │
-     │  └──> Update-DR         │  └──> Update-IR │
-     │TMS=0                    │TMS=0            │
-     └──> Shift-DR             └──> Shift-IR     │
-                                                  │
-  Update-DR/IR ──> (TMS=0) ──> Run-Test/Idle ────┘
-  Update-DR/IR ──> (TMS=1) ──> Select-DR-Scan
-```
+The 16-state TAP FSM is navigated purely by TMS on the rising edge of TCK. The DR and IR columns are structurally identical; from any state, holding TMS=1 for five cycles returns to Test-Logic-Reset.
 
 All 16 states:
 
-```
+```text
   1.  Test-Logic-Reset    9.  Exit1-DR
   2.  Run-Test/Idle      10.  Pause-DR
   3.  Select-DR-Scan     11.  Exit2-DR
@@ -1543,7 +1374,7 @@ All 16 states:
 
 ### 8.2 TAP Signals
 
-```
+```ascii-graph
   Signal  Direction   Description
   ─────── ─────────── ───────────────────────────────────────
   TCK     Input       Test Clock (independent from system clock)
@@ -1558,7 +1389,7 @@ All 16 states:
 
 ### 8.3 Standard JTAG Instructions
 
-```
+```ascii-graph
   ┌──────────────────┬──────────┬──────────────────────────────────┐
   │ Instruction      │ Required │ Description                       │
   ├──────────────────┼──────────┼──────────────────────────────────┤
@@ -1590,7 +1421,7 @@ All 16 states:
 
 ### 8.4 Boundary Scan Cell
 
-```
+```ascii-graph
   Boundary Scan Cell (BSC)
   ========================
 
@@ -1623,7 +1454,7 @@ All 16 states:
 
 ### 8.5 Board-Level Testing
 
-```
+```ascii-graph
   Board with 3 JTAG-compliant ICs:
   =================================
 
@@ -1657,7 +1488,7 @@ clocking unreliable above ~200 MHz. The **On-Chip Clock Controller (OCC)**
 solves this by generating precise, fast clock pulses on-chip while the ATE
 supplies only a slow shift clock.
 
-```
+```ascii-graph
   Without OCC:
     ATE must deliver fast launch-capture pair at GHz frequencies
     → Skew and jitter on tester channels make timing unpredictable
@@ -1672,34 +1503,20 @@ supplies only a slow shift clock.
 
 ### 9.2 OCC Architecture
 
-```
-  OCC Block Diagram
-  =================
-
-                          ┌──────────────────────────────────┐
-                          │          OCC Controller           │
-                          │                                  │
-   ext_clk ──> ┌───────┐  │  ┌──────────┐   ┌─────────────┐ │
-               │  PLL  │──┼─>│  Clock    │   │  Scan       │ │
-               │       │  │  │  Divider  │   │  Enable     │ │
-               │ f_vco  │  │  │  (/N)     │   │  Generator  │ │
-               └───────┘  │  └────┬─────┘   └──────┬──────┘ │
-                          │       │                │        │
-                          │       v                v        │
-                          │  ┌──────────────────────────┐   │
-                          │  │      Clock MUX / Gate     │   │
-                          │  │                          │   │
-                          │  │  sel = 0: slow shift clk │   │
-                          │  │  sel = 1: fast func clk  │   │
-                          │  └──────────┬───────────────┘   │
-                          │             │                    │
-                          │             v                    │
-                          │      clk_out to scan chains     │
-                          └──────────────────────────────────┘
-                                      ^
-                                      │
-                          ate_control (from TAP/ATE)
-                          (shift_start, capture_start, pulse_count)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    EXT["ext_clk"] --> PLL["PLL<br/>f_vco"]
+    subgraph OCC["OCC controller"]
+        DIV["Clock divider (/N)"]
+        SEG["Scan-enable generator"]
+    end
+    PLL --> DIV --> GC["Gated at-speed clock<br/>to scan chains"]
+    SEG --> GC
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef c fill:#fde68a,stroke:#b45309,color:#000
+    class EXT,PLL,GC s
+    class DIV,SEG c
 ```
 
 **Key components:**
@@ -1714,7 +1531,7 @@ supplies only a slow shift clock.
 
 ### 9.3 OCC Timing for At-Speed Testing
 
-```
+```ascii-graph
   OCC Timing: LOC (Launch-Off-Capture) Mode
   ==========================================
 
@@ -1745,72 +1562,31 @@ supplies only a slow shift clock.
     - Clock gated after capture to prevent additional captures
 ```
 
-```
-  OCC Timing: LOS (Launch-Off-Shift) Mode
-  =========================================
-
-  Phase 1: SHIFT (slow clock, SE=1)
-           ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
-  CLK_s   ┘  └──┘  └──┘  └──┘  └──┘  └──
-  SE      ────────────────────────────── (HIGH)
-
-  Phase 2: LAUNCH+CAPTURE (fast clock)
-                                      ↑     ┌─┐    ┌─┐
-  SE                                  └─────┘      (goes LOW)
-  CLK_f                                     └────┘ └──
-                                            ^      ^
-                                         launch  capture
-                                        <── T_func ──>
-
-  Note: Last slow shift clock IS the launch event in classic LOS.
-  OCC variant: OCC issues the launch on fast clock, SE goes LOW
-  internally before the fast launch edge (relaxed vs external LOS).
+```wavedrom
+{ "signal": [
+  { "name": "CLK_shift", "wave": "0101010000" },
+  { "name": "CLK_fast",  "wave": "0000000101", "node": ".......a.b" },
+  { "name": "SE",        "wave": "1.....0..." }
+], "edge": ["a~b at-speed"], "head": { "text": "OCC LOS: slow shift clocks with SE=1, then SE drops and the OCC muxes in a fast launch+capture pair from the PLL" } }
 ```
 
 ### 9.4 OCC Controller FSM and ATE Handshaking
 
-```
-  OCC Controller States
-  =====================
-
-  ┌──────────┐    shift_start    ┌──────────┐
-  │  IDLE    │────────────────>│  SHIFT    │
-  │          │                  │  (slow    │
-  │          │<────────────────│   clock)  │
-  └──────────┘   shift_done     └─────┬────┘
-       ^          (count = L)          │
-       │                               │ capture_start
-       │                               v
-       │                        ┌──────────────┐
-       │                        │  CAPTURE     │
-       │                        │  (fast clock │
-       │                        │   pulses)    │
-       │                        └──────┬───────┘
-       │                               │ pulse_count reached
-       │                               v
-       │                        ┌──────────────┐
-       └───────────────────────│  DONE        │
-          occ_done             │  (signal to  │
-                               │   ATE)       │
-                               └──────────────┘
-
-  ATE Handshake Protocol:
-    1. ATE asserts shift_start, supplies slow clock externally
-    2. OCC counts shift cycles (= chain length L)
-    3. OCC asserts shift_done (or ATE counts externally)
-    4. ATE asserts capture_start
-    5. OCC gates slow clock off, ungates fast PLL clock
-    6. OCC issues exactly N fast pulses (typically 2: launch + capture)
-    7. OCC gates fast clock off, asserts occ_done
-    8. ATE resumes slow clock for shift-out phase
-
-  Safety: If PLL is not locked, OCC must NOT issue capture pulses.
-  A PLL-lock detector gates the capture enable.
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> SHIFT: shift_start
+    SHIFT --> IDLE: shift_done (count = L)
+    SHIFT --> CAPTURE: capture_start
+    CAPTURE --> SHIFT: capture_done
+    SHIFT: SHIFT — slow clock
+    CAPTURE: CAPTURE — fast clock pulses
 ```
 
 ### 9.5 OCC in Production ATPG Flow
 
-```
+```text
   Production Flow Integration:
   ============================
 
@@ -1836,7 +1612,7 @@ supplies only a slow shift clock.
 
 ### 9.6 OCC Design Considerations
 
-```
+```ascii-graph
   Key design points:
   ─────────────────
   1. PLL lock time: PLL must be locked before capture phase.
@@ -1871,29 +1647,15 @@ For a modern SoC with hundreds of embedded instruments (MBIST controllers, PLLs,
 temperature sensors, voltage monitors, PVT monitors, debug trace blocks), this
 architecture breaks down:
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    TDI --> IR["IR"] --> DR["selected DR"] --> TDO
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class TDI,IR,DR,TDO s
 ```
-  JTAG Limitation: One DR at a Time
-  ==================================
-  TDI ──> [IR] ──> [selected DR] ──> TDO
 
-  To access MBIST controller (200 bits deep):
-    1. Shift IR = MBIST instruction (e.g., 8 bits)
-    2. Shift 200 bits through DR
-    Total: 208 bits per access
-
-  To access PLL config (50 bits deep):
-    1. Shift IR = PLL instruction
-    2. Shift 50 bits through DR
-    Total: 58 bits per access
-
-  Problem: Switching between instruments requires IR reload every time.
-  With 50 instruments, no way to compose a single DR that includes
-  subsets of instruments. The IR becomes a bottleneck.
-
-  Worse: Every new instrument requires a new IR opcode. With a 32-bit IR,
-  you have at most 32 instructions (minus mandatory ones). Real SoCs
-  need hundreds.
-```
+With classic JTAG only one DR is in the chain at a time. Accessing the MBIST controller (200-bit DR) costs 8-bit IR + 200-bit DR = 208 bits; PLL config (50-bit DR) costs 58 bits. Switching instruments requires an IR reload every time — with 50 instruments this is very slow.
 
 ### 10.2 IJTAG Architecture
 
@@ -1902,25 +1664,20 @@ IJTAG (IEEE 1687) replaces the fixed IR-selected DR model with a
 **Segment Insertion Bits (SIBs)** that dynamically include or exclude
 scan segments from the serial chain.
 
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    TDI --> S1["SIB_1"] --> S2["SIB_2"] --> SN["SIB_N"] --> TDO
+    S1 -.->|open| I1["Instrument_1<br/>200 bits"]
+    S2 -.->|open| I2["Instrument_2<br/>50 bits"]
+    SN -.->|open| IN["Instrument_N<br/>100 bits"]
+    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef i fill:#fde68a,stroke:#b45309,color:#000
+    class TDI,S1,S2,SN,TDO s
+    class I1,I2,IN i
 ```
-  IJTAG Scan Network
-  ==================
 
-  TDI ──> [SIB_1] ──> [SIB_2] ──> ... ──> [SIB_N] ──> TDO
-            │            │                    │
-            │ closed      │ closed             │ closed
-            v             v                    v
-        [Instrument_1] [Instrument_2]    [Instrument_N]
-        [200 bits]     [50 bits]         [100 bits]
-
-  When SIB_1 is OPEN (bit = 1):
-    Chain = TDI → SIB_1 → Instrument_1 (200 bits) → SIB_2 → ... → TDO
-    Chain length increases by 200 bits (instrument inserted)
-
-  When SIB_1 is CLOSED (bit = 0):
-    Chain = TDI → SIB_1 → SIB_2 → ... → TDO
-    Instrument_1 is bypassed (0 extra bits)
-```
+Each SIB (Segment Insertion Bit) gates its instrument into the scan path. When SIB_1 is open (bit = 1) the chain becomes TDI → SIB_1 → Instrument_1 → SIB_2 → … → TDO, so the active chain length grows only by the instruments you actually select.
 
 ### 10.3 SIB (Segment Insertion Bit) Operation
 
@@ -1928,7 +1685,7 @@ A SIB is a 1-bit scan element that acts as a dynamic multiplexer in the scan
 path. When the SIB is **closed** (default), the instrument segment is removed
 from the chain. When **opened**, the segment is inserted.
 
-```
+```ascii-graph
   SIB Internal Structure
   ======================
 
@@ -1962,7 +1719,7 @@ from the chain. When **opened**, the segment is inserted.
 
 **SIB chaining example:**
 
-```
+```ascii-graph
   Opening SIB_1, SIB_2, accessing both instruments:
 
   Initial state (all SIBs closed):
@@ -1993,7 +1750,7 @@ Instrument Connectivity Language) and **Procedure Language** (Procedural
 Description Language, PDL) to describe instrument connectivity and access
 sequences in a vendor-neutral format.
 
-```
+```text
   ICL (Instrument Connectivity Language):
     - Describes the scan network topology
     - Defines instruments, SIBs, and their bit widths
@@ -2017,7 +1774,7 @@ sequences in a vendor-neutral format.
 
 ### 10.5 JTAG vs IJTAG Comparison
 
-```
+```ascii-graph
   ┌────────────────────────┬──────────────────────┬──────────────────────────┐
   │ Feature                │ JTAG (1149.1)        │ IJTAG (1687)             │
   ├────────────────────────┼──────────────────────┼──────────────────────────┤
@@ -2051,32 +1808,30 @@ sequences in a vendor-neutral format.
 
 ### 10.6 IJTAG Use Cases
 
-```
-  1. MBIST Access:
-     - Open MBIST controller SIB
-     - Load march algorithm configuration
-     - Start MBIST, read pass/fail status
-     - Read failing address and data for debug
-     - Close SIB (MBIST runs autonomously)
+1. MBIST Access:
+   - Open MBIST controller SIB
+   - Load march algorithm configuration
+   - Start MBIST, read pass/fail status
+   - Read failing address and data for debug
+   - Close SIB (MBIST runs autonomously)
 
-  2. PLL Configuration:
-     - Open PLL SIB, write divider ratio and enable
-     - Read lock status via SIB
-     - Multiple PLLs: each has its own SIB, access independently
+2. PLL Configuration:
+   - Open PLL SIB, write divider ratio and enable
+   - Read lock status via SIB
+   - Multiple PLLs: each has its own SIB, access independently
 
-  3. Sensor Readout:
-     - Temperature sensors, voltage monitors, PVT monitors
-     - Open sensor SIB, trigger measurement, read result
-     - Periodic monitoring during production test
+3. Sensor Readout:
+   - Temperature sensors, voltage monitors, PVT monitors
+   - Open sensor SIB, trigger measurement, read result
+   - Periodic monitoring during production test
 
-  4. Debug Trace:
-     - Open trace buffer SIB, read captured trace data
-     - Configure trace triggers via SIB-accessible registers
+4. Debug Trace:
+   - Open trace buffer SIB, read captured trace data
+   - Configure trace triggers via SIB-accessible registers
 
-  5. Fuse/OTP Access:
-     - Read fuse values for trim, calibration, security keys
-     - Write fuse values during production programming
-```
+5. Fuse/OTP Access:
+   - Read fuse values for trim, calibration, security keys
+   - Write fuse values during production programming
 
 ---
 
@@ -2088,7 +1843,7 @@ In a flat (top-level) DFT flow, all scan flip-flops across the entire SoC are
 stitched into chains and ATPG is run on the full flattened netlist. This approach
 breaks down for large designs:
 
-```
+```ascii-graph
   Flat DFT Problems (50M-gate SoC example):
   ──────────────────────────────────────────
   1. Chain length: 50M FFs / 500 chains = 100K FFs per chain
@@ -2122,7 +1877,7 @@ The hierarchical approach wraps each IP block with a **test wrapper** (IEEE
 internal blocks). The wrapper isolates the block for individual testing and
 provides controlled access to its internal scan chains.
 
-```
+```ascii-graph
   IEEE 1500 Wrapper Around an IP Block
   =====================================
 
@@ -2153,7 +1908,7 @@ provides controlled access to its internal scan chains.
 
 ### 11.3 Wrapper Cell Types
 
-```
+```ascii-graph
   IEEE 1500 defines several wrapper cell types:
 
   Type 0 (observe-only):
@@ -2178,7 +1933,7 @@ provides controlled access to its internal scan chains.
 
 ### 11.4 Test Modes in Hierarchical DFT
 
-```
+```ascii-graph
   ┌─────────────────────────────────────────────────────────────┐
   │                    Hierarchical Test Modes                   │
   ├──────────────────┬──────────────────────────────────────────┤
@@ -2229,7 +1984,7 @@ provides controlled access to its internal scan chains.
 
 ### 11.5 Test Compression at Block Level vs Top Level
 
-```
+```ascii-graph
   Block-Level Compression (Preferred):
   ────────────────────────────────────
   ┌────────────────────────────────────┐
@@ -2276,7 +2031,7 @@ provides controlled access to its internal scan chains.
 
 ### 11.6 Hierarchical ATPG Flow Benefits
 
-```
+```ascii-graph
   ┌────────────────────────┬───────────────────────┬───────────────────────┐
   │ Attribute              │ Flat ATPG              │ Hierarchical ATPG     │
   ├────────────────────────┼───────────────────────┼───────────────────────┤
@@ -2321,7 +2076,7 @@ provides controlled access to its internal scan chains.
 
 ### 12.1 Power Gating and Scan
 
-```
+```ascii-graph
   Problem: Power-gated domain is OFF during certain test modes
   
   ┌─────────────────────────┐     ┌─────────────────────┐
@@ -2354,7 +2109,7 @@ provides controlled access to its internal scan chains.
 
 ### 12.2 Multi-Voltage Scan
 
-```
+```ascii-graph
   Scan chain crossing voltage domains:
   
   VDD_high (1.0V)          VDD_low (0.75V)
@@ -2385,30 +2140,28 @@ This can cause:
 
 **Mitigation techniques:**
 
-```
-  1. Lower voltage during shift:
-     - Shift at reduced VDD (e.g., 0.8V instead of 1.0V)
-     - Slower but lower power
-     - Capture at nominal VDD for at-speed testing
+1. Lower voltage during shift:
+   - Shift at reduced VDD (e.g., 0.8V instead of 1.0V)
+   - Slower but lower power
+   - Capture at nominal VDD for at-speed testing
 
-  2. Clock gating scan chains:
-     - Only shift a subset of chains at a time
-     - Reduces simultaneous switching
-     - Increases test time (more shift cycles needed)
+2. Clock gating scan chains:
+   - Only shift a subset of chains at a time
+   - Reduces simultaneous switching
+   - Increases test time (more shift cycles needed)
 
-  3. Scan chain partitioning:
-     - Alternate active/inactive chains per shift cycle
-     - "Staggered shift clocking"
+3. Scan chain partitioning:
+   - Alternate active/inactive chains per shift cycle
+   - "Staggered shift clocking"
 
-  4. Low-power scan fill:
-     - ATPG fills don't-care bits to MINIMIZE transitions
-     - Adjacent-fill: fill X with same value as neighbor
-     - Reduces shift power by 30-50% vs random fill
+4. Low-power scan fill:
+   - ATPG fills don't-care bits to MINIMIZE transitions
+   - Adjacent-fill: fill X with same value as neighbor
+   - Reduces shift power by 30-50% vs random fill
 
-  5. On-chip power management during test:
-     - DFT controller manages power switches
-     - Daisy-chain power-up sequence for power domains
-```
+5. On-chip power management during test:
+   - DFT controller manages power switches
+   - Daisy-chain power-up sequence for power domains
 
 ---
 
@@ -2417,7 +2170,7 @@ This can cause:
 Key DFT constants and typical values that come up in interviews and production
 planning.
 
-```
+```ascii-graph
   ┌──────────────────────────────────────┬──────────────────────────────────────┐
   │ Parameter                            │ Typical Value                        │
   ├──────────────────────────────────────┼──────────────────────────────────────┤
@@ -2745,7 +2498,7 @@ clocks can share clock tree resources; the others cannot.
 
 ### 15.1 Tensor Core Testing
 
-```
+```ascii-graph
 Tensor core / systolic array DFT challenges:
 
   A modern AI accelerator tensor core:
@@ -2790,7 +2543,7 @@ Tensor core / systolic array DFT challenges:
 
 ### 15.2 HBM Stack Testing
 
-```
+```ascii-graph
 HBM testing hierarchy:
 
   Level 1: Known Good Die (KGD) testing
@@ -2848,7 +2601,7 @@ HBM testing hierarchy:
 
 ### 15.3 Die-to-Die Link Testing
 
-```
+```ascii-graph
 UCIe / die-to-die link testing:
 
   1. Loopback testing:
@@ -2887,7 +2640,7 @@ UCIe / die-to-die link testing:
 
 ### 15.4 3D IC Test: TSV and KGD
 
-```
+```ascii-graph
 TSV testing:
 
   Pre-bond TSV test (via-middle or via-last):
@@ -2924,7 +2677,7 @@ TSV testing:
 
 ### 15.5 Power-Aware Test Scheduling for 1000W+ Designs
 
-```
+```ascii-graph
 Challenge: Testing a 1000W+ AI accelerator on ATE
 
   ATE power limitations:
@@ -2968,7 +2721,7 @@ Challenge: Testing a 1000W+ AI accelerator on ATE
 
 ### 15.6 High-Speed I/O Testing
 
-```
+```ascii-graph
 PCIe 6.0 / CXL link testing:
 
   PCIe 6.0 (PAM-4 signaling):
@@ -3010,7 +2763,7 @@ PCIe 6.0 / CXL link testing:
 
 ### 15.7 Analog/Mixed-Signal BIST (AMBIST)
 
-```
+```ascii-graph
 AMBIST: Built-In Self-Test for analog/mixed-signal blocks
 
   Targets: PLLs, SerDes PHYs, ADCs, DACs, voltage regulators

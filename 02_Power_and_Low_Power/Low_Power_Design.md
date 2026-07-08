@@ -24,103 +24,112 @@
 
 Consider a CMOS inverter output transitioning from 0 to VDD (charging load capacitance CL through the PMOS pull-up).
 
-```
-        VDD
-         |
-       [PMOS]  <- turns ON for 0->1 transition
-         |
-    out--+--[CL]--GND
-         |
-       [NMOS]  <- turns OFF
-         |
-        GND
+```text
+      VDD
+       │
+     [PMOS]  <-- turns ON for 0->1 transition
+       │
+  out ─┼─ [CL] ─ GND
+       │
+     [NMOS]  <-- turns OFF
+       │
+      GND
 ```
 
 **Energy drawn from VDD during 0->1 transition:**
 
-```
+```text
 The current from VDD charges CL from 0 to VDD.
 
-Charge delivered: Q = CL * VDD
+Charge delivered:
+  Q = CL * VDD
 
-Energy from supply: E_supply = Q * VDD = CL * VDD^2
+Energy from supply:
+  E_supply = Q * VDD = CL * VDD²
 ```
 
 **Energy stored in capacitor:**
 
-```
-E_cap = (1/2) * CL * VDD^2
+```text
+E_cap = (1/2) * CL * VDD²
 ```
 
 **Energy dissipated in PMOS channel resistance:**
 
-```
-E_PMOS = E_supply - E_cap = CL * VDD^2 - (1/2) * CL * VDD^2 = (1/2) * CL * VDD^2
+```text
+E_PMOS = E_supply - E_cap
+       = CL * VDD² - (1/2) * CL * VDD²
+       = (1/2) * CL * VDD²
 ```
 
 **Key insight:** Exactly HALF the energy from VDD is stored in CL, and HALF is dissipated as heat in the PMOS resistance. This is true regardless of PMOS size or channel resistance (assuming full swing).
 
 ### 1.2 Discharging Through NMOS (1->0 transition)
 
-```
-The stored energy (1/2) * CL * VDD^2 is dissipated in the NMOS channel.
-No energy drawn from VDD (PMOS is off, current flows from CL to GND through NMOS).
+```text
+The stored energy (1/2) * CL * VDD² is dissipated in the NMOS channel.
+No energy is drawn from VDD (PMOS is off, current flows from CL to GND through NMOS).
 ```
 
 ### 1.3 Total Energy Per Full Cycle (0->1->0)
 
-```
+```text
 E_cycle = E_charge + E_discharge
-        = (1/2) * CL * VDD^2 + (1/2) * CL * VDD^2
-        = CL * VDD^2
+        = (1/2) * CL * VDD² + (1/2) * CL * VDD²
+        = CL * VDD²
 
-Energy from VDD per cycle: CL * VDD^2  (all dissipated as heat)
+Energy from VDD per cycle: CL * VDD² (all dissipated as heat)
 ```
 
 ### 1.4 Switching Power Formula
 
-```
-P_switching = alpha * CL * VDD^2 * f
+```verilog
+P_switching = α * CL * VDD² * f
 
-where:
-  alpha = activity factor = probability of 0->1 transition per clock cycle
-  CL    = total load capacitance (gate + wire + fanout)
-  VDD   = supply voltage
-  f     = clock frequency
+Where:
+  α   = activity factor (probability of 0->1 transition per clock cycle)
+  CL  = total load capacitance (gate + wire + fanout)
+  VDD = supply voltage
+  f   = clock frequency
 
-For a clock net (alpha = 1.0, toggles every half-cycle):
-  P_clock = CL_total * VDD^2 * f
+For a clock net (α = 1.0, toggles every half-cycle):
+  P_clock = CL_total * VDD² * f
 
-For typical logic (alpha ~ 0.1-0.3):
-  P_logic = 0.1 to 0.3 * CL * VDD^2 * f
+For typical logic (α ≈ 0.1 - 0.3):
+  P_logic = (0.1 to 0.3) * CL * VDD² * f
 ```
 
 **Numerical example:**
 
-```
+```verilog
 Block with 1 million gates
 Average CL per gate: 2 fF (including wire cap)
 Total CL: 1M * 2 fF = 2 nF
-Alpha: 0.15
+Alpha (α): 0.15
 VDD: 0.8V
 Frequency: 1 GHz
 
-P_switching = 0.15 * 2e-9 * (0.8)^2 * 1e9
+P_switching = 0.15 * 2e-9 * (0.8)² * 1e9
             = 0.15 * 2e-9 * 0.64 * 1e9
-            = 0.192 W = 192 mW
+            = 0.192 W
+            = 192 mW
 ```
 
 **Voltage scaling impact:**
 
-```
+```text
 Reducing VDD from 0.8V to 0.72V (10% reduction):
-P_new = 0.15 * 2e-9 * (0.72)^2 * 1e9 = 0.15 * 2e-9 * 0.5184 * 1e9 = 155.5 mW
+  P_new = 0.15 * 2e-9 * (0.72)² * 1e9 
+        = 0.15 * 2e-9 * 0.5184 * 1e9 
+        = 155.5 mW
 
-Savings: (192 - 155.5) / 192 = 19%  (quadratic!)
+  Savings: (192 - 155.5) / 192 = 19% (quadratic!)
 
 Reducing VDD from 0.8V to 0.6V (25% reduction):
-P_new = 0.15 * 2e-9 * (0.36) * 1e9 = 108 mW
-Savings: 44%  (but frequency must also drop significantly)
+  P_new = 0.15 * 2e-9 * 0.36 * 1e9 
+        = 108 mW
+        
+  Savings: (192 - 108) / 192 = 44% (but frequency must also drop significantly)
 ```
 
 ---
@@ -131,33 +140,33 @@ Savings: 44%  (but frequency must also drop significantly)
 
 During an input transition, there is a brief period when both PMOS and NMOS are simultaneously conducting (input voltage is between Vtn and VDD - |Vtp|). A direct current path exists from VDD to GND.
 
-```
-      VDD
-       |
-     [PMOS] <- partially ON
-       |
-  Vin--+--Vout
-       |
-     [NMOS] <- partially ON
-       |
-      GND
+```text
+       VDD
+        │
+      [PMOS]  <-- partially ON
+        │
+  Vin ──┼── Vout
+        │
+      [NMOS]  <-- partially ON
+        │
+       GND
 
 Short-circuit window: Vtn < Vin < VDD - |Vtp|
 ```
 
 ### 2.2 Short-Circuit Power Estimate
 
-```
+```text
 P_sc = I_peak * (t_sc / T_clk) * VDD
 
-where:
+Where:
   I_peak = peak short-circuit current
   t_sc   = duration of short-circuit window during each transition
   T_clk  = clock period
 
-Typical: P_sc = 5-15% of P_switching
+Typical: P_sc = 5% to 15% of P_switching
 
-Minimized when: input slew ~ output slew (balanced transition times)
+Minimized when: input slew ≈ output slew (balanced transition times)
 ```
 
 When input slew is much slower than output slew, both transistors are ON for a long time, increasing P_sc. This is why excessive slew (failing max_transition DRC) increases power.
@@ -170,16 +179,16 @@ When input slew is much slower than output slew, both transistors are ON for a l
 
 The MOSFET does not turn off abruptly at Vgs = Vth. Below threshold, current is dominated by diffusion (not drift):
 
-```
+```text
 I_sub = I_0 * exp((Vgs - Vth) / (n * Vt)) * (1 - exp(-Vds / Vt))
 
-where:
-  I_0  = technology-dependent constant (proportional to W/L)
-  Vgs  = gate-to-source voltage (0 when "off" in CMOS)
-  Vth  = threshold voltage
-  n    = sub-threshold swing coefficient (1.0 to 1.5, ideally 1.0)
-  Vt   = thermal voltage = kT/q = 26mV at 300K (27C)
-  Vds  = drain-to-source voltage
+Where:
+  I_0 = technology-dependent constant (proportional to W/L)
+  Vgs = gate-to-source voltage (0V when "off" in CMOS)
+  Vth = threshold voltage
+  n   = sub-threshold swing coefficient (1.0 to 1.5, ideally 1.0)
+  Vt  = thermal voltage (kT/q = 26mV at 300K / 27°C)
+  Vds = drain-to-source voltage
 
 For a "fully off" transistor (Vgs = 0, Vds = VDD >> Vt):
   I_sub = I_0 * exp(-Vth / (n * Vt))
@@ -189,80 +198,82 @@ For a "fully off" transistor (Vgs = 0, Vds = VDD >> Vt):
 
 The sub-threshold slope (SS) defines how many millivolts of Vgs change are needed to reduce current by 10x (one decade):
 
-```
-SS = n * Vt * ln(10) = n * 26mV * 2.303 = 60mV/decade (ideal at 300K, n=1)
+```text
+SS = n * Vt * ln(10)
+   = n * 26mV * 2.303
+   = 60 mV/decade (ideal at 300K, n=1)
 
-Practical values: 60-100 mV/decade (n=1.0 to 1.7)
+Practical values: 60 - 100 mV/decade (n = 1.0 to 1.7)
 ```
 
 **Physical limit:** At room temperature, the absolute minimum SS is ~60 mV/decade. This is the **Boltzmann tyranny** -- no conventional MOSFET can switch faster than this. It fundamentally limits how much you can reduce Vth (and thus leakage) while maintaining a reasonable Ion/Ioff ratio.
 
-```
-For Vth = 0.3V and SS = 70 mV/decade:
-  Decades off = Vth / SS = 0.3 / 0.07 = 4.3 decades
-  Ion/Ioff = 10^4.3 = ~20,000:1
+- **For Vth** = `0.3V and SS = 70 mV/decade:`
+   - Decades off = Vth / SS = 0.3 / 0.07 = 4.3 decades
+   - Ion/Ioff = 10^4.3 = ~20,000:1
 
-For Vth = 0.2V and SS = 70 mV/decade:
-  Decades off = 0.2 / 0.07 = 2.86 decades
-  Ion/Ioff = 10^2.86 = ~724:1   (marginal for logic!)
-```
+- **For Vth** = `0.2V and SS = 70 mV/decade:`
+   - Decades off = 0.2 / 0.07 = 2.86 decades
+   - Ion/Ioff = 10^2.86 = ~724:1   (marginal for logic!)
 
 ### 3.3 Temperature Dependence of Sub-Threshold Leakage
 
-```
 I_sub ~ exp(-Vth / (n * kT/q))
 
-As T increases:
-  1. Vt = kT/q increases linearly (26mV at 300K -> 34mV at 400K)
-  2. Vth decreases (approximately -1 to -2 mV/K)
-  3. Both effects increase leakage exponentially
+**As T increases:**
+   1. Vt = kT/q increases linearly (26mV at 300K -> 34mV at 400K)
+2. Vth decreases (approximately -1 to -2 mV/K)
+3. Both effects increase leakage exponentially
 
 Rule of thumb: leakage roughly DOUBLES for every 10-12C temperature rise
-              (sometimes quoted as 10x per 30C for conservative estimates)
-```
+(sometimes quoted as 10x per 30C for conservative estimates)
 
 **Numerical example:**
 
-```
-Leakage at 25C (298K): 1 mA
-At 85C (358K):
-  Factor = exp((-Vth_hot)/n*Vt_hot) / exp((-Vth_cold)/n*Vt_cold)
+```text
+Leakage at 25°C (298K): 1 mA
 
-  Using rule of thumb (2x per 10C):
-  Factor = 2^((85-25)/10) = 2^6 = 64x
-  Leakage at 85C ~ 64 mA
+At 85°C (358K):
+  Factor = exp(-Vth_hot / (n * Vt_hot)) / exp(-Vth_cold / (n * Vt_cold))
 
-  Using conservative rule (10x per 30C):
-  Factor = 10^((85-25)/30) = 10^2 = 100x
-  Leakage at 85C ~ 100 mA
+  Using rule of thumb (2x per 10°C):
+    Factor = 2^((85 - 25) / 10) = 2^6 = 64x
+    Leakage at 85°C ≈ 64 mA
 
-The actual value depends on the technology, but leakage at 125C can easily be
-100-300x the value at 25C. This makes thermal management critical.
+  Using conservative rule (10x per 30°C):
+    Factor = 10^((85 - 25) / 30) = 10^2 = 100x
+    Leakage at 85°C ≈ 100 mA
+
+The actual value depends on the technology, but leakage at 125°C can easily be
+100 - 300x the value at 25°C. This makes thermal management critical.
 ```
 
 ### 3.4 DIBL (Drain-Induced Barrier Lowering)
 
 At short channel lengths, the drain voltage affects the source-channel barrier:
 
-```
-Vth_effective = Vth_0 - eta * Vds
+```text
+Vth_effective = Vth_0 - η * Vds
 
-where eta = DIBL coefficient (0.02 to 0.1 V/V for short channels)
+Where:
+  η = DIBL coefficient (0.02 to 0.1 V/V for short channels)
 ```
 
 When Vds increases (logic HIGH applied to drain), Vth decreases, increasing sub-threshold leakage. This is why stacking transistors (series NMOS) reduces leakage -- the intermediate node voltage reduces Vds across each transistor.
 
-```
-Single NMOS off (Vgs=0, Vds=VDD=0.8V):
-  I_leak = I_0 * exp(-0.3 / (1.2 * 0.026)) = I_0 * exp(-9.62)
+```text
+Single NMOS off (Vgs=0V, Vds=VDD=0.8V):
+  I_leak = I_0 * exp(-0.3 / (1.2 * 0.026)) 
+         = I_0 * exp(-9.62)
 
-Stacked 2 NMOS off (each has Vds ~ VDD/2 = 0.4V due to intermediate node):
-  Vth_eff = 0.3 + 0.05*0.4 = 0.32V (DIBL correction, Vds reduced)
-  I_leak ~ I_0 * exp(-0.32 / (1.2 * 0.026)) = I_0 * exp(-10.26)
+Stacked 2 NMOS off (each has Vds ≈ VDD/2 = 0.4V due to intermediate node):
+  Vth_eff = 0.3 + 0.05 * 0.4 = 0.32V (DIBL correction, Vds reduced)
+  I_leak  ≈ I_0 * exp(-0.32 / (1.2 * 0.026)) 
+          = I_0 * exp(-10.26)
 
 Ratio: exp(-9.62) / exp(-10.26) = exp(0.64) = 1.9x reduction
 
-The "stack effect" provides ~2-3x leakage reduction for 2-high stacks.
+The "stack effect" provides ≈ 2-3x leakage reduction for 2-high stacks.
 ```
 
 ### 3.5 Gate Oxide Tunneling Leakage
@@ -271,47 +282,45 @@ Electrons can quantum-mechanically tunnel through the thin gate oxide.
 
 **Direct tunneling** (oxide < 3nm): Dominates at advanced nodes.
 
-```
-I_gate ~ A * (Vox/Tox)^2 * exp(-B * Tox * sqrt(phi_b - Vox/2))
+```text
+I_gate ≈ A * (Vox / Tox)² * exp(-B * Tox * sqrt(phi_b - Vox/2))
 
-where:
-  Tox  = oxide thickness
-  Vox  = voltage across oxide
-  phi_b = barrier height (~3.1 eV for SiO2)
-  A, B = constants
+Where:
+  Tox   = oxide thickness
+  Vox   = voltage across oxide
+  phi_b = barrier height (≈ 3.1 eV for SiO2)
+  A, B  = constants
 ```
 
 Gate leakage is exponentially sensitive to oxide thickness. Each 0.1nm reduction roughly 10x increases tunneling current.
 
 **High-k dielectrics (HfO2, etc.):**
 
-```
+```text
 Physical thickness can be larger (reducing tunneling) while maintaining
 the same effective capacitance:
 
-  C = epsilon_0 * k / T_physical
+  C = ε₀ * k / T_physical
 
-SiO2:  k = 3.9, T = 1.2nm -> C = epsilon_0 * 3.9 / 1.2nm
-HfO2:  k = 25,  T = 5nm   -> C = epsilon_0 * 25 / 5nm = same C!
+SiO2: k = 3.9, T = 1.2nm  =>  C = ε₀ * 3.9 / 1.2nm
+HfO2: k = 25,  T = 5.0nm  =>  C = ε₀ * 25  / 5.0nm  (same C!)
 
-But tunneling through 5nm is negligible compared to 1.2nm.
-High-k reduced gate leakage by 100-1000x at 45nm and below.
+But tunneling through 5.0nm is negligible compared to 1.2nm.
+High-k dielectrics reduced gate leakage by 100 - 1000x at 45nm and below.
 ```
 
 **Equivalent Oxide Thickness (EOT):**
 
-```
-EOT = T_physical * (k_SiO2 / k_high-k) = 5nm * (3.9/25) = 0.78nm
+- **EOT** = `T_physical * (k_SiO2 / k_high-k) = 5nm * (3.9/25) = 0.78nm`
 
 This means the HfO2 gate has the capacitance of a 0.78nm SiO2 gate
 but the tunneling of a 5nm barrier.
-```
 
 ### 3.6 GIDL (Gate-Induced Drain Leakage)
 
 When the gate is at 0V and the drain is at VDD, a strong electric field at the gate-drain overlap causes band-to-band tunneling:
 
-```
+```ascii-graph
           Gate (0V)
      ═══════════════
           |
@@ -327,16 +336,16 @@ GIDL is significant when |Vgd| > ~1V and becomes worse with thinner oxides and h
 
 ### 3.7 Leakage Power Breakdown by Node
 
-```
-| Source          | 65nm  | 28nm  | 7nm FinFET |
-|-----------------|-------|-------|------------|
-| Sub-threshold   | 70%   | 80%   | 85%        |
-| Gate tunneling  | 20%   | 10%   | 5%         |
-| Junction/GIDL   | 10%   | 10%   | 10%        |
+```text
+| Source           | 65nm | 28nm | 7nm FinFET |
+|------------------|------|------|------------|
+| Sub-threshold    | 70%  | 80%  | 85%        |
+| Gate tunneling   | 20%  | 10%  | 5%         |
+| Junction/GIDL    | 10%  | 10%  | 10%        |
 
 Note: FinFET dramatically reduced gate leakage (thicker effective oxide
 due to the fin geometry) and improved sub-threshold slope (n closer to 1.0),
-but leakage still dominates due to the sheer number of transistors.
+but sub-threshold leakage still dominates due to the sheer number of transistors.
 ```
 
 ---
@@ -345,7 +354,7 @@ but leakage still dominates due to the sheer number of transistors.
 
 ### 4.1 ICG Cell Schematic (Latch + AND Gate)
 
-```
+```ascii-graph
                ┌─────────────────────┐
    EN ────────>│ D    Latch    Q ├───┐
                │         CLK        │   │
@@ -359,31 +368,30 @@ but leakage still dominates due to the sheer number of transistors.
 
 **Why latch-based is glitch-free (timing diagram):**
 
+```wavedrom
+{ "signal": [
+  { "name": "CLK",      "wave": "0101010101" },
+  { "name": "EN",       "wave": "0.1.....0." },
+  { "name": "EN_latch", "wave": "0...1...0." },
+  { "name": "GCLK",     "wave": "0...10101." }
+], "head": { "text": "Latch-based clock gating: EN sampled while CLK LOW, so EN_latch is stable during CLK HIGH and GCLK = CLK AND EN_latch is glitch-free" } }
 ```
-CLK:     ___|‾‾‾‾‾‾|______|‾‾‾‾‾‾|______|‾‾‾‾‾‾|______
-EN:      __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_________________________
-EN_latch:_____|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|__________________
-GCLK:   ______|‾‾‾‾‾‾|______|‾‾‾‾‾‾|_______________________
 
-Latch is transparent when CLK=0 (LOW phase).
-EN changes during CLK=0 are captured by the latch.
-EN changes during CLK=1 are BLOCKED by the latch (it's opaque).
-The AND gate only sees EN_latched, which is stable during CLK=1.
-Therefore, GCLK = CLK & EN_latched is GLITCH-FREE.
+The latch is transparent when `CLK=0`, so EN changes during the low phase are captured and EN changes during the high phase are blocked. The AND gate only ever sees the stable `EN_latch`. Without the latch, an EN change while `CLK` is HIGH chops the clock into a narrow glitch:
 
-Without the latch:
-CLK:     ___|‾‾‾‾‾‾|______|‾‾‾‾‾‾|______
-EN:      ______|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_______
-GCLK:   _______|‾‾‾‾|______|‾‾‾‾‾‾|_____
-                ^^ GLITCH! EN arrived while CLK was high
-                   causing a partial pulse on GCLK
+```wavedrom
+{ "signal": [
+  { "name": "CLK",  "wave": "01010101" },
+  { "name": "EN",   "wave": "0..1..0." },
+  { "name": "GCLK = CLK & EN (no latch)", "wave": "0..1x0." }
+], "head": { "text": "Direct AND gating: EN toggling while CLK HIGH produces a runt clock pulse (x)" } }
 ```
 
 ### 4.2 ICG Timing Constraints in STA
 
 The ICG has its own setup and hold checks:
 
-```
+```verilog
 EN must meet SETUP before the falling edge of CLK (latch opening edge):
   EN arrival time < CLK_fall - T_setup_icg
 
@@ -397,7 +405,7 @@ These appear as "clock gating check" timing reports in PrimeTime.
 
 **Example: 1000 flip-flops with clock gating, gated 70% of the time**
 
-```
+```verilog
 Assumptions:
   Each FF clock pin capacitance: 5 fF
   Clock tree buffer capacitance per FF: 3 fF (average)
@@ -419,7 +427,7 @@ Savings = 5.12 - 1.546 = 3.574 mW = 70% savings!
 
 ### 4.4 AND-Type vs OR-Type ICG Cells
 
-```
+```verilog
 AND-type ICG (clock gating for active-high enables, INDUSTRY STANDARD):
   
   GCLK = CLK & EN_latched
@@ -460,7 +468,7 @@ Timing of enable relative to clock:
 
 ### 4.4B Clock Gating Enable Generation from RTL
 
-```
+```verilog
 The synthesis tool infers ICG from these RTL patterns:
 
 Pattern 1: if-else with clocked assignment (MOST COMMON)
@@ -538,21 +546,19 @@ The tool identifies registers with a common enable signal and inserts ICG cells.
 
 The propagation delay of a CMOS gate is:
 
-```
 T_pd = (CL * VDD) / I_avg
 
 I_avg ~ (W/L) * mu * Cox * (VDD - Vth)^alpha / 2
 
-Therefore:
-  T_pd ~ CL * VDD / ((VDD - Vth)^alpha)
+**Therefore:**
+   - T_pd ~ CL * VDD / ((VDD - Vth)^alpha)
 
 where alpha is between 1 (velocity-saturated) and 2 (long-channel square-law)
 For modern short-channel: alpha ~ 1.0 to 1.3
-```
 
 **Maximum frequency:**
 
-```
+```verilog
 f_max = 1 / T_pd ~ (VDD - Vth)^alpha / (CL * VDD)
 
 For VDD >> Vth: f_max ~ VDD^(alpha-1) ~ roughly proportional to VDD
@@ -561,7 +567,7 @@ For VDD near Vth: f_max drops rapidly (approaching 0 at VDD = Vth)
 
 **DVFS power scaling:**
 
-```
+```verilog
 P_dynamic = alpha_sw * CL * VDD^2 * f
 
 If we reduce VDD by factor k (VDD_new = k * VDD_old):
@@ -574,7 +580,7 @@ Cubic power reduction! A 20% voltage reduction gives:
 
 ### 5.2 Practical DVFS Implementation
 
-```
+```ascii-graph
                     ┌──────────────┐
    Performance  -->│  DVFS        │--> VDD_request --> [Voltage Regulator]
    Request         │  Controller  │--> Freq_request --> [PLL/Clock Divider]
@@ -604,21 +610,19 @@ WHY this order matters:
 
 For a gate with delay T_d proportional to Vdd / (Vdd - Vth)^alpha:
 
-```
 For constant delay (same performance): Vdd must scale with frequency
-  If f doubles: T_d halves -> need Vdd to increase
-  Roughly: Vdd proportional to f for constant delay
-  (at Vdd >> Vth: T_d ~ Vdd / Vdd^alpha = 1/Vdd^(alpha-1), 
-   so Vdd ~ f^(1/(alpha-1)))
+If f doubles: T_d halves -> need Vdd to increase
+Roughly: Vdd proportional to f for constant delay
+(at Vdd >> Vth: T_d ~ Vdd / Vdd^alpha = 1/Vdd^(alpha-1),
+so Vdd ~ f^(1/(alpha-1)))
 
-For alpha = 1.3: Vdd ~ f^(1/0.3) = f^3.33
-  If f increases 20%: Vdd must increase ~80%
-  This is why small frequency increases cost enormous power!
-```
+- **For alpha** = `1.3: Vdd ~ f^(1/0.3) = f^3.33`
+   - If f increases 20%: Vdd must increase ~80%
+   - This is why small frequency increases cost enormous power!
 
 **Detailed operating points table with derivation:**
 
-```
+```verilog
 Assume: 7nm FinFET, Vth = 0.25V, alpha = 1.3
 Base design at 0.75V, 2.0 GHz
 
@@ -642,7 +646,7 @@ Power at Min   = 0.08x nominal -> 92% dynamic power reduction for background tas
 
 ### 5.2C DVFS Controller Decision Logic
 
-```
+```verilog
 How the DVFS controller decides V/F level:
 
 Method 1: Utilization-based (most common in mobile SoCs)
@@ -677,7 +681,7 @@ Method 3: Critical path monitor (hardware AVS)
 
 ### 5.2D Voltage Regulator Response Time
 
-```
+```verilog
 How fast can you change Vdd?
 
 External PMIC (Power Management IC):
@@ -712,7 +716,7 @@ DVFS transition overhead:
 
 ### 5.3 DVFS Operating Points -- Real-World Example
 
-```
+```verilog
 | OPP     | VDD (V) | Freq (GHz) | Rel Power | Use Case          |
 |---------|---------|------------|-----------|-------------------|
 | Turbo   | 0.95    | 2.5        | 1.80      | Peak performance  |
@@ -726,18 +730,16 @@ DVFS transition overhead:
 
 Below Vth, transistors still conduct via diffusion current, but:
 
-```
 - Current drops exponentially: I ~ exp(VDD/Vt) for VDD < Vth
 - Frequency drops to kHz-MHz range
 - Ion/Ioff ratio approaches 1 -> poor noise margins
 - Very sensitive to Vth variation (process corners spread widely)
 - Used for ultra-low-power sensor nodes, pacemakers
 
-At VDD = 0.3V (sub-Vth for Vth=0.4V):
-  Freq ~ 10-100 kHz (application-specific)
-  Power ~ 1-10 uW (nW-range for simple logic)
-  Energy per operation: LOWER than super-threshold! (E ~ CV^2 is quadratic)
-```
+- **At VDD** = `0.3V (sub-Vth for Vth=0.4V):`
+   - Freq ~ 10-100 kHz (application-specific)
+   - Power ~ 1-10 uW (nW-range for simple logic)
+   - Energy per operation: LOWER than super-threshold! (E ~ CV^2 is quadratic)
 
 ---
 
@@ -747,7 +749,7 @@ At VDD = 0.3V (sub-Vth for Vth=0.4V):
 
 **Header switch (PMOS between VDD and virtual VDD):**
 
-```
+```verilog
      Real VDD
        |
     [PMOS header]  <- SLEEP_N controls
@@ -761,7 +763,7 @@ At VDD = 0.3V (sub-Vth for Vth=0.4V):
 
 **Footer switch (NMOS between virtual GND and real GND):**
 
-```
+```verilog
     VDD
      |
   [Logic block]
@@ -790,7 +792,7 @@ At VDD = 0.3V (sub-Vth for Vth=0.4V):
 
 When power is restored, the virtual rail must charge from 0V to VDD. The parasitic capacitance of the entire gated domain (gate caps + wire caps + decoupling caps) creates a rush current.
 
-```
+```text
 I_rush = C_total * dV/dt
 
 Example:
@@ -814,28 +816,26 @@ The header/footer switch must be sized to:
 1. **Have low enough resistance in ON state** to limit IR drop during normal operation.
 2. **Not be too large** (area and leakage overhead).
 
-```
-Switch ON resistance:
-  R_switch = Leff / (W_total * mu * Cox * (VDD - |Vtp|))
+**Switch ON resistance:**
+   - R_switch = Leff / (W_total * mu * Cox * (VDD - |Vtp|))
 
 Target: R_switch * I_max < IR_drop_budget
 
-Example:
-  I_max (peak current of domain): 100 mA
-  IR_drop budget: 5% of VDD = 40 mV
-  Required R_switch < 40mV / 100mA = 0.4 ohm
+**Example:**
+   - I_max (peak current of domain): 100 mA
+   - IR_drop budget: 5% of VDD = 40 mV
+   - Required R_switch < 40mV / 100mA = 0.4 ohm
 
-  For PMOS header in 7nm:
-    R_per_fin ~ 500 ohm (per fin, Leff = 7nm)
-    W_total needed = R_per_fin / R_switch = 500/0.4 = 1250 fins
-    At 100 fins per header cell, need ~13 header cells
+For PMOS header in 7nm:
+R_per_fin ~ 500 ohm (per fin, Leff = 7nm)
+W_total needed = R_per_fin / R_switch = 500/0.4 = 1250 fins
+At 100 fins per header cell, need ~13 header cells
 
-  These cells are distributed along the VDD rail (not concentrated in one spot).
-```
+These cells are distributed along the VDD rail (not concentrated in one spot).
 
 ### 6.4 Daisy-Chain Power-On (Rush Current Control)
 
-```
+```ascii-graph
    SLEEP_N[0] --> [Header_group_0] --> ack_0
                                         |
    SLEEP_N[1] <---- (ack_0 delayed) <---+
@@ -852,7 +852,7 @@ Rush current spread over time -> manageable peak current.
 
 ### 6.5 Complete Power Gating Sequence
 
-```
+```verilog
 Power-DOWN sequence:
   1. Software saves context (optional, for state not in retention FFs)
   2. Assert SAVE signal -> retention FFs latch their values
@@ -880,7 +880,7 @@ Critical ordering rules:
 
 ### 6.6 Retention Register Design (Balloon Latch)
 
-```
+```ascii-graph
          Main FF (on switchable supply VVDD)
   ┌──────────────────────────────┐
   │  D --[TG]--M--[TG]--S-- Q   │
@@ -907,7 +907,7 @@ Critical ordering rules:
 
 ### 6.6B Retention Register Detailed Design (Balloon Register)
 
-```
+```ascii-graph
 Schematic of a retention flip-flop with balloon (shadow) latch:
 
   Switchable VDD (VVDD)                    Always-On VDD (VDD_AO)
@@ -960,7 +960,7 @@ Leakage overhead: only the shadow latch leaks on the always-on rail
 
 ### 6.6C Power-Up Sequence with In-Rush Current Management
 
-```
+```verilog
 Detailed power-up sequence with timing:
 
   t0: Wake-up event (interrupt, timer)
@@ -1017,16 +1017,14 @@ Critical ordering violations and their consequences:
 | Latch | Output = last value | When downstream needs stable data |
 | High-Z | Output = Z | Shared bus, tristatable outputs |
 
-```
-Isolation cell (clamp-to-0):
+**Isolation cell (clamp-to-0):**
 
-  IN ──[AND]── OUT
-         |
-        ISO_N  (active-low: when ISO_N=0, output is forced to 0)
+IN ──[AND]── OUT
+|
+ISO_N  (active-low: when ISO_N=0, output is forced to 0)
 
 The AND gate is powered by the ALWAYS-ON supply (destination domain).
 When the source domain is off, IN is floating, but ISO_N=0 forces OUT=0.
-```
 
 ### 6.8 UPF for Power-Gated Domain
 
@@ -1083,7 +1081,7 @@ add_power_state PD_GPU \
 
 ### 7.1 Actual Library Data (Typical 7nm FinFET)
 
-```
+```verilog
 | Cell     | Vt Type | Delay (ps) | Leakage (nW) | Rel Delay | Rel Leak |
 |----------|---------|-----------|-------------|-----------|----------|
 | INV_X1   | uLVT   | 12        | 150         | 0.80      | 15.0     |
@@ -1101,7 +1099,7 @@ Observations:
 
 ### 7.2 Vt Assignment Algorithm
 
-```
+```verilog
 Optimization strategy (typical in Synopsys Design Compiler / ICC2):
 
 Phase 1: Start with ALL cells as HVT (minimum leakage)
@@ -1127,7 +1125,7 @@ Result: Typically 70-85% HVT, 10-20% SVT, 5-10% LVT
 
 ### 7.2B Multi-Vt Synthesis Flow in Detail
 
-```
+```tcl
 Step-by-step multi-Vt optimization in Synopsys Design Compiler:
 
 Phase 0: Library preparation
@@ -1177,7 +1175,7 @@ Typical result for a well-optimized CPU core at 7nm:
 
 ### 7.2C Multi-Vt Leakage Reduction Quantified
 
-```
+```text
 Worked example: 5M gate design, 7nm FinFET
 
 All-SVT baseline:
@@ -1221,28 +1219,26 @@ and 20-30% total power vs all-SVT at higher voltage.
 
 ### 7.3 Vt vs Cell Sizing Trade-off
 
-```
-To fix a 20ps setup violation, you can:
+**To fix a 20ps setup violation, you can:**
 
 Option A: Swap bottleneck cell from HVT to LVT
-  Delay improvement: ~20%  (~10-15ps for a typical gate)
-  Leakage cost: 5-10x for that cell
-  Area: unchanged (same cell footprint)
+Delay improvement: ~20%  (~10-15ps for a typical gate)
+Leakage cost: 5-10x for that cell
+Area: unchanged (same cell footprint)
 
 Option B: Upsize bottleneck cell from X1 to X2
-  Delay improvement: ~30-40% (~15-20ps)
-  Leakage cost: ~2x (double the transistor width)
-  Area: ~2x for that cell
+Delay improvement: ~30-40% (~15-20ps)
+Leakage cost: ~2x (double the transistor width)
+Area: ~2x for that cell
 
 Option C: Both (LVT + upsize)
-  Delay improvement: ~50-60%
-  Leakage cost: 10-20x
-  Area: 2x
+Delay improvement: ~50-60%
+Leakage cost: 10-20x
+Area: 2x
 
 For minimal leakage impact: prefer upsizing (linear leakage increase)
 For minimal area impact: prefer Vt swap (no area change)
 For maximum speed: both
-```
 
 ---
 
@@ -1252,7 +1248,7 @@ For maximum speed: both
 
 Apply a small positive voltage to the body (P-well for NMOS):
 
-```
+```verilog
 Vbs > 0 for NMOS (body voltage higher than source)
 
 Effect: Vth decreases (by body effect coefficient):
@@ -1268,7 +1264,7 @@ Typical FBB: +100 to +300 mV. Delay improvement: 5-15%. Leakage increase: 2-5x.
 
 Apply a negative voltage to the body (for NMOS):
 
-```
+```verilog
 Vbs < 0 for NMOS
 
 Effect: Vth increases -> slower switching, lower leakage
@@ -1280,7 +1276,7 @@ Typical RBB: -100 to -500 mV. Delay degradation: 10-30%. Leakage reduction: 5-20
 
 Combine with DVFS: use FBB in active mode (speed up) and RBB in sleep mode (reduce leakage).
 
-```
+```verilog
 Active:  VDD = 0.8V, FBB = +200mV -> maximum performance
 Idle:    VDD = 0.6V, RBB = -300mV -> minimum leakage
 ```
@@ -1293,7 +1289,7 @@ Note: Body biasing is less effective in FinFET (the body is fully depleted, no b
 
 ### 9.1 Power Budget Example: Mobile SoC
 
-```
+```verilog
 Total power budget: 5W (limited by package thermal resistance)
 
 | Block          | % Budget | Power (mW) | Technique Applied      |
@@ -1314,7 +1310,7 @@ Dynamic vs Leakage split at 7nm:
 
 ### 9.2 Thermal Runaway
 
-```
+```verilog
 Leakage increases with temperature.
 Leakage power generates heat.
 Heat increases temperature.
@@ -1341,7 +1337,7 @@ Prevention:
 
 ### 9.3 Dynamic Thermal Management (DTM) Flow
 
-```
+```verilog
 On-chip temp sensors (distributed across die, 1 per ~1mm^2)
          |
          v
@@ -1397,7 +1393,7 @@ report_power
 
 ### 10.3 IR Drop Analysis
 
-```
+```verilog
 Static IR drop: Average current * mesh resistance
   Target: < 5% of VDD (e.g., < 40mV at 0.8V)
 
@@ -1413,7 +1409,7 @@ Tools: Cadence Voltus, Synopsys PrimePower, ANSYS RedHawk
 
 ## 11. Low-Power Design Flow
 
-```
+```verilog
 Architecture Definition
   |-- Power budgeting (per block)
   |-- Choose power management strategy (DVFS, PG, CG)
@@ -1563,7 +1559,7 @@ chip/flow -- what do you do?" Practice narrating these five end-to-end.
 
 ### Drill 1: Silicon power is 30% above the signoff estimate
 
-```
+```verilog
 Structure the bisection:
 1. Idle, clocks gated, nominal V/T -> measures LEAKAGE
    High? -> wrong corner assumption, hotter die than modeled, Vt-mix or
@@ -1584,7 +1580,7 @@ Key behavior: never say "the estimate was wrong" without naming WHICH input
 
 ### Drill 2: Chip resets when a big domain wakes up
 
-```
+```verilog
 Hypothesis: rush current collapses the shared/parent rail.
 Evidence to collect: correlation of resets with wake events; droop monitor
 or PMIC undervoltage flags; does slowing the wake (longer switch staging,
@@ -1598,7 +1594,7 @@ concurrent-wake scenario, not a lone domain on a quiet die.
 
 ### Drill 3: Random single-bit state corruption after sleep/wake cycles
 
-```
+```verilog
 Suspects in order:
 1. RESTORE pulsed before VVDD stable at the far corner of the domain
    (worse cold: slower ramp) -> voltage detector placement / wake timer
@@ -1613,7 +1609,7 @@ switch chain -> ramp issue) or logical structure (one bus -> sequencing)?
 
 ### Drill 4: Leakage passes at signoff, fails 3x over budget in HTOL/burn-in
 
-```
+```verilog
 Not a bug -- physics, if signoff corner was optimistic:
 leakage doubles every ~10C and burn-in runs hot and high-V.
 Check: which corner was the leakage budget defined at? (typical-25C
@@ -1626,7 +1622,7 @@ budget at a defined corner.
 
 ### Drill 5: DVFS transitions occasionally hang the system
 
-```
+```verilog
 Classic causes:
 1. Frequency raised before voltage settled (sequencing bug or PMIC
    settling-time mis-set for the new board's load) -> setup violations

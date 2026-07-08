@@ -6,7 +6,7 @@
 
 ### The Two Branches: uvm_object and uvm_component
 
-```
+```ascii-graph
 uvm_void (abstract root)
 ├── uvm_object (data containers -- no hierarchy, no phasing)
 │   ├── uvm_transaction (deprecated, use uvm_sequence_item)
@@ -43,7 +43,7 @@ uvm_void (abstract root)
 
 ### How the Hierarchy Relates -- Data Flow
 
-```
+```ascii-graph
 uvm_test
   └── uvm_env
         ├── uvm_agent (ACTIVE mode: drives stimulus)
@@ -91,7 +91,7 @@ Key relationships:
 A **handle** is a pointer/reference. An **object** is the actual memory allocation. Multiple
 handles can point to the same object. A handle can be `null`.
 
-```systemverilog
+```verilog
 class Packet;
     int id;
     function new(int id);
@@ -120,7 +120,7 @@ end
 
 ### Complete Class Lifecycle
 
-```systemverilog
+```verilog
 class Transaction;
     static int count = 0;
     int id;
@@ -154,7 +154,7 @@ end
 
 ### this Keyword
 
-```systemverilog
+```verilog
 class Node;
     int value;
     Node next;  // Handle to another Node
@@ -177,7 +177,7 @@ endclass
 
 ## Inheritance
 
-```systemverilog
+```verilog
 class base_transaction;
     rand bit [7:0] addr;
     rand bit [31:0] data;
@@ -232,7 +232,7 @@ endclass
 
 ### Virtual vs Non-Virtual: Proof by Example
 
-```systemverilog
+```verilog
 class Animal;
     function string speak_static();       // NOT virtual
         return "...";
@@ -288,7 +288,7 @@ derived class objects.
 
 ### Practical Polymorphism in Verification
 
-```systemverilog
+```verilog
 // A single scoreboard function handles ALL transaction types
 class scoreboard;
     function void check(base_transaction expected, base_transaction actual);
@@ -309,7 +309,7 @@ endclass
 
 ### The Bug That Bites Everyone
 
-```systemverilog
+```verilog
 class Payload;
     bit [7:0] data[];
 
@@ -344,7 +344,7 @@ end
 
 ### Implementing Proper Deep Copy
 
-```systemverilog
+```verilog
 class Payload;
     bit [7:0] data[];
 
@@ -398,7 +398,7 @@ t2.copy(t1);  // Calls do_copy -- full deep copy
 
 ### Why Polymorphism Alone Is Not Enough
 
-```systemverilog
+```verilog
 // Problem: you can't override "new" with polymorphism
 class driver;
     task run();
@@ -412,7 +412,7 @@ endclass
 
 ### UVM Factory Solves This
 
-```systemverilog
+```verilog
 class base_txn extends uvm_sequence_item;
     `uvm_object_utils(base_txn)  // Register with factory
     rand bit [7:0] addr;
@@ -481,7 +481,7 @@ exponential blowup:
 
 ### Basic Randomization
 
-```systemverilog
+```verilog
 class packet extends uvm_sequence_item;
     rand bit [7:0]  addr;
     rand bit [31:0] data;
@@ -516,7 +516,7 @@ end
 
 ### Pattern 1: Weighted Distribution for Error Injection
 
-```systemverilog
+```verilog
 class error_injection_txn;
     rand enum {NORMAL, SHORT_PKT, LONG_PKT, CRC_ERROR, TIMEOUT} txn_type;
 
@@ -537,7 +537,7 @@ endclass
 
 ### Pattern 2: Unique Array Elements
 
-```systemverilog
+```verilog
 class unique_demo;
     rand bit [3:0] arr[8];
 
@@ -558,7 +558,7 @@ endclass
 
 ### Pattern 3: Conditional Constraints with Implication
 
-```systemverilog
+```verilog
 class protocol_txn;
     rand bit        is_write;
     rand bit [31:0] addr;
@@ -589,7 +589,7 @@ endclass
 
 ### Pattern 4: Circular Dependency Detection
 
-```systemverilog
+```verilog
 class circular_demo;
     rand int a, b;
 
@@ -615,7 +615,7 @@ endclass
 
 ### Pattern 5: Array Size Constraint with Element Constraints
 
-```systemverilog
+```verilog
 class variable_payload;
     rand bit [7:0] payload[];
     rand int unsigned payload_size;
@@ -639,7 +639,7 @@ endclass
 
 ### Pattern 6: solve...before for Controlling Solver Order
 
-```systemverilog
+```verilog
 class solve_before_demo;
     rand bit       flag;
     rand bit [7:0] value;
@@ -668,7 +668,7 @@ endclass
 
 ### Pattern 7: Soft Constraints
 
-```systemverilog
+```verilog
 class configurable_txn;
     rand bit [7:0] addr;
     rand bit [31:0] data;
@@ -699,7 +699,7 @@ end
 
 ### Pattern 8: constraint_mode() On/Off
 
-```systemverilog
+```verilog
 class multi_constraint_txn;
     rand bit [7:0] addr;
 
@@ -728,7 +728,7 @@ end
 
 ### Pattern 9: randc for Permutation
 
-```systemverilog
+```verilog
 class fair_arbiter_test;
     randc bit [1:0] channel;  // Cycles through 0,1,2,3 before repeating
 
@@ -745,7 +745,7 @@ endclass
 
 ### Pattern 10: Complex Cross-Variable Constraint
 
-```systemverilog
+```verilog
 class axi_txn;
     rand bit [1:0]  burst_type;  // 0=FIXED, 1=INCR, 2=WRAP
     rand bit [7:0]  burst_len;   // 0-255 (actual length = burst_len + 1)
@@ -783,7 +783,7 @@ endclass
 
 ### A Class With 5 Constraint Types -- Step by Step
 
-```systemverilog
+```verilog
 class axi_burst_txn;
     rand bit [1:0]  burst;     // 00=FIXED, 01=INCR, 10=WRAP
     rand bit [7:0]  len;       // 0-255 (beats = len+1)
@@ -821,41 +821,41 @@ endclass
 
 **Step-by-step solver walkthrough:**
 
-```
-1. SOLVE-BEFORE: solver picks burst first
-   Available: {00, 01, 10} (constraint 3 excludes 11)
-   Probability: 1/3 each
-   Let's say solver picks burst = 10 (WRAP)
+``` text
+1. SOLVE-BEFORE:
+   - Solver picks `burst` first.
+   - Available: {00, 01, 10} (Constraint 3 excludes 11).
+   - Probability: 1/3 each.
+   - Example: Solver picks `burst = 10` (WRAP).
 
-2. RANGE constraint (c_size_range): 
-   size must be in {0, 1, 2, 3, 4}
-   Solver picks size = 2 (4 bytes per beat), probability 1/5
+2. RANGE Constraint (`c_size_range`): 
+   - `size` must be in {0, 1, 2, 3, 4}.
+   - Example: Solver picks `size = 2` (4 bytes per beat), probability 1/5.
 
-3. IMPLICATION constraint (c_wrap_len):
-   burst == 10 -> len must be in {1, 3, 7, 15}
-   Available: {1, 3, 7, 15} (4 values)
-   Solver picks len = 7 (8-beat burst), probability 1/4
+3. IMPLICATION Constraint (`c_wrap_len`):
+   - If `burst == 10`, `len` must be in {1, 3, 7, 15}.
+   - Available: {1, 3, 7, 15} (4 values).
+   - Example: Solver picks `len = 7` (8-beat burst), probability 1/4.
 
-4. SOFT constraint (c_default_addr):
-   addr[3:0] == 4'b0000 (default: aligned)
-   Since no hard constraint overrides it, addr[3:0] = 0
-   addr[31:4] = random (any value)
-   
-   Result: addr is aligned to 16-byte boundary
+4. SOFT Constraint (`c_default_addr`):
+   - `addr[3:0] == 4'b0000` (default: aligned).
+   - Since no hard constraint overrides it, `addr[3:0] = 0`.
+   - `addr[31:4] = random` (any value).
+   - Result: `addr` is aligned to a 16-byte boundary.
 
-5. Remaining unconstrained variables:
-   is_cacheable: random (50% each)
+5. Remaining Unconstrained Variables:
+   - `is_cacheable`: random (50% each).
 
-Sample output:
-  burst = 10 (WRAP)
-  len = 7 (8 beats)
-  size = 2 (4 bytes/beat)
-  addr = 32'h0001_0010 (16-byte aligned)
-  is_cacheable = 1
+Sample Output:
+- burst = 10 (WRAP)
+- len = 7 (8 beats)
+- size = 2 (4 bytes/beat)
+- addr = 32'h0001_0010 (16-byte aligned)
+- is_cacheable = 1
 ```
 
 **Overriding the soft constraint:**
-```systemverilog
+```verilog
 initial begin
     axi_burst_txn txn = new();
     
@@ -878,7 +878,7 @@ end
 
 ### Covergroup Definition and Sampling
 
-```systemverilog
+```verilog
 class axi_coverage extends uvm_subscriber #(axi_burst_txn);
     `uvm_component_utils(axi_coverage)
 
@@ -956,87 +956,77 @@ endclass
 
 ### Functional Coverage vs Code Coverage
 
-```
-                    What it measures           How it's collected
-Functional coverage: "Did we test all        Covergroups + coverpoints
-                     SPECIFIED behaviors?"     explicitly written by the
-                                               verification engineer
+```text
+FUNCTIONAL COVERAGE vs. CODE COVERAGE
 
-Code coverage:       "Did we execute all      Automatically extracted by
-                     lines/branches/FSM         the simulator from RTL source
-                     states/conditions?"
-                     
-Types of code coverage:
-  Line coverage:     Did each line of RTL execute?
-  Toggle coverage:   Did each net toggle 0->1 and 1->0?
-  Branch coverage:   Did each if-else branch execute?
-  FSM coverage:      Did each state transition occur?
-  Condition coverage: Did each Boolean sub-expression evaluate to both T and F?
-  Expression coverage: Did each logical expression hit all input combinations?
+1. Functional Coverage
+   - What it measures: "Did we test all SPECIFIED behaviors?"
+   - How it's collected: Covergroups and coverpoints explicitly written by the verification engineer.
 
-Relationship:
-  100% code coverage ≠ correct design (can execute all code but miss scenarios)
-  100% functional coverage ≠ all bugs found (spec may be incomplete)
-  
-  Example where code coverage is misleading:
-    A 32-bit counter counts from 0 to 2^32-1
-    Code coverage: 100% (all lines execute)
-    Functional coverage: FAIL (did we test overflow? wrap-around? specific values?)
+2. Code Coverage
+   - What it measures: "Did we execute all lines, branches, FSM states, and conditions?"
+   - How it's collected: Automatically extracted by the simulator from the RTL source.
 
-  Example where functional coverage is misleading:
-    A FIFO is tested with all read/write/empty/full combinations
-    Functional coverage: 100%
-    But: the RTL has a typo where data is inverted on even clock cycles
-    Neither coverage catches this (no functional spec says "data must be non-inverted")
+Types of Code Coverage:
+- Line coverage: Did each line of RTL execute?
+- Toggle coverage: Did each net toggle 0->1 and 1->0?
+- Branch coverage: Did each if-else branch execute?
+- FSM coverage: Did each state transition occur?
+- Condition coverage: Did each Boolean sub-expression evaluate to both true and false?
+- Expression coverage: Did each logical expression hit all input combinations?
 
-Best practice: use BOTH. Code coverage as baseline floor, functional coverage for
-spec-specific scenarios. Coverage closure = both metrics above threshold.
+Relationship & Pitfalls:
+- 100% Code Coverage ≠ Correct Design: You can execute all code but still miss important scenarios.
+  Example: A 32-bit counter counts from 0 to 2^32-1. Code coverage is 100%, but functional coverage fails if overflow or wrap-around wasn't tested.
+- 100% Functional Coverage ≠ All Bugs Found: The specification itself may be incomplete.
+  Example: A FIFO is tested with all read/write/empty/full combinations (100% functional coverage). However, if the RTL has a typo where data is inverted on even clock cycles, neither coverage catches this unless explicitly specified.
+
+Best Practice: 
+Use BOTH. Treat code coverage as a baseline floor and functional coverage for spec-specific scenarios. True coverage closure requires both metrics to be above their respective thresholds.
 ```
 
 ### Coverage Closure Methodology
 
-```
 Phase 1: Define coverage model from specification
-  - Extract all functional requirements from the design spec
-  - For each requirement, define coverpoints and cross coverage
-  - Set coverage goals (typically 95% for functional, 100% for code)
-  - Estimate total bin count (watch for cross coverage explosion)
+- Extract all functional requirements from the design spec
+   - For each requirement, define coverpoints and cross coverage
+   - Set coverage goals (typically 95% for functional, 100% for code)
+   - Estimate total bin count (watch for cross coverage explosion)
 
 Phase 2: Run initial regression with random stimulus
-  - Use constrained-random sequences (UVM factory + sequences)
-  - Collect coverage database (.ucdb for Questa, .covr for VCS)
-  - Check initial coverage: typically 40-70% after first run
+- Use constrained-random sequences (UVM factory + sequences)
+   - Collect coverage database (.ucdb for Questa, .covr for VCS)
+   - Check initial coverage: typically 40-70% after first run
 
 Phase 3: Analyze coverage holes
-  - Identify uncovered bins (which scenarios weren't hit?)
-  - For each hole, determine: is it a test gap or an impossible scenario?
-  - Impossible scenarios: add ignore_bins
-  - Test gaps: add directed sequences or adjust constraints
+- Identify uncovered bins (which scenarios weren't hit?)
+   - For each hole, determine: is it a test gap or an impossible scenario?
+   - Impossible scenarios: add ignore_bins
+   - Test gaps: add directed sequences or adjust constraints
 
 Phase 4: Targeted stimulus for coverage closure
-  - Write directed sequences for specific uncovered bins
-  - Adjust random constraints to steer stimulus toward holes
-  - Use coverage feedback to guide regression (coverage-driven closure)
-  - Run multiple seeds to increase random coverage
+- Write directed sequences for specific uncovered bins
+   - Adjust random constraints to steer stimulus toward holes
+   - Use coverage feedback to guide regression (coverage-driven closure)
+   - Run multiple seeds to increase random coverage
 
 Phase 5: Coverage merge and final regression
-  - Merge coverage from all tests and seeds:
-    vcover merge total.ucdb seed1.ucdb seed2.ucdb ... seedN.ucdb
-  - Verify total coverage meets signoff threshold
-  - Document any remaining holes with justification
+- Merge coverage from all tests and seeds:
+   - vcover merge total.ucdb seed1.ucdb seed2.ucdb ... seedN.ucdb
+   - Verify total coverage meets signoff threshold
+   - Document any remaining holes with justification
 
-Signoff criteria:
-  - Functional coverage: >= 95% (with documented exceptions)
-  - Code coverage: >= 100% line, >= 95% branch, >= 90% condition
-  - All illegal_bins: zero hits
-  - Coverage model reviewed by design and verification leads
-```
+**Signoff criteria:**
+   - Functional coverage: >= 95% (with documented exceptions)
+   - Code coverage: >= 100% line, >= 95% branch, >= 90% condition
+   - All illegal_bins: zero hits
+   - Coverage model reviewed by design and verification leads
 
 ---
 
 ## rand_mode: Enable/Disable Randomization Per Variable
 
-```systemverilog
+```verilog
 class txn;
     rand bit [7:0] addr;
     rand bit [31:0] data;
@@ -1058,7 +1048,7 @@ end
 
 ## pre_randomize and post_randomize
 
-```systemverilog
+```verilog
 class sequenced_packet extends uvm_sequence_item;
     static int seq_counter = 0;
     rand bit [7:0] addr;
@@ -1085,7 +1075,7 @@ endclass
 
 ## std::randomize -- Randomize Without a Class
 
-```systemverilog
+```verilog
 initial begin
     bit [7:0] addr;
     bit [31:0] data;
@@ -1105,7 +1095,7 @@ end
 
 ### The local:: Scope Qualifier
 
-```systemverilog
+```verilog
 class driver;
     bit [7:0] min_addr;
     bit [7:0] max_addr;
@@ -1139,7 +1129,7 @@ SystemVerilog guarantees **thread stability** and **type stability**:
 
 ### Why Reordering Code Changes Random Sequences
 
-```systemverilog
+```verilog
 initial begin
     Packet p1 = new();
     Packet p2 = new();
@@ -1163,7 +1153,7 @@ end
 - `srandom(seed)` on an object sets its RNG explicitly
 - For debug: print the seed with `get_randstate()` and restore with `set_randstate()`
 
-```systemverilog
+```verilog
 Packet p = new();
 string saved_state = p.get_randstate();  // Save RNG state
 p.randomize();  // Some random values
@@ -1175,7 +1165,7 @@ p.randomize();  // SAME random values as before
 
 ## Parameterized Classes
 
-```systemverilog
+```verilog
 class fifo #(type T = int, int DEPTH = 16);
     T storage[$:DEPTH-1];
 
@@ -1202,7 +1192,7 @@ fifo #(bit [7:0]) byte_fifo = new();  // Default DEPTH = 16
 
 ## Abstract Classes and Pure Virtual Methods
 
-```systemverilog
+```verilog
 virtual class base_driver;  // Cannot instantiate directly
     pure virtual task drive(input Transaction txn);  // Must be overridden
     pure virtual function bit check_ready();
@@ -1238,7 +1228,7 @@ base_driver handle = d;    // OK -- polymorphic handle
 
 ## Typedef Class (Forward Declaration)
 
-```systemverilog
+```verilog
 // When two classes reference each other:
 typedef class B;  // Forward declare B
 
@@ -1255,7 +1245,7 @@ endclass
 
 ## Interface Classes (SystemVerilog 2012)
 
-```systemverilog
+```verilog
 interface class printable;
     pure virtual function void print();
 endclass
@@ -1326,7 +1316,7 @@ first (50/50), then value is chosen within the resulting range.
 **A:** It means the constraints are unsolvable -- contradictory or over-constrained. The random
 variables retain their previous values (they are NOT modified). You MUST check the return value:
 
-```systemverilog
+```verilog
 if (!txn.randomize())
     `uvm_fatal("RAND", "Randomization failed -- check constraints")
 ```
@@ -1366,7 +1356,7 @@ defaults (e.g., `soft addr < 64`), and specific tests override them with inline 
 
 ### Q11: Write a constraint for an array where each element is greater than the previous.
 
-```systemverilog
+```verilog
 class sorted_array;
     rand int arr[10];
 
@@ -1410,7 +1400,7 @@ constrained.
 
 ### Q15: Write a class that generates unique random addresses without repetition until all are used.
 
-```systemverilog
+```verilog
 class unique_addr_gen;
     randc bit [7:0] addr;  // randc cycles through all 256 values
 

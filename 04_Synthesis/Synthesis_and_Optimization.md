@@ -23,58 +23,18 @@
 
 ### 1.1 Three Phases of Synthesis
 
-```
-  RTL-to-Gates Pipeline
-  =====================
-
-  ┌─────────────────┐
-  │   RTL (Verilog/  │
-  │   SystemVerilog/ │
-  │   VHDL)          │
-  └────────┬─────────┘
-           │
-           v
-  ┌─────────────────────────────────────────────────────┐
-  │  PHASE 1: TRANSLATION (RTL → GTECH/Generic)         │
-  │                                                     │
-  │  - Parse HDL into internal representation           │
-  │  - Infer sequential elements (FFs, latches, RAMs)   │
-  │  - Build technology-independent Boolean network      │
-  │  - GTECH cells: generic AND, OR, MUX, FF, etc.     │
-  │  - No timing/area info yet                          │
-  └────────────────────┬────────────────────────────────┘
-                       │
-                       v
-  ┌─────────────────────────────────────────────────────┐
-  │  PHASE 2: OPTIMIZATION (Boolean + Structural)        │
-  │                                                     │
-  │  - Two-level optimization (espresso-like minimize)  │
-  │  - Multi-level optimization (algebraic/Boolean)     │
-  │  - Factoring, decomposition, substitution           │
-  │  - Retiming (moving FFs across combinational logic) │
-  │  - Resource sharing (ALU reuse across MUX branches) │
-  │  - Datapath optimization (carry-save, wallace tree) │
-  │  - Still technology-independent                     │
-  └────────────────────┬────────────────────────────────┘
-                       │
-                       v
-  ┌─────────────────────────────────────────────────────┐
-  │  PHASE 3: MAPPING (Generic → Technology-Specific)    │
-  │                                                     │
-  │  - Map Boolean network to target library cells      │
-  │  - DAG covering / tree covering algorithms          │
-  │  - Boolean matching (NPN equivalence)               │
-  │  - Cell selection (drive strength, Vt flavor)       │
-  │  - Timing-driven: pick faster cells on critical path│
-  │  - Area-driven: pick smallest cells off critical    │
-  │  - Design Rule fixing (max transition, cap, fanout) │
-  └────────────────────┬────────────────────────────────┘
-                       │
-                       v
-  ┌─────────────────┐
-  │  Gate-Level      │
-  │  Netlist (.v)    │
-  └─────────────────┘
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    RTL["RTL<br/>(Verilog / SystemVerilog / VHDL)"] --> P1
+    P1["Phase 1 — Translation (RTL → GTECH/generic)<br/>parse HDL, infer FFs/latches/RAMs,<br/>build tech-independent Boolean network<br/>(generic AND/OR/MUX/FF); no timing/area yet"]
+    P1 --> P2["Phase 2 — Optimization (Boolean + structural)<br/>two-level + multi-level minimize, factoring/decomposition,<br/>retiming, resource sharing, datapath (carry-save, Wallace);<br/>still technology-independent"]
+    P2 --> P3["Phase 3 — Mapping (generic → technology)<br/>DAG/tree covering, Boolean (NPN) matching,<br/>cell selection (drive strength, Vt), timing- vs area-driven,<br/>design-rule fixing (max transition/cap/fanout)"]
+    P3 --> GATE["Gate-level netlist (.v)"]
+    classDef io fill:#e2e8f0,stroke:#475569,color:#000
+    classDef ph fill:#dbeafe,stroke:#1d4ed8,color:#000
+    class RTL,GATE io
+    class P1,P2,P3 ph
 ```
 
 ### 1.2 Synopsys Design Compiler Flow
@@ -169,7 +129,7 @@ write_design -innovus -basename output/top
 
 **Phase 1 -- Translation:**
 
-```
+```verilog
   RTL code:
     always @(posedge clk)
       if (sel)
@@ -186,7 +146,7 @@ write_design -innovus -basename output/top
 
 **Phase 2 -- Optimization (selected techniques):**
 
-```
+```verilog
   Boolean optimization example:
     Original: f = abc + abd + ab'c + ab'd
     Factor:   f = a(bc + bd + b'c + b'd)
@@ -203,7 +163,7 @@ write_design -innovus -basename output/top
 
 **Phase 3 -- Technology Mapping:**
 
-```
+```ascii-graph
   Generic Boolean network:
     y = (a & b) | (c & d)
 
@@ -326,7 +286,7 @@ set_clock_uncertainty -setup 0.25 \
 
 **Typical values:**
 
-```
+```ascii-graph
   Component              Value (7nm example)
   ─────────────────────  ──────────────────
   PLL jitter             20-50 ps
@@ -385,7 +345,7 @@ set_output_delay -clock sys_clk -min 0.2 [get_ports data_out]
 
 **Understanding the timing budget:**
 
-```
+```ascii-graph
   For input path:
   ═══════════════════════════════════════════════════
   
@@ -482,7 +442,7 @@ set_multicycle_path 1 -hold -from [get_cells reg_a] -to [get_cells reg_b]
 
 **Detailed timing diagram for multicycle = 2:**
 
-```
+```ascii-graph
   Clock period = T
 
   Launch edge    Capture edge (default)    Capture edge (MCP setup 2)
@@ -556,7 +516,7 @@ set_multicycle_path 1 -hold -from [get_cells reg_a] -to [get_cells reg_b]
 
 **Worked example:**
 
-```
+```tcl
   Clock period = 2 ns (500 MHz)
   MCP = 3 (data valid every 3rd cycle)
 
@@ -632,7 +592,7 @@ set_clock_groups -logically_exclusive \
 
 **Critical differences summary:**
 
-```
+```ascii-graph
   ┌──────────────────────┬──────────────┬──────────────┬──────────────┐
   │ Property             │ Asynchronous │ Phys Excl    │ Logic Excl   │
   ├──────────────────────┼──────────────┼──────────────┼──────────────┤
@@ -843,7 +803,7 @@ set_ungroup [get_designs sub_module_a]
 compile_ultra -ungroup_all
 ```
 
-```
+```ascii-graph
   Before ungrouping:
   ┌─────────────────────┐    ┌──────────────────────┐
   │  Module A            │    │  Module B             │
@@ -881,7 +841,7 @@ The tool can:
 - Remove unconnected/unused ports
 - Merge duplicate logic across boundaries
 
-```
+```verilog
   Example: Module port tied to constant
   
   Before:
@@ -896,7 +856,7 @@ The tool can:
 
 Moving registers across combinational logic to balance path delays.
 
-```
+```ascii-graph
   Forward Retiming (pipeline register moved forward):
   ═══════════════════════════════════════════════════
 
@@ -921,7 +881,7 @@ Moving registers across combinational logic to balance path delays.
 
 **Mathematical Formulation (Leiserson-Saxe):**
 
-```
+```text
   Given a synchronous circuit modeled as a directed graph G = (V, E):
     V = set of combinational nodes (gates)
     E = set of edges, each with weight d(v) = combinational delay of node v
@@ -962,7 +922,7 @@ Moving registers across combinational logic to balance path delays.
 
 **When retiming helps vs. when it doesn't:**
 
-```
+```verilog
   HELPS:
   - Pipeline stages with unbalanced combinational delays (1ns + 3ns)
   - Dataflow paths where FFs can be freely moved
@@ -1000,7 +960,7 @@ syn_opt -retime
 
 Logical effort is a method for sizing gates in a combinational path to minimize delay.
 
-```
+```ascii-graph
   Key Definitions:
   ────────────────
   g = logical effort of a gate = ratio of its input capacitance to that
@@ -1030,7 +990,7 @@ Logical effort is a method for sizing gates in a combinational path to minimize 
 
 **Worked Example: Size a 4-stage path**
 
-```
+```ascii-graph
   Path: INPUT --> NAND2 --> INV --> NAND3 --> NOR2 --> OUTPUT
 
   Given:
@@ -1100,7 +1060,7 @@ Logical effort is a method for sizing gates in a combinational path to minimize 
 
 Synthesis tools recognize arithmetic operations and implement them efficiently.
 
-```
+```ascii-graph
   Carry-Save Optimization:
   ════════════════════════
 
@@ -1213,7 +1173,7 @@ set_critical_range 0.3 [current_design]
 
 Standard cell naming conventions:
 
-```
+```ascii-graph
   Cell name format (typical):
     <function><inputs>_<drive_strength>
 
@@ -1245,7 +1205,7 @@ Standard cell naming conventions:
 
 ### 4.2 Cell Selection Trade-offs
 
-```
+```ascii-graph
   ┌──────────────────┬──────────┬──────────┬──────────┬──────────┐
   │ Property         │ X1 (min) │ X2       │ X4       │ X8 (max) │
   ├──────────────────┼──────────┼──────────┼──────────┼──────────┤
@@ -1274,7 +1234,7 @@ Standard cell naming conventions:
 
 **DAG Covering (FlowMap Algorithm):**
 
-```
+```verilog
   Subject graph (Boolean network) is a DAG of 2-input gates.
   Library cells are represented as patterns (sub-DAGs).
   Mapping = covering every node in subject graph with library patterns.
@@ -1308,7 +1268,7 @@ Standard cell naming conventions:
 
 **Tree Matching (Pattern Covering):**
 
-```
+```verilog
   For tree-structured subgraphs (no reconvergent fanout), the mapper
   performs optimal tree covering using dynamic programming:
 
@@ -1337,7 +1297,7 @@ Two functions are NPN-equivalent if one can be transformed to the other by:
 - **P**ermutation of inputs
 - **N**egation of output
 
-```
+```text
   How Boolean matching works in the mapper:
   
   1. Canonical form: For a library cell with n inputs, there are 2^n input
@@ -1370,7 +1330,7 @@ Two functions are NPN-equivalent if one can be transformed to the other by:
 
 **Don't-Care Points in Technology Mapping:**
 
-```
+```verilog
   Don't-care (DC) conditions allow the mapper to simplify functions beyond
   what the Boolean specification alone permits. Two types:
 
@@ -1406,7 +1366,7 @@ Two functions are NPN-equivalent if one can be transformed to the other by:
 
 ### 4.4 Multi-Vt Optimization
 
-```
+```tcl
   Strategy: Start all-HVT, swap to lower Vt on critical paths only.
 
   Flow:
@@ -1443,7 +1403,7 @@ compile_ultra
 
 ### 5.1 The Iterative Loop
 
-```
+```ascii-graph
   ┌──────────────────────────────┐
   │  Write/Refine SDC Constraints│ <──────────┐
   └──────────────┬───────────────┘            │
@@ -1472,7 +1432,7 @@ compile_ultra
 
 ### 5.2 Reading Timing Reports
 
-```
+```ascii-graph
   Example DC timing report:
 
   Startpoint: cpu/alu/reg_a (rising edge-triggered flip-flop clocked by core_clk)
@@ -1517,7 +1477,7 @@ compile_ultra
 
 ### 5.3 Common Timing Closure Techniques
 
-```
+```ascii-graph
   ┌───────────────────────┬────────────────────────────────────────┐
   │ Technique             │ When to Use                            │
   ├───────────────────────┼────────────────────────────────────────┤
@@ -1632,7 +1592,7 @@ report_reference -by_type
 **Register merging:** Combine duplicate registers (same logic driving same
 D input) into one register.
 
-```
+```ascii-graph
   Before:
     [comb_logic] ──> reg_a/D     reg_a/Q ──> [fanout1]
     [comb_logic] ──> reg_b/D     reg_b/Q ──> [fanout2]
@@ -1689,7 +1649,7 @@ set_dont_touch [get_cells debug_logic/*]
 
 ### 7.1 Clock Gating Insertion
 
-```
+```ascii-graph
   Without clock gating:
   ═══════════════════════
 
@@ -1739,7 +1699,7 @@ end
 
 ### 7.2 Operand Isolation
 
-```
+```ascii-graph
   Without operand isolation:
     [MUL] computes a*b EVERY cycle, even when result is unused
     (MUL inputs toggle, consuming dynamic power)
@@ -1822,7 +1782,7 @@ realistic simulation -- much more accurate power optimization targeting.
 
 ### 8.1 Command Mapping Table
 
-```
+```ascii-graph
   ┌────────────────────────────┬────────────────────────────────────┐
   │ Design Compiler (Synopsys) │ Genus (Cadence)                    │
   ├────────────────────────────┼────────────────────────────────────┤
@@ -1862,7 +1822,7 @@ realistic simulation -- much more accurate power optimization targeting.
 
 ### 8.2 Optimization Differences
 
-```
+```ascii-graph
   ┌──────────────────────┬──────────────────────┬──────────────────────┐
   │ Feature              │ Design Compiler      │ Genus                │
   ├──────────────────────┼──────────────────────┼──────────────────────┤
@@ -1941,7 +1901,7 @@ clock domains, set_clock_groups is the correct and preferred approach.
 
 **A:** A multicycle path of N means data is valid for N clock cycles. For
 example, a configuration register written every 4th cycle:
-```
+```tcl
 set_multicycle_path 4 -setup -from config_reg -to core_reg
 set_multicycle_path 3 -hold  -from config_reg -to core_reg
 ```
@@ -2001,7 +1961,7 @@ reference netlist for formal verification against a specific hierarchy.
 
 **A:** DDR interfaces transfer data on both rising and falling clock edges.
 You need input/output delays referenced to both edges:
-```
+```tcl
 set_input_delay -clock ddr_clk -max 0.8 [get_ports data]
 set_input_delay -clock ddr_clk -max 0.8 -clock_fall -add_delay [get_ports data]
 ```
@@ -2203,7 +2163,7 @@ the clock-based timing framework and can lead to incorrect hold analysis.
 
 ### 10.1 Massive Parameter Count Synthesis
 
-```
+```ascii-graph
 AI accelerator synthesis challenges:
 
   Modern AI accelerator complexity:
@@ -2253,7 +2213,7 @@ AI accelerator synthesis challenges:
 
 ### 10.2 Multi-Instance Block Synthesis
 
-```
+```tcl
 Multi-instance synthesis for regular structures:
 
   Problem: A GPU has 100+ SMs (streaming multiprocessors),
@@ -2292,7 +2252,7 @@ Multi-instance synthesis for regular structures:
 
 ### 10.3 Retiming and Register Balancing for Deep Pipelines
 
-```
+```tcl
 AI accelerators use deep pipelines for throughput:
 
   Example: Tensor core datapath (8-stage pipeline)
@@ -2334,7 +2294,7 @@ AI accelerators use deep pipelines for throughput:
 
 ### 10.4 Verifying SDC Constraint Correctness
 
-```
+```tcl
 Common SDC mistakes in AI accelerator designs:
 
   1. Missing generated clock for divided clocks:

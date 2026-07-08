@@ -4,7 +4,7 @@
 
 Power analysis occurs at every stage of the design flow. Each stage trades speed for accuracy:
 
-```
+```ascii-graph
   RTL Power Estimation (~20-30% error)
       |  Tools: Synopsys Joules, Ansys PowerArtist, Cadence Genus (power mode)
       |  Input: RTL + SAIF + technology characterization data
@@ -47,7 +47,7 @@ SAIF captures per-net switching statistics over a simulation window. It records 
 count, time at logic-0, and time at logic-1 for every annotated net.
 
 **Complete SAIF file example:**
-```
+```verilog
 (SAIF
   (SAIFILE
     (DIRECTION "backward")
@@ -109,20 +109,21 @@ count, time at logic-0, and time at logic-1 for every annotated net.
 ```
 
 **Derived metrics from SAIF:**
-```
+```text
 For net alu_result[0]:
-  Static Probability (SP) = T1 / DURATION = 1150000 / 2000000 = 0.575
-  Toggle Rate (TR)        = TC / DURATION = 2800 / 2000000 = 0.0014 transitions/ps
-  Toggle Count per cycle  = TC / num_clk_cycles = 2800 / 2000 = 1.4 transitions/cycle
-  Switching Activity (SA) = TC / (2 * num_clk_cycles) = 2800 / 4000 = 0.7
-      (SA > 0.5 means more than one toggle per clock period on average -- possible
-       if there are glitches within a cycle)
+  Static Probability (SP) = T1 / DURATION               = 1150000 / 2000000 = 0.575
+  Toggle Rate (TR)        = TC / DURATION               = 2800    / 2000000 = 0.0014 transitions/ps
+  Toggle Count per cycle  = TC / num_clk_cycles         = 2800    / 2000    = 1.4 transitions/cycle
+  Switching Activity (SA) = TC / (2 * num_clk_cycles)   = 2800    / 4000    = 0.7
+  
+  (SA > 0.5 means more than one toggle per clock period on average -- possible
+   if there are glitches within a cycle)
 ```
 
 ### 2.2 Forward vs Backward SAIF Annotation
 
 **Forward annotation:**
-```
+```text
 1. Simulate RTL
 2. Dump SAIF at RTL net names
 3. During power analysis on gate-level netlist:
@@ -130,20 +131,18 @@ For net alu_result[0]:
    - Mapping is imperfect (synthesis may rename/restructure)
    - Unmapped nets use default activity -> inaccuracy
    
-Advantage: RTL simulation is fast (10-100x faster than gate-level)
-Disadvantage: naming mismatch, missing glitch activity
+Advantage:    RTL simulation is fast (10-100x faster than gate-level)
+Disadvantage: Naming mismatch, missing glitch activity
 ```
 
 **Backward annotation:**
-```
 1. Run power tool on gate-level netlist
 2. Tool generates a SAIF template with ALL gate-level net names
 3. Simulate gate-level netlist, dump SAIF matching the template
 4. Re-run power tool with filled-in SAIF
 
-Advantage: perfect name matching, captures glitch activity
-Disadvantage: gate-level simulation is slow, SAIF file is large
-```
+- **Advantage** — perfect name matching, captures glitch activity
+- **Disadvantage** — gate-level simulation is slow, SAIF file is large
 
 **Practical recommendation:**
 - Use forward annotation for early estimation (RTL development phase)
@@ -154,7 +153,7 @@ Disadvantage: gate-level simulation is slow, SAIF file is large
 
 VCD records EVERY signal transition with a timestamp. This enables time-based power analysis.
 
-```
+```verilog
 $date
    2026-03-15 14:30:00
 $end
@@ -191,18 +190,16 @@ b00000000000000001010101010101010 #
 ```
 
 **VCD file size problem:**
-```
 For a design with 10M nets, toggling at average 0.1 transitions/ns, over 10us:
-  Total transitions = 10M * 0.1 * 10,000 = 10 billion transitions
-  Each transition: ~20 bytes (timestamp + signal ID + value)
-  VCD size = 10e9 * 20 = 200 GB
+Total transitions = 10M * 0.1 * 10,000 = 10 billion transitions
+Each transition: ~20 bytes (timestamp + signal ID + value)
+VCD size = 10e9 * 20 = 200 GB
 
-This is impractical. Solutions:
-  1. FSDB (Synopsys): compressed binary format, 5-10x smaller
-  2. Selective dumping: only dump signals in the block under analysis
-  3. Shorter simulation window (but must be representative)
-  4. SAIF instead of VCD (for average power, not time-based)
-```
+**This is impractical. Solutions:**
+   1. FSDB (Synopsys): compressed binary format, 5-10x smaller
+2. Selective dumping: only dump signals in the block under analysis
+3. Shorter simulation window (but must be representative)
+4. SAIF instead of VCD (for average power, not time-based)
 
 ### 2.4 VCD vs FSDB vs SAIF Comparison
 
@@ -222,14 +219,16 @@ This is impractical. Solutions:
 When simulation is not possible (too early in design, too expensive, or workload unknown):
 
 **How vectorless estimation works:**
-```
+```text
 1. Assign default toggle rate (TR) and static probability (SP) to primary inputs
-   Typical defaults: SP = 0.5, TR = 0.1 (one transition every 10 clock cycles)
+   Typical defaults:
+     SP = 0.5
+     TR = 0.1 (one transition every 10 clock cycles)
 
 2. Propagate through the netlist:
    For an AND gate with inputs A (SP_A, TR_A) and B (SP_B, TR_B):
      SP_out = SP_A * SP_B
-     TR_out = SP_A * TR_B + SP_B * TR_A  (approximate, assumes independence)
+     TR_out = (SP_A * TR_B) + (SP_B * TR_A)  (approximate, assumes independence)
    
    For an inverter:
      SP_out = 1 - SP_in
@@ -279,35 +278,36 @@ report_switching_activity -unannotated > unannotated.rpt
 Every wire in the power grid has resistance. When current flows through this resistance,
 voltage drops (V = I*R), reducing the supply voltage seen by standard cells:
 
-```
-  Package Pin (Vdd = 0.9V)
+```text
+  Package Pin (Vdd = 0.900V)
       |
-    [R_package] ~5-20 mOhm
-      |
+      |  [R_package]      ~5-20 mOhm
+      v
   Chip Pad (0.895V)
       |
-    [R_pad + R_bump] ~10-50 mOhm
-      |
+      |  [R_pad + R_bump] ~10-50 mOhm
+      v
   Top Metal Ring (0.890V)
       |
-    [R_stripe_M9] ~0.1-1 ohm/mm
-      |
+      |  [R_stripe_M9]    ~0.1-1 ohm/mm
+      v
     [R_via_array]
       |
-    [R_stripe_M7]
-      |
+      |  [R_stripe_M7]
+      v
     [R_via_array]
       |
-    [R_stripe_M5]
-      |  ... more metal layers ...
+      |  [R_stripe_M5]
+      v
+    ... more metal layers ...
       |
   Standard Cell Rail (0.855V)
       |
-    [R_local] ~1-10 ohm
-      |
+      |  [R_local]        ~1-10 ohm
+      v
   Transistor Source (0.850V)
 
-  Total IR drop: 0.9 - 0.85 = 50 mV = 5.6% of Vdd
+  Total IR drop: 0.900V - 0.850V = 50 mV (5.6% of Vdd)
 ```
 
 ### 3.2 Static IR Drop
@@ -315,7 +315,7 @@ voltage drops (V = I*R), reducing the supply voltage seen by standard cells:
 Static IR drop assumes DC (steady-state) current. It is a pure resistive network analysis:
 
 **The resistor mesh model:**
-```
+```ascii-graph
   VDD ring (top)
    |        |        |        |
   [Rv]     [Rv]     [Rv]     [Rv]      (via resistance to power stripe)
@@ -342,9 +342,12 @@ Each current sink I_i represents the current drawn by cells in that region.
 - Report voltage at every node
 
 **Typical targets:**
-```
-Static IR drop < 5% of Vdd (some companies: < 3%)
-For Vdd = 0.9V: maximum IR drop = 45 mV (5%) or 27 mV (3%)
+```text
+Static IR drop target: < 5% of Vdd (some companies: < 3%)
+
+For Vdd = 0.9V:
+  - 5% maximum IR drop = 45 mV
+  - 3% maximum IR drop = 27 mV
 ```
 
 ### 3.3 Dynamic IR Drop
@@ -352,26 +355,26 @@ For Vdd = 0.9V: maximum IR drop = 45 mV (5%) or 27 mV (3%)
 Dynamic IR drop is MUCH worse than static because of transient current demands:
 
 **Why dynamic IR drop peaks at clock edges:**
-```
+```text
 At a clock edge, ALL flip-flops in the design sample simultaneously.
 This creates a massive, near-simultaneous current demand:
 
   I_peak = N_switching_FFs * C_FF * Vdd * f_local
 
-  For a region with 10K FFs, 30% switching:
-  I_peak = 3000 * 20fF * 0.9V / (0.5ns half-period)
+For a region with 10K FFs and 30% switching activity:
+  I_peak = 3000 * 20 fF * 0.9 V / (0.5 ns half-period)
          = 3000 * 20e-15 * 0.9 / 0.5e-9
          = 3000 * 36e-6
          = 108 mA locally!
 
-This transient current through grid resistance AND inductance:
-  V_drop = I*R + L*(dI/dt)
+This transient current passes through grid resistance AND inductance:
+  V_drop = (I * R) + (L * dI/dt)
 
-The Ldi/dt component can be 2-3x worse than the IR component.
+Note: The L*dI/dt component can be 2-3x worse than the I*R component.
 ```
 
 **Dynamic IR drop characteristics:**
-```
+```ascii-graph
   Time -->
   
   Vdd_local
@@ -388,69 +391,65 @@ The Ldi/dt component can be 2-3x worse than the IR component.
 ```
 
 **Dynamic IR drop targets:**
-```
 Dynamic IR drop < 10% of Vdd (typical)
 Some high-performance designs: < 8%
-For Vdd = 0.9V: maximum dynamic drop = 90 mV (10%)
+- **For Vdd** = `0.9V: maximum dynamic drop = 90 mV (10%)`
 
-If dynamic IR drop exceeds spec:
-  - Timing failures (cells see lower Vdd -> slower -> setup violations)
-  - Functional failures at extreme drop (below noise margin)
-  - Reliability issues (oxide stress, hot carrier injection from recovery overshoot)
-```
+**If dynamic IR drop exceeds spec:**
+   - Timing failures (cells see lower Vdd -> slower -> setup violations)
+   - Functional failures at extreme drop (below noise margin)
+   - Reliability issues (oxide stress, hot carrier injection from recovery overshoot)
 
 ### 3.4 Decoupling Capacitors (Decap)
 
 Decaps provide local charge storage to supply transient current demand, reducing
 dynamic IR drop:
 
-```
+```text
 Frequency domain analysis of decap effectiveness:
 
-  On-die MOS-cap (gate capacitance of NMOS):
-    - Effective up to ~1-5 GHz
-    - Provides ~1-5 nF/mm^2 in modern processes
-    - Placed in whitespace (filler cells with decap)
+1. On-die MOS-cap (gate capacitance of NMOS):
+   - Effective up to: ~1-5 GHz
+   - Capacitance:     ~1-5 nF/mm^2 in modern processes
+   - Placement:       Whitespace (filler cells with decap)
     
-  Explicit decap cells in standard cell library:
-    - 2-10 fF per cell (varies by size)
-    - Placed where IR drop is worst
-    - Area cost: typically 5-10% of chip area dedicated to decap
+2. Explicit decap cells in standard cell library:
+   - Capacitance:     2-10 fF per cell (varies by size)
+   - Placement:       Where IR drop is worst
+   - Area cost:       Typically 5-10% of chip area dedicated to decap
     
-  Package decap:
-    - Surface mount capacitors on package substrate
-    - 10-100 nF typical
-    - Effective up to ~100-500 MHz (limited by package inductance)
+3. Package decap:
+   - Type:            Surface mount capacitors on package substrate
+   - Capacitance:     10-100 nF typical
+   - Effective up to: ~100-500 MHz (limited by package inductance)
     
-  PCB decap:
-    - Bulk capacitors on the board
-    - 1-100 uF
-    - Effective up to ~10-50 MHz only
+4. PCB decap:
+   - Type:            Bulk capacitors on the board
+   - Capacitance:     1-100 uF
+   - Effective up to: ~10-50 MHz only
     
-  Each level covers a different frequency band:
+Each level covers a different frequency band:
   
-  Frequency:  1Hz    1kHz   1MHz   100MHz  1GHz   10GHz
-              |------|------|------|-------|------|
-              [PCB decap                  ]
-                     [Package decap       ]
-                            [On-die decap         ]
-                                   [Intrinsic cell cap]
+Frequency:  1Hz    1kHz   1MHz   100MHz  1GHz   10GHz
+            |------|------|------|-------|------|
+            [PCB decap                  ]
+                   [Package decap       ]
+                          [On-die decap         ]
+                                 [Intrinsic cell cap]
 ```
 
 **Decap sizing calculation:**
-```
-Given:
-  Transient current demand: I_peak = 200 mA for 200 ps duration
-  Allowable voltage droop: delta_V = 50 mV
+**Given:**
+   - Transient current demand: I_peak = 200 mA for 200 ps duration
+   - Allowable voltage droop: delta_V = 50 mV
 
-Required local decap:
-  C = I * dt / dV = 200e-3 * 200e-12 / 50e-3 = 800 pF
+**Required local decap:**
+   - C = I * dt / dV = 200e-3 * 200e-12 / 50e-3 = 800 pF
 
 On-die decap density: ~2 nF/mm^2
 Area needed: 800pF / 2nF/mm^2 = 0.4 mm^2
 
 If chip area is 10 mm^2, this is 4% of chip area for this region alone.
-```
 
 ### 3.5 Electromigration (EM)
 
@@ -458,68 +457,68 @@ EM is the gradual displacement of metal atoms by momentum transfer from conducti
 electrons. It causes wire thinning (open circuit) or hillock formation (short circuit).
 
 **Black's Equation:**
-```
-MTTF = A * J^(-n) * exp(Ea / (k*T))
+```text
+Black's Equation:
+  MTTF = A * J^(-n) * exp(Ea / (k * T))
 
-where:
+Where:
   MTTF = Mean Time To Failure
-  A    = process constant
-  J    = current density (A/cm^2)
-  n    = current density exponent (typically 1-2, usually 2 for bulk EM)
-  Ea   = activation energy (0.7-0.9 eV for Cu with liner)
+  A    = Process constant
+  J    = Current density (A/cm^2)
+  n    = Current density exponent (typically 1-2, usually 2 for bulk EM)
+  Ea   = Activation energy (0.7-0.9 eV for Cu with liner)
   k    = Boltzmann constant (8.617e-5 eV/K)
-  T    = absolute temperature (K)
+  T    = Absolute temperature (K)
 ```
 
 **EM design rules:**
-```
 DC EM limit (Jmax_DC): typically 1-3 MA/cm^2 for copper at 105C
 AC EM limit (Jmax_AC): typically 2-6 MA/cm^2 (2x DC due to self-healing)
 
-Wire sizing for EM:
-  Required wire width = I_rms / (Jmax * t_metal)
-  
-  Example:
-    I_avg = 10 mA through a M5 power stripe
-    Jmax_DC = 2 MA/cm^2 = 2e6 A/cm^2
-    t_metal = 400 nm (M5 copper thickness)
-    
-    Required width = 10e-3 / (2e6 * 400e-7) = 10e-3 / 0.08 = 0.125 cm = 1250 um
-    
-    This means a single narrow stripe cannot carry 10 mA!
-    Need multiple parallel stripes or one wide stripe (~1.25 mm).
-```
+**Wire sizing for EM:**
+   - Required wire width = I_rms / (Jmax * t_metal)
+
+Example:
+I_avg = 10 mA through a M5 power stripe
+Jmax_DC = 2 MA/cm^2 = 2e6 A/cm^2
+t_metal = 400 nm (M5 copper thickness)
+
+Required width = 10e-3 / (2e6 * 400e-7) = 10e-3 / 0.08 = 0.125 cm = 1250 um
+
+This means a single narrow stripe cannot carry 10 mA!
+Need multiple parallel stripes or one wide stripe (~1.25 mm).
 
 **Temperature dependence of EM:**
-```
-From Black's equation, MTTF ~ exp(Ea / (kT))
+```text
+From Black's equation, MTTF is proportional to exp(Ea / (k * T)).
 
-At T1 = 105C (378K): exp(0.7 / (8.617e-5 * 378)) = exp(21.5)
-At T2 =  85C (358K): exp(0.7 / (8.617e-5 * 358)) = exp(22.7)
+For Ea = 0.7 eV:
+  At T1 = 105C (378K): exp(0.7 / (8.617e-5 * 378)) = exp(21.5)
+  At T2 =  85C (358K): exp(0.7 / (8.617e-5 * 358)) = exp(22.7)
 
-MTTF ratio: exp(22.7) / exp(21.5) = exp(1.2) = 3.3x
+MTTF ratio: 
+  exp(22.7) / exp(21.5) = exp(1.2) = 3.3x
 
-85C has 3.3x longer lifetime than 105C for the same current density.
-Every 20C increase in temperature roughly halves EM lifetime (for Ea=0.7eV).
+Conclusion:
+  - 85C has a 3.3x longer lifetime than 105C for the same current density.
+  - Every 20C increase in temperature roughly halves EM lifetime (for Ea = 0.7eV).
 ```
 
 **EM at advanced nodes:**
-```
 As wire cross-sections shrink (thinner, narrower):
-  - Current density increases for same total current
-  - Copper resistivity increases (grain boundary scattering at thin films)
-  - EM becomes a tighter constraint
-  
-Mitigation:
-  - Cobalt cap layer (better EM resistance than copper/barrier interface)
-  - Ruthenium liner/barrier (thinner, more copper volume)
-  - Backside power delivery (move power off the signal layers)
-```
+- Current density increases for same total current
+   - Copper resistivity increases (grain boundary scattering at thin films)
+   - EM becomes a tighter constraint
+
+**Mitigation:**
+   - Cobalt cap layer (better EM resistance than copper/barrier interface)
+   - Ruthenium liner/barrier (thinner, more copper volume)
+   - Backside power delivery (move power off the signal layers)
 
 ### 3.6 Power Grid Design
 
 **Typical power grid structure:**
-```
+```ascii-graph
   +============================================================+
   |  VDD Ring (top-level, M10)                                  |
   |  +------------------------------------------------------+  |
@@ -543,8 +542,8 @@ Mitigation:
 ```
 
 **Power grid design guidelines:**
-```
-General rules:
+```text
+General Rules:
   - Dedicate 5-10% of each metal layer to power routing
   - Top 2-3 metals carry most of the current (thickest, lowest resistance)
   - Alternate VDD/VSS stripes for balanced current distribution
@@ -553,21 +552,21 @@ General rules:
 
 Trade-offs:
   Wider stripes:
-    + Lower IR drop (lower R)
-    + Better EM (lower J for same I)
-    - Less routing resource for signals
-    - Potential routing congestion
+    [+] Lower IR drop (lower R)
+    [+] Better EM (lower J for same I)
+    [-] Less routing resource for signals
+    [-] Potential routing congestion
   
   Denser stripe pitch:
-    + More uniform voltage distribution
-    + Better current sharing
-    - More routing resource consumed
-    - Diminishing returns (mesh already dense enough)
+    [+] More uniform voltage distribution
+    [+] Better current sharing
+    [-] More routing resource consumed
+    [-] Diminishing returns (mesh already dense enough)
 
-Typical pitch guidelines (for a medium-performance design):
-  M8/M9 (top metals): VDD+VSS stripe every 20-40 um
-  M6/M7 (mid metals):  VDD+VSS stripe every 30-60 um
-  M1 (cell rail): continuous VDD and VSS in every cell row
+Typical Pitch Guidelines (for a medium-performance design):
+  - M8/M9 (top metals): VDD+VSS stripe every 20-40 um
+  - M6/M7 (mid metals): VDD+VSS stripe every 30-60 um
+  - M1 (cell rail):     Continuous VDD and VSS in every cell row
 ```
 
 ---
@@ -805,33 +804,27 @@ generate_map -type dynamic_ir -net VDD -output ir_map.png
 
 Start from the total power constraint and allocate downward:
 
-```
-Example: Mobile Application Processor
-  Total TDP (Thermal Design Power): 5W at 85C junction temperature
-  
-  +----------------------------------+-------+--------+
-  | Subsystem                        | Budget| % Total|
-  +----------------------------------+-------+--------+
-  | CPU Cluster (4x A-class cores)   | 2.0 W | 40%    |
-  |   Per-core budget                | 0.5 W |        |
-  | GPU (8-core)                     | 1.5 W | 30%    |
-  | Modem (5G baseband)              | 0.5 W | 10%    |
-  | Memory Controller (LPDDR5)       | 0.3 W |  6%    |
-  | Display Processor                | 0.2 W |  4%    |
-  | IO Subsystem (USB, PCIe, UFS)    | 0.2 W |  4%    |
-  | Always-On Domain (PMU, RTC, AON) | 0.05W |  1%    |
-  | Interconnect (NoC, bus fabric)   | 0.15W |  3%    |
-  | Margin                           | 0.1 W |  2%    |
-  +----------------------------------+-------+--------+
-  | TOTAL                            | 5.0 W | 100%   |
-  +----------------------------------+-------+--------+
-```
+**Example — Mobile Application Processor.** Total TDP 5 W at 85 °C junction temperature.
+
+| Subsystem | Budget | % Total |
+|---|---|---|
+| CPU cluster (4× A-class cores) | 2.0 W | 40% |
+| — per-core budget | 0.5 W | |
+| GPU (8-core) | 1.5 W | 30% |
+| Modem (5G baseband) | 0.5 W | 10% |
+| Memory controller (LPDDR5) | 0.3 W | 6% |
+| Display processor | 0.2 W | 4% |
+| IO subsystem (USB, PCIe, UFS) | 0.2 W | 4% |
+| Always-on domain (PMU, RTC, AON) | 0.05 W | 1% |
+| Interconnect (NoC, bus fabric) | 0.15 W | 3% |
+| Margin | 0.1 W | 2% |
+| **Total** | **5.0 W** | **100%** |
 
 ### 5.2 Bottom-Up Power Verification
 
 After design, sum actual block powers and compare with budget:
 
-```
+```verilog
 For each block:
   1. Run gate-level power analysis with representative workload
   2. Get average power (dynamic + leakage)
@@ -852,23 +845,21 @@ Iteration:
 
 ### 5.3 Power Modes and Use Cases
 
-```
 Mobile SoC Power Modes:
 
-Mode           | CPU   | GPU   | Modem  | IO    | Total  | Use Case
----------------|-------|-------|--------|-------|--------|------------------
-Active (Max)   | 2.0W  | 1.5W  | 0.5W   | 0.2W  | 5.0W   | Gaming, benchmark
-Active (Typ)   | 0.8W  | 0.5W  | 0.3W   | 0.1W  | 2.0W   | Normal use
-Idle           | 0.1W  | Off   | 0.1W   | 0.05W | 0.4W   | Screen on, no task
-Light Sleep    | Ret   | Off   | Idle   | Off   | 0.05W  | Screen off
-Deep Sleep     | Off   | Off   | Idle   | Off   | 0.01W  | Phone in pocket
-Hibernate      | Off   | Off   | Off    | Off   | 0.002W | Power button off
+| Mode | CPU | GPU | Modem | IO | Total | Use Case |
+|---|---|---|---|---|---|---|
+| Active (Max) | 2.0W | 1.5W | 0.5W | 0.2W | 5.0W | Gaming, benchmark |
+| Active (Typ) | 0.8W | 0.5W | 0.3W | 0.1W | 2.0W | Normal use |
+| Idle | 0.1W | Off | 0.1W | 0.05W | 0.4W | Screen on, no task |
+| Light Sleep | Ret | Off | Idle | Off | 0.05W | Screen off |
+| Deep Sleep | Off | Off | Idle | Off | 0.01W | Phone in pocket |
+| Hibernate | Off | Off | Off | Off | 0.002W | Power button off |
 
 Key: Ret = retention (state preserved), Off = fully power-gated
-```
 
 **Battery life calculation:**
-```
+```verilog
 Battery: 5000 mAh at 3.8V = 19 Wh
 
 Light sleep mode (50 mW):
@@ -887,31 +878,29 @@ Active max (5W, gaming):
 
 ### 6.1 Junction Temperature
 
-```
-Tj = Ta + P * Rth_ja
+- **Tj** = `Ta + P * Rth_ja`
 
 where:
-  Tj     = junction temperature (C)
-  Ta     = ambient temperature (C)
-  P      = total power dissipation (W)
-  Rth_ja = thermal resistance from junction to ambient (C/W)
+Tj     = junction temperature (C)
+Ta     = ambient temperature (C)
+P      = total power dissipation (W)
+Rth_ja = thermal resistance from junction to ambient (C/W)
 
 Rth_ja depends on the package and cooling solution:
-  Bare die (no heatsink):    Rth_ja ~ 30-60 C/W
-  With heatsink (laptop):    Rth_ja ~ 5-15 C/W
-  With fan (desktop):        Rth_ja ~ 2-5 C/W
-  Liquid cooling (server):   Rth_ja ~ 0.5-2 C/W
-  
-Thermal resistance chain:
-  Rth_ja = Rth_jc + Rth_cs + Rth_sa
-  
-  Rth_jc = junction to case (die + package) ~ 0.5-5 C/W
-  Rth_cs = case to heatsink (thermal paste/pad) ~ 0.1-1 C/W
-  Rth_sa = heatsink to ambient (convection + radiation) ~ 1-30 C/W
-```
+Bare die (no heatsink):    Rth_ja ~ 30-60 C/W
+With heatsink (laptop):    Rth_ja ~ 5-15 C/W
+With fan (desktop):        Rth_ja ~ 2-5 C/W
+Liquid cooling (server):   Rth_ja ~ 0.5-2 C/W
+
+**Thermal resistance chain:**
+   - Rth_ja = Rth_jc + Rth_cs + Rth_sa
+
+Rth_jc = junction to case (die + package) ~ 0.5-5 C/W
+Rth_cs = case to heatsink (thermal paste/pad) ~ 0.1-1 C/W
+Rth_sa = heatsink to ambient (convection + radiation) ~ 1-30 C/W
 
 **Example:**
-```
+```text
 Mobile SoC: 5W, no heatsink (just PCB copper), Rth_ja = 40 C/W, Ta = 45C (in pocket)
   Tj = 45 + 5 * 40 = 245C -> IMPOSSIBLE, chip would burn
 
@@ -927,7 +916,7 @@ allows brief power spikes before the die heats up).
 
 Thermal runaway is a positive feedback loop:
 
-```
+```verilog
   Higher temperature
       |
       v
@@ -944,7 +933,7 @@ Thermal runaway is a positive feedback loop:
 ```
 
 **Stability analysis:**
-```
+```ascii-graph
 Power dissipated: P(T) = P_dynamic + P_leakage(T)
   P_leakage(T) = P_leak_25C * 2^((T-25)/10)
 
@@ -984,23 +973,21 @@ capability, the chip will thermally run away.
 Since sustainable power is often much less than peak power, DTM is essential:
 
 **On-chip temperature sensors:**
-```
-  Ring oscillator-based: frequency decreases with temperature
-    - Simple, area-efficient
-    - Accuracy: +/- 5-10C
-    - Placed at expected hotspots (CPU core, GPU, memory controller)
-    
-  BJT-based (bandgap reference):
-    - V_be decreases linearly with temperature (~-2 mV/C)
-    - Compare V_be with reference using ADC
-    - Accuracy: +/- 1-3C (better than ring osc)
-    - Used in most production SoCs
+- **Ring oscillator-based** — frequency decreases with temperature
+- Simple, area-efficient
+- Accuracy: +/- 5-10C
+- Placed at expected hotspots (CPU core, GPU, memory controller)
 
-  Typical placement: 4-8 sensors per chip, at least one per major block
-```
+BJT-based (bandgap reference):
+- V_be decreases linearly with temperature (~-2 mV/C)
+- Compare V_be with reference using ADC
+- Accuracy: +/- 1-3C (better than ring osc)
+- Used in most production SoCs
+
+- **Typical placement** — 4-8 sensors per chip, at least one per major block
 
 **Throttling mechanisms (in order of severity):**
-```
+```verilog
 Level 0 (Proactive): DVFS governor reduces frequency based on workload
   Trigger: continuously
   Response time: microseconds
@@ -1028,21 +1015,19 @@ Recovery: resume when temperature drops below hysteresis threshold
 
 ### 6.4 Hotspot Analysis
 
-```
 Not all parts of the chip have equal power density:
-  - CPU ALU: 2-5 W/mm^2 (very hot)
-  - SRAM arrays: 0.5-1 W/mm^2 (moderate)
-  - IO pads: 0.1-0.3 W/mm^2 (cool)
-  
-Hotspot mitigation in floorplanning:
-  1. Don't place high-power blocks adjacent to each other
-  2. Interleave hot blocks with cool blocks (SRAM near ALU)
-  3. Place critical blocks near heat extraction path (center for flip-chip,
-     edges for wire-bond)
-  4. Use thermal vias (through-silicon vias not for signals, just for heat)
-  
+- CPU ALU: 2-5 W/mm^2 (very hot)
+   - SRAM arrays: 0.5-1 W/mm^2 (moderate)
+   - IO pads: 0.1-0.3 W/mm^2 (cool)
+
+**Hotspot mitigation in floorplanning:**
+   1. Don't place high-power blocks adjacent to each other
+2. Interleave hot blocks with cool blocks (SRAM near ALU)
+3. Place critical blocks near heat extraction path (center for flip-chip,
+edges for wire-bond)
+4. Use thermal vias (through-silicon vias not for signals, just for heat)
+
 Thermal simulation tools: ANSYS Icepak, Cadence Celsius, Synopsys IC Compiler thermal
-```
 
 ---
 
@@ -1052,23 +1037,21 @@ Thermal simulation tools: ANSYS Icepak, Cadence Celsius, Synopsys IC Compiler th
 
 IR drop reduces the effective Vdd seen by cells, which slows them down:
 
-```
-Gate delay sensitivity to Vdd:
-  dT/dVdd ~ -T / (Vdd - Vth)  (negative because lower Vdd -> slower)
+**Gate delay sensitivity to Vdd:**
+   - dT/dVdd ~ -T / (Vdd - Vth)  (negative because lower Vdd -> slower)
 
-For Vdd = 0.9V, Vth = 0.3V:
-  Relative delay change per mV of IR drop = 1 / (900 - 300) = 0.167%/mV
+- **For Vdd** = `0.9V, Vth = 0.3V:`
+   - Relative delay change per mV of IR drop = 1 / (900 - 300) = 0.167%/mV
 
-For 50 mV IR drop:
-  Delay increase = 50 * 0.167% = 8.3% slowdown
+**For 50 mV IR drop:**
+   - Delay increase = 50 * 0.167% = 8.3% slowdown
 
-On a critical path with 500 ps delay:
-  Extra delay = 0.083 * 500 = 41.5 ps
-  This can easily cause a timing violation!
-```
+**On a critical path with 500 ps delay:**
+   - Extra delay = 0.083 * 500 = 41.5 ps
+   - This can easily cause a timing violation!
 
 **How tools handle this:**
-```
+```verilog
 Static timing analysis (STA) with IR drop derating:
   1. Run IR drop analysis (Voltus/RedHawk) -> per-instance voltage map
   2. Feed voltage map back to STA (PrimeTime) -> per-instance derating
@@ -1082,7 +1065,7 @@ With IR-aware timing: margin is reduced because you know the actual voltage per 
 
 ### 7.2 Power vs Performance Trade-off Visualization
 
-```
+```ascii-graph
 The Power-Performance design space:
 
   Power (W)
@@ -1109,7 +1092,7 @@ The Power-Performance design space:
 
 ### 7.3 Chip-Package-System Power Integrity
 
-```
+```verilog
 Complete power delivery network (PDN):
 
   VRM (Voltage Regulator Module)
@@ -1141,7 +1124,7 @@ PDN impedance target (Zmax):
 At <=7nm, glitch (spurious-transition) power is commonly **25-40% of dynamic power**
 in datapath-heavy blocks -- large enough that ignoring it busts budgets.
 
-```
+```verilog
 Why standard flows miss it:
   - Zero-delay RTL simulation: all input transitions arrive simultaneously
     -> NO glitches generated -> activity files underestimate datapath power
@@ -1168,19 +1151,16 @@ Power_Reduction_Techniques and Block_Activity_and_Power notes).
 
 Average-power signoff does not protect against transient events:
 
-```
-What must be checked beyond average power:
-  1. Realistic peak window: from emulation activity of real workloads,
-     find the worst 1-10 us window -> drive dynamic IR analysis with it
-  2. Synthetic worst case: power-virus vectors (max simultaneous switching)
-     -> bounds VRM/package current, validates throttle response
-  3. di/dt events: domain wake-up (rush current), vector-unit turn-on,
-     clock-ungating of a large cluster -- each is a load STEP that excites
-     the package resonance (~50-300 MHz "first droop")
-  4. Checks: peak droop within budget WITH the droop mitigation modeled
-     (decap + adaptive clocking), current ramp within PMIC slew capability,
-     no EM overstress on the burst profile
-```
+**What must be checked beyond average power:**
+   1. Realistic peak window: from emulation activity of real workloads,
+find the worst 1-10 us window -> drive dynamic IR analysis with it
+2. Synthetic worst case: power-virus vectors (max simultaneous switching) → bounds VRM/package current, validates throttle response
+3. di/dt events: domain wake-up (rush current), vector-unit turn-on,
+clock-ungating of a large cluster -- each is a load STEP that excites
+the package resonance (~50-300 MHz "first droop")
+4. Checks: peak droop within budget WITH the droop mitigation modeled
+(decap + adaptive clocking), current ramp within PMIC slew capability,
+no EM overstress on the burst profile
 
 ### 7.6 Backside Power Delivery (BSPDN) -- What Changes for Power Signoff
 
@@ -1189,7 +1169,7 @@ Through 2025-2026, power delivery moved to the wafer backside on leading nodes:
 connecting to transistor contacts) and **TSMC A16 "Super Power Rail"** (production
 2H 2026; backside network contacting source/drain directly).
 
-```
+```verilog
 Why: frontside power grids competed with signal routing on the lower metal
 layers and reached transistors through tall, resistive via stacks.
 
@@ -1282,7 +1262,7 @@ What changes for the signoff engineer:
 
 ## 9. Summary: Power Analysis Checklist for Tapeout
 
-```
+```verilog
 Pre-Signoff Checklist:
 
 [ ] Average power within budget (per domain and total)
