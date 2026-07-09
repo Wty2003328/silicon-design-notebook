@@ -26,6 +26,54 @@ DRC verifies the layout obeys the **foundry's geometric rules**, which encode wh
 
 At advanced nodes there are **thousands** of rules, plus **DPT/MPT coloring** rules (multi-patterning: shapes must be 2-colorable for double-patterning, or odd-cycle conflicts are flagged) and **DRC+ / equation-based** rules. DRC runs on the full GDSII and must reach **zero violations or justified waivers** — the foundry rejects anything else.
 
+### 1.1 DRC in Practice — Rule Categories, Runsets, Debug (from the PnR view)
+
+**Fundamental DRC rules:**
+
+```ascii-graph
+  Minimum width:    |<- w ->|     w >= w_min (e.g., 36nm for M1 at 7nm)
+                    |=======|
+  
+  Minimum spacing:  |===| gap |===|    gap >= s_min (e.g., 36nm for M1)
+  
+  Minimum enclosure (via in metal):
+                    +----------+
+                    |  +----+  |
+                    |  | via|  |    enclosure >= e_min on all sides
+                    |  +----+  |
+                    +----------+
+  
+  Minimum area:     Metal rectangle must have area >= A_min
+  
+  End-of-line (EOL) spacing:
+                    |===|
+                         ↕ EOL space (larger than regular spacing)
+                    |===|
+                    
+  (The end of a wire needs more spacing due to lithography effects)
+```
+
+**Advanced Node DRC (7nm and below):**
+
+- **LELE double patterning**: features on one layer split into two masks (colors)
+```ascii-graph
+  Original M2:    |A| |B| |C| |D|
+  
+  Mask 1 (blue):  |A|     |C|      (every other wire)
+  Mask 2 (green):     |B|     |D|
+  
+  Coloring constraint: adjacent wires must be on different masks.
+  If 3 mutually adjacent wires → coloring conflict → DRC error!
+```
+
+- **SADP (Self-Aligned Double Patterning)**: mandrel+spacer technique, creates very specific design rules
+  - Tip-to-tip spacing rules (different for same-color vs different-color)
+  - Cut-based rules for creating line ends
+
+- **Via pillar rules**: vias must land on specific grid locations
+
+
+
 ---
 
 ## 2. LVS — Layout Versus Schematic
@@ -59,6 +107,48 @@ The tool **extracts** devices and connectivity from the layout, then does a **gr
 
 LVS clean is non-negotiable: a short between power and ground, or a swapped connection, makes the chip dead regardless of perfect timing. Paired with LVS, **ERC** (Electrical Rule Check) flags floating gates, missing well/substrate ties, etc.
 
+### 2.1 LVS in Practice — Extraction, Comparison, Classic Mismatches
+
+```ascii-graph
+  LVS Flow:
+  
+  Layout (GDSII)                    Schematic (Netlist from synthesis)
+       |                                      |
+       v                                      v
+  Device Extraction                     Read Netlist
+  (identify transistors,                      |
+   resistors, caps)                           |
+       |                                      |
+       v                                      v
+  Connectivity Extraction              +-----------+
+  (trace metal connections)    ------> |  COMPARE  |
+       |                               +-----------+
+       v                                      |
+  Extracted Netlist                           v
+                                      PASS or FAIL
+                                      (with error report)
+```
+
+**Common LVS errors:**
+
+| Error Type       | Cause                                        | Fix                              |
+|------------------|----------------------------------------------|----------------------------------|
+| Short            | Two nets connected that shouldn't be         | Fix routing overlap              |
+| Open             | Net has disconnected segments                | Add missing via or wire          |
+| Device mismatch  | Extra/missing transistor in layout           | Check well/diffusion regions     |
+| Floating net     | Net connected to nothing                     | Connect or remove                |
+| Parameter mismatch | Transistor W/L differs from schematic      | Fix device sizing                |
+| Missing connection | Pin not properly connected to net          | Fix pin geometry                 |
+
+### 2.2 ERC (Electrical Rule Check)
+
+- **Floating gate**: gate terminal not connected to any driver → undefined state, excessive leakage
+- **Antenna violation**: antenna ratio exceeds limit (see Section 5.5)
+- **Well connectivity**: N-well must be connected to VDD, P-well to VSS (or body bias supply)
+- **ESD path check**: all IO pads have proper ESD protection path to VDD/VSS
+
+
+
 ---
 
 ## 3. Antenna check — a process-damage rule worth its own section
@@ -80,6 +170,28 @@ DFM goes past binary rule-checking to *improve yield*:
 - **Critical-area analysis** — estimate random-defect-limited yield from the layout's susceptibility to particle defects.
 
 DFM is "DRC-clean but better" — the gap between *manufacturable* and *high-yielding*.
+
+### 4.1 Metal Density Checks and Dummy Fill
+
+```ascii-graph
+  CMP (Chemical Mechanical Polishing) during fabrication:
+  
+  Without fill:                    With fill:
+  
+  |==|         |==|               |==| |F| |F| |==| |F|
+  +---substrate----+              +---substrate---------+
+  
+  Low density area polishes          Uniform density → uniform
+  differently → dishing, erosion     polishing → flat surface
+  
+  Foundry requirement: metal density per layer must be 20-80% in any window.
+  Fill insertion adds dummy metal shapes to meet density targets.
+  
+  Timing impact: fill adds parasitic capacitance to nearby signal wires!
+  Timing-aware fill: avoid placing fill too close to timing-critical nets.
+```
+
+
 
 ---
 
@@ -116,6 +228,8 @@ Physical verification is run on the **full-chip merged GDSII** (including IP, me
 ---
 
 ## Cross-references
+
+- The in-practice subsections (1.1, 2.1, 2.2, 4.1) were moved here from [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md) §6; PD keeps the hand-off summary.
 - Upstream layout: [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md). SI/reliability: [Signal_Integrity_Reliability](../05_Backend_Physical_Design/Signal_Integrity_Reliability.md).
 - Rule physics: [Fabrication_Process](../07_Manufacturing_and_Bringup/Fabrication_Process.md). Hand-off: [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md).
 - Other signoffs: [STA](STA.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/Power_Analysis_and_Signoff.md), [DFT_and_ATPG](DFT_and_ATPG.md).

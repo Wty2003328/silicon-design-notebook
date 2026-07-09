@@ -1326,6 +1326,31 @@ On an I-cache miss:
 4. Typical L1 I-cache miss penalty: 8--15 cycles (L2 hit), 40--100 cycles
    (L2 miss, DRAM access).
 
+**Worked detail (pipeline view):**
+
+When the I-cache misses the fetch unit must wait for the line to arrive from
+the next cache level. The key mechanisms are:
+
+1. **Line-fill buffer** -- holds the incoming cache line while it is being
+   written into the I-cache data array. One or two fill buffers allow
+   overlapping misses (one being filled while another waits for L2).
+
+2. **Critical-word-first** -- the first 16--32 bytes that contain the
+   requested PC are forwarded to the pre-decoder immediately; the rest of the
+   line arrives over subsequent bus beats. This reduces the visible stall by
+   roughly $\lceil B/w \rceil - 1$ cycles, where $B$ is the cache-line size
+   and $w$ is the bus width per beat.
+
+3. **Fetch stall + FTQ drain** -- the FTQ continues to drain entries that hit
+   in the I-cache, but no new FTQ entries are pushed until the miss resolves.
+   In practice the BPU also stalls to avoid polluting the FTQ with
+   predictions for addresses that cannot yet be fetched.
+
+4. **Streaming / prefetch** -- some designs (e.g., Apple M-series) employ a
+   next-line prefetcher that initiates an L2 request for the sequential line
+   in parallel with the current I-cache access, hiding most of the miss
+   penalty for straight-line code.
+
 ### 8.6 Fetch Bandwidth
 
 | Design | Fetch Width | Instructions/Cycle | Alignment |
@@ -1337,6 +1362,100 @@ On an I-cache miss:
 The fetch unit must handle branches that fall mid-cache-line. On a predicted
 taken branch at byte offset +8, the fetch unit extracts only the 2 instructions
 before the branch and redirects to the target for the next cycle.
+
+---
+
+**Fetch bandwidth constraints — worked numbers (pipeline view):**
+
+Fetch bandwidth is measured in instructions per cycle (IPC$_{\text{fetch}}$):
+
+$$
+\text{IPC}_{\text{fetch}} = \min\!\left(\frac{\text{I-cache line size}}{\text{avg instruction width}},\;\text{decode width}\right)
+$$
+
+For a fixed-length ISA (RISC-V, ARM):
+- I-cache line = 64 bytes, instruction = 4 bytes $\Rightarrow$ up to 16
+  instructions per line.
+- Practical fetch width limited to 4--8 instructions per cycle by the
+  pre-decoder and branch-prediction check within the fetch group.
+
+For a variable-length ISA (x86):
+- Instructions range from 1--15 bytes.
+- Pre-decode must find instruction boundaries, so 4--6 instructions per cycle
+  is typical; Intel calls this the "MOP cache" problem and uses a decoded
+  instruction cache (DSB / MOP cache) to bypass the pre-decoder.
+
+Alignment penalty: if the fetch PC is not aligned to the start of a cache line,
+only the remaining bytes in the line are usable. The fetch unit issues a second
+I-cache access in the next cycle for the remainder, costing one cycle.
+
+### 8.7 Fetch Target Queue (FTQ)
+
+The FTQ is a small FIFO structure sitting between the branch predictor and the
+I-cache. It decouples prediction throughput from cache latency so the predictor
+can run ahead of the cache without stalling.
+
+```verilog
+FTQ entry fields:
+  { predicted_PC,          -- next fetch address (from BPU)
+    fall_through_PC,       -- PC + fetch_width (sequential fallback)
+    btb_hit,               -- was there a BTB hit for this prediction?
+    bht_direction,         -- taken / not-taken from the 2-bit counter
+    cond_branch_mask,      -- which instruction positions contain branches
+    pred_target            -- predicted branch target address
+  }
+```
+
+Each cycle the BPU pushes one FTQ entry; the I-cache pops entries at its own
+rate. On a misprediction the FTQ is flushed and refilled from the corrected PC.
+
+### 8.8 Fetch Pipeline Stages
+
+The fetch pipeline typically spans 3--5 stages in a modern out-of-order core.
+The key dataflow is:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    A[BPU predicts next PC] --> B[FTQ Entry Allocated]
+    B --> C[I-Cache Tag + Data Lookup]
+    C -->|Hit| D[Instruction Bytes Returned]
+    C -->|Miss| E[Line-Fill Buffer Allocated]
+    E --> F[Critical-Word-First Fill from L2]
+    F --> D
+    D --> G[Pre-Decoder: scan for branches]
+    G --> H[Decode Queue -- feeds rename/decode]
+    H --> I[Rename Stage]
+```
+
+Stage-by-stage breakdown:
+
+| Stage | Latency | Action |
+|-------|---------|--------|
+| BPU + FTQ | 1 cycle | Generate predicted PC, enqueue in FTQ |
+| I-cache lookup | 1--4 cycles | Tag compare + data RAM read in parallel |
+| I-cache miss | 10--20 cycles | Line-fill from L2, stall fetch pipe |
+| Pre-decode | 1 cycle | Identify branches, compute targets |
+| Decode queue | buffer | Decouple fetch from rename bandwidth |
+
+### 8.9 Pre-Decode
+
+The pre-decoder scans raw instruction bytes for lightweight hints that are
+used by later pipeline stages:
+
+- **Branch detection** -- identify conditional and unconditional branch opcodes
+  so the BTB and BHT can be updated early.
+- **Branch target computation** -- for direct branches the target is encoded
+  in the immediate field; the pre-decoder extracts it in parallel with decode.
+- **Instruction length** -- for variable-length ISAs the pre-decoder marks byte
+  boundaries, enabling the decoder to slice the fetch group into individual
+  instructions.
+- **Call/return identification** -- mark CALL and RET instructions so the
+  Return Address Stack (RAS) can be updated speculatively at fetch time.
+
+Pre-decode results are stored alongside each instruction in the decode queue
+and forwarded to the BPU update path on commit, completing the prediction
+feedback loop.
 
 ---
 

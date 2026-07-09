@@ -388,6 +388,190 @@ Typical rename bandwidth: 4-6 instructions per cycle in modern designs (2020s).
 
 ---
 
+### 2.8 Renaming Implementation Detail — RAM vs CAM RAT, Ports, Worked Example
+
+**RAM-based rename table vs CAM-based:**
+
+| Design | Structure | Read | Update | Power | Latency |
+|--------|-----------|------|--------|-------|---------|
+| RAM-based RAT | SRAM array, 32 entries x 7-bit phys_tag | Direct index (1 cycle) | Write port per rename lane | Low | Fast (O(1) lookup) |
+| CAM-based RAT | 128-entry CAM, match on arch_reg tag | Associative search | Update matched entry | High (every entry compares) | Slower (O(N) compare) |
+| Fusion: RAM for common case, CAM for checkpoint restore | Hybrid | RAM indexed by arch_reg | RAM write + CAM for recovery | Medium | Fast lookup, 1-cycle restore |
+
+RAM-based is universally used for the active (speculative) RAT because the 32
+architectural registers make it a small, fast SRAM. CAM-based rename is used only
+for checkpointing (see below).
+
+**RAM-based RAT implementation details:**
+
+```verilog
+RAT SRAM array (32 entries x 7 bits = 224 bits total):
+
+  Read: arch_reg[4:0] drives the SRAM word-line decoder.
+        1-cycle access (often half-cycle with fast SRAM).
+        For a 4-wide machine: 8 read ports (2 per instruction x 4 instructions).
+        Multi-ported SRAM area scales as O(read_ports x write_ports).
+        8-read, 4-write port SRAM for 32 entries is ~2-3 KB in 7 nm.
+
+  Write: On rename, the new phys_tag is written to RAT[arch_dst].
+         Bypass: if two instructions in the same rename group write the same
+         arch register, the second write wins (the first's phys_dst is still
+         recorded in its ROB entry for recycling).
+
+  Intra-group forwarding: Within a single-cycle rename group of W instructions,
+    instruction i+1 may read an arch register that instruction i just renamed.
+    The rename logic must bypass the new phys_tag from instruction i directly
+    to instruction i+1's source lookup, without waiting for the SRAM write.
+    Implementation: a W x W bypass network (W=4 -> 16 comparisons).
+
+  Port count analysis for 4-wide rename:
+    Read ports:  2 sources * 4 instructions = 8 read ports
+    Write ports: 1 destination * 4 instructions = 4 write ports
+    Total: 12 ports on a 32-entry SRAM
+    Area: ~3 KB in 7 nm (dominated by the crossbar for multi-porting)
+```
+
+**CAM-based RAT implementation details (for checkpoint recovery):**
+
+```verilog
+CAM-based rename table (128 entries x 7-bit phys_tag):
+
+  Each entry stores: {arch_reg[4:0], phys_tag[6:0], valid}
+  CAM match: incoming arch_reg[4:0] compared against all 128 entries in parallel.
+  Only one entry per arch_reg should be valid at a time (invariant).
+
+  Why use CAM at all? For checkpoint-based misprediction recovery:
+    On branch: save a pointer to the current CAM state (or copy 32 valid entries)
+    On misprediction: restore the CAM by re-validating the saved entries
+    No need to walk the ROB backwards -- the CAM IS the history.
+
+  Area cost: 128 entries x (5+7+1) bits x 2 (complement for dynamic CAM) = ~4.5 KB
+  Power cost: every lookup compares against all 128 entries -> 128 * 13-bit comparisons
+  Latency: ~2 FO4 for match-line discharge in dynamic CMOS
+
+  Hybrid approach (most common in modern designs):
+    Active RAT: RAM-based (fast, low power)
+    Checkpoint storage: compact shadow copies of the 32-entry RAM RAT
+    On recovery: copy shadow -> active RAT (1 cycle)
+    No CAM needed for the main rename path
+```
+
+**Free list management -- implementation considerations:**
+
+The free list must support W allocations per cycle (rename) and up to C deallocations
+per cycle (commit). For a 4-wide machine, this means 4 pops and up to 8 pushes per
+cycle (commit is typically wider than dispatch).
+
+```text
+Free list FIFO implementation (N = 128 physical registers):
+
+  head_ptr[6:0]: index of next register to allocate
+  tail_ptr[6:0]: index where next freed register is inserted
+  count[7:0]:    number of free registers
+
+  Allocate (rename, 4 per cycle):
+    if count < 4: stall dispatch
+    phys_dst[0] = freelist[head_ptr]
+    phys_dst[1] = freelist[(head_ptr+1) % 128]
+    phys_dst[2] = freelist[(head_ptr+2) % 128]
+    phys_dst[3] = freelist[(head_ptr+3) % 128]
+    head_ptr = (head_ptr + 4) % 128
+    count -= 4
+
+  Free (commit, up to 8 per cycle):
+    for i = 0 to num_committed-1:
+      freelist[tail_ptr] = ROB[head+i].phys_dst_old
+      tail_ptr = (tail_ptr + 1) % 128
+      count += 1
+
+  Critical race: allocate and free in the same cycle.
+    If count is near zero but commit will free registers this cycle:
+      Option A: stall (conservative, simpler)
+      Option B: forward freed registers directly from commit to rename (bypass)
+                Used in Intel P-cores; saves ~2% dispatch stalls
+
+  Storage: 128 entries x 7 bits = 896 bits = 112 bytes (trivial)
+  The head/tail/count registers are the critical state that must be checkpointed
+  along with the RAT on branch rename for misprediction recovery.
+```
+
+**Free list management:**
+
+```verilog
+Free list: circular FIFO of physical register tags
+  head_ptr: next tag to allocate
+  tail_ptr: next slot to return a freed tag
+  count: number of free registers
+
+Allocate (rename stage):
+  if count < W: stall (not enough free regs for W instructions)
+  for i in 0..W-1:
+    phys_dst[i] = freelist[head_ptr]
+    head_ptr = (head_ptr + 1) % N_FREELIST
+    count -= 1
+
+Free (commit stage):
+  for i in 0..C-1:
+    freelist[tail_ptr] = ROB[head].phys_dst_old
+    tail_ptr = (tail_ptr + 1) % N_FREELIST
+    count += 1
+```
+
+Critical invariant: `count >= 0` at all times. A free-list underflow means the core
+dispatched more instructions than it has physical registers to support, which must
+be prevented by stalling dispatch when `count < dispatch_width`.
+
+**Checkpoint vs history buffer for recovery:**
+
+| Mechanism | Storage | Recovery Time | Complexity |
+|-----------|---------|---------------|------------|
+| Checkpoint (copy-on-write shadow RAT) | 8-16 snapshots x 32 x 7 bits = ~3.5 KB | 1 cycle (activate shadow) | Moderate |
+| History buffer (ROB stores old mapping) | 0 extra (old mapping in ROB entry) | O(N_ROB) cycles (walk back) | Low area |
+| Hybrid: checkpoint for branches, ROB-walk for exceptions | 8-16 checkpoints + ROB walk | 1 cycle for branch, O(N) for exception | Moderate |
+
+Checkpoint approach (used in Intel, AMD, ARM high-performance cores):
+```verilog
+On branch rename:
+  Snapshot the active RAT into checkpoint[k]
+  checkpoint[k].valid = 1
+
+On branch misprediction:
+  Restore active RAT from checkpoint[k]
+  Invalidate all checkpoints younger than k
+  Free all physical regs allocated after checkpoint[k]
+```
+
+History buffer approach (used in area-constrained designs):
+```verilog
+On any rename:
+  ROB[tail].phys_dst_old = previous mapping (already stored)
+
+On misprediction at ROB[B]:
+  Walk from tail back to B:
+    RAT[ROB[i].arch_dst] = ROB[i].phys_dst_old  // undo the rename
+    FreeList.push(ROB[i].phys_dst)               // free speculative phys reg
+  Takes (tail - B) cycles
+```
+
+**Architectural vs physical register mapping on commit:**
+
+The processor maintains two RATs:
+
+1. **Frontend (speculative) RAT** -- maps arch regs to the latest physical register,
+   including uncommitted (speculative) instructions. Updated during rename. Used for
+   source operand lookup.
+
+2. **Commit (architectural) RAT** -- maps arch regs to the physical register of the
+   last *committed* instruction. Updated only at commit. Used for exception recovery
+   and precise state.
+
+On commit, the commit RAT is updated: `commit_RAT[rd] = phys_dst`. The old physical
+register `phys_dst_old` is freed. On a pipeline flush (exception or misprediction),
+the frontend RAT is restored from the commit RAT -- all speculative mappings are
+discarded.
+
+---
+
 ## 3. Reorder Buffer (ROB)
 
 The ROB is the data structure that enforces in-order retirement while allowing out-of-order execution. It is a circular buffer with two pointers:
@@ -449,6 +633,137 @@ Total per entry: approximately 200-250 bits. A 128-entry ROB therefore occupies 
 | 512 | Marginal gain | ~16 KB | Research, extreme ILP |
 
 The sweet spot for most 2020s cores is 128-256 entries. Beyond 256, diminishing returns set in because the program's inherent ILP window is limited by branch mispredictions and cache misses.
+
+---
+
+### 3.4 ROB Implementation Detail — Circular-Buffer Mechanics and Worked Example
+
+**Circular buffer mechanics:**
+
+The ROB is implemented as a SRAM array with head and tail pointers that wrap modulo
+$N_{ROB}$:
+
+```python
+ROB[0]  ROB[1]  ...  ROB[Head]  ROB[Head+1]  ...  ROB[Tail-1]  ROB[Tail]
+                                    |                              |
+                              oldest uncommitted            next free slot
+
+Head pointer: points to the oldest uncommitted instruction
+Tail pointer: points to the next free slot for dispatch
+
+Allocate (dispatch W instructions):
+  for i in 0..W-1:
+    ROB[(tail + i) % N_ROB] = new_entry[i]
+  tail = (tail + W) % N_ROB
+  if (tail + 1) % N_ROB == head: ROB_FULL -> stall dispatch
+
+Commit (retire up to C instructions):
+  for i in 0..C-1:
+    if ROB[(head + i) % N_ROB].completed && !ROB[(head + i) % N_ROB].exception:
+      commit_entry(ROB[(head + i) % N_ROB])
+    else:
+      break
+  head = (head + i) % N_ROB
+
+Occupied count: N = (tail - head) % N_ROB
+  (When tail >= head: N = tail - head. When tail < head: N = tail + N_ROB - head)
+```
+
+The modulo arithmetic is implemented with an adder and a mux: since $N_{ROB}$ is
+always a power of 2, the wrap is a simple bit truncation (keep only $\log_2 N_{ROB}$
+bits). Detecting "full" requires an extra comparison; detecting "empty" is
+`head == tail`.
+
+**Physical register recycling on commit:**
+
+When instruction $I$ commits and its destination architectural register $rd$ maps to
+physical register $P_{new}$, the *previous* physical register $P_{old}$ for that same
+$rd$ is returned to the free list:
+
+```verilog
+At commit:
+  P_old = ROB[head].phys_dst_old    // saved during rename
+  arch_RAT[ROB[head].arch_dst] = ROB[head].phys_dst  // not strictly needed
+                                                      // (commit RAT update)
+  FreeList.push(P_old)
+  head = (head + 1) % N_ROB
+```
+
+Why not free $P_{old}$ immediately when $P_{new}$ is written by the execution unit?
+Because other in-flight instructions may still read $P_{old}$ as a source. Only when
+$I$ commits (guaranteeing no earlier instruction will need $P_{old}$) is it safe to
+recycle.
+
+**Precise exception handling through ROB:**
+
+The ROB enables precise exceptions by serializing all architectural state updates
+through the in-order commit path:
+
+```verilog
+1. Exception detected at any execution stage (e.g., page fault at MEM)
+2. Exception code written to ROB entry's exception field
+3. ROB entry marked completed=1
+4. Commit logic scans from head:
+   - All entries before the faulting one commit normally
+   - When the faulting entry reaches head:
+     a. Flush all entries from (head+1) to tail
+     b. Restore RAT to committed state (all prior commits are correct)
+     c. Redirect PC to trap vector (mtvec/stvec)
+5. Architectural state is now precise:
+   - All instructions before the fault have updated arch state
+   - No instruction after the fault has modified arch state
+   - Memory unchanged (stores commit only at ROB head)
+```
+
+The key invariant: no store reaches the D-cache and no architectural register is
+permanently updated until the instruction reaches the ROB head. This makes rollback
+trivial -- simply discard everything after the faulting instruction.
+
+**ROB walk-back for precise exceptions (step-by-step hardware sequence):**
+
+When a faulting instruction $I_f$ at ROB index $B$ reaches the head, the following
+sequence executes in 2--3 cycles:
+
+```verilog
+Cycle 1: Detection and flush initiation
+  1. ROB commit logic reads head entry (index B)
+  2. Exception field != 0 -> trigger exception pipeline
+  3. Invalidate all ROB entries from B+1 to tail:
+     for i = B+1 to tail-1:
+       ROB[i].valid = 0
+     tail = B + 1 (mod N_ROB)
+  4. Invalidate all IQ entries (branch mask not needed; entire IQ flushed)
+  5. Invalidate all LSQ entries after B (walk LQ and SQ, match rob_idx > B)
+
+Cycle 2: Architectural state restoration
+  1. Restore the frontend RAT from the commit RAT:
+     for arch_reg = 0 to 31:
+       frontend_RAT[arch_reg] = commit_RAT[arch_reg]
+     This is the "snapback" -- the commit RAT reflects all instructions up to
+     but NOT including the faulting instruction.
+  2. Free all physical registers that were allocated by instructions B+1..tail:
+     Walk the invalidated ROB entries and push each phys_dst back to the free list.
+     (Some designs skip this by maintaining a speculative free list pointer that
+     is simply restored.)
+  3. Set exception CSRs:
+     mepc = ROB[B].PC          (address of faulting instruction)
+     mcause = ROB[B].exception  (exception code, e.g., 13 for load page fault)
+     mtval = ROB[B].ldst_addr   (faulting virtual address or instruction encoding)
+
+Cycle 3: Redirect pipeline
+  1. PC = mtvec (trap vector base address)
+  2. mstatus.MIE = 0 (disable interrupts in handler)
+  3. Privilege mode -> M-mode (or S-mode if delegated)
+  4. Frontend begins fetching from trap vector
+```
+
+The critical property: after the walk-back, the frontend RAT exactly matches the
+commit RAT, which reflects only instructions 0 through B-1 (all those that committed
+before the fault). The faulting instruction's physical destination register is NOT
+freed -- it was allocated at rename but never committed, so it simply remains
+allocated. On return from the handler (MRET), the instruction will be re-fetched
+and re-executed, allocating a fresh physical register. The stale phys_dst from the
+original (faulting) execution is returned to the free list during the walk-back.
 
 ---
 
@@ -769,6 +1084,142 @@ Stores never write to the D-cache until they reach the head of the ROB and commi
 5. ROB head advances.
 
 If the D-cache misses, the store buffer holds the data until the cache line is filled. Store buffers are typically 8-16 entries deep.
+
+---
+
+### 5.6 LSQ Implementation Detail — Entry Fields, CAM Search, Violation Recovery
+
+The LSQ is the structure that enforces memory ordering in an out-of-order core. It
+is split into two sub-structures with distinct roles:
+
+**Load Queue (LQ) -- 32-64 entries, CAM on address:**
+
+Each LQ entry stores: `{valid, addr[63:0], data[63:0], rob_idx[6:0], completed, size[2:0], va_known}`.
+
+Loads enter the LQ at dispatch time. When the AGU computes the load's virtual
+address, `va_known` is set and the address is broadcast for CAM matching against
+all older SQ entries. The LQ is searched by address on every store commit to detect
+violations (a younger load observed a value before an older store to the same address
+wrote it).
+
+**Store Queue (SQ) -- 24-48 entries, CAM on address:**
+
+Each SQ entry stores: `{valid, addr[63:0], data[63:0], rob_idx[6:0], committed, size[2:0], addr_known}`.
+
+Stores enter the SQ at dispatch. Address computation sets `addr_known`. Data may arrive
+later (out-of-order address/data). Stores write to the D-cache only at ROB commit
+(`committed` flag), ensuring precise exceptions.
+
+**Store coloring / store sets for disambiguation:**
+
+To avoid comparing every load against every store (O(N) per load), many designs use
+store sets. Each load is associated with a "store set" -- a bitmask of stores it has
+previously alias-conflicted with. On dispatch, if any store in the set is still in the
+SQ without a known address, the load stalls. This reduces the number of comparisons
+from O(SQ_size) to O(store_set_size).
+
+An alternative is **store coloring**: a small hash of the store address partitions
+stores into "colors." A load only checks stores of matching colors. This is less
+accurate than store sets but cheaper to implement.
+
+Store coloring works as follows. Each store is assigned a 2--4 bit "color" derived
+from a hash of its virtual address (e.g., `color = addr[5:3]`). A small per-load
+"color mask" tracks which colors the load has previously observed conflicts with.
+On dispatch, the load's color mask is compared against all older stores in the SQ
+whose addresses are not yet known. If any pending store has a color that is in the
+load's conflict set, the load stalls. If no pending store matches, the load issues
+speculatively. The color space is deliberately small (4--16 colors) so the mask
+fits in a few bits per load and the comparison logic is a simple bitwise AND rather
+than a full address CAM. The trade-off is over-conservatism: two addresses that hash
+to the same color but do not actually alias will cause unnecessary stalls. In practice,
+4-bit coloring (16 colors) achieves ~90% of the performance of a full store-set
+predictor at roughly half the area cost, making it attractive for mid-range cores
+where the store-set predictor's SSID table (typically 256--1024 entries x 8--16 bits)
+is too expensive.
+
+**Store-to-load forwarding with age-based priority:**
+
+When a load address is computed, it is compared against all older SQ entries with
+`addr_known=1`:
+
+**Forwarding priority:**
+   1. Find all SQ entries older than this load (lower SQ index) with matching address
+2. Among matches, select the YOUNGEST (closest to the load in program order)
+3. If multiple SQ entries overlap the load's byte range, merge bytes:
+- Youngest store provides bytes it covers
+   - Next-youngest covers remaining bytes, etc.
+   - Any uncovered bytes come from D-cache
+
+The "youngest older store" rule ensures the load sees the most recent write to each
+byte. If the youngest older store covers the entire load, no D-cache access is needed
+(pure forward). If no older store matches, the load reads from the D-cache.
+
+**Age-priority forwarding in detail:**
+
+Age-based priority is critical for correctness when multiple older stores overlap the
+load's address range. Consider this scenario:
+
+```verilog
+SQ state (program order):
+  SQ[0]: SW x5, addr=0x1000, size=8, data=0xAAAABBBBCCCCDDDD  (oldest)
+  SQ[1]: SW x6, addr=0x1004, size=4, data=0x11223344          (younger)
+  SQ[2]: SW x7, addr=0x1000, size=4, data=0x55667788          (youngest)
+
+Load: LW x8, addr=0x1000, size=8
+  Overlap analysis (little-endian, byte addresses 0x1000..0x1007):
+    SQ[0] covers bytes 0x1000..0x1007 (full 8-byte store)
+    SQ[1] covers bytes 0x1004..0x1007 (upper 4 bytes)
+    SQ[2] covers bytes 0x1000..0x1003 (lower 4 bytes)
+
+  Priority: youngest first
+    Bytes 0x1000..0x1003: SQ[2] is youngest -> use 0x55667788
+    Bytes 0x1004..0x1007: SQ[1] is youngest (SQ[2] doesn't cover these)
+                          -> use 0x11223344
+    Result: x8 = 0x1122334455667788
+```
+
+Hardware implementation: a priority encoder scans the SQ from the youngest entry
+(highest index) to the oldest. For each byte lane of the load, the first SQ entry
+that covers that byte provides the data. This requires a per-byte-byte multiplexer
+tree, which is one reason the SQ data path is wide and power-hungry. In designs that
+do not support partial forwarding, the load is simply stalled until all overlapping
+stores have committed to the D-cache, trading ILP for hardware simplicity.
+
+**Load bypass of earlier stores (when safe):**
+
+A load may execute before an older store whose address is unknown, speculating that
+they do not alias. This is called **load bypass** and is critical for ILP:
+
+**Safe to bypass:**
+   - Store address is known AND different from load address -> bypass (no alias)
+   - Store address is unknown -> speculate bypass, check later
+
+**Must wait:**
+   - Store address is known AND matches load address -> forward (no bypass)
+   - Store-set predictor says this load aliases the pending store -> stall
+
+**Memory violation detection and recovery pipeline flush:**
+
+If a load bypassed an older store speculatively, and that store later computes an
+address that aliases the load, a **memory ordering violation** occurs:
+
+**Violation detection:**
+   1. Store computes address -> SQ entry gets addr_known=1
+2. SQ address is broadcast to all younger LQ entries
+3. CAM match: LQ entry has same address AND load already completed
+4. Violation detected! The load read stale data.
+
+**Recovery:**
+   1. Identify the violating load's rob_idx
+2. Flush the ROB from (load's rob_idx + 1) to tail
+-- the load itself must be re-executed
+3. Restore RAT from checkpoint at the load's rob_idx
+4. Re-issue the load (this time it will forward from the store)
+5. Penalty: typically 10-20 cycles (same as branch misprediction)
+
+Violation frequency: ~0.1-1% of all loads on typical integer workloads. Store-set
+predictors keep this rate low by preventing speculative bypass when history indicates
+aliasing.
 
 ---
 
@@ -1310,6 +1761,297 @@ When an exception is taken in RISC-V:
 3. $\text{mstatus.MIE} \leftarrow \text{mstatus.MPIE}$.
 
 The OoO datapath handles this by flushing the entire pipeline (same mechanism as a branch misprediction, but initiated from the commit stage) and redirecting fetch to the trap vector.
+
+---
+
+### 9.4 Stage-by-Stage Exception Detection Across the Pipeline
+
+Each pipeline stage can detect different classes of exceptions. The following table
+shows exactly where each exception type is detected and how it is handled:
+
+| Pipeline Stage | Exception Type | Example (RISC-V) | Detection Mechanism | Handling |
+|---|---|---|---|---|
+| **Fetch (IF)** | Instruction page fault | Access unmapped page in I-TLB miss | I-TLB miss + page walk returns invalid PTE | Abort fetch, write exception to special ROB entry at decode |
+| **Fetch (IF)** | Instruction access fault | Misaligned fetch, fetch from I/O region | PC alignment check + PTE permission check | Same as above |
+| **Decode (ID)** | Illegal instruction | Undefined opcode, reserved encoding | Opcode decoder finds no valid decode | Write exception code to ROB entry at dispatch |
+| **Rename** | None (typically) | -- | -- | Rename does not raise exceptions |
+| **Execute (EX)** | Divide by zero | DIV by zero (RISC-V: no trap, result defined) | Dividend check on divisor operand | Architecture-dependent: some trap, others return sentinel |
+| **Execute (EX)** | Integer overflow | ADD overflow (MIPS: trap; RISC-V: no trap) | ALU overflow flag | Architecture-dependent |
+| **Execute (EX)** | ECALL / EBREAK | System call / breakpoint | Opcode recognized at decode, flagged in ROB | Handled at commit (no "real" execution needed) |
+| **Execute (EX)** | Breakpoint (hardware) | Trigger match on PC or data address | Hardware debug comparator | Written to ROB at execute |
+| **Memory (MEM)** | Load page fault | Load from unmapped/protected page | D-TLB miss + page walk returns invalid PTE | Exception code written to ROB entry |
+| **Memory (MEM)** | Store page fault | Store to read-only/unmapped page | D-TLB miss + permission check | Same as load page fault |
+| **Memory (MEM)** | Load access fault | Misaligned load, device error | Alignment checker + bus error signal | Same |
+| **Memory (MEM)** | Store access fault | Misaligned store | Same | Same |
+| **Writeback (WB)** | **None** | -- | -- | WB is a data movement stage; no new exceptions |
+
+**How each stage's exception detection interacts with the ROB:**
+
+The fundamental principle is: *any exception detected at any stage is recorded in
+the instruction's ROB entry and deferred to commit time*. The instruction is marked
+`completed=1` (the exception IS the "result"), but no architectural state is changed.
+This lazy handling is what makes precise exceptions cheap -- no special fast-flush
+logic is needed at the detection point.
+
+Fetch-stage exception (instruction page fault):
+Detection: I-TLB miss -> page walk -> PTE not present or no execute permission
+Action at fetch: the faulting instruction cannot enter the pipeline normally.
+Instead, the fetch unit creates a "poison" fetch packet containing the PC
+and the exception code (CAUSE_INSN_PAGE_FAULT = 12). This packet travels
+through decode and rename like a normal instruction. At dispatch, the ROB
+entry is created with exception_code = 12 and completed = 1 immediately.
+ROB interaction: when this entry reaches the head, the normal exception
+handler fires (flush, restore RAT, redirect to mtvec). No special handling
+needed -- the ROB doesn't care that the instruction never actually executed.
+
+Decode-stage exception (illegal instruction):
+Detection: opcode decoder cannot match the encoding to any valid instruction.
+Action at decode: the instruction is still dispatched to the ROB, but its
+exception field is set to CAUSE_ILLEGAL_INSTRUCTION = 2 and completed = 1.
+The instruction does NOT proceed to issue or execute.
+ROB interaction: identical to fetch-stage. The ROB entry arrives at commit
+with exception already set. The handler sees mcause=2 and mtval contains
+the faulting instruction encoding.
+
+**Execute-stage exception (e.g., ECALL):**
+   - Detection: the execution unit recognizes the opcode (ECALL is a "trap"
+   - instruction, not a computational one). Some designs detect ECALL at decode
+   - and mark the ROB entry immediately, bypassing execute entirely.
+   - Action at execute: the functional unit writes exception_code = CAUSE_ECALL_U/S/M
+   - (8, 9, or 10 depending on current privilege mode) to the ROB entry via the CDB.
+   - ROB interaction: the entry is marked completed=1 with the exception code.
+   - When it reaches the head, the pipeline flushes and redirects to mtvec/stvec.
+
+Memory-stage exception (load/store page fault):
+Detection: D-TLB miss triggers a hardware page table walk. The walk returns a
+PTE that is not present, or does not permit the required access (e.g., read-
+only page for a store). Alternatively, the PTE may be present but the
+privilege check fails (user-mode access to supervisor-only page).
+Action at memory: the AGU/LSQ pipeline writes exception_code = CAUSE_LOAD_PAGE_FAULT
+(13) or CAUSE_STORE_PAGE_FAULT (15) to the ROB entry, along with the faulting
+virtual address in the ldst_addr field.
+ROB interaction: the store's SQ entry is NOT committed to the D-cache (it never
+reaches the head). On exception handling, the SQ entry is simply discarded.
+For loads, the LQ entry is discarded and any data loaded from the wrong page
+is ignored (it was never written to the PRF because the exception prevented it).
+
+The key insight: because the ROB commits in-order, an exception detected in the
+memory stage of instruction $I_k$ cannot affect architectural state until $I_k$
+reaches the head. All instructions before $I_k$ commit normally, and by the time
+$I_k$ reaches the head, they have already updated the architectural register file
+and D-cache. The handler therefore sees a precise state: everything before $I_k$ is
+committed, nothing after $I_k$ has touched architectural state.
+
+**Precise vs imprecise traps:**
+
+- **Precise trap** (all modern OoO cores): the trap handler sees architectural state
+  as if all instructions before the faulting one completed and none after executed.
+  Guaranteed by the ROB's in-order commit.
+
+- **Imprecise trap** (some older FP architectures, e.g., MIPS R2000 FP exceptions):
+  the faulting instruction may have committed, or later instructions may have
+  modified state. The handler cannot trivially resume. Avoided in modern designs.
+
+**How the ROB enables precise exceptions -- detailed walkthrough:**
+
+```verilog
+Scenario: I3 causes a load page fault
+
+ROB state at fault detection:
+  [I1: ADD  | Done=1 | Exc=0]  <- head, can commit
+  [I2: SUB  | Done=1 | Exc=0]  <- can commit
+  [I3: LD   | Done=1 | Exc=13] <- load page fault detected in MEM stage
+  [I4: ADD  | Done=1 | Exc=0]  <- executed out-of-order, already done
+  [I5: MUL  | Done=0 | Exc=0]  <- still executing
+
+Cycle-by-cycle:
+  Cycle N:   Commit I1, I2 (both done, no exception). Head advances to I3.
+  Cycle N+1: Head = I3, Exc=13 (page fault).
+             -> Do NOT commit I3.
+             -> Flush ROB entries I3..I5 (set valid=0, tail = I3 index)
+             -> Restore RAT to commit_RAT state (I1, I2 committed; I3+ did not)
+             -> Set mepc = I3.PC, mcause = 13, mtval = I3.load_addr
+             -> Redirect PC to mtvec
+
+Result: architectural state = state after I1 and I2 committed, nothing else.
+        This is a precise exception.
+```
+
+### 9.5 Exception Pipeline in Out-of-Order Execution — Full Walkthrough
+
+#### 9.5.1 Precise Exception Guarantee
+
+A precise exception means that when an exception is delivered to the handler,
+the architectural state (register file, PC, memory) reflects exactly the state
+as if all instructions before the faulting instruction had completed and no
+instruction after it has modified state.
+
+In an out-of-order core the ROB enforces this by committing results in program
+order. Even though instruction execution may complete out of order, no
+architectural state is updated until the instruction reaches the ROB head and
+is committed.
+
+$$
+\text{Architectural State}_{\text{at exception}} = \text{State after committing ROB}[0..i-1] \;\;\text{where } i \text{ is the faulting instruction}
+$$
+
+#### 9.5.2 Exception Flow in the OoO Pipeline
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    A[Instruction executes on FU] --> B{Exception detected?}
+    B -->|No| C[Write result to ROB entry, set<br/>Done=1]
+    B -->|Yes| D[Write exception code to ROB entry,<br/>set Exception=1, Done=1]
+    C --> E[ROB commit: check head entry]
+    D --> E
+    E --> F{Exception bit set?}
+    F -->|No| G[Commit: update arch register file /<br/>D-cache]
+    F -->|Yes| H[Flush all ROB entries from faulting<br/>entry to tail]
+    H --> I[Save faulting PC to mepc / sepc]
+    I --> J[Set mcause / scause to exception<br/>code]
+    J --> K[Set mtval / stval to faulting<br/>address or instruction]
+    K --> L[PC = mtvec / stvec -- jump to trap<br/>vector]
+    L --> M[Trap handler executes in M-mode or<br/>S-mode]
+```
+
+Step-by-step walk of the flow:
+
+1. **Execute stage** -- the functional unit detects the exception (e.g., page
+   fault on a load address). Instead of writing a normal result, it writes an
+   exception code (e.g., `CAUSE_LOAD_PAGE_FAULT = 0xD`) into the ROB entry's
+   exception field and sets the exception bit.
+
+2. **ROB commit** -- the commit logic examines the head entry every cycle. If
+   the head entry has `Done=1` and `Exception=1`, the core raises the
+   exception. No instruction after the faulting one has committed because the
+   ROB is in-order, so architectural state is already precise.
+
+3. **Pipeline flush** -- all ROB entries from the faulting instruction to the
+   tail are discarded. The RAT is restored to the committed state (using ROB
+   snapshots or a checkpoint RAT). The issue queue, load/store queue, and
+   reservation stations are cleared.
+
+4. **Trap vector delivery** -- the PC is set to the trap vector base address
+   (stored in `mtvec` for machine mode or `stvec` for supervisor mode). The
+   hardware sets:
+   - `mepc` / `sepc` = PC of the faulting instruction
+   - `mcause` / `scause` = exception code identifying the cause
+   - `mtval` / `stval` = auxiliary information (faulting virtual address for
+     page faults, or the faulting instruction encoding for illegal instruction)
+
+5. **Return from handler** -- the software handler executes `MRET` or `SRET`,
+   which restores PC from `mepc`/`sepc` and resumes execution.
+
+#### 9.5.3 Synchronous Exceptions
+
+Synchronous exceptions are caused directly by an instruction and are detected
+during the execute or memory stage:
+
+| Exception | Cause | Detection Point |
+|-----------|-------|-----------------|
+| ECALL | Environment call (system call) | Execute (recognized by opcode) |
+| EBREAK | Software breakpoint | Execute (recognized by opcode) |
+| Load page fault | Load accesses unmapped or protected page | Memory stage (after TLB / page table walk) |
+| Store page fault | Store accesses unmapped or protected page | Memory stage |
+| Load access fault | Misaligned load or device access error | Memory stage |
+| Store access fault | Misaligned store or device access error | Memory stage |
+| Illegal instruction | Opcode or encoding not supported | Decode stage (can be detected early, written to ROB) |
+| Instruction page fault | Fetch from unmapped page | Fetch stage (handled before entering the OoO pipeline) |
+| Instruction access fault | Misaligned fetch or fetch from I/O region | Fetch stage |
+| Breakpoint | Trigger match (hardware breakpoint) | Execute stage |
+
+Synchronous exceptions are *precise* in an OoO core because they are always
+attributed to a specific instruction and the ROB ensures that instruction
+appears to execute in program order.
+
+#### 9.5.4 Asynchronous Exceptions (Interrupts)
+
+Asynchronous exceptions (interrupts) originate from external events and are not
+tied to a specific instruction. They are **checked at commit boundaries**, not
+at execute:
+
+| Interrupt | Source | Timing |
+|-----------|--------|--------|
+| Timer interrupt |_mtime_ register exceeds _mtimecmp_ | Checked at commit boundary |
+| External interrupt | Platform-level interrupt controller (PLIC) | Checked at commit boundary |
+| Software interrupt | Inter-processor interrupt (IPI) via CLINT | Checked at commit boundary |
+| Performance counter overflow | Hardware performance monitor | Checked at commit boundary |
+
+**Why check at commit, not at execute?** Consider this scenario:
+
+```ascii-graph
+I1: ADD  x5, x6, x7     -- committed
+I2: LD   x8, 0(x9)      -- executing, L2 miss in flight
+I3: ADD  x10, x11, x12   -- executed out of order, result ready
+IRQ --> arrives during cycle when I3 finishes
+```
+
+If the interrupt were taken immediately (at I3's completion), the handler
+would see a state where I1 has committed but I2 and I3 have not. This is
+correct. However, if I3 were *before* I2 in program order, the handler
+must see a state where I2 has NOT committed (I2 is older). The ROB ensures
+this by only servicing interrupts at the commit boundary, when the
+architectural state is unambiguous.
+
+#### 9.5.5 Interrupt vs. Exception Timing Diagram
+
+```verilog
+Cycle:         1    2    3    4    5    6    7    8    9    10
+I1 (ADD)      IF   ID   EX  MEM  WB(commit)                  <- commits at cycle 5
+I2 (LD)            IF   ID   EX  MEM  MEM  MEM  MEM  MEM  WB <- L2 miss, 10-cycle MEM
+I3 (ADD)                IF   ID   EX  MEM  WB(done)          <- finishes early (OoO)
+I4 (SUB)                     IF   ID   EX  MEM  WB(done)     <- finishes early (OoO)
+
+Scenario A: I2 causes a load page fault (synchronous exception)
+  - Detected at cycle 6 (MEM stage of I2)
+  - Exception code written to I2's ROB entry
+  - I3 and I4 cannot commit until I2 commits (ROB is in-order)
+  - At I2's commit (cycle 10): exception bit checked -> flush pipeline
+  - Handler sees state as if only I1 executed
+
+Scenario B: Timer interrupt arrives at cycle 7 (asynchronous)
+  - Not serviced immediately -- checked only at commit boundary
+  - I1 already committed; I2 is next to commit (but not done)
+  - Interrupt is pending, waits for I2 to reach commit
+  - If I2 finishes at cycle 10: interrupt is taken BEFORE I2 commits
+  - Handler sees state where only I1 has committed
+  - After handler returns, I2 re-executes (it was flushed)
+```
+
+#### 9.5.6 Exception Priority and Delegation
+
+When multiple exceptions are pending simultaneously, hardware resolves them
+in a defined priority order (RISC-V privileged spec):
+
+| Priority | Exception / Interrupt |
+|----------|----------------------|
+| 1 (highest) | Instruction access fault |
+| 2 | Instruction page fault (fetch) |
+| 3 | Illegal instruction |
+| 4 | Breakpoint |
+| 5 | Load access fault |
+| 6 | Load page fault |
+| 7 | Store access fault |
+| 8 | Store page fault |
+| 9 | ECALL from U-mode |
+| 10 | ECALL from S-mode |
+| 11 | ECALL from M-mode |
+| 12 | -- (reserved) |
+| 13 | Timer interrupt |
+| 14 | External interrupt (PLIC) |
+
+In RISC-V, exceptions can be *delegated* from M-mode to S-mode using the
+`medeleg` and `mideleg` CSRs. For example, setting bit 13 in `mideleg` causes
+timer interrupts to be delivered to the S-mode trap vector (`stvec`) instead of
+the M-mode vector (`mtvec`). This allows the OS (running in S-mode) to handle
+common exceptions without trapping into the firmware/hypervisor (M-mode),
+reducing trap latency.
+
+The delegation model is a key difference from MIPS, where all exceptions go to
+a single exception level and the OS must determine the cause from the
+exception code. RISC-V's separate trap vectors for M-mode and S-mode reduce
+the number of privilege transitions on a typical syscall or page fault.
 
 ---
 

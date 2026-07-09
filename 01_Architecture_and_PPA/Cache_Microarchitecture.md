@@ -136,6 +136,62 @@ flowchart TD
 
 ---
 
+### 1.4 Worked Geometry Example: 32KB, 4-Way, 64B Lines
+
+**Given:**
+- Total cache size: 32 KB = 32,768 bytes
+- Associativity: 4-way set-associative
+- Line size: 64 bytes
+
+**Derived parameters:**
+```verilog
+Number of lines = 32768 / 64 = 512 lines total
+Number of sets = 512 / 4 = 128 sets
+```
+
+**Address breakdown for 32-bit address:**
+```verilog
+Offset bits = log2(64) = 6 bits  (byte within a line)
+Index bits  = log2(128) = 7 bits  (selects the set)
+Tag bits    = 32 - 6 - 7 = 19 bits
+
+Address: [31:13 tag | 12:6 index | 5:0 offset]
+```
+
+**Hardware structure per set:**
+```verilog
+Set k:
+  Way 0: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
+  Way 1: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
+  Way 2: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
+  Way 3: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
+  LRU state: 3 bits (for pseudo-LRU) or 5 bits (for true LRU)
+```
+
+**Total storage:**
+- **Data** — 512 lines × 64 bytes = 32 KB (the actual cache data)
+- **Tags** — 512 lines × 19 bits = 9728 bits = 1.19 KB
+- **Valid** — 512 bits
+- **Dirty** — 512 bits
+- **LRU** — 128 sets × 3 bits = 384 bits (pseudo-LRU)
+
+- **Total overhead** — ~1.2 KB for 32 KB cache = ~3.7% overhead
+
+**Read operation (hit path):**
+```verilog
+1. Extract index [12:6], tag [31:13], offset [5:0] from address
+2. Use index to read all 4 ways simultaneously:
+   - 4 tag comparisons (19-bit each): tag == stored_tag[way_i] AND valid[way_i]
+   - 4 data reads (512 bits each, but typically only read the requested word)
+3. Hit detection: one-hot vector of 4 compare results
+4. MUX: select the data from the matching way
+5. Use offset to extract the requested byte/word from the 64B line
+
+Latency: Tag read + comparator + MUX ≈ 2-4 cycles for L1 cache
+```
+
+---
+
 ## 2. Non-Blocking Cache and MSHR
 
 ### 2.1 Motivation
@@ -434,6 +490,47 @@ new write to $L$ arrives, the two are merged into a single entry. This can reduc
 traffic by 2--8x for sequential write patterns.
 
 Typical write buffer depth: 4--16 entries (L1), 16--32 entries (L2).
+
+---
+
+**Write-back controller FSM (RTL view):**
+
+```ascii-graph
+States: IDLE → TAG_CHECK → {HIT_UPDATE | MISS_ALLOCATE} → WRITEBACK → REFILL → IDLE
+
+IDLE:
+  Wait for CPU request
+  → TAG_CHECK on any read/write
+
+TAG_CHECK:
+  Read tags for the indexed set
+  Compare with request tag
+  → HIT_UPDATE if any way matches (hit)
+  → MISS_ALLOCATE if no match (miss)
+
+HIT_UPDATE:
+  Read hit: return data, update LRU
+  Write hit: update cache line, set dirty bit, update LRU
+  → IDLE
+
+MISS_ALLOCATE:
+  Select victim way using LRU
+  Check if victim is dirty:
+  → WRITEBACK if dirty (must write victim to memory first)
+  → REFILL if clean (can immediately fetch new line)
+
+WRITEBACK:
+  Send victim line to next level (L2 or main memory)
+  Wait for acknowledgment
+  → REFILL
+
+REFILL:
+  Send request to next level for the missing line
+  Wait for data
+  Install new line: update tag, set valid, clear dirty
+  Supply requested word to CPU (can do "critical word first")
+  → IDLE
+```
 
 ---
 

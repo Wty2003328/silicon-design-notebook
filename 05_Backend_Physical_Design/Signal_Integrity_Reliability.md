@@ -292,6 +292,92 @@ Width calculations:
   (This is why power straps must be wide!)
 ```
 
+**Worked wire-level EM check (PnR view):**
+
+**Black's Equation:**
+```text
+  MTTF = A * (J)^(-n) * exp(Ea / (k*T))
+  
+  Where:
+    MTTF = Mean Time To Failure
+    A = constant (process dependent)
+    J = current density (A/cm^2)
+    n = current density exponent (typically 1-2)
+    Ea = activation energy (~0.7 eV for Al, ~0.9 eV for Cu grain boundary)
+    k = Boltzmann constant (8.617e-5 eV/K)
+    T = temperature (Kelvin)
+```
+
+**Numerical Example:**
+```ascii-graph
+Given:
+  Wire on M3 at 7nm: width = 36nm, thickness = 50nm
+  Wire area = 36nm * 50nm = 1800 nm^2 = 1.8e-11 cm^2
+  
+  EM limit for M3 = 1 MA/cm^2 = 1e6 A/cm^2
+  Max DC current = J_limit * Area = 1e6 * 1.8e-11 = 18 uA (per wire!)
+  
+  For AC (RMS) current: limit is typically 3-10x higher due to
+  self-healing during current reversal.
+  
+  For power straps (much wider, e.g., 2 um):
+  Area = 2000nm * 100nm = 2e-9 cm^2
+  Max current = 1e6 * 2e-9 = 2 mA per strap
+  
+  With 100 parallel straps: 200 mA total → need to verify this is sufficient.
+```
+
+**EM by metal layer:**
+
+| Metal Layer | Typical EM Limit (DC) | Wire Width | Max Current/Wire |
+|-------------|----------------------|------------|------------------|
+| M1          | 0.5 MA/cm^2          | 36nm       | ~9 uA            |
+| M4          | 1.0 MA/cm^2          | 40nm       | ~20 uA           |
+| M8          | 2.0 MA/cm^2          | 200nm      | ~400 uA          |
+| M12 (thick) | 3.0 MA/cm^2          | 2000nm     | ~30 mA           |
+
+
+
+**Electromigration Limits:**
+
+```verilog
+  For each power grid segment and via:
+    J = I / A  (current density)
+
+  where A = cross-sectional area of the wire or via
+
+  EM limits (typical, 7nm Cu):
+    DC:  J_max = 1-3 MA/cm^2 (depends on layer, temperature, lifetime target)
+    AC (RMS): J_max_rms = 5-15 MA/cm^2 (self-healing extends limit)
+
+  Checking methodology:
+  1. Compute average current per power grid segment (from activity-aware
+     power analysis -- requires VCD or SAIF switching activity data)
+  2. For each wire segment: J = I_avg / (width * thickness)
+  3. For each via: J = I_avg / (N_cuts * via_area)
+  4. Compare J against J_max for that layer and temperature
+  5. Flag any segment where J > J_max
+
+  Example (M4 power strap, 7nm):
+    Width = 0.2 um, thickness = 0.08 um
+    Area = 0.2 * 0.08 = 0.016 um^2 = 1.6e-9 cm^2
+    I_segment = 2 mA (from power analysis)
+    J = 2e-3 / 1.6e-9 = 1.25 MA/cm^2
+    J_max (M4 DC, 105C, 10yr) = 1.0 MA/cm^2
+    -> VIOLATION: need wider strap or additional parallel straps
+    
+  Fix: increase strap width to 0.3 um:
+    J = 2e-3 / (0.3 * 0.08 * 1e-8) = 0.83 MA/cm^2 -> PASS
+
+  Via EM check:
+    V4 via: area per cut = 0.04 * 0.04 = 1600 nm^2 = 1.6e-10 cm^2
+    I_via = 0.5 mA, N_cuts = 2 (double-cut via)
+    J_via = 0.5e-3 / (2 * 1.6e-10) = 1.56 MA/cm^2
+    J_max_via = 2.0 MA/cm^2 -> PASS
+```
+
+
+
 ### 4.4 Self-Heating EM
 
 ```ascii-graph
@@ -421,6 +507,136 @@ Signoff criteria:
 
 ---
 
+### 5.5 Grid-Level IR Models — Worked Examples (from the PnR view)
+
+**Power Grid Modeling (Resistance Network):**
+
+```ascii-graph
+  The power delivery network is modeled as a resistive mesh:
+
+  VDD pad ──[R_bump]──┬──[R_M10]──┬──[R_M10]──┬── ... (top metal grid)
+                       |           |           |
+                    [R_via]     [R_via]     [R_via]
+                       |           |           |
+                    [R_M8]────[R_M8]────[R_M8]── ... (intermediate grid)
+                       |           |           |
+                    [R_via]     [R_via]     [R_via]
+                       |           |           |
+                    [R_M5]────[R_M5]────[R_M5]── ... (lower grid)
+                       |           |           |
+                    cell_i      cell_j      cell_k  (current sinks)
+
+  Each R value is computed from:
+    R = rho * L / (W * T)  = R_sheet * (L / W)
+    
+    where R_sheet = sheet resistance (ohm/square)
+    
+  Typical R_sheet values (7nm):
+    M1:   ~100 mohm/sq   (thin, narrow)
+    M4:   ~50 mohm/sq
+    M6:   ~20 mohm/sq
+    M8:   ~5 mohm/sq
+    M10:  ~1 mohm/sq     (thick, wide)
+
+  Via resistance per cut:
+    V1 (M1-M2): ~5 ohm
+    V4 (M4-M5): ~2 ohm
+    V8 (M8-M9): ~0.5 ohm
+    Multi-cut: R_eff = R_via / N_cuts
+
+  The grid has millions of nodes (one per intersection).
+  Static IR drop solves: V = V_source - R_matrix * I_vector
+  where R_matrix is the full resistance network and I_vector is the
+  current drawn at each node. Solved via sparse matrix techniques
+  (conjugate gradient, multigrid) in tools like RedHawk/Voltus.
+```
+
+**Static IR Drop:**
+```verilog
+  Average current consumption -> DC voltage drop across power grid.
+
+  V_drop = I_avg * R_grid
+
+  Measured at every node of the power grid.
+  Output: voltage contour map showing drop from supply to each cell.
+
+  Target: V_drop < 3-5% of VDD
+    At VDD = 0.75V: max drop = 22.5-37.5 mV
+
+  Current calculation per cell:
+    I_avg = P_avg / VDD = (C_total * VDD^2 * f * alpha) / VDD
+          = C_total * VDD * f * alpha
+
+    where:
+      C_total = total switched capacitance (cell + wire)
+      f = clock frequency
+      alpha = activity factor (toggle rate)
+
+  Example for a clock buffer driving 50 FFs:
+    C_load = 50 * 2 fF = 100 fF (cell input caps)
+    C_wire = 200 fF (clock tree wire)
+    C_total = 300 fF
+    VDD = 0.75V, f = 1 GHz, alpha = 1.0 (clock toggles every cycle)
+    I_avg = 300e-15 * 0.75 * 1e9 * 1.0 = 0.225 mA
+    
+    If this buffer is 5 squares from the power pad on M8 (R_sheet = 5 mohm/sq):
+    R_path = 5 * 0.005 = 0.025 ohm
+    V_drop_static = 0.225e-3 * 0.025 = 5.6 uV (negligible for one buffer)
+    
+    But 10,000 such buffers: I_total = 2.25 A
+    R_grid_effective ≈ 0.05 ohm (parallel paths)
+    V_drop = 2.25 * 0.05 = 112.5 mV (15% of VDD -- WAY over budget!)
+    -> Need more power straps or additional grid layers.
+```
+
+**Dynamic IR Drop:**
+```text
+  Considers simultaneous switching of many cells (worst-case transient).
+
+  V_drop_dynamic = L * di/dt + R * i(t)
+
+  The di/dt term (inductance) causes supply bounce (Ldi/dt noise).
+  Much worse than static IR drop -- can be 2-5x larger.
+
+  Analysis requires:
+    1. VCD (Value Change Dump) from simulation for switching activity
+    2. Power grid model (R, L, C network)
+    3. Transient simulation of power grid
+    4. Package model (bond wire / bump inductance, typically 0.1-1 nH)
+
+  Dynamic IR drop scenario (worst case):
+    - All clock tree buffers switch simultaneously at the clock edge
+    - Clock tree power: 30% of total dynamic power
+    - At 1 GHz: di/dt peak ≈ 10-50 A/ns
+    - With L_package = 0.5 nH: V_bounce = 0.5e-9 * 30e9 = 15V !! 
+      (This is clearly unrealistic -- the on-die decap absorbs most of this)
+    
+    With sufficient on-die decoupling capacitance (C_decap):
+    - C_decap provides local charge: delta_V = I * dt / C_decap
+    - Need: C_decap > I_peak * t_switch / delta_V_budget
+    - For I_peak = 5A, t_switch = 100ps, delta_V = 50mV:
+      C_decap > 5 * 100e-12 / 0.05 = 10 nF
+
+  Output: time-varying voltage map, identify hotspots and worst-case time windows.
+```
+
+**IR Drop Map (ASCII representation):**
+```ascii-graph
+  +------+------+------+------+
+  | 15mV | 20mV | 25mV | 18mV |   Voltage drop values at grid nodes
+  +------+------+------+------+
+  | 22mV | 30mV | 38mV!| 28mV |   38mV exceeds 37.5mV budget!
+  +------+------+------+------+   -> Need more power straps or
+  | 18mV | 25mV | 32mV | 22mV |     decap cells in that region
+  +------+------+------+------+
+  | 10mV | 15mV | 20mV | 12mV |
+  +------+------+------+------+
+```
+
+---
+
+
+
 ## 6. Power Grid Design
 
 ### 6.1 Power Grid Structure
@@ -513,6 +729,46 @@ Sizing requirement:
 ```
 
 ---
+
+**Typical Power Grid Design Parameters:**
+
+```ascii-graph
+  Mesh density (for a 10mm x 10mm die, 7nm, 2W total power):
+  
+  M10 (top metal):  stripes every 20 um, width 5 um
+    -> 500 stripes per direction, each 10mm long
+    -> R per stripe = R_sheet * L/W = 0.001 * (10000/5) = 2 ohm
+    -> 500 parallel: R_eff = 2/500 = 4 milliohm
+    -> IR drop from M10 alone: 2.67A * 0.004 = 10.7 mV (manageable)
+
+  M8: stripes every 10 um, width 2 um
+    -> 1000 stripes per direction
+    -> R per stripe = 0.005 * (10000/2) = 25 ohm
+    -> 1000 parallel: R_eff = 25 milliohm
+
+  M6: stripes every 5 um, width 1 um
+    -> Finer grid for local distribution
+
+  Via arrays at intersections: 4x4 array of V8-V9 vias
+    -> R_via_array = R_via / 16 ≈ 0.03 ohm (negligible)
+
+  Decap cells: fill 10% of whitespace
+    -> Typical: 0.5-1 nF per mm^2 of decap density
+    -> For 100 mm^2 die: 50-100 nF total on-die decap
+
+  Total IR drop budget allocation:
+    Package + bumps:  10 mV
+    M10-M9 mesh:      10 mV
+    M8-M6 stripes:    10 mV
+    M5-M1 rails:       5 mV
+    Dynamic (Ldi/dt):  5 mV (after decap)
+    ─────────────────────
+    Total:            40 mV (5.3% of 0.75V, within budget)
+```
+
+---
+
+
 
 ## 7. Thermal Analysis
 

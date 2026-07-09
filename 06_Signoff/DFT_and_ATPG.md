@@ -1191,6 +1191,60 @@ every address.
   E5 ↕r0:    final read-all-zeros verification
 ```
 
+### 7.2B March C- Fault-Coverage Proof and Memory Fault Models (from the SRAM view)
+
+### Fault Models
+
+| Fault         | Abbr | Description                                | How to Detect            |
+|---------------|------|--------------------------------------------|--------------------------|
+| Stuck-At 0    | SA0  | Cell permanently reads 0                   | Write 1, read 1          |
+| Stuck-At 1    | SA1  | Cell permanently reads 1                   | Write 0, read 0          |
+| Transition 0→1| TF↑  | Cell cannot transition from 0 to 1         | Write 0, write 1, read 1 |
+| Transition 1→0| TF↓  | Cell cannot transition from 1 to 0         | Write 1, write 0, read 0 |
+| Coupling (inv)| CFin | Writing cell j inverts cell i              | Write j, read i          |
+| Coupling (st) | CFst | Writing cell j sets cell i to fixed value  | Write j, read i          |
+| Address fault | AF   | Address decoder maps two addresses to same cell | Write A, read B → should differ |
+
+### March C- Algorithm: Step by Step
+
+Notation: ↑ = ascending address, ↓ = descending address, (r0) = read expecting 0, (w1) = write 1.
+
+```verilog
+Step 0: ↑↓(w0)         — Write 0 to all addresses (any order)
+Step 1: ↑(r0, w1)      — Ascending: read 0 (verify), write 1
+Step 2: ↑(r1, w0)      — Ascending: read 1 (verify), write 0
+Step 3: ↓(r0, w1)      — Descending: read 0 (verify), write 1
+Step 4: ↓(r1, w0)      — Descending: read 1 (verify), write 0
+Step 5: ↑↓(r0)         — Read 0 from all addresses (final check)
+```
+
+**Complexity:** 10N operations (N = number of addresses). For 1MB SRAM: 10M operations.
+
+### Fault Coverage Proof
+
+**SAF detection:**
+- SA0: Step 1 writes 1, Step 2 reads 1 → if SA0, read returns 0 → DETECTED
+- SA1: Step 0 writes 0, Step 1 reads 0 → if SA1, read returns 1 → DETECTED
+
+**Transition fault detection:**
+- TF↑ (can't go 0→1): Step 1 writes 1 after 0, Step 2 reads 1 → fails → DETECTED
+- TF↓ (can't go 1→0): Step 2 writes 0 after 1, Step 3 reads 0 → fails → DETECTED
+
+**Coupling fault (inversion) detection:**
+
+Consider cells i and j where writing j inverts i (CFin):
+- Steps 1-2 are ascending. If j < i: j is written (step 1 or 2) before i is read (later in same step or next step). If writing j inverts i, the subsequent read of i detects the corruption.
+- Steps 3-4 are descending: catches the case where j > i (j is visited first in descending order, so its write corrupts i which is visited later).
+- Together, ascending + descending covers all (i, j) pairs regardless of relative ordering.
+
+**Coupling fault (static) detection:**
+
+CFst: writing j forces i to a fixed value (e.g., 0). Step 1 ascending writes all to 1, then step 2 reads all as 1 in ascending order. If CFst forced some cell to 0 during step 1, step 2 detects it. Descending steps similarly cover the reverse-ordered pairs.
+
+**Address fault detection:**
+
+If addresses A and B map to the same physical cell: writing 1 to A then 0 to B overwrites the cell. Reading A returns 0 (wrong). Steps 1-4 exercise this: write 1 ascending, then read/write patterns that would expose aliased addresses.
+
 ### 7.3 Fault Coverage Table
 
 ```ascii-graph

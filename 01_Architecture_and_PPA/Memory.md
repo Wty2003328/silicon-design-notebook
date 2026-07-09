@@ -610,101 +610,7 @@ The current difference appears in ~50-100 ps (much faster than voltage-mode).
 Most DRAM uses voltage-mode due to simplicity and robustness.
 Fast SRAM register files may use current-mode for sub-ns read latency.
 
-### Multi-Port Register File Design -- Detailed Implementation
-
-#### How Multiple Read Ports Are Implemented
-
-Each additional read port requires a **separate pair of bitlines** (or a separate 2T
-read stack) for every bitcell in the array. The bitcell physically grows to accommodate
-the additional bitline routing and access transistors.
-
-**1R1W register file (6T cell):**
-
-```ascii-graph
-                   VDD
-                ┌──┴──┐
-        BL ──── M5    M6 ──── BL_bar
-                │  ╳  │     (cross-coupled inverters M1-M4)
-                └──┬──┘
-               GND (via pull-down)
-        WL ──── gates of M5, M6
-
-1 read port (shared with write via BL/BL_bar)
-1 write port (same access transistors)
-6 transistors, 1 wordline, 1 bitline pair
-```
-
-**3R2W register file (16T cell):**
-
-- **Write ports** — 2 independent write paths
-- **Write Port A** — WLA, BLA/BLA_bar (access transistors M5a, M6a)
-- **Write Port B** — WLB, BLB/BLB_bar (access transistors M5b, M6b)
-
-- **Read ports** — 3 independent read-only paths (8T-style read-decoupled)
-- **Read Port 0** — RWL0, RBL0 (transistors M7a, M8a -- gated by Q_bar)
-- **Read Port 1** — RWL1, RBL1 (transistors M7b, M8b -- gated by Q_bar)
-- **Read Port 2** — RWL2, RBL2 (transistors M7c, M8c -- gated by Q_bar)
-
-- **Total transistors** — 6 (storage) + 2x2 (write ports) + 3x2 (read ports) = 16T
-- **Total wordlines** — 2 write + 3 read = 5
-- **Total bitlines** — 2 write pairs + 3 read singles = 7
-
-Area per cell ≈ 16T/6T * 0.05 um^2 ≈ 0.13 um^2 (in 7nm)
-
-#### Write Conflict Resolution
-
-When two write ports target the same address simultaneously, the result is undefined
-without arbitration. A multi-port register file controller must implement:
-
-```verilog
-Write conflict detection:
-  For all pairs of write ports (i, j):
-    if (W_addr[i] == W_addr[j]) && W_enable[i] && W_enable[j]:
-      // CONFLICT! Resolve by priority
-      if (W_priority[i] > W_priority[j]):
-        W_enable[j] = 0   // suppress port j
-      else:
-        W_enable[i] = 0   // suppress port i
-
-In an OoO processor:
-  Port priorities are assigned by the scheduler (e.g., older instruction wins)
-  The scheduler knows both write addresses before issue, so conflicts are
-  resolved before the write reaches the register file
-
-Alternative: some designs allow simultaneous writes to the same address
-  only if they write non-overlapping byte lanes (checked via WSTRB comparison)
-```
-
-#### Area Scaling With Ports
-
-```verilog
-Cell area scales approximately as O(Ports^2):
-  Each port adds 1 wordline (horizontal) + 1-2 bitlines (vertical)
-  Cell must grow in BOTH dimensions to route the additional wires
-
-  A(P) ≈ A_6T * (1 + k * P)^2  where k ≈ 0.1-0.15
-
-  P=1 (1R1W):  A ≈ 0.05 um^2 (6T)
-  P=2 (1R1W):  A ≈ 0.07 um^2 (8T)
-  P=3 (2R1W):  A ≈ 0.10 um^2 (10T)
-  P=5 (3R2W):  A ≈ 0.13 um^2 (16T)
-  P=6 (4R2W):  A ≈ 0.18 um^2 (18T)
-  P=8 (6R2W):  A ≈ 0.25 um^2 (22T)
-  P=12 (8R4W): A ≈ 0.40 um^2 (30T) -- extremely large
-
-Access time also scales poorly with ports:
-  Each additional bitline adds capacitance to the sense node
-  Each additional wordline adds gate loading to the decoder
-  P=2:  ~0.5 ns access
-  P=6:  ~0.8 ns access
-  P=12: ~1.5 ns access (often multi-cycle)
-
-Typical OoO CPU configurations:
-  ARM Cortex-A78:  128-entry x 64b, 4R2W (banked 2x2R1W)
-  Apple M1:       ~350-entry x 64b, estimated 6R3W (banked)
-  AMD Zen 4:      ~180-entry x 64b, estimated 4R2W (banked)
-  Intel Golden Cove: ~280-entry x 64b, estimated 6R4W (banked)
-```
+---
 
 ### DRAM Read and Write Operation Sequences
 
@@ -949,262 +855,9 @@ Cons: Long exit latency; no external access during self-refresh.
 
 ---
 
-## Asynchronous FIFO — Complete RTL with All Signals
+## Asynchronous FIFO — moved
 
-### Architecture Overview
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TB
-    subgraph WD["Write clock domain"]
-        WL["Write logic<br/>wr_ptr_bin · wr_ptr_gray<br/>Full / Almost-Full logic"]
-    end
-    subgraph RD["Read clock domain"]
-        RL["Read logic<br/>rd_ptr_bin · rd_ptr_gray<br/>Empty / Almost-Empty logic"]
-    end
-    win["wdata / wen / wrst_n"] --> WL
-    WL --> wflags["full / afull"]
-    rin["ren / rrst_n"] --> RL
-    RL --> rout["rdata / empty / aempty"]
-    WL -->|"wr_ptr_gray (2-FF sync)"| RL
-    RL -->|"rd_ptr_gray (2-FF sync)"| WL
-    WL --> DPR["Dual-port RAM (2^ADDR_W deep)<br/>write port A · read port B"]
-    RL --> DPR
-    classDef w fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef r fill:#dcfce7,stroke:#15803d,color:#000
-    classDef m fill:#fde68a,stroke:#b45309,color:#000
-    class WL,win,wflags w
-    class RL,rin,rout r
-    class DPR m
-```
-
-### Complete Synthesizable Verilog
-
-```verilog
-module async_fifo #(
-    parameter DATA_W    = 8,
-    parameter ADDR_W    = 4,     // Depth = 2^ADDR_W = 16
-    parameter AFULL_TH  = 2,     // Almost-full threshold (full - AFULL_TH)
-    parameter AEMPTY_TH = 2      // Almost-empty threshold (empty + AEMPTY_TH)
-) (
-    // Write interface
-    input                   wclk,
-    input                   wrst_n,
-    input                   wen,
-    input  [DATA_W-1:0]     wdata,
-    output                  full,
-    output                  almost_full,
-
-    // Read interface
-    input                   rclk,
-    input                   rrst_n,
-    input                   ren,
-    output [DATA_W-1:0]     rdata,
-    output                  empty,
-    output                  almost_empty
-);
-
-    localparam DEPTH = 1 << ADDR_W;
-    localparam PTR_W = ADDR_W + 1;  // Extra MSB for wrap-around detection
-
-    // =========================================================
-    // Dual-port RAM
-    // =========================================================
-    reg [DATA_W-1:0] mem [0:DEPTH-1];
-
-    // Write port
-    always @(posedge wclk) begin
-        if (wen && !full)
-            mem[wr_bin[ADDR_W-1:0]] <= wdata;
-    end
-
-    // Read port (asynchronous read for FIFO — or registered for timing)
-    assign rdata = mem[rd_bin[ADDR_W-1:0]];
-
-    // =========================================================
-    // Write pointer (binary and Gray)
-    // =========================================================
-    reg [PTR_W-1:0] wr_bin;
-    wire [PTR_W-1:0] wr_bin_next;
-    wire [PTR_W-1:0] wr_gray, wr_gray_next;
-
-    assign wr_bin_next  = wr_bin + (wen & ~full);
-    assign wr_gray      = wr_bin ^ (wr_bin >> 1);
-    assign wr_gray_next = wr_bin_next ^ (wr_bin_next >> 1);
-
-    always @(posedge wclk or negedge wrst_n) begin
-        if (!wrst_n)
-            wr_bin <= {PTR_W{1'b0}};
-        else
-            wr_bin <= wr_bin_next;
-    end
-
-    // Register the Gray code (for clean CDC)
-    reg [PTR_W-1:0] wr_gray_reg;
-    always @(posedge wclk or negedge wrst_n) begin
-        if (!wrst_n)
-            wr_gray_reg <= {PTR_W{1'b0}};
-        else
-            wr_gray_reg <= wr_gray_next;
-    end
-
-    // =========================================================
-    // Read pointer (binary and Gray)
-    // =========================================================
-    reg [PTR_W-1:0] rd_bin;
-    wire [PTR_W-1:0] rd_bin_next;
-    wire [PTR_W-1:0] rd_gray, rd_gray_next;
-
-    assign rd_bin_next  = rd_bin + (ren & ~empty);
-    assign rd_gray      = rd_bin ^ (rd_bin >> 1);
-    assign rd_gray_next = rd_bin_next ^ (rd_bin_next >> 1);
-
-    always @(posedge rclk or negedge rrst_n) begin
-        if (!rrst_n)
-            rd_bin <= {PTR_W{1'b0}};
-        else
-            rd_bin <= rd_bin_next;
-    end
-
-    reg [PTR_W-1:0] rd_gray_reg;
-    always @(posedge rclk or negedge rrst_n) begin
-        if (!rrst_n)
-            rd_gray_reg <= {PTR_W{1'b0}};
-        else
-            rd_gray_reg <= rd_gray_next;
-    end
-
-    // =========================================================
-    // Synchronizers: Write Gray pointer → Read domain
-    // =========================================================
-    reg [PTR_W-1:0] wr_gray_sync1, wr_gray_sync2;
-
-    always @(posedge rclk or negedge rrst_n) begin
-        if (!rrst_n) begin
-            wr_gray_sync1 <= {PTR_W{1'b0}};
-            wr_gray_sync2 <= {PTR_W{1'b0}};
-        end else begin
-            wr_gray_sync1 <= wr_gray_reg;
-            wr_gray_sync2 <= wr_gray_sync1;
-        end
-    end
-
-    // =========================================================
-    // Synchronizers: Read Gray pointer → Write domain
-    // =========================================================
-    reg [PTR_W-1:0] rd_gray_sync1, rd_gray_sync2;
-
-    always @(posedge wclk or negedge wrst_n) begin
-        if (!wrst_n) begin
-            rd_gray_sync1 <= {PTR_W{1'b0}};
-            rd_gray_sync2 <= {PTR_W{1'b0}};
-        end else begin
-            rd_gray_sync1 <= rd_gray_reg;
-            rd_gray_sync2 <= rd_gray_sync1;
-        end
-    end
-
-    // =========================================================
-    // Empty detection (in read clock domain)
-    // =========================================================
-    // FIFO is empty when read Gray pointer == synchronized write Gray pointer
-    assign empty = (rd_gray_next == wr_gray_sync2);
-
-    // =========================================================
-    // Full detection (in write clock domain)
-    // =========================================================
-    // FIFO is full when write Gray pointer matches read Gray pointer
-    // with the top TWO MSBs inverted (indicating one full wrap-around apart)
-    assign full = (wr_gray_next == {~rd_gray_sync2[PTR_W-1:PTR_W-2],
-                                      rd_gray_sync2[PTR_W-3:0]});
-
-    // =========================================================
-    // Almost full / almost empty (using binary pointers)
-    // =========================================================
-    // Convert synchronized Gray pointers back to binary for arithmetic
-    // (Gray-to-binary conversion)
-    wire [PTR_W-1:0] rd_bin_sync;
-    wire [PTR_W-1:0] wr_bin_sync;
-
-    // Gray to binary for synchronized read pointer (in write domain)
-    assign rd_bin_sync[PTR_W-1] = rd_gray_sync2[PTR_W-1];
-    genvar i;
-    generate
-        for (i = PTR_W-2; i >= 0; i = i - 1) begin : g2b_rd
-            assign rd_bin_sync[i] = rd_bin_sync[i+1] ^ rd_gray_sync2[i];
-        end
-    endgenerate
-
-    // Gray to binary for synchronized write pointer (in read domain)
-    assign wr_bin_sync[PTR_W-1] = wr_gray_sync2[PTR_W-1];
-    generate
-        for (i = PTR_W-2; i >= 0; i = i - 1) begin : g2b_wr
-            assign wr_bin_sync[i] = wr_bin_sync[i+1] ^ wr_gray_sync2[i];
-        end
-    endgenerate
-
-    // Fill level in write domain (for almost_full)
-    wire [PTR_W-1:0] fill_level_w = wr_bin - rd_bin_sync;
-    assign almost_full = (fill_level_w >= DEPTH - AFULL_TH);
-
-    // Fill level in read domain (for almost_empty)
-    wire [PTR_W-1:0] fill_level_r = wr_bin_sync - rd_bin;
-    assign almost_empty = (fill_level_r <= AEMPTY_TH);
-
-endmodule
-```
-
-### Gray Code Pointer Crossing — Metastability Scenario
-
-**Timing diagram showing what happens when the write pointer changes during read-domain sampling:**
-
-```ascii-graph
-Write domain (wclk):
-  wr_gray_reg:   0100 ──────► 0110  (single bit change: bit[1] 0→1)
-                           ↑
-                    write happens here
-
-Read domain (rclk):
-  Synchronizer FF1 samples wr_gray_reg:
-  
-  Case A: FF1 samples BEFORE the write pointer changes
-    FF1 captures 0100 → FF2 gets 0100 (old value, conservative)
-    Empty logic sees fewer entries → reports empty or almost-empty
-    SAFE: FIFO under-reports fullness (conservative)
-
-  Case B: FF1 samples AFTER the write pointer changes
-    FF1 captures 0110 → FF2 gets 0110 (new value)
-    Empty logic sees actual fill level
-    SAFE: correct
-
-  Case C: FF1 samples DURING the transition (metastability!)
-    Only bit[1] is changing (Gray code guarantees single-bit transition)
-    FF1 either resolves to 0100 or 0110 (both valid)
-    If 0100: same as Case A (conservative but safe)
-    If 0110: same as Case B (correct)
-    SAFE in either case!
-```
-
-**Key insight:** Because Gray code ensures only ONE bit changes, the synchronizer can only resolve to the old or new value — never to a bogus intermediate. Binary counter: if multiple bits change (e.g., 0111 → 1000, all 4 bits flip), the synchronizer could capture any of 16 intermediate values (like 1111, 0000, 1010...), most of which are completely wrong.
-
-### Proof of Full/Empty Detection Correctness
-
-**Empty detection (read domain): rd_gray == wr_gray_sync2**
-
-**Why this works:** If wr_gray_sync2 shows the same value as rd_gray, then the read pointer has caught up to the write pointer. Because synchronization can only show an OLD write pointer (never newer), if wr_gray_sync2 == rd_gray, it means the write pointer was AT LEAST at rd_gray some time ago, and may have advanced further. So the FIFO has at most 0 entries (empty) or possibly more (if writes happened since the last sync). Reporting empty when there might be data is PESSIMISTIC but SAFE — the reader won't read garbage, it just waits one more cycle.
-
-**Full detection (write domain): wr_gray == {~rd_gray_sync2[MSB:MSB-1], rd_gray_sync2[rest]}**
-
-**Why the top-2-bit inversion?** In binary, full means wr_ptr - rd_ptr = DEPTH (wr has wrapped around exactly once more). In binary, this means the MSBs differ and the rest are equal. In Gray code:
-
-Binary wr_ptr = rd_ptr + DEPTH
-If rd_ptr = 0000, wr_ptr = 10000 (5-bit for depth-16)
-- **Gray(0000)** = `0000`
-Gray(10000) = 11000  (note: top two bits are inverted, rest same!)
-
-This pattern holds for all pointer values because of how Gray code reflects at the MSB boundary. The top two MSBs of Gray code encode the "quadrant" of the binary counter, and being one full wrap apart means being in the diametrically opposite quadrant, which differs in exactly the top 2 Gray bits.
-
-**Safety:** Since rd_gray_sync2 is a possibly-old read pointer, the FIFO may report full when the reader has actually advanced (pessimistic). This is SAFE — the writer waits unnecessarily but never overflows.
+The complete async-FIFO treatment (architecture, binary↔Gray proofs, full/empty detection proof, production-quality RTL, worked pointer-state example, reset handling, non-power-of-2 depths) lives in [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) §5 — it is a CDC structure first and a memory second. This page keeps the SRAM/DRAM device view.
 
 ---
 
@@ -1304,251 +957,15 @@ cell (SRAM_1024x32) {
 
 ---
 
-## Memory BIST — March C- Algorithm Detailed Analysis
+## Memory BIST — moved
 
-### Fault Models
-
-| Fault         | Abbr | Description                                | How to Detect            |
-|---------------|------|--------------------------------------------|--------------------------|
-| Stuck-At 0    | SA0  | Cell permanently reads 0                   | Write 1, read 1          |
-| Stuck-At 1    | SA1  | Cell permanently reads 1                   | Write 0, read 0          |
-| Transition 0→1| TF↑  | Cell cannot transition from 0 to 1         | Write 0, write 1, read 1 |
-| Transition 1→0| TF↓  | Cell cannot transition from 1 to 0         | Write 1, write 0, read 0 |
-| Coupling (inv)| CFin | Writing cell j inverts cell i              | Write j, read i          |
-| Coupling (st) | CFst | Writing cell j sets cell i to fixed value  | Write j, read i          |
-| Address fault | AF   | Address decoder maps two addresses to same cell | Write A, read B → should differ |
-
-### March C- Algorithm: Step by Step
-
-Notation: ↑ = ascending address, ↓ = descending address, (r0) = read expecting 0, (w1) = write 1.
-
-```verilog
-Step 0: ↑↓(w0)         — Write 0 to all addresses (any order)
-Step 1: ↑(r0, w1)      — Ascending: read 0 (verify), write 1
-Step 2: ↑(r1, w0)      — Ascending: read 1 (verify), write 0
-Step 3: ↓(r0, w1)      — Descending: read 0 (verify), write 1
-Step 4: ↓(r1, w0)      — Descending: read 1 (verify), write 0
-Step 5: ↑↓(r0)         — Read 0 from all addresses (final check)
-```
-
-**Complexity:** 10N operations (N = number of addresses). For 1MB SRAM: 10M operations.
-
-### Fault Coverage Proof
-
-**SAF detection:**
-- SA0: Step 1 writes 1, Step 2 reads 1 → if SA0, read returns 0 → DETECTED
-- SA1: Step 0 writes 0, Step 1 reads 0 → if SA1, read returns 1 → DETECTED
-
-**Transition fault detection:**
-- TF↑ (can't go 0→1): Step 1 writes 1 after 0, Step 2 reads 1 → fails → DETECTED
-- TF↓ (can't go 1→0): Step 2 writes 0 after 1, Step 3 reads 0 → fails → DETECTED
-
-**Coupling fault (inversion) detection:**
-
-Consider cells i and j where writing j inverts i (CFin):
-- Steps 1-2 are ascending. If j < i: j is written (step 1 or 2) before i is read (later in same step or next step). If writing j inverts i, the subsequent read of i detects the corruption.
-- Steps 3-4 are descending: catches the case where j > i (j is visited first in descending order, so its write corrupts i which is visited later).
-- Together, ascending + descending covers all (i, j) pairs regardless of relative ordering.
-
-**Coupling fault (static) detection:**
-
-CFst: writing j forces i to a fixed value (e.g., 0). Step 1 ascending writes all to 1, then step 2 reads all as 1 in ascending order. If CFst forced some cell to 0 during step 1, step 2 detects it. Descending steps similarly cover the reverse-ordered pairs.
-
-**Address fault detection:**
-
-If addresses A and B map to the same physical cell: writing 1 to A then 0 to B overwrites the cell. Reading A returns 0 (wrong). Steps 1-4 exercise this: write 1 ascending, then read/write patterns that would expose aliased addresses.
+March algorithms (element notation, March C- walkthrough, fault models, and the fault-coverage proof) live with the rest of test: [DFT_and_ATPG](../06_Signoff/DFT_and_ATPG.md) §7 *Memory BIST*.
 
 ---
 
-## Cache — Detailed Set-Associative Design
+## Cache — moved
 
-### Worked Example: 32KB, 4-Way, 64B Lines
-
-**Given:**
-- Total cache size: 32 KB = 32,768 bytes
-- Associativity: 4-way set-associative
-- Line size: 64 bytes
-
-**Derived parameters:**
-```verilog
-Number of lines = 32768 / 64 = 512 lines total
-Number of sets = 512 / 4 = 128 sets
-```
-
-**Address breakdown for 32-bit address:**
-```verilog
-Offset bits = log2(64) = 6 bits  (byte within a line)
-Index bits  = log2(128) = 7 bits  (selects the set)
-Tag bits    = 32 - 6 - 7 = 19 bits
-
-Address: [31:13 tag | 12:6 index | 5:0 offset]
-```
-
-**Hardware structure per set:**
-```verilog
-Set k:
-  Way 0: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
-  Way 1: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
-  Way 2: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
-  Way 3: [Valid][Dirty][Tag (19b)][Data (64B = 512b)]
-  LRU state: 3 bits (for pseudo-LRU) or 5 bits (for true LRU)
-```
-
-**Total storage:**
-- **Data** — 512 lines × 64 bytes = 32 KB (the actual cache data)
-- **Tags** — 512 lines × 19 bits = 9728 bits = 1.19 KB
-- **Valid** — 512 bits
-- **Dirty** — 512 bits
-- **LRU** — 128 sets × 3 bits = 384 bits (pseudo-LRU)
-
-- **Total overhead** — ~1.2 KB for 32 KB cache = ~3.7% overhead
-
-**Read operation (hit path):**
-```verilog
-1. Extract index [12:6], tag [31:13], offset [5:0] from address
-2. Use index to read all 4 ways simultaneously:
-   - 4 tag comparisons (19-bit each): tag == stored_tag[way_i] AND valid[way_i]
-   - 4 data reads (512 bits each, but typically only read the requested word)
-3. Hit detection: one-hot vector of 4 compare results
-4. MUX: select the data from the matching way
-5. Use offset to extract the requested byte/word from the 64B line
-
-Latency: Tag read + comparator + MUX ≈ 2-4 cycles for L1 cache
-```
-
-### LRU Implementation
-
-**True LRU for 4-way:**
-
-Track the full ordering of 4 ways. There are $4! = 24$ possible orderings → need 5 bits ($\lceil \log_2(24) \rceil = 5$).
-
-In practice, use a 4×4 matrix:
-
-Matrix M[i][j] = 1 if way i was accessed more recently than way j
-
-**On access to way k:**
-   - Set M[k][*] = 1  (row k, all columns)
-   - Set M[*][k] = 0  (column k, all rows)
-
-- **LRU victim** = `way with all 0s in its row (accessed least recently)`
-
-Storage: 4×4 matrix, but diagonal is unused and matrix is antisymmetric → 4*3/2 = 6 bits per set.
-
-For 8-way: 8*7/2 = 28 bits per set — expensive!
-
-**Pseudo-LRU (Tree PLRU) for 4-way:**
-
-Use a binary tree with 3 bits:
-```verilog
-          bit[0]
-         /      \
-      bit[1]   bit[2]
-      /  \      /  \
-    W0   W1   W2   W3
-```
-
-Each bit points toward the "less recently used" subtree:
-- bit[0] = 0: left subtree is LRU, = 1: right subtree is LRU
-- bit[1] = 0: W0 is LRU of left pair, = 1: W1 is LRU
-- bit[2] = 0: W2 is LRU of right pair, = 1: W3 is LRU
-
-**On access to way k:** Set tree bits to point AWAY from k.
-**On eviction:** Follow tree bits to find the LRU victim.
-
-**Storage: only N-1 = 3 bits for 4-way** (vs 6 for true LRU).
-
-For 8-way: 7 bits (vs 28 for true LRU). This is why PLRU is universally used for associativity ≥ 4.
-
-**PLRU vs true LRU miss rate comparison (SPEC benchmarks, 32KB 4-way):**
-```verilog
-True LRU miss rate:   ~4.2%
-Pseudo-LRU miss rate: ~4.4%
-Random replacement:   ~5.1%
-
-PLRU is within 5% of true LRU for 4-way — negligible difference.
-For 8-way, the gap widens slightly but PLRU is still >90% as effective.
-```
-
-### Write-Back State Machine
-
-```ascii-graph
-States: IDLE → TAG_CHECK → {HIT_UPDATE | MISS_ALLOCATE} → WRITEBACK → REFILL → IDLE
-
-IDLE:
-  Wait for CPU request
-  → TAG_CHECK on any read/write
-
-TAG_CHECK:
-  Read tags for the indexed set
-  Compare with request tag
-  → HIT_UPDATE if any way matches (hit)
-  → MISS_ALLOCATE if no match (miss)
-
-HIT_UPDATE:
-  Read hit: return data, update LRU
-  Write hit: update cache line, set dirty bit, update LRU
-  → IDLE
-
-MISS_ALLOCATE:
-  Select victim way using LRU
-  Check if victim is dirty:
-  → WRITEBACK if dirty (must write victim to memory first)
-  → REFILL if clean (can immediately fetch new line)
-
-WRITEBACK:
-  Send victim line to next level (L2 or main memory)
-  Wait for acknowledgment
-  → REFILL
-
-REFILL:
-  Send request to next level for the missing line
-  Wait for data
-  Install new line: update tag, set valid, clear dirty
-  Supply requested word to CPU (can do "critical word first")
-  → IDLE
-```
-
-### Cache Coherence — MESI Protocol
-
-MESI (Modified, Exclusive, Shared, Invalid) handles cache coherence in multi-core systems:
-
-**States per cache line:**
-   - M (Modified):  Line is dirty, only copy, owned by this cache
-   - E (Exclusive): Line is clean, only copy, can write without bus transaction
-   - S (Shared):    Line is clean, multiple copies may exist
-   - I (Invalid):   Line is not valid in this cache
-
-**State transitions:**
-
-```ascii-graph
-I → E: CPU read miss, no other cache has the line
-        (Bus read, memory responds, line loaded as Exclusive)
-
-I → S: CPU read miss, another cache has the line
-        (Bus read, other cache responds or shares, both become Shared)
-
-I → M: CPU write miss, no other cache has the line
-        (Bus read-exclusive / read-for-ownership)
-
-E → M: CPU write hit (silent transition, no bus traffic!)
-        (This is the key advantage of E state over S)
-
-S → I: Another CPU writes (invalidate bus transaction)
-        (Snooped write-invalidate for this line)
-
-M → I: Another CPU reads or writes
-        (Must write back dirty data, then invalidate or transition to S)
-
-M → S: Another CPU reads
-        (Write back data, transition to Shared, other cache gets copy)
-
-E → I: Another CPU reads (transition to Shared usually, or Invalid)
-
-E → S: Another CPU reads (share the line)
-```
-
-**Why E state exists (vs just MSI):**
-Without E, a write to a clean exclusive line (only copy) would require a bus transaction to upgrade S→M. With E state, the write is silently promoted E→M with NO bus traffic. For workloads with mostly private data, this eliminates a huge fraction of coherence traffic.
+Cache organization and microarchitecture have their own page: [Cache_Microarchitecture](Cache_Microarchitecture.md) — the worked 32KB/4-way/64B geometry example is in its §1, replacement policies (LRU/PLRU/RRIP) in §7, write policies + write-back FSM in §3, and MESI/MOESI coherence in §9 (protocol-level view: [CPU_Architecture](CPU_Architecture.md) §8).
 
 ---
 
@@ -1674,6 +1091,102 @@ Physical register file parameters (example: ARM Cortex-A78 class):
 - **Read ports** — 8-10 (for 4-5 issue width, 2 sources each)
 - **Write ports** — 4-6 (for execution unit writebacks)
 - **Total ports** — 12-16
+
+### Multi-Port Register File — Detailed Implementation (moved from the DRAM section)
+
+#### How Multiple Read Ports Are Implemented
+
+Each additional read port requires a **separate pair of bitlines** (or a separate 2T
+read stack) for every bitcell in the array. The bitcell physically grows to accommodate
+the additional bitline routing and access transistors.
+
+**1R1W register file (6T cell):**
+
+```ascii-graph
+                   VDD
+                ┌──┴──┐
+        BL ──── M5    M6 ──── BL_bar
+                │  ╳  │     (cross-coupled inverters M1-M4)
+                └──┬──┘
+               GND (via pull-down)
+        WL ──── gates of M5, M6
+
+1 read port (shared with write via BL/BL_bar)
+1 write port (same access transistors)
+6 transistors, 1 wordline, 1 bitline pair
+```
+
+**3R2W register file (16T cell):**
+
+- **Write ports** — 2 independent write paths
+- **Write Port A** — WLA, BLA/BLA_bar (access transistors M5a, M6a)
+- **Write Port B** — WLB, BLB/BLB_bar (access transistors M5b, M6b)
+
+- **Read ports** — 3 independent read-only paths (8T-style read-decoupled)
+- **Read Port 0** — RWL0, RBL0 (transistors M7a, M8a -- gated by Q_bar)
+- **Read Port 1** — RWL1, RBL1 (transistors M7b, M8b -- gated by Q_bar)
+- **Read Port 2** — RWL2, RBL2 (transistors M7c, M8c -- gated by Q_bar)
+
+- **Total transistors** — 6 (storage) + 2x2 (write ports) + 3x2 (read ports) = 16T
+- **Total wordlines** — 2 write + 3 read = 5
+- **Total bitlines** — 2 write pairs + 3 read singles = 7
+
+Area per cell ≈ 16T/6T * 0.05 um^2 ≈ 0.13 um^2 (in 7nm)
+
+#### Write Conflict Resolution
+
+When two write ports target the same address simultaneously, the result is undefined
+without arbitration. A multi-port register file controller must implement:
+
+```verilog
+Write conflict detection:
+  For all pairs of write ports (i, j):
+    if (W_addr[i] == W_addr[j]) && W_enable[i] && W_enable[j]:
+      // CONFLICT! Resolve by priority
+      if (W_priority[i] > W_priority[j]):
+        W_enable[j] = 0   // suppress port j
+      else:
+        W_enable[i] = 0   // suppress port i
+
+In an OoO processor:
+  Port priorities are assigned by the scheduler (e.g., older instruction wins)
+  The scheduler knows both write addresses before issue, so conflicts are
+  resolved before the write reaches the register file
+
+Alternative: some designs allow simultaneous writes to the same address
+  only if they write non-overlapping byte lanes (checked via WSTRB comparison)
+```
+
+#### Area Scaling With Ports
+
+```verilog
+Cell area scales approximately as O(Ports^2):
+  Each port adds 1 wordline (horizontal) + 1-2 bitlines (vertical)
+  Cell must grow in BOTH dimensions to route the additional wires
+
+  A(P) ≈ A_6T * (1 + k * P)^2  where k ≈ 0.1-0.15
+
+  P=1 (1R1W):  A ≈ 0.05 um^2 (6T)
+  P=2 (1R1W):  A ≈ 0.07 um^2 (8T)
+  P=3 (2R1W):  A ≈ 0.10 um^2 (10T)
+  P=5 (3R2W):  A ≈ 0.13 um^2 (16T)
+  P=6 (4R2W):  A ≈ 0.18 um^2 (18T)
+  P=8 (6R2W):  A ≈ 0.25 um^2 (22T)
+  P=12 (8R4W): A ≈ 0.40 um^2 (30T) -- extremely large
+
+Access time also scales poorly with ports:
+  Each additional bitline adds capacitance to the sense node
+  Each additional wordline adds gate loading to the decoder
+  P=2:  ~0.5 ns access
+  P=6:  ~0.8 ns access
+  P=12: ~1.5 ns access (often multi-cycle)
+
+Typical OoO CPU configurations:
+  ARM Cortex-A78:  128-entry x 64b, 4R2W (banked 2x2R1W)
+  Apple M1:       ~350-entry x 64b, estimated 6R3W (banked)
+  AMD Zen 4:      ~180-entry x 64b, estimated 4R2W (banked)
+  Intel Golden Cove: ~280-entry x 64b, estimated 6R4W (banked)
+```
 
 ### Register File Banking
 

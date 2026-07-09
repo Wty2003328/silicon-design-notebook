@@ -1,6 +1,6 @@
 # RTL Coding Questions — Classic Problems with Full Solutions
 
-> The whiteboard-RTL canon. Each problem: statement → key insight → SystemVerilog solution → follow-ups interviewers actually ask. Theory backup: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md).
+> The whiteboard-RTL canon. Each problem: statement → key insight → SystemVerilog solution → follow-ups interviewers actually ask. Theory backup: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) (CDC, async FIFO).
 
 ---
 
@@ -177,7 +177,7 @@ module afifo #(parameter W=32, A=4)
 endmodule
 ```
 
-**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../01_Architecture_and_PPA/Memory.md) / [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md).
+**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../01_Architecture_and_PPA/Memory.md) / [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) (CDC, async FIFO).
 
 ---
 
