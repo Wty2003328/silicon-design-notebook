@@ -105,6 +105,8 @@ mjx-container[display="true"] {
 .markdown-rendered pre[class*='language-']::after {
     /* Extract just the language name if possible, though CSS attr() takes the whole class.
        Obsidian typically has 'language-python' on the code block, but we put it on pre?
-       Actually, Obsidian puts it on the code element. 
+       Actually, Obsidian puts it on the code element.
     */
 }
+
+/
