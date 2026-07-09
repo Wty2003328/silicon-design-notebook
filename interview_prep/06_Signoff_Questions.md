@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `06_Signoff/`,
 
 ## Design for Testability (DFT) and ATPG -- Senior Engineer Deep Dive
 
-*From [DFT_and_ATPG.md](../06_Signoff/DFT_and_ATPG.md)*
+*From [DFT_and_ATPG.md](../06_Signoff/02_DFT_and_ATPG.md)*
 
 ### Q1: What is the purpose of a lockup latch in a scan chain?
 
@@ -255,7 +255,7 @@ clocks can share clock tree resources; the others cannot.
 
 ## Physical Verification — DRC, LVS, Antenna, and DFM Signoff
 
-*From [Physical_Verification_DRC_LVS.md](../06_Signoff/Physical_Verification_DRC_LVS.md)*
+*From [Physical_Verification_DRC_LVS.md](../06_Signoff/03_Physical_Verification_DRC_LVS.md)*
 
 **Q: DRC passes but the chip is dead — what check did you skip?** Almost certainly **LVS**: DRC only proves the geometry is legal, not that it implements the right circuit. A poly-to-metal mis-connection or a power/ground short can be perfectly DRC-clean and electrically fatal. LVS (extract + compare to netlist) is what catches it.
 
@@ -267,7 +267,7 @@ clocks can share clock tree resources; the others cannot.
 
 ## Static Timing Analysis (STA) -- The Complete Interview Bible
 
-*From [STA.md](../06_Signoff/STA.md)*
+*From [STA.md](../06_Signoff/01_STA.md)*
 
 ### Q1: Explain NLDM vs CCS delay models. When do you need CCS?
 

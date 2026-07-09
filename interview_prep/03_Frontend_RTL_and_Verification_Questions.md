@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `03_Frontend_R
 
 ## SystemVerilog Assertions and Coverage -- Senior Engineer Deep Dive
 
-*From [Assertions_and_Coverage.md](../03_Frontend_RTL_and_Verification/Assertions_and_Coverage.md)*
+*From [Assertions_and_Coverage.md](../03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md)*
 
 ### Q1: What are sampled values in SVA and why do they matter?
 
@@ -179,7 +179,7 @@ functional coverage, allowing unified analysis.
 
 ## Asynchronous Circuit Design and Clock Domain Crossing -- The Complete CDC Bible
 
-*From [Async_Circuit_Design.md](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md)*
+*From [Async_Design_and_CDC.md](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)*
 
 ### Q1: Derive the MTBF formula for a 2-FF synchronizer. What determines MTBF?
 
@@ -267,7 +267,7 @@ functional coverage, allowing unified analysis.
 
 ## Clock Division Techniques — Senior Engineer Level
 
-*From [Clock_Division_and_Switching.md](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md)*
+*From [Clock_Division_and_Switching.md](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md)*
 
 ### Q1: How do you generate an odd-division clock with 50% duty cycle? Prove it works.
 
@@ -319,7 +319,7 @@ create_generated_clock -name clk_div4 -source [get_ports clk] \
 ```
 The tool treats the divider output as a regular signal, not a clock. Paths from this "clock" to flip-flops are treated as data paths and may be incorrectly timed (too relaxed or too tight). The chip may pass STA but fail in silicon because the actual clock period is 4x shorter than the tool assumed. This is one of the most common clock-domain bugs caught during signoff timing review.
 
-*Q12–Q14: PLL/DLL material — from [PLL_DLL_and_Clock_Distribution.md](../03_Frontend_RTL_and_Verification/PLL_DLL_and_Clock_Distribution.md)*
+*Q12–Q14: PLL/DLL material — from [PLL_DLL_and_Clock_Distribution.md](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md)*
 
 ### Q12: Draw the PLL block diagram and explain each component's function.
 
@@ -407,7 +407,7 @@ Common mistakes: forgetting `-add` for multiple clocks on the same pin (the seco
 
 ## SystemVerilog Data Types and Basics -- Senior Engineer Deep Dive
 
-*From [Data_Types_and_Basics.md](../03_Frontend_RTL_and_Verification/Data_Types_and_Basics.md)*
+*From [Data_Types_and_Basics.md](../03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md)*
 
 ### Q1: What is the difference between `logic` and `reg`?
 
@@ -601,7 +601,7 @@ endfunction
 
 ## Formal Verification — Senior Engineer Deep Dive
 
-*From [Formal_Verification.md](../03_Frontend_RTL_and_Verification/Formal_Verification.md)*
+*From [Formal_Verification.md](../03_Frontend_RTL_and_Verification/12_Formal_Verification.md)*
 
 **Q1: What is the difference between simulation and formal verification?**
 
@@ -805,7 +805,7 @@ via k-liveness (bounded liveness checking) or fair-cycle detection.
 
 ## Gate-Level Simulation and Emulation
 
-*From [Gate_Level_Sim_and_Emulation.md](../03_Frontend_RTL_and_Verification/Gate_Level_Sim_and_Emulation.md)*
+*From [Gate_Level_Sim_and_Emulation.md](../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md)*
 
 **Q: Why run GLS if you already ran RTL sim and STA?** RTL sim doesn't run the actual netlist (misses synthesis/scan bugs and X-pessimism); STA is static (checks timing margins, not functional waveforms, and can't see glitches or async races). SDF GLS runs the real netlist with real delays and catches reset/X-propagation, scan-chain, and timing-dependent functional bugs neither can.
 
@@ -817,7 +817,7 @@ via k-liveness (bounded liveness checking) or fair-cycle detection.
 
 ## SystemVerilog IPC and Verification Methodology -- Senior Engineer Deep Dive
 
-*From [Procedural_and_Processes.md](../03_Frontend_RTL_and_Verification/Procedural_and_Processes.md) and [UVM_Methodology.md](../03_Frontend_RTL_and_Verification/UVM_Methodology.md)*
+*From [Procedural_Processes_and_IPC.md](../03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) and [UVM_Methodology.md](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md)*
 
 ### Q1: Explain the difference between mailbox put/get and try_put/try_get.
 
@@ -949,7 +949,7 @@ a bug. `update()` writes desired to HW only if desired != mirror (conditional wr
 
 ## Lint, CDC, and RDC Signoff — Static Frontend Checks
 
-*From [Lint_CDC_RDC_Signoff.md](../03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md)*
+*From [Lint_CDC_RDC_Signoff.md](../03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md)*
 
 **Q: Why can't simulation find a missing CDC synchronizer?** RTL simulation is cycle-deterministic — it samples the crossing signal as a clean 0/1 each cycle and never models the metastable settling window. The bug only appears as real-time metastability in silicon. Only static CDC analysis (structure) or gate-sim with timing + metastability injection can flag it.
 
@@ -961,7 +961,7 @@ a bug. `update()` writes desired to HW only if desired != mirror (conditional wr
 
 ## SystemVerilog OOP and Randomization -- Senior Engineer Deep Dive
 
-*From [OOP_and_Randomization.md](../03_Frontend_RTL_and_Verification/OOP_and_Randomization.md)*
+*From [OOP_and_Randomization.md](../03_Frontend_RTL_and_Verification/08_OOP_and_Randomization.md)*
 
 ### Q1: Explain handle vs object in SystemVerilog. What happens with `Packet p2 = p1;`?
 
@@ -1115,7 +1115,7 @@ a limited form of multiple inheritance (Java-style interfaces).
 
 ## SystemVerilog Procedural Blocks and Processes -- Senior Engineer Deep Dive
 
-*From [Procedural_and_Processes.md](../03_Frontend_RTL_and_Verification/Procedural_and_Processes.md)*
+*From [Procedural_Processes_and_IPC.md](../03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md)*
 
 ### Q1: Explain the SystemVerilog scheduling regions and why they matter.
 
@@ -1252,7 +1252,7 @@ sequence of other processes. The older `$random` is NOT thread-stable and should
 
 ## RTL Design Methodology — Synchronous Discipline, Reset, Clocking, and Structure
 
-*From [RTL_Design_Methodology.md](../03_Frontend_RTL_and_Verification/RTL_Design_Methodology.md)*
+*From [RTL_Design_Methodology.md](../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md)*
 
 **Q: Why async-assert, sync-deassert reset?** Async assert resets the chip even with no clock (power-up). Synchronous de-assert guarantees no flop releases reset inside its recovery/removal window, which would otherwise drive it metastable. The reset synchronizer (2 FF, async-clear, D tied high) implements exactly this.
 
@@ -1264,7 +1264,7 @@ sequence of other processes. The older `$random` is NOT thread-stable and should
 
 ## UVM Methodology — Components, Phasing, Sequences, Factory, RAL
 
-*From [UVM_Methodology.md](../03_Frontend_RTL_and_Verification/UVM_Methodology.md)*
+*From [UVM_Methodology.md](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md)*
 
 **Q: Why does UVM need a factory at all — isn't `new()` polymorphic enough?**
 **A:** Polymorphism needs the *caller* to choose the subclass at construction. The env code is frozen/reusable; only the test knows it wants `bad_parity_item`. The factory inverts control: env asks for a type by name, test injects the override. Construction-site polymorphism without editing the construction site.
@@ -1288,7 +1288,7 @@ sequence of other processes. The older `$random` is NOT thread-stable and should
 
 ## Verification Planning and Coverage Closure
 
-*From [Verification_Planning_and_Coverage_Closure.md](../03_Frontend_RTL_and_Verification/Verification_Planning_and_Coverage_Closure.md)*
+*From [Verification_Planning_and_Coverage_Closure.md](../03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md)*
 
 **Q: 100% code coverage — are you done?** No. Code coverage only proves the lines *executed*, not that the checks would have caught a bug, and it says nothing about scenarios the spec cares about (functional coverage) or combinations (cross coverage). 100% code + weak checkers can ship a broken chip. Closure needs functional coverage + passing checks too.
 

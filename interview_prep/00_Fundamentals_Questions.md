@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `00_Fundamenta
 
 ## Adders — From First Principles to Silicon
 
-*From [Adders.md](../00_Fundamentals/Adders.md)*
+*From [Adders_and_Multipliers.md](../00_Fundamentals/03_Adders_and_Multipliers.md)*
 
 ### Q1: Derive the carry equation for a 4-bit CLA from first principles.
 
@@ -82,7 +82,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ## Basic Knowledge for Digital Design — Senior Engineer Level
 
-*From [Basic_Knowledge.md](../00_Fundamentals/Basic_Knowledge.md)*
+*From [Logic_Building_Blocks.md](../00_Fundamentals/02_Logic_Building_Blocks.md)*
 
 ### Q1: What is the difference between a latch and a flip-flop at the transistor level?
 
@@ -148,7 +148,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ## CMOS Fundamentals and Device Physics — Senior Engineer Deep Dive
 
-*From [CMOS_Fundamentals.md](../00_Fundamentals/CMOS_Fundamentals.md)*
+*From [CMOS_Fundamentals.md](../00_Fundamentals/01_CMOS_Fundamentals.md)*
 
 **Q1: Draw the VTC of a CMOS inverter and label all five regions of operation.**
 
@@ -358,7 +358,7 @@ capacitance, and timing. Design rules require metal density to stay within bound
 
 ## Floating Point Arithmetic — Deep Dive for IC Design
 
-*From [Floating_Point.md](../00_Fundamentals/Floating_Point.md)*
+*From [Floating_Point.md](../00_Fundamentals/04_Floating_Point.md)*
 
 ### Q1: Why is the bias 127 instead of 128 for single precision?
 

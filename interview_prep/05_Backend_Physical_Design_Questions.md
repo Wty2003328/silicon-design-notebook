@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `05_Backend_Ph
 
 ## Physical Design (PnR) — Senior Engineer Deep Dive
 
-*From [Physical_Design.md](../05_Backend_Physical_Design/Physical_Design.md)*
+*From [Physical_Design.md](../05_Backend_Physical_Design/01_Physical_Design.md)*
 
 ### Q1: Walk me through the complete ASIC PD flow from netlist to GDSII.
 
@@ -177,7 +177,7 @@ Additionally: power analysis confirms total power within package/board thermal l
 
 ## Signal Integrity and Reliability — Senior Engineer Deep Dive
 
-*From [Signal_Integrity_Reliability.md](../05_Backend_Physical_Design/Signal_Integrity_Reliability.md)*
+*From [Signal_Integrity_Reliability.md](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md)*
 
 **Q1: What is crosstalk and what causes it?**
 

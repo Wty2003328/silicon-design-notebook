@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `04_Synthesis/
 
 ## Constraints (SDC) — Telling the Tools What "Correct Timing" Means
 
-*From [Constraints_SDC.md](../04_Synthesis/Constraints_SDC.md)*
+*From [Constraints_SDC.md](../04_Synthesis/02_Constraints_SDC.md)*
 
 **Q: What breaks if you forget to declare a divided clock?** STA treats the divider output as a normal data net on the source clock, so every flop clocked by the /2 is timed against the wrong period/edges — paths that are actually fine look failing, and real violations on the divided domain go unchecked. Always `create_generated_clock`.
 
@@ -18,7 +18,7 @@ Consolidated interview Q&A and worked problems from every page in `04_Synthesis/
 
 ## Logic Synthesis and Optimization -- Senior Engineer Deep Dive
 
-*From [Synthesis_and_Optimization.md](../04_Synthesis/Synthesis_and_Optimization.md)*
+*From [Synthesis_and_Optimization.md](../04_Synthesis/01_Synthesis_and_Optimization.md)*
 
 ### Q1: Walk me through the synthesis flow from RTL to gates.
 

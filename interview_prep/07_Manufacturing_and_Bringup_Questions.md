@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `07_Manufactur
 
 ## Semiconductor Fabrication Process — Senior Engineer Deep Dive
 
-*From [Fabrication_Process.md](../07_Manufacturing_and_Bringup/Fabrication_Process.md)*
+*From [Fabrication_Process.md](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md)*
 
 **Q1: Walk through the major steps in CMOS fabrication.**
 
@@ -202,7 +202,7 @@ becomes more challenging since the backside is no longer available for heat remo
 
 ## IC Packaging and Advanced Packaging — Senior Engineer Deep Dive
 
-*From [IC_Packaging.md](../07_Manufacturing_and_Bringup/IC_Packaging.md)*
+*From [IC_Packaging.md](../07_Manufacturing_and_Bringup/02_IC_Packaging.md)*
 
 **Q1: Compare wire bonding and flip chip. When would you choose each?**
 
@@ -315,9 +315,9 @@ probe individual bonds. (6) Design rules for keep-out and dummy patterns become 
 
 ## Tapeout and Post-Silicon Bring-up
 
-*From [Tapeout_and_Post_Silicon_Bringup.md](../07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md)*
+*From [Tapeout_and_Post_Silicon_Bringup.md](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md)*
 
-**Q: First silicon draws huge current at power-on. First hypotheses?** A short — power-to-ground bridging that [LVS](../06_Signoff/Physical_Verification_DRC_LVS.md) should have caught (or in an analog/IO area it didn't cover), a missing well tie, or a bus-contention/X-state driving fight (often a reset bug leaving outputs enabled). Drop voltage, use thermal imaging to localize the hot spot, scan-dump if it'll come up enough.
+**Q: First silicon draws huge current at power-on. First hypotheses?** A short — power-to-ground bridging that [LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) should have caught (or in an analog/IO area it didn't cover), a missing well tie, or a bus-contention/X-state driving fight (often a reset bug leaving outputs enabled). Drop voltage, use thermal imaging to localize the hot spot, scan-dump if it'll come up enough.
 
 **Q: Why is DFT critical for bring-up, not just production test?** Because silicon has no internal visibility. Scan lets you freeze and read out all flop state to see *where* a non-booting chip died; trace buffers capture internal activity. Without good DFT, debugging first silicon is nearly impossible — you're guessing at a black box.
 

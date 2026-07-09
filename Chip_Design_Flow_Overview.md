@@ -48,8 +48,8 @@ flowchart TD
 
 Two cross-cutting concerns ride alongside every stage and therefore live in their own track:
 
-- **[02 · Power & Low-Power](02_Power_and_Low_Power/Power_Fundamentals.md)** — power is *specified* at architecture, *intended* in RTL (UPF), *implemented* at synthesis/backend, and *signed off* at the end. The track is kept together so you can see the whole story.
-- **[00 · Fundamentals](00_Fundamentals/CMOS_Fundamentals.md)** — device physics, logic, and arithmetic the other stages assume.
+- **[02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md)** — power is *specified* at architecture, *intended* in RTL (UPF), *implemented* at synthesis/backend, and *signed off* at the end. The track is kept together so you can see the whole story.
+- **[00 · Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md)** — device physics, logic, and arithmetic the other stages assume.
 
 ---
 
@@ -93,14 +93,14 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 
 | Stage (folder) | What you do | Key pages |
 |---|---|---|
-| **00 · Fundamentals** | the physics/logic everything assumes | [CMOS](00_Fundamentals/CMOS_Fundamentals.md), [Logic blocks](00_Fundamentals/Basic_Knowledge.md), [Adders](00_Fundamentals/Adders.md), [Floating point](00_Fundamentals/Floating_Point.md) |
-| **01 · Architecture + PPA** | explore µarch; model performance; budget power/area | [Performance Modeling & DSE](01_Architecture_and_PPA/Performance_Modeling_and_DSE.md), [CPU Architecture](01_Architecture_and_PPA/CPU_Architecture.md), [OoO](01_Architecture_and_PPA/OoO_Execution.md), [Cache](01_Architecture_and_PPA/Cache_Microarchitecture.md), [NoC](01_Architecture_and_PPA/Network_on_Chip.md), [DDR](01_Architecture_and_PPA/DDR_Controller.md) |
-| **02 · Power & Low-Power** | the cross-cutting power track | [Power Fundamentals](02_Power_and_Low_Power/Power_Fundamentals.md), [Reduction Techniques](02_Power_and_Low_Power/Power_Reduction_Techniques.md), [UPF Intent](02_Power_and_Low_Power/UPF_Power_Intent.md), [Power Signoff](02_Power_and_Low_Power/Power_Analysis_and_Signoff.md) |
-| **03 · Frontend RTL + Verification** | write synthesizable RTL; verify it | [RTL Design Methodology](03_Frontend_RTL_and_Verification/RTL_Design_Methodology.md), [Data types](03_Frontend_RTL_and_Verification/Data_Types_and_Basics.md), [Async/CDC](03_Frontend_RTL_and_Verification/Async_Circuit_Design.md), [UVM](03_Frontend_RTL_and_Verification/UVM_Methodology.md), [Lint/CDC/RDC signoff](03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md), [GLS & Emulation](03_Frontend_RTL_and_Verification/Gate_Level_Sim_and_Emulation.md), [Verification Planning](03_Frontend_RTL_and_Verification/Verification_Planning_and_Coverage_Closure.md), [Formal](03_Frontend_RTL_and_Verification/Formal_Verification.md) |
-| **04 · Synthesis** | RTL → gates under constraints | [Synthesis & Optimization](04_Synthesis/Synthesis_and_Optimization.md), [SDC Constraints](04_Synthesis/Constraints_SDC.md) |
-| **05 · Backend (Physical Design)** | gates → layout | [Physical Design](05_Backend_Physical_Design/Physical_Design.md), [Signal Integrity](05_Backend_Physical_Design/Signal_Integrity_Reliability.md) |
-| **06 · Signoff** | prove it's correct before tapeout | [STA](06_Signoff/STA.md), [DFT & ATPG](06_Signoff/DFT_and_ATPG.md), [Physical Verification (DRC/LVS)](06_Signoff/Physical_Verification_DRC_LVS.md) |
-| **07 · Manufacturing + Bring-up** | fab, package, tapeout, first silicon | [Fabrication](07_Manufacturing_and_Bringup/Fabrication_Process.md), [Packaging](07_Manufacturing_and_Bringup/IC_Packaging.md), [Tapeout & Post-Silicon Bring-up](07_Manufacturing_and_Bringup/Tapeout_and_Post_Silicon_Bringup.md) |
+| **00 · Fundamentals** | the physics/logic everything assumes | [CMOS](00_Fundamentals/01_CMOS_Fundamentals.md), [Logic blocks](00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md), [Floating point](00_Fundamentals/04_Floating_Point.md) |
+| **01 · Architecture + PPA** | explore µarch; model performance; budget power/area | [Performance Modeling & DSE](01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md), [CPU Architecture](01_Architecture_and_PPA/03_CPU_Architecture.md), [OoO](01_Architecture_and_PPA/05_OoO_Execution.md), [Cache](01_Architecture_and_PPA/07_Cache_Microarchitecture.md), [NoC](01_Architecture_and_PPA/13_Network_on_Chip.md), [DDR](01_Architecture_and_PPA/10_DDR_Controller.md) |
+| **02 · Power & Low-Power** | the cross-cutting power track | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md), [Reduction Techniques](02_Power_and_Low_Power/03_Power_Reduction_Techniques.md), [UPF Intent](02_Power_and_Low_Power/04_UPF_Power_Intent.md), [Power Signoff](02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) |
+| **03 · Frontend RTL + Verification** | write synthesizable RTL; verify it | [RTL Design Methodology](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md), [Data types](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md), [Async/CDC](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM](03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Lint/CDC/RDC signoff](03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md), [GLS & Emulation](03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md), [Verification Planning](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md), [Formal](03_Frontend_RTL_and_Verification/12_Formal_Verification.md) |
+| **04 · Synthesis** | RTL → gates under constraints | [Synthesis & Optimization](04_Synthesis/01_Synthesis_and_Optimization.md), [SDC Constraints](04_Synthesis/02_Constraints_SDC.md) |
+| **05 · Backend (Physical Design)** | gates → layout | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md), [Signal Integrity](05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) |
+| **06 · Signoff** | prove it's correct before tapeout | [STA](06_Signoff/01_STA.md), [DFT & ATPG](06_Signoff/02_DFT_and_ATPG.md), [Physical Verification (DRC/LVS)](06_Signoff/03_Physical_Verification_DRC_LVS.md) |
+| **07 · Manufacturing + Bring-up** | fab, package, tapeout, first silicon | [Fabrication](07_Manufacturing_and_Bringup/01_Fabrication_Process.md), [Packaging](07_Manufacturing_and_Bringup/02_IC_Packaging.md), [Tapeout & Post-Silicon Bring-up](07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) |
 
 ---
 
@@ -126,5 +126,5 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 ---
 
 ## Cross-references
-- Power as a cross-cutting track: [02 · Power & Low-Power](02_Power_and_Low_Power/Power_Fundamentals.md).
+- Power as a cross-cutting track: [02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md).
 - The systems analogue (AI datacenter "flow"): ai_infra [Index](../ai_infra/Index.md).

@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `02_Power_and_
 
 ## Block Activity Power -- Estimation, Monitoring, and Management
 
-*From [Block_Activity_and_Power.md](../02_Power_and_Low_Power/Block_Activity_and_Power.md)*
+*From [Block_Activity_and_Power.md](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)*
 
 ### Q1: "What does 'block activity power' mean to you?"
 
@@ -115,7 +115,7 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ## Low Power Design -- The Complete Interview Bible
 
-*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/Power_Reduction_Techniques.md)*
+*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)*
 
 ### Q1: Derive P = alpha * C * V^2 * f from first principles.
 
@@ -293,7 +293,7 @@ captured on watchdog reset.
 
 ## Power Analysis and Signoff for Digital IC / ASIC Design
 
-*From [Power_Analysis_and_Signoff.md](../02_Power_and_Low_Power/Power_Analysis_and_Signoff.md)*
+*From [Power_Analysis_and_Signoff.md](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md)*
 
 ### Q1: "Walk me through the complete power signoff flow for a tape-out."
 
@@ -363,7 +363,7 @@ captured on watchdog reset.
 
 ## Power Fundamentals in Digital IC / ASIC Design
 
-*From [Power_Fundamentals.md](../02_Power_and_Low_Power/Power_Fundamentals.md)*
+*From [Power_Fundamentals.md](../02_Power_and_Low_Power/01_Power_Fundamentals.md)*
 
 ### Q1: "A 28nm design has 10M gates, average switching activity 0.15, average gate capacitance 1.2fF, Vdd=0.9V, 500MHz. Estimate dynamic power."
 
@@ -433,7 +433,7 @@ captured on watchdog reset.
 
 ## Power Reduction Techniques for Digital IC / ASIC Design
 
-*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/Power_Reduction_Techniques.md)*
+*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)*
 
 ### Q1: "A block has 5000 FFs, clock freq 1GHz, Vdd=0.8V, C_clk per FF = 8fF. Calculate power savings with 75% clock gating efficiency."
 
@@ -556,7 +556,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ## UPF (Unified Power Format) Power Intent Specification
 
-*From [UPF_Power_Intent.md](../02_Power_and_Low_Power/UPF_Power_Intent.md)*
+*From [UPF_Power_Intent.md](../02_Power_and_Low_Power/04_UPF_Power_Intent.md)*
 
 ### Q1: "What is UPF and why can't you capture power intent in RTL?"
 
