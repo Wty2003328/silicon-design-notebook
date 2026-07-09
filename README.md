@@ -31,18 +31,20 @@ Organized by the chip-design flow — the folders are numbered `00 → 07` in fl
 hardware_design_notebook/
 ├── Chip_Design_Flow_Overview.md   the master narrative: spec -> silicon
 ├── Index.md                       full page index and reading paths
-├── 00_Fundamentals/               device physics, logic, arithmetic
-├── 01_Architecture_and_PPA/       CPU microarch, memory, NoC, PPA exploration
-├── 02_Power_and_Low_Power/        power physics, intent (UPF), reduction, signoff
-├── 03_Frontend_RTL_and_Verification/   RTL coding, CDC, UVM, formal, coverage
-├── 04_Synthesis/                  RTL -> gates
-├── 05_Backend_Physical_Design/    gates -> layout, signal integrity
-├── 06_Signoff/                    STA, DFT/ATPG, physical verification
-├── 07_Manufacturing_and_Bringup/  fab, packaging, tapeout, post-silicon
-└── interview_prep/                per-folder interview Q&A (00-07) + RTL coding canon
+├── 00_Fundamentals/               device physics, logic, arithmetic (4 pages)
+├── 01_Architecture_and_PPA/       CPU microarch, memory, NoC, PPA exploration (14 pages)
+├── 02_Power_and_Low_Power/        power physics, intent (UPF), reduction, signoff (5 pages)
+├── 03_Frontend_RTL_and_Verification/   RTL coding, clocks/CDC, UVM, formal, coverage (13 pages)
+├── 04_Synthesis/                  RTL -> gates + SDC constraints (2 pages)
+├── 05_Backend_Physical_Design/    gates -> layout, signal integrity (2 pages)
+├── 06_Signoff/                    STA, DFT/ATPG, physical verification (3 pages)
+├── 07_Manufacturing_and_Bringup/  fab, packaging, tapeout, post-silicon (3 pages)
+└── interview_prep/                per-folder interview Q&A (00-07) + RTL coding canon + numeric bank
 ```
 
-See [Index.md](Index.md) for the full page-by-page index and topic reading paths (CPU design, physical design/STA, verification, power-aware design, etc.).
+Pages are numbered in reading order within each folder, and every flow folder has a `00_Index.md` with per-page coverage summaries and prev/next navigation. Total: **47 flow pages + 10 interview-prep banks**.
+
+See [Index.md](Index.md) for the full page-by-page index with coverage summaries.
 
 ## Content Style
 
