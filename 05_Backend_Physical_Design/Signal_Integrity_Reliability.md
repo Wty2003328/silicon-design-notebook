@@ -401,6 +401,8 @@ At advanced nodes, wire self-heating exacerbates EM:
 
 ## 5. IR Drop Analysis
 
+*Scope: the PnR/implementation view — grid models, analysis, fixing. Signoff criteria and power-integrity tool flow: [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/Power_Analysis_and_Signoff.md) §3.*
+
 ### 5.1 Static IR Drop
 
 ```ascii-graph
@@ -771,6 +773,8 @@ Sizing requirement:
 
 
 ## 7. Thermal Analysis
+
+*Scope: implementation-side thermal modeling and mitigation. Budgeting, thermal runaway math, and DTM policy: [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/Power_Analysis_and_Signoff.md) §6.*
 
 ### 7.1 Heat Generation and Dissipation
 

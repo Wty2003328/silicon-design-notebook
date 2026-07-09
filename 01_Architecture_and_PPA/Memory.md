@@ -457,6 +457,8 @@ Cosmic rays (neutrons) and alpha particles (from packaging materials) can flip S
 
 ## DRAM — Detailed Design
 
+*Scope: cell physics and array design — 1T1C, sense amps, refresh mechanisms. The interface/scheduling view (DDR protocol, timing parameters, controller policies): [DDR_Controller](DDR_Controller.md).*
+
 ### 1T1C Cell — Charge Sharing Equation
 
 ```ascii-graph

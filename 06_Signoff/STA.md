@@ -1442,78 +1442,26 @@ set_operating_conditions -max ss_0p72v_125c -min ff_0p88v_m40c
 
 ---
 
-## 11. Clock Tree Synthesis (CTS)
+## 11. Clock Tree Synthesis — What STA Assumes
 
-### 11.1 CTS Goals and Metrics
+STA does not build the clock tree; it consumes it. The timing-relevant contract:
 
-| Metric | Target (typical SoC) | Why |
-|--------|---------------------|-----|
-| Skew | < 50-100ps | Directly affects timing margin |
-| Latency | 500-1500ps | Affects cycle time through launch/capture |
-| Max transition | < 150-250ps | Signal integrity, downstream gate delay |
-| Power | Minimize | Clock tree = 30-50% of total dynamic power |
-| Insertion delay variation | < 20ps (3-sigma) | OCV/POCV margin |
+- **Pre-CTS:** clocks are *ideal* — network delay approximated by `set_clock_latency`, skew hidden inside `set_clock_uncertainty` (jitter + estimated skew + margin).
+- **Post-CTS:** `set_propagated_clock [all_clocks]` switches to real arrival times; uncertainty shrinks to jitter(+margin); skew becomes explicit per-path launch/capture latency and CRPR (§6) removes common-path pessimism.
+- **Useful skew** is a CTS optimization STA must re-verify: intentionally delaying a capture clock buys setup slack on one path at the cost of hold/setup pressure on neighbors — re-run full setup *and* hold after any skew scheduling.
+- **Clock-network quality STA inherits:** skew < 50–100 ps, insertion delay ~500–1500 ps, max transition on clock nets < 150–250 ps, insertion-delay variation < ~20 ps (3σ) — these feed directly into OCV margins (§7).
 
-### 11.2 CTS Topologies
-
-**H-tree:** Perfectly symmetric binary tree. Wire lengths balanced by construction. Used for clock meshes in memory arrays and FPGAs. Impractical for irregular ASIC layouts.
-
-**Fishbone/Spine:** Central spine with branches. Good for row-based standard cell designs. Less balanced than H-tree but adapts to irregular placement.
-
-**Balanced buffer tree:** What most CTS tools build. Algorithm: cluster sinks by proximity, insert buffers, balance delay through buffer sizing and wire snaking.
-
-**Clock mesh/grid:** A grid of wires shorts the clock signal at regular intervals. Lowest skew possible (< 10ps) but highest power. Used for very high-frequency designs (server CPUs at 5+ GHz).
-
-### 11.3 CTS Design Rules
-
-```tcl
-# In ICC2 / Innovus CTS constraints:
-
-# Use only dedicated clock buffers/inverters
-set_clock_tree_references -references {CLKBUFX4 CLKBUFX8 CLKBUFX16 CLKINVX4 CLKINVX8}
-
-# Route clocks on upper metal layers (low resistance)
-set_clock_routing_rules -rule NDR_2W2S -layer {M4 M5 M6}
-
-# Non-Default Routing Rules for clock nets
-create_routing_rule NDR_2W2S \
-    -widths {M4 0.08 M5 0.08 M6 0.08} \
-    -spacings {M4 0.08 M5 0.08 M6 0.08}
-# Double-width, double-space reduces resistance and crosstalk
-
-# Shield clock nets
-set_clock_tree_options -use_shield_net VSS
-```
-
-### 11.4 Useful Skew in CTS
+**Post-CTS closure loop (STA side):**
 
 ```text
-Before useful skew:
-  Path A->B: slack = -50ps (FAIL)
-  Path C->B: slack = +200ps (comfortable)
-
-CTS intentionally delays B's clock by 50ps:
-  Path A->B: slack = -50 + 50 = 0ps (MET)
-  Path C->B: slack = +200 - 50 = +150ps (still fine)
+1. set_propagated_clock [all_clocks]
+2. Reduce set_clock_uncertainty (drop estimated-skew component, keep jitter)
+3. Run STA -> fix setup (sizing, Vt swap on data paths)
+4. Run STA -> fix hold (buffer insertion on short paths)
+5. Iterate across all corners; verify clock-net DRCs (max_transition / max_capacitance)
 ```
 
-The CTS tool solves a global optimization problem: minimize total negative slack across all paths by redistributing skew within the clock tree. Constraint: no path may go negative after skew redistribution.
-
-### 11.5 Post-CTS Timing Closure
-
-```text
-Post-CTS signoff checklist:
-1. set_propagated_clock [all_clocks]     ; # Use real clock tree
-2. Reduce set_clock_uncertainty (remove skew component, keep jitter)
-3. Run STA -> identify setup violations
-4. Fix setup: cell sizing, Vt swap on data paths
-5. Run STA -> identify hold violations
-6. Fix hold: buffer insertion on short data paths
-7. Iterate until clean at all corners
-8. Verify CTS DRC: max_transition, max_capacitance on clock nets
-```
-
----
+How the tree is actually built — topologies (H-tree / spine / balanced tree / mesh), clock buffer selection, NDR routing rules, shielding, skew scheduling, multi-source CTS: [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md) §4.
 
 ## 12. MCMM and Signoff Methodology
 

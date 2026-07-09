@@ -16,6 +16,8 @@
 
 ## 1. Metastability -- Physics and MTBF Derivation
 
+*Device-level first-principles (two cross-coupled inverters as an unstable equilibrium): [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md) §Metastability.*
+
 ### 1.1 The Bistable Element Differential Equation
 
 A cross-coupled inverter pair (the core of any latch/FF) is a bistable element. In the metastable region, the circuit behavior is governed by:

@@ -460,6 +460,8 @@ power and test-mode vectors.
 
 ## 3. IR Drop Analysis -- Deep Dive
 
+*Scope: the signoff view — methodology, criteria, decap/EM interplay. Grid-level resistance models, worked examples, and the PnR fixing levers: [Signal_Integrity_Reliability](../05_Backend_Physical_Design/Signal_Integrity_Reliability.md) §5–§6.*
+
 ### 3.1 What Is IR Drop?
 
 Every wire in the power grid has resistance. When current flows through this resistance,
@@ -1062,6 +1064,8 @@ Active max (5W, gaming):
 ---
 
 ## 6. Thermal Analysis
+
+*Scope: chip/package thermal budgeting, runaway, DTM at signoff. Implementation-side thermal analysis (power maps, hotspot mitigation in PnR): [Signal_Integrity_Reliability](../05_Backend_Physical_Design/Signal_Integrity_Reliability.md) §7.*
 
 ### 6.1 Junction Temperature
 

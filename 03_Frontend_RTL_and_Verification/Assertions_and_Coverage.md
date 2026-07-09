@@ -694,64 +694,31 @@ covergroup cg_options;
 endgroup
 ```
 
----
-
-## Coverage-Driven Verification Methodology
-
-### The Feedback Loop
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    W["Write coverage model<br/>from spec"] --> R["Run regressions<br/>(random + directed)"]
-    R --> A["Analyze coverage reports"]
-    A --> H{"Coverage holes?<br/>missing combos?"}
-    H -->|yes| ID["Identify holes —<br/>tune constraints,<br/>add directed tests,<br/>adjust weights"]
-    ID --> W
-    H -->|no| DONE["Coverage closure"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef d fill:#fde68a,stroke:#b45309,color:#000
-    classDef g fill:#dcfce7,stroke:#15803d,color:#000
-    class W,R,A,ID s
-    class H d
-    class DONE g
-```
-
-### Methodology Stages
-
-1. **Feature extraction**: Read the spec, identify functional features, corner cases, error
-   scenarios, boundary conditions.
-
-2. **Coverage model design**: Create covergroups for:
-   - Input stimulus coverage (did we send all transaction types?)
-   - Output/status coverage (did we see all response types?)
-   - Cross coverage (interesting combinations)
-   - Transition coverage (state machine paths)
-   - Corner cases (boundary values, back-to-back, empty/full)
-
-3. **Initial regression**: Run random tests, check coverage.
-
-4. **Coverage closure**: Iterate on constraints, add directed sequences for hard-to-hit bins.
-
-5. **When 100% is not needed**: illegal/impossible states (use `illegal_bins`), don't-care
-   combinations (`ignore_bins`), or when diminishing returns make the last 2% not worth the
-   effort. Document why each uncovered bin is excluded.
-
-### Coverage Merging
+**Covergroup `option.*` knobs** (scoring/reporting control):
 
 ```verilog
-// Per-instance vs type coverage:
-// option.per_instance = 1: each component tracks its own coverage
-//   Useful: "did agent0 AND agent1 both see all opcodes?"
-// option.per_instance = 0 (default): all instances merge into one
-//   Useful: "across all agents, did we see all opcodes?"
-
-// Across regression runs, coverage databases are merged:
-// Simulator command: vcover merge total.ucdb run1.ucdb run2.ucdb run3.ucdb
-// This accumulates hits across all seeds/tests
+covergroup cg @(posedge clk);
+    option.per_instance = 1;   // report each instance separately (default: merged per type)
+    option.at_least     = 3;   // a bin needs >= 3 hits to count as covered
+    option.goal         = 95;  // target % for this covergroup
+    option.weight       = 2;   // weight in the parent/merged coverage score
+    option.comment      = "AXI burst coverage";
+    ...
+endgroup
 ```
 
 ---
+
+## Coverage-Driven Verification Methodology — see Verification_Planning
+
+The CDV loop — write the coverage model from the spec, run random regressions, analyze holes,
+tune constraints / add directed tests, iterate to closure — and the hole-triage decision tree are
+centralized in [Verification_Planning_and_Coverage_Closure](Verification_Planning_and_Coverage_Closure.md) §1, §3–§4.
+
+The mechanics-side rule that stays here: **100% of bins is not the goal — 100% of *reachable* bins is.**
+Encode impossibility in the model itself: `illegal_bins` (error if ever hit) for spec violations,
+`ignore_bins` (excluded from the score) for don't-cares, and a documented justification for every
+other excluded bin.
 
 ## Multi-Clock Assertions
 

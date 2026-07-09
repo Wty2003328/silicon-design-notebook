@@ -1277,6 +1277,8 @@ ways based on demand (e.g., RAPL power management).
 
 ## 9. Cache Coherence
 
+*Scope: the implementation view — how coherence lands in a real cache pipeline. Protocol-level MESI/MOESI state tables, snooping examples, directory scaling: [CPU_Architecture](CPU_Architecture.md) §8.*
+
 ### 9.1 The Coherence Problem
 
 In a multicore system, each core has private L1 (and possibly L2) caches. When Core 0

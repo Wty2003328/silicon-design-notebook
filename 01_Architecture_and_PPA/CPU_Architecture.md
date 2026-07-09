@@ -1011,6 +1011,8 @@ tile).
 
 ## 8. Cache Coherence -- MESI with All Transitions
 
+*Scope: the protocol view — states, transitions, snooping/directory tradeoffs. The implementation view (coherence controllers inside a cache, MSHR interaction, inclusive/exclusive effects): [Cache_Microarchitecture](Cache_Microarchitecture.md) §9.*
+
 ### 8.1 MESI States
 
 | State     | Valid | Dirty | Exclusive | Meaning                                    |

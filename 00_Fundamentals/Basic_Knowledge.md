@@ -361,6 +361,8 @@ Instead of the simpler per-stage constraint of flip-flop design. This makes timi
 
 ## Metastability — First-Principles Derivation
 
+*This section derives the physics. The design consequences — MTBF budgeting, synchronizer zoo, CDC schemes, async FIFO: [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) §1–§5.*
+
 ### The Physics of Metastability
 
 A flip-flop's internal cross-coupled inverter pair has three equilibrium points:
