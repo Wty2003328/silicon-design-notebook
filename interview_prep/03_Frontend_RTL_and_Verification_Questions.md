@@ -263,9 +263,63 @@ functional coverage, allowing unified analysis.
 
 ---
 
+---
+
 ## Clock Division Techniques — Senior Engineer Level
 
 *From [Clock_Division_and_Switching.md](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md)*
+
+### Q1: How do you generate an odd-division clock with 50% duty cycle? Prove it works.
+
+**A:** Generate two divided clocks — one triggered on rising edges, one on falling edges — each with duty cycle (N-1)/(2N). OR them. The negedge clock is shifted by T/2 relative to the posedge clock. The OR extends the high time by T/2 at each end, giving total HIGH = (N-1)/2*T + T/2 = N/2*T. Since the period is N*T, duty cycle = (N/2*T)/(N*T) = 50%. This works for any odd N. The proof relies on the half-cycle offset between posedge and negedge filling in the asymmetry.
+
+### Q2: Why can't you use a simple MUX for clock switching?
+
+**A:** A combinational MUX `sel ? clk_b : clk_a` produces runt pulses when sel transitions while the two clocks are at different levels. Example: if sel goes from 0→1 while clk_a=HIGH and clk_b=LOW, the output drops from 1 to 0 creating a pulse shorter than a valid half-period. This runt pulse causes setup/hold violations in all downstream flip-flops. Additionally, clock tree buffers may filter the runt differently at different fanout points, causing some FFs to see an edge and others not — a catastrophic functional failure.
+
+### Q3: Explain the glitch-free clock mux feedback mechanism.
+
+**A:** Each clock domain has a 2-FF synchronizer for the select signal, with the output of the OTHER domain's synchronizer fed back as a gating condition. Specifically: en_a = sync_to_clk_a(sel_n AND ~en_b). This means en_a cannot go high until en_b is confirmed low (and vice versa). The feedback creates a mandatory dead-time during switching where both enables are 0, and clk_out = 0 (constant, no glitch). The dead-time is 2-4 cycles of each clock. This is a "break-before-make" switching strategy.
+
+### Q4: What is the jitter of a dual-modulus fractional divider?
+
+**A:** For divide-by-N.5 (alternating N and N+1): peak-to-peak jitter = T (one input clock period). For divide-by-N + K/F (general fractional): Jpp = T always (periods differ by 1 input cycle). The RMS jitter depends on the sequence pattern. A first-order sigma-delta modulator produces Jrms ≈ T/sqrt(12) for the divider output. Higher-order modulators shape the noise spectrum so that low-frequency jitter is reduced at the expense of high-frequency jitter, which the PLL loop filter attenuates. After PLL filtering, the output jitter can be sub-picosecond.
+
+### Q5: What is the difference between clock gating and clock division?
+
+**A:** Clock gating selectively enables/disables an existing clock using an ICG cell (latch + AND). It preserves the original frequency when active and eliminates toggling when gated. Used for power reduction of idle blocks. Clock division creates a new, lower-frequency clock signal. Used to generate clocks for slower domains (peripherals, IO). Key difference: gating saves power in the clock tree fanout when a block is idle; division reduces frequency for blocks that inherently need a slower clock. In an SoC, clock gating saves 30-60% of dynamic power.
+
+### Q6: How do you handle the case where one clock stops during switching?
+
+**A:** If the source clock stops, the synchronizer FFs in that domain can't update → the enable for the new clock can't assert → system is stuck with no output clock. Solutions: (1) Guaranteed running reference clock that monitors both sources and forces enable transitions via an asynchronous mechanism. (2) Timeout counter on a separate always-running clock — if no edges are detected for N cycles, force the enable state. (3) In practice, SoC clock controllers enforce a protocol: ensure the target clock is stable (PLL locked, crystal running) before asserting the switch. Software reads a "clock stable" status register before switching. The hardware itself may include a lock-detect output from the PLL.
+
+### Q7: Why do ASIC designs use ICG cells instead of direct AND gating?
+
+**A:** A raw `clk & en` glitches if en transitions while clk is HIGH — the AND output produces a narrow pulse. The ICG cell contains a negative-phase latch that captures `en` when clk is LOW (inactive phase). When clk goes HIGH, the latched enable is stable, so the AND output is clean. Additionally, ICG cells are: (1) characterized by the foundry with accurate timing models (Tsetup for enable, Tclk-to-Q), enabling correct STA; (2) DFT-aware with a test-enable (TE) port for scan testing; (3) physically optimized for low insertion delay and balanced rise/fall times. Using raw AND gates for clock gating is a DRC violation in most ASIC methodologies.
+
+### Q8: Can you implement a divide-by-1.5 clock?
+
+**A:** Yes, using dual-modulus: alternate between divide-by-1 and divide-by-2. Average period = 1.5T. But the jitter is catastrophic: Jpp = T = 67% of the average period. This is unusable for any clocked logic. In practice, divide-by-1.5 (or any fractional ratio < 2) must use a PLL: set feedback divider to 2 and reference divider to 3 → f_out = f_ref * 3/2 = 1.5 * f_ref. The PLL produces a clean clock with sub-ps jitter.
+
+### Q9: What happens if div_ratio is changed while the counter is mid-count?
+
+**A:** If the new ratio is smaller than the current count value, the counter will never reach the (now-lowered) terminal count. It will count up to its maximum value, wrap around, and eventually reach the new terminal count — producing one very long output period (up to 2^N cycles). If the new ratio is larger, the counter reaches the old terminal count, rolls over, and the next period uses the new ratio — producing one short period. Both cases create frequency transients. Fix: latch the new ratio at counter rollover (cnt==0), ensuring it takes effect at a period boundary. Or hold the divider in reset during reconfiguration.
+
+### Q10: Describe the clock mux design used in real SoC power management.
+
+**A:** In a typical SoC (e.g., ARM-based mobile chip), the clock controller has: (1) Multiple clock sources: crystal oscillator (24-32 MHz), ring oscillator (low-power, inaccurate), PLL outputs (high-speed). (2) A tree of glitch-free clock MUXes selecting among sources. (3) Clock dividers downstream of each MUX to generate domain-specific frequencies. (4) ICG cells for fine-grained gating. During DVFS transitions: software programs the new PLL frequency → waits for PLL lock → switches the MUX from the old source to the new PLL → adjusts dividers. The MUX switching takes 2-5 us (including synchronizer latency and dead-time). During this time, the processor may run on a temporary clock (ring oscillator) to stay alive while the PLL relocks.
+
+### Q11: A common tapeout bug related to clock dividers — what is it?
+
+**A:** Forgetting to constrain the generated clock from a divider in SDC. If you write a divide-by-4 and don't tell the STA tool about it:
+```tcl
+# Missing this constraint:
+create_generated_clock -name clk_div4 -source [get_ports clk] \
+    -divide_by 4 [get_pins div4_inst/clk_out]
+```
+The tool treats the divider output as a regular signal, not a clock. Paths from this "clock" to flip-flops are treated as data paths and may be incorrectly timed (too relaxed or too tight). The chip may pass STA but fail in silicon because the actual clock period is 4x shorter than the tool assumed. This is one of the most common clock-domain bugs caught during signoff timing review.
+
+*Q12–Q14: PLL/DLL material — from [PLL_DLL_and_Clock_Distribution.md](../03_Frontend_RTL_and_Verification/PLL_DLL_and_Clock_Distribution.md)*
 
 ### Q12: Draw the PLL block diagram and explain each component's function.
 
@@ -348,62 +402,6 @@ Common mistakes: forgetting `-add` for multiple clocks on the same pin (the seco
 ### Q26: How is clock skew managed in modern ASIC design?
 
 **A:** Clock skew is managed through the Clock Tree Synthesis (CTS) flow in P&R tools: (1) **Target:** useful skew = 0 for all flip-flop pairs in the same clock domain (or intentional useful skew to help timing). Typical achievable skew: 20-50 ps in 7nm, 50-100 ps in 28nm. (2) **CTS algorithm:** the tool builds a balanced buffer tree from the clock source to all sinks (flip-flops), inserting buffers and inverters to equalize path delays. H-tree topology for critical clocks, or spine-based for general use. (3) **Post-CTS optimization:** the tool adjusts buffer sizes and adds delay cells to fine-tune skew. Useful skew intentionally unbalances launch vs capture to help tight paths. (4) **Clock tree DRVs:** design rule violations specific to clock trees — maximum transition time, maximum capacitance, maximum fanout — are tighter than data path rules. (5) **Multi-corner multi-mode (MCMM):** CTS must balance skew across all PVT corners simultaneously, not just typical. A tree balanced at SS corner may be unbalanced at FF corner. CTS tools optimize across multiple corners jointly.
-
----
-
-## Clock Division Techniques — Senior Engineer Level
-
-*From [Clock_Division_and_Switching.md](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md)*
-
-### Q1: How do you generate an odd-division clock with 50% duty cycle? Prove it works.
-
-**A:** Generate two divided clocks — one triggered on rising edges, one on falling edges — each with duty cycle (N-1)/(2N). OR them. The negedge clock is shifted by T/2 relative to the posedge clock. The OR extends the high time by T/2 at each end, giving total HIGH = (N-1)/2*T + T/2 = N/2*T. Since the period is N*T, duty cycle = (N/2*T)/(N*T) = 50%. This works for any odd N. The proof relies on the half-cycle offset between posedge and negedge filling in the asymmetry.
-
-### Q2: Why can't you use a simple MUX for clock switching?
-
-**A:** A combinational MUX `sel ? clk_b : clk_a` produces runt pulses when sel transitions while the two clocks are at different levels. Example: if sel goes from 0→1 while clk_a=HIGH and clk_b=LOW, the output drops from 1 to 0 creating a pulse shorter than a valid half-period. This runt pulse causes setup/hold violations in all downstream flip-flops. Additionally, clock tree buffers may filter the runt differently at different fanout points, causing some FFs to see an edge and others not — a catastrophic functional failure.
-
-### Q3: Explain the glitch-free clock mux feedback mechanism.
-
-**A:** Each clock domain has a 2-FF synchronizer for the select signal, with the output of the OTHER domain's synchronizer fed back as a gating condition. Specifically: en_a = sync_to_clk_a(sel_n AND ~en_b). This means en_a cannot go high until en_b is confirmed low (and vice versa). The feedback creates a mandatory dead-time during switching where both enables are 0, and clk_out = 0 (constant, no glitch). The dead-time is 2-4 cycles of each clock. This is a "break-before-make" switching strategy.
-
-### Q4: What is the jitter of a dual-modulus fractional divider?
-
-**A:** For divide-by-N.5 (alternating N and N+1): peak-to-peak jitter = T (one input clock period). For divide-by-N + K/F (general fractional): Jpp = T always (periods differ by 1 input cycle). The RMS jitter depends on the sequence pattern. A first-order sigma-delta modulator produces Jrms ≈ T/sqrt(12) for the divider output. Higher-order modulators shape the noise spectrum so that low-frequency jitter is reduced at the expense of high-frequency jitter, which the PLL loop filter attenuates. After PLL filtering, the output jitter can be sub-picosecond.
-
-### Q5: What is the difference between clock gating and clock division?
-
-**A:** Clock gating selectively enables/disables an existing clock using an ICG cell (latch + AND). It preserves the original frequency when active and eliminates toggling when gated. Used for power reduction of idle blocks. Clock division creates a new, lower-frequency clock signal. Used to generate clocks for slower domains (peripherals, IO). Key difference: gating saves power in the clock tree fanout when a block is idle; division reduces frequency for blocks that inherently need a slower clock. In an SoC, clock gating saves 30-60% of dynamic power.
-
-### Q6: How do you handle the case where one clock stops during switching?
-
-**A:** If the source clock stops, the synchronizer FFs in that domain can't update → the enable for the new clock can't assert → system is stuck with no output clock. Solutions: (1) Guaranteed running reference clock that monitors both sources and forces enable transitions via an asynchronous mechanism. (2) Timeout counter on a separate always-running clock — if no edges are detected for N cycles, force the enable state. (3) In practice, SoC clock controllers enforce a protocol: ensure the target clock is stable (PLL locked, crystal running) before asserting the switch. Software reads a "clock stable" status register before switching. The hardware itself may include a lock-detect output from the PLL.
-
-### Q7: Why do ASIC designs use ICG cells instead of direct AND gating?
-
-**A:** A raw `clk & en` glitches if en transitions while clk is HIGH — the AND output produces a narrow pulse. The ICG cell contains a negative-phase latch that captures `en` when clk is LOW (inactive phase). When clk goes HIGH, the latched enable is stable, so the AND output is clean. Additionally, ICG cells are: (1) characterized by the foundry with accurate timing models (Tsetup for enable, Tclk-to-Q), enabling correct STA; (2) DFT-aware with a test-enable (TE) port for scan testing; (3) physically optimized for low insertion delay and balanced rise/fall times. Using raw AND gates for clock gating is a DRC violation in most ASIC methodologies.
-
-### Q8: Can you implement a divide-by-1.5 clock?
-
-**A:** Yes, using dual-modulus: alternate between divide-by-1 and divide-by-2. Average period = 1.5T. But the jitter is catastrophic: Jpp = T = 67% of the average period. This is unusable for any clocked logic. In practice, divide-by-1.5 (or any fractional ratio < 2) must use a PLL: set feedback divider to 2 and reference divider to 3 → f_out = f_ref * 3/2 = 1.5 * f_ref. The PLL produces a clean clock with sub-ps jitter.
-
-### Q9: What happens if div_ratio is changed while the counter is mid-count?
-
-**A:** If the new ratio is smaller than the current count value, the counter will never reach the (now-lowered) terminal count. It will count up to its maximum value, wrap around, and eventually reach the new terminal count — producing one very long output period (up to 2^N cycles). If the new ratio is larger, the counter reaches the old terminal count, rolls over, and the next period uses the new ratio — producing one short period. Both cases create frequency transients. Fix: latch the new ratio at counter rollover (cnt==0), ensuring it takes effect at a period boundary. Or hold the divider in reset during reconfiguration.
-
-### Q10: Describe the clock mux design used in real SoC power management.
-
-**A:** In a typical SoC (e.g., ARM-based mobile chip), the clock controller has: (1) Multiple clock sources: crystal oscillator (24-32 MHz), ring oscillator (low-power, inaccurate), PLL outputs (high-speed). (2) A tree of glitch-free clock MUXes selecting among sources. (3) Clock dividers downstream of each MUX to generate domain-specific frequencies. (4) ICG cells for fine-grained gating. During DVFS transitions: software programs the new PLL frequency → waits for PLL lock → switches the MUX from the old source to the new PLL → adjusts dividers. The MUX switching takes 2-5 us (including synchronizer latency and dead-time). During this time, the processor may run on a temporary clock (ring oscillator) to stay alive while the PLL relocks.
-
-### Q11: A common tapeout bug related to clock dividers — what is it?
-
-**A:** Forgetting to constrain the generated clock from a divider in SDC. If you write a divide-by-4 and don't tell the STA tool about it:
-```tcl
-# Missing this constraint:
-create_generated_clock -name clk_div4 -source [get_ports clk] \
-    -divide_by 4 [get_pins div4_inst/clk_out]
-```
-The tool treats the divider output as a regular signal, not a clock. Paths from this "clock" to flip-flops are treated as data paths and may be incorrectly timed (too relaxed or too tight). The chip may pass STA but fail in silicon because the actual clock period is 4x shorter than the tool assumed. This is one of the most common clock-domain bugs caught during signoff timing review.
 
 ---
 

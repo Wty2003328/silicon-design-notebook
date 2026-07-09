@@ -328,7 +328,7 @@ RISC-V provides dedicated conversion instructions:
 
 ---
 
-## Rounding — GRS Bits Sufficiency Proof
+## Rounding — GRS Bits and IEEE Rounding Modes
 
 ### Claim
 
@@ -380,9 +380,154 @@ wire [n-1:0] rounded_mantissa = mantissa + round_up;
 
 **Post-normalization:** If the mantissa was 1.111...1 and we round up: result = 10.000...0. Must right-shift by 1 and increment exponent. This is a 1-bit shift (trivial) but must be checked.
 
+### The Four IEEE 754 Rounding Modes
+
+**Mode 1: Round-to-nearest-even (RNE) — the default "banker's rounding"**
+
+Why "banker's rounding" prevents statistical bias: simple round-half-up always rounds 0.5 upward, introducing a systematic positive bias over many operations. RNE rounds ties to the nearest EVEN value, so half the ties round up and half round down (statistically). Over millions of operations, the accumulated rounding error averages to approximately zero.
+
+**Examples (decimal analogy):**
+   - 2.5 → rounds to 2 (nearest even)
+   - 3.5 → rounds to 4 (nearest even)
+   - 4.5 → rounds to 4 (nearest even)
+   - 5.5 → rounds to 6 (nearest even)
+
+Average rounding direction: 2 up, 2 down → zero bias
+
+**Mode 2: Round toward +infinity (ceiling)**
+
+Always rounds toward positive infinity. Non-exact positive results round up; non-exact negative results round toward zero (which is toward +inf).
+
+```ascii-graph
++1.1 → +2    (rounded up)
+-1.1 → -1    (rounded toward +inf, i.e., toward zero)
++1.0 → +1    (exact, no rounding)
+```
+
+**Mode 3: Round toward -infinity (floor)**
+
+Always rounds toward negative infinity. Non-exact positive results round toward zero (toward -inf); non-exact negative results round down (more negative).
+
+```ascii-graph
++1.1 → +1    (rounded toward -inf, i.e., toward zero)
+-1.1 → -2    (rounded down, more negative)
+```
+
+**Mode 4: Round toward zero (truncation)**
+
+Always rounds toward zero — simply discard the fractional bits. Positive numbers round down, negative numbers round up (toward zero).
+
+```ascii-graph
++1.9 → +1    (truncated)
+-1.9 → -1    (truncated toward zero)
+```
+
+**Interval arithmetic application:** By computing the same operation in round-toward-+inf and round-toward--inf modes, you get guaranteed upper and lower bounds on the true result. This is the basis for IEEE 754's support of interval arithmetic in scientific computing.
+
+### Worked Example: 1.0 + 2^(-24) in Single Precision, All 4 Modes
+
+**Setup:**
+
+```text
+A                      = 1.0  = 1.00000000000000000000000 * 2^0     (E=127)
+B                      = 2^(-24) = 1.00000000000000000000000 * 2^(-24)  (E=103)
+
+Exponent difference: d = 127 - 103 = 24
+```
+
+**Alignment shift (shift B right by 24):**
+
+```text
+M_A         = 1.00000000000000000000000  (24 bits: 1 implicit + 23 stored)
+M_B before shift: 1.00000000000000000000000
+
+Shift right by 24:
+M_B_aligned = 0.00000000000000000000000 | 1 | 0 | 0
+                                           G   R   S
+
+The implicit 1 of B lands exactly in the Guard bit position.
+G           = 1, R = 0, S = 0
+```
+
+**Mantissa addition:**
+
+```text
+  1.00000000000000000000000   (A)
++ 0.00000000000000000000000   (B aligned, truncated to 24 bits)
+= 1.00000000000000000000000
+
+The aligned B contributes 0 to the 24-bit mantissa. All its information is in GRS = 100.
+```
+
+**Infinitely precise result:**
+
+- **True result** = `1.00000000000000000000000 1  (binary)`
+   - ^-- this is the 25th bit (Guard position)
+= 1.0 + 2^(-24)  = 1 + 2^(-24)
+
+**The representable neighbors are:**
+   - Lower: 1.00000000000000000000000 * 2^0  = 1.0
+   - Upper: 1.00000000000000000000001 * 2^0  = 1.0 + 2^(-23)
+
+The true result is EXACTLY halfway between them:
+1.0 + 2^(-24) = 1.0 + (2^(-23))/2 = midpoint
+
+**Rounding decisions:**
+
+```ascii-graph
+GRS = 100 (Guard=1, Round=0, Sticky=0) → exact tie (halfway case)
+LSB of truncated mantissa = bit 0 = 0 (even)
+
+Mode 1 — RNE:
+  Tie → round to even → LSB is already 0 (even) → truncate (round down)
+  Result: 1.00000000000000000000000 * 2^0 = 1.0
+  The addition of 2^(-24) is LOST — the result is exactly 1.0.
+
+Mode 2 — Round toward +inf:
+  True result > representable result → round up (toward +inf)
+  Result: 1.00000000000000000000001 * 2^0 = 1.0 + 2^(-23)
+  Error = +2^(-24) (rounded up by half an ULP)
+
+Mode 3 — Round toward -inf:
+  True result > truncated result → but rounding toward -inf means truncate (for positive numbers)
+  Result: 1.00000000000000000000000 * 2^0 = 1.0
+  Same as RNE in this case.
+
+Mode 4 — Round toward zero:
+  Truncate (for positive numbers, toward zero = toward -inf)
+  Result: 1.00000000000000000000000 * 2^0 = 1.0
+  Same as mode 3.
+```
+
+**Key insight:** In RNE mode, adding 2^(-24) to 1.0 in single precision gives exactly 1.0 — the addition has no effect! This is because 2^(-24) is exactly 0.5 ULP of 1.0, and the tie-breaking rule rounds to the already-even LSB. However, adding 2^(-24) + 2^(-50) (anything slightly above half ULP) would round UP to 1.0 + 2^(-23).
+
+### Another Worked Example: GRS in Action
+
+**Compute 1.0 + 1.5 * 2^(-24) in single precision (RNE):**
+
+```ascii-graph
+A = 1.0 = 1.00000000000000000000000 * 2^0
+B = 1.5 * 2^(-24) = 1.10000000000000000000000 * 2^(-24)
+
+Alignment: shift B right by 24:
+M_B_aligned = 0.00000000000000000000000 | 1 | 1 | 0
+                                           G   R   S
+
+G = 1, R = 1, S = 0
+
+Mantissa sum (24-bit) = 1.00000000000000000000000 (same as before)
+
+Rounding: GRS = 110
+  G = 1 → tail >= 0.5 ULP
+  R = 1 → tail > 0.5 ULP (not a tie!)
+  → Round UP unconditionally
+
+Result: 1.00000000000000000000001 * 2^0 = 1.0 + 2^(-23)
+```
+
 ---
 
-## Division — SRT with Quotient Digit Selection Table
+## Division — SRT, Newton-Raphson, and Goldschmidt
 
 ### Radix-4 SRT Division
 
@@ -504,6 +649,183 @@ Goldschmidt per iteration: 1 mul for F + 2 parallel muls (N*F, D*F) = 2 serial m
 
 **In practice:** High-performance FPUs (AMD, IBM) use Goldschmidt. Simpler FPUs (embedded) use N-R or SRT.
 
+### SRT Division: Radix-2 and Radix-4
+
+**Radix-2 SRT Division:**
+
+The simplest form of SRT (Sweeney, Robertson, Tocher) division. Quotient digits are from {-1, 0, +1} — a redundant signed-digit representation.
+
+```text
+Recurrence: w_{j+1} = 2 * w_j - q_{j+1} * D
+
+Where:
+  w_j               = partial remainder (initially = dividend N)
+  D = divisor (normalized: 0.5 <= D < 1)
+  q_{j+1}           = quotient digit selected from {-1, 0, +1}
+```
+
+Quotient digit selection for radix-2 SRT is trivial — based on the sign and magnitude of the partial remainder:
+
+```text
+If w_j >= D/2:    q = +1      (subtract D from shifted remainder)
+If -D/2 <= w_j < D/2:  q = 0   (no correction, just shift)
+If w_j < -D/2:   q = -1       (add D to shifted remainder)
+```
+
+**Key advantage of redundancy:** The selection of q only depends on a few MSBs of w_j (typically 3-4 bits) because the regions overlap. Without redundancy (non-restoring division, q in {-1, +1}), the selection boundary is exactly at w=0, requiring full-precision comparison.
+
+**Radix-4 SRT Division (as used in Pentium):**
+
+Produces 2 bits per iteration. Quotient digits: {-2, -1, 0, +1, +2}.
+
+```text
+Recurrence: w_{j+1} = 4 * w_j - q_{j+1} * D
+```
+
+The quotient digit selection function is more complex — it's a 2D function of (truncated w, truncated D). This is the P-D diagram (partial remainder vs divisor):
+
+```ascii-graph
+P-D Diagram for Radix-4 SRT:
+
+  Partial            The diagram shows selection regions.
+  Remainder          Overlap regions allow multiple valid digits.
+  (w_hat)
+    ^
+    |  +2  +2  +2  +2
+    |  /   /   /   /
+    | +1  +1  +1  +1    ← Selection boundaries are
+    | /   /   /   /       piecewise-linear functions of D
+    | 0   0   0   0
+    | \   \   \   \
+    | -1  -1  -1  -1
+    |  \   \   \   \
+    |  -2  -2  -2  -2
+    +------------------→ Divisor (D_hat)
+       0.5   0.75   1.0
+```
+
+**Hardware implementation with carry-save adder:**
+
+The partial remainder w is maintained in carry-save (redundant) form to avoid long carry propagation chains:
+
+```text
+w                                                                = w_sum + w_carry  (two vectors, no carry propagation)
+
+Each iteration:
+  1. Truncate w_sum and w_carry to get w_hat (top 7-8 bits)
+     w_hat                                                       = w_sum[MSBs] + w_carry[MSBs]  (short CPA, ~8 bits)
+  2. Look up q_{j+1} in the selection table using (w_hat, D_hat)
+  3. Compute: [w_sum_new, w_carry_new]                           = CSA(4*w_sum, 4*w_carry, -q*D)
+     The 4x is a 2-bit left shift (free in hardware)
+     -q*D is: 0 (q=0), -D (q=+1), +D (q=-1), -2D (q=+2), +2D (q=-2)
+     2D is D left-shifted by 1 (also free)
+
+Critical path per iteration: truncation CPA + table lookup + CSA = very short
+Typically 1 clock cycle per iteration at high frequency.
+```
+
+**Quotient conversion (on-the-fly):**
+
+The signed-digit quotient {-2,-1,0,+1,+2} must be converted to standard binary. This is done on-the-fly using two registers QP (positive running quotient) and QM (QP minus 1 ULP):
+
+```text
+On each new digit q:
+  If q >= 0: QP_new = QP_old << 2 | q;   QM_new = QP_old << 2 | (q-1)
+  If q < 0:  QP_new = QM_old << 2 | (4+q); QM_new = QM_old << 2 | (4+q-1)
+
+At the end: if final remainder >= 0, result = QP, else result = QM.
+```
+
+### Goldschmidt Division — Detailed
+
+**Algorithm:**
+
+```ascii-graph
+Given: compute Q = N / D, where 0.5 <= D < 1 (normalized)
+
+Step 0: Initial approximation
+  F_0 = LUT(D)  ≈ 1/D  (8-12 bits of accuracy from lookup table)
+
+Step 1-k: Iterate
+  For each iteration i:
+    N_{i+1} = N_i * F_i
+    D_{i+1} = D_i * F_i
+    F_{i+1} = 2 - D_{i+1}
+
+  As D_i → 1, N_i → N/D = Q.
+```
+
+**Quadratic convergence proof:**
+
+```ascii-graph
+Let e_i = 1 - D_i  (error in D from the target value 1)
+
+D_{i+1} = D_i * F_i = D_i * (2 - D_i)
+
+e_{i+1} = 1 - D_{i+1} = 1 - D_i * (2 - D_i)
+         = 1 - 2*D_i + D_i^2
+         = (1 - D_i)^2
+         = e_i^2
+
+This is quadratic convergence: the error SQUARES each iteration.
+If |e_0| < 2^(-8)  (8-bit initial approximation):
+  |e_1| < 2^(-16)   (16 correct bits)
+  |e_2| < 2^(-32)   (32 correct bits)
+  |e_3| < 2^(-64)   (64 correct bits)
+```
+
+**Comparison with Newton-Raphson:**
+
+| Aspect | Newton-Raphson | Goldschmidt |
+|--------|---------------|-------------|
+| Convergence | Quadratic (same) | Quadratic (same) |
+| Operations/iteration | 3 serial multiplies | 1 mul (F) + 2 parallel muls |
+| With 2 multipliers | 3 serial muls | 2 serial muls (N*F || D*F) |
+| Latency/iteration | 3M | 2M (with 2 multipliers) |
+| Total muls (SP, 8-bit LUT) | 6 (2 iterations * 3) | 4-6 (2 iterations, parallelized) |
+| Self-correcting? | Yes (compute residual) | No (error analysis needed) |
+| Hardware cost | 1 multiplier sufficient | Benefits from 2 multipliers |
+| Used in | Simpler FPUs, embedded | IBM POWER, AMD |
+
+**Goldschmidt's advantage** is that within each iteration, the N and D multiplications are independent and can execute simultaneously on two multiplier units. This nearly halves the latency compared to Newton-Raphson (where each multiply depends on the previous).
+
+### Lookup Table Sizing for Initial Approximation
+
+The initial reciprocal approximation comes from a ROM lookup table indexed by the top bits of the divisor:
+
+**Table parameters:**
+   - Input:  top k bits of D (after normalization, D in [0.5, 1))
+   - Output: m bits approximating 1/D
+
+**Common configurations:**
+   - 8-bit input → 8-bit output:  256 entries * 8 bits = 256 bytes
+   - Accuracy: ~8 correct bits of 1/D
+   - Sufficient for SP with 2 N-R iterations
+
+10-bit input → 10-bit output: 1024 entries * 10 bits = 1.25 KB
+Accuracy: ~10 correct bits
+Sufficient for DP with 3 N-R iterations
+
+8-bit input → 16-bit output:  256 entries * 16 bits = 512 bytes
+Accuracy: ~15+ correct bits (lookup can exceed input precision
+by using fine-grained tabulation + linear interpolation)
+Can reduce DP to 2 iterations
+
+**Error bound for k-bit lookup:**
+   - Maximum table error ≈ 2^(-(k+1)) (half an ULP of the table output)
+   - With linear interpolation between entries: error ≈ 2^(-2k)
+
+**Bipartite table optimization:** Instead of a single large table, use two smaller tables whose outputs are added:
+
+Table A: indexed by top k1 bits of D → coarse approximation
+Table B: indexed by top k1 bits AND next k2 bits → correction term
+- **Result** = `Table_A[D_high] + Table_B[D_high][D_mid]`
+
+Total entries: 2^k1 + 2^(k1+k2) (much less than 2^(k1+k2) for a single table)
+Accuracy: comparable to a single (k1+k2)-bit table
+
+This technique reduces table area by 50-70% for the same accuracy and is widely used in production FPU designs.
+
 ---
 
 ## Fused Multiply-Add (FMA)
@@ -540,30 +862,142 @@ For double precision: ~161 bits
 
 This is why FMA is area-expensive — the adder is much wider than a normal FP adder (which only handles p+3 bits).
 
-### FMA for Division and Square Root
+### Why FMA Exists
 
-**Division via FMA:**
-```text
-1. X_0 = LUT(B)                    // initial approximation of 1/B
-2. X_1 = fma(-B, X_0, 2) * X_0     // N-R iteration (single rounding!)
-   More precisely:
-   r   = fma(-B, X_0, 1)             // r = 1 - B*X_0 (exact with FMA)
-   X_1 = fma(X_0, r, X_0)          // X_1 = X_0 + X_0*r = X_0*(1+r) ≈ X_0*(2-B*X_0)
-3. Repeat until converged
-4. Q   = fma(A, X_final, 0)          // Q = A * (1/B) = A/B
+The FMA computes `round(a * b + c)` with a **single rounding** at the end, instead of the two roundings in separate multiply-then-add (`round(round(a*b) + c)`).
+
+**Accuracy benefit:** The single rounding means the result is the correctly-rounded value of the infinitely-precise `a*b + c`. This is critical for:
+
+1. **Dot products:** Each FMA accumulates one term with only 1 rounding error instead of 2. For an n-term dot product, error is reduced from O(n * epsilon^2) to O(n * epsilon).
+
+2. **Polynomial evaluation (Horner's method):** `((a3*x + a2)*x + a1)*x + a0` — each step is an FMA, and single rounding per step minimizes error propagation.
+
+3. **Error-free transformations:** With FMA, the exact rounding error of a multiplication can be computed: if `p = round(a*b)`, then `e = fma(a, b, -p)` gives the exact error such that `a*b = p + e` exactly (no rounding). This is the foundation of compensated algorithms.
+
+4. **Newton-Raphson iterations:** Each iteration `x_{n+1} = x_n * (2 - b*x_n)` can be expressed as `fma(-b, x_n, 2) * x_n` — the FMA avoids intermediate rounding that would slow convergence.
+
+### Hardware Architecture — Pipeline Stages
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    A["a (p bits)"] --> S1
+    B["b (p bits)"] --> S1
+    C["c (p bits, with exponent)"] --> EC["Exponent compare<br/>&amp; alignment-shift calc"]
+    S1["Stage 1 — p×p multiplier array<br/>(partial-product tree)<br/>result: 2p bits (carry-save)"]
+    S1 -->|"2p-bit product (carry-save)"| S2
+    EC --> S2
+    S2["Stage 2 — Alignment: shift c by (Ea+Eb−Ec)<br/>3-input carry-save adder, ~3p bits"]
+    S2 --> S3["Stage 3 — Carry-propagate add (3p bits)<br/>leading-zero anticipator (parallel)"]
+    S3 --> S4["Stage 4 — Normalization shift (≤ 2p+1 bits)<br/>exponent adjustment"]
+    S4 --> S5["Stage 5 — Rounding (single!)<br/>post-normalization + special cases (NaN, inf, 0)"]
+    S5 --> R["result"]
+    classDef st fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef io fill:#e2e8f0,stroke:#475569,color:#000
+    class S1,S2,S3,S4,S5 st
+    class A,B,C,EC,R io
 ```
 
-The FMA ensures each N-R iteration loses NO precision from intermediate rounding.
+**Key widths (double precision, p = 53):**
 
-**Square root via FMA:**
+- **Multiplier array** — 53 x 53 = 106-bit product (in carry-save: two 106-bit vectors)
+- **Alignment shift** — c can be shifted by up to 2*E_max ≈ 2048 positions
+- **Adder** — ~161 bits wide (106 for product + 53 for c alignment + guard bits)
+- **Normalizer** — barrel shifter up to 161 bits
+
+**The (p_a + p_b) bit multiplier product:**
+
+For p-bit mantissa inputs (including implicit 1), the exact product is (2p)-bit. No information is lost at this stage — the FMA preserves the full product. In a regular FP multiplier, this product would be immediately rounded to p bits. In the FMA, it feeds directly (unrounded) into the alignment/addition stage.
+
+**Alignment shift of addend c:**
+
+The addend c must be aligned so its binary point matches the product's binary point. The shift amount is:
+
+- **shift** = `(E_a + E_b - bias) - E_c + p`
+
+Where E_a + E_b - bias is the product's exponent.
+Shift can be from -(2p) to +(2*E_max):
+- Large positive shift: c is much smaller than product → shift c right (lose precision of c)
+   - Large negative shift: c is much larger than product → product is effectively zero
+   - Small shift: both contribute significantly → this is the hard case
+
+### Latency and Critical Path Analysis
+
+Typical FMA pipeline: **4-5 stages**, total latency **4-5 cycles** at 1-2 GHz in modern process nodes.
+
 ```text
-1. Y_0     = LUT(A)                    // initial approximation of 1/sqrt(A)
-2. h       = 0.5 * Y_0
-   r       = fma(-A, Y_0*Y_0, 1)        // r = 1 - A*Y_0^2
-   Y_1     = fma(h, r, Y_0)           // Y_1 = Y_0 + 0.5*Y_0*r (N-R for reciprocal sqrt)
-3. Repeat
-4. sqrt(A) = A * Y_final
+Stage 1 (Multiply): Booth-encoded partial product generation + Wallace tree reduction
+  Latency: ~1.5 ns (in 7nm)
+  This is the same as a standalone multiplier's critical path
+
+Stage 2 (Align + 3:2 CSA): Barrel shifter for c alignment + carry-save addition
+  Latency: ~0.8 ns
+  The barrel shifter for alignment is on the critical path
+
+Stage 3 (CPA + LZA): Full carry-propagate adder (161 bits!) + LZA in parallel
+  Latency: ~1.0 ns
+  The wide CPA is the dominant delay (161-bit Kogge-Stone or similar)
+
+Stage 4 (Normalize): Wide barrel shifter
+  Latency: ~0.8 ns
+
+Stage 5 (Round): Incrementer + special-case MUX
+  Latency: ~0.5 ns
 ```
+
+**Critical path:** The overall critical path often goes through the wide CPA in stage 3, which is significantly wider than in a standalone adder. This is why FMA latency is typically 1-2 cycles longer than a standalone multiply.
+
+**Throughput:** With full pipelining, the FMA can accept a new operation every cycle (throughput = 1 FMA/cycle), even though latency is 4-5 cycles.
+
+### FMA for Division and Square Root — Detailed
+
+**Division using FMA (Newton-Raphson):**
+
+```text
+Goal: Q                         = A / B
+
+Step 0: x0                      = LUT(B)           // ~8-10 bit approximation of 1/B
+Step 1: e0                      = fma(-B, x0, 1.0) // e0 = 1 - B*x0 (exact with FMA!)
+        x1                      = fma(x0, e0, x0)  // x1 = x0 + x0*e0 = x0*(1+e0) ≈ 1/B
+Step 2: e1                      = fma(-B, x1, 1.0) // e1 = 1 - B*x1
+        x2                      = fma(x1, e1, x1)  // x2 = x1*(1+e1) ≈ 1/B (more accurate)
+Step 3 (for DP): e2             = fma(-B, x2, 1.0)
+                 x3             = fma(x2, e2, x2)
+Final:  Q                       = fma(A, x3, 0.0)   // Q = A * (1/B)
+        (or: Q                  = A * x3 with a separate multiply)
+
+Residual check: r               = fma(-B, Q, A)  // r = A - B*Q (exact residual!)
+  If |r| > 0.5 ULP: Q_corrected = Q + sign(r) * ULP
+```
+
+The FMA is crucial here because `fma(-B, x_i, 1.0)` computes `1 - B*x_i` with no intermediate rounding. Without FMA, the multiplication `B*x_i` would be rounded, and the subtraction from 1 might lose significant bits due to cancellation.
+
+**Square root using FMA:**
+
+```text
+Goal: S                   = sqrt(A)
+
+Strategy: compute 1/sqrt(A) first, then multiply by A.
+
+Step 0: y0                = LUT(A)              // ~8-bit approximation of 1/sqrt(A)
+Step 1: h0                = 0.5 * y0
+        r0                = fma(-A, y0*y0, 1.0) // r0 = 1 - A*y0^2
+        y1                = fma(h0, r0, y0)     // y1 = y0 + 0.5*y0*r0
+Step 2: h1                = 0.5 * y1
+        r1                = fma(-A, y1*y1, 1.0)
+        y2                = fma(h1, r1, y1)
+...
+Final: S                  = fma(A, y_final, 0.0)  // S = A * (1/sqrt(A)) = sqrt(A)
+
+Residual: r               = fma(-S, S, A)      // r = A - S^2 (exact residual)
+  Correction: S_corrected = fma(r, 0.5*y_final, S)
+```
+
+**Latency comparison (double precision):**
+
+- **SRT radix-4 division** — ~27 cycles (53/2 = ~27 iterations)
+- **Newton-Raphson with FMA** — ~16-20 cycles (3 iterations * 2 FMA + setup)
+- **Goldschmidt with FMA** — ~14-16 cycles (3 iterations, parallelized)
 
 ---
 
@@ -1002,477 +1436,6 @@ wire ieee_lt = ~unordered & (
     (~a_neg & ~b_neg & mag_a_lt_b)              // both positive, |a| < |b|
 );
 ```
-
----
-
-## Rounding Modes with Numerical Examples
-
-### The Four IEEE 754 Rounding Modes
-
-**Mode 1: Round-to-nearest-even (RNE) — the default "banker's rounding"**
-
-Why "banker's rounding" prevents statistical bias: simple round-half-up always rounds 0.5 upward, introducing a systematic positive bias over many operations. RNE rounds ties to the nearest EVEN value, so half the ties round up and half round down (statistically). Over millions of operations, the accumulated rounding error averages to approximately zero.
-
-**Examples (decimal analogy):**
-   - 2.5 → rounds to 2 (nearest even)
-   - 3.5 → rounds to 4 (nearest even)
-   - 4.5 → rounds to 4 (nearest even)
-   - 5.5 → rounds to 6 (nearest even)
-
-Average rounding direction: 2 up, 2 down → zero bias
-
-**Mode 2: Round toward +infinity (ceiling)**
-
-Always rounds toward positive infinity. Non-exact positive results round up; non-exact negative results round toward zero (which is toward +inf).
-
-```ascii-graph
-+1.1 → +2    (rounded up)
--1.1 → -1    (rounded toward +inf, i.e., toward zero)
-+1.0 → +1    (exact, no rounding)
-```
-
-**Mode 3: Round toward -infinity (floor)**
-
-Always rounds toward negative infinity. Non-exact positive results round toward zero (toward -inf); non-exact negative results round down (more negative).
-
-```ascii-graph
-+1.1 → +1    (rounded toward -inf, i.e., toward zero)
--1.1 → -2    (rounded down, more negative)
-```
-
-**Mode 4: Round toward zero (truncation)**
-
-Always rounds toward zero — simply discard the fractional bits. Positive numbers round down, negative numbers round up (toward zero).
-
-```ascii-graph
-+1.9 → +1    (truncated)
--1.9 → -1    (truncated toward zero)
-```
-
-**Interval arithmetic application:** By computing the same operation in round-toward-+inf and round-toward--inf modes, you get guaranteed upper and lower bounds on the true result. This is the basis for IEEE 754's support of interval arithmetic in scientific computing.
-
-### Worked Example: 1.0 + 2^(-24) in Single Precision, All 4 Modes
-
-**Setup:**
-
-```text
-A                      = 1.0  = 1.00000000000000000000000 * 2^0     (E=127)
-B                      = 2^(-24) = 1.00000000000000000000000 * 2^(-24)  (E=103)
-
-Exponent difference: d = 127 - 103 = 24
-```
-
-**Alignment shift (shift B right by 24):**
-
-```text
-M_A         = 1.00000000000000000000000  (24 bits: 1 implicit + 23 stored)
-M_B before shift: 1.00000000000000000000000
-
-Shift right by 24:
-M_B_aligned = 0.00000000000000000000000 | 1 | 0 | 0
-                                           G   R   S
-
-The implicit 1 of B lands exactly in the Guard bit position.
-G           = 1, R = 0, S = 0
-```
-
-**Mantissa addition:**
-
-```text
-  1.00000000000000000000000   (A)
-+ 0.00000000000000000000000   (B aligned, truncated to 24 bits)
-= 1.00000000000000000000000
-
-The aligned B contributes 0 to the 24-bit mantissa. All its information is in GRS = 100.
-```
-
-**Infinitely precise result:**
-
-- **True result** = `1.00000000000000000000000 1  (binary)`
-   - ^-- this is the 25th bit (Guard position)
-= 1.0 + 2^(-24)  = 1 + 2^(-24)
-
-**The representable neighbors are:**
-   - Lower: 1.00000000000000000000000 * 2^0  = 1.0
-   - Upper: 1.00000000000000000000001 * 2^0  = 1.0 + 2^(-23)
-
-The true result is EXACTLY halfway between them:
-1.0 + 2^(-24) = 1.0 + (2^(-23))/2 = midpoint
-
-**Rounding decisions:**
-
-```ascii-graph
-GRS = 100 (Guard=1, Round=0, Sticky=0) → exact tie (halfway case)
-LSB of truncated mantissa = bit 0 = 0 (even)
-
-Mode 1 — RNE:
-  Tie → round to even → LSB is already 0 (even) → truncate (round down)
-  Result: 1.00000000000000000000000 * 2^0 = 1.0
-  The addition of 2^(-24) is LOST — the result is exactly 1.0.
-
-Mode 2 — Round toward +inf:
-  True result > representable result → round up (toward +inf)
-  Result: 1.00000000000000000000001 * 2^0 = 1.0 + 2^(-23)
-  Error = +2^(-24) (rounded up by half an ULP)
-
-Mode 3 — Round toward -inf:
-  True result > truncated result → but rounding toward -inf means truncate (for positive numbers)
-  Result: 1.00000000000000000000000 * 2^0 = 1.0
-  Same as RNE in this case.
-
-Mode 4 — Round toward zero:
-  Truncate (for positive numbers, toward zero = toward -inf)
-  Result: 1.00000000000000000000000 * 2^0 = 1.0
-  Same as mode 3.
-```
-
-**Key insight:** In RNE mode, adding 2^(-24) to 1.0 in single precision gives exactly 1.0 — the addition has no effect! This is because 2^(-24) is exactly 0.5 ULP of 1.0, and the tie-breaking rule rounds to the already-even LSB. However, adding 2^(-24) + 2^(-50) (anything slightly above half ULP) would round UP to 1.0 + 2^(-23).
-
-### Another Worked Example: GRS in Action
-
-**Compute 1.0 + 1.5 * 2^(-24) in single precision (RNE):**
-
-```ascii-graph
-A = 1.0 = 1.00000000000000000000000 * 2^0
-B = 1.5 * 2^(-24) = 1.10000000000000000000000 * 2^(-24)
-
-Alignment: shift B right by 24:
-M_B_aligned = 0.00000000000000000000000 | 1 | 1 | 0
-                                           G   R   S
-
-G = 1, R = 1, S = 0
-
-Mantissa sum (24-bit) = 1.00000000000000000000000 (same as before)
-
-Rounding: GRS = 110
-  G = 1 → tail >= 0.5 ULP
-  R = 1 → tail > 0.5 ULP (not a tie!)
-  → Round UP unconditionally
-
-Result: 1.00000000000000000000001 * 2^0 = 1.0 + 2^(-23)
-```
-
----
-
-## FP Division Algorithms — Detailed
-
-### SRT Division: Radix-2 and Radix-4
-
-**Radix-2 SRT Division:**
-
-The simplest form of SRT (Sweeney, Robertson, Tocher) division. Quotient digits are from {-1, 0, +1} — a redundant signed-digit representation.
-
-```text
-Recurrence: w_{j+1} = 2 * w_j - q_{j+1} * D
-
-Where:
-  w_j               = partial remainder (initially = dividend N)
-  D = divisor (normalized: 0.5 <= D < 1)
-  q_{j+1}           = quotient digit selected from {-1, 0, +1}
-```
-
-Quotient digit selection for radix-2 SRT is trivial — based on the sign and magnitude of the partial remainder:
-
-```text
-If w_j >= D/2:    q = +1      (subtract D from shifted remainder)
-If -D/2 <= w_j < D/2:  q = 0   (no correction, just shift)
-If w_j < -D/2:   q = -1       (add D to shifted remainder)
-```
-
-**Key advantage of redundancy:** The selection of q only depends on a few MSBs of w_j (typically 3-4 bits) because the regions overlap. Without redundancy (non-restoring division, q in {-1, +1}), the selection boundary is exactly at w=0, requiring full-precision comparison.
-
-**Radix-4 SRT Division (as used in Pentium):**
-
-Produces 2 bits per iteration. Quotient digits: {-2, -1, 0, +1, +2}.
-
-```text
-Recurrence: w_{j+1} = 4 * w_j - q_{j+1} * D
-```
-
-The quotient digit selection function is more complex — it's a 2D function of (truncated w, truncated D). This is the P-D diagram (partial remainder vs divisor):
-
-```ascii-graph
-P-D Diagram for Radix-4 SRT:
-
-  Partial            The diagram shows selection regions.
-  Remainder          Overlap regions allow multiple valid digits.
-  (w_hat)
-    ^
-    |  +2  +2  +2  +2
-    |  /   /   /   /
-    | +1  +1  +1  +1    ← Selection boundaries are
-    | /   /   /   /       piecewise-linear functions of D
-    | 0   0   0   0
-    | \   \   \   \
-    | -1  -1  -1  -1
-    |  \   \   \   \
-    |  -2  -2  -2  -2
-    +------------------→ Divisor (D_hat)
-       0.5   0.75   1.0
-```
-
-**Hardware implementation with carry-save adder:**
-
-The partial remainder w is maintained in carry-save (redundant) form to avoid long carry propagation chains:
-
-```text
-w                                                                = w_sum + w_carry  (two vectors, no carry propagation)
-
-Each iteration:
-  1. Truncate w_sum and w_carry to get w_hat (top 7-8 bits)
-     w_hat                                                       = w_sum[MSBs] + w_carry[MSBs]  (short CPA, ~8 bits)
-  2. Look up q_{j+1} in the selection table using (w_hat, D_hat)
-  3. Compute: [w_sum_new, w_carry_new]                           = CSA(4*w_sum, 4*w_carry, -q*D)
-     The 4x is a 2-bit left shift (free in hardware)
-     -q*D is: 0 (q=0), -D (q=+1), +D (q=-1), -2D (q=+2), +2D (q=-2)
-     2D is D left-shifted by 1 (also free)
-
-Critical path per iteration: truncation CPA + table lookup + CSA = very short
-Typically 1 clock cycle per iteration at high frequency.
-```
-
-**Quotient conversion (on-the-fly):**
-
-The signed-digit quotient {-2,-1,0,+1,+2} must be converted to standard binary. This is done on-the-fly using two registers QP (positive running quotient) and QM (QP minus 1 ULP):
-
-```text
-On each new digit q:
-  If q >= 0: QP_new = QP_old << 2 | q;   QM_new = QP_old << 2 | (q-1)
-  If q < 0:  QP_new = QM_old << 2 | (4+q); QM_new = QM_old << 2 | (4+q-1)
-
-At the end: if final remainder >= 0, result = QP, else result = QM.
-```
-
-### Goldschmidt Division — Detailed
-
-**Algorithm:**
-
-```ascii-graph
-Given: compute Q = N / D, where 0.5 <= D < 1 (normalized)
-
-Step 0: Initial approximation
-  F_0 = LUT(D)  ≈ 1/D  (8-12 bits of accuracy from lookup table)
-
-Step 1-k: Iterate
-  For each iteration i:
-    N_{i+1} = N_i * F_i
-    D_{i+1} = D_i * F_i
-    F_{i+1} = 2 - D_{i+1}
-
-  As D_i → 1, N_i → N/D = Q.
-```
-
-**Quadratic convergence proof:**
-
-```ascii-graph
-Let e_i = 1 - D_i  (error in D from the target value 1)
-
-D_{i+1} = D_i * F_i = D_i * (2 - D_i)
-
-e_{i+1} = 1 - D_{i+1} = 1 - D_i * (2 - D_i)
-         = 1 - 2*D_i + D_i^2
-         = (1 - D_i)^2
-         = e_i^2
-
-This is quadratic convergence: the error SQUARES each iteration.
-If |e_0| < 2^(-8)  (8-bit initial approximation):
-  |e_1| < 2^(-16)   (16 correct bits)
-  |e_2| < 2^(-32)   (32 correct bits)
-  |e_3| < 2^(-64)   (64 correct bits)
-```
-
-**Comparison with Newton-Raphson:**
-
-| Aspect | Newton-Raphson | Goldschmidt |
-|--------|---------------|-------------|
-| Convergence | Quadratic (same) | Quadratic (same) |
-| Operations/iteration | 3 serial multiplies | 1 mul (F) + 2 parallel muls |
-| With 2 multipliers | 3 serial muls | 2 serial muls (N*F || D*F) |
-| Latency/iteration | 3M | 2M (with 2 multipliers) |
-| Total muls (SP, 8-bit LUT) | 6 (2 iterations * 3) | 4-6 (2 iterations, parallelized) |
-| Self-correcting? | Yes (compute residual) | No (error analysis needed) |
-| Hardware cost | 1 multiplier sufficient | Benefits from 2 multipliers |
-| Used in | Simpler FPUs, embedded | IBM POWER, AMD |
-
-**Goldschmidt's advantage** is that within each iteration, the N and D multiplications are independent and can execute simultaneously on two multiplier units. This nearly halves the latency compared to Newton-Raphson (where each multiply depends on the previous).
-
-### Lookup Table Sizing for Initial Approximation
-
-The initial reciprocal approximation comes from a ROM lookup table indexed by the top bits of the divisor:
-
-**Table parameters:**
-   - Input:  top k bits of D (after normalization, D in [0.5, 1))
-   - Output: m bits approximating 1/D
-
-**Common configurations:**
-   - 8-bit input → 8-bit output:  256 entries * 8 bits = 256 bytes
-   - Accuracy: ~8 correct bits of 1/D
-   - Sufficient for SP with 2 N-R iterations
-
-10-bit input → 10-bit output: 1024 entries * 10 bits = 1.25 KB
-Accuracy: ~10 correct bits
-Sufficient for DP with 3 N-R iterations
-
-8-bit input → 16-bit output:  256 entries * 16 bits = 512 bytes
-Accuracy: ~15+ correct bits (lookup can exceed input precision
-by using fine-grained tabulation + linear interpolation)
-Can reduce DP to 2 iterations
-
-**Error bound for k-bit lookup:**
-   - Maximum table error ≈ 2^(-(k+1)) (half an ULP of the table output)
-   - With linear interpolation between entries: error ≈ 2^(-2k)
-
-**Bipartite table optimization:** Instead of a single large table, use two smaller tables whose outputs are added:
-
-Table A: indexed by top k1 bits of D → coarse approximation
-Table B: indexed by top k1 bits AND next k2 bits → correction term
-- **Result** = `Table_A[D_high] + Table_B[D_high][D_mid]`
-
-Total entries: 2^k1 + 2^(k1+k2) (much less than 2^(k1+k2) for a single table)
-Accuracy: comparable to a single (k1+k2)-bit table
-
-This technique reduces table area by 50-70% for the same accuracy and is widely used in production FPU designs.
-
----
-
-## FMA (Fused Multiply-Add) Micro-architecture
-
-### Why FMA Exists
-
-The FMA computes `round(a * b + c)` with a **single rounding** at the end, instead of the two roundings in separate multiply-then-add (`round(round(a*b) + c)`).
-
-**Accuracy benefit:** The single rounding means the result is the correctly-rounded value of the infinitely-precise `a*b + c`. This is critical for:
-
-1. **Dot products:** Each FMA accumulates one term with only 1 rounding error instead of 2. For an n-term dot product, error is reduced from O(n * epsilon^2) to O(n * epsilon).
-
-2. **Polynomial evaluation (Horner's method):** `((a3*x + a2)*x + a1)*x + a0` — each step is an FMA, and single rounding per step minimizes error propagation.
-
-3. **Error-free transformations:** With FMA, the exact rounding error of a multiplication can be computed: if `p = round(a*b)`, then `e = fma(a, b, -p)` gives the exact error such that `a*b = p + e` exactly (no rounding). This is the foundation of compensated algorithms.
-
-4. **Newton-Raphson iterations:** Each iteration `x_{n+1} = x_n * (2 - b*x_n)` can be expressed as `fma(-b, x_n, 2) * x_n` — the FMA avoids intermediate rounding that would slow convergence.
-
-### Hardware Architecture — Pipeline Stages
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A["a (p bits)"] --> S1
-    B["b (p bits)"] --> S1
-    C["c (p bits, with exponent)"] --> EC["Exponent compare<br/>&amp; alignment-shift calc"]
-    S1["Stage 1 — p×p multiplier array<br/>(partial-product tree)<br/>result: 2p bits (carry-save)"]
-    S1 -->|"2p-bit product (carry-save)"| S2
-    EC --> S2
-    S2["Stage 2 — Alignment: shift c by (Ea+Eb−Ec)<br/>3-input carry-save adder, ~3p bits"]
-    S2 --> S3["Stage 3 — Carry-propagate add (3p bits)<br/>leading-zero anticipator (parallel)"]
-    S3 --> S4["Stage 4 — Normalization shift (≤ 2p+1 bits)<br/>exponent adjustment"]
-    S4 --> S5["Stage 5 — Rounding (single!)<br/>post-normalization + special cases (NaN, inf, 0)"]
-    S5 --> R["result"]
-    classDef st fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef io fill:#e2e8f0,stroke:#475569,color:#000
-    class S1,S2,S3,S4,S5 st
-    class A,B,C,EC,R io
-```
-
-**Key widths (double precision, p = 53):**
-
-- **Multiplier array** — 53 x 53 = 106-bit product (in carry-save: two 106-bit vectors)
-- **Alignment shift** — c can be shifted by up to 2*E_max ≈ 2048 positions
-- **Adder** — ~161 bits wide (106 for product + 53 for c alignment + guard bits)
-- **Normalizer** — barrel shifter up to 161 bits
-
-**The (p_a + p_b) bit multiplier product:**
-
-For p-bit mantissa inputs (including implicit 1), the exact product is (2p)-bit. No information is lost at this stage — the FMA preserves the full product. In a regular FP multiplier, this product would be immediately rounded to p bits. In the FMA, it feeds directly (unrounded) into the alignment/addition stage.
-
-**Alignment shift of addend c:**
-
-The addend c must be aligned so its binary point matches the product's binary point. The shift amount is:
-
-- **shift** = `(E_a + E_b - bias) - E_c + p`
-
-Where E_a + E_b - bias is the product's exponent.
-Shift can be from -(2p) to +(2*E_max):
-- Large positive shift: c is much smaller than product → shift c right (lose precision of c)
-   - Large negative shift: c is much larger than product → product is effectively zero
-   - Small shift: both contribute significantly → this is the hard case
-
-### Latency and Critical Path Analysis
-
-Typical FMA pipeline: **4-5 stages**, total latency **4-5 cycles** at 1-2 GHz in modern process nodes.
-
-```text
-Stage 1 (Multiply): Booth-encoded partial product generation + Wallace tree reduction
-  Latency: ~1.5 ns (in 7nm)
-  This is the same as a standalone multiplier's critical path
-
-Stage 2 (Align + 3:2 CSA): Barrel shifter for c alignment + carry-save addition
-  Latency: ~0.8 ns
-  The barrel shifter for alignment is on the critical path
-
-Stage 3 (CPA + LZA): Full carry-propagate adder (161 bits!) + LZA in parallel
-  Latency: ~1.0 ns
-  The wide CPA is the dominant delay (161-bit Kogge-Stone or similar)
-
-Stage 4 (Normalize): Wide barrel shifter
-  Latency: ~0.8 ns
-
-Stage 5 (Round): Incrementer + special-case MUX
-  Latency: ~0.5 ns
-```
-
-**Critical path:** The overall critical path often goes through the wide CPA in stage 3, which is significantly wider than in a standalone adder. This is why FMA latency is typically 1-2 cycles longer than a standalone multiply.
-
-**Throughput:** With full pipelining, the FMA can accept a new operation every cycle (throughput = 1 FMA/cycle), even though latency is 4-5 cycles.
-
-### FMA for Division and Square Root — Detailed
-
-**Division using FMA (Newton-Raphson):**
-
-```text
-Goal: Q                         = A / B
-
-Step 0: x0                      = LUT(B)           // ~8-10 bit approximation of 1/B
-Step 1: e0                      = fma(-B, x0, 1.0) // e0 = 1 - B*x0 (exact with FMA!)
-        x1                      = fma(x0, e0, x0)  // x1 = x0 + x0*e0 = x0*(1+e0) ≈ 1/B
-Step 2: e1                      = fma(-B, x1, 1.0) // e1 = 1 - B*x1
-        x2                      = fma(x1, e1, x1)  // x2 = x1*(1+e1) ≈ 1/B (more accurate)
-Step 3 (for DP): e2             = fma(-B, x2, 1.0)
-                 x3             = fma(x2, e2, x2)
-Final:  Q                       = fma(A, x3, 0.0)   // Q = A * (1/B)
-        (or: Q                  = A * x3 with a separate multiply)
-
-Residual check: r               = fma(-B, Q, A)  // r = A - B*Q (exact residual!)
-  If |r| > 0.5 ULP: Q_corrected = Q + sign(r) * ULP
-```
-
-The FMA is crucial here because `fma(-B, x_i, 1.0)` computes `1 - B*x_i` with no intermediate rounding. Without FMA, the multiplication `B*x_i` would be rounded, and the subtraction from 1 might lose significant bits due to cancellation.
-
-**Square root using FMA:**
-
-```text
-Goal: S                   = sqrt(A)
-
-Strategy: compute 1/sqrt(A) first, then multiply by A.
-
-Step 0: y0                = LUT(A)              // ~8-bit approximation of 1/sqrt(A)
-Step 1: h0                = 0.5 * y0
-        r0                = fma(-A, y0*y0, 1.0) // r0 = 1 - A*y0^2
-        y1                = fma(h0, r0, y0)     // y1 = y0 + 0.5*y0*r0
-Step 2: h1                = 0.5 * y1
-        r1                = fma(-A, y1*y1, 1.0)
-        y2                = fma(h1, r1, y1)
-...
-Final: S                  = fma(A, y_final, 0.0)  // S = A * (1/sqrt(A)) = sqrt(A)
-
-Residual: r               = fma(-S, S, A)      // r = A - S^2 (exact residual)
-  Correction: S_corrected = fma(r, 0.5*y_final, S)
-```
-
-**Latency comparison (double precision):**
-
-- **SRT radix-4 division** — ~27 cycles (53/2 = ~27 iterations)
-- **Newton-Raphson with FMA** — ~16-20 cycles (3 iterations * 2 FMA + setup)
-- **Goldschmidt with FMA** — ~14-16 cycles (3 iterations, parallelized)
 
 ---
 

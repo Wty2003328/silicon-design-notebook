@@ -354,9 +354,59 @@ capacitance, and timing. Design rules require metal density to stay within bound
 
 ---
 
+---
+
 ## Floating Point Arithmetic — Deep Dive for IC Design
 
 *From [Floating_Point.md](../00_Fundamentals/Floating_Point.md)*
+
+### Q1: Why is the bias 127 instead of 128 for single precision?
+
+**A:** The usable exponent range is [1, 254] (0 and 255 are reserved). Bias = 127 gives actual range [-126, +127], which is roughly symmetric and ensures the largest positive exponent (+127 → 2^127 ≈ 1.7e38) and smallest negative exponent (-126 → 2^(-126) ≈ 1.2e-38) cover comparable dynamic range. Bias = 128 would give [-127, +126], biased toward small numbers. The choice also ensures that the reciprocal of the largest representable number is approximately representable (2^(-127) is in the denormal range but close to 2^(-126)).
+
+### Q2: Prove that GRS bits are sufficient for correct rounding.
+
+**A:** For round-to-nearest-even: the decision depends on whether the truncated tail is <, =, or > 0.5 ULP. Guard bit tells us if >= 0.5 ULP (g=1). Round and Sticky together tell us if > 0.5 ULP (g=1 and (r=1 or s=1)). For the exact tie (g=1, r=0, s=0), we check LSB for the even rule. No additional bits can change these decisions — the Sticky bit captures the OR of ALL remaining bits, which is the only information we need (whether they're all zero or not). For directed rounding modes (toward +inf, -inf, zero): only the OR of (g, r, s) matters (are there any non-zero discarded bits?), which GRS fully determines.
+
+### Q3: Explain the dual-path FP adder and why |d| <= 1 is the boundary.
+
+**A:** When |d| >= 2, subtraction can produce at most 1 leading zero. Proof: if E_A - E_B >= 2, then A >= 4B (in terms of the implicit 1.xxx mantissas, A >= 2^2 * B_aligned). A - B >= A - A/4 = 3A/4, which is at least 3/4 — always in [0.5, 2), meaning 0 or 1 leading zeros. When |d| <= 1, A and B are nearly equal, and subtraction can cancel almost completely (up to p leading zeros). The far path (|d| >= 2) only needs a 1-bit normalizer. The close path (|d| <= 1) needs a full barrel shifter and LZA. Running these in parallel and selecting based on d gives better overall timing than a single path.
+
+### Q4: How does the LZA work and why does it have +/-1 error?
+
+**A:** The LZA examines corresponding bit pairs of A and B to predict the leading-zero position of A - B. For each position i, it computes a function f_i based on whether A_i > B_i (generate), A_i = B_i (transfer), or A_i < B_i (zero). The leading 1 of the f vector approximates the leading 1 of |A - B|. The +/-1 error arises because the LZA doesn't compute the actual borrows — there are edge cases where a borrow propagation shifts the leading 1 by one position. The correction is trivial: after the actual subtraction, check the MSB and conditionally shift by 1 more.
+
+### Q5: Compare SRT, Newton-Raphson, and Goldschmidt division.
+
+**A:** SRT (radix-4): digit-recurrence, 1 quotient digit (2 bits) per cycle, linear convergence, ~13 cycles for SP. Hardware: lookup table + adder + shifter. Moderate area. Newton-Raphson: multiplicative, quadratic convergence (bits double each iteration), 2-3 iterations for SP. Needs initial LUT + multiplier. Sequential dependency between iterations. Goldschmidt: also multiplicative/quadratic, but the two multiplications per iteration (N*F and D*F) are independent → parallelizable with 2 multipliers, roughly 2x throughput vs N-R. Both N-R and Goldschmidt are preferred for high-performance FPUs; SRT for area-constrained designs. The Pentium FDIV bug was in the SRT lookup table.
+
+### Q6: Why is FMA important and what is the "wide adder problem"?
+
+**A:** FMA computes round(A*B + C) with a single rounding, improving accuracy over separate multiply-then-add (which has 2 roundings). Hardware challenge: the product A*B is 2p bits wide (not rounded), and C must be aligned to it. The alignment shift can be up to 2*E_max positions, and the adder must be ~3p bits wide (161 bits for double precision). This makes the FMA significantly more expensive than a separate multiplier + adder. FMA is critical for: N-R division/sqrt iterations (no precision loss), dot products (reduced error accumulation), and polynomial evaluation (Horner's method).
+
+### Q7: Explain signed zero and when it matters in hardware.
+
+**A:** IEEE 754 has +0 and -0 which compare equal but have different sign bits. They produce different results under division (1/+0 = +inf, 1/-0 = -inf) and affect branch cuts in complex functions. In FPU hardware, the sign of a zero result must be computed specially: for addition, if the true result is zero, the sign depends on rounding mode (negative zero only if rounding toward -inf and the operands' signs differ, or if both operands are -0). This requires extra logic in the sign computation path. For multiplication and division, sign follows the XOR rule even for zero results.
+
+### Q8: What is flush-to-zero (FTZ) and when is it acceptable?
+
+**A:** FTZ replaces denormal results with zero, and DAZ (denormals-are-zero) treats denormal inputs as zero. This eliminates all denormal special-case handling, simplifying the FPU. It's non-IEEE-compliant but acceptable in: GPUs (graphics doesn't need denormal precision), DSP (signal values far from zero), ML inference (model accuracy barely affected). It's NOT acceptable in: scientific computing, financial calculations, or any IEEE-754-compliant implementation. Most x86 CPUs support both modes — IEEE-compliant by default, FTZ+DAZ via MXCSR register bits for performance-sensitive code.
+
+### Q9: Walk through the hardware cost of each FP addition pipeline stage.
+
+**A:** Stage 1 (exponent compare + swap): 8-bit subtractor (~50 gates), 2×24-bit MUXes (~100 gates), total ~200 gates. Stage 2 (alignment): 24-bit barrel shifter (~600 gates), sticky OR tree (~25 gates), total ~650 gates. Stage 3 (mantissa add): 28-bit adder (including GRS, ~400 gates). Stage 4 (normalize): 24-bit LZC (~200 gates), 24-bit barrel shifter (~600 gates), 8-bit exponent adder (~50 gates), total ~850 gates. Stage 5 (round): 24-bit incrementer (~100 gates), overflow detect (~20 gates), total ~150 gates. TOTAL: ~2250 gates for single-precision FP adder. Double precision roughly 2-3x.
+
+### Q10: What happens when you multiply infinity by zero?
+
+**A:** The result is NaN (quiet NaN). IEEE 754 specifies: inf * 0 = NaN, because the mathematical limit is indeterminate. Similarly: inf - inf = NaN, 0/0 = NaN, inf/inf = NaN. These are the "invalid operation" exceptions. The result is a canonical QNaN (exponent all-1s, MSB of mantissa = 1, rest = 0). In hardware, the exception flag is raised, and if the exception is not masked, the processor traps to an exception handler.
+
+### Q11: How do modern CPUs handle denormals in practice?
+
+**A:** Most x86 CPUs handle denormal inputs in microcode — when a denormal is detected, the hardware traps to a microcode sequence that performs the operation step by step (denormalize, compute, re-normalize). This adds 50-150 cycles of penalty. The detection is done in the initial pipeline stages by checking if the exponent field is 0 and mantissa is nonzero. Intel's Alder Lake (12th gen) and later handle many denormal cases in hardware without microcode traps, reducing the penalty to 0-5 cycles. ARM Cortex-A cores have had full hardware denormal support for many generations. GPUs universally use FTZ for performance.
+
+### Q12: Explain quadratic convergence intuitively.
+
+**A:** In Newton-Raphson division, the error after iteration i is e_{i+1} = B * e_i^2. Squaring the error means: if you have k correct bits, the next iteration gives ~2k correct bits. Starting with 8 correct bits (from a lookup table): iteration 1 gives 16, iteration 2 gives 32, iteration 3 gives 64. This is dramatically faster than linear convergence (which adds a fixed number of bits per step). The cost: each iteration requires a full-width multiplication, so the per-iteration cost is high. But the number of iterations is O(log(p)) where p is the target precision — only 2-3 iterations for practical FP formats.
 
 ### Q13: Why does FMA give better accuracy than separate multiply-add?
 
@@ -421,58 +471,3 @@ capacitance, and timing. Design rules require metal density to stay within bound
 ### Q28: Why has bfloat16 replaced FP32 for deep learning training?
 
 **A:** BF16 has the same 8-bit exponent as FP32 (same dynamic range, max ~3.4e38), so gradient values don't overflow during training — unlike FP16 (5-bit exponent, max ~65504) which requires loss scaling. BF16's 7-bit mantissa provides sufficient precision for gradient descent (the reduced precision acts as implicit regularization, often matching FP32 accuracy). The hardware advantage is massive: BF16 multiply is 8x8 = 64 units vs FP32's 24x24 = 576 — 9x smaller, enabling 9x more MACs in the same silicon area. The standard training recipe is: FP32 master weights, BF16 forward/backward computation, FP32 weight update. This "mixed precision" approach was first deployed by Google (TPU v2, 2017) and is now universal across NVIDIA (Ampere, Hopper), AMD (MI300), and all major training frameworks (PyTorch, JAX). No loss scaling needed, simpler than FP16 mixed precision.
-
----
-
-## Floating Point Arithmetic — Deep Dive for IC Design
-
-*From [Floating_Point.md](../00_Fundamentals/Floating_Point.md)*
-
-### Q1: Why is the bias 127 instead of 128 for single precision?
-
-**A:** The usable exponent range is [1, 254] (0 and 255 are reserved). Bias = 127 gives actual range [-126, +127], which is roughly symmetric and ensures the largest positive exponent (+127 → 2^127 ≈ 1.7e38) and smallest negative exponent (-126 → 2^(-126) ≈ 1.2e-38) cover comparable dynamic range. Bias = 128 would give [-127, +126], biased toward small numbers. The choice also ensures that the reciprocal of the largest representable number is approximately representable (2^(-127) is in the denormal range but close to 2^(-126)).
-
-### Q2: Prove that GRS bits are sufficient for correct rounding.
-
-**A:** For round-to-nearest-even: the decision depends on whether the truncated tail is <, =, or > 0.5 ULP. Guard bit tells us if >= 0.5 ULP (g=1). Round and Sticky together tell us if > 0.5 ULP (g=1 and (r=1 or s=1)). For the exact tie (g=1, r=0, s=0), we check LSB for the even rule. No additional bits can change these decisions — the Sticky bit captures the OR of ALL remaining bits, which is the only information we need (whether they're all zero or not). For directed rounding modes (toward +inf, -inf, zero): only the OR of (g, r, s) matters (are there any non-zero discarded bits?), which GRS fully determines.
-
-### Q3: Explain the dual-path FP adder and why |d| <= 1 is the boundary.
-
-**A:** When |d| >= 2, subtraction can produce at most 1 leading zero. Proof: if E_A - E_B >= 2, then A >= 4B (in terms of the implicit 1.xxx mantissas, A >= 2^2 * B_aligned). A - B >= A - A/4 = 3A/4, which is at least 3/4 — always in [0.5, 2), meaning 0 or 1 leading zeros. When |d| <= 1, A and B are nearly equal, and subtraction can cancel almost completely (up to p leading zeros). The far path (|d| >= 2) only needs a 1-bit normalizer. The close path (|d| <= 1) needs a full barrel shifter and LZA. Running these in parallel and selecting based on d gives better overall timing than a single path.
-
-### Q4: How does the LZA work and why does it have +/-1 error?
-
-**A:** The LZA examines corresponding bit pairs of A and B to predict the leading-zero position of A - B. For each position i, it computes a function f_i based on whether A_i > B_i (generate), A_i = B_i (transfer), or A_i < B_i (zero). The leading 1 of the f vector approximates the leading 1 of |A - B|. The +/-1 error arises because the LZA doesn't compute the actual borrows — there are edge cases where a borrow propagation shifts the leading 1 by one position. The correction is trivial: after the actual subtraction, check the MSB and conditionally shift by 1 more.
-
-### Q5: Compare SRT, Newton-Raphson, and Goldschmidt division.
-
-**A:** SRT (radix-4): digit-recurrence, 1 quotient digit (2 bits) per cycle, linear convergence, ~13 cycles for SP. Hardware: lookup table + adder + shifter. Moderate area. Newton-Raphson: multiplicative, quadratic convergence (bits double each iteration), 2-3 iterations for SP. Needs initial LUT + multiplier. Sequential dependency between iterations. Goldschmidt: also multiplicative/quadratic, but the two multiplications per iteration (N*F and D*F) are independent → parallelizable with 2 multipliers, roughly 2x throughput vs N-R. Both N-R and Goldschmidt are preferred for high-performance FPUs; SRT for area-constrained designs. The Pentium FDIV bug was in the SRT lookup table.
-
-### Q6: Why is FMA important and what is the "wide adder problem"?
-
-**A:** FMA computes round(A*B + C) with a single rounding, improving accuracy over separate multiply-then-add (which has 2 roundings). Hardware challenge: the product A*B is 2p bits wide (not rounded), and C must be aligned to it. The alignment shift can be up to 2*E_max positions, and the adder must be ~3p bits wide (161 bits for double precision). This makes the FMA significantly more expensive than a separate multiplier + adder. FMA is critical for: N-R division/sqrt iterations (no precision loss), dot products (reduced error accumulation), and polynomial evaluation (Horner's method).
-
-### Q7: Explain signed zero and when it matters in hardware.
-
-**A:** IEEE 754 has +0 and -0 which compare equal but have different sign bits. They produce different results under division (1/+0 = +inf, 1/-0 = -inf) and affect branch cuts in complex functions. In FPU hardware, the sign of a zero result must be computed specially: for addition, if the true result is zero, the sign depends on rounding mode (negative zero only if rounding toward -inf and the operands' signs differ, or if both operands are -0). This requires extra logic in the sign computation path. For multiplication and division, sign follows the XOR rule even for zero results.
-
-### Q8: What is flush-to-zero (FTZ) and when is it acceptable?
-
-**A:** FTZ replaces denormal results with zero, and DAZ (denormals-are-zero) treats denormal inputs as zero. This eliminates all denormal special-case handling, simplifying the FPU. It's non-IEEE-compliant but acceptable in: GPUs (graphics doesn't need denormal precision), DSP (signal values far from zero), ML inference (model accuracy barely affected). It's NOT acceptable in: scientific computing, financial calculations, or any IEEE-754-compliant implementation. Most x86 CPUs support both modes — IEEE-compliant by default, FTZ+DAZ via MXCSR register bits for performance-sensitive code.
-
-### Q9: Walk through the hardware cost of each FP addition pipeline stage.
-
-**A:** Stage 1 (exponent compare + swap): 8-bit subtractor (~50 gates), 2×24-bit MUXes (~100 gates), total ~200 gates. Stage 2 (alignment): 24-bit barrel shifter (~600 gates), sticky OR tree (~25 gates), total ~650 gates. Stage 3 (mantissa add): 28-bit adder (including GRS, ~400 gates). Stage 4 (normalize): 24-bit LZC (~200 gates), 24-bit barrel shifter (~600 gates), 8-bit exponent adder (~50 gates), total ~850 gates. Stage 5 (round): 24-bit incrementer (~100 gates), overflow detect (~20 gates), total ~150 gates. TOTAL: ~2250 gates for single-precision FP adder. Double precision roughly 2-3x.
-
-### Q10: What happens when you multiply infinity by zero?
-
-**A:** The result is NaN (quiet NaN). IEEE 754 specifies: inf * 0 = NaN, because the mathematical limit is indeterminate. Similarly: inf - inf = NaN, 0/0 = NaN, inf/inf = NaN. These are the "invalid operation" exceptions. The result is a canonical QNaN (exponent all-1s, MSB of mantissa = 1, rest = 0). In hardware, the exception flag is raised, and if the exception is not masked, the processor traps to an exception handler.
-
-### Q11: How do modern CPUs handle denormals in practice?
-
-**A:** Most x86 CPUs handle denormal inputs in microcode — when a denormal is detected, the hardware traps to a microcode sequence that performs the operation step by step (denormalize, compute, re-normalize). This adds 50-150 cycles of penalty. The detection is done in the initial pipeline stages by checking if the exponent field is 0 and mantissa is nonzero. Intel's Alder Lake (12th gen) and later handle many denormal cases in hardware without microcode traps, reducing the penalty to 0-5 cycles. ARM Cortex-A cores have had full hardware denormal support for many generations. GPUs universally use FTZ for performance.
-
-### Q12: Explain quadratic convergence intuitively.
-
-**A:** In Newton-Raphson division, the error after iteration i is e_{i+1} = B * e_i^2. Squaring the error means: if you have k correct bits, the next iteration gives ~2k correct bits. Starting with 8 correct bits (from a lookup table): iteration 1 gives 16, iteration 2 gives 32, iteration 3 gives 64. This is dramatically faster than linear convergence (which adds a fixed number of bits per step). The cost: each iteration requires a full-width multiplication, so the per-iteration cost is high. But the number of iterations is O(log(p)) where p is the target precision — only 2-3 iterations for practical FP formats.
-
