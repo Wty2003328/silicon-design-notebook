@@ -984,7 +984,7 @@ BJT-based (bandgap reference):
 - Accuracy: +/- 1-3C (better than ring osc)
 - Used in most production SoCs
 
-- **Typical placement** — 4-8 sensors per chip, at least one per major block
+- **Typical placement** — 4-8 sensors per chip, at least one per major block; high-power-density designs go much denser (up to ~1 sensor per mm^2, distributed across the die)
 
 **Throttling mechanisms (in order of severity):**
 ```verilog
@@ -1005,7 +1005,9 @@ Level 2 (Critical): Aggressive throttling
 
 Level 3 (Emergency): Shutdown
   Trigger: Tj > 105C
-  Action: Immediately shut down chip (hardware-triggered, not software)
+  Action: Shut down non-essential domains; if temperature keeps rising,
+          a last-resort hardware thermal trip (~115C) forces full chip
+          shutdown independent of any software (hardware-triggered)
   Purpose: prevent permanent damage
   
 Recovery: resume when temperature drops below hysteresis threshold

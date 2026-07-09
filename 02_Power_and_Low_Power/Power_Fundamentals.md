@@ -536,6 +536,22 @@ At room temperature, junction leakage is typically 10-100x smaller than subthres
 But at high temperatures (125C+), it can become significant, especially for large diffusion
 areas.
 
+### 8.3 Leakage Breakdown by Mechanism Across Nodes
+
+How the leakage mechanisms of sections 5-8 split up as a fraction of total leakage:
+
+```text
+| Source           | 65nm | 28nm | 7nm FinFET |
+|------------------|------|------|------------|
+| Sub-threshold    | 70%  | 80%  | 85%        |
+| Gate tunneling   | 20%  | 10%  | 5%         |
+| Junction/GIDL    | 10%  | 10%  | 10%        |
+
+Note: FinFET dramatically reduced gate leakage (thicker effective oxide
+due to the fin geometry) and improved sub-threshold slope (n closer to 1.0),
+but sub-threshold leakage still dominates due to the sheer number of transistors.
+```
+
 ---
 
 ## 9. Glitch Power (Hazard-Related Switching)

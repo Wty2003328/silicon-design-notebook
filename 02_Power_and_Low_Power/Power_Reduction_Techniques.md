@@ -14,6 +14,57 @@ them, the greater the potential savings -- but also the greater the design effor
 | Circuit        | Adiabatic, body biasing, custom cells                | 5-20%          |
 | Physical       | Wire optimization, placement for activity            | 5-15%          |
 
+**Flow map -- where each technique enters the chip design flow:**
+
+```verilog
+Architecture Definition
+  |-- Power budgeting (per block)
+  |-- Choose power management strategy (DVFS, PG, CG)
+  v
+RTL Design
+  |-- Clock gating (manual + auto-insert)
+  |-- Operand isolation
+  |-- Memory partitioning
+  |-- Retention register identification
+  v
+UPF Specification
+  |-- Power domains, supplies, states
+  |-- Isolation, retention, level shifters
+  v
+Power-Aware Simulation
+  |-- Simulate power-on/off sequences
+  |-- Verify isolation, retention, level shifting
+  v
+Synthesis
+  |-- Multi-Vt assignment
+  |-- Clock gating insertion
+  |-- Cell sizing optimization
+  v
+Floorplanning
+  |-- Power domain placement
+  |-- Power grid planning (per domain)
+  |-- Switch cell placement
+  v
+Place & Route
+  |-- Isolation cell insertion and placement
+  |-- Level shifter insertion
+  |-- Retention cell swapping
+  |-- Power switch (header/footer) insertion
+  |-- Power grid routing
+  v
+Power Analysis & IR Drop
+  |-- Vector-based dynamic power
+  |-- Leakage power at all corners
+  |-- Static and dynamic IR drop
+  |-- EM (electromigration) analysis
+  v
+Signoff
+  |-- All power checks clean
+  |-- IR drop within budget
+  |-- EM clean
+  |-- Thermal analysis OK
+```
+
 ---
 
 ## 2. Clock Gating -- Deep Dive
@@ -70,7 +121,7 @@ change is blocked until the next negative edge.
   Typical setup time of ICG cell: 50-200 ps (process dependent)
   Hard requirement: the transparent-low latch CLOSES at the next RISING
   edge, so the enable formally has until that rising edge and may borrow
-  through the low phase. See 2.9 for precise STA semantics.
+  through the low phase. See 2.12 for precise STA semantics.
 ```
 
 **Transistor-level implementation (Latch-AND):**
@@ -111,7 +162,120 @@ change is blocked until the next negative edge.
   in some cell libraries. Output clock is active-high same as input.
 ```
 
-### 2.3 Clock Gating Efficiency (CGE) and Power Savings Calculation
+### 2.3 AND-Type vs OR-Type ICG Cells
+
+```verilog
+AND-type ICG (clock gating for active-high enables, INDUSTRY STANDARD):
+
+  GCLK = CLK & EN_latched
+
+  The latch captures EN on the NEGATIVE phase (transparent when CLK=0).
+  During CLK=1: latch is opaque, EN_latched is stable.
+  AND gate: GCLK is HIGH only when both CLK=1 AND EN_latched=1.
+
+  Use when: gating signal is active-HIGH enable (1 = clock enabled).
+  This is the default for 95%+ of clock gating in digital designs.
+  When EN=0: GCLK is stuck LOW -> flip-flops see no rising edge.
+
+OR-type ICG (clock gating for active-low enables):
+
+  GCLK = CLK | EN_latched_n
+
+  The latch captures EN on the POSITIVE phase (transparent when CLK=1).
+  During CLK=0: latch is opaque, EN_latched is stable.
+  OR gate: GCLK is LOW only when both CLK=0 AND EN_latched_n=0.
+
+  Use when: gating signal is active-LOW (0 = clock enabled).
+  When EN=1: GCLK is stuck HIGH -> flip-flops see no rising edge.
+
+  Rare in practice -- most designs use AND-type with inverted enable if needed.
+
+When to use each:
+  - AND-type: standard register file gating, pipeline stage gating, module gating
+  - OR-type: rarely needed; some negative-edge-triggered designs use it
+  - Most synthesis tools only insert AND-type ICG cells
+
+Timing of enable relative to clock:
+  AND-type: EN must be stable by FALLING edge of CLK (setup to negedge)
+  OR-type:  EN must be stable by RISING edge of CLK (setup to posedge)
+
+  The setup requirement is to the INACTIVE edge, not the active edge.
+  This gives a full half-cycle for enable to propagate from launching FF.
+```
+
+### 2.4 Clock Gating Enable Generation from RTL
+
+```verilog
+The synthesis tool infers ICG from these RTL patterns:
+
+Pattern 1: if-else with clocked assignment (MOST COMMON)
+  always @(posedge clk)
+    if (enable)           // <-- ICG inferred here
+      q <= d;
+
+  Tool actions:
+    1. Extracts "enable" as the gating signal
+    2. Inserts ICG cell on the clock path
+    3. Removes the mux on D input (saves combinational logic)
+
+  Without clock gating: tool implements D-input mux
+    always @(posedge clk)
+      q <= enable ? d : q;  // mux on D, clock always toggles
+
+Pattern 2: Explicit clock gating (manual)
+  wire gated_clk;
+  ICG_CELL u_icg (.CLK(clk), .EN(enable), .GCLK(gated_clk));
+  always @(posedge gated_clk)
+    q <= d;
+
+Pattern 3: Module-level gating (coarse-grain)
+  // In the power management controller:
+  always @(posedge clk) begin
+    if (module_active)
+      module_clk_en <= 1;
+    else
+      module_clk_en <= 0;
+  end
+  // ICG for entire module inserted at clock entry point
+
+Module-level vs gate-level clock gating:
+  Module-level: one ICG for entire module (1 cell for 10K FFs)
+    - Controlled by software/firmware
+    - Gating efficiency depends on module idle time
+    - Very low area overhead
+
+  Gate-level (RTL-inferred): one ICG per 4-64 FFs
+    - Controlled by data path enables
+    - Gating efficiency depends on data-dependent activity
+    - Higher area overhead (many ICG cells)
+    - Typical: 5-8% area increase, 20-40% power reduction
+
+  Best practice: use BOTH. Module-level for sleep modes,
+  gate-level for dynamic activity reduction during active operation.
+```
+
+### 2.5 Fine-Grain vs Coarse-Grain Clock Gating
+
+| Aspect | Fine-Grain | Coarse-Grain |
+|--------|-----------|--------------|
+| Granularity | 4-16 FFs per ICG | 100-1000+ FFs per ICG |
+| Area overhead | High (many ICGs) | Low (few ICGs) |
+| Gating efficiency | High (precise control) | Lower (all-or-nothing) |
+| Typical source | Synthesis auto-insertion | Architecture/RTL manual |
+| Example | Register enable per field | Module-level sleep |
+
+**Synthesis auto-insertion threshold:**
+
+```tcl
+# In Design Compiler:
+set_clock_gating_style -minimum_bitwidth 4  ; # Gate groups of 4+ FFs
+set_clock_gating_style -max_fanout 64       ; # Max FFs per ICG
+compile_ultra -gate_clock
+```
+
+The tool identifies registers with a common enable signal and inserts ICG cells. The enable is factored out of the D-input logic and connected to the ICG.
+
+### 2.6 Clock Gating Efficiency (CGE) and Power Savings Calculation
 
 CGE = fraction of clock cycles where the clock is gated (disabled):
 
@@ -150,7 +314,7 @@ ICG cell overhead:
 Net savings: 2.835 - 0.25 = ~2.6 mW
 ```
 
-### 2.4 Hierarchical Clock Gating
+### 2.7 Hierarchical Clock Gating
 
 ```verilog
 Level 1: Module-level gating
@@ -176,7 +340,7 @@ Area overhead trade-off:
 - But fine-grain gating saves more power than coarse-grain (captures more idle cycles)
 - Optimal: combine hierarchical (coarse) + fine-grain, let synthesis handle the rest
 
-### 2.5 Synthesis Tool Commands for Clock Gating
+### 2.8 Synthesis Tool Commands for Clock Gating
 
 ```tcl
 # Synopsys Design Compiler
@@ -202,7 +366,7 @@ set_db design_clock_gating_min_bitwidth 3
 set_attribute lp_insert_clock_gating true [current_design]
 ```
 
-### 2.6 Clock Gating and Scan (DFT Considerations)
+### 2.9 Clock Gating and Scan (DFT Considerations)
 
 During scan shift, ALL flip-flops must be clocked every cycle. Clock gating would block
 the scan clock. Solution:
@@ -216,7 +380,7 @@ the scan clock. Solution:
 
 The ICG cell has a dedicated test/scan_enable pin for this purpose.
 
-### 2.7 Sequential / Data-Driven Clock Gating (Beyond Synthesis Inference)
+### 2.10 Sequential / Data-Driven Clock Gating (Beyond Synthesis Inference)
 
 Synthesis-inferred gating only captures explicit `if (en) q <= d` patterns. Two stronger
 levels exist, and mid-level interviews increasingly probe them:
@@ -233,7 +397,7 @@ always @(posedge gated_clk)
 - Cost: 1 XOR per bit + wide OR reduction tree + ICG.
 - Pays off for wide registers (>16 bits) with low data activity (<10-20% change rate).
 - Catch: the D -> XOR -> OR-tree -> ICG enable path adds delay to an already-tight
-  enable timing path (see 2.9). For very wide buses, pipeline the OR tree or gate
+  enable timing path (see 2.12). For very wide buses, pipeline the OR tree or gate
   per-byte instead of per-word.
 
 **Stability/observability-based (sequential) clock gating:**
@@ -263,7 +427,7 @@ always @(posedge clk) valid_d <= valid_in;
 always @(posedge clk) if (valid_in) result <= a * b;  // ICG inferred from valid_in
 ```
 
-### 2.8 Debugging Low Clock-Gating Efficiency (Real-World Flow)
+### 2.11 Debugging Low Clock-Gating Efficiency (Real-World Flow)
 
 Scenario you should be able to narrate in an interview: *"Architecture predicted 80%
 CGE; emulation/silicon shows 35%. Find out why."*
@@ -301,7 +465,7 @@ Step 5: Verify the fix moves CLOCK TREE power, not just register power:
   proportionally to CGE at each level of the tree.
 ```
 
-### 2.9 ICG Cells in CTS and Enable Timing Closure
+### 2.12 ICG Cells in CTS and Enable Timing Closure
 
 **Where the ICG sits in the clock tree matters:**
 ```verilog
@@ -375,7 +539,45 @@ For alpha = 1.3:
     Vdd = 0.5V: f ~ (0.2)^1.3 / 0.5 = 0.214  -> 66.4% slower
 ```
 
-### 3.2 Power Savings Calculation
+### 3.2 Voltage-Frequency Curve Derivation
+
+For a gate with delay T_d proportional to Vdd / (Vdd - Vth)^alpha:
+
+For constant delay (same performance): Vdd must scale with frequency
+If f doubles: T_d halves -> need Vdd to increase
+Roughly: Vdd proportional to f for constant delay
+(at Vdd >> Vth: T_d ~ Vdd / Vdd^alpha = 1/Vdd^(alpha-1),
+so Vdd ~ f^(1/(alpha-1)))
+
+- **For alpha** = `1.3: Vdd ~ f^(1/0.3) = f^3.33`
+   - If f increases 20%: Vdd must increase ~80%
+   - This is why small frequency increases cost enormous power!
+
+**Detailed operating points table with derivation:**
+
+```verilog
+Assume: 7nm FinFET, Vth = 0.25V, alpha = 1.3
+Base design at 0.75V, 2.0 GHz
+
+| OPP     | Vdd(V) | F(GHz) | Vdd-Vth | Relative T_d | Relative P_dyn | Use Case         |
+|---------|--------|--------|---------|-------------|----------------|-------------------|
+| Turbo   | 0.95   | 2.8    | 0.70    | 0.72x (fast)| 1.78x          | Peak burst        |
+| Nominal | 0.80   | 2.0    | 0.55    | 1.00x (ref) | 1.00x          | Sustained         |
+| SVS     | 0.70   | 1.4    | 0.45    | 1.33x       | 0.64x          | Light load        |
+| Low     | 0.60   | 0.8    | 0.35    | 1.90x       | 0.34x          | Background        |
+| Min     | 0.50   | 0.4    | 0.25    | 2.98x       | 0.14x          | Always-on sensor  |
+
+Relative P_dyn = (Vdd/Vdd_ref)^2 * (f/f_ref)
+  Turbo:  (0.95/0.80)^2 * (2.8/2.0) = 1.41 * 1.40 = 1.97 (close to 1.78 with rounding)
+  SVS:    (0.70/0.80)^2 * (1.4/2.0) = 0.766 * 0.70  = 0.54
+  Low:    (0.60/0.80)^2 * (0.8/2.0) = 0.563 * 0.40  = 0.23
+  Min:    (0.50/0.80)^2 * (0.4/2.0) = 0.391 * 0.20  = 0.08
+
+Power at Turbo = 1.97x the nominal -> thermal throttling kicks in within seconds.
+Power at Min   = 0.08x nominal -> 92% dynamic power reduction for background tasks.
+```
+
+### 3.3 Power Savings Calculation
 
 ```verilog
 P_dynamic = C * Vdd^2 * f
@@ -394,7 +596,7 @@ Summary: 20% voltage reduction -> ~21% frequency loss -> ~49% dynamic power savi
 This is why DVFS is the most powerful knob for dynamic power.
 ```
 
-### 3.3 Operating Performance Points (OPPs)
+### 3.4 Operating Performance Points (OPPs)
 
 A real-world DVFS table for a mobile SoC (representative values):
 
@@ -407,7 +609,7 @@ A real-world DVFS table for a mobile SoC (representative values):
 | Low Power    | 0.55        | 0.4              | 6%            | 18%           | Background tasks      |
 | Retention    | 0.50        | 0 (clock off)    | 0%            | 12%           | State retention only  |
 
-### 3.4 DVFS Controller Architecture
+### 3.5 DVFS Controller Architecture
 
 ```ascii-graph
                     +-------------------+
@@ -452,7 +654,42 @@ same problem -- timing violations at the new lower voltage.
 **Total transition time:** 20-100 us depending on PMIC speed and PLL architecture.
 During this time, the processor is operational but at a non-optimal operating point.
 
-### 3.5 Adaptive Voltage Scaling (AVS)
+### 3.6 DVFS Controller Decision Logic
+
+```verilog
+How the DVFS controller decides V/F level:
+
+Method 1: Utilization-based (most common in mobile SoCs)
+  1. Hardware performance counters track:
+     - Instructions per cycle (IPC)
+     - Cache miss rate
+     - Pipeline stall cycles
+     - Memory bandwidth utilization
+  2. OS governor samples counters every 10-100 ms
+  3. Decision algorithm:
+     utilization = busy_cycles / total_cycles
+
+     if utilization > 80%: scale UP to next OPP
+     if utilization < 30%: scale DOWN to lower OPP
+     if 30% < utilization < 80%: maintain current OPP
+  4. Hysteresis: require N consecutive samples above/below threshold
+     to prevent oscillation (typically N=3 samples at 50ms each = 150ms)
+
+Method 2: Workload prediction (used in modern CPUs)
+  - Track workload history (last 10-100 ms)
+  - Predict next interval's demand using moving average
+  - Preemptively adjust V/F before the workload arrives
+  - Reduces response latency for bursty workloads
+
+Method 3: Critical path monitor (hardware AVS)
+  - On-die ring oscillators or replica delay lines
+  - Measure actual silicon speed in real-time
+  - If replica path is faster than needed -> reduce Vdd
+  - If replica path is too slow -> increase Vdd
+  - Per-chip optimization: fast silicon saves 50-100 mV
+```
+
+### 3.7 Adaptive Voltage Scaling (AVS)
 
 Silicon varies. Two chips from the same wafer can have 10-20% speed difference due to
 process variation. DVFS uses a fixed voltage for each frequency -- sized for the WORST
@@ -488,7 +725,7 @@ chip. AVS adjusts voltage per-chip based on actual silicon speed.
    Used in some ARM designs (adaptive clocking + voltage)
 ```
 
-### 3.6 Per-Domain DVFS
+### 3.8 Per-Domain DVFS
 
 Modern SoCs have independent voltage/frequency domains:
 
@@ -511,7 +748,7 @@ flowchart TB
 
 Each domain has an independent PMIC rail (or LDO), an independent PLL/divider, level shifters at the domain boundaries, and a handshake protocol for cross-domain communication.
 
-### 3.7 Voltage Regulation Hardware: PMIC vs IVR vs DLVR
+### 3.9 Voltage Regulation Hardware: PMIC vs IVR vs DLVR
 
 Per-core/per-domain DVFS is only as good as the regulator granularity behind it.
 
@@ -536,7 +773,42 @@ shared VccIA input rail. The DLVR drops each domain to just-enough voltage.
 AMD Zen families: per-core digital LDOs + per-core DFS, driven by on-die
 speed/power sensors (AMD calls the closed-loop system AVFS).
 
-### 3.8 AVFS, Droop Detection, and Adaptive Clocking
+### 3.10 Voltage Regulator Response Time
+
+```verilog
+How fast can you change Vdd?
+
+External PMIC (Power Management IC):
+  - Buck converter on the PCB
+  - Voltage change: 10-50 us settling time
+  - Step size: 6.25 mV or 12.5 mV resolution
+  - Limited by output inductor and capacitor
+  - Most mobile SoCs use this (external PMIC)
+
+On-die LDO (Low Dropout Regulator):
+  - Analog LDO on the same die as the logic
+  - Voltage change: 0.5-5 us settling time
+  - Much faster than external PMIC
+  - But LDO efficiency = Vout/Vin (at 0.6V out / 1.0V in = 60% efficient)
+  - Used for fine-grain DVFS with fast transitions
+
+DVFS transition overhead:
+  Scale up:   10-50 us (wait for PMIC) + 5-20 us (PLL relock) = 15-70 us total
+  Scale down: 5-20 us (PLL relock) + 10-50 us (voltage settles) = 15-70 us total
+
+  During transition: logic continues at old V/F (safe but suboptimal)
+
+  Energy wasted during transition:
+    E_transition = P_old * T_transition / 2 (roughly, average of old and new)
+    For a 50 us transition at 1W average: E = 25 uJ
+
+  Minimum DVFS interval: transition cost must be amortized
+    If saving 500 mW by switching down for T_idle:
+    Break-even: 500mW * T_idle > 25 uJ -> T_idle > 50 us
+    Practical minimum: 1-10 ms between DVFS transitions
+```
+
+### 3.11 AVFS, Droop Detection, and Adaptive Clocking
 
 **Terminology ladder (know the difference):**
 ```verilog
@@ -581,7 +853,7 @@ power (P ~ V^2) or the equivalent frequency headroom, in exchange for a few
 percent frequency loss only DURING actual droop events (rare, tens of ns).
 ```
 
-### 3.9 DVFS in GPUs and AI Accelerators
+### 3.12 DVFS in GPUs and AI Accelerators
 
 ```text
 GPU power management stack:
@@ -617,6 +889,21 @@ decode is bandwidth-bound -- SM clocks can drop with little latency impact
 for a large energy saving. Phase-aware DVFS is an active serving-stack
 optimization (ties directly to the AI-infra notes on disaggregated serving).
 ```
+
+### 3.13 Sub-Threshold Operation (VDD < Vth)
+
+Below Vth, transistors still conduct via diffusion current, but:
+
+- Current drops exponentially: I ~ exp(VDD/Vt) for VDD < Vth
+- Frequency drops to kHz-MHz range
+- Ion/Ioff ratio approaches 1 -> poor noise margins
+- Very sensitive to Vth variation (process corners spread widely)
+- Used for ultra-low-power sensor nodes, pacemakers
+
+- **At VDD** = `0.3V (sub-Vth for Vth=0.4V):`
+   - Freq ~ 10-100 kHz (application-specific)
+   - Power ~ 1-10 uW (nW-range for simple logic)
+   - Energy per operation: LOWER than super-threshold! (E ~ CV^2 is quadratic)
 
 ---
 
@@ -715,7 +1002,28 @@ If this is too slow, either:
 - Accept higher rush current (strengthen package decap)
    - Or use daisy-chain (staged) power-up
 
-### 4.4 Daisy-Chain (Staged) Power-Up
+### 4.4 Rush Current: Controlled vs Uncontrolled Ramp
+
+When power is restored, the virtual rail must charge from 0V to VDD. The parasitic capacitance of the entire gated domain (gate caps + wire caps + decoupling caps) creates a rush current.
+
+```text
+I_rush = C_total * dV/dt
+
+Example:
+  Domain area: 1 mm^2
+  Decoupling cap: ~10 nF/mm^2 (typical for dense logic)
+  C_total = 10 nF
+  Target ramp time: 10 us (controlled ramp to limit rush current)
+
+  I_rush_max = C_total * VDD / T_ramp = 10e-9 * 0.8 / 10e-6 = 0.8 mA
+  (This is very manageable)
+
+  If uncontrolled (T_ramp ~ 1 ns -- switch turns on instantly):
+  I_rush = 10e-9 * 0.8 / 1e-9 = 8A !!
+  (This would cause massive IR drop, EM violations, and ground bounce)
+```
+
+### 4.5 Daisy-Chain (Staged) Power-Up
 
 Instead of turning on all switches simultaneously, enable them sequentially with a
 staggered delay:
@@ -756,7 +1064,7 @@ create_power_switch CPU_SW \
 # during power switch insertion in ICC2/Innovus
 ```
 
-### 4.5 Isolation Cells
+### 4.6 Isolation Cells
 
 When a power-gated domain is off, its outputs are undefined (floating/X). This can
 corrupt always-on logic that receives these signals. Isolation cells clamp the outputs
@@ -808,7 +1116,7 @@ Isolation MUST be deasserted AFTER power is restored:
   4. Deassert isolation -> live outputs propagate
 ```
 
-### 4.6 Retention Registers
+### 4.7 Retention Registers
 
 When a power-gated domain is turned off, all flip-flop state is lost. For domains that
 need fast wake-up (avoid full re-initialization), retention registers save state before
@@ -867,7 +1175,60 @@ Not all state needs retention. To minimize area/leakage:
 Selective retention can reduce retention FF count by 80-90%, saving significant area.
 ```
 
-### 4.7 Complete Power-Up/Down Sequence
+### 4.8 Retention Register Transistor-Level Design (Balloon Register)
+
+```ascii-graph
+Schematic of a retention flip-flop with balloon (shadow) latch:
+
+  Switchable VDD (VVDD)                    Always-On VDD (VDD_AO)
+  ┌────────────────────────────┐           ┌──────────────────────┐
+  │                            │           │                      │
+  │  D ──[TG1]── Master ──[TG2]── Slave ──│── Q                  │
+  │       ↑        Latch       ↑   Latch   │                      │
+  │      CLK1                 CLK2         │                      │
+  │                            │           │   Shadow Latch       │
+  │                      [TG3]─┤───────────│──[TG4]── Retain ─────│
+  │                       ↑    │           │   ↑     Latch        │
+  │                     SAVE   │           │ RESTORE               │
+  └────────────────────────────┘           └──────────────────────┘
+  
+  TG1/TG2: Transmission gates (clocked by CLK, powered by VVDD)
+  TG3:     SAVE transmission gate (powered by VVDD for input, VDD_AO for output)
+  TG4:     RESTORE transmission gate (powered by VDD_AO)
+  
+  Normal operation (VVDD = ON):
+    Master-slave operates as normal FF
+    Shadow latch is idle (SAVE=0, RESTORE=0)
+    
+  SAVE sequence (before power-down):
+    1. Clock is stopped (no active edge)
+    2. SAVE is pulsed HIGH: TG3 opens, Slave output -> Shadow input
+    3. Shadow latch captures the bit on VDD_AO supply
+    4. SAVE goes LOW: TG3 closes, Shadow holds the bit
+    
+  Power-down:
+    VVDD ramps to 0V. Master and Slave lose all state.
+    Shadow latch retains on VDD_AO. Only ~4-6 transistors draw leakage.
+    
+  RESTORE sequence (after power-up):
+    1. VVDD is stable at target voltage
+    2. Master/Slave are in unknown state (random)
+    3. RESTORE is pulsed HIGH: TG4 opens, Shadow output -> Master input
+    4. Master captures the saved bit from Shadow
+    5. RESTORE goes LOW
+    6. Next clock edge: Slave captures from Master -> Q has saved value
+    
+Area overhead: ~30-50% larger than standard FF
+  Standard D-FF: ~16-20 transistors
+  Retention D-FF: ~26-34 transistors (shadow latch + TG3/TG4 + control logic)
+  
+Leakage overhead: only the shadow latch leaks on the always-on rail
+  Shadow latch: ~4-6 transistors, ~2-5 nA at 25C
+  For 10K retention FFs: 10,000 * 5nA * 0.9V = 45 uW always-on leakage
+  This is the cost of fast wake-up (vs. full re-initialization)
+```
+
+### 4.9 Complete Power-Up/Down Sequence
 
 **Power-down sequence:**
 ```verilog
@@ -920,7 +1281,57 @@ Retention **power-up** sequence — power on, restore, de-isolate, resume:
 ], "head": { "text": "Power-up: SLEEP off (power on) -> VVDD ramps -> RESTORE state -> de-assert ISO -> resume clocks" } }
 ```
 
-### 4.8 State Retention Power Gating (SRPG) vs Full Power Gating
+### 4.10 Power-Up Timing with In-Rush Current Management
+
+```verilog
+Detailed power-up sequence with timing:
+
+  t0: Wake-up event (interrupt, timer)
+  t1: PMU asserts SLEEP_N deassertion (start turning on header switches)
+      - Daisy-chain: group 0 turns on first
+      - Each group delayed by ~200 ns from the previous
+      - With 10 groups: total ramp time = 10 * 200 ns = 2 us
+      - In-rush current limited to: I_domain / N_groups
+        = 100 mA / 10 = 10 mA per group (manageable)
+        
+      Without daisy-chain:
+        I_rush = C_domain * VDD / T_ramp_uncontrolled
+               = 10 nF * 0.8V / 1 ns (instantaneous switch)
+               = 8A !! (catastrophic Ldi/dt, package bondwire fuse risk)
+        
+  t2: VVDD reaches 90% of VDD (after ~2 us)
+      Voltage detector signals "power good"
+      
+  t3: PMU asserts RESET to domain (1 us minimum pulse width)
+      All FFs go to known state (0)
+      
+  t4: PMU asserts RESTORE to retention FFs (1 us minimum pulse width)
+      Shadow latches write back to master/slave
+      
+  t5: PMU deasserts RESET (synchronous to clock!)
+      Domain FFs now have restored values
+      
+  t6: PMU deasserts ISOLATION
+      Domain outputs go from clamped values to live logic
+      
+  t7: PMU enables clocks (via clock gating deassertion)
+      First functional clock edge
+      
+  t8: Domain is fully operational
+      Total wake-up time: ~5-15 us (domain dependent)
+
+Critical ordering violations and their consequences:
+  ISOLATION deasserted before VVDD stable:
+    -> Outputs are undefined (random) -> corrupt always-on domain
+  RESTORE before VVDD stable:
+    -> Shadow latch data transfers incorrectly -> silent data corruption
+  Clock enabled before RESET deasserted:
+    -> FFs clock in garbage data for 1+ cycles
+  RESET deasserted asynchronously:
+    -> Recovery/removal violation on FFs -> metastability
+```
+
+### 4.11 State Retention Power Gating (SRPG) vs Full Power Gating
 
 | Feature              | SRPG (with retention)        | Full Power Gating            |
 |----------------------|------------------------------|------------------------------|
@@ -931,7 +1342,7 @@ Retention **power-up** sequence — power on, restore, de-isolate, resume:
 | Design complexity    | Higher                       | Lower                        |
 | Use case             | CPU cores, DSPs              | Peripherals, rarely-used IPs |
 
-### 4.9 Physical Implementation of Power Switches (PnR View)
+### 4.12 Physical Implementation of Power Switches (PnR View)
 
 **Switch placement styles:**
 ```verilog
@@ -970,7 +1381,7 @@ RING style:                          COLUMN/GRID style:
      measured at the FARTHEST corner of the domain from the switches
 ```
 
-### 4.10 Power-Gating Verification and the Classic Bug Catalog
+### 4.13 Power-Gating Verification and the Classic Bug Catalog
 
 **Static low-power checks (Synopsys VC LP, Cadence Conformal Low Power):**
 missing isolation on a domain output, isolation cell powered by the wrong
@@ -1007,7 +1418,7 @@ domain recovers through reset/restore, random sleep-injection tests pass.
    wake droop adds on top. Bench PSU was stiffer than the real PMIC.
 ```
 
-### 4.11 SRAM Low-Power Modes (Compiler-Memory Standard Feature)
+### 4.14 SRAM Low-Power Modes (Compiler-Memory Standard Feature)
 
 SRAM macros ship with built-in power modes -- this is asked constantly
 because memory is 15-25% of chip power and mostly idle:
@@ -1066,12 +1477,25 @@ rather than channel doping (undoped channel for better mobility and variation).
 | ULVT      | ~200     | 0.65x               | 20.0x                 | Most critical paths only        |
 | ELVT      | ~150     | 0.55x               | 80.0x                 | Speed emergency (sparingly)     |
 
-**Key relationships:**
+**Key relationships** (absolute numbers for a typical 7nm INV_X1):
 ```verilog
-Every ~50mV reduction in Vth:
-  - Speed improves by ~15-25% (depends on Vdd, process)
-  - Leakage increases by ~4-5x (exponential: exp(50mV / (1.1*26mV)) = exp(1.75) = 5.75x)
+| Cell   | Vt Type | Delay (ps) | Leakage (nW) | Rel Delay | Rel Leak |
+|--------|---------|------------|--------------|-----------|----------|
+| INV_X1 | uLVT    | 12         | 150          | 0.80      | 15.0     |
+| INV_X1 | LVT     | 14         | 50           | 0.93      | 5.0      |
+| INV_X1 | SVT     | 15         | 10           | 1.00      | 1.0      |
+| INV_X1 | HVT     | 19         | 2            | 1.27      | 0.2      |
+| INV_X1 | uHVT    | 25         | 0.5          | 1.67      | 0.05     |
+
+Observations:
+- LVT is ~7% faster than SVT but 5x more leaky
+- HVT is ~27% slower than SVT but 5x less leaky
+- uLVT is ~20% faster than SVT but 15x more leaky
+- Every ~50mV reduction in Vth buys a modest speed gain at an
+  exponential leakage cost: the delay penalty is modest, the
+  leakage difference is enormous. That asymmetry is the whole game.
 ```
+
 
 ### 5.3 Vt Optimization Algorithm
 
@@ -1120,7 +1544,57 @@ swapCells -cell U123 -toCell NAND2_SVT
 - **LVT** — 8-15% (near-critical paths)
 - **ULVT** — 1-3%  (most critical paths only)
 
-### 5.4 Leakage Savings Calculation
+### 5.4 Multi-Vt Synthesis Flow in Detail
+
+```tcl
+Step-by-step multi-Vt optimization in Synopsys Design Compiler:
+
+Phase 0: Library preparation
+  - Foundry provides 4-6 Vt flavors per cell (ULVT, LVT, SVT, HVT, UHVT)
+  - Each has same function, different Vth implant / work function metal
+  - Liberty files: nangate_7nm_UHVT.lib, nangate_7nm_HVT.lib, etc.
+  
+Phase 1: Initial compile (all HVT for minimum leakage)
+  set_link_library "* 7nm_hvt.db 7nm_svt.db 7nm_lvt.db 7nm_ulvt.db"
+  compile_ultra -scan
+  
+Phase 2: Vt assignment (swap up for timing closure)
+  optimize_netlist -area -power
+  # DC swaps cells from HVT -> SVT -> LVT on critical paths
+  # Each swap: ~15-25% faster, ~4-5x more leakage
+  
+Phase 3: Leakage recovery (swap down for non-critical paths)
+  # After timing closure, find cells with positive slack
+  # Swap LVT -> SVT -> HVT if timing still meets
+  # Priority: swap the highest-leakage cells first
+  
+Phase 4: Constraint-driven Vt limits
+  set_multi_vth_constraint -lvth_percentage 10 -type soft
+  # Limit LVT+ULVT to 10% of total cell count
+  # Soft constraint: may be violated if timing requires
+  
+Phase 5: Report and verify
+  report_threshold_voltage_group
+  report_power -breakdown {vth}
+  
+Typical result for a well-optimized CPU core at 7nm:
+  UHVT:  1%  (absolute critical paths only)
+  HVT:  60%  (vast majority of non-critical logic)
+  SVT:  28%  (moderately timing-critical)
+  LVT:  10%  (near-critical paths)
+  ULVT:  1%  (rarely needed, only for the most critical gates)
+  
+  Leakage breakdown by Vt:
+    1% ULVT -> 25% of total leakage (each cell leaks 20-80x more than HVT!)
+    10% LVT -> 35% of total leakage
+    28% SVT -> 25% of total leakage  
+    60% HVT -> 15% of total leakage
+    
+  This shows the Pareto: a few LVT/ULVT cells dominate total leakage.
+  Aggressive leakage recovery on even 1% of LVT cells can save 5-10% total power.
+```
+
+### 5.5 Leakage Savings Calculation
 
 ```text
 Example: 10M gate design, all SVT baseline
@@ -1151,7 +1625,76 @@ vs all-HVT: 10M * 10nA * 0.20 * 0.9V = 18 mW (but won't meet timing)
 The art is in minimizing the LVT/ULVT count while still meeting timing.
 ```
 
-### 5.5 Multi-Vt at GAA / Nanosheet Nodes (N2-Class, 2025-2026)
+### 5.6 Multi-Vt Leakage Reduction Quantified -- Worked Example
+
+```text
+Worked example: 5M gate design, 7nm FinFET
+
+All-SVT baseline:
+  Leakage per SVT gate = 10 nA (at 25C)
+  Total leakage = 5e6 * 10e-9 * 0.75V = 37.5 mW
+
+After multi-Vt optimization (60% HVT, 28% SVT, 10% LVT, 2% ULVT):
+  HVT leakage:  3.0M * 10nA * 0.20x = 6.0 mA * 0.75 = 4.5 mW
+  SVT leakage:  1.4M * 10nA * 1.00x = 14.0 mA * 0.75 = 10.5 mW
+  LVT leakage:  0.5M * 10nA * 5.00x = 25.0 mA * 0.75 = 18.8 mW
+  ULVT leakage: 0.1M * 10nA * 20.0x = 20.0 mA * 0.75 = 15.0 mW
+  Total: 65 mA * 0.75V = 48.8 mW
+
+Wait -- that's MORE than all-SVT! Why?
+
+The issue: LVT/ULVT cells on critical paths add enormous leakage.
+But these cells were NECESSARY to meet timing -- without them, the
+design would need to run at lower frequency or higher voltage.
+
+Compare at constant performance:
+  All-SVT at 0.85V (higher voltage to meet timing):
+    Dynamic: 5e6 * 0.15 * 1.2fF * 0.85^2 * 2GHz = 1.3 W
+    Leakage:  37.5 mW (at 0.85V, slightly less due to lower Vds DIBL)
+    Total: ~1.34 W
+    
+  Multi-Vt at 0.75V (lower voltage thanks to LVT on critical paths):
+    Dynamic: 5e6 * 0.15 * 1.2fF * 0.75^2 * 2GHz = 1.01 W
+    Leakage: 48.8 mW
+    Total: ~1.06 W
+    
+  Net savings: 1.34 - 1.06 = 280 mW (21% reduction!)
+  
+The key insight: multi-Vt enables lower Vdd operation by speeding up
+critical paths with LVT, which saves dynamic power quadratically.
+The leakage increase from LVT is small compared to V^2 dynamic savings.
+
+Typical industry result: multi-Vt optimization saves 2-5x total leakage
+vs an all-LVT design (which would meet timing trivially but leak terribly),
+and 20-30% total power vs all-SVT at higher voltage.
+```
+
+### 5.7 Vt vs Cell Sizing Trade-off
+
+**To fix a 20ps setup violation, you can:**
+
+Option A: Swap bottleneck cell from HVT to LVT
+Delay improvement: ~20%  (~10-15ps for a typical gate)
+Leakage cost: 5-10x for that cell
+Area: unchanged (same cell footprint)
+
+Option B: Upsize bottleneck cell from X1 to X2
+Delay improvement: ~30-40% (~15-20ps)
+Leakage cost: ~2x (double the transistor width)
+Area: ~2x for that cell
+
+Option C: Both (LVT + upsize)
+Delay improvement: ~50-60%
+Leakage cost: 10-20x
+Area: 2x
+
+For minimal leakage impact: prefer upsizing (linear leakage increase)
+For minimal area impact: prefer Vt swap (no area change)
+For maximum speed: both
+
+---
+
+### 5.8 Multi-Vt at GAA / Nanosheet Nodes (N2-Class, 2025-2026)
 
 How Vt flavors are physically created has changed twice:
 
@@ -1178,7 +1721,7 @@ GAA nanosheet:    WFM space between stacked sheets is TINY -> thick-WFM
     process corners is real -- sign off leakage and timing per-corner, do
     not assume fixed delay/leakage ratios between flavors.
 
-### 5.6 Leakage-Recovery ECO -- The Bread-and-Butter PD Task
+### 5.9 Leakage-Recovery ECO -- The Bread-and-Butter PD Task
 
 After timing closure, recover leakage by downgrading every cell that has
 more slack than it needs:
@@ -1468,7 +2011,16 @@ Is the block idle for extended periods (ms)?
 | Operand isolation payoff | datapaths **>16 bit**, activity **<10–20%** | when the isolation latch pays for itself |
 | Multi-Vt budget | target **<10% LVT/ULVT** cells | bounds standby leakage |
 | Power gating wake-up | SRPG + retention (fast) vs full PG (simple) | latency vs area choice |
-| Body bias (standby) | reverse-bias raises Vth → cuts leakage | the circuit-level leakage knob |
+| Subthreshold slope limit | **60 mV/dec** (Boltzmann), 60–100 practical | floor on Vth/leakage scaling |
+| Leakage vs temperature | ~2× per 10 °C → **~64×** from 25→85 °C | thermal-runaway driver |
+| Header (PMOS) vs footer (NMOS) switch | PMOS ~**2×** wider for equal R | why headers are larger |
+| Switch sizing rule | R_switch · I_max < IR budget | e.g. 100 mA, 40 mV → R<0.4 Ω → ~13 header cells |
+| Rush current | I = C_total · dV/dt | controlled ramp (µs) vs 8 A uncontrolled |
+| Retention FF area overhead | **~30–50%** vs standard FF | the cost of fast wake-up |
+| Retention shadow latch | ~4–6 always-on transistors | the only thing that leaks when gated |
+| Isolation clamp | AND-type (clamp 0) / OR-type (clamp 1) | prevents X-propagation from off domain |
+| Power-gating break-even | T_idle > E_save⁻¹ · (E_enter + E_exit) | when sleep actually pays |
+| Body bias | FBB lowers Vth (speed) · RBB raises Vth (standby leakage) | the post-silicon knob |
 
 ---
 
