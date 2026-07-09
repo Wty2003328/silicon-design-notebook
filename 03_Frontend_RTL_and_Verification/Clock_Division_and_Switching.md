@@ -1,4 +1,4 @@
-# Clock Division Techniques — Senior Engineer Level
+# Clock Division and Glitch-Free Clock Switching — Senior Engineer Level
 
 ## Even Division — Gate-Level Understanding
 
@@ -987,884 +987,6 @@ endmodule
 
 ---
 
-## Glitch-Free Clock Switching — Exhaustive Analysis
-
-### Why a Naive MUX Produces Runt Pulses
-
-```verilog
-// DANGEROUS — never use for clock MUX
-assign clk_out = sel ? clk_b : clk_a;
-```
-
-**Scenario: sel transitions from 0 to 1 while clk_a=1, clk_b=0:**
-
-```wavedrom
-{ "signal": [
-  { "name": "clk_a",   "wave": "01010101" },
-  { "name": "clk_b",   "wave": "10101010" },
-  { "name": "sel",     "wave": "0....1.." },
-  {},
-  { "name": "clk_out", "wave": "0101x01." }
-], "head": { "text": "Naive MUX runt pulse -- width = sel transition to clk_a falling edge (0 to half-period)" } }
-```
-
-The runt (`x`) is shorter than either clock's half-period; its width is the time from the `sel` transition to `clk_a`'s falling edge, anywhere from 0 to a full half-period.
-
-**Runt pulse consequences:**
-- **Setup violation:** A flip-flop clocked by clk_out might see the rising edge of the runt pulse, try to capture data, but the pulse is too short for the data to propagate through the master latch → metastable output.
-- **Hold violation:** The falling edge of the runt pulse comes too soon after the rising edge → slave latch hasn't settled.
-- **Clock tree response:** CTS (clock tree synthesis) buffers may filter out very narrow pulses, causing some flip-flops to see the edge and others not → functional failure.
-
-### The AND-OR-AND Deglitched Design
-
-**Architecture:**
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    sel["sel"] --> na["AND<br/>(clk_a path)"]
-    sel --> NOT["NOT"] --> seln["sel_n"] --> nb["AND<br/>(clk_b path)"]
-    na --> FA1["FF1 @ clk_a"] --> FA2["FF2 @ clk_a"] --> ena["en_a"]
-    nb --> FB1["FF1 @ clk_b"] --> FB2["FF2 @ clk_b"] --> enb["en_b"]
-    FB2 -.->|"~en_b feedback"| na
-    FA2 -.->|"~en_a feedback"| nb
-    ena --> ga["AND"] --> orr["OR"]
-    clka["clk_a"] --> ga
-    enb --> gb["AND"] --> orr
-    clkb["clk_b"] --> gb
-    orr --> out["clk_out"]
-    classDef l fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef s fill:#fde68a,stroke:#b45309,color:#000
-    classDef c fill:#dcfce7,stroke:#15803d,color:#000
-    class na,nb,NOT,ga,gb,orr l
-    class FA1,FA2,FB1,FB2 s
-    class sel,seln,clka,clkb,out,ena,enb c
-```
-
-### Timing Diagram — Showing the Safe Switching Sequence
-
-**Switching from clk_a to clk_b (sel goes from 0 to 1):**
-
-```ascii-graph
-Time →     t0    t1    t2    t3    t4    t5    t6    t7    t8    t9
-           ├─────┤─────┤─────┤─────┤─────┤─────┤─────┤─────┤─────┤
-
-sel:       0000000|11111111111111111111111111111111111111111111
-                  ↑ sel changes (asynchronous to both clocks)
-
-clk_a:     _|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__
-clk_b:     __|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|_
-
-en_a path:
-  sel_n:   1111111|00000000000000000000000000
-  AND input (sel_n & ~en_b): depends on en_b
-  
-  FF1@clk_a (first sync): 1..1..1..? picks up sel_n=0 after 1-2 clk_a edges
-  FF2@clk_a (second sync, = en_a):
-           111111111111|11|00000000000000000000
-                            ↑ en_a goes LOW after 2 clk_a cycles from sel change
-
-en_b path:
-  AND input (sel & ~en_a): sel=1 but ~en_a=0 until en_a drops!
-  So en_b stays 0 until en_a becomes 0.
-  
-  FF3@clk_b: 0000000000000000|01 picks up (sel=1 & ~en_a=1) after en_a drops
-  FF4@clk_b (= en_b):
-           000000000000000000000|01111111111
-                                  ↑ en_b goes HIGH ~2 clk_b cycles after en_a dropped
-
-clk_out = (clk_a & en_a) | (clk_b & en_b):
-
-Phase 1 (t0-t3):  en_a=1, en_b=0 → clk_out = clk_a
-Phase 2 (t3-t6):  en_a=0, en_b=0 → clk_out = 0 (DEAD TIME)
-Phase 3 (t6+):    en_a=0, en_b=1 → clk_out = clk_b
-
-The dead time is 2-4 clock cycles of the slower clock.
-During dead time, clk_out is stuck LOW — no edges.
-This is SAFE: downstream flip-flops simply don't clock for a few cycles.
-```
-
-### Proving No Runt Pulses — Exhaustive Case Analysis
-
-**Case 1: en_a=1, en_b=0**
-```verilog
-clk_out = clk_a & 1 | clk_b & 0 = clk_a
-Pure clk_a, no glitch possible.
-```
-
-**Case 2: en_a=0, en_b=0 (dead time)**
-```verilog
-clk_out = clk_a & 0 | clk_b & 0 = 0
-Output is constant 0. No edges, no glitches.
-```
-
-**Case 3: en_a=0, en_b=1**
-```verilog
-clk_out = clk_a & 0 | clk_b & 1 = clk_b
-Pure clk_b, no glitch possible.
-```
-
-**Case 4: en_a=1, en_b=1 (IMPOSSIBLE)**
-**The feedback cross-coupling prevents this:**
-   - en_a = FF2(FF1(sel_n & ~en_b))
-   - en_b = FF4(FF3(sel & ~en_a))
-
-If en_a=1, then ~en_a=0, so the input to en_b's path is (sel & 0) = 0.
-en_b will become 0 after 2 clk_b cycles.
-
-If en_b=1, then ~en_b=0, so the input to en_a's path is (sel_n & 0) = 0.
-en_a will become 0 after 2 clk_a cycles.
-
-At most, there's a transient overlap of ~2 cycles during initial reset release,
-which is covered by the reset logic (en_a defaults to 1, en_b defaults to 0).
-
-### What If One or Both Clocks Stop?
-
-**clk_a stops while active (en_a=1):**
-- sel changes to select clk_b
-- en_a can't update (clk_a is stopped, FFs can't clock)
-- en_b can't enable (blocked by ~en_a = 0)
-- **System is stuck.** No clock output.
-
-**Solution:** Use the negedge of the stuck clock (if it stopped high), or add a timeout circuit:
-```ascii-graph
-If clk_a has no edge for N cycles of a reference clock → force en_a = 0
-```
-
-In practice, clock switching in SoCs assumes both clocks are running (or use a controlled sequence):
-
-**Safe switching protocol:**
-1. Ensure the target clock is stable and running (PLL locked)
-2. Assert sel
-3. Wait for switch completion (read back a status register)
-4. Optionally disable the old clock source to save power
-
-**Startup sequence concern:** After power-on, which clock runs first? The default selection (en_a=1 via reset) must correspond to a clock that's guaranteed to be running at reset. Often this is a crystal oscillator or ring oscillator (always-on), not a PLL output (which takes time to lock).
-
----
-
-## Clock Gating vs Clock Division — SoC Perspective
-
-### Clock Gating (ICG Cell)
-
-```ascii-graph
-             ┌──────────────┐
-     en ────►│ Latch (neg)  ├──► en_latched ──┐
-             └──────┬───────┘                  │
-                    │                          ▼
-     clk ───────────┼────────────────────► AND ──► gated_clk
-                    │
-              CLK of latch = ~clk (transparent when clk LOW)
-```
-
-**Why the latch?** If `en` changes while `clk` is HIGH, a direct AND gate would produce a runt pulse. The negative-edge latch holds `en` stable during the HIGH phase of clk.
-
-**Timing constraint:** `en` must be stable for Tsu before the falling edge of clk (= rising edge of latch clock). This is naturally satisfied if `en` comes from a flip-flop clocked by clk (the FF output is stable long before the next falling edge).
-
-### When to Use Clock Gating vs Division
-
-| Scenario | Use Clock Gating | Use Clock Division |
-|----------|------------------|--------------------|
-| Power save for idle blocks | Yes (gate the clock) | No |
-| Reduce frequency for slow peripherals | No | Yes (divide and distribute) |
-| Dynamic voltage-frequency scaling | No | Yes (change divider ratio) |
-| Conditional computation | Yes (gate on valid data) | No |
-| Clock domain generation for IO | No | Yes (e.g., UART baud rate) |
-
-**Power savings:** Clock gating saves dynamic power by eliminating toggling in idle flip-flops. Dynamic power = alpha * C * V^2 * f. Gating reduces alpha (activity factor) to 0 for gated FFs.
-
-Clock division reduces f. For a block that needs to run at half speed, gating every other cycle wastes power in the clock tree (which still toggles at full speed). Division at the source is more efficient.
-
----
-
-## PLL Architecture Deep Dive
-
-### Block Diagram
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    REF["f_ref"] --> PFD["PFD"]
-    FB["f_fb"] --> PFD
-    PFD --> CP["Charge pump"] --> LF["Loop filter (LPF)"] --> VCO["VCO"] --> OUT["f_out"]
-    VCO --> DIV["Feedback divider ÷N"] --> FB
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class REF,PFD,CP,LF,VCO,OUT,DIV,FB s
-```
-
-### Phase-Frequency Detector (PFD)
-
-The PFD compares the phase AND frequency of the reference clock (f_ref) and the feedback clock (f_fb). It produces two output signals: UP and DOWN.
-
-**3-State State Machine:**
-
-```ascii-graph
-States: IDLE, UP_ACTIVE, DOWN_ACTIVE
-
-Transitions:
-  IDLE → UP_ACTIVE:     on rising edge of f_ref
-  IDLE → DOWN_ACTIVE:   on rising edge of f_fb
-  UP_ACTIVE → IDLE:     on rising edge of f_fb (both edges seen → reset)
-  DOWN_ACTIVE → IDLE:   on rising edge of f_ref (both edges seen → reset)
-
-Outputs:
-  UP_ACTIVE:   UP = 1, DOWN = 0  (VCO too slow → speed up)
-  DOWN_ACTIVE: UP = 0, DOWN = 1  (VCO too fast → slow down)
-  IDLE:        UP = 0, DOWN = 0  (phase aligned)
-```
-
-```verilog
-// Simplified PFD (conceptual)
-module pfd (
-    input  ref_clk,
-    input  fb_clk,
-    input  rst_n,
-    output reg up,
-    output reg down
-);
-    // Both FFs reset when both UP and DOWN are high
-    wire reset_both = up & down;
-
-    always @(posedge ref_clk or negedge rst_n or posedge reset_both) begin
-        if (!rst_n || reset_both)
-            up <= 1'b0;
-        else
-            up <= 1'b1;
-    end
-
-    always @(posedge fb_clk or negedge rst_n or posedge reset_both) begin
-        if (!rst_n || reset_both)
-            down <= 1'b0;
-        else
-            down <= 1'b1;
-    end
-endmodule
-```
-
-**Dead zone problem:** When the phase difference between f_ref and f_fb is very small, both UP and DOWN pulses become very narrow. If the pulse width is shorter than the switching time of the charge pump transistors, the charge pump cannot respond — the PFD is effectively "blind" in this region. This dead zone limits the minimum phase error the PLL can correct, creating a flat region in the PFD characteristic curve that increases output jitter.
-
-**Dead zone solutions:**
-1. **Add a minimum pulse width:** Insert a delay in the reset path so that UP and DOWN are always active for at least T_min, even when the phase error is near zero. Both UP and DOWN are active simultaneously for T_min, and their currents cancel.
-2. **Use a bang-bang PFD:** A 1-bit PFD that outputs only +1 or -1 (no proportional information), commonly used in CDR circuits. Eliminates dead zone but has quantization noise.
-
-### Charge Pump
-
-The charge pump converts the PFD's UP/DOWN pulses into a current that charges or discharges the loop filter:
-
-```ascii-graph
-            VDD
-             │
-         ┌───┴───┐
-         │ I_up  │ (current source, typically 10-100 uA)
-         │       │
-  UP ───►│ SW    │──────┬──► to Loop Filter
-         │       │      │
-  DOWN──►│ SW    │──────┘
-         │       │
-         │ I_dn  │ (current sink)
-         └───┬───┘
-             │
-            GND
-```
-
-**Charge pump mismatch:** Ideally I_up = I_dn. In practice, PMOS and NMOS current sources have different characteristics:
-
-**Mismatch sources:**
-   1. Process variation: PMOS and NMOS have different threshold voltages
-2. Channel-length modulation: output impedance differs
-3. Charge sharing: parasitic capacitance at the output node
-4. Clock feedthrough: switching transients couple through gate-drain capacitance
-
-Consequence: net charge injected per reference cycle is nonzero even when locked.
-If I_up > I_dn: positive charge accumulates → VCO control voltage drifts up
-The PFD compensates by adjusting the phase offset until average charge = 0
-This creates a static phase offset between ref and fb
-The periodic charge injection at f_ref creates REFERENCE SPURS at f_out ± k*f_ref
-
-**Reference spurs:** These are spectral peaks at offsets of f_ref (and harmonics) from the carrier. Specification: typically -40 to -80 dBc depending on application. Reducing spurs requires: matched current sources, careful layout (symmetric PMOS/NMOS), charge cancellation circuits, and narrow PLL bandwidth.
-
-### Loop Filter
-
-The loop filter converts the charge pump current into a voltage that controls the VCO. It determines the PLL's bandwidth, stability, and transient response.
-
-**2nd-order loop filter (most common):**
-
-```ascii-graph
-From charge pump ──┬── R1 ──┬── C1 ──┬── GND
-                   │        │        │
-                   └── C2 ──┘        │
-                                     │
-                   V_ctrl ───────────┘
-
-Transfer function: Z(s) = (1 + s*R1*C1) / (s * (C1 + C2) * (1 + s*R1*C1*C2/(C1+C2)))
-```
-
-The resistor R1 provides a zero that ensures loop stability (phase margin > 45 degrees). Without R1 (just capacitors), the loop would be marginally stable (180 degrees phase shift = oscillation).
-
-**Component values determine PLL behavior:**
-
-```verilog
-Loop bandwidth ≈ (I_cp * Kvco * R1) / (2π * N)
-  Where:
-    I_cp = charge pump current
-    Kvco = VCO gain (Hz/V)
-    R1   = loop filter resistor
-    N    = feedback divider ratio
-
-Phase margin ≈ atan(ω_bw * R1 * C1) - atan(ω_bw * R1 * C1 * C2 / (C1 + C2))
-  Typical target: 55-65 degrees for good stability
-
-Lock time ≈ 2π * N / (ω_bw) * ln(Δf / f_tolerance)
-  Rough rule: ~100 / f_bandwidth cycles
-```
-
-**3rd-order loop filter:** Adds an additional R-C section for extra filtering of high-frequency noise and reference spurs. More complex pole-zero placement, but better spur rejection.
-
-**Design trade-offs:**
-
-| Parameter | Wider bandwidth | Narrower bandwidth |
-|-----------|-----------------|---------------------|
-| Lock time | Faster | Slower |
-| Jitter from VCO | Higher (less filtering) | Lower (more filtering) |
-| Jitter from reference | Lower (faster tracking) | Higher (less tracking) |
-| Reference spurs | Higher | Lower |
-| Stability | Harder (more phase margin needed) | Easier |
-| Loop filter area | Smaller capacitors | Larger capacitors |
-
-### VCO: Ring Oscillator vs LC Oscillator
-
-**Ring oscillator (digital PLL / DPLL):**
-
-```ascii-graph
-┌───► INV ──► INV ──► INV ──► INV ──► INV ──┐
-│                                              │
-└──────────────────────────────────────────────┘
-                (odd number of inverters)
-
-Frequency = 1 / (2 * N * t_delay)
-  Where N = number of stages, t_delay = inverter delay
-
-Tuning: adjust inverter delay by changing supply voltage (current-starved)
-  or switching in/out capacitive loads (digitally-controlled oscillator, DCO)
-```
-
-**Characteristics:**
-- Phase noise: poor (-80 to -100 dBc/Hz at 1 MHz offset)
-- Area: small (just inverters)
-- Power: moderate
-- Frequency range: wide tuning range (easy to cover 2:1 ratio)
-- Integration: fully digital-compatible, easy to integrate in SoC
-- Used in: digital PLLs, general-purpose SoC clocking, USB, PCIe (with extra jitter cleaning)
-
-**LC oscillator (analog PLL):**
-
-```verilog
-Uses an inductor (L) and capacitor (C) tank circuit:
-  f_osc = 1 / (2π * sqrt(L * C))
-
-Tuning: use varactors (voltage-variable capacitors) to change C
-  Kvco typically 100-500 MHz/V
-```
-
-**Characteristics:**
-- Phase noise: excellent (-110 to -130 dBc/Hz at 1 MHz offset)
-- Area: large (inductor takes significant die area, ~200x200 um in advanced nodes)
-- Power: moderate to high
-- Frequency range: narrow tuning range (typically 10-20%)
-- Integration: requires analog design expertise, inductor modeling
-- Used in: RF PLLs (wireless, SerDes), high-performance clock generation
-
-**Kvco (VCO gain):**
-
-- **Kvco** = `df_out / dV_ctrl  [Hz/V]`
-
-Ring oscillator Kvco: typically 0.5-5 GHz/V (high, wide range)
-LC oscillator Kvco: typically 100-500 MHz/V (lower, narrower range)
-
-High Kvco: more sensitive to supply noise → worse jitter
-Low Kvco: less sensitive → better jitter, but narrower tuning range
-
-Design approach: use coarse digital tuning (switched capacitor banks) for
-wide range + fine analog tuning (varactor) for low Kvco near the target.
-
-### Lock Detection
-
-Lock detection determines when the PLL has achieved phase/frequency lock:
-
-**Methods:**
-
-1. **Phase error monitoring:** If the UP and DOWN pulse widths from the PFD are both below a threshold for N consecutive reference cycles, declare lock. Simple to implement, directly measures the phase error.
-
-2. **Frequency comparison:** Compare f_out (divided) against f_ref using a counter. If the counts match within tolerance over a window, declare frequency lock. Then check phase lock separately.
-
-3. **Control voltage monitoring:** If V_ctrl stays within a narrow band for N cycles, the PLL is stable. This is indirect but robust.
-
-**Implementation:**
-
-```verilog
-// Simple lock detector based on PFD pulse width
-module lock_detect (
-    input  ref_clk,
-    input  up,
-    input  down,
-    input  rst_n,
-    output reg locked
-);
-    parameter LOCK_COUNT = 64;   // consecutive good cycles to declare lock
-    parameter UNLOCK_COUNT = 4;  // bad cycles to declare unlock
-
-    reg [6:0] good_count;
-    reg       phase_good;
-
-    // Phase is "good" if neither UP nor DOWN is excessively long
-    // Sample at reference clock edge — at lock, UP and DOWN should be very narrow
-    always @(posedge ref_clk or negedge rst_n) begin
-        if (!rst_n)
-            phase_good <= 1'b0;
-        else
-            // If both UP and DOWN are low at the ref_clk edge, phase error is small
-            phase_good <= ~up & ~down;
-    end
-
-    always @(posedge ref_clk or negedge rst_n) begin
-        if (!rst_n) begin
-            good_count <= 0;
-            locked     <= 1'b0;
-        end else begin
-            if (phase_good) begin
-                if (good_count < LOCK_COUNT)
-                    good_count <= good_count + 1;
-                if (good_count == LOCK_COUNT - 1)
-                    locked <= 1'b1;
-            end else begin
-                good_count <= 0;
-                if (good_count == 0)  // multiple bad cycles
-                    locked <= 1'b0;
-            end
-        end
-    end
-endmodule
-```
-
-### PLL Specifications
-
-**Lock time:** Time from enabling the PLL (or changing the divider ratio) until the output frequency is within tolerance. Typical: 5-50 us for general-purpose PLLs, 1-5 us for fast-lock designs.
-
-```ascii-graph
-Lock time ≈ (2π / ω_n) * ln(Δf_initial / f_tolerance) * damping_factor_correction
-  Where ω_n = natural frequency of the loop
-
-Faster lock: wider bandwidth, higher charge pump current
-  But wider bandwidth → more jitter → design trade-off
-```
-
-**Jitter types:**
-
-```verilog
-1. Cycle-to-cycle jitter (J_cc):
-   Difference between consecutive output periods.
-   J_cc          = |T_{n+1} - T_n|
-   Spec:         typically < 1-5% of output period
-   Dominated by: VCO phase noise
-
-2. Period jitter (J_per):
-   Deviation of any single period from the ideal period.
-   J_per         = T_n - T_ideal
-   RMS value:    typically 1-20 ps for PLL outputs
-   Includes contributions from VCO, reference, and loop noise
-
-3. Long-term (accumulated) jitter (J_lt):
-   Phase deviation accumulated over N cycles.
-   J_lt(N)       = sum(T_i - T_ideal) for i = 1 to N
-   Grows as sqrt(N) for random jitter (Gaussian)
-   Bounded for deterministic jitter (e.g., reference spurs)
-   Important for: SerDes (eye diagram), ADC sampling
-```
-
-**Phase noise:**
-
-Phase noise is the frequency-domain representation of jitter.
-Measured in dBc/Hz at a given offset from the carrier.
-
-**Typical specs:**
-   - Ring oscillator PLL: -80 to -100 dBc/Hz at 1 MHz offset
-   - LC oscillator PLL:   -110 to -130 dBc/Hz at 1 MHz offset
-
-**Relationship to jitter:**
-   - J_rms = (1 / (2π * f_out)) * sqrt(2 * integral(L(f) * df, f_low, f_high))
-   - Where L(f) is the single-sideband phase noise PSD
-
-### PLL Bandwidth Considerations
-
-PLL bandwidth (f_bw) is the -3 dB point of the closed-loop transfer function.
-
-Rule of thumb: f_bw should be ~1/10 to 1/20 of f_ref for stability.
-Too wide (> f_ref/5): loop becomes unstable, reference spurs increase
-Too narrow (< f_ref/50): lock time becomes excessively long
-
-**Within the bandwidth:**
-   - PLL tracks the reference: reference noise passes through
-   - VCO noise is suppressed (PLL corrects VCO wander)
-
-**Outside the bandwidth:**
-   - VCO free-runs: VCO noise dominates
-   - Reference noise is filtered out
-
-Optimal bandwidth: set f_bw at the frequency where reference noise
-(multiplied by N^2) equals VCO noise. This minimizes total output jitter.
-
----
-
-## DLL (Delay-Locked Loop) vs PLL
-
-### DLL Architecture
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    REF["f_ref"] --> PFD["PFD"]
-    FB["f_fb"] --> PFD
-    PFD --> CP["Charge pump"] --> LF["Loop filter (simple)"] --> VCDL["VCDL"] --> OUT["f_out"]
-    VCDL --> FB
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class REF,PFD,CP,LF,VCDL,OUT,FB s
-```
-
-VCDL = voltage-controlled delay line: it delays `f_ref` by a controlled amount, with `f_fb = f_out` (a delayed `f_ref`).
-
-**VCDL (Voltage-Controlled Delay Line):**
-
-```ascii-graph
-f_ref ──► [Delay Cell 1] ──► [Delay Cell 2] ──► ... ──► [Delay Cell N] ──► f_out
-                                                                              │
-                                                                              ▼ feedback
-                                                                           to PFD
-
-Each delay cell: current-starved inverter pair
-Total delay = N * t_cell(V_ctrl)
-Tuned by V_ctrl from charge pump
-
-Multiphase outputs available at each tap:
-  Phase 0:   tap 0        = 0 degrees
-  Phase 1:   tap N/4      = 90 degrees
-  Phase 2:   tap N/2      = 180 degrees
-  Phase 3:   tap 3N/4     = 270 degrees
-```
-
-### DLL Advantages
-
-1. **Inherently stable (first-order system):** A DLL has only one integrator (the loop filter capacitor). A PLL has two integrators (loop filter + VCO, since VCO integrates phase from frequency). This makes the DLL inherently first-order — it cannot oscillate or become unstable regardless of bandwidth. No stability analysis (phase margin) is needed.
-
-2. **No jitter accumulation:** In a PLL, the VCO free-runs between corrections, accumulating phase noise over time. In a DLL, the delay line does not generate new edges — it only delays the reference edges. Each output edge is derived from a reference edge, so VCO-like jitter accumulation does not occur. The output jitter is bounded by the reference jitter plus the delay line noise (which does not accumulate).
-
-3. **Simpler loop filter:** Since the DLL is first-order, a simple capacitor (no resistor needed for zero) suffices for the loop filter. This saves area and simplifies design.
-
-### DLL Limitations
-
-1. **Cannot multiply frequency:** The DLL output has the same frequency as the input — it can only shift the phase. A PLL with a feedback divider can generate N * f_ref.
-
-2. **Cannot generate arbitrary frequencies:** For clock synthesis (e.g., generating 2.4 GHz from 50 MHz reference), a PLL is required.
-
-3. **Harmonic locking:** The DLL can falsely lock at delay = k * T_ref (integer multiple of the period) instead of delay = T_ref. This gives the same phase relationship but the delay line runs at a suboptimal operating point. Prevention: limit the delay range or detect/break harmonic lock.
-
-4. **Limited delay range:** The VCDL must produce a delay exactly equal to T_ref. If the delay range doesn't cover T_ref at the operating voltage/temperature, the DLL cannot lock. PLLs don't have this limitation since the VCO inherently generates any frequency in its range.
-
-### When to Use DLL vs PLL
-
-| Application | DLL | PLL | Reason |
-|-------------|-----|-----|--------|
-| DDR memory interface | Yes | No | Phase align internal clock to external data; no freq multiplication needed |
-| Multiphase clock generation | Yes | Possible | DLL naturally provides evenly-spaced taps |
-| Clock synthesis (freq multiply) | No | Yes | DLL cannot multiply frequency |
-| SerDes CDR | No | Yes | Need to synthesize recovered clock at data rate |
-| DVFS (freq scaling) | No | Yes | Need to change output frequency dynamically |
-| Jitter-sensitive sampling | DLL preferred | Possible | DLL has lower jitter (no accumulation) |
-| Wide frequency range | No | Yes | DLL delay range is limited |
-
----
-
-## Clock Distribution
-
-### Global Clock Distribution Topologies
-
-**H-tree:**
-
-```ascii-graph
-                        ┌───────────────────┐
-                        │    Root buffer     │
-                        └─────────┬─────────┘
-                    ┌─────────────┴─────────────┐
-              ┌─────┴─────┐               ┌─────┴─────┐
-              │  Buffer   │               │  Buffer   │
-              └─────┬─────┘               └─────┬─────┘
-           ┌────────┴────────┐         ┌────────┴────────┐
-      ┌────┴────┐      ┌────┴────┐  ┌────┴────┐    ┌────┴────┐
-      │ Buffer  │      │ Buffer  │  │ Buffer  │    │ Buffer  │
-      └────┬────┘      └────┬────┘  └────┬────┘    └────┴────┘
-           │                │            │               │
-       [sinks]          [sinks]      [sinks]         [sinks]
-
-Properties:
-  - Symmetric: all paths from root to leaves have equal wire length
-  - Guarantees matched delay (low clock skew)
-  - Area: moderate (balanced tree layout)
-  - Used in: custom designs where skew is critical (processors)
-```
-
-**Spine (fishbone):**
-
-```ascii-graph
-  Clock source
-       │
-       ▼
-  ═════╪═════════════════════════  (horizontal spine)
-       │    │    │    │    │
-       ▼    ▼    ▼    ▼    ▼
-      ─┼─  ─┼─  ─┼─  ─┼─  ─┼─   (vertical ribs)
-       │    │    │    │    │
-     sinks sinks sinks sinks sinks
-
-Properties:
-  - Main trunk drives horizontal spine; vertical ribs branch off
-  - Simple to implement in automated CTS tools
-  - Skew depends on rib placement — not inherently balanced
-  - Used in: most ASIC automated flows (Innovus/ICC2 CTS)
-```
-
-**Mesh (grid):**
-
-```ascii-graph
-  ──────┬──────┬──────┬──────
-        │      │      │
-  ──────┼──────┼──────┼──────
-        │      │      │
-  ──────┼──────┼──────┼──────
-        │      │      │
-  ──────┴──────┴──────┴──────
-
-  Clock driven from multiple points on the mesh.
-  Each intersection shorts the clock wires.
-
-Properties:
-  - Very low skew (all points are connected by multiple paths)
-  - High power consumption (large capacitance of mesh wires)
-  - High metal resource usage
-  - Used in: ultra-high-performance processors (IBM POWER, Intel server CPUs)
-  - Often combined with H-tree: H-tree drives mesh, mesh distributes locally
-```
-
-### Clock Domain Partitioning in SoC
-
-A modern SoC has multiple clock domains, each with its own PLL or clock generator:
-
-```ascii-graph
-┌─────────────────────────────────────────────────────────┐
-│  SoC                                                     │
-│                                                          │
-│  ┌──────────┐   ┌───────────┐   ┌───────────────────┐  │
-│  │ PLL_CPU  │   │ PLL_GPU   │   │ PLL_DDR           │  │
-│  │ 2.0 GHz  │   │ 1.5 GHz   │   │ 1.6 GHz          │  │
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────────────┘  │
-│       │               │               │                  │
-│  ┌────▼─────┐   ┌─────▼─────┐   ┌─────▼─────────────┐  │
-│  │CPU cluster│   │  GPU     │   │DDR controller     │  │
-│  │          │   │          │   │+ PHY              │  │
-│  └──────────┘   └──────────┘   └────────────────────┘  │
-│                                                          │
-│  ┌──────────┐   ┌──────────┐   ┌───────────────────┐   │
-│  │ PLL_IO   │   │ Ring OSC │   │ Crystal OSC       │   │
-│  │ 500 MHz  │   │ 32 kHz   │   │ 24 MHz (always-on)│   │
-│  └────┬─────┘   └────┬─────┘   └─────┬─────────────┘   │
-│       │              │               │                   │
-│  ┌────▼─────┐   ┌────▼─────┐   ┌────▼──────────────┐   │
-│  │Peripherals│   │ RTC     │   │ Boot ROM /        │   │
-│  │USB,PCIe  │   │ Timer   │   │ Power Management  │   │
-│  └──────────┘   └──────────┘   └────────────────────┘   │
-│                                                          │
-│  CDC (clock domain crossing) bridges between all domains │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Key considerations:**
-1. Each PLL is independently controllable for DVFS (CPU may run at 2 GHz while GPU is at 800 MHz)
-2. CDC bridges (FIFO-based or handshake-based) at every domain boundary
-3. Always-on domain (crystal/ring osc) for power management controller
-4. Clock gating within each domain for fine-grained power control
-
-### Clock Buffer Types
-
-**CTS (Clock Tree Synthesis) buffers:**
-
-**Properties of dedicated clock buffers:**
-   1. Balanced rise/fall times: t_rise ≈ t_fall (within 5%)
-Regular buffers may have 10-20% rise/fall imbalance
-This imbalance would cause duty cycle distortion as the clock
-propagates through many levels of buffers
-
-2. Low insertion delay: optimized transistor sizing for fast edge propagation
-
-3. High drive strength: clock nets have large fanout (thousands of FFs)
-
-4. Special characterization: timing libraries have detailed models
-for clock buffers including pulse-width-dependent delay
-
-5. Low power: some clock buffers use smaller transistors with
-special threshold voltage (HVT for reduced leakage)
-
-**Clock inverters vs clock buffers:**
-
-```ascii-graph
-Clock inverters: CLK → INV → INV → ... → leaf
-  - Each inverter inverts the signal; pairs cancel out
-  - Slightly lower delay than buffers (inverter = 1 stage, buffer = 2 stages)
-  - Must use even number of levels to maintain polarity
-  - More commonly used in CTS because of lower delay
-
-Clock buffers: CLK → BUF → BUF → ... → leaf
-  - Non-inverting at each level
-  - Slightly higher delay but polarity is always correct
-  - Used when odd number of levels is needed
-```
-
-### Clock OCV (On-Chip Variation) — Special Treatment
-
-**Why clock paths get special OCV treatment:**
-
-In STA, OCV (on-chip variation) accounts for the fact that different parts of the chip may operate at slightly different speeds due to local process/voltage/temperature variations. For data paths, OCV is applied by derating the launch and capture clock paths differently:
-
-**Normal OCV application:**
-   - Launch clock path: derated "slow" (worst case for setup)
-   - Capture clock path: derated "fast" (worst case for setup)
-   - Data path: derated "slow" (worst case for setup)
-
-This can create pessimistic results because the shared portion
-of the launch and capture clock paths is derated in OPPOSITE
-directions, even though it's the same physical wire/buffers.
-
-**CPPR / CRPR (Clock Path Pessimism Removal):**
-
-```ascii-graph
-Common clock path: the portion of the clock tree shared by both
-  the launch and capture flip-flops.
-
-  Example:
-    CLK → BUF1 → BUF2 → BUF3 → FF_launch
-    CLK → BUF1 → BUF2 → BUF4 → FF_capture
-    
-    Common path: CLK → BUF1 → BUF2
-    Divergence point: after BUF2
-
-Without CPPR: BUF1-BUF2 on launch path uses slow derate
-              BUF1-BUF2 on capture path uses fast derate
-              Difference = artificial pessimism
-
-With CPPR: Remove the OCV derate on the common path
-           Only apply OCV from the divergence point onward
-           This can recover 50-200 ps of pessimism
-```
-
-**Clock reconvergence pessimism removal is mandatory in modern STA flows.** Without it, 5-15% of paths would show false violations.
-
----
-
-## Clock Gating Check in STA
-
-### What Clock Gating Check Is
-
-A clock gating check ensures that the enable signal to an ICG cell (or any AND/OR gate on the clock path) is stable during the clock transition that could create a glitch.
-
-```ascii-graph
-        ┌─────────┐
-  EN ──►│ Latch   ├──► EN_latched ──┐
-        │ (neg)   │                  │
-  CLK──►│         │    CLK ─────► AND ──► GCLK
-        └─────────┘
-
-The latch captures EN on the falling edge of CLK.
-EN must be stable (setup + hold) around the falling edge of CLK.
-
-Clock gating setup: EN must arrive before CLK falls (with margin)
-Clock gating hold:  EN must remain stable after CLK falls (with margin)
-```
-
-### Active-High vs Active-Low Clock Gating Check
-
-**Active-high gating (AND gate):**
-
-- **GCLK** = `CLK & EN_latched`
-
-EN must be stable when CLK transitions HIGH → LOW (falling edge of CLK =
-rising edge of latch clock). A glitch on EN while CLK is HIGH would create
-a runt pulse on GCLK.
-
-Check: EN setup before falling edge of CLK
-EN hold after falling edge of CLK
-
-**Active-low gating (OR gate):**
-
-- **GCLK** = `CLK | EN_latched`
-
-EN must be stable when CLK transitions LOW → HIGH (rising edge of CLK).
-A glitch on EN while CLK is LOW would create a runt pulse on GCLK.
-
-Check: EN setup before rising edge of CLK
-EN hold after rising edge of CLK
-
-### Setup and Hold for Clock Gating — Why It Differs from Data Path
-
-In a normal data path, setup and hold are measured relative to the capturing clock edge:
-
-- **Data path** — data must be stable before/after the FF's active clock edge
-- **Setup** — data stable T_setup before posedge CLK
-- **Hold** — data stable T_hold after posedge CLK
-
-In clock gating, the "data" is the enable signal, and the "clock" is the gating clock itself. But the timing reference is different:
-
-```text
-Clock gating check: EN must be stable around the INACTIVE edge of CLK
-  For AND gate (active-high): inactive edge = falling edge
-  For OR  gate (active-low):  inactive edge = rising edge
-
-This is the OPPOSITE edge from normal data capture!
-The reason: EN must be settled before CLK becomes active (high for AND)
-to prevent glitches on the gated clock.
-```
-
-**Timing report example (clock gating setup violation):**
-
-```ascii-graph
-Clock gating setup check:
-  Startpoint: reg_en (rising edge CLK, launch)
-  Endpoint:   ICG_cell/EN (falling edge CLK, clock gating check)
-
-  Launch path (posedge CLK → reg_en → EN):
-    CLK rise at source:          0.00 ns
-    CLK tree to reg_en:         +0.50 ns
-    reg_en clk-to-Q:            +0.15 ns
-    Combinational logic:        +0.80 ns
-    Wire delay to ICG:          +0.10 ns
-    Data arrival at ICG/EN:      1.55 ns
-
-  Capture path (negedge CLK → ICG):
-    CLK rise at source:          0.00 ns
-    Half period:                +2.00 ns  (CLK period = 4 ns, negedge at 2.0 ns)
-    CLK tree to ICG:            +0.50 ns
-    Library setup (ICG):        -0.05 ns
-    Required arrival at ICG/EN:  2.45 ns
-
-  Slack = 2.45 - 1.55 = +0.90 ns (PASS)
-```
-
-**How to fix clock gating violations:**
-
-1. **Reduce combinational delay:** Retime or optimize the logic generating the enable signal
-2. **Move the ICG closer to the enable source:** Reduces wire delay
-3. **Use a later pipeline stage for enable:** Launch EN one cycle earlier
-4. **Increase clock period:** If possible (reduces performance)
-5. **ECO buffer insertion:** Add buffers on the launch path to slow it down (for hold violations) or on the clock path to balance delays
-
----
-
 ## Programmable Clock Divider RTL — Extended
 
 ### Generic N-Divider with 50% Duty Cycle for Any N
@@ -2130,6 +1252,202 @@ After PLL loop filtering, effective jitter can be reduced to < 1 ps.
 
 ---
 
+## Glitch-Free Clock Switching — Exhaustive Analysis
+
+### Why a Naive MUX Produces Runt Pulses
+
+```verilog
+// DANGEROUS — never use for clock MUX
+assign clk_out = sel ? clk_b : clk_a;
+```
+
+**Scenario: sel transitions from 0 to 1 while clk_a=1, clk_b=0:**
+
+```wavedrom
+{ "signal": [
+  { "name": "clk_a",   "wave": "01010101" },
+  { "name": "clk_b",   "wave": "10101010" },
+  { "name": "sel",     "wave": "0....1.." },
+  {},
+  { "name": "clk_out", "wave": "0101x01." }
+], "head": { "text": "Naive MUX runt pulse -- width = sel transition to clk_a falling edge (0 to half-period)" } }
+```
+
+The runt (`x`) is shorter than either clock's half-period; its width is the time from the `sel` transition to `clk_a`'s falling edge, anywhere from 0 to a full half-period.
+
+**Runt pulse consequences:**
+- **Setup violation:** A flip-flop clocked by clk_out might see the rising edge of the runt pulse, try to capture data, but the pulse is too short for the data to propagate through the master latch → metastable output.
+- **Hold violation:** The falling edge of the runt pulse comes too soon after the rising edge → slave latch hasn't settled.
+- **Clock tree response:** CTS (clock tree synthesis) buffers may filter out very narrow pulses, causing some flip-flops to see the edge and others not → functional failure.
+
+### The AND-OR-AND Deglitched Design
+
+**Architecture:**
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    sel["sel"] --> na["AND<br/>(clk_a path)"]
+    sel --> NOT["NOT"] --> seln["sel_n"] --> nb["AND<br/>(clk_b path)"]
+    na --> FA1["FF1 @ clk_a"] --> FA2["FF2 @ clk_a"] --> ena["en_a"]
+    nb --> FB1["FF1 @ clk_b"] --> FB2["FF2 @ clk_b"] --> enb["en_b"]
+    FB2 -.->|"~en_b feedback"| na
+    FA2 -.->|"~en_a feedback"| nb
+    ena --> ga["AND"] --> orr["OR"]
+    clka["clk_a"] --> ga
+    enb --> gb["AND"] --> orr
+    clkb["clk_b"] --> gb
+    orr --> out["clk_out"]
+    classDef l fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef s fill:#fde68a,stroke:#b45309,color:#000
+    classDef c fill:#dcfce7,stroke:#15803d,color:#000
+    class na,nb,NOT,ga,gb,orr l
+    class FA1,FA2,FB1,FB2 s
+    class sel,seln,clka,clkb,out,ena,enb c
+```
+
+### Timing Diagram — Showing the Safe Switching Sequence
+
+**Switching from clk_a to clk_b (sel goes from 0 to 1):**
+
+```ascii-graph
+Time →     t0    t1    t2    t3    t4    t5    t6    t7    t8    t9
+           ├─────┤─────┤─────┤─────┤─────┤─────┤─────┤─────┤─────┤
+
+sel:       0000000|11111111111111111111111111111111111111111111
+                  ↑ sel changes (asynchronous to both clocks)
+
+clk_a:     _|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__
+clk_b:     __|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|__|^^|_
+
+en_a path:
+  sel_n:   1111111|00000000000000000000000000
+  AND input (sel_n & ~en_b): depends on en_b
+  
+  FF1@clk_a (first sync): 1..1..1..? picks up sel_n=0 after 1-2 clk_a edges
+  FF2@clk_a (second sync, = en_a):
+           111111111111|11|00000000000000000000
+                            ↑ en_a goes LOW after 2 clk_a cycles from sel change
+
+en_b path:
+  AND input (sel & ~en_a): sel=1 but ~en_a=0 until en_a drops!
+  So en_b stays 0 until en_a becomes 0.
+  
+  FF3@clk_b: 0000000000000000|01 picks up (sel=1 & ~en_a=1) after en_a drops
+  FF4@clk_b (= en_b):
+           000000000000000000000|01111111111
+                                  ↑ en_b goes HIGH ~2 clk_b cycles after en_a dropped
+
+clk_out = (clk_a & en_a) | (clk_b & en_b):
+
+Phase 1 (t0-t3):  en_a=1, en_b=0 → clk_out = clk_a
+Phase 2 (t3-t6):  en_a=0, en_b=0 → clk_out = 0 (DEAD TIME)
+Phase 3 (t6+):    en_a=0, en_b=1 → clk_out = clk_b
+
+The dead time is 2-4 clock cycles of the slower clock.
+During dead time, clk_out is stuck LOW — no edges.
+This is SAFE: downstream flip-flops simply don't clock for a few cycles.
+```
+
+### Proving No Runt Pulses — Exhaustive Case Analysis
+
+**Case 1: en_a=1, en_b=0**
+```verilog
+clk_out = clk_a & 1 | clk_b & 0 = clk_a
+Pure clk_a, no glitch possible.
+```
+
+**Case 2: en_a=0, en_b=0 (dead time)**
+```verilog
+clk_out = clk_a & 0 | clk_b & 0 = 0
+Output is constant 0. No edges, no glitches.
+```
+
+**Case 3: en_a=0, en_b=1**
+```verilog
+clk_out = clk_a & 0 | clk_b & 1 = clk_b
+Pure clk_b, no glitch possible.
+```
+
+**Case 4: en_a=1, en_b=1 (IMPOSSIBLE)**
+**The feedback cross-coupling prevents this:**
+   - en_a = FF2(FF1(sel_n & ~en_b))
+   - en_b = FF4(FF3(sel & ~en_a))
+
+If en_a=1, then ~en_a=0, so the input to en_b's path is (sel & 0) = 0.
+en_b will become 0 after 2 clk_b cycles.
+
+If en_b=1, then ~en_b=0, so the input to en_a's path is (sel_n & 0) = 0.
+en_a will become 0 after 2 clk_a cycles.
+
+At most, there's a transient overlap of ~2 cycles during initial reset release,
+which is covered by the reset logic (en_a defaults to 1, en_b defaults to 0).
+
+### What If One or Both Clocks Stop?
+
+**clk_a stops while active (en_a=1):**
+- sel changes to select clk_b
+- en_a can't update (clk_a is stopped, FFs can't clock)
+- en_b can't enable (blocked by ~en_a = 0)
+- **System is stuck.** No clock output.
+
+**Solution:** Use the negedge of the stuck clock (if it stopped high), or add a timeout circuit:
+```ascii-graph
+If clk_a has no edge for N cycles of a reference clock → force en_a = 0
+```
+
+In practice, clock switching in SoCs assumes both clocks are running (or use a controlled sequence):
+
+**Safe switching protocol:**
+1. Ensure the target clock is stable and running (PLL locked)
+2. Assert sel
+3. Wait for switch completion (read back a status register)
+4. Optionally disable the old clock source to save power
+
+**Startup sequence concern:** After power-on, which clock runs first? The default selection (en_a=1 via reset) must correspond to a clock that's guaranteed to be running at reset. Often this is a crystal oscillator or ring oscillator (always-on), not a PLL output (which takes time to lock).
+
+---
+
+## Clock Gating vs Clock Division — SoC Perspective
+
+### Clock Gating (ICG Cell)
+
+```ascii-graph
+             ┌──────────────┐
+     en ────►│ Latch (neg)  ├──► en_latched ──┐
+             └──────┬───────┘                  │
+                    │                          ▼
+     clk ───────────┼────────────────────► AND ──► gated_clk
+                    │
+              CLK of latch = ~clk (transparent when clk LOW)
+```
+
+**Why the latch?** If `en` changes while `clk` is HIGH, a direct AND gate would produce a runt pulse. The negative-edge latch holds `en` stable during the HIGH phase of clk.
+
+**Timing constraint:** `en` must be stable for Tsu before the falling edge of clk (= rising edge of latch clock). This is naturally satisfied if `en` comes from a flip-flop clocked by clk (the FF output is stable long before the next falling edge).
+
+### When to Use Clock Gating vs Division
+
+| Scenario | Use Clock Gating | Use Clock Division |
+|----------|------------------|--------------------|
+| Power save for idle blocks | Yes (gate the clock) | No |
+| Reduce frequency for slow peripherals | No | Yes (divide and distribute) |
+| Dynamic voltage-frequency scaling | No | Yes (change divider ratio) |
+| Conditional computation | Yes (gate on valid data) | No |
+| Clock domain generation for IO | No | Yes (e.g., UART baud rate) |
+
+**Power savings:** Clock gating saves dynamic power by eliminating toggling in idle flip-flops. Dynamic power = alpha * C * V^2 * f. Gating reduces alpha (activity factor) to 0 for gated FFs.
+
+Clock division reduces f. For a block that needs to run at half speed, gating every other cycle wastes power in the clock tree (which still toggles at full speed). Division at the source is more efficient.
+
+---
+
+## Clock Gating Check in STA — moved
+
+The timing-check side of clock gating — which clock edge the enable is checked against, active-high (AND) vs active-low (OR) variants, and a worked gating-check slack report — lives with the rest of timing signoff: [STA](../06_Signoff/STA.md) §15 *Clock Gating Checks*. The ICG cell structure and the gating-vs-division decision are above on this page.
+
+---
+
 ## Clock MUX in Multi-Power-Domain Design
 
 ### Clock MUX for DVFS
@@ -2240,6 +1558,3 @@ flowchart TD
    - Level shifters in the clock path should be powered by the always-on
      supply to prevent clock loss when one domain powers down
 ```
-
----
-

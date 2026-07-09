@@ -56,7 +56,7 @@ Further rules: **not every flop needs a reset** — reset only what the control 
 
 - **Minimize clock domains.** Each new asynchronous clock is a [CDC](Lint_CDC_RDC_Signoff.md) liability. Prefer a single clock with enables over many clocks.
 - **Gate clocks only through ICG cells**, never with combinational AND on the clock — that creates glitches and untimeable paths. The synthesis tool inserts ICGs from RTL `if (enable)` patterns ([Power_Reduction_Techniques](../02_Power_and_Low_Power/Power_Reduction_Techniques.md)).
-- **Generated/divided clocks** belong in a small, reviewed clocking block, not scattered ([Clock_Division](Clock_Division.md)).
+- **Generated/divided clocks** belong in a small, reviewed clocking block, not scattered ([Clock_Division_and_Switching](Clock_Division_and_Switching.md)).
 - **Clock enables** are the synchronous alternative to gating: `if (en) q <= d;` — one clock, behavior controlled by a data-path enable. Cheaper to verify, friendlier to STA.
 
 ---

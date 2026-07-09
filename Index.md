@@ -66,7 +66,8 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 | [Data Types and Basics](03_Frontend_RTL_and_Verification/Data_Types_and_Basics.md) | 2/4-state, arrays, structs, enums, casting |
 | [Procedural and Processes](03_Frontend_RTL_and_Verification/Procedural_and_Processes.md) | event regions, always blocks, fork/join, scheduling |
 | [OOP and Randomization](03_Frontend_RTL_and_Verification/OOP_and_Randomization.md) | classes, polymorphism, constraint randomization |
-| [Clock Division](03_Frontend_RTL_and_Verification/Clock_Division.md) | even/odd/fractional dividers, PLL/DLL, glitch-free switching |
+| [Clock Division and Switching](03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md) | even/odd/fractional dividers, div-3 FSM, programmable divider RTL, glitch-free switching, clock MUX |
+| [PLL, DLL, and Clock Distribution](03_Frontend_RTL_and_Verification/PLL_DLL_and_Clock_Distribution.md) | PFD/charge pump/VCO, lock, jitter, DLL vs PLL, H-tree/mesh distribution |
 | [Asynchronous Circuit Design](03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) | metastability/MTBF, synchronizers, async FIFO, handshakes, CDC |
 | [Assertions and Coverage](03_Frontend_RTL_and_Verification/Assertions_and_Coverage.md) | immediate/concurrent SVA, functional+code coverage |
 | [UVM Methodology](03_Frontend_RTL_and_Verification/UVM_Methodology.md) | components, phasing, sequences, factory, config_db, RAL |

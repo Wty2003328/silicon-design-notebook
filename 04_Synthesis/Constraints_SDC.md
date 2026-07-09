@@ -48,7 +48,7 @@ set_clock_uncertainty -hold  0.020 [get_clocks clk]
 set_clock_latency 0.300 [get_clocks clk]   ;# pre-CTS estimate; real tree replaces it
 ```
 
-- **Primary clocks** (`create_clock`) come in on a port/PLL output. **Generated clocks** (`create_generated_clock`) are *derived* — divided, multiplied, gated, or muxed — and MUST be declared, or STA mis-times every path they feed ([Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md)).
+- **Primary clocks** (`create_clock`) come in on a port/PLL output. **Generated clocks** (`create_generated_clock`) are *derived* — divided, multiplied, gated, or muxed — and MUST be declared, or STA mis-times every path they feed ([Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md)).
 - **Uncertainty** models what STA can't yet know exactly: clock **jitter** plus, before CTS, an **estimated skew** budget. Post-CTS, real skew comes from the tree and uncertainty drops to jitter+margin.
 - **Asynchronous clock groups**: `set_clock_groups -asynchronous` tells STA two clocks have no phase relationship, so it doesn't try to time paths between them (those are [CDC](../03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md) paths handled structurally, not by STA).
 
@@ -134,4 +134,4 @@ The **same constraint intent** flows through every tool — but evolves: pre-CTS
 
 ## Cross-references
 - Consumed by: [STA](../06_Signoff/STA.md) (timing signoff), [Physical_Design](../05_Backend_Physical_Design/Physical_Design.md).
-- Produced from: [Synthesis_and_Optimization](Synthesis_and_Optimization.md). Clocks: [Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md). Async groups → [Lint_CDC_RDC_Signoff](../03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md).
+- Produced from: [Synthesis_and_Optimization](Synthesis_and_Optimization.md). Clocks: [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md). Async groups → [Lint_CDC_RDC_Signoff](../03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md).

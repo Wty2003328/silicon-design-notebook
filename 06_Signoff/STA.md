@@ -2107,6 +2107,82 @@ Hold check: EN must remain stable AFTER the clock rising edge.
   Fix: add delay buffers on the enable path, increase wire length during routing.
 ```
 
+### 15.3B Active-High vs Active-Low Gating — the Inactive-Edge Rule
+
+**Active-high gating (AND gate):**
+
+- **GCLK** = `CLK & EN_latched`
+
+EN must be stable when CLK transitions HIGH → LOW (falling edge of CLK =
+rising edge of latch clock). A glitch on EN while CLK is HIGH would create
+a runt pulse on GCLK.
+
+Check: EN setup before falling edge of CLK
+EN hold after falling edge of CLK
+
+**Active-low gating (OR gate):**
+
+- **GCLK** = `CLK | EN_latched`
+
+EN must be stable when CLK transitions LOW → HIGH (rising edge of CLK).
+A glitch on EN while CLK is LOW would create a runt pulse on GCLK.
+
+Check: EN setup before rising edge of CLK
+EN hold after rising edge of CLK
+
+**Why the checked edge differs from a data path:**
+
+In a normal data path, setup and hold are measured relative to the capturing clock edge:
+
+- **Data path** — data must be stable before/after the FF's active clock edge
+- **Setup** — data stable T_setup before posedge CLK
+- **Hold** — data stable T_hold after posedge CLK
+
+In clock gating, the "data" is the enable signal, and the "clock" is the gating clock itself. But the timing reference is different:
+
+```text
+Clock gating check: EN must be stable around the INACTIVE edge of CLK
+  For AND gate (active-high): inactive edge = falling edge
+  For OR  gate (active-low):  inactive edge = rising edge
+
+This is the OPPOSITE edge from normal data capture!
+The reason: EN must be settled before CLK becomes active (high for AND)
+to prevent glitches on the gated clock.
+```
+
+**Timing report example (clock gating setup violation):**
+
+```ascii-graph
+Clock gating setup check:
+  Startpoint: reg_en (rising edge CLK, launch)
+  Endpoint:   ICG_cell/EN (falling edge CLK, clock gating check)
+
+  Launch path (posedge CLK → reg_en → EN):
+    CLK rise at source:          0.00 ns
+    CLK tree to reg_en:         +0.50 ns
+    reg_en clk-to-Q:            +0.15 ns
+    Combinational logic:        +0.80 ns
+    Wire delay to ICG:          +0.10 ns
+    Data arrival at ICG/EN:      1.55 ns
+
+  Capture path (negedge CLK → ICG):
+    CLK rise at source:          0.00 ns
+    Half period:                +2.00 ns  (CLK period = 4 ns, negedge at 2.0 ns)
+    CLK tree to ICG:            +0.50 ns
+    Library setup (ICG):        -0.05 ns
+    Required arrival at ICG/EN:  2.45 ns
+
+  Slack = 2.45 - 1.55 = +0.90 ns (PASS)
+```
+
+**How to fix clock gating violations:**
+
+1. **Reduce combinational delay:** Retime or optimize the logic generating the enable signal
+2. **Move the ICG closer to the enable source:** Reduces wire delay
+3. **Use a later pipeline stage for enable:** Launch EN one cycle earlier
+4. **Increase clock period:** If possible (reduces performance)
+5. **ECO buffer insertion:** Add buffers on the launch path to slow it down (for hold violations) or on the clock path to balance delays
+
 ### 15.4 How STA Tools Model Clock Gating Checks
 
 ```text

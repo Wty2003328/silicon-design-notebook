@@ -265,7 +265,7 @@ functional coverage, allowing unified analysis.
 
 ## Clock Division Techniques — Senior Engineer Level
 
-*From [Clock_Division.md](../03_Frontend_RTL_and_Verification/Clock_Division.md)*
+*From [Clock_Division_and_Switching.md](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md)*
 
 ### Q12: Draw the PLL block diagram and explain each component's function.
 
@@ -353,7 +353,7 @@ Common mistakes: forgetting `-add` for multiple clocks on the same pin (the seco
 
 ## Clock Division Techniques — Senior Engineer Level
 
-*From [Clock_Division.md](../03_Frontend_RTL_and_Verification/Clock_Division.md)*
+*From [Clock_Division_and_Switching.md](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md)*
 
 ### Q1: How do you generate an odd-division clock with 50% duty cycle? Prove it works.
 

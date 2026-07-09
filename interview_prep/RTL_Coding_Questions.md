@@ -1,6 +1,6 @@
 # RTL Coding Questions — Classic Problems with Full Solutions
 
-> The whiteboard-RTL canon. Each problem: statement → key insight → SystemVerilog solution → follow-ups interviewers actually ask. Theory backup: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs), [Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md).
+> The whiteboard-RTL canon. Each problem: statement → key insight → SystemVerilog solution → follow-ups interviewers actually ask. Theory backup: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md).
 
 ---
 
@@ -56,7 +56,7 @@ module div3_50 (input logic clk, rst_n, output logic clk_o);
 endmodule
 ```
 
-**Follow-ups:** generalize to any odd N (same trick: two phases, OR); is `clk_o` a "real" clock? — only via CTS-aware implementation; prefer clock generators/ICG cells in production ([Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md) has the full zoo). Even N → counter + toggle at N/2.
+**Follow-ups:** generalize to any odd N (same trick: two phases, OR); is `clk_o` a "real" clock? — only via CTS-aware implementation; prefer clock generators/ICG cells in production ([Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md) has the full zoo). Even N → counter + toggle at N/2.
 
 ---
 
@@ -409,5 +409,5 @@ What senior interviewers actually score:
 ## Cross-references
 
 - Building blocks: [Basic_Knowledge](../00_Fundamentals/Basic_Knowledge.md), [Adders](../00_Fundamentals/Adders.md).
-- Deep dives behind problems: [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs/SRAM), [Clock_Division](../03_Frontend_RTL_and_Verification/Clock_Division.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) (CDC), [Network_on_Chip](../01_Architecture_and_PPA/Network_on_Chip.md) (arbiter in context).
+- Deep dives behind problems: [Memory](../01_Architecture_and_PPA/Memory.md) (FIFOs/SRAM), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/Clock_Division_and_Switching.md), [Async_Circuit_Design](../03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) (CDC), [Network_on_Chip](../01_Architecture_and_PPA/Network_on_Chip.md) (arbiter in context).
 - Companion: [Hardware_Interview_Questions](Hardware_Interview_Questions.md) (concept Q&A + timing/power math), [System_Design_Interview](../../ai_infra/interview_prep/System_Design_Interview.md) (the AI-systems counterpart).
