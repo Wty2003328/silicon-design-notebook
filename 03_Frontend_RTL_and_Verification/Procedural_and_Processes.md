@@ -1,4 +1,4 @@
-# SystemVerilog Procedural Blocks and Processes -- Senior Engineer Deep Dive
+# SystemVerilog Procedural Blocks, Processes, and IPC -- Senior Engineer Deep Dive
 
 ---
 
@@ -400,6 +400,251 @@ endtask
 
 ---
 
+## Inter-Process Communication: Mailbox
+
+Processes spawned with fork need to synchronize and exchange data. SystemVerilog provides three IPC primitives: mailboxes (typed queues), semaphores (key pools), and events (triggers).
+
+### Bounded vs Unbounded with Blocking Behavior
+
+```verilog
+mailbox #(Transaction) mbx_unbounded = new();   // Unbounded: never blocks on put
+mailbox #(Transaction) mbx_bounded = new(4);    // Bounded: blocks put when 4 items stored
+
+// put():  blocks if bounded mailbox is full (waits for space)
+// get():  blocks if mailbox is empty (waits for item)
+// try_put(): non-blocking put, returns 0 if full
+// try_get(): non-blocking get, returns 0 if empty
+// peek(): blocks until item available, copies without removing
+// try_peek(): non-blocking peek, returns 0 if empty
+// num(): returns current number of items (never blocks)
+```
+
+### Producer-Consumer with Timing
+
+```verilog
+class producer;
+    mailbox #(Transaction) mbx;
+    
+    task run();
+        for (int i = 0; i < 10; i++) begin
+            Transaction txn = new();
+            txn.randomize();
+            txn.id = i;
+            #($urandom_range(5, 20));  // Variable production rate
+            mbx.put(txn);  // Blocks if bounded and full
+            $display("T=%0t: Producer put txn %0d", $time, i);
+        end
+    endtask
+endclass
+
+class consumer;
+    mailbox #(Transaction) mbx;
+    
+    task run();
+        Transaction txn;
+        forever begin
+            mbx.get(txn);  // Blocks until item available
+            $display("T=%0t: Consumer got txn %0d", $time, txn.id);
+            #10;  // Processing time
+        end
+    endtask
+endclass
+
+// Wiring:
+initial begin
+    mailbox #(Transaction) mbx = new(4);  // Bounded: max 4
+    producer prod = new();
+    consumer cons = new();
+    prod.mbx = mbx;
+    cons.mbx = mbx;
+    fork
+        prod.run();
+        cons.run();
+    join_any
+end
+// When bounded mailbox is full, producer blocks on put()
+// When empty, consumer blocks on get()
+// This naturally provides back-pressure flow control
+```
+
+### Type Safety
+
+```verilog
+// Parameterized mailbox ensures type safety at compile time
+mailbox #(Transaction) txn_mbx = new();
+mailbox #(int) int_mbx = new();
+
+Transaction t = new();
+txn_mbx.put(t);    // OK
+// int_mbx.put(t);  // COMPILE ERROR: wrong type
+
+// Unparameterized mailbox accepts any type (like void*)
+mailbox generic_mbx = new();
+generic_mbx.put(t);         // OK
+generic_mbx.put(42);        // Also OK -- dangerous!
+// You must cast when getting:
+Transaction t2;
+generic_mbx.get(t2);        // Runtime error if item isn't a Transaction
+```
+
+---
+
+## Semaphore
+
+### Counting Semaphore -- Not Just a Mutex
+
+```verilog
+// Semaphore with N keys = counting semaphore
+// N=1: binary semaphore (mutex)
+// N>1: resource pool
+
+semaphore bus_slots = new(2);  // 2 available bus slots
+
+// 4 agents competing for 2 bus slots:
+task automatic agent_task(int id);
+    repeat (5) begin
+        bus_slots.get(1);  // Acquire 1 slot (blocks if none available)
+        $display("T=%0t: Agent %0d acquired bus slot", $time, id);
+        #($urandom_range(10, 50));  // Use the bus
+        bus_slots.put(1);  // Release 1 slot
+        $display("T=%0t: Agent %0d released bus slot", $time, id);
+        #5;  // Idle time
+    end
+endtask
+
+initial begin
+    fork
+        agent_task(0);
+        agent_task(1);
+        agent_task(2);
+        agent_task(3);
+    join
+end
+// At most 2 agents use the bus simultaneously
+// Others block on get() until a slot is released
+```
+
+### Semaphore Methods
+
+```verilog
+semaphore sem = new(3);  // 3 keys initially
+
+sem.get(2);     // Acquire 2 keys. Blocks if < 2 available.
+sem.put(1);     // Return 1 key. Never blocks.
+sem.try_get(1); // Non-blocking: returns 1 if success, 0 if not enough keys.
+
+// GOTCHA: put() can add MORE keys than initially created!
+semaphore s = new(1);
+s.put(1);       // Now 2 keys available (no upper bound enforced)
+s.put(100);     // Now 102 keys -- probably a bug
+```
+
+### Deadlock Scenario and Prevention
+
+```verilog
+semaphore sem_a = new(1);
+semaphore sem_b = new(1);
+
+// DEADLOCK: two processes acquire semaphores in opposite order
+task automatic process_1();
+    sem_a.get(1);  // Gets A
+    #10;           // Window for deadlock
+    sem_b.get(1);  // Waits for B (held by process_2) -- DEADLOCK
+    // ... work ...
+    sem_b.put(1);
+    sem_a.put(1);
+endtask
+
+task automatic process_2();
+    sem_b.get(1);  // Gets B
+    #10;           // Window for deadlock
+    sem_a.get(1);  // Waits for A (held by process_1) -- DEADLOCK
+    // ... work ...
+    sem_a.put(1);
+    sem_b.put(1);
+endtask
+
+// PREVENTION: always acquire in the same order
+task automatic process_1_fixed();
+    sem_a.get(1);  // Always acquire A first
+    sem_b.get(1);  // Then B
+    // ... work ...
+    sem_b.put(1);
+    sem_a.put(1);
+endtask
+
+task automatic process_2_fixed();
+    sem_a.get(1);  // Same order: A first
+    sem_b.get(1);  // Then B
+    // ... work ...
+    sem_b.put(1);
+    sem_a.put(1);
+endtask
+```
+
+---
+
+## Events
+
+### The Race Between -> and @
+
+```verilog
+event done;
+
+// RACE: if trigger and wait happen in the same time step
+initial begin
+    fork
+        begin
+            #10;
+            -> done;         // Trigger at T=10
+        end
+        begin
+            #10;
+            @(done);         // Wait at T=10 -- MAY MISS the trigger!
+            // The @ was evaluated before the -> in this time step
+        end
+    join
+end
+
+// FIX 1: use .triggered (persistent within the time step)
+initial begin
+    fork
+        begin #10; -> done; end
+        begin
+            #10;
+            wait (done.triggered);  // Catches same-time-step trigger
+        end
+    join
+end
+
+// FIX 2: use nonblocking trigger ->>
+initial begin
+    fork
+        begin #10; ->> done; end  // Trigger in NBA region
+        begin
+            #10;
+            @(done);              // Now safely catches it
+        end
+    join
+end
+```
+
+### wait_order: Event Sequence Checking
+
+```verilog
+event e1, e2, e3;
+
+// Block until e1, e2, e3 fire in that exact order
+initial begin
+    wait_order(e1, e2, e3)
+        $display("Events fired in correct order");
+    else
+        $error("Events fired out of order");
+end
+```
+
+---
+
 ## Task vs Function
 
 ### Fundamental Rule
@@ -609,123 +854,4 @@ program automatic test (bus_if.driver_mp drv_if);
     initial begin
         // This executes in the REACTIVE region
         // All RTL (Active region) and assertions (Observed) are done
-        // So testbench sees stable, settled values -- no races
-        @(drv_if.driver_cb);
-        drv_if.driver_cb.data <= 8'hFF;
-    end
-endprogram
-```
-
-### Why UVM Deprecated Program Blocks
-
-1. **OOP incompatibility**: program blocks don't support class-based component hierarchies well
-2. **Implicit $finish**: program blocks call `$finish` when all initial blocks complete, which
-   can terminate simulation prematurely when using phase-based UVM control
-3. **Limited fork-join**: some simulators restrict concurrent processes in program blocks
-4. **One-shot execution**: program blocks run once; UVM needs phases that can re-execute
-5. **Modern alternative**: UVM uses `uvm_test` with phase mechanism for simulation control,
-   and clocking blocks + careful coding practices to avoid races
-
----
-
-## Wait Statements and Event Control
-
-```verilog
-// Edge-triggered wait
-@(posedge clk);           // Wait for rising edge of clk
-@(negedge rst_n);         // Wait for falling edge of rst_n
-@(posedge clk or negedge rst_n);  // Wait for either
-
-// Level-sensitive wait
-wait (ready == 1);         // Block until ready is 1
-// GOTCHA: if ready is already 1, wait returns immediately (no blocking)
-
-// Named event
-event done;
--> done;                   // Trigger the event (Active region)
-@(done);                   // Wait for trigger
-
-// RACE CONDITION: if -> and @ happen in same time step
-// The @ might miss the trigger (it was registered before the ->)
-// Fix: use .triggered
-wait (done.triggered);     // Catches same-time-step triggers
-
-// Nonblocking event trigger
-->> done;                  // Trigger in NBA region (avoids some races)
-```
-
----
-
-## Disable Statement
-
-```verilog
-// Disable a named block
-begin : my_block
-    forever begin
-        @(posedge clk);
-        if (condition) disable my_block;  // Exits the named block
-    end
-end
-
-// Disable a task (all instances!)
-task automatic long_task();
-    // ...
-endtask
-
-initial begin
-    fork
-        long_task();   // Instance 1
-        long_task();   // Instance 2
-    join_none
-
-    #100;
-    disable long_task;  // Disables ALL active instances of long_task!
-end
-```
-
----
-
-## RTL Coding Constructs and Synthesizability
-
-### case vs casez vs casex
-
-All three pick a branch by comparing the selector against each case-item, **bit by bit**. They differ only in how `x`/`z` bits are treated during that compare:
-
-- **`case`** — exact 4-state compare. Every bit must match literally, including `x` and `z`. There is **no wildcard**: an item bit written as `?` is just `z` and is matched literally (see trap below).
-- **`casez`** — `z` (and its shorthand `?`) bits are **don't-care** wildcards, on *either* the selector or the item. This is the idiom for priority / one-hot decoders: list patterns like `4'b1???`, or use the reverse-case form `case (1'b1)` with the conditions as items.
-- **`casex`** — **both** `x` and `z` are wildcards. This is **dangerous**: a propagated `x` on the selector silently matches some item, so a real bug (uninitialized/contended signal) is masked instead of producing `x`. Avoid in RTL; lint rules flag every `casex`.
-
-**Trap:** in plain `case`, `?` is **not** a wildcard — it is `z`, matched literally. Writing `casez`-style patterns such as `4'b1?_??` inside a plain `case` is a classic bug: those items only match if the selector actually carries `z` bits, so the branch never fires for normal `0/1` inputs.
-
-Per-bit match table (selector bit value down, statement across — does the item wildcard bit match it?):
-
-| selector bit | `case` (item `?`=`z`) | `casez` (item `?`/`z`) | `casex` (item `?`/`z`/`x`) |
-|--------------|-----------------------|------------------------|----------------------------|
-| `0`          | no (item `z` ≠ `0`)   | **yes**                | **yes**                    |
-| `1`          | no (item `z` ≠ `1`)   | **yes**                | **yes**                    |
-| `x`          | no                    | no (only `z` wild)     | **yes**                    |
-| `z`          | yes (literal `z`=`z`) | **yes**                | **yes**                    |
-
-**Qualifiers.** Prefix the keyword with `unique` / `unique0` / `priority` to state intent: `unique` asserts the items are mutually exclusive and (for `unique`) fully cover the selector — the tool both checks this in simulation and uses it to drop priority/default logic; `priority` asserts at least one item matches and preserves top-to-bottom precedence. Prefer these over the legacy `// synopsys full_case parallel_case` pragmas, which assert the same facts to **synthesis only** — if the assertion is false, the gates and the simulation disagree (a sim/synth mismatch that the qualifiers would have caught in sim). See the Synthesis/Lint notes elsewhere in `03_Frontend_RTL_and_Verification` for how these are enforced.
-
-### Synthesizable vs Non-Synthesizable Constructs
-
-Think of an abstraction ladder, and the synthesis tool as a mapper that only understands the lower rungs:
-
-- **Behavioral / algorithmic** — describes *what* to compute, possibly untimed. May be non-synthesizable.
-- **RTL (register-transfer)** — clocked registers + combinational logic between them. This is the synthesizable contract: the tool maps it to gates and flops.
-- **Gate / structural** — explicit primitives or instantiated cells.
-
-| Synthesizable (maps to hardware) | Non-synthesizable (simulation / testbench only) |
-|----------------------------------|-------------------------------------------------|
-| `always` / `always_ff` / `always_comb` / `always_latch` | `initial` blocks |
-| `assign`, `if`/`case` (see above) | `fork…join` / `join_any` / `join_none` (see [Fork-Join Deep Dive](#fork-join-deep-dive)) |
-| statically-bound `for` loops, `generate` | `#delay`, `wait`, untimed `forever`, `@event` as control |
-| combinational `function` (zero-time, no time controls) | `$display` / `$monitor` / `$finish` / `$strobe` |
-| module / cell instantiation | `real`, `time`; classes, `mailbox`, `semaphore` |
-| parameters, constants | `===` / `!==` (4-state compare — usually TB only) |
-
-One line to remember: **the tool maps RTL to gates; testbench constructs have no hardware to map to.** A loop bound or `generate` range must be static (resolvable at elaboration) precisely because the tool must unroll it into fixed structure rather than execute it over time.
-
----
-
+        // So testbench sees stable, settled 

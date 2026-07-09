@@ -25,6 +25,47 @@ The vplan is the contract for *what* gets verified, derived from the **design sp
 
 The vplan is **executable**: modern tools link each vplan item to the coverage objects that close it, so the plan auto-annotates with live coverage numbers. Unlinked vplan items = un-verified features = risk.
 
+**Worked example — decomposing features into tests + coverage** (block-level test plan):
+
+```ascii-graph
+Test Plan for [Block/Feature]
+|
++-- Feature 1: Basic Read/Write
+|     +-- Test: single_write_read        [directed]
+|     +-- Test: random_write_read        [constrained random]
+|     +-- Coverage: addr ranges, data patterns
+|
++-- Feature 2: Burst Transactions
+|     +-- Test: burst_all_lengths        [directed sweep]
+|     +-- Test: random_bursts            [constrained random]
+|     +-- Coverage: burst_len x burst_type cross
+|
++-- Feature 3: Error Handling
+|     +-- Test: address_out_of_range     [error injection]
+|     +-- Test: protocol_violation       [negative test]
+|     +-- Coverage: error types, recovery paths
+|
++-- Feature 4: Corner Cases
+|     +-- Test: back_to_back_txns        [stress]
+|     +-- Test: reset_during_txn         [interrupt]
+|     +-- Test: fifo_full_empty          [boundary]
+|     +-- Coverage: boundary conditions
+```
+
+And the executable feature→coverage mapping, AXI4 slave:
+
+| Feature | Test Type | Coverage Item | Target |
+|---------|-----------|---------------|--------|
+| Single read | CR (constrained random) | `cg_axi_read.bv_addr` | 100% |
+| Burst read (INCR4) | CR | `cg_axi_burst.bv_burst_len` with `len==4` | 100% |
+| Out-of-order completion | CR | `cg_ooo.cp_ordering` | 100% |
+| Error response (SLVERR) | Directed | `cp_slverr` | 100% |
+| Back-to-back transactions | CR | `cg_perf.cp_back2back` | >80% |
+
+The verification plan is the contract between design and verification teams. Each row maps a design feature to a measurable coverage goal -- without this mapping, coverage numbers are meaningless.
+
+### Coverage Closure Methodology
+
 ---
 
 ## 2. The coverage taxonomy
@@ -86,6 +127,27 @@ Closure also means **all checks pass** (zero failing assertions/scoreboard misma
 The dominant methodology: **constrained-random** stimulus generates volume and reaches corners a human wouldn't script; **functional coverage** measures what it actually hit; the gap drives new constraints/seeds. Optionally **coverage-driven generation** automatically biases the random generator toward un-hit bins. This is why UVM is built around randomization + covergroups — they're the two ends of the same loop.
 
 Directed tests still matter for: reset/init sequences, known-hard corners, and quick smoke tests. The real flow is random-for-breadth + directed-for-the-stubborn-corners.
+
+**The canonical CDV cycle** — from plan to closure:
+
+1. **Write verification plan** — decompose every design feature into testable requirements.
+2. **Create coverage model** — instrument covergroups, coverpoints, and crosses that signal "this feature has been exercised."
+3. **Develop constrained-random stimulus** — let the generator explore the legal space; use directed tests only for corner cases the randomizer cannot reach.
+4. **Simulate and collect coverage** — run regressions with multiple seeds; merge coverage databases.
+5. **Analyze coverage holes** — triage every uncovered bin (decision tree in §3).
+6. **Add directed tests** — only after confirming a stimulus gap (not a model gap or dead code).
+7. **Declare closure** — when functional and code coverage targets are met across all seeds.
+
+Skipping step 5 is the most common mistake: chasing 100% without understanding *why* a bin is uncovered wastes effort on dead-code bins that can never fire.
+
+**Regression management tiers:**
+
+- **Nightly regression**: full test suite, all seeds, report coverage.
+- **Smoke regression**: subset of critical tests, fast turnaround for CI.
+- **Coverage-focused**: run only tests that target uncovered bins.
+- **Seed management**: save seeds that hit interesting coverage, replay for debug.
+
+Track coverage trend charts across nightly runs: a sudden coverage drop almost always indicates a regression bug in stimulus generation, not a design bug.
 
 ---
 

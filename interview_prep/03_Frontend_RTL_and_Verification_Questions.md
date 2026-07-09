@@ -819,7 +819,7 @@ via k-liveness (bounded liveness checking) or fair-cycle detection.
 
 ## SystemVerilog IPC and Verification Methodology -- Senior Engineer Deep Dive
 
-*From [IPC_and_Verification.md](../03_Frontend_RTL_and_Verification/IPC_and_Verification.md)*
+*From [Procedural_and_Processes.md](../03_Frontend_RTL_and_Verification/Procedural_and_Processes.md) and [UVM_Methodology.md](../03_Frontend_RTL_and_Verification/UVM_Methodology.md)*
 
 ### Q1: Explain the difference between mailbox put/get and try_put/try_get.
 

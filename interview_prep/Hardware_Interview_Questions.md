@@ -147,7 +147,7 @@ Naming the *verification cost* of each rung is what separates senior answers ([S
 
 ### 6.1 Snap answers
 
-- **Directed vs constrained-random economics:** directed = linear effort per scenario, CR = front-loaded env cost then coverage-per-cycle compounding; the crossover argument is *the* verification-strategy interview ([IPC_and_Verification](../03_Frontend_RTL_and_Verification/IPC_and_Verification.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/UVM_Methodology.md)).
+- **Directed vs constrained-random economics:** directed = linear effort per scenario, CR = front-loaded env cost then coverage-per-cycle compounding; the crossover argument is *the* verification-strategy interview ([Verification_Planning_and_Coverage_Closure](../03_Frontend_RTL_and_Verification/Verification_Planning_and_Coverage_Closure.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/UVM_Methodology.md)).
 - **When formal over simulation:** control-dominated, bounded-state, completeness-critical: arbiters (starvation), FIFOs (no overflow), CDC structure, register access policies, security/lockstep — exhaustive where sim samples ([Formal_Verification](../03_Frontend_RTL_and_Verification/Formal_Verification.md)).
 - **Coverage closure ≠ done:** code+functional coverage at 100% with a wrong/missing covergroup still ships bugs; review coverage *model* against spec, not just the percentage.
 - **"Your test passes but the bug exists" — name mechanisms:** checker disabled/X-optimism masking, scoreboard compares only fields that match, assertion off during reset window where bug fires, seed luck — the question tests epistemic humility about green dashboards.

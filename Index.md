@@ -53,8 +53,7 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 |------|----------|
 | [Power Fundamentals](02_Power_and_Low_Power/Power_Fundamentals.md) | switching/short-circuit/leakage physics, scaling, sub-threshold swing |
 | [Block Activity and Power](02_Power_and_Low_Power/Block_Activity_and_Power.md) | per-block/per-mode modeling, RTL power, glitch, emulation power, on-die telemetry |
-| [Power Reduction Techniques](02_Power_and_Low_Power/Power_Reduction_Techniques.md) | clock gating, DVFS, power gating, multi-Vt, body biasing, operand isolation |
-| [Low Power Design](02_Power_and_Low_Power/Low_Power_Design.md) | the interview bible: ICG, power-gating switches/retention, debug drills |
+| [Power Reduction Techniques](02_Power_and_Low_Power/Power_Reduction_Techniques.md) | clock gating, DVFS, power gating, multi-Vt, body biasing, operand isolation, low-power flow |
 | [UPF Power Intent](02_Power_and_Low_Power/UPF_Power_Intent.md) | IEEE 1801, domains, retention, isolation, level shifters, switches, PST |
 | [Power Analysis and Signoff](02_Power_and_Low_Power/Power_Analysis_and_Signoff.md) | PrimeTime PX/Voltus, IR/EM, glitch, peak/di-dt, backside power |
 
@@ -70,7 +69,6 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 | [Clock Division](03_Frontend_RTL_and_Verification/Clock_Division.md) | even/odd/fractional dividers, PLL/DLL, glitch-free switching |
 | [Asynchronous Circuit Design](03_Frontend_RTL_and_Verification/Async_Circuit_Design.md) | metastability/MTBF, synchronizers, async FIFO, handshakes, CDC |
 | [Assertions and Coverage](03_Frontend_RTL_and_Verification/Assertions_and_Coverage.md) | immediate/concurrent SVA, functional+code coverage |
-| [IPC and Verification](03_Frontend_RTL_and_Verification/IPC_and_Verification.md) | mailbox, semaphore, testbench architecture |
 | [UVM Methodology](03_Frontend_RTL_and_Verification/UVM_Methodology.md) | components, phasing, sequences, factory, config_db, RAL |
 | [Lint, CDC & RDC Signoff](03_Frontend_RTL_and_Verification/Lint_CDC_RDC_Signoff.md) ⭐ | static lint, structural+functional CDC, reset-domain crossing |
 | [Gate-Level Sim & Emulation](03_Frontend_RTL_and_Verification/Gate_Level_Sim_and_Emulation.md) ⭐ | GLS (zero-delay/SDF, X-prop), emulation, FPGA prototyping |
