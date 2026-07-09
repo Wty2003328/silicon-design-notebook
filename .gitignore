@@ -1,5 +1,6 @@
-# Obsidian workspace (machine-local state)
-.obsidian/
+# Obsidian: config, snippets, and plugins are tracked; machine-local state is not
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
 *.base
 
 # AI assistant scratch

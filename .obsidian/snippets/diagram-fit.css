@@ -1,0 +1,32 @@
+/* diagram-fit.css — scale mermaid & wavedrom diagrams to the note width
+   Enable in Obsidian: Settings → Appearance → CSS snippets → toggle "diagram-fit". */
+
+/* Mermaid: fit to reading/edit width, center, keep aspect ratio */
+.markdown-rendered .mermaid,
+.markdown-source-view .mermaid {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;          /* very wide diagrams scroll instead of clipping */
+}
+.markdown-rendered .mermaid svg,
+.markdown-source-view .mermaid svg {
+  max-width: 100% !important;
+  height: auto !important;    /* preserve aspect ratio when width is capped */
+}
+
+/* WaveDrom timing diagrams: same treatment */
+.markdown-rendered .wavedrom,
+.block-language-wavedrom {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+.markdown-rendered .wavedrom svg,
+.block-language-wavedrom svg {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+/* Give big diagrams a little breathing room */
+.markdown-rendered .mermaid,
+.block-language-wavedrom { margin: 0.4em 0 0.8em; }

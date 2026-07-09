@@ -1,0 +1,10 @@
+{
+	"id": "waveform-player",
+	"name": "Waveform Player",
+	"version": "0.0.7",
+	"minAppVersion": "1.7.7",
+	"description": "Render audio files as waveforms",
+	"author": "Zhou Hua",
+	"authorUrl": "https://zhouhua.site",
+	"isDesktopOnly": false
+}

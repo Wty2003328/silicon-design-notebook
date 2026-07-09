@@ -1,0 +1,8 @@
+{
+  "accentColor": "",
+  "theme": "moonstone",
+  "enabledCssSnippets": [
+    "diagram-fit",
+    "snippet-formatting"
+  ]
+}
