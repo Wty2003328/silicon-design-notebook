@@ -280,7 +280,7 @@ Even an acyclic-CDG fabric deadlocks if a *request* blocks the channel that its 
 Server/infra SoCs (Neoverse CMN-600/700/S3-class meshes) put coherence *on* the mesh:
 
 - **RN-F** (fully coherent requesters: CPU clusters), **HN-F** (home nodes: slices of the system cache + snoop filter/directory + point of coherence), **SN-F** (subordinate memory controllers), plus RN-I/HN-I for IO.
-- Physical addresses are **hash-interleaved across HN-Fs** → uniform load on home nodes, no single coherence bottleneck (same trick as GPU L2-slice/memory-channel hashing — see ai_infra [GPU_Architecture](../../ai_infra/L3_Microarchitecture/GPU_Architecture.md)).
+- Physical addresses are **hash-interleaved across HN-Fs** → uniform load on home nodes, no single coherence bottleneck (same trick as GPU L2-slice/memory-channel hashing — *GPU architecture, companion AI-infra notebook*).
 - A coherent read: RN-F → (REQ VN) → its address's HN-F → snoop filter lookup → either DAT from system-cache slice, snoop to an owning RN-F (SNP VN), or fetch from SN-F; data returns possibly **direct-to-requester (DCT/DMT)** skipping the home hop on the data path.
 - QoS: per-source priority fields, age-based escalation at routers, and regulator counters at injection points (rate-limit a misbehaving accelerator before it floods the mesh).
 
@@ -364,4 +364,4 @@ $$
 - Protocol layer above: [ACE_and_CHI](12_ACE_and_CHI.md), [AHB_AXI_APB](11_AHB_AXI_APB.md).
 - Components: [Memory](09_Memory.md) (FIFOs, SRAM buffers), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC at NIUs).
 - Implementation: [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (link pipelining, floorplan), [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (UCIe die-to-die).
-- System-scale analogues: ai_infra [Networking_and_Interconnect](../../ai_infra/L4_Systems_and_Interconnects/Networking_and_Interconnect.md) (same theory, bigger wires), [Specialty_Accelerators](../../ai_infra/L3_Microarchitecture/Specialty_Accelerators.md) (Tenstorrent NoC-as-fabric).
+- System-scale analogues: *datacenter networking and interconnect* (same theory, bigger wires) and *Tenstorrent's NoC-as-fabric (specialty accelerators)* — companion AI-infra notebook.

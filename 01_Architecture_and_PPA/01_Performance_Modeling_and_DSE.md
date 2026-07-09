@@ -41,7 +41,7 @@ $$\text{Speedup} = \frac{1}{(1-p) + p/N}$$
 The serial fraction $p$ caps everything — at $p=0.9$, infinite cores give only 10×. This is *why* accelerators co-design the algorithm, not just the hardware.
 
 ### 2.3 Roofline (the AI-era PPA lens)
-Attainable perf $= \min(\pi,\ \beta \cdot I)$ where $\pi$=peak FLOPS, $\beta$=bandwidth, $I$=arithmetic intensity. The ridge point $\pi/\beta$ tells you whether a workload is compute- or memory-bound *before* you size anything. (Full treatment in ai_infra [Memory_Hierarchy_and_Roofline](../../ai_infra/L3_Microarchitecture/Memory_Hierarchy_and_Roofline.md).)
+Attainable perf $= \min(\pi,\ \beta \cdot I)$ where $\pi$=peak FLOPS, $\beta$=bandwidth, $I$=arithmetic intensity. The ridge point $\pi/\beta$ tells you whether a workload is compute- or memory-bound *before* you size anything. (Full treatment: *Memory Hierarchy and Roofline*, companion AI-infra notebook.)
 
 ### 2.4 Worked example — issue width vs. frequency
 A 4-wide core at 3 GHz vs. a 2-wide core at 4 GHz. Suppose the 4-wide sustains IPC 1.8, the 2-wide IPC 1.2 (better clock came from a shorter pipeline that hurts IPC via more mispredict exposure).
@@ -140,7 +140,7 @@ The architect's job is to spend each mm² and each mW where the **CPI stack / ro
 
 ## 9. GPU performance modeling — throughput, occupancy, per-kernel roofline
 
-Everything above is CPU-centric: the metric is **latency of one stream** (CPI, IPC). A GPU is a **throughput** machine — thousands of threads hide latency instead of avoiding it — so the model changes. The unit of analysis is the **kernel**, and the bottleneck is almost always *occupancy* or *memory* rather than per-instruction stalls. (µarch detail: ai_infra [GPU_Architecture](../../ai_infra/L3_Microarchitecture/GPU_Architecture.md).)
+Everything above is CPU-centric: the metric is **latency of one stream** (CPI, IPC). A GPU is a **throughput** machine — thousands of threads hide latency instead of avoiding it — so the model changes. The unit of analysis is the **kernel**, and the bottleneck is almost always *occupancy* or *memory* rather than per-instruction stalls. (µarch detail: *GPU architecture*, companion AI-infra notebook.)
 
 ### 9.1 Occupancy and latency hiding
 Threads are grouped into **warps** (32 lanes, SIMT); a streaming multiprocessor (SM) round-robins ready warps to hide memory and pipeline latency. **Occupancy** = active warps / max warps per SM, capped by whichever resource runs out first:
@@ -176,7 +176,7 @@ SM allows 64 warps (2048 threads), 64K registers, 96 KB shared memory. A kernel 
 
 ## 10. NPU / accelerator performance modeling — systolic arrays, dataflow, tiling
 
-An NPU/TPU replaces the warp-scheduler abstraction entirely: the workhorse is a **systolic array (SA)** of $D\times D$ MAC PEs streaming a tiled GEMM, plus a SIMD **vector unit (VU)** for non-GEMM ops and an SRAM/HBM hierarchy. Performance modeling becomes a **loop-nest + utilization** problem, not an IPC problem. (Background: ai_infra [Systolic_Arrays_and_Dataflow](../../ai_infra/L2_Digital_Design_for_AI/Systolic_Arrays_and_Dataflow.md), [Google_TPU](../../ai_infra/L3_Microarchitecture/Google_TPU.md).)
+An NPU/TPU replaces the warp-scheduler abstraction entirely: the workhorse is a **systolic array (SA)** of $D\times D$ MAC PEs streaming a tiled GEMM, plus a SIMD **vector unit (VU)** for non-GEMM ops and an SRAM/HBM hierarchy. Performance modeling becomes a **loop-nest + utilization** problem, not an IPC problem. (Background: *systolic arrays/dataflow* and *the Google TPU*, companion AI-infra notebook.)
 
 ### 10.1 Systolic-array cycle and utilization model
 A $D\times D$ array computing $C_{M\times N} = A_{M\times K}\,B_{K\times N}$, tiled into $T_m\times T_n$ output tiles with the $K$ dimension streamed. For one tile (weight- or output-stationary), the array must **fill** and **drain** the pipeline around the $K$ useful cycles:
@@ -291,5 +291,5 @@ The lesson for an architect: an industrial DSE tool is **(component perf models)
 - Implements into: [RTL_Design_Methodology](../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md).
 - Power half of PPA: [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md), [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md).
 - Microarchitecture detail: [CPU_Architecture](03_CPU_Architecture.md), [OoO_Execution](05_OoO_Execution.md), [Cache_Microarchitecture](07_Cache_Microarchitecture.md).
-- Accelerator µarch (GPU/NPU perf modeling, §9–11): ai_infra [GPU_Architecture](../../ai_infra/L3_Microarchitecture/GPU_Architecture.md), [Google_TPU](../../ai_infra/L3_Microarchitecture/Google_TPU.md), [Systolic_Arrays_and_Dataflow](../../ai_infra/L2_Digital_Design_for_AI/Systolic_Arrays_and_Dataflow.md).
-- Systems analogue: ai_infra [Memory_Hierarchy_and_Roofline](../../ai_infra/L3_Microarchitecture/Memory_Hierarchy_and_Roofline.md).
+- Accelerator µarch (GPU/NPU perf modeling, §9–11): *GPU architecture, Google TPU, systolic arrays — companion AI-infra notebook*.
+- Systems analogue: *memory hierarchy and roofline — companion AI-infra notebook*.

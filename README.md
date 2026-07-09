@@ -6,7 +6,7 @@ A comprehensive, bottom-up technical reference covering digital IC design end to
 
 Built for senior-level interview preparation and professional reference. Target roles: RTL design engineer, CPU/microarchitecture engineer, physical design/STA engineer, DFT engineer, verification engineer.
 
-This notebook was split out of the combined "Silicon to Serving" project — see the sibling [ai_infra notebook](https://github.com/Wty2003328/silicon-to-serving) for the AI-infrastructure half (GPU/TPU architecture, CUDA kernels, transformers, distributed training, LLM serving).
+This notebook was split out of the combined "Silicon to Serving" project — see the sibling [AI-infrastructure notebook](https://github.com/Wty2003328/silicon-to-serving) for the other half (GPU/TPU architecture, CUDA kernels, transformers, distributed training, LLM serving).
 
 ## Getting Started
 
@@ -21,7 +21,7 @@ Start at [Index.md](Index.md) or [Chip_Design_Flow_Overview.md](Chip_Design_Flow
 To view this notebook exactly as intended, the following Obsidian configuration is recommended:
 
 1. **Mermaid Zoom Plugin (Architecture Diagrams)** — install the [mermaid-zoom](https://github.com/xiaozhuang0433/mermaid-zoom) community plugin so dense architecture diagrams open in a full-screen, scrollable modal.
-2. **Custom CSS snippet** for code/LaTeX wrapping, if you carry one over from the sibling ai_infra vault.
+2. **Custom CSS snippet** for code/LaTeX wrapping — included in this vault's `.obsidian/snippets/`.
 
 ## Structure
 
@@ -57,7 +57,7 @@ Every page follows the same structure:
 
 ## History
 
-This notebook's git history was split out of the combined `silicon-to-serving` repository (see `REORG_PLAN.md` for the flow-based reorganization this content went through) — commit history for `hardware_design/` content is preserved back to the original project.
+This notebook's git history was split out of the combined `silicon-to-serving` repository — commit history for this notebook's content is preserved back to the original project.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Chip Design Flow — The Full RTL-to-GDSII-to-Silicon Pipeline
 
-> **Read this first.** This page is the spine of the `hardware_design/` notebook. The folders are numbered in **flow order** (00 → 07); this page explains what each stage consumes, produces, and hands off, where the loops are, and which page covers each step.
+> **Read this first.** This page is the spine of this notebook. The folders are numbered in **flow order** (00 → 07); this page explains what each stage consumes, produces, and hands off, where the loops are, and which page covers each step.
 > **Prerequisites:** none — this is the map. **Hands off to:** every stage page linked below.
 
 ---
@@ -127,4 +127,4 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 
 ## Cross-references
 - Power as a cross-cutting track: [02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md).
-- The systems analogue (AI datacenter "flow"): ai_infra [Index](../ai_infra/Index.md).
+- The systems analogue (the AI-datacenter "flow") lives in the companion AI-infra notebook.

@@ -205,4 +205,4 @@ The grading axis is identical in all four: **clarify constraints → block diagr
 
 - Live-coding companion: [RTL_Coding_Questions](08_RTL_Coding_Questions.md).
 - Per-domain depth: [STA](../06_Signoff/01_STA.md), [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md), [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md), [Cache_Microarchitecture](../01_Architecture_and_PPA/07_Cache_Microarchitecture.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Formal_Verification](../03_Frontend_RTL_and_Verification/12_Formal_Verification.md).
-- AI-systems counterpart: [Common_Interview_Questions](../../ai_infra/interview_prep/Common_Interview_Questions.md), [System_Design_Interview](../../ai_infra/interview_prep/System_Design_Interview.md).
+- AI-systems counterpart (*Common Interview Questions*, *System Design Interview*): companion AI-infra notebook.
