@@ -109,4 +109,45 @@ mjx-container[display="true"] {
     */
 }
 
-/
+/* ============================================================
+   Book-like heading hierarchy: each level distinctly smaller
+   than its parent (applies to reading view AND live preview
+   via Obsidian's --hN-size variables).
+   ============================================================ */
+body {
+    --h1-size: 1.9em;
+    --h2-size: 1.5em;
+    --h3-size: 1.22em;
+    --h4-size: 1.05em;
+    --h5-size: 0.95em;
+    --h6-size: 0.85em;
+    --h1-weight: 700;
+    --h2-weight: 700;
+    --h3-weight: 650;
+    --h4-weight: 600;
+}
+
+/* Chapter feel: page title and top-level sections get separators */
+.markdown-rendered h1,
+.markdown-source-view.mod-cm6 .HyperMD-header-1 {
+    border-bottom: 2px solid var(--interactive-accent);
+    padding-bottom: 0.25em;
+}
+
+.markdown-rendered h2,
+.markdown-source-view.mod-cm6 .HyperMD-header-2 {
+    border-bottom: 1px solid var(--background-modifier-border-hover);
+    padding-bottom: 0.15em;
+    margin-top: 1.6em;
+}
+
+.markdown-rendered h3 {
+    margin-top: 1.2em;
+}
+
+/* Sub-subsections: slightly muted so they read as subordinate */
+.markdown-rendered h4,
+.markdown-rendered h5 {
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
+}
