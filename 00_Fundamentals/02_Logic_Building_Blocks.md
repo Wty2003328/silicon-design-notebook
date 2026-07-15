@@ -122,7 +122,7 @@ flowchart TD
 
 The feedback cross-coupling makes state (1,1) unreachable. The 2-FF synchronizers ensure that enable transitions are clean in each clock domain, preventing metastability on the enable signals.
 
-**Switching latency:** ~2-4 cycles of each clock domain. This is fine — clock switching is a rare control-plane event (e.g., switching PLL source during DVFS transitions).
+**Switching latency:** ~2-4 cycles of each clock domain. This is fine — clock switching is a rare control-plane event (e.g., switching PLL (phase-locked loop) source during DVFS (dynamic voltage and frequency scaling) transitions).
 
 ```verilog
 module glitch_free_clk_mux (
@@ -162,7 +162,7 @@ module glitch_free_clk_mux (
 endmodule
 ```
 
-**ASIC implementation note:** In real tapeouts, replace `clk_a & sel_a_ff2` with a library ICG (Integrated Clock Gating) cell. ICG uses an internal latch to hold the enable stable during the active clock phase, preventing glitches even if the enable has marginal timing. The ICG also has characterized timing models for STA.
+**ASIC (application-specific integrated circuit) implementation note:** In real tapeouts, replace `clk_a & sel_a_ff2` with a library ICG (Integrated Clock Gating) cell. ICG uses an internal latch to hold the enable stable during the active clock phase, preventing glitches even if the enable has marginal timing. The ICG also has characterized timing models for STA (static timing analysis).
 
 ---
 
@@ -246,11 +246,11 @@ module lzc_8 (
 endmodule
 ```
 
-**Application in FP:** After mantissa subtraction produces result R, the LZC determines shift amount s. The mantissa is left-shifted by s, and the exponent is decremented by s. In a pipelined FPU, the LZC runs in parallel with the subtraction using a **Leading Zero Anticipator (LZA)** that predicts the leading zero count from the inputs (before the subtraction completes), accepting +/-1 error and correcting in the next cycle.
+**Application in FP:** After mantissa subtraction produces result R, the LZC (leading zero counter) determines shift amount s. The mantissa is left-shifted by s, and the exponent is decremented by s. In a pipelined FPU (floating-point unit), the LZC runs in parallel with the subtraction using a **Leading Zero Anticipator (LZA)** that predicts the leading zero count from the inputs (before the subtraction completes), accepting +/-1 error and correcting in the next cycle.
 
 ### Tree Comparator for 64-bit
 
-A naive 64-bit comparator cascades bit comparisons MSB to LSB — O(N) delay. A tree comparator achieves O(log N).
+A naive 64-bit comparator cascades bit comparisons MSB (most significant bit) to LSB (least significant bit) — O(N) delay. A tree comparator achieves O(log N).
 
 **Approach:** Divide into 8-bit blocks, compare each block in parallel, then combine with priority.
 
@@ -361,7 +361,7 @@ Instead of the simpler per-stage constraint of flip-flop design. This makes timi
 
 ## Metastability — First-Principles Derivation
 
-*This section derives the physics. The design consequences — MTBF budgeting, synchronizer zoo, CDC schemes, async FIFO: [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §1–§5.*
+*This section derives the physics. The design consequences — MTBF (mean time between failures) budgeting, synchronizer zoo, CDC (clock domain crossing) schemes, async FIFO (first-in first-out): [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §1–§5.*
 
 ### The Physics of Metastability
 
@@ -449,7 +449,7 @@ This is astronomically large — 3-FF is overkill for most designs but used in s
 
 - **Very high clock ratios:** If fclk >> fdata, Tr is large and MTBF is excellent. But if fclk ≈ fdata, Tr is minimal.
 - **Many synchronizers in a chip:** If you have 1000 independent CDC crossings, divide MTBF by 1000.
-- **Safety-critical:** ISO 26262 ASIL-D requires MTBF > 10^9 hours for random hardware faults.
+- **Safety-critical:** ISO 26262 ASIL-D (Automotive Safety Integrity Level D) requires MTBF > 10^9 hours for random hardware faults.
 
 ---
 
@@ -457,7 +457,7 @@ This is astronomically large — 3-FF is overkill for most designs but used in s
 
 ### One-Hot vs Binary Encoding — Actual Synthesis Comparison
 
-**Example: 12-state FSM (UART receiver)**
+**Example: 12-state FSM (UART (universal asynchronous receiver/transmitter) receiver)**
 
 | Metric              | Binary (4-bit) | One-Hot (12-bit) | Gray (4-bit) |
 |---------------------|----------------|------------------|--------------|
@@ -473,11 +473,11 @@ This is astronomically large — 3-FF is overkill for most designs but used in s
 
 **Crossover point:** For >~32 states, binary encoding starts winning on area because the FF count dominates. For speed-critical FSMs with <20 states, one-hot is almost always better.
 
-**FPGA consideration:** FPGAs have abundant flip-flops but limited LUTs, making one-hot strongly preferred (sometimes the tool does this automatically).
+**FPGA (field-programmable gate array) consideration:** FPGAs have abundant flip-flops but limited LUTs (lookup tables), making one-hot strongly preferred (sometimes the tool does this automatically).
 
 ### Safe FSM Coding — Default State Recovery
 
-In real tapeouts, cosmic rays, power glitches, or ECC failures can corrupt state registers, putting the FSM into an unencoded (illegal) state.
+In real tapeouts, cosmic rays, power glitches, or ECC (error-correcting code) failures can corrupt state registers, putting the FSM into an unencoded (illegal) state.
 
 **Binary encoding:** With 4 bits and 12 states, there are 4 unused states (12-15). If the FSM enters one of these, it must recover.
 
@@ -695,7 +695,7 @@ AC = 1 (constant, does not depend on B)
 F = AB' + BC + 1 = 1   (no glitch possible)
 ```
 
-**General rule:** For each pair of adjacent prime implicants that share a boundary where a variable transitions, add the consensus term that covers both. This is equivalent to ensuring every pair of adjacent 1-cells in the K-map is covered by at least one common prime implicant.
+**General rule:** For each pair of adjacent prime implicants that share a boundary where a variable transitions, add the consensus term that covers both. This is equivalent to ensuring every pair of adjacent 1-cells in the K-map (Karnaugh map) is covered by at least one common prime implicant.
 
 ### Static-0 Hazard
 

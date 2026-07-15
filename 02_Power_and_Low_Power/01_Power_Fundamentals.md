@@ -603,9 +603,9 @@ In an unoptimized datapath:
 
 ---
 
-## 9B. Technology Scaling Trends -- Dennard Scaling and Its Breakdown
+## 10. Technology Scaling Trends -- Dennard Scaling and Its Breakdown
 
-### 9B.1 Dennard Scaling (1974-2005)
+### 10.1 Dennard Scaling (1974-2005)
 
 Robert Dennard's 1974 paper established that as MOSFET dimensions shrink by a factor k:
 - W, L -> W/k, L/k (gate length and width shrink)
@@ -620,7 +620,7 @@ But k times as many gates fit in the same area: total power density = $(CV^2f/k)
 
 This was the foundation of "frequency doubles every generation" for 30 years.
 
-### 9B.2 Why Dennard Scaling Broke (~65nm)
+### 10.2 Why Dennard Scaling Broke (~65nm)
 
 Dennard scaling requires Vdd to scale with Vth. But as Vth drops, leakage increases exponentially:
 
@@ -646,7 +646,7 @@ Consequence: Vdd could not scale as Dennard predicted (Vdd/Vth ratio dropped).
 The fundamental limit is the **Boltzmann tyranny** (60 mV/decade subthreshold swing): you cannot
 reduce Vth below ~0.25V without I_off exceeding design limits.
 
-### 9B.3 Consequences of Broken Dennard Scaling
+### 10.3 Consequences of Broken Dennard Scaling
 
 ```ascii-graph
 1. Power density INCREASES with scaling (instead of staying constant):
@@ -671,7 +671,7 @@ reduce Vth below ~0.25V without I_off exceeding design limits.
    130nm → 7nm:   Vdd dropped from 1.2V → 0.75V (only 38% in 5+ generations)
 ```
 
-### 9B.4 FinFET Advantage for Leakage
+### 10.4 FinFET Advantage for Leakage
 
 ```verilog
 Why FinFET (16nm and below) partially restored scaling:
@@ -697,7 +697,7 @@ Consequence: FinFET can use LOWER Vth at same leakage budget:
   while maintaining performance. Without FinFET, the 7nm node would not be viable.
 ```
 
-### 9B.5 Dark Silicon and Power Density Limits
+### 10.5 Dark Silicon and Power Density Limits
 
 ```verilog
 Power density ceiling for different cooling:
@@ -723,7 +723,7 @@ Dark silicon fraction (fraction that must be off at peak performance):
   near-threshold computing for background tasks.
 ```
 
-### 9B.6 Worked Leakage Calculation With All Parameters
+### 10.6 Worked Leakage Calculation With All Parameters
 
 ```text
 Calculate subthreshold leakage for a single NMOS in 28nm at 85C:
@@ -786,9 +786,9 @@ A design that meets power budget at 25C will fail catastrophically at 85C.
 
 ---
 
-## 10. Power at Advanced Technology Nodes
+## 11. Power at Advanced Technology Nodes
 
-### 10.1 FinFET Advantages (16nm/14nm/7nm/5nm)
+### 11.1 FinFET Advantages (16nm/14nm/7nm/5nm)
 
 FinFET dramatically improved the power-performance trade-off:
 
@@ -810,7 +810,7 @@ Power impact compared to equivalent planar node:
 - ~80-90% reduction in leakage at same Vth target
 - Enables lower Vdd operation (0.7-0.8V vs 0.9-1.0V)
 
-### 10.2 Gate-All-Around (GAAFET) / Nanosheet (3nm and below)
+### 11.2 Gate-All-Around (GAAFET) / Nanosheet (3nm and below)
 
 ```verilog
 GAAFET:              Gate wraps channel on ALL FOUR sides
@@ -821,7 +821,7 @@ GAAFET:              Gate wraps channel on ALL FOUR sides
                         (unlike FinFET where width is quantized to fin pitch)
 ```
 
-### 10.3 Backside Power Delivery Network (BSPDN)
+### 11.3 Backside Power Delivery Network (BSPDN)
 
 Traditional approach: power and signal routing share the same metal stack (front side).
 Power rails consume routing resources and have high IR drop.
@@ -833,7 +833,7 @@ Backside power delivery (Intel PowerVia, TSMC backside):
 - Enables denser standard cell libraries
 - Allows thinner front-side metal stack (lower parasitic capacitance -> less switching power)
 
-### 10.4 Complementary FET (CFET) and Stacked Transistors
+### 11.4 Complementary FET (CFET) and Stacked Transistors
 
 Future (2nm and beyond): stack NMOS directly on top of PMOS:
 - ~50% area reduction per logic cell
@@ -843,7 +843,7 @@ Future (2nm and beyond): stack NMOS directly on top of PMOS:
 
 ---
 
-## 11.–12. Power Measurement, Annotation, and Tool Flow — moved
+## 12. Power Measurement, Annotation, and Tool Flow — moved
 
 How switching activity is captured and fed to the tools (SAIF/VCD/FSDB, annotation flow and
 its coverage pitfalls, vectorless estimation) and the PrimeTime PX / Voltus tool flows now live in

@@ -1,6 +1,6 @@
 # 01 · Architecture and PPA — Folder Index
 
-*Explore the microarchitecture; model performance; budget power and area — before RTL.*
+*Explore the microarchitecture; model performance; budget power and area — before RTL (register-transfer level).*
 
 | # | Page | Coverage |
 |---|------|----------|
@@ -18,6 +18,9 @@
 | 12 | [ACE and CHI](12_ACE_and_CHI.md) | cache-coherence protocols, snoop, CXL/PCIe |
 | 13 | [Network-on-Chip](13_Network_on_Chip.md) | topology/bisection math, wormhole/VC flow control, router datapath + allocators, deadlock theory, CHI-over-mesh |
 | 14 | [Xiangshan CPU Design](14_Xiangshan_CPU_Design.md) | open-source RISC-V OoO core case study (Nanhu/Kunminghu) |
+| 15 | [GPU Architecture](15_GPU_Architecture.md) | the throughput/latency-hiding machine: SIMT + massive multithreading, the SM as a hardware block, warp divergence, memory coalescing, occupancy, HBM hierarchy (hardware-design lens; cross-links the AI-infra notebook) |
+| 16 | [NPU / Dataflow Accelerators](16_NPU_Accelerators.md) | why spatial/dataflow beats von-Neumann for GEMM: the systolic array as hardware, WS/OS/RS dataflow as an energy lever, scratchpad + mapping, roofline, scale-out |
+| ▸ | [Simulators/](06_Simulators/00_Index.md) | how the tools that produce every non-silicon number work — methodology, gem5, DRAM, GPU, accelerator/NPU, other-architecture, analytical models |
 
 ---
 

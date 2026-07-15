@@ -1,6 +1,6 @@
 # Performance Modeling and Design-Space Exploration
 
-> **Stage:** 01 · Architecture & PPA — the *performance* half of PPA, done **before any RTL exists**.
+> **Stage:** 01 · Architecture & PPA (Performance, Power, Area) — the *performance* half of PPA, done **before any RTL (register-transfer level) exists**.
 > **Prerequisites:** [Chip_Design_Flow_Overview](../Chip_Design_Flow_Overview.md), [CPU_Architecture](03_CPU_Architecture.md), [Memory](09_Memory.md). **Hands off to:** the µarch spec that [RTL_Design_Methodology](../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) implements.
 
 ---
@@ -30,7 +30,7 @@ Every model picks a point on the **speed ↔ accuracy** curve. You move *down* t
 ## 2. Analytical models — the back-of-envelope that decides the most
 
 ### 2.1 The CPI stack
-Performance = $\text{IPC} \times f$. Build CPI additively from a base plus stall components:
+Performance = $\text{IPC} \times f$. Build CPI (cycles per instruction) additively from a base plus stall components:
 
 $$\text{CPI} = \text{CPI}_{\text{base}} + \underbrace{m_{\text{L1}}\,p_{\text{L1}} + m_{\text{L2}}\,p_{\text{L2}} + m_{\text{mem}}\,p_{\text{mem}}}_{\text{memory}} + \underbrace{b\,(1-a)\,p_{\text{mispred}}}_{\text{branch}}$$
 
@@ -44,8 +44,8 @@ The serial fraction $p$ caps everything — at $p=0.9$, infinite cores give only
 Attainable perf $= \min(\pi,\ \beta \cdot I)$ where $\pi$=peak FLOPS, $\beta$=bandwidth, $I$=arithmetic intensity. The ridge point $\pi/\beta$ tells you whether a workload is compute- or memory-bound *before* you size anything. (Full treatment: *Memory Hierarchy and Roofline*, companion AI-infra notebook.)
 
 ### 2.4 Worked example — issue width vs. frequency
-A 4-wide core at 3 GHz vs. a 2-wide core at 4 GHz. Suppose the 4-wide sustains IPC 1.8, the 2-wide IPC 1.2 (better clock came from a shorter pipeline that hurts IPC via more mispredict exposure).
-- 4-wide: $1.8 \times 3 = 5.4$ BIPS. 2-wide: $1.2 \times 4 = 4.8$ BIPS.
+A 4-wide core at 3 GHz vs. a 2-wide core at 4 GHz. Suppose the 4-wide sustains IPC (instructions per cycle) 1.8, the 2-wide IPC 1.2 (better clock came from a shorter pipeline that hurts IPC via more mispredict exposure).
+- 4-wide: $1.8 \times 3 = 5.4$ BIPS (billion instructions per second). 2-wide: $1.2 \times 4 = 4.8$ BIPS.
 - But power $\propto$ width × f × V², and the 4-wide needs more area. The *decision* is BIPS/W and BIPS/mm², not BIPS. This is DSE in one example.
 
 ---
@@ -54,7 +54,7 @@ A 4-wide core at 3 GHz vs. a 2-wide core at 4 GHz. Suppose the 4-wide sustains I
 
 When the spreadsheet can't resolve a choice (contention, reordering, prefetcher interaction), you simulate.
 
-- **gem5** is the academic/industry standard: configurable CPU models (`AtomicSimpleCPU` for fast functional, `O3CPU` for out-of-order cycle-accurate), a flexible memory system (Ruby/classic), and full-system or syscall-emulation modes. You model your µarch as a config, run benchmark traces, and read out IPC, MPKI, occupancy.
+- **gem5** is the academic/industry standard: configurable CPU models (`AtomicSimpleCPU` for fast functional, `O3CPU` for out-of-order cycle-accurate), a flexible memory system (Ruby/classic), and full-system or syscall-emulation modes. You model your µarch as a config, run benchmark traces, and read out IPC, MPKI (misses per kilo-instruction), occupancy.
 - **Sampling** makes long workloads tractable: **SimPoint** clusters program phases and simulates one representative per cluster; **SMARTS** does statistically-rigorous interval sampling. You simulate ~1% of instructions and extrapolate with bounded error — without it, a single SPEC run is weeks.
 - **Validation** is the catch: an unvalidated cycle "accurate" model can be 30% off. You calibrate against a known reference (silicon or RTL) on a few kernels before trusting it for DSE.
 
@@ -70,7 +70,7 @@ gem5 O3 config knobs that matter most for DSE:
 
 ## 4. SystemC / TLM — system-level and pre-RTL HW/SW co-design
 
-For SoCs (not just a core), **SystemC** with **TLM-2.0** models the *system*: CPUs, DMA, accelerators, NoC, memory, all as transaction-level modules. Two coding styles:
+For SoCs (systems-on-chip, not just a core), **SystemC** with **TLM-2.0** (Transaction-Level Modeling) models the *system*: CPUs, DMA (direct memory access), accelerators, NoC (network-on-chip), memory, all as transaction-level modules. Two coding styles:
 - **Loosely-timed (LT)** — blocking transactions, temporal decoupling; fast enough to **boot the OS and run firmware** on a virtual platform months before RTL. This is how software teams start early.
 - **Approximately-timed (AT)** — non-blocking, models arbitration/contention/latency phases; used for **performance** estimation of the interconnect and memory system.
 
@@ -134,7 +134,7 @@ The architect's job is to spend each mm² and each mW where the **CPI stack / ro
 
 **Q.** Architecture proposes doubling L2 from 1 MB to 2 MB. Trace-driven sim shows L2 MPKI drops 12 → 7. L2 penalty is 12 cyc, mem penalty 200 cyc, and the extra MB adds 1.5 mm² and 60 mW leakage. The core runs at IPC 1.5, 3 GHz. Is it worth it?
 
-*Solution.* Memory-CPI improvement: the 5 fewer misses/1000-instr that now hit L2 instead of memory save $(200-12)=188$ cyc each → $\Delta\text{CPI} = 5/1000 \times 188 = 0.94$ cyc/instr saved... but only the fraction that *would have gone to memory* counts — assume those 5 MPKI were memory accesses: ΔCPI ≈ 0.94. New CPI = (1/1.5) − 0.94 = 0.67 − 0.94 < 0, which is impossible — so the assumption is wrong: not all 5 saved misses were full memory misses, and base CPI already hides some under OoO. The lesson: **plug it into the CPI stack with realistic memory-level parallelism**, don't multiply MPKI by raw latency. Re-run with the cycle model; if perf gain >~3–5% for +1.5 mm²/+60 mW it's likely worth it, judged on BIPS/W and BIPS/mm² against the Pareto frontier.
+*Solution.* Memory-CPI improvement: the 5 fewer misses/1000-instr that now hit L2 instead of memory save $(200-12)=188$ cyc each → $\Delta\text{CPI} = 5/1000 \times 188 = 0.94$ cyc/instr saved... but only the fraction that *would have gone to memory* counts — assume those 5 MPKI were memory accesses: ΔCPI ≈ 0.94. New CPI = (1/1.5) − 0.94 = 0.67 − 0.94 < 0, which is impossible — so the assumption is wrong: not all 5 saved misses were full memory misses, and base CPI already hides some under OoO (out-of-order execution). The lesson: **plug it into the CPI stack with realistic memory-level parallelism**, don't multiply MPKI by raw latency. Re-run with the cycle model; if perf gain >~3–5% for +1.5 mm²/+60 mW it's likely worth it, judged on BIPS/W and BIPS/mm² against the Pareto frontier.
 
 ---
 
@@ -143,7 +143,7 @@ The architect's job is to spend each mm² and each mW where the **CPI stack / ro
 Everything above is CPU-centric: the metric is **latency of one stream** (CPI, IPC). A GPU is a **throughput** machine — thousands of threads hide latency instead of avoiding it — so the model changes. The unit of analysis is the **kernel**, and the bottleneck is almost always *occupancy* or *memory* rather than per-instruction stalls. (µarch detail: *GPU architecture*, companion AI-infra notebook.)
 
 ### 9.1 Occupancy and latency hiding
-Threads are grouped into **warps** (32 lanes, SIMT); a streaming multiprocessor (SM) round-robins ready warps to hide memory and pipeline latency. **Occupancy** = active warps / max warps per SM, capped by whichever resource runs out first:
+Threads are grouped into **warps** (32 lanes, SIMT — single-instruction, multiple-thread); a streaming multiprocessor (SM) round-robins ready warps to hide memory and pipeline latency. **Occupancy** = active warps / max warps per SM, capped by whichever resource runs out first:
 
 $$\text{occupancy} = \frac{\min\!\left(\underbrace{\tfrac{\text{regs}_{\max}}{32\cdot\text{regs/thread}}}_{\text{reg-limited warps}},\ \underbrace{\left\lfloor\tfrac{\text{smem}_{\max}}{\text{smem/block}}\right\rfloor\cdot\tfrac{\text{warps}}{\text{block}}}_{\text{smem-limited warps}},\ W_{\max}\right)}{W_{\max}}$$
 
@@ -152,10 +152,10 @@ $$\text{occupancy} = \frac{\min\!\left(\underbrace{\tfrac{\text{regs}_{\max}}{32
 To hide a memory latency $L$ at issue throughput, **Little's Law** sets the warps you need: $\text{warps} \gtrsim L \times \text{issue-rate}$. Too few warps → the SM stalls with no ready work even though peak FLOPS is untouched. The lever is register/shared-memory pressure, not clock.
 
 ### 9.2 Memory coalescing
-The DRAM/L2 sees **memory transactions**, not threads. When the 32 threads of a warp touch one aligned cache line, the access **coalesces** into one transaction; strided/scattered access fans out into many, multiplying effective traffic and collapsing achieved bandwidth. Coalescing efficiency = requested bytes / transferred bytes is a first-order multiplier on $\beta$ in the roofline — a strided kernel can be 8–32× off peak BW with no compute change.
+The DRAM/L2 (dynamic random-access memory / L2 cache) sees **memory transactions**, not threads. When the 32 threads of a warp touch one aligned cache line, the access **coalesces** into one transaction; strided/scattered access fans out into many, multiplying effective traffic and collapsing achieved bandwidth. Coalescing efficiency = requested bytes / transferred bytes is a first-order multiplier on $\beta$ in the roofline — a strided kernel can be 8–32× off peak BW with no compute change.
 
 ### 9.3 Per-kernel roofline and simulators
-Apply roofline (§2.3) **per kernel**, with $I$ = FLOPs / bytes *after* coalescing and cache effects. A GEMM kernel sits near the compute roof; an element-wise or LayerNorm kernel is far left (memory-bound) — they need opposite optimizations, so you never roofline "the GPU," you roofline each kernel.
+Apply roofline (§2.3) **per kernel**, with $I$ = FLOPs / bytes *after* coalescing and cache effects. A GEMM (general matrix multiply) kernel sits near the compute roof; an element-wise or LayerNorm kernel is far left (memory-bound) — they need opposite optimizations, so you never roofline "the GPU," you roofline each kernel.
 
 | Tool | What it is | Fidelity |
 |---|---|---|
@@ -176,7 +176,7 @@ SM allows 64 warps (2048 threads), 64K registers, 96 KB shared memory. A kernel 
 
 ## 10. NPU / accelerator performance modeling — systolic arrays, dataflow, tiling
 
-An NPU/TPU replaces the warp-scheduler abstraction entirely: the workhorse is a **systolic array (SA)** of $D\times D$ MAC PEs streaming a tiled GEMM, plus a SIMD **vector unit (VU)** for non-GEMM ops and an SRAM/HBM hierarchy. Performance modeling becomes a **loop-nest + utilization** problem, not an IPC problem. (Background: *systolic arrays/dataflow* and *the Google TPU*, companion AI-infra notebook.)
+An NPU/TPU (neural processing unit / tensor processing unit) replaces the warp-scheduler abstraction entirely: the workhorse is a **systolic array (SA)** of $D\times D$ MAC (multiply-accumulate) PEs (processing elements) streaming a tiled GEMM, plus a SIMD (single-instruction, multiple-data) **vector unit (VU)** for non-GEMM ops and an SRAM/HBM (static random-access memory / high-bandwidth memory) hierarchy. Performance modeling becomes a **loop-nest + utilization** problem, not an IPC problem. (Background: *systolic arrays/dataflow* and *the Google TPU*, companion AI-infra notebook.)
 
 ### 10.1 Systolic-array cycle and utilization model
 A $D\times D$ array computing $C_{M\times N} = A_{M\times K}\,B_{K\times N}$, tiled into $T_m\times T_n$ output tiles with the $K$ dimension streamed. For one tile (weight- or output-stationary), the array must **fill** and **drain** the pipeline around the $K$ useful cycles:
@@ -209,7 +209,7 @@ The mapper picks tile sizes ($T_m,T_n,T_k$) so each tile's operands fit in SRAM,
 
 - **SA-bound** — the GEMM saturates the MAC array; you are at the compute roof. Fix: bigger array, more SAs, higher $U$.
 - **VU-bound** — softmax / LayerNorm / activation on the vector unit is the critical path (common in attention). Fix: more VU lanes, fuse into GEMM epilogue.
-- **HBM-bound** — operand/weight traffic exceeds HBM bandwidth (memory-bound operators, low arithmetic intensity, KV-cache reads). Fix: bigger tiles for reuse, more HBM BW, quantization.
+- **HBM-bound** — operand/weight traffic exceeds HBM bandwidth (memory-bound operators, low arithmetic intensity, KV-cache (key-value cache) reads). Fix: bigger tiles for reuse, more HBM BW, quantization.
 
 ### 10.4 Tools
 | Tool | Models | Output |
@@ -234,7 +234,7 @@ Map $C = A B$ with $M=512, N=512, K=256$ onto $D=128$ (WS).
 
 > **Composing these leaf/block perf models into a full chip** — CPU core→cluster→SoC, GPU SM→chip, NPU PE→pod — with the contention, compute/memory/comm overlap, power-budget (DVFS/turbo), and thermal-throttling layers co-modeled, is the hierarchical treatment in [Full_Chip_Modeling](02_Full_Chip_Modeling.md).
 
-This is the capstone: **how you turn the analytical models of §9–10 into an industrial DSE tool.** [NeuSim](https://github.com/platformxlab/NeuSim) (UIUC PlatformX lab; backs the Neu10/MICRO'24, V10/ISCA'23 perf papers and ReGate/MICRO'25 power-gating paper) is an open-source NPU simulator that does exactly the perf → power → carbon → SLO loop, config-driven, at design-space scale.
+This is the capstone: **how you turn the analytical models of §9–10 into an industrial DSE tool.** [NeuSim](https://github.com/platformxlab/NeuSim) (UIUC PlatformX lab; backs the Neu10/MICRO'24, V10/ISCA'23 perf papers and ReGate/MICRO'25 power-gating paper) is an open-source NPU simulator that does exactly the perf → power → carbon → SLO (service-level objective) loop, config-driven, at design-space scale.
 
 ### 11.1 Component models — one model per block
 NeuSim models each NPU component the §10 abstraction names, and reports **per-operator** statistics so bottleneck class is a direct output, not a hand calculation:
@@ -265,8 +265,8 @@ This is the accelerator analogue of "gem5 → McPAT → power/thermal → does-i
 The whole design space is **three config directories**, swept combinatorially — this is §5 (DSE / Pareto) realized for NPUs:
 
 - `configs/chips/` — # of SAs, # of VUs, core frequency, HBM bandwidth, SRAM size (the **hardware** axis).
-- `configs/models/` — model graph + parallelism (LLMs Llama/DeepSeek, DLRM, DiT-XL, GLIGEN).
-- `configs/systems/` — datacenter PUE, carbon intensity (the **carbon** axis).
+- `configs/models/` — model graph + parallelism (LLMs — large language models — Llama/DeepSeek, DLRM, DiT-XL, GLIGEN).
+- `configs/systems/` — datacenter PUE (power usage effectiveness), carbon intensity (the **carbon** axis).
 
 `run_sim.py` sweeps **#chips × batch size × NPU version × parallelism config** (tensor/pipeline/data/expert parallelism, TP/PP/DP/EP), and **Ray** auto-parallelizes the millions of simulation jobs across machines — the practical answer to "the space is combinatorial, you can't brute-force cycle-accurate" (§5). The output is a Pareto set the `slo_analysis` stage filters to the most cost-/carbon-efficient config meeting the SLO.
 

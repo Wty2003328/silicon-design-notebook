@@ -16,7 +16,7 @@ when it is useless -- clock gating does nothing for a leakage-dominated standby 
 power gating does nothing for a block that is busy every cycle.
 
 These techniques are not bolted on at the end: they enter the design flow at specific,
-different points. Clock gating is inferred during synthesis from RTL coding patterns; DVFS
+different points. Clock gating is inferred during synthesis from RTL (register-transfer level) coding patterns; DVFS
 is an architecture decision that ripples into clock/reset design, timing signoff corners,
 and system software; power gating requires power-intent specification
 ([UPF](04_UPF_Power_Intent.md)), special cells (switches, isolation, retention), and
@@ -38,7 +38,7 @@ cross-references.
 
 Prerequisites: the dynamic-power derivation and leakage physics in
 [Power Fundamentals](01_Power_Fundamentals.md) (its Sections 3 and 5 are assumed
-throughout); MOSFET operation, transmission gates, and latch structures from
+throughout); MOSFET (metal-oxide-semiconductor field-effect transistor) operation, transmission gates, and latch structures from
 [CMOS Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md); setup/hold reasoning from
 [STA](../06_Signoff/01_STA.md); and, for context on where the activity numbers come from,
 [Block Activity and Power](02_Block_Activity_and_Power.md).
@@ -157,7 +157,7 @@ clock source. The consequences are severe.
   fail to capture.
 - Even a full-width but late-rising `GCLK` edge is a clock edge at an uncharacterized time:
   every setup/hold relationship at the downstream flops is now referenced to a data-derived
-  edge, which STA cannot bound.
+  edge, which STA (static timing analysis) cannot bound.
 - Result: glitches on EN during CLK=1 propagate directly to GCLK -> clock glitches ->
   metastability / data corruption. Naive AND gating is **never used in production designs**
   for this reason.
@@ -216,7 +216,7 @@ To build the transparent-low latch we need (see
 2. a **storage node** and buffering -- inverters `INV1`/`INV3`;
 3. a **keeper** to make storage static -- inverter `INV2` feeding back through a second
    transmission gate `TG2` clocked in antiphase to `TG1`;
-4. the **output AND** -- in static CMOS, a NAND followed by an inverter;
+4. the **output AND** -- in static CMOS (complementary metal-oxide-semiconductor), a NAND followed by an inverter;
 5. a **local clock inverter** `INV0` to generate `CLKB` inside the cell.
 
 ```ascii-graph
@@ -319,7 +319,7 @@ through the low phase. See 2.12 for precise STA semantics.
 ```
 
 Section 2.5 unpacks these two views (hard requirement vs. margin policy); Section 2.12
-covers how CTS placement of the ICG tightens or relaxes this path.
+covers how CTS (clock tree synthesis) placement of the ICG tightens or relaxes this path.
 
 #### 2.3.5 Failure modes if mis-designed
 
@@ -832,7 +832,7 @@ The fitted exponent:
   be derived from the gradual-channel approximation)
 - $\alpha = 1.0$-$1.4$ for short-channel devices (carrier velocity saturates, so current
   grows less than quadratically with gate drive)
-- $\alpha \approx 1.3$ is typical for modern FinFET
+- $\alpha \approx 1.3$ is typical for modern FinFET (fin field-effect transistor)
 
 Fitted range: the model holds in super-threshold operation, roughly $V_{DD} \gtrsim V_{th}
 + 0.15\,$V. Near and below threshold the conduction mechanism changes to exponential
@@ -988,7 +988,7 @@ subject of the next four subsections.
 
 The loop has three pieces: **monitors** (PMU performance counters, temperature and current
 sensors) that measure demand, a **decision agent** (an OS governor such as Linux `cpufreq`,
-firmware, or dedicated hardware) that picks the target OPP, and **actuators** -- the PMIC
+firmware, or dedicated hardware) that picks the target OPP, and **actuators** -- the PMIC (power management integrated circuit)
 that moves the voltage and the PLL/divider that moves the frequency.
 
 **Voltage-frequency change sequence (CRITICAL for interviews).** The chip must satisfy
@@ -1014,7 +1014,7 @@ Decreasing performance (scaling DOWN):
   failure: timing violations at the new lower voltage.
 ```
 
-**Total transition time:** 20-100 us depending on PMIC speed and PLL architecture. During
+**Total transition time:** 20-100 us depending on PMIC speed and PLL (phase-locked loop) architecture. During
 the transition the processor keeps running -- correct at every point, merely at a
 non-optimal operating point. With the *mechanism* clear, the remaining question is
 *policy*: when should the controller move, and to which OPP?
@@ -1097,7 +1097,7 @@ delivers the voltages: domain partitioning, then the regulators themselves.
 
 One global (V, f) setting wastes power the moment different blocks want different
 operating points -- a GPU rendering flat-out should not drag an idle CPU cluster up to its
-voltage. Modern SoCs therefore split the chip into independent voltage/frequency domains:
+voltage. Modern SoCs (systems-on-chip) therefore split the chip into independent voltage/frequency domains:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -1116,11 +1116,11 @@ flowchart TB
     class NoC n
 ```
 
-Each domain has an independent PMIC rail (or LDO), an independent PLL/divider,
+Each domain has an independent PMIC rail (or LDO (low-dropout regulator)), an independent PLL/divider,
 **level shifters** at the domain boundaries (a logic high launched at 0.65 V cannot
 reliably drive a receiver powered at 0.90 V -- the circuit is covered with voltage islands
 in Section 8.3), and a handshake protocol for cross-domain communication (with unrelated
-clocks the crossing is a full CDC problem, see
+clocks the crossing is a full CDC (clock domain crossing) problem, see
 [Async Design and CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)).
 
 How finely a chip can be carved into domains is limited by the regulator hardware that has
@@ -1153,7 +1153,7 @@ $$\eta_{LDO} = \frac{V_{out} \cdot I}{V_{in} \cdot I} = \frac{V_{out}}{V_{in}}$$
 -- no design cleverness changes this; it is conservation of energy with the same current
 in and out. Reading: dropping 0.85 V from a 0.90 V input is 94% efficient; dropping to
 0.55 V is 61%. Linear regulation is therefore attractive only when the drop is small,
-which is why DLVR designs include a bypass ("power gate") mode that shorts input to output
+which is why DLVR (digital linear voltage regulator) designs include a bypass ("power gate") mode that shorts input to output
 when the domain wants full rail voltage.
 
 Product examples worth citing:
@@ -1161,8 +1161,8 @@ Product examples worth citing:
 - **Intel DLVR (Core Ultra 200S "Arrow Lake"):** each P-core, each E-core cluster, and
   the ring has its own digital linear regulator fed from the shared VccIA input rail. The
   DLVR drops each domain to just-enough voltage.
-- **AMD Zen families:** per-core digital LDOs + per-core DFS, driven by on-die speed/power
-  sensors (AMD calls the closed-loop system AVFS -- Section 3.12).
+- **AMD Zen families:** per-core digital LDOs + per-core DFS (dynamic frequency scaling), driven by on-die speed/power
+  sensors (AMD calls the closed-loop system AVFS (adaptive voltage and frequency scaling) -- Section 3.12).
 
 ### 3.11 Voltage Regulator Response Time and the DVFS Break-Even Interval
 
@@ -1225,7 +1225,7 @@ AVFS: fully closed-loop V AND f management with distributed on-die sensors
 cache burst) demands a sudden change in supply current, and the package/PDN inductance
 converts it into a voltage droop, $\Delta V = L \cdot di/dt$, where $L$ is the effective
 package + power-delivery loop inductance (nH-scale) and $di/dt$ the load-current slew
-(A/ns-scale). The "first droop" resonance of the PDN sits at ~50-300 MHz, so the rail dips
+(A/ns-scale). The "first droop" resonance of the PDN (power delivery network) sits at ~50-300 MHz, so the rail dips
 within NANOSECONDS. No regulator (microseconds, Section 3.11) or firmware loop
 (milliseconds, Section 3.7) can react in time.
 
@@ -1434,9 +1434,9 @@ rail is switched stops being a clean reference for the logic inside.
 | ESD | standard protection paths preserved | can cause issues with ESD protection paths |
 | Power-up speed | slower for the same area | faster (lower resistance for same size) |
 
-**Industry practice:** header switches are more common in ASIC designs -- a clean common
+**Industry practice:** header switches are more common in ASIC (application-specific integrated circuit) designs -- a clean common
 ground for the whole chip is worth the extra switch area. Footer switches are sometimes
-used in SRAM arrays (where the regular structure helps manage ground bounce).
+used in SRAM (static random-access memory) arrays (where the regular structure helps manage ground bounce).
 
 ### 4.3 Switch Sizing
 
@@ -1567,7 +1567,7 @@ moment. A common refinement puts a **weak "trickle" switch** in the first stage(
 rail creeps up slowly, then engages the strong main switches once VVDD is nearly charged
 (Section 4.10's mother/daughter cells).
 
-**Implementation in UPF** (power intent is Tcl-based -- full treatment in
+**Implementation in UPF (Unified Power Format)** (power intent is Tcl-based -- full treatment in
 [UPF](04_UPF_Power_Intent.md)):
 
 ```tcl
@@ -1992,7 +1992,7 @@ RING style:                          COLUMN/GRID style:
 missing isolation on a domain output, isolation cell powered by the wrong
 (switched!) supply, level shifter wrong direction, retention supply hookup
 errors, control signals (save/restore/iso_en) sourced FROM the domain they
-control, AON buffer placed on the switched rail.
+control, AON (always-on) buffer placed on the switched rail.
 
 **Power-aware simulation (UPF-driven):** simulator corrupts all domain
 state to X on power-down; checks isolation clamps actually hold values,
@@ -2071,8 +2071,8 @@ day-to-day power task in physical design (Section 5.9).
 
 This section builds the physics first (why the exponential, 5.1), then the library
 landscape (5.2), the optimization algorithms and flow (5.3-5.4), quantified savings
-(5.5-5.6), the trade against cell sizing (5.7), what changed at GAA nodes (5.8), and the
-production leakage-recovery ECO loop (5.9).
+(5.5-5.6), the trade against cell sizing (5.7), what changed at GAA (gate-all-around) nodes (5.8), and the
+production leakage-recovery ECO (engineering change order) loop (5.9).
 
 ### 5.1 Threshold Voltage and Why Leakage Is Exponential in It
 
@@ -2495,7 +2495,7 @@ achieve the same effective-work-function shift in sub-nanometer films.
   effectively a *continuous* drive-strength axis alongside the discrete Vt axis, blurring
   the Section 5.7 dichotomy.
 - Practical implications you can cite:
-  - Early PDKs at a new node offer FEWER Vt/channel-length combos; leakage recovery has
+  - Early PDKs (process design kits) at a new node offer FEWER Vt/channel-length combos; leakage recovery has
     less room -> activity reduction and architecture-level techniques matter relatively
     more at bring-up.
   - Vt is now a GATE-STACK property: Vt mistracking between flavors across process
@@ -2537,7 +2537,7 @@ weaker drive degrades output transitions.
 Guardrails (the part interviewers push on):
 
 - **Keep a slack cushion:** a swap that lands a path at exactly 0 ps slack will fail
-  later under OCV/aging updates -- chips age (BTI, bias temperature instability, raises
+  later under OCV (on-chip variation)/aging updates -- chips age (BTI, bias temperature instability, raises
   $V_{th}$ over the lifetime, slowing exactly the high-Vt cells you just swapped in), so
   end-of-life timing must still close.
 - **Respect global mix constraints** (e.g., max 10-15% LVT) and per-corner leakage
@@ -2929,12 +2929,12 @@ flag to recover the data.
   binary counter toggles ~2 bits per increment, so Gray halves the average and crushes
   the worst case).
 - Counter power reduction: significant for wide counters.
-- Used in FIFO pointers, address generators -- with the happy coincidence that
+- Used in FIFO (first-in, first-out) pointers, address generators -- with the happy coincidence that
   asynchronous-FIFO pointers must be Gray-coded *anyway* for safe clock-domain crossing
   (only one changing bit means a synchronizer can never capture an inconsistent
   multi-bit state), so the power benefit comes free.
 
-Sequential addresses (instruction fetch, DMA bursts) are where address-bus Gray/encoding
+Sequential addresses (instruction fetch, DMA (direct memory access) bursts) are where address-bus Gray/encoding
 pays; for genuinely random access patterns Gray offers no average advantage -- encoding
 choices must follow the actual traffic statistics.
 
@@ -3097,7 +3097,7 @@ live -- the interactions below are what actually bite in production.
 - **DVFS x power gating:** the retention voltage is a hard floor for any rail feeding
   retention flops or retentive SRAM (Sections 4.7, 4.12); and OPP transitions must not
   overlap a domain's wake (rush current stacking on top of a rail transition).
-- **Clock gating x DFT:** scan shift must bypass all functional gating (the ICG's
+- **Clock gating x DFT (design-for-test):** scan shift must bypass all functional gating (the ICG's
   scan-enable OR input, Section 2.10) -- while at-speed power-aware test *wants* realistic
   gating to avoid vastly over-stressing the grid versus mission mode.
 - **Clock gating x CTS:** ICG depth in the tree trades enable timing against gated

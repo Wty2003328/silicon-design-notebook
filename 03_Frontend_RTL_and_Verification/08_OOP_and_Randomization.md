@@ -283,7 +283,7 @@ end
 
 **Key insight:** Without `virtual`, SystemVerilog uses the HANDLE type to determine which
 function to call (compile-time/static dispatch). With `virtual`, it uses the OBJECT type
-(run-time/dynamic dispatch). This is fundamental to UVM where base class handles store
+(run-time/dynamic dispatch). This is fundamental to UVM (Universal Verification Methodology) where base class handles store
 derived class objects.
 
 ### Practical Polymorphism in Verification

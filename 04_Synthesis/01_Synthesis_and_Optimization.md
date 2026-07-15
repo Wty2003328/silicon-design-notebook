@@ -1,6 +1,6 @@
 # Logic Synthesis and Optimization -- Senior Engineer Deep Dive
 
-> Target audience: Engineers preparing for senior-level IC design interviews at
+> Target audience: Engineers preparing for senior-level IC (integrated circuit) design interviews at
 > Apple, NVIDIA, AMD, Intel, Qualcomm, Broadcom, MediaTek, etc.
 
 ---
@@ -181,9 +181,9 @@ write_design -innovus -basename output/top
 
 ## 2. SDC Constraints — moved to Constraints_SDC
 
-Synthesis is driven by the same SDC that later drives STA and P&R. The full command-by-command
+Synthesis is driven by the same SDC (Synopsys Design Constraints) that later drives STA (static timing analysis) and P&R (place and route). The full command-by-command
 reference (create_clock / generated clocks / uncertainty / latency / clock groups, I/O delays,
-false path / multicycle / max-min delay / case analysis, DRV constraints, and a complete
+false path / multicycle / max-min delay / case analysis, DRV (design rule violation) constraints, and a complete
 3-clock-domain worked SDC) now lives in [Constraints_SDC](02_Constraints_SDC.md).
 
 - Signoff-side walkthrough of a realistic block's SDC: [STA](../06_Signoff/01_STA.md) §10.
@@ -224,7 +224,7 @@ compile_ultra -ungroup_all
 
 **When NOT to ungroup:**
 - Large modules (makes optimization intractable)
-- Modules you want to preserve for ECO or debug
+- Modules you want to preserve for ECO (engineering change order) or debug
 - Hard macros (memories, IPs)
 
 ### 3.2 Boundary Optimization
@@ -629,7 +629,7 @@ Standard cell naming conventions:
 
 ### 4.3 Mapping Algorithms -- Deep Dive
 
-**DAG Covering (FlowMap Algorithm):**
+**DAG (directed acyclic graph) Covering (FlowMap Algorithm):**
 
 ```verilog
   Subject graph (Boolean network) is a DAG of 2-input gates.
@@ -1074,7 +1074,7 @@ set_dont_touch [get_cells debug_logic/*]
   so gated_clk rises cleanly with CLK.
 ```
 
-**RTL coding for clock gating inference:**
+**RTL (register-transfer level) coding for clock gating inference:**
 
 ```verilog
 // GOOD: Tool infers clock gating
@@ -1169,7 +1169,7 @@ report_power -hierarchy -verbose
 #    periph             3.8 mW   3.4 mW   0.2 mW   7.4 mW
 ```
 
-**Without SAIF:** Tool assumes default toggle rate (typically 0.1 or 10%)
+**Without SAIF (Switching Activity Interchange Format):** Tool assumes default toggle rate (typically 0.1 or 10%)
 for all signals -- very inaccurate. **With SAIF:** Actual toggle rates from
 realistic simulation -- much more accurate power optimization targeting.
 
@@ -1259,7 +1259,7 @@ realistic simulation -- much more accurate power optimization targeting.
 - Often faster runtime, especially for large designs (> 5M instances)
 - Three-step compile gives more control over optimization phases
 - Native integration with Innovus P&R (Cadence full flow)
-- Competitive or better QoR at advanced nodes (7nm, 5nm, 3nm)
+- Competitive or better QoR (quality of results) at advanced nodes (7nm, 5nm, 3nm)
 - Growing adoption at major semiconductor companies
 
 **Reality:** Many companies license BOTH tools and benchmark regularly.

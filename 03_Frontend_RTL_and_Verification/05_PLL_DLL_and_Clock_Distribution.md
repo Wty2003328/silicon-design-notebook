@@ -68,11 +68,11 @@ module pfd (
 endmodule
 ```
 
-**Dead zone problem:** When the phase difference between f_ref and f_fb is very small, both UP and DOWN pulses become very narrow. If the pulse width is shorter than the switching time of the charge pump transistors, the charge pump cannot respond — the PFD is effectively "blind" in this region. This dead zone limits the minimum phase error the PLL can correct, creating a flat region in the PFD characteristic curve that increases output jitter.
+**Dead zone problem:** When the phase difference between f_ref and f_fb is very small, both UP and DOWN pulses become very narrow. If the pulse width is shorter than the switching time of the charge pump transistors, the charge pump cannot respond — the PFD is effectively "blind" in this region. This dead zone limits the minimum phase error the PLL (phase-locked loop) can correct, creating a flat region in the PFD characteristic curve that increases output jitter.
 
 **Dead zone solutions:**
 1. **Add a minimum pulse width:** Insert a delay in the reset path so that UP and DOWN are always active for at least T_min, even when the phase error is near zero. Both UP and DOWN are active simultaneously for T_min, and their currents cancel.
-2. **Use a bang-bang PFD:** A 1-bit PFD that outputs only +1 or -1 (no proportional information), commonly used in CDR circuits. Eliminates dead zone but has quantization noise.
+2. **Use a bang-bang PFD:** A 1-bit PFD that outputs only +1 or -1 (no proportional information), commonly used in CDR (clock-data recovery) circuits. Eliminates dead zone but has quantization noise.
 
 ### Charge Pump
 
@@ -94,7 +94,7 @@ The charge pump converts the PFD's UP/DOWN pulses into a current that charges or
             GND
 ```
 
-**Charge pump mismatch:** Ideally I_up = I_dn. In practice, PMOS and NMOS current sources have different characteristics:
+**Charge pump mismatch:** Ideally I_up = I_dn. In practice, PMOS (p-channel MOS) and NMOS (n-channel MOS) current sources have different characteristics:
 
 **Mismatch sources:**
    1. Process variation: PMOS and NMOS have different threshold voltages
@@ -103,7 +103,7 @@ The charge pump converts the PFD's UP/DOWN pulses into a current that charges or
 4. Clock feedthrough: switching transients couple through gate-drain capacitance
 
 Consequence: net charge injected per reference cycle is nonzero even when locked.
-If I_up > I_dn: positive charge accumulates → VCO control voltage drifts up
+If I_up > I_dn: positive charge accumulates → VCO (voltage-controlled oscillator) control voltage drifts up
 The PFD compensates by adjusting the phase offset until average charge = 0
 This creates a static phase offset between ref and fb
 The periodic charge injection at f_ref creates REFERENCE SPURS at f_out ± k*f_ref
@@ -180,10 +180,10 @@ Tuning: adjust inverter delay by changing supply voltage (current-starved)
 - Area: small (just inverters)
 - Power: moderate
 - Frequency range: wide tuning range (easy to cover 2:1 ratio)
-- Integration: fully digital-compatible, easy to integrate in SoC
-- Used in: digital PLLs, general-purpose SoC clocking, USB, PCIe (with extra jitter cleaning)
+- Integration: fully digital-compatible, easy to integrate in SoC (system-on-chip)
+- Used in: digital PLLs, general-purpose SoC clocking, USB, PCIe (Peripheral Component Interconnect Express) (with extra jitter cleaning)
 
-**LC oscillator (analog PLL):**
+**LC (inductor-capacitor) oscillator (analog PLL):**
 
 ```verilog
 Uses an inductor (L) and capacitor (C) tank circuit:
@@ -199,7 +199,7 @@ Tuning: use varactors (voltage-variable capacitors) to change C
 - Power: moderate to high
 - Frequency range: narrow tuning range (typically 10-20%)
 - Integration: requires analog design expertise, inductor modeling
-- Used in: RF PLLs (wireless, SerDes), high-performance clock generation
+- Used in: RF (radio-frequency) PLLs (wireless, SerDes (serializer/deserializer)), high-performance clock generation
 
 **Kvco (VCO gain):**
 
@@ -319,7 +319,7 @@ Measured in dBc/Hz at a given offset from the carrier.
 
 **Relationship to jitter:**
    - J_rms = (1 / (2π * f_out)) * sqrt(2 * integral(L(f) * df, f_low, f_high))
-   - Where L(f) is the single-sideband phase noise PSD
+   - Where L(f) is the single-sideband phase noise PSD (power spectral density)
 
 ### PLL Bandwidth Considerations
 
@@ -514,7 +514,7 @@ A modern SoC has multiple clock domains, each with its own PLL or clock generato
 
 **Key considerations:**
 1. Each PLL is independently controllable for DVFS (CPU may run at 2 GHz while GPU is at 800 MHz)
-2. CDC bridges (FIFO-based or handshake-based) at every domain boundary
+2. CDC bridges (FIFO-based (first-in, first-out) or handshake-based) at every domain boundary
 3. Always-on domain (crystal/ring osc) for power management controller
 4. Clock gating within each domain for fine-grained power control
 
@@ -530,13 +530,13 @@ propagates through many levels of buffers
 
 2. Low insertion delay: optimized transistor sizing for fast edge propagation
 
-3. High drive strength: clock nets have large fanout (thousands of FFs)
+3. High drive strength: clock nets have large fanout (thousands of FFs (flip-flops))
 
 4. Special characterization: timing libraries have detailed models
 for clock buffers including pulse-width-dependent delay
 
 5. Low power: some clock buffers use smaller transistors with
-special threshold voltage (HVT for reduced leakage)
+special threshold voltage (HVT (high threshold voltage) for reduced leakage)
 
 **Clock inverters vs clock buffers:**
 
@@ -557,7 +557,7 @@ Clock buffers: CLK → BUF → BUF → ... → leaf
 
 **Why clock paths get special OCV treatment:**
 
-In STA, OCV (on-chip variation) accounts for the fact that different parts of the chip may operate at slightly different speeds due to local process/voltage/temperature variations. For data paths, OCV is applied by derating the launch and capture clock paths differently:
+In STA (static timing analysis), OCV (on-chip variation) accounts for the fact that different parts of the chip may operate at slightly different speeds due to local process/voltage/temperature variations. For data paths, OCV is applied by derating the launch and capture clock paths differently:
 
 **Normal OCV application:**
    - Launch clock path: derated "slow" (worst case for setup)

@@ -24,9 +24,9 @@ gated -- if idle power is high, it's leakage (corner/temperature/Vt-mix issue), 
 activity. (2) If dynamic: compare assumed vs real activity -- read activity counters
 during the failing workload; the most common cause is an activity assumption (e.g.,
 40% utilization assumed, 75% real, or clock gating not engaging due to a software/
-driver setting). (3) Check voltage: is AVS delivering the assumed voltage or running
-the guardbanded default? (4) Check glitch: if signoff used zero-delay RTL activity,
-datapath glitch power was underestimated -- compare against SDF gate-level on a window.
+driver setting). (3) Check voltage: is AVS (adaptive voltage scaling) delivering the assumed voltage or running
+the guardbanded default? (4) Check glitch: if signoff used zero-delay RTL (register-transfer level) activity,
+datapath glitch power was underestimated -- compare against SDF (standard delay format) gate-level on a window.
 (5) Only then suspect extraction/library model errors.
 
 ### Q3: "Why can't RTL simulation activity be trusted for peak-power signoff?"
@@ -41,10 +41,10 @@ realistic peaks + synthetic power-virus vectors for the electrical worst case.
 ### Q4: "Design a mechanism for the OS to know each core's power consumption in real time."
 
 **A:** Per-core digital power meter: select 5-10 microarchitectural events that
-correlate with power (instructions issued by class, cache accesses, FP width usage,
+correlate with power (instructions issued by class, cache accesses, FP (floating-point) width usage,
 clock-enabled cycles), compute a weighted sum per window in hardware, weights
 characterized against measured power per V/f point, accumulate into an energy counter
-(this is the RAPL-style model). Expose via MSR/registers. Calibrate periodically
+(this is the RAPL-style (Running Average Power Limit) model). Expose via MSR/registers. Calibrate periodically
 against rail telemetry. Discuss error sources: workload-dependent residual (~3-5%),
 temperature effect on leakage (add T-sensor term), and aliasing if the window is too
 long relative to workload phases.
@@ -75,7 +75,7 @@ droop monitor logs / repeat with adaptive clocking disabled in a lab build), rus
 current on a power-domain wake collapsing a shared rail, current-limit (EDC) throttle
 misconfiguration, or a workload-correlated thermal hotspot (sensor grid too sparse to
 catch it). The instinct "power problem = average power" is exactly what this question
-screens out; the reaction-time hierarchy (ns droop / us rail / ms DVFS / s thermal)
+screens out; the reaction-time hierarchy (ns droop / us rail / ms DVFS (dynamic voltage and frequency scaling) / s thermal)
 gives the structured answer.
 
 ### Q8: "How do activity counters enable better DVFS than utilization alone?"
@@ -86,7 +86,7 @@ performance loss (performance is bandwidth-limited), saving V^2*f power. A
 compute-bound phase shows the opposite, wanting max frequency. Modern governors
 (hardware P-state / firmware) classify phases from counters and pick operating points;
 the same logic at cluster scale drops accelerator clocks during communication phases of
-training, or during memory-bound decode in LLM inference serving.
+training, or during memory-bound decode in LLM (large language model) inference serving.
 
 ### Q9: "A block is idle. Should it sleep? Walk me through the decision."
 
@@ -96,7 +96,7 @@ latency `T_tr` when wake power isn't inflated. Sleep only if the *expected* idle
 exceeds `T_be` -- below it you burn more wake-up energy than you save. Since you don't
 know the idle length, a policy predicts it: a timeout (sleep after idle >= T_be; safe,
 2-competitive per Karlin, but wastes the timeout window), a predictive governor (guess
-from history, sleep immediately, risk over/under-prediction), or a stochastic MDP policy
+from history, sleep immediately, risk over/under-prediction), or a stochastic MDP (Markov decision process) policy
 (optimal for a modeled workload). Deeper states have larger T_be, so they need longer
 idle gaps -- exactly what the Linux cpuidle menu/TEO governor does picking C-states.
 
@@ -105,10 +105,10 @@ idle gaps -- exactly what the Linux cpuidle menu/TEO governor does picking C-sta
 **A:** Real workloads are idle-dominated -- most wall-clock time is spent between frames,
 requests, or training steps, so total energy is dominated by idle residency and
 transition costs, not the active peak. A peak (or even average-active) model ignores the
-majority of the energy. The replacement is DPM modeling: a power state machine per block,
+majority of the energy. The replacement is DPM (dynamic power management) modeling: a power state machine per block,
 energy = `sum(residency_s * P_state,s) + sum(N_trans * E_trans)`, with a governor that
 maximizes deep-state residency for idle gaps above break-even. On a CPU this is C-states +
-package C-states driven by the PCU; on an NPU it's per-tile clock/power gating scheduled
+package C-states driven by the PCU (power control unit); on an NPU (neural processing unit) it's per-tile clock/power gating scheduled
 by the dataflow. You size cooling to peak, but you size *battery life* to this integral.
 
 ---
@@ -119,7 +119,7 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ### Q1: Derive P = alpha * C * V^2 * f from first principles.
 
-**A:** Consider a node with load capacitance C. During a 0->1 transition, charge Q = CV flows from VDD through the PMOS to charge C. Energy from VDD = Q * VDD = CV^2. Of this, (1/2)CV^2 is stored in C, and (1/2)CV^2 is dissipated in the PMOS channel. During 1->0, the stored (1/2)CV^2 is dissipated in the NMOS. Total energy per full cycle = CV^2, all dissipated as heat. With switching activity alpha (probability of 0->1 per clock) and clock frequency f, power = alpha * C * V^2 * f. This is exact regardless of transistor sizes (energy loss is intrinsic to charging a capacitor through a resistor).
+**A:** Consider a node with load capacitance C. During a 0->1 transition, charge Q = CV flows from VDD through the PMOS (p-channel MOS transistor) to charge C. Energy from VDD = Q * VDD = CV^2. Of this, (1/2)CV^2 is stored in C, and (1/2)CV^2 is dissipated in the PMOS channel. During 1->0, the stored (1/2)CV^2 is dissipated in the NMOS (n-channel MOS transistor). Total energy per full cycle = CV^2, all dissipated as heat. With switching activity alpha (probability of 0->1 per clock) and clock frequency f, power = alpha * C * V^2 * f. This is exact regardless of transistor sizes (energy loss is intrinsic to charging a capacitor through a resistor).
 
 ### Q2: Why does leakage increase exponentially with temperature? Quantify it.
 
@@ -127,7 +127,7 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ### Q3: Explain the difference between clock gating and power gating. When do you use each?
 
-**A:** Clock gating stops the clock to idle blocks, eliminating switching power (dynamic) but leaving supply connected (leakage unchanged). It's lightweight: single ICG cell, ~1 cycle enable latency, no isolation or retention needed. Use for blocks that idle frequently for short periods (tens of cycles). Power gating disconnects VDD entirely, eliminating BOTH dynamic and leakage power. It requires header/footer switches, isolation cells, retention registers, and a power-on sequence (microseconds of latency). Use for blocks that idle for long periods (milliseconds+) where leakage savings justify the overhead. In a mobile SoC, both are used: clock gating for fine-grain (register-level) and power gating for coarse-grain (block-level).
+**A:** Clock gating stops the clock to idle blocks, eliminating switching power (dynamic) but leaving supply connected (leakage unchanged). It's lightweight: single ICG (integrated clock gating) cell, ~1 cycle enable latency, no isolation or retention needed. Use for blocks that idle frequently for short periods (tens of cycles). Power gating disconnects VDD entirely, eliminating BOTH dynamic and leakage power. It requires header/footer switches, isolation cells, retention registers, and a power-on sequence (microseconds of latency). Use for blocks that idle for long periods (milliseconds+) where leakage savings justify the overhead. In a mobile SoC (system-on-chip), both are used: clock gating for fine-grain (register-level) and power gating for coarse-grain (block-level).
 
 ### Q4: Size a header switch for a 2mm^2 domain with 200mA peak current.
 
@@ -139,19 +139,19 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ### Q6: What is GIDL and when does it matter?
 
-**A:** GIDL (Gate-Induced Drain Leakage) occurs when the gate is at 0V and drain is at VDD, creating a strong electric field at the gate-drain overlap region. This field causes band-to-band tunneling -- electrons tunnel from the valence band to the conduction band, generating electron-hole pairs. GIDL matters in: (1) DRAM, where it discharges the storage capacitor (reduces retention time); (2) FinFET devices with thin gate oxide and wrap-around gate (larger overlap area); (3) power-gated domains where header switches have high Vds when the domain is off. GIDL is typically 5-10% of total leakage but can be significant at low temperatures (where sub-threshold leakage drops but GIDL stays roughly constant).
+**A:** GIDL (Gate-Induced Drain Leakage) occurs when the gate is at 0V and drain is at VDD, creating a strong electric field at the gate-drain overlap region. This field causes band-to-band tunneling -- electrons tunnel from the valence band to the conduction band, generating electron-hole pairs. GIDL matters in: (1) DRAM (dynamic random-access memory), where it discharges the storage capacitor (reduces retention time); (2) FinFET (fin field-effect transistor) devices with thin gate oxide and wrap-around gate (larger overlap area); (3) power-gated domains where header switches have high Vds when the domain is off. GIDL is typically 5-10% of total leakage but can be significant at low temperatures (where sub-threshold leakage drops but GIDL stays roughly constant).
 
 ### Q7: Describe the complete power-up sequence for a power-gated domain. Why does ordering matter?
 
-**A:** The sequence is: (1) Deassert SLEEP (enable header switches, daisy-chain for rush current control); (2) Wait for virtual VDD to stabilize (monitor ramp or use fixed delay); (3) Assert RESET to all FFs in the domain; (4) Deassert RESET synchronously (to avoid recovery/removal violations); (5) Deassert ISOLATION (outputs now driven by live logic); (6) Assert RESTORE (retention FFs recover saved state); (7) Deassert RESTORE; (8) Resume operation. Ordering is critical: if ISOLATION is deasserted before power is stable, the domain outputs are floating/garbage and corrupt the always-on domain. If RESTORE happens before RESET, the reset overwrites the restored values. If RESET is deasserted asynchronously, FFs may violate recovery/removal timing.
+**A:** The sequence is: (1) Deassert SLEEP (enable header switches, daisy-chain for rush current control); (2) Wait for virtual VDD to stabilize (monitor ramp or use fixed delay); (3) Assert RESET to all FFs (flip-flops) in the domain; (4) Deassert RESET synchronously (to avoid recovery/removal violations); (5) Deassert ISOLATION (outputs now driven by live logic); (6) Assert RESTORE (retention FFs recover saved state); (7) Deassert RESTORE; (8) Resume operation. Ordering is critical: if ISOLATION is deasserted before power is stable, the domain outputs are floating/garbage and corrupt the always-on domain. If RESTORE happens before RESET, the reset overwrites the restored values. If RESET is deasserted asynchronously, FFs may violate recovery/removal timing.
 
 ### Q8: What is UPF and how does it differ from RTL?
 
-**A:** UPF (Unified Power Format, IEEE 1801) is a separate TCL-based specification that defines power intent: power domains, supply networks, power states, isolation, retention, level shifters, and power switches. RTL describes function; UPF describes how power is managed. RTL cannot express concepts like "this block can be powered off" or "these outputs need isolation when the domain is off." UPF is read by synthesis tools (to insert special cells), simulation tools (to model power-down behavior), and P&R tools (to physically implement the power architecture). Without UPF, the tools would not know which cells need always-on supply, where to place header switches, or which outputs to isolate.
+**A:** UPF (Unified Power Format, IEEE 1801) is a separate TCL-based specification that defines power intent: power domains, supply networks, power states, isolation, retention, level shifters, and power switches. RTL describes function; UPF describes how power is managed. RTL cannot express concepts like "this block can be powered off" or "these outputs need isolation when the domain is off." UPF is read by synthesis tools (to insert special cells), simulation tools (to model power-down behavior), and P&R (place and route) tools (to physically implement the power architecture). Without UPF, the tools would not know which cells need always-on supply, where to place header switches, or which outputs to isolate.
 
 ### Q9: Compare leakage reduction techniques: multi-Vt, power gating, and body biasing.
 
-**A:** Multi-Vt: assigns HVT to non-critical paths (5-10x leakage reduction per cell, no area overhead, works always, standard flow). Power gating: turns off entire domains (nearly 100% leakage elimination when off, but requires isolation/retention/switches, only works for long idle periods). Body biasing: applies reverse body bias to increase Vth in idle mode (5-20x reduction, requires bias generators and distribution network, less effective in FinFET). Best practice: use multi-Vt always (baseline), add power gating for large blocks with long idle periods, use body biasing for fine-grain control in planar CMOS. In modern FinFET designs, multi-Vt + power gating is the dominant combination.
+**A:** Multi-Vt: assigns HVT (high threshold voltage) to non-critical paths (5-10x leakage reduction per cell, no area overhead, works always, standard flow). Power gating: turns off entire domains (nearly 100% leakage elimination when off, but requires isolation/retention/switches, only works for long idle periods). Body biasing: applies reverse body bias to increase Vth in idle mode (5-20x reduction, requires bias generators and distribution network, less effective in FinFET). Best practice: use multi-Vt always (baseline), add power gating for large blocks with long idle periods, use body biasing for fine-grain control in planar CMOS (complementary metal-oxide-semiconductor). In modern FinFET designs, multi-Vt + power gating is the dominant combination.
 
 ### Q10: How do you estimate the break-even time for power gating?
 
@@ -159,7 +159,7 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ### Q11: Explain IR drop and its impact on timing. How is it analyzed?
 
-**A:** IR drop is voltage reduction across the power distribution network (PDN) due to resistive losses. If VDD at a cell drops from 0.80V to 0.76V (50mV drop), the cell's delay increases because drive current is proportional to (VDD-Vth)^alpha. A 50mV drop at 0.8V could increase delay by 5-10%. Static IR drop uses average current; dynamic IR drop captures transient surges (e.g., at clock edges when thousands of FFs switch simultaneously). Dynamic IR drop can be 2-3x worse than static. Analysis tools (Voltus, RedHawk) take switching activity + PDN model and compute per-instance voltage, which is fed back to STA for timing derating. Worst-case dynamic IR drop determines if the PDN needs more straps, wider metals, or additional decoupling capacitance.
+**A:** IR drop is voltage reduction across the power distribution network (PDN) due to resistive losses. If VDD at a cell drops from 0.80V to 0.76V (50mV drop), the cell's delay increases because drive current is proportional to (VDD-Vth)^alpha. A 50mV drop at 0.8V could increase delay by 5-10%. Static IR drop uses average current; dynamic IR drop captures transient surges (e.g., at clock edges when thousands of FFs switch simultaneously). Dynamic IR drop can be 2-3x worse than static. Analysis tools (Voltus, RedHawk) take switching activity + PDN model and compute per-instance voltage, which is fed back to STA (static timing analysis) for timing derating. Worst-case dynamic IR drop determines if the PDN needs more straps, wider metals, or additional decoupling capacitance.
 
 ### Q12: What is the relationship between activity factor and different types of signals?
 
@@ -187,11 +187,11 @@ When valid=0, inputs are 0, and the multiplier internals don't toggle (0*0 = 0, 
 
 ### Q16: How does memory partitioning save power?
 
-**A:** A 64KB SRAM as one monolithic block draws full power on every access (all bitlines charge, all sense amps fire). Partitioned into 8 banks of 8KB: only the accessed bank is active (1/8 the bitline + sense amp power). Additional savings: shorter bitlines = lower capacitance per access, smaller decoders, banks in standby can be put in retention or shut down. Trade-off: bank selection logic adds a small amount of area and delay, and the total area increases slightly due to duplicated peripheral circuits. But for memories > 16KB, partitioning almost always wins. Advanced memory compilers offer configurable banking ratios.
+**A:** A 64KB SRAM (static random-access memory) as one monolithic block draws full power on every access (all bitlines charge, all sense amps fire). Partitioned into 8 banks of 8KB: only the accessed bank is active (1/8 the bitline + sense amp power). Additional savings: shorter bitlines = lower capacitance per access, smaller decoders, banks in standby can be put in retention or shut down. Trade-off: bank selection logic adds a small amount of area and delay, and the total area increases slightly due to duplicated peripheral circuits. But for memories > 16KB, partitioning almost always wins. Advanced memory compilers offer configurable banking ratios.
 
 ### Q17: What are the challenges of near-threshold computing?
 
-**A:** Operating at VDD near Vth (e.g., 0.4V with Vth = 0.35V): (1) Ion/Ioff ratio is very poor (~10-100x) making logic unreliable; (2) Process variation causes huge delay spread (Vth variation of +/-30mV at 3-sigma means some gates are super-threshold and others are sub-threshold simultaneously); (3) SRAM fails first (6T SRAM read/write margins collapse near Vth, need 8T or 10T cells); (4) Frequency drops to MHz range; (5) Leakage becomes comparable to dynamic power, so the energy advantage plateaus. Used in ultra-low-power applications (IoT sensors, biomedical) where throughput is not critical. Design requires wide timing margins, oversized transistors, and error-resilient architectures.
+**A:** Operating at VDD near Vth (e.g., 0.4V with Vth = 0.35V): (1) Ion/Ioff ratio is very poor (~10-100x) making logic unreliable; (2) Process variation causes huge delay spread (Vth variation of +/-30mV at 3-sigma means some gates are super-threshold and others are sub-threshold simultaneously); (3) SRAM fails first (6T SRAM read/write margins collapse near Vth, need 8T or 10T cells); (4) Frequency drops to MHz range; (5) Leakage becomes comparable to dynamic power, so the energy advantage plateaus. Used in ultra-low-power applications (IoT — Internet of Things — sensors, biomedical) where throughput is not critical. Design requires wide timing margins, oversized transistors, and error-resilient architectures.
 
 ### Q18: Explain the difference between static and dynamic IR drop. Which is worse?
 
@@ -199,7 +199,7 @@ When valid=0, inputs are 0, and the multiplier internals don't toggle (0*0 = 0, 
 
 ### Q19: How does leakage scale across technology nodes?
 
-**A:** Leakage per transistor increased dramatically from 180nm to 65nm due to: thinner gate oxide (more tunneling), shorter channels (worse DIBL), lower Vth (needed to maintain speed as VDD scaled). At 45nm, high-k/metal gate reduced gate leakage significantly. At 22nm, FinFET reduced sub-threshold leakage (better electrostatic control, n closer to 1.0, steeper SS). However, total chip leakage continued to grow because transistor count increased faster than per-transistor leakage decreased. At 7nm, total leakage is ~45-50% of total power for a high-performance design, making leakage management (multi-Vt, power gating) mandatory, not optional.
+**A:** Leakage per transistor increased dramatically from 180nm to 65nm due to: thinner gate oxide (more tunneling), shorter channels (worse DIBL (drain-induced barrier lowering)), lower Vth (needed to maintain speed as VDD scaled). At 45nm, high-k/metal gate reduced gate leakage significantly. At 22nm, FinFET reduced sub-threshold leakage (better electrostatic control, n closer to 1.0, steeper SS). However, total chip leakage continued to grow because transistor count increased faster than per-transistor leakage decreased. At 7nm, total leakage is ~45-50% of total power for a high-performance design, making leakage management (multi-Vt, power gating) mandatory, not optional.
 
 ### Q20: What power verification checks must pass before tapeout?
 
@@ -297,7 +297,7 @@ captured on watchdog reset.
 
 ### Q1: "Walk me through the complete power signoff flow for a tape-out."
 
-**A:** (1) Run gate-level power analysis with post-route extracted SPEF and representative workload SAIF/VCD. Tool: PrimeTime PX or Voltus. Verify average power meets budget per domain. (2) Run static IR drop analysis (Voltus/RedHawk). Verify < 5% Vdd drop at all points. Fix by widening stripes or adding vias where violations occur. (3) Run dynamic IR drop analysis with VCD-based current waveform. Verify < 10% Vdd peak drop. Fix by adding decap cells in hotspot areas. (4) Run EM analysis. Verify all wires meet Jmax for 10-year lifetime at 105C. Widen any violating wires. (5) Feed IR drop map back into STA for voltage-aware timing closure (iterate with ECO if timing fails). (6) Verify leakage at worst-case temperature corner (125C, fast process). (7) Verify thermal stability (no runaway). (8) Document all results and sign off.
+**A:** (1) Run gate-level power analysis with post-route extracted SPEF (standard parasitic exchange format) and representative workload SAIF/VCD. Tool: PrimeTime PX or Voltus. Verify average power meets budget per domain. (2) Run static IR drop analysis (Voltus/RedHawk). Verify < 5% Vdd drop at all points. Fix by widening stripes or adding vias where violations occur. (3) Run dynamic IR drop analysis with VCD-based current waveform. Verify < 10% Vdd peak drop. Fix by adding decap cells in hotspot areas. (4) Run EM analysis. Verify all wires meet Jmax for 10-year lifetime at 105C. Widen any violating wires. (5) Feed IR drop map back into STA for voltage-aware timing closure (iterate with ECO (engineering change order) if timing fails). (6) Verify leakage at worst-case temperature corner (125C, fast process). (7) Verify thermal stability (no runaway). (8) Document all results and sign off.
 
 ### Q2: "Your dynamic IR drop is 15% (above the 10% spec). What do you do?"
 
@@ -305,7 +305,7 @@ captured on watchdog reset.
 
 ### Q3: "Explain the difference between SAIF and VCD for power analysis. When do you use each?"
 
-**A:** SAIF captures aggregate statistics (toggle count, time at 0/1) -- compact file, suitable for average power analysis only. Cannot do time-based or peak power analysis. VCD captures every transition with timestamps -- huge files (10-100 GB), but enables time-based power waveforms and peak power identification. Use SAIF for: average power estimation, power budgeting, comparing design alternatives. Use VCD/FSDB for: IR drop analysis (need current waveforms), peak power analysis, power integrity studies, identifying which clock edge causes worst-case current.
+**A:** SAIF (switching activity interchange format) captures aggregate statistics (toggle count, time at 0/1) -- compact file, suitable for average power analysis only. Cannot do time-based or peak power analysis. VCD (value change dump) captures every transition with timestamps -- huge files (10-100 GB), but enables time-based power waveforms and peak power identification. Use SAIF for: average power estimation, power budgeting, comparing design alternatives. Use VCD/FSDB for: IR drop analysis (need current waveforms), peak power analysis, power integrity studies, identifying which clock edge causes worst-case current.
 
 ### Q4: "A design has 80% SAIF annotation coverage. Is this good enough for signoff?"
 
@@ -317,7 +317,7 @@ captured on watchdog reset.
 
 ### Q6: "What is electromigration and why is it worse at advanced nodes?"
 
-**A:** EM is metal atom displacement by electron wind. Governed by Black's equation: MTTF = A * J^(-n) * exp(Ea/kT). At advanced nodes: (1) wire cross-sections are smaller (thinner metal, narrower width), so current density J increases for the same total current. (2) Copper grain boundaries become a larger fraction of the wire volume (grain boundary EM is worse). (3) Barrier metals consume a larger percentage of the wire cross-section. (4) Some foundries are moving to alternative metals (cobalt, ruthenium) for the thinnest layers, which have different EM characteristics. Mitigation: wider power stripes, more parallel vias, redundant paths, backside power delivery (larger cross-section wires dedicated to power).
+**A:** EM is metal atom displacement by electron wind. Governed by Black's equation: MTTF (mean time to failure) = A * J^(-n) * exp(Ea/kT). At advanced nodes: (1) wire cross-sections are smaller (thinner metal, narrower width), so current density J increases for the same total current. (2) Copper grain boundaries become a larger fraction of the wire volume (grain boundary EM is worse). (3) Barrier metals consume a larger percentage of the wire cross-section. (4) Some foundries are moving to alternative metals (cobalt, ruthenium) for the thinnest layers, which have different EM characteristics. Mitigation: wider power stripes, more parallel vias, redundant paths, backside power delivery (larger cross-section wires dedicated to power).
 
 ### Q7: "Calculate the battery life for a device with 4000mAh battery, 3.7V nominal, and the SoC draws 200mW in light sleep and 1.5W during active use. Usage: 4h active, 20h sleep per day."
 
@@ -329,11 +329,11 @@ captured on watchdog reset.
 
 ### Q9: "How does backside power delivery improve IR drop?"
 
-**A:** Traditional front-side PDN shares the metal stack between power and signals. Top metals (M8/M9/M10) are thick and low-resistance but also carry signals. Backside PDN puts power rails on the wafer backside, accessible through nano-TSVs. Benefits: (1) Power rails can be thicker/wider since they don't compete for routing space -> lower resistance -> lower IR drop (30-50% improvement). (2) Front-side metal can be thinner (less parasitic cap on signals) -> lower dynamic power. (3) More signal routing resource -> less congestion -> shorter wires -> lower wire power. Intel PowerVia (demonstrated at Intel 20A/18A) was the first production implementation.
+**A:** Traditional front-side PDN shares the metal stack between power and signals. Top metals (M8/M9/M10) are thick and low-resistance but also carry signals. Backside PDN puts power rails on the wafer backside, accessible through nano-TSVs (nanoscale through-silicon vias). Benefits: (1) Power rails can be thicker/wider since they don't compete for routing space -> lower resistance -> lower IR drop (30-50% improvement). (2) Front-side metal can be thinner (less parasitic cap on signals) -> lower dynamic power. (3) More signal routing resource -> less congestion -> shorter wires -> lower wire power. Intel PowerVia (demonstrated at Intel 20A/18A) was the first production implementation.
 
 ### Q10: "Walk me through how you would debug a timing failure caused by IR drop."
 
-**A:** (1) Run voltage-aware STA: import IR drop map from Voltus/RedHawk into PrimeTime. (2) Identify failing paths. (3) For each failing path, check which cells see the worst IR drop. (4) If IR drop is localized: add power stripes or decap in that region, re-extract, re-run IR drop and STA. (5) If IR drop is distributed: check overall power grid adequacy -- may need to increase stripe density globally. (6) Check if the power analysis workload is representative -- maybe the VCD shows an unrealistic worst case. (7) If the path barely fails: consider upsizing critical cells (more drive current compensates for lower Vdd) or swapping to LVT. (8) If all else fails: reduce frequency for that operating point or increase voltage (sacrifice power for timing).
+**A:** (1) Run voltage-aware STA: import IR drop map from Voltus/RedHawk into PrimeTime. (2) Identify failing paths. (3) For each failing path, check which cells see the worst IR drop. (4) If IR drop is localized: add power stripes or decap in that region, re-extract, re-run IR drop and STA. (5) If IR drop is distributed: check overall power grid adequacy -- may need to increase stripe density globally. (6) Check if the power analysis workload is representative -- maybe the VCD shows an unrealistic worst case. (7) If the path barely fails: consider upsizing critical cells (more drive current compensates for lower Vdd) or swapping to LVT (low threshold voltage). (8) If all else fails: reduce frequency for that operating point or increase voltage (sacrifice power for timing).
 
 ### Q11: "What is the difference between peak power and average power? How do you analyze each?"
 
@@ -407,7 +407,7 @@ captured on watchdog reset.
 
 ### Q11: "How would you estimate the power of a block you haven't designed yet?"
 
-**A:** (1) Use a similar block from a previous project as a reference and scale by gate count, activity, Vdd, and frequency. (2) Use high-level estimation: P = alpha * N_gates * C_avg * Vdd^2 * f, where N_gates and C_avg come from synthesis estimates or published data. (3) For memory-dominated blocks, estimate memory macro power from datasheets and add logic power. (4) Industry rules of thumb: ARM Cortex-A class cores are ~100-300 mW/GHz at 7nm; DSP blocks are ~50-100 mW/GHz; always-on domains target < 1 mW.
+**A:** (1) Use a similar block from a previous project as a reference and scale by gate count, activity, Vdd, and frequency. (2) Use high-level estimation: P = alpha * N_gates * C_avg * Vdd^2 * f, where N_gates and C_avg come from synthesis estimates or published data. (3) For memory-dominated blocks, estimate memory macro power from datasheets and add logic power. (4) Industry rules of thumb: ARM Cortex-A class cores are ~100-300 mW/GHz at 7nm; DSP (digital signal processor) blocks are ~50-100 mW/GHz; always-on domains target < 1 mW.
 
 ### Q12: "What is the difference between average power and peak power? Why do both matter?"
 
@@ -474,7 +474,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q7: "Compare power gating header vs footer switches."
 
-**A:** Header (PMOS between Vdd and logic): cleaner ground for internal logic (no ground bounce), better noise margins for retention registers, larger area (PMOS is ~2x wider for same current). Footer (NMOS between logic and GND): smaller area (NMOS has higher mobility), but virtual ground bounces during switching causing noise on internal nodes. Industry standard: headers for most ASIC designs. Footers sometimes for SRAM arrays (regular structure, easier to manage ground bounce). For FinFET: the PMOS/NMOS mobility gap is smaller (both use undoped channel), so the area advantage of NMOS footer is reduced.
+**A:** Header (PMOS between Vdd and logic): cleaner ground for internal logic (no ground bounce), better noise margins for retention registers, larger area (PMOS is ~2x wider for same current). Footer (NMOS between logic and GND): smaller area (NMOS has higher mobility), but virtual ground bounces during switching causing noise on internal nodes. Industry standard: headers for most ASIC (application-specific integrated circuit) designs. Footers sometimes for SRAM arrays (regular structure, easier to manage ground bounce). For FinFET: the PMOS/NMOS mobility gap is smaller (both use undoped channel), so the area advantage of NMOS footer is reduced.
 
 ### Q8: "How does AVS save power compared to fixed DVFS?"
 
@@ -486,7 +486,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q10: "Explain operand isolation. Give an example where it saves significant power."
 
-**A:** Operand isolation freezes the inputs of a combinational block when its output is not needed, preventing useless toggling. Classic example: a CPU with an ALU and a multiplier behind a result MUX. When the instruction is ADD, the multiplier inputs should be frozen (AND-gated with the MUL select signal) to prevent the multiplier from burning dynamic power computing an unused result. For a 64-bit multiplier that consumes 15mW and is used only 20% of cycles: savings = 0.80 * 15 = 12 mW. Synthesis tools can do this automatically with pragmas or automatic operand isolation inference.
+**A:** Operand isolation freezes the inputs of a combinational block when its output is not needed, preventing useless toggling. Classic example: a CPU with an ALU (arithmetic logic unit) and a multiplier behind a result MUX. When the instruction is ADD, the multiplier inputs should be frozen (AND-gated with the MUL select signal) to prevent the multiplier from burning dynamic power computing an unused result. For a 64-bit multiplier that consumes 15mW and is used only 20% of cycles: savings = 0.80 * 15 = 12 mW. Synthesis tools can do this automatically with pragmas or automatic operand isolation inference.
 
 ### Q11: "What is the energy overhead of power-gating on/off transitions?"
 
@@ -530,7 +530,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q19: "Compare a board PMIC, an integrated buck (FIVR), and a digital LDO (DLVR) for per-core DVFS."
 
-**A:** Board PMIC: efficient (85-92%) but slow (10-100 us) and one rail feeds many cores -- voltage is set by the most demanding core. FIVR: on-die buck with package inductors, ~us transitions, per-domain rails, but inductor cost/area and conversion loss. DLVR (Intel Core Ultra: per P-core, per E-core cluster, per ring): a digital linear regulator -- nanosecond-class response and very fine granularity, but linear efficiency = Vout/Vin, so it only wins when shaving a small delta off the shared rail; a bypass mode shorts it when the core needs full voltage. The architectural point: per-core regulation converts the (V_shared - V_needed) gap on every idle/slow core into real power savings, which a single rail can never capture.
+**A:** Board PMIC (power management integrated circuit): efficient (85-92%) but slow (10-100 us) and one rail feeds many cores -- voltage is set by the most demanding core. FIVR: on-die buck with package inductors, ~us transitions, per-domain rails, but inductor cost/area and conversion loss. DLVR (Intel Core Ultra: per P-core, per E-core cluster, per ring): a digital linear regulator -- nanosecond-class response and very fine granularity, but linear efficiency = Vout/Vin, so it only wins when shaving a small delta off the shared rail; a bypass mode shorts it when the core needs full voltage. The architectural point: per-core regulation converts the (V_shared - V_needed) gap on every idle/slow core into real power savings, which a single rail can never capture.
 
 ### Q20: "A voltage droop event happens in 5 ns. Your firmware DVFS loop runs every millisecond. Reconcile."
 
@@ -542,11 +542,11 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q22: "Describe a leakage-recovery ECO and three ways it can go wrong."
 
-**A:** Post-route, swap positive-slack cells to higher-Vt footprint-compatible variants (PrimeTime fix_eco_power -> ICC2/Innovus ECO; or Innovus optPower -postRoute), iterating with incremental STA; typically 20-50% leakage reduction for free. Failure modes: (1) swapping to exactly-zero slack leaves nothing for OCV updates and aging -- BTI raises Vt over life, so end-of-life paths fail; (2) corner blindness -- a swap that closes at the nominal corner violates at the low-voltage corner where HVT delay blows up, or busts the high-temp leakage budget; (3) touching the wrong cells -- clock network cells (skew shift) or clock-gate enable paths (tight checks). Also watch max_transition: HVT variants have weaker drive, and a legal-timing swap can still create a slew violation downstream.
+**A:** Post-route, swap positive-slack cells to higher-Vt footprint-compatible variants (PrimeTime fix_eco_power -> ICC2/Innovus ECO; or Innovus optPower -postRoute), iterating with incremental STA; typically 20-50% leakage reduction for free. Failure modes: (1) swapping to exactly-zero slack leaves nothing for OCV (on-chip variation) updates and aging -- BTI (bias temperature instability) raises Vt over life, so end-of-life paths fail; (2) corner blindness -- a swap that closes at the nominal corner violates at the low-voltage corner where HVT delay blows up, or busts the high-temp leakage budget; (3) touching the wrong cells -- clock network cells (skew shift) or clock-gate enable paths (tight checks). Also watch max_transition: HVT variants have weaker drive, and a legal-timing swap can still create a slew violation downstream.
 
 ### Q23: "How are multiple Vt flavors built on a GAA nanosheet process if the channel is undoped and there's no room for thick work-function metal?"
 
-**A:** Dipole engineering: ultra-thin dipole layers (separate n-type and p-type dipole materials) inserted in the high-k gate stack shift the effective work function without consuming the few nanometers between stacked sheets. TSMC's N2 reports six Vt levels across ~200 mV using third-generation dipole integration. Nanosheets also add sheet-WIDTH tuning (NanoFlex short vs tall cells) as a quasi-continuous drive knob alongside discrete Vt. Interview-relevant consequence: early GAA PDKs offer fewer Vt/Lg combos than mature FinFET nodes, so leakage recovery has less room and Vt-flavor mistracking across corners must be signed off explicitly.
+**A:** Dipole engineering: ultra-thin dipole layers (separate n-type and p-type dipole materials) inserted in the high-k gate stack shift the effective work function without consuming the few nanometers between stacked sheets. TSMC's N2 reports six Vt levels across ~200 mV using third-generation dipole integration. Nanosheets also add sheet-WIDTH tuning (NanoFlex short vs tall cells) as a quasi-continuous drive knob alongside discrete Vt. Interview-relevant consequence: early GAA (gate-all-around) PDKs (process design kits) offer fewer Vt/Lg combos than mature FinFET nodes, so leakage recovery has less room and Vt-flavor mistracking across corners must be signed off explicitly.
 
 ### Q24: "Why do AI training clusters create a power-delivery problem that single-chip DVFS can't solve, and what's done about it?"
 
@@ -560,7 +560,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q1: "What is UPF and why can't you capture power intent in RTL?"
 
-**A:** UPF (IEEE 1801) is a TCL-based format that specifies power domains, supply networks, power states, and low-power cell insertion strategies. RTL describes WHAT the circuit does functionally, not HOW it is powered. You cannot express "this block can be powered off" or "these registers retain state" in Verilog/VHDL. UPF separates power intent from function, allowing the same RTL to be implemented with different power strategies and enabling all EDA tools to consume a single, consistent power specification.
+**A:** UPF (IEEE 1801) is a TCL-based format that specifies power domains, supply networks, power states, and low-power cell insertion strategies. RTL describes WHAT the circuit does functionally, not HOW it is powered. You cannot express "this block can be powered off" or "these registers retain state" in Verilog/VHDL. UPF separates power intent from function, allowing the same RTL to be implemented with different power strategies and enabling all EDA (electronic design automation) tools to consume a single, consistent power specification.
 
 ### Q2: "Walk me through writing UPF for a design with two power-gatable blocks."
 
@@ -576,7 +576,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q5: "Explain supply set handles and successive refinement."
 
-**A:** Supply set handles are abstract placeholders for {power, ground} connections. An IP block's UPF uses handles (PD.primary.power, PD.primary.ground) without naming actual physical nets. At SoC integration, the integrator connects these handles to real supply nets. This allows the IP to be reused in different SoCs with different supply topologies. Successive refinement: write high-level UPF at RTL (domains, strategies), refine at synthesis (cell types, constraints), refine again at physical design (switch placement, grid design). Each stage adds detail without rewriting previous stages.
+**A:** Supply set handles are abstract placeholders for {power, ground} connections. An IP (intellectual property) block's UPF uses handles (PD.primary.power, PD.primary.ground) without naming actual physical nets. At SoC integration, the integrator connects these handles to real supply nets. This allows the IP to be reused in different SoCs with different supply topologies. Successive refinement: write high-level UPF at RTL (domains, strategies), refine at synthesis (cell types, constraints), refine again at physical design (switch placement, grid design). Each stage adds detail without rewriting previous stages.
 
 ### Q6: "What are the most common UPF bugs you've seen?"
 
@@ -584,7 +584,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q7: "What is a power state table (PST) and why is it important?"
 
-**A:** The PST defines all LEGAL combinations of power states across domains. Example: it is legal for CPU to be ON and PERI to be OFF, but it is ILLEGAL for TOP to be OFF while CPU is ON (because CPU depends on TOP for bus fabric and interrupts). Tools use the PST to: (1) verify that the power management FSM only generates legal state transitions, (2) analyze power at each state, (3) verify that isolation/retention is properly handled for each transition. Missing a legal state in the PST means tools won't check it; including an illegal state means tools might allow an invalid configuration.
+**A:** The PST defines all LEGAL combinations of power states across domains. Example: it is legal for CPU to be ON and PERI to be OFF, but it is ILLEGAL for TOP to be OFF while CPU is ON (because CPU depends on TOP for bus fabric and interrupts). Tools use the PST to: (1) verify that the power management FSM (finite state machine) only generates legal state transitions, (2) analyze power at each state, (3) verify that isolation/retention is properly handled for each transition. Missing a legal state in the PST means tools won't check it; including an illegal state means tools might allow an invalid configuration.
 
 ### Q8: "How do you handle a signal that goes from domain A through domain B to domain C, where B can be powered off?"
 
@@ -612,7 +612,7 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ### Q14: "How do you handle UPF for an IP block that you receive as a hard macro?"
 
-**A:** The IP vendor should deliver: (1) an abstract UPF model describing the IP's power domains and supply requirements, (2) Liberty (.lib) with power pin definitions (pg_pin attributes), (3) LEF with power rail locations. The SoC integrator writes top-level UPF that: creates supply nets and connects them to the IP's supply ports, defines isolation for signals crossing between the IP and the rest of the SoC, and includes the IP's power states in the system PST. If the vendor doesn't provide UPF, you must reverse-engineer the power structure from the .lib and documentation.
+**A:** The IP vendor should deliver: (1) an abstract UPF model describing the IP's power domains and supply requirements, (2) Liberty (.lib) with power pin definitions (pg_pin attributes), (3) LEF (library exchange format) with power rail locations. The SoC integrator writes top-level UPF that: creates supply nets and connects them to the IP's supply ports, defines isolation for signals crossing between the IP and the rest of the SoC, and includes the IP's power states in the system PST. If the vendor doesn't provide UPF, you must reverse-engineer the power structure from the .lib and documentation.
 
 ### Q15: "Explain how UPF handles retention for a design where only 10% of flip-flops need retention."
 

@@ -11,8 +11,8 @@
 
 ## 0. Why This Page Exists
 
-A DDR memory controller is the bridge between the processor's cache hierarchy (which speaks
-AXI or a similar bus protocol) and the DDR DRAM chips on the DIMM. Every read miss that
+A DDR (double data rate) memory controller is the bridge between the processor's cache hierarchy (which speaks
+AXI (Advanced eXtensible Interface) or a similar bus protocol) and the DDR DRAM (dynamic random-access memory) chips on the DIMM (dual in-line memory module). Every read miss that
 leaves L3 cache must traverse this controller. Understanding the controller is essential
 because:
 
@@ -259,7 +259,7 @@ After power-on or reset, the DDR controller must initialize the DRAM through a s
 4. **Issue MRS commands** to configure mode registers:
    - MR0: burst length, CAS latency, read burst type
    - MR1: DLL enable, output drive strength, ODT
-   - MR2: CRC, write leveling
+   - MR2: CRC (cyclic redundancy check), write leveling
    - MR3: MPR (Multi-Purpose Register)
    - MR4: $t_{\text{REFI}}$ mode
    - MR5: CA parity latency
@@ -272,7 +272,7 @@ The entire initialization sequence takes 1--10 ms depending on the training algo
 
 ### Read/Write Training Algorithms
 
-**Write leveling:** Adjust the DQS delay per byte lane so that DQS edges align with the clock at the DRAM. The controller sweeps DQS delay; the DRAM reports alignment via a feedback mode register. This compensates for PCB trace length differences between CK and DQS.
+**Write leveling:** Adjust the DQS delay per byte lane so that DQS edges align with the clock at the DRAM. The controller sweeps DQS delay; the DRAM reports alignment via a feedback mode register. This compensates for PCB (printed circuit board) trace length differences between CK and DQS.
 
 **Read leveling:** Adjust the DQS capture delay per byte lane to center the sampling point in the data eye. The controller sweeps delay, finds the left and right edges of the eye, then sets the delay to the midpoint.
 
@@ -729,7 +729,7 @@ Total per DIMM: 32 banks (2x16), 64 data bits + 16 ECC bits
 **Advantage over DDR4 single channel:**
    - 2x more banks available for scheduling
    - Independent command streams (controller can issue to both subchannels)
-   - Higher scheduling flexibility for FR-FCFS
+   - Higher scheduling flexibility for FR-FCFS (first ready, first come first served)
 
 Constraint: C/A bus is shared between subchannels on standard DIMMs.
 Only one command per clock cycle, so the controller must alternate
@@ -860,7 +860,7 @@ During this time, the data bus is idle.
 
 ### 7.3 Quality of Service (QoS)
 
-In a system with multiple requestors (CPU, GPU, DMA, display controller), the scheduler
+In a system with multiple requestors (CPU, GPU, DMA (direct memory access), display controller), the scheduler
 must ensure critical traffic is not starved.
 
 ```text
@@ -1006,7 +1006,7 @@ ECC DIMM: 72-bit bus (64 data + 8 ECC) implemented as 9 x8 devices
 SECDED can correct 1-bit errors within a 72-bit word. But if an entire DRAM chip fails
 (a "chip kill"), every word has 8 bit errors -- far beyond SECDED's capability.
 
-Chipkill solution: spread each ECC code word across multiple chips
+Chipkill solution: spread each ECC (error-correcting code) code word across multiple chips
 so that a single chip failure affects at most 1 bit per code word.
 
 **Implementation (AMD, IBM, Intel variants):**
@@ -1228,7 +1228,7 @@ LPDDR (Low-Power DDR) targets mobile and embedded systems where power efficiency
 
 - **Bidirectional DQ bus:** LPDDR uses a shared read/write data path at the command level (not separate read/write data paths). This halves the pin count but requires careful bus turnaround scheduling.
 - **Separate CA (command/address) bus:** LPDDR4/5 has a dedicated CA bus shared between the two channels, reducing pin count compared to the full-width command bus in DDR4/5.
-- **LPDDR5 DVFS:** The DRAM can switch between two operating frequencies (e.g., 3200 and 6400 Mbps) without full re-initialization, using DVFSC (DVFS Set-C) commands. This enables rapid power-performance adaptation.
+- **LPDDR5 DVFS (dynamic voltage and frequency scaling):** The DRAM can switch between two operating frequencies (e.g., 3200 and 6400 Mbps) without full re-initialization, using DVFSC (DVFS Set-C) commands. This enables rapid power-performance adaptation.
 - **Bank group architecture:** LPDDR5 supports 8 banks in BG mode, 16 banks in 16B mode. More banks provide more bank-level parallelism, allowing the controller to keep more requests in flight.
 
 ### LPDDR5 WCK Clock (Double Data Rate Clock)
@@ -1435,7 +1435,7 @@ improved power efficiency:
 
 ### MRDIMM (Multiplexed Rank DIMM)
 
-MRDIMM is a JEDEC-standardized extension for DDR5 that addresses the bandwidth gap between standard DIMMs and HBM in server platforms. It introduces a **multiplexing register (MRCD/MDB)** on the DIMM that aggregates data from multiple ranks and presents a wider logical interface to the memory controller.
+MRDIMM is a JEDEC-standardized extension for DDR5 that addresses the bandwidth gap between standard DIMMs and HBM (High Bandwidth Memory) in server platforms. It introduces a **multiplexing register (MRCD/MDB)** on the DIMM that aggregates data from multiple ranks and presents a wider logical interface to the memory controller.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -1458,7 +1458,7 @@ flowchart TD
     class R,RK0,RK1 r
 ```
 
-The standard RDIMM data bus is 2 × 40-bit subchannels (80-bit with ECC). In an MRDIMM the **MDB** (Multiplexed Data Buffer) sits between the RCD and the DRAM chips; it buffers and re-times data so the DRAM cores can run at a different frequency than the external bus (external bus at 1.5× or 2× the core). The MDB multiplexes data from two ranks onto the same bus, effectively doubling the controller-visible data rate without doubling DRAM core speed.
+The standard RDIMM (registered DIMM) data bus is 2 × 40-bit subchannels (80-bit with ECC). In an MRDIMM the **MDB** (Multiplexed Data Buffer) sits between the RCD (register clock driver) and the DRAM chips; it buffers and re-times data so the DRAM cores can run at a different frequency than the external bus (external bus at 1.5× or 2× the core). The MDB multiplexes data from two ranks onto the same bus, effectively doubling the controller-visible data rate without doubling DRAM core speed.
 
 **MRDIMM signaling and timing:**
 
@@ -1608,7 +1608,7 @@ DVFS (Dynamic Voltage and Frequency Scaling):
 
 **Edge AI implications:**
 
-- **Bandwidth for on-device inference:** A large language model (LLM) inference on a mobile NPU requires 50-100 GB/s of memory bandwidth for parameter loading. LPDDR5X-8533 on a 4-byte (32-bit) channel provides 34.1 GB/s; a quad-channel mobile SoC provides 136.4 GB/s, sufficient for 7B-parameter models at ~10 tokens/s.
+- **Bandwidth for on-device inference:** A large language model (LLM) inference on a mobile NPU (neural processing unit) requires 50-100 GB/s of memory bandwidth for parameter loading. LPDDR5X-8533 on a 4-byte (32-bit) channel provides 34.1 GB/s; a quad-channel mobile SoC (system-on-chip) provides 136.4 GB/s, sufficient for 7B-parameter models at ~10 tokens/s.
 - **Thermal constraints:** LPDDR5X reduces VDD by 14% over LPDDR5, lowering power density. The lower VDDQ (0.35V vs 0.50V) cuts I/O power by approximately 30% at the same data rate.
 - **Controller adaptations:** The LPDDR5X controller must handle LPDDR-specific features not present in standard DDR5: DVFS state machine, clock-stop mode entry/exit, partial-array self-refresh (only refresh rows in use, saving refresh power by 30-50%), and enhanced write-data-mask (DM) for sparse updates common in AI weight patching.
 

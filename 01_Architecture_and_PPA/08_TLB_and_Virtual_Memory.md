@@ -23,11 +23,11 @@ stall the pipeline for tens of cycles, and refill the TLB before execution can r
 
 Understanding TLB microarchitecture is essential for:
 
-- **Processor design interviews:** TLB sizing, set-associative organization, VIPT
+- **Processor design interviews:** TLB sizing, set-associative organization, VIPT (virtually-indexed, physically-tagged)
   constraints, and page-walk state machines are standard questions.
 - **Performance analysis:** TLB miss rates dominate the effective memory latency for
   workloads with large working sets (databases, ML training, graph processing).
-- **OS-hardware co-design:** page-table format, ASIDs, shootdown mechanisms, and
+- **OS-hardware co-design:** page-table format, ASIDs (address-space identifiers), shootdown mechanisms, and
   superpage support all require tight coupling between hardware and software.
 
 This page covers the complete path from a 64-bit virtual address to a physical address:
@@ -40,7 +40,38 @@ an interview.
 
 ## 1. TLB Entry Format
 
+A TLB entry is a *cached translation*, and like any cache line its contents are dictated by what
+the consumer needs the instant it hits. Here the consumer is a memory access that must translate,
+check permission, and continue **in a single cycle** — so before reading the field table, derive
+what one entry must hold from the three jobs it does; every field in §1.1 is a consequence of one
+of these, not an arbitrary copy of the page-table entry:
+
+1. **Translate in one lookup.** The point of a TLB is to replace a multi-level page walk with a
+   single associative match, so an entry must store both halves of the map: the **VPN** as the
+   match tag and the **PPN** as the payload it emits. The cache's physical tag compare cannot
+   proceed until this resolves (§0), which is why the lookup must be small and highly associative
+   rather than just another SRAM read.
+2. **Authorize in the same step.** A translation that is correct but *unpermitted* — a store to a
+   read-only page, a user-mode access to a supervisor page — must fault *before* the access
+   completes, not after the data is fetched. Caching the **R/W/X** and **U** bits beside the PPN
+   lets one lookup both translate and authorize; splitting them would put a second structure on
+   the same critical path.
+3. **Stay valid across context switches and page-table edits.** A bare VPN→PPN pair is meaningful
+   only within one address space and goes stale when the OS rewrites the page table. So each entry
+   carries an **ASID** to tag its owning address space (letting a context switch skip the flush —
+   §1.3), a **G** bit for kernel mappings shared by every space, a **V** bit for invalidation, and
+   hardware-managed **A/D** bits that report "used / written" back to the OS *without* forcing a
+   page walk.
+
+So a TLB entry is best read not as "nine fields" but as **the minimum state that lets one
+associative hit translate, authorize, and stay coherent with the OS** — the table in §1.1 is
+simply that state written out.
+
 ### 1.1 Fields in a Single Entry
+
+Read the table below as the consequence of those three jobs, not a bag of bits: VPN and PPN do
+the translating, R/W/X/U do the authorizing, and ASID/G/V/A/D keep the cached translation
+coherent with the OS.
 
 A TLB is a small, associative memory that maps a **Virtual Page Number (VPN)** to a
 **Physical Page Number (PPN)** along with permission metadata. Each entry contains the
@@ -66,7 +97,7 @@ $$
 \text{Entry size} = \underbrace{27}_{\text{VPN}} + \underbrace{44}_{\text{PPN}} + \underbrace{16}_{\text{ASID}} + \underbrace{8}_{\text{R/W/X/U/G/A/D/V}} = 95 \text{ bits}
 $$
 
-In practice, entries are padded to 96 or 128 bits for SRAM alignment. A 64-entry,
+In practice, entries are padded to 96 or 128 bits for SRAM (static random-access memory) alignment. A 64-entry,
 fully-associative TLB thus requires roughly $64 \times 96 = 6{,}144$ bits (768 bytes)
 of storage, plus the tag comparison logic that makes it associative.
 
@@ -77,7 +108,7 @@ maps to different PPNs in different processes. Flushing a 64-entry TLB and refil
 from scratch costs hundreds of cycles.
 
 The ASID solves this: each process is assigned a 16-bit identifier. The current ASID
-is stored in the `satp` CSR. On a TLB lookup, the hardware compares **both** the VPN
+is stored in the `satp` CSR (control and status register). On a TLB lookup, the hardware compares **both** the VPN
 and the ASID against each entry. Only entries whose ASID matches the current ASID (or
 that are marked Global) are considered hits.
 
@@ -87,6 +118,19 @@ $$
 
 With 16 ASID bits, up to 65,536 processes can share the TLB simultaneously before the
 OS must recycle an ASID and flush stale entries.
+
+**The trade, made explicit.** An ASID is not free: it widens every TLB entry by its bit-count
+and adds that comparison to the match on *every* lookup (the hit condition above), and it hands
+the OS a name space to manage — ASIDs are finite, so when they run out the OS must recycle one
+and flush its stale entries. What that buys is the elimination of the *unconditional*
+flush-and-refill on every context switch. Without ASIDs, a switch discards a warm TLB hierarchy
+(hundreds to a couple thousand entries across L1 and L2) and then pays hundreds to thousands of
+cycles re-walking those translations back in; with ASIDs the switch is a single `satp` write and
+the two processes' entries simply coexist. The **G** (global) bit is the complementary move for
+the one address space every process shares — the kernel — so kernel mappings match regardless of
+ASID and survive every switch untagged, instead of being duplicated once per ASID. This is the
+canonical "add a tag to avoid an invalidate" pattern, and it returns as ASID-based shootdown
+avoidance in §6.
 
 ---
 
@@ -119,7 +163,7 @@ flowchart TD
 - **Pros:** Zero conflict misses; optimal hit rate for a given capacity.
 - **Cons:** $O(N)$ comparators; power scales linearly with entries; impractical above
   ~64 entries due to routing and fan-out.
-- **Use case:** L1 ITLB and L1 DTLB (16--64 entries, 1-cycle hit).
+- **Use case:** L1 ITLB (instruction TLB) and L1 DTLB (data TLB) (16--64 entries, 1-cycle hit).
 
 ### 2.2 Set-Associative
 
@@ -135,7 +179,7 @@ Example: a 256-entry, 4-way TLB has $256 / 4 = 64$ sets, requiring 6 index bits 
 the VPN. Each set holds 4 entries; only 4 comparators fire per lookup.
 
 - **Pros:** Scales to large capacities (512--2048 entries) with bounded comparator count.
-- **Cons:** Conflict misses possible; replacement policy (LRU, PLRU) adds overhead.
+- **Cons:** Conflict misses possible; replacement policy (LRU (least recently used), PLRU (pseudo-LRU)) adds overhead.
 - **Use case:** L2 STLB (shared TLB), 256--1024 entries, 2--5 cycle hit.
 
 ### 2.3 Multi-Level TLB Hierarchy
@@ -220,7 +264,7 @@ RISC-V `satp` register: `Mode` (4 bits, = 8 for Sv39) selects the paging scheme,
 
 ### 3.2 Walk State Machine
 
-The hardware page walker is a small FSM that performs the following sequence:
+The hardware page walker is a small FSM (finite state machine) that performs the following sequence:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -253,7 +297,7 @@ flowchart TD
 Step-by-step for a 4 KB base page:
 
 1. **Level 1:** The root page table is at physical address `satp.PPN << 12`. Index with
-   $\text{VPN}[2]$ (bits 38--30 of the VA): read PTE at
+   $\text{VPN}[2]$ (bits 38--30 of the VA (virtual address)): read PTE at
    $(\text{satp.PPN} \ll 12) + \text{VPN}[2] \times 8$.
 2. **Level 2:** If the L1 PTE is a non-leaf (R=W=X=0), its PPN field points to the
    next-level table. Index with $\text{VPN}[1]$ (bits 29--21): read PTE at
@@ -275,6 +319,17 @@ A page fault is raised if any of the following is true at any level:
 - A non-leaf PTE is found at the last (third) level (malformed page table).
 
 ### 3.4 Page-Walk Cache
+
+A TLB miss is costly for a specific reason: the walk is *serial pointer-chasing*. Each level's
+PTE holds the physical address of the next level's table, so an Sv39 walk is three *dependent*
+memory reads (Sv48 and Sv57: four and five), and no two levels can be fetched in parallel. The
+page-walk cache attacks the fact that these reads are enormously **redundant across misses**: the
+top of the radix tree fans out so widely that a whole region of virtual address space — megabytes
+under one level-2 entry, gigabytes under one level-1 entry — shares the *same* upper-level PTEs.
+Caching just those non-leaf entries collapses the dependent chain: a walk that hits every upper
+level skips straight to the final leaf read. That is *what* the structure must hold (non-leaf
+PTEs, keyed by the partial VPN that selects them) and *why* it is kept separate from the TLB,
+which caches the leaf translations.
 
 The upper-level page-table entries (non-leaf PTEs) are accessed far more frequently
 than leaf PTEs because every translation in the same region of virtual address space
@@ -393,7 +448,7 @@ dedicated instruction (e.g., `TLBWR` on MIPS).
 
 ### 4.2 Hardware-Managed TLB (RISC-V, ARM, x86 Style)
 
-A hardware page walker is a dedicated FSM inside the MMU. On a TLB miss, the walker
+A hardware page walker is a dedicated FSM inside the MMU (memory management unit). On a TLB miss, the walker
 automatically reads page-table entries from the cache/memory hierarchy, traverses the
 radix tree, and fills the TLB without software intervention.
 
@@ -432,6 +487,20 @@ radix tree, and fills the TLB without software intervention.
 ---
 
 ## 5. VIPT -- Virtually-Indexed, Physically-Tagged Caches
+
+VIPT resolves a scheduling conflict between two structures that both sit on the load's critical
+path. A *physically* tagged cache cannot confirm a hit until translation produces the physical
+address (§0), which naively serializes TLB-then-cache and doubles load-to-use latency. The only
+way to overlap them is to begin the cache lookup *before* translation finishes — but a lookup
+needs address bits to choose a set, and translation is precisely the operation that *rewrites*
+the high-order page-number bits while leaving the low-order page-offset bits untouched. That one
+asymmetry is the entire idea: **index the cache with bits translation cannot change (the page
+offset), and tag it with the physical bits translation produces.** The index and the TLB then run
+in parallel, and the physical tag lands just in time to compare. Every constraint that follows —
+the index-bit ceiling, the synonym problem, the associativity and page-size choices that buy
+headroom — is a direct consequence of the single rule that *the cache index may use only
+page-offset bits.* §5.1 states the latency problem; §5.2 states the insight; §5.3--§5.5 turn the
+rule into concrete sizing math.
 
 ### 5.1 The Problem VIPT Solves
 
@@ -729,7 +798,7 @@ mmap with MAP_SHARED), and the VIPT constraint is violated, the two virtual addr
 may index into different cache sets. The same physical data resides in two different
 cache locations -- this is a **synonym** (also called an alias).
 
-**The synonym problem:** Core 0 writes to VA1 (maps to PA, cached in set 5). Core 1
+**The synonym problem:** Core 0 writes to VA1 (maps to PA (physical address), cached in set 5). Core 1
 reads VA2 (also maps to PA, but indexes set 9). Core 1 gets stale data (or misses
 entirely) because the write went to a different cache set.
 
@@ -827,7 +896,7 @@ Initiator (Core 0)                           Targets (Cores 1, 2, 3)
 | Initiator spin-wait | varies | until all N−1 cores respond |
 | **Total per shootdown** | **200–1000** | on an 8-core system |
 
-On a 64-core system the IPI fans out to 63 targets, all of which must respond before the initiator resumes — total 2,000–10,000+ cycles, during which every core is stalled in the shootdown handler.
+On a 64-core system the IPI (inter-processor interrupt) fans out to 63 targets, all of which must respond before the initiator resumes — total 2,000–10,000+ cycles, during which every core is stalled in the shootdown handler.
 
 **Scalability problem:** TLB shootdown cost scales linearly (or worse) with core count.
 On large systems (64-128 cores), shootdowns become a major performance bottleneck for
@@ -1088,10 +1157,10 @@ allocation granularity for small or sparse mappings.
 
 ### 10.1 Motivation
 
-4-level paging in x86-64 (PML4 -> PDPT -> PD -> PT) supports 48-bit virtual
+4-level paging in x86-64 (PML4 (page-map level 4) -> PDPT (page-directory pointer table) -> PD (page directory) -> PT (page table)) supports 48-bit virtual
 addresses, giving 256 TiB of virtual address space per process. This was
 sufficient until workloads such as in-memory databases, persistent memory
-(DIMM-based NVRAM), and multi-terabyte ML training sets pushed beyond the
+(DIMM-based NVRAM (non-volatile random-access memory)), and multi-terabyte ML training sets pushed beyond the
 limit. 5-level paging extends the virtual address width to 57 bits (128 PiB).
 
 ### 10.2 x86-64 LA57 (5-Level Paging, Intel)
@@ -1165,9 +1234,9 @@ Superpages: 128 TiB (leaf at L1), 256 GiB (L2), 1 GiB (L3), 2 MiB (L4), 4 KiB (L
 
 ### 11.1 Compute Express Link (CXL) Overview
 
-CXL (Compute Express Link) is a cache-coherent interconnect built on PCIe
+CXL (Compute Express Link) is a cache-coherent interconnect built on PCIe (Peripheral Component Interconnect Express)
 physical layers. It allows a CPU to access memory attached to a different
-device (another CPU, a memory expander, or a smart NIC) as if it were local
+device (another CPU, a memory expander, or a smart NIC (network interface card)) as if it were local
 memory -- but with higher latency.
 
 | CXL Version | Bandwidth (x16) | Latency (typical) | Key Feature |
@@ -1176,7 +1245,7 @@ memory -- but with higher latency.
 | CXL 2.0 | 32 GT/s (~64 GB/s) | 80--150 ns | Switching, multi-head devices |
 | CXL 3.0 | 64 GT/s (~128 GB/s) | 50--100 ns | Fabric, peer-to-peer |
 
-CXL-attached memory appears in the physical address map as a separate NUMA
+CXL-attached memory appears in the physical address map as a separate NUMA (non-uniform memory access)
 node with higher latency and lower bandwidth than DDR-attached memory.
 
 ### 11.2 NUMA-Aware Page Tables
@@ -1218,10 +1287,10 @@ must be NUMA-aware:
   physical address mapping differs.
 
 - **Tiered memory systems:** Future designs (projected 2025--2027) use CXL
-  memory as a tier between DRAM and SSD. The OS's virtual memory system
+  memory as a tier between DRAM (dynamic random-access memory) and SSD. The OS's virtual memory system
   manages three tiers: hot pages in DDR, warm pages in CXL, cold pages on
   SSD. Page promotion/demotion between tiers is guided by hardware access
-  counters (Intel MAT, ARM MPAM).
+  counters (Intel MAT, ARM MPAM (memory system partitioning and monitoring)).
 
 ---
 
@@ -1230,8 +1299,8 @@ must be NUMA-aware:
 ### 12.1 The Threat Model
 
 In cloud environments, a malicious hypervisor (or a physical attacker with
-access to DRAM DIMMs) can:
-1. Read the guest's memory contents (via DMA or DIMM snooping).
+access to DRAM DIMMs (dual in-line memory modules)) can:
+1. Read the guest's memory contents (via DMA (direct memory access) or DIMM snooping).
 2. Modify the guest's memory (via DMA or bus interception).
 3. Roll back memory to a previous state (replay attacks).
 
@@ -1264,7 +1333,7 @@ at boot. The key is never visible to the host OS or hypervisor.
   the C-bit on every memory access and routes the request through the
   encryption engine.
 - Encrypted and unencrypted pages can coexist: the hypervisor runs with
-  unencrypted memory while the guest runs with encrypted memory (in SEV mode).
+  unencrypted memory while the guest runs with encrypted memory (in SEV (Secure Encrypted Virtualization) mode).
 
 **Performance impact:** The encryption engine adds ~6--10 cycles of latency to
 every memory access that goes to DRAM (cache hits are not affected because

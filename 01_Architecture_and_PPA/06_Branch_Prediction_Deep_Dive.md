@@ -15,15 +15,15 @@ Branch instructions appear every 4--7 instructions in typical integer code. A
 instructions on every misprediction -- at best a 15-cycle bubble, at worst a
 full pipeline flush. The difference between a 95% accurate predictor and a
 99% accurate predictor is the difference between wasting 5% versus 1% of all
-cycles, which translates directly into 4--8% overall performance on SPEC
+cycles, which translates directly into 4--8% overall performance on SPEC (Standard Performance Evaluation Corporation)
 int2006.
 
 Interview candidates at Apple, AMD, ARM, Google, Meta, NVIDIA, and RISC-V
 startups are regularly asked to:
 
-- Explain the BTB / BHT split and why they are separate structures.
+- Explain the BTB (Branch Target Buffer) / BHT (Branch History Table) split and why they are separate structures.
 - Walk through gshare indexing and compute a prediction by hand.
-- Describe TAGE lookup, provider selection, and allocation policy.
+- Describe TAGE (TAgged GEometric history length) lookup, provider selection, and allocation policy.
 - Design a speculative Return Address Stack with misprediction repair.
 - Compute mispredict penalty given pipeline depth and resolution stage.
 
@@ -36,9 +36,30 @@ interview, with worked problems that mirror actual interview questions.
 
 ### 1.1 Purpose
 
-The BTB answers one question: **given a branch PC, what is the target PC?**
+The BTB answers one question: **given a branch PC (program counter), what is the target PC?**
 Without a BTB, the fetch unit cannot know where to redirect until the branch
 is decoded and its offset computed -- a delay of 1--3 stages.
+
+The deeper reason the BTB *must* exist is a **timing** one, and that constraint
+dictates what each entry has to hold. The fetch engine picks the next PC in the
+same cycle it launches the I-cache access -- several stages before decode can even
+confirm that the fetched bytes are a branch. So the BTB has to reconstruct, from
+the PC alone, everything the fetch engine would otherwise have to wait for decode
+to learn. That forces three obligations onto every entry, and the fields in
+Section 1.2 are exactly those three:
+
+- a **tag** (upper PC bits), because the index is only a hash: the tag confirms
+  that *this* PC really is the cached branch and not an aliasing neighbor, so a
+  bogus redirect is never issued;
+- a **target PC**, the answer to "where," latched in time to steer the next fetch;
+- a **branch-type** field, because *what kind* of transfer it is changes who acts
+  next cycle -- a RETURN must pop the RAS, a CALL must push it, an indirect jump
+  must not blindly trust a single stored target. A structure that stored only "one
+  target per PC" would mispredict every return and every polymorphic indirect
+  branch.
+
+Read Section 1.2 as the encoding of those three obligations, not as an arbitrary
+record layout.
 
 ### 1.2 Set-Associative Structure
 
@@ -51,7 +72,7 @@ is decoded and its offset computed -- a delay of 1--3 stages.
 ]}
 ```
 
-BTB entry (typical 28–36 bits). `BrType` encoding: `000` conditional branch, `001` unconditional jump, `010` CALL (push to RAS), `011` RETURN (pop from RAS), `100` indirect jump (target may vary).
+BTB entry (typical 28–36 bits). `BrType` encoding: `000` conditional branch, `001` unconditional jump, `010` CALL (push to RAS (Return Address Stack)), `011` RETURN (pop from RAS), `100` indirect jump (target may vary).
 
 **Indexing**: `PC[11:2]` provides a 10-bit index into 1024 sets. The tag is
 `PC[31:12]` (upper 20 bits). A hit requires both tag match and valid bit set.
@@ -81,11 +102,20 @@ decode (stage 3--5). The pipeline must then flush the instructions fetched after
 the branch and redirect to the computed target. Typical penalty: 3--5 cycles
 for a BTB miss that is caught at decode.
 
+**Why two levels at all** is the same knee as an L1/L2 data-cache hierarchy: a
+single BTB large enough to cover a big code footprint cannot also be fast enough
+to redirect within the fetch cycle, because access time grows with capacity. The
+design therefore splits *capacity* from *latency* -- a small L1 BTB sized to hit in
+one cycle on the hot branch working set, backed by a large L2 BTB whose 1--2-cycle
+redirect is still far cheaper than the 3--5-cycle decode-time recovery a total miss
+costs. The 3--5-cycle miss penalty above is precisely the cost the L2 BTB exists to
+avoid on all but the coldest branches.
+
 ### 1.4 BTB Update Policy
 
 When a branch is resolved (execute stage):
 
-1. If the branch was not in the BTB, allocate a new entry (LRU replacement).
+1. If the branch was not in the BTB, allocate a new entry (LRU (least recently used) replacement).
 2. If the target changed (indirect branch), update the stored target.
 3. If the branch is no longer taken after N consecutive not-takens, some
    designs evict the BTB entry to save space for active branches.
@@ -93,6 +123,21 @@ When a branch is resolved (execute stage):
 ---
 
 ## 2. Branch History Table (BHT) and gshare
+
+A BTB answers *where* a taken branch goes; it says nothing about *whether* a
+conditional branch is taken this time -- and a perfect target is worthless if you
+step onto it on a branch that should have fallen through. Direction is a separate
+question, so it gets a separate structure, and the minimum that structure must
+remember is a compressed summary of how each branch has recently behaved. The
+insight that lifts accuracy past the ~85% that per-branch bias alone reaches is
+that a branch's outcome is often *correlated with the outcomes of the last few
+branches* (an `if` that fires only when an earlier `if` did). So the direction
+predictor must actually remember two things -- a per-context *bias* and a slice of
+recent *global history* -- and the three subsections below are the progression that
+adds them: the 2-bit saturating counter is the bias with hysteresis (Section 2.1),
+the GHR is the history (Section 2.2), and gshare is how you index a single small
+table by *both* at once without paying for one table per history pattern
+(Section 2.3).
 
 ### 2.1 Two-Bit Saturating Counter
 
@@ -183,6 +228,41 @@ components in TAGE) add per-entry tags at higher storage cost.
 TAGE is the dominant predictor in academic and industrial designs since 2014.
 It won the CBP (Championship Branch Prediction) competitions and is used in
 chips ranging from the SiFive P870 to the Xiangshan Nanhu (open-source RISC-V).
+
+**The trade-off TAGE resolves.** Every history-based predictor must choose *how
+much* history to fold into its index, and there is no single right answer. Short
+history trains fast and nails loop-local behavior but is blind to long-range
+correlation. Long history captures deep correlation but (a) trains slowly -- each
+long pattern has to be seen many times -- and (b) *dilutes* branches that need only
+a few bits of context, because every distinct long pattern claims its own entry and
+short-correlated branches thrash. A single-length predictor like gshare is
+therefore forced to compromise on one global history length, and loses accuracy at
+both ends of that spectrum.
+
+TAGE's move is to refuse the compromise: keep *several* tables at geometrically
+spaced history lengths ($0, 4, 16, 64, 256, \ldots$ -- geometric so a handful of
+tables spans loop-local to very-long-range) and, for each branch, use *the longest
+table that actually has a trained entry for this exact history*. Two design
+obligations fall straight out of that one sentence, and they are precisely what the
+Section 3.1 entry format encodes:
+
+- **Tags.** If you intend to trust the longest matching table, you must be *sure*
+  it matches -- a false hit on a 256-bit-history entry is a confident wrong
+  prediction. So each entry carries a partial tag and is treated as the "provider"
+  only on a tag match. This is the single biggest departure from gshare, which is
+  untagged and simply tolerates aliasing.
+- **A usefulness counter plus a fallback.** A freshly allocated long-history entry
+  is not yet trained, so TAGE keeps the shorter matching entry as an *alternate*
+  and trusts the long provider only once its `Useful` counter shows it has earned
+  it. Allocation, `u`-bit decay, and provider/alternate selection (Section 3.2,
+  Section 3.6) are all machinery answering one question: *which history length
+  should I believe for this branch right now?*
+
+So TAGE is best understood not as "gshare with more tables" but as **a predictor
+that lets each branch pick its own history length dynamically**, paying for that
+flexibility in tag storage and a multi-table lookup. The accuracy in Section 3.7
+(~3 MPKI, against gshare's 8--11 in Section 9.1) is what that flexibility is worth;
+the tag bits and the parallel lookup are what it costs.
 
 ### 3.1 Structure
 
@@ -825,6 +905,21 @@ a RAS, the BTB must predict the target of every return, but returns have a
 different target each time (the instruction after the corresponding CALL). The
 RAS provides a single-cycle, cycle-accurate prediction for returns.
 
+Why a *stack* -- and not simply a bigger BTB -- is the whole point. A return's
+target is the one control-transfer target that is *not* a function of the branch
+PC: the same `ret` returns to a different caller on every dynamic invocation, so a
+PC-indexed BTB mispredicts it the moment a function has more than one call site.
+Yet the target is not unpredictable, only *context-dependent* -- it is exactly the
+address after whichever CALL is currently outstanding, and CALLs and RETURNs nest
+perfectly. That nesting *is* the structure: it forces a LIFO whose entries are
+return addresses and whose only extra state is a top pointer (push on CALL, pop on
+RETURN), because "last call made is first to return" is precisely stack discipline.
+Everything downstream follows -- the entry is one return address wide
+(Section 6.2), the depth is sized to cover typical call nesting (Section 6.2), and
+because fetch pushes and pops *speculatively*, correctness reduces to keeping that
+top pointer balanced across mispredicts, which is the entire subject of
+Sections 6.3--6.5.
+
 ### 6.2 Circular Buffer Implementation
 
 ```ascii-graph
@@ -862,11 +957,11 @@ Hardware:
 Typical call depth in software:
 - C/C++: 5-15 levels deep (main -> function -> helper -> utility -> leaf)
 - JavaScript/Python: 8-20 levels (interpreter dispatch + recursive calls)
-- OS kernel: 10-25 levels (syscall -> VFS -> filesystem -> block driver)
+- OS kernel: 10-25 levels (syscall -> VFS (virtual file system) -> filesystem -> block driver)
 
 A 16-entry RAS covers >95% of call depths in SPEC benchmarks. A 32-entry RAS
 covers >99.9%. Going beyond 32 has diminishing returns and increases access
-latency (larger SRAM).
+latency (larger SRAM (static random-access memory)).
 
 ### 6.3 Speculative RAS with Misprediction Repair
 
@@ -1092,7 +1187,7 @@ helps disambiguate. Accuracy for indirect branches: ~85--92% with this scheme.
 
 ### 7.3 ITTAGE
 
-ITTAGE extends TAGE from direction prediction to target prediction. The same
+ITTAGE (Indirect Target TAGE) extends TAGE from direction prediction to target prediction. The same
 tagged-geometric structure is used, but each entry stores a target PC instead
 of a direction counter.
 
@@ -1185,8 +1280,8 @@ Taken-path redirect with RAS (CALL instruction):
 
 ### 8.2 Fetch Bandwidth and Multiple Branches Per Fetch Block
 
-**Fetch bandwidth:** Modern OoO cores fetch 4-8 instructions per cycle (16-32
-bytes for fixed-length ISAs, variable for x86). The fetch block may contain
+**Fetch bandwidth:** Modern OoO (out-of-order execution) cores fetch 4-8 instructions per cycle (16-32
+bytes for fixed-length ISAs (instruction set architectures), variable for x86). The fetch block may contain
 multiple branches.
 
 **Handling multiple branches per fetch block:**
@@ -1324,7 +1419,7 @@ On an I-cache miss:
    is returned first and forwarded to the fetch unit immediately.
 3. The remaining sectors of the cache line arrive in subsequent cycles.
 4. Typical L1 I-cache miss penalty: 8--15 cycles (L2 hit), 40--100 cycles
-   (L2 miss, DRAM access).
+   (L2 miss, DRAM (dynamic random-access memory) access).
 
 **Worked detail (pipeline view):**
 
@@ -1341,9 +1436,9 @@ the next cache level. The key mechanisms are:
    roughly $\lceil B/w \rceil - 1$ cycles, where $B$ is the cache-line size
    and $w$ is the bus width per beat.
 
-3. **Fetch stall + FTQ drain** -- the FTQ continues to drain entries that hit
+3. **Fetch stall + FTQ (fetch target queue) drain** -- the FTQ continues to drain entries that hit
    in the I-cache, but no new FTQ entries are pushed until the miss resolves.
-   In practice the BPU also stalls to avoid polluting the FTQ with
+   In practice the BPU (branch prediction unit) also stalls to avoid polluting the FTQ with
    predictions for addresses that cannot yet be fetched.
 
 4. **Streaming / prefetch** -- some designs (e.g., Apple M-series) employ a
@@ -1391,7 +1486,7 @@ I-cache access in the next cycle for the remainder, costing one cycle.
 
 ### 8.7 Fetch Target Queue (FTQ)
 
-The FTQ is a small FIFO structure sitting between the branch predictor and the
+The FTQ is a small FIFO (first-in, first-out) structure sitting between the branch predictor and the
 I-cache. It decouples prediction throughput from cache latency so the predictor
 can run ahead of the cache without stalling.
 

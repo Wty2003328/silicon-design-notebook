@@ -1,6 +1,6 @@
 # Lint, CDC, and RDC Signoff — Static Frontend Checks
 
-> **Stage:** 03 · Verification. The **static** (no-simulation) gate that RTL must pass before it's trusted: structural lint, clock-domain-crossing (CDC), and reset-domain-crossing (RDC) signoff.
+> **Stage:** 03 · Verification. The **static** (no-simulation) gate that RTL (register-transfer level) must pass before it's trusted: structural lint, clock-domain-crossing (CDC), and reset-domain-crossing (RDC) signoff.
 > **Prerequisites:** [RTL_Design_Methodology](01_RTL_Design_Methodology.md), [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (the CDC *physics*). **Hands off to:** dynamic verification ([UVM_Methodology](10_UVM_Methodology.md), [Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md)).
 
 ---
@@ -68,7 +68,7 @@ The under-appreciated sibling of CDC. An RDC exists when a flop reset by **reset
 
 - RDC matters in designs with **multiple, independently-asserted reset domains** — power-gated blocks ([UPF_Power_Intent](../02_Power_and_Low_Power/04_UPF_Power_Intent.md)), partial resets, functional-safety islands.
 - The fix is the same family: isolate the crossing (isolation cell / reset-aware synchronizer), or sequence the resets so the destination is also in reset when the source resets.
-- Static RDC tools enumerate every reset-domain crossing and check for protection — analogous to CDC, and increasingly a separate signoff in low-power SoCs.
+- Static RDC tools enumerate every reset-domain crossing and check for protection — analogous to CDC, and increasingly a separate signoff in low-power SoCs (systems on chip).
 
 ---
 

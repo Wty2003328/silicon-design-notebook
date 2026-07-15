@@ -1,13 +1,13 @@
 # Gate-Level Simulation and Emulation
 
-> **Stage:** 03 · Verification. Two dynamic-verification tools that bracket RTL sim: **GLS** (verify the *post-synthesis netlist* with real timing) and **emulation/FPGA prototyping** (run *software-scale* workloads on the design).
+> **Stage:** 03 · Verification. Two dynamic-verification tools that bracket RTL (register-transfer level) sim: **GLS** (verify the *post-synthesis netlist* with real timing) and **emulation/FPGA prototyping** (run *software-scale* workloads on the design).
 > **Prerequisites:** [UVM_Methodology](10_UVM_Methodology.md), [Synthesis_and_Optimization](../04_Synthesis/01_Synthesis_and_Optimization.md), [STA](../06_Signoff/01_STA.md). **Hands off to:** [signoff](../06_Signoff/01_STA.md), [bring-up](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md).
 
 ---
 
 ## 0. Why this page exists
 
-RTL simulation proves the *design intent* is correct, but two gaps remain. First, synthesis transforms RTL into a gate netlist (and DFT inserts scan) — does the *netlist* still match, and does it work with **real gate/wire delays**? That is **gate-level simulation (GLS)**. Second, RTL sim is far too slow to boot an OS or run a benchmark (KHz–MHz effective), so you can't validate the hardware/software system — that is what **emulation and FPGA prototyping** do, at MHz–tens-of-MHz. Both catch bugs that pure RTL sim structurally cannot.
+RTL simulation proves the *design intent* is correct, but two gaps remain. First, synthesis transforms RTL into a gate netlist (and DFT (design-for-test) inserts scan) — does the *netlist* still match, and does it work with **real gate/wire delays**? That is **gate-level simulation (GLS)**. Second, RTL sim is far too slow to boot an OS or run a benchmark (KHz–MHz effective), so you can't validate the hardware/software system — that is what **emulation and FPGA (field-programmable gate array) prototyping** do, at MHz–tens-of-MHz. Both catch bugs that pure RTL sim structurally cannot.
 
 ---
 
@@ -49,7 +49,7 @@ Booting Linux on an RTL sim could take *years*; on an emulator, minutes. That ga
 ### 2.3 What they find
 - **HW/SW integration bugs** — driver/firmware against real RTL: the bugs that only appear when software actually exercises the hardware.
 - **Long-sequence/corner bugs** — anything needing millions–billions of cycles (boot, cache-warming, congestion, thermal-throttle loops) that sim can't reach.
-- **Performance validation** — real workloads at MHz give early IPC/throughput numbers to confirm the [performance model](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md).
+- **Performance validation** — real workloads at MHz give early IPC (instructions per cycle)/throughput numbers to confirm the [performance model](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md).
 
 (This is the hardware analogue of why AI infra uses [emulation-based power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) and software-scale validation.)
 

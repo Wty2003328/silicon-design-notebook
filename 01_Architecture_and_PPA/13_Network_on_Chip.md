@@ -6,7 +6,7 @@
 
 ## 0. Why this page exists
 
-Beyond ~10–16 agents, shared buses and full crossbars stop scaling: bus bandwidth is constant while demand grows linearly, and crossbar area grows as $O(n^2)$ with wire delay making a chip-spanning monolithic switch untimeable. The answer — packetize transactions and route them hop-by-hop over a network of small routers — is now the backbone of every large SoC (Arm CMN mesh in server CPUs, hashed-ring/mesh fabrics in GPUs, the 2D mesh that *is* the compute fabric in Tenstorrent/Cerebras-class AI chips, and die-to-die extensions over UCIe). Interviews probe NoC at three depths: topology math (bisection bandwidth, diameter), correctness (deadlock theory — the only part with real theorems), and router microarchitecture (the 4–5 stage pipeline and where the cycles go). This page covers all three plus the protocol layer (CHI-over-mesh) that SoC interviews actually care about.
+Beyond ~10–16 agents, shared buses and full crossbars stop scaling: bus bandwidth is constant while demand grows linearly, and crossbar area grows as $O(n^2)$ with wire delay making a chip-spanning monolithic switch untimeable. The answer — packetize transactions and route them hop-by-hop over a network of small routers — is now the backbone of every large SoC (system-on-chip) (Arm CMN (Coherent Mesh Network) mesh in server CPUs, hashed-ring/mesh fabrics in GPUs, the 2D mesh that *is* the compute fabric in Tenstorrent/Cerebras-class AI chips, and die-to-die extensions over UCIe (Universal Chiplet Interconnect Express)). Interviews probe NoC at three depths: topology math (bisection bandwidth, diameter), correctness (deadlock theory — the only part with real theorems), and router microarchitecture (the 4–5 stage pipeline and where the cycles go). This page covers all three plus the protocol layer (CHI-over-mesh) that SoC interviews actually care about.
 
 ---
 
@@ -90,6 +90,8 @@ $$
 D_{\min} = \lceil t_{\text{crt}} \rceil = t_{\text{flit→down}} + t_{\text{credit→up}} + t_{\text{pipe}}
 $$
 
+($D_{\min}$ = minimum buffers per VC, $t_{\text{crt}}$ = credit round-trip time; the three right-hand terms are the flit-forward, credit-return, and pipeline-update latencies.)
+
 With a 3-cycle credit loop, < 3 buffers per VC throttles the link even with zero contention — the standard "why is my link at 60% utilization" bug. (Same reasoning as AXI outstanding-transaction sizing in [AHB_AXI_APB](11_AHB_AXI_APB.md).)
 
 **The credit-counter circuit (per output VC).** The hardware is one small up/down counter per downstream VC, sitting in the upstream router's output unit:
@@ -111,7 +113,7 @@ flowchart TD
     class FIFO d
 ```
 
-Sending a flit on VC *v* does `credit_cnt[v]--` and stalls if the count would go below zero (no grant). When the downstream router frees a slot it pulses a credit plus the VC id back upstream and `credit_cnt[v]++`. The counter is initialised to *d*, the downstream FIFO depth for that VC.
+Sending a flit on VC *v* does `credit_cnt[v]--` and stalls if the count would go below zero (no grant). When the downstream router frees a slot it pulses a credit plus the VC id back upstream and `credit_cnt[v]++`. The counter is initialised to *d*, the downstream FIFO (first-in, first-out) depth for that VC.
 
 So "credits" are not a bus — they are a per-VC count of *known-free downstream slots*. The switch allocator (§4) is only allowed to request an output for an input VC whose `credit_cnt > 0`; this is what makes backpressure lossless without ever dropping a flit. The reverse credit wire carries just a VC id (⌈log₂ v⌉ bits) per freed slot, which is why credit return is cheap but still costs the round-trip latency the formula above captures.
 
@@ -282,18 +284,18 @@ Server/infra SoCs (Neoverse CMN-600/700/S3-class meshes) put coherence *on* the 
 - **RN-F** (fully coherent requesters: CPU clusters), **HN-F** (home nodes: slices of the system cache + snoop filter/directory + point of coherence), **SN-F** (subordinate memory controllers), plus RN-I/HN-I for IO.
 - Physical addresses are **hash-interleaved across HN-Fs** → uniform load on home nodes, no single coherence bottleneck (same trick as GPU L2-slice/memory-channel hashing — *GPU architecture, companion AI-infra notebook*).
 - A coherent read: RN-F → (REQ VN) → its address's HN-F → snoop filter lookup → either DAT from system-cache slice, snoop to an owning RN-F (SNP VN), or fetch from SN-F; data returns possibly **direct-to-requester (DCT/DMT)** skipping the home hop on the data path.
-- QoS: per-source priority fields, age-based escalation at routers, and regulator counters at injection points (rate-limit a misbehaving accelerator before it floods the mesh).
+- QoS (Quality of Service): per-source priority fields, age-based escalation at routers, and regulator counters at injection points (rate-limit a misbehaving accelerator before it floods the mesh).
 
-AI-accelerator NoCs (Tenstorrent-style) differ in kind: software-scheduled, **multicast-capable** (one weight tile → row of cores), bandwidth-optimized over latency, often *not* hardware-coherent — the NoC is the dataflow fabric, with explicit DMA as the programming model.
+AI-accelerator NoCs (Tenstorrent-style) differ in kind: software-scheduled, **multicast-capable** (one weight tile → row of cores), bandwidth-optimized over latency, often *not* hardware-coherent — the NoC is the dataflow fabric, with explicit DMA (Direct Memory Access) as the programming model.
 
 ---
 
 ## 7. Physical design of the fabric
 
 - **Link pipelining:** mesh links at 1–2 mm route in 1 cycle at SoC clocks; longer or cross-die links need pipeline flops (adds hops' worth of latency) or **elastic buffers** (pipeline flops with backpressure = distributed FIFO).
-- **CDC:** multi-clock SoCs put async FIFOs at NIU boundaries or run the whole fabric on one mesochronous grid ([Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)).
+- **CDC (clock domain crossing):** multi-clock SoCs put async FIFOs at NIU boundaries or run the whole fabric on one mesochronous grid ([Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)).
 - **Width/serialization:** 512-bit data flits common near memory; narrow regions serialize (1 flit = 2–4 phits) trading bandwidth for routing congestion relief.
-- **Die-to-die:** UCIe/proprietary D2D PHYs carry the same flit protocol across chiplets (CHI C2C, AXI-over-D2D) — the NoC becomes a *package-scale* network; add ~5–20 ns and a serdes-style PHY per crossing ([IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md)).
+- **Die-to-die:** UCIe/proprietary D2D PHYs (physical layers) carry the same flit protocol across chiplets (CHI C2C, AXI-over-D2D) — the NoC becomes a *package-scale* network; add ~5–20 ns and a serdes-style PHY per crossing ([IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md)).
 - **Floorplan coupling:** router placement = tile placement; bisection wires must physically exist across the die middle — a mesh's $k \cdot b$ bisection is also a *routing-resource* statement ([Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md)).
 
 ---
@@ -306,9 +308,9 @@ $$
 T_0 = \bar{h}\,(t_r + t_w) + \frac{L_{\text{pkt}}}{b}
 $$
 
-($\bar{h}$ avg hops, $t_r$ router delay, $t_w$ wire delay, last term = serialization). 
+($\bar{h}$ avg hops, $t_r$ router delay, $t_w$ wire delay, $L_{\text{pkt}}$ packet size, $b$ link bandwidth; last term = serialization). 
 
-**Saturation:** queueing delay explodes as offered load → min(allocator efficiency × link capacity, bisection bound). Engineering rule: provision so links run ≤ 60–70% sustained; latency–throughput curves hockey-stick past that (M/D/1 intuition: delay $\propto \rho/(1-\rho)$).
+**Saturation:** queueing delay explodes as offered load → min(allocator efficiency × link capacity, bisection bound). Engineering rule: provision so links run ≤ 60–70% sustained; latency–throughput curves hockey-stick past that (M/D/1 intuition: delay $\propto \rho/(1-\rho)$, $\rho$ = link utilization).
 
 **Worked mini-example** (the classic): 8×8 mesh, 256-bit links @ 2 GHz, uniform random. Bisection = 8 links × 64 GB/s = 512 GB/s; per-node throughput bound = 2×512/64 = **16 GB/s** — note how much lower than one link's 64 GB/s. Uniform-random is bisection-limited, which is why real SoCs hash addresses (spread hotspots) and place high-traffic agents (memory controllers) to shorten $\bar h$ for the dominant flows.
 

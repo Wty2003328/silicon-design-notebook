@@ -13,7 +13,7 @@ Consolidated interview Q&A and worked problems from every page in `03_Frontend_R
 **A:** Sampled values are signal values captured in the Preponed region (start of the time
 slot, before any Active-region logic). Assertions evaluate in the Observed region using these
 pre-captured values. This prevents race conditions: the assertion sees a consistent snapshot
-of all signals from before any RTL updates in the current cycle. Without sampled values,
+of all signals from before any RTL (Register-Transfer Level) updates in the current cycle. Without sampled values,
 assertions could see partially-updated combinational logic and produce non-deterministic results.
 
 ### Q2: Explain the difference between |-> and |=>.
@@ -41,7 +41,7 @@ verify it actually fires during simulation.
 ### Q5: Explain the bind construct and why it's critical for verification.
 
 **A:** `bind` instantiates a checker module inside an RTL module without modifying the RTL
-source. This is essential because: (1) RTL IP may be encrypted; (2) RTL should stay clean for
+source. This is essential because: (1) RTL IP (Intellectual Property) may be encrypted; (2) RTL should stay clean for
 synthesis; (3) assertions are verification artifacts that don't belong in design code; (4) bind
 enables assertion libraries that can be reused across projects. The bound module has full
 visibility into the target module's ports and internal signals.
@@ -92,7 +92,7 @@ on sampled values, so it shows what was stable before the clock edge, not mid-cy
 
 ### Q11: When would you use assert vs assume vs cover?
 
-**A:** `assert`: the DUT must satisfy this property -- failures indicate bugs. `assume`:
+**A:** `assert`: the DUT (Device Under Test) must satisfy this property -- failures indicate bugs. `assume`:
 the environment/stimulus must satisfy this -- in simulation, acts like assert; in formal
 verification, constrains the input space (tells the prover not to try illegal inputs). `cover`:
 checks that a property CAN be satisfied -- verifies reachability. Use all three together: assume
@@ -162,7 +162,7 @@ endgroup
 ### Q15: What is the difference between assert #0 and assert final?
 
 **A:** Both are deferred immediate assertions (avoid combinational glitches). `assert #0`
-evaluates in the Observed region (same time slot, after Active/NBA settle). `assert final`
+evaluates in the Observed region (same time slot, after Active/NBA (Non-Blocking Assignment) settle). `assert final`
 evaluates in the Reactive region (after Observed assertions and program block scheduling).
 Use `assert #0` for most cases. Use `assert final` when you need to check values after
 concurrent assertion processing has completed.
@@ -183,19 +183,19 @@ functional coverage, allowing unified analysis.
 
 ### Q1: Derive the MTBF formula for a 2-FF synchronizer. What determines MTBF?
 
-**A:** Starting from the metastable state, the latch voltage evolves as V(t) = Vm + dV * exp(t/tau). Resolution occurs when V reaches a logic threshold. The probability of NOT resolving in time t_r is proportional to T_w = T_0 * exp(-t_r/tau). Failure rate = f_clk * f_data * T_w, so MTBF = exp(t_r/tau) / (f_clk * f_data * T_0). The key factors are: (1) tau -- technology-dependent, smaller is better (faster resolution); (2) t_r -- available resolution time = clock period - Tc2q - Tsetup; (3) f_clk and f_data -- higher rates increase failure probability. MTBF increases EXPONENTIALLY with t_r/tau, which is why one extra synchronizer stage (doubling t_r) increases MTBF by many orders of magnitude.
+**A:** Starting from the metastable state, the latch voltage evolves as V(t) = Vm + dV * exp(t/tau). Resolution occurs when V reaches a logic threshold. The probability of NOT resolving in time t_r is proportional to T_w = T_0 * exp(-t_r/tau). Failure rate = f_clk * f_data * T_w, so MTBF (Mean Time Between Failures) = exp(t_r/tau) / (f_clk * f_data * T_0). The key factors are: (1) tau -- technology-dependent, smaller is better (faster resolution); (2) t_r -- available resolution time = clock period - Tc2q - Tsetup; (3) f_clk and f_data -- higher rates increase failure probability. MTBF increases EXPONENTIALLY with t_r/tau, which is why one extra synchronizer stage (doubling t_r) increases MTBF by many orders of magnitude.
 
 ### Q2: Why 2 FFs and not 1? When do you need 3?
 
-**A:** With 1 FF, the output goes directly to destination logic. If metastable, the metastable voltage propagates through combinational logic, potentially causing different gates to interpret it as different logic values simultaneously (one gate sees '1', another sees '0'). With 2 FFs, the first FF has a full clock period to resolve before the second FF samples it. The MTBF with 2 FFs is typically 10^15+ years. Use 3 FFs when: f_clk > 2GHz (reducing t_r per stage), safety-critical systems (ASIL-D, DO-254 Level A), or when technology has poor tau (high-Vt cells, older nodes). 3-FF adds 1 cycle latency but squares the MTBF exponent.
+**A:** With 1 FF (flip-flop), the output goes directly to destination logic. If metastable, the metastable voltage propagates through combinational logic, potentially causing different gates to interpret it as different logic values simultaneously (one gate sees '1', another sees '0'). With 2 FFs, the first FF has a full clock period to resolve before the second FF samples it. The MTBF with 2 FFs is typically 10^15+ years. Use 3 FFs when: f_clk > 2GHz (reducing t_r per stage), safety-critical systems (ASIL-D, DO-254 Level A), or when technology has poor tau (high-Vt cells, older nodes). 3-FF adds 1 cycle latency but squares the MTBF exponent.
 
 ### Q3: Why can't you synchronize a multi-bit bus with individual 2-FF synchronizers?
 
-**A:** Each synchronizer bit is independent and may resolve to the new or old value on any given clock cycle. For a bus transitioning from 0111 to 1000, the destination domain could see 1111, 0000, 1100, or any of 16 possible combinations of old/new bit values. These intermediate values never existed in the source domain and cause data corruption. Solutions: (1) Gray code for sequential counters (1-bit change guaranteed); (2) MUX-recirculation (synchronize control, capture stable data); (3) Handshake (req/ack protocol); (4) Async FIFO (best for streaming).
+**A:** Each synchronizer bit is independent and may resolve to the new or old value on any given clock cycle. For a bus transitioning from 0111 to 1000, the destination domain could see 1111, 0000, 1100, or any of 16 possible combinations of old/new bit values. These intermediate values never existed in the source domain and cause data corruption. Solutions: (1) Gray code for sequential counters (1-bit change guaranteed); (2) MUX-recirculation (synchronize control, capture stable data); (3) Handshake (req/ack protocol); (4) Async FIFO (First-In First-Out; best for streaming).
 
 ### Q4: Walk through the full/empty detection logic of an async FIFO.
 
-**A:** Pointers are ADDR_W+1 bits (extra MSB for wrap detection), Gray-coded before crossing domains. EMPTY (read domain): compare synchronized write Gray pointer with local read Gray pointer. If equal, empty (all entries read). FULL (write domain): compare local write Gray pointer with synchronized read Gray pointer. Full when the top 2 MSBs differ and the remaining bits are equal -- this means the write pointer has wrapped around and caught up to the read pointer. Both conditions are CONSERVATIVE: empty may be falsely asserted briefly (stale write pointer), and full may be falsely asserted briefly (stale read pointer). Neither condition can falsely indicate "not full" or "not empty," preventing overflow or underflow.
+**A:** Pointers are ADDR_W+1 bits (extra MSB (most significant bit) for wrap detection), Gray-coded before crossing domains. EMPTY (read domain): compare synchronized write Gray pointer with local read Gray pointer. If equal, empty (all entries read). FULL (write domain): compare local write Gray pointer with synchronized read Gray pointer. Full when the top 2 MSBs differ and the remaining bits are equal -- this means the write pointer has wrapped around and caught up to the read pointer. Both conditions are CONSERVATIVE: empty may be falsely asserted briefly (stale write pointer), and full may be falsely asserted briefly (stale read pointer). Neither condition can falsely indicate "not full" or "not empty," preventing overflow or underflow.
 
 ### Q5: Explain async-assert, sync-deassert reset. Why is it necessary?
 
@@ -207,11 +207,11 @@ functional coverage, allowing unified analysis.
 
 ### Q7: What is a pulse synchronizer and when does it fail?
 
-**A:** A pulse synchronizer converts a source-domain pulse to a toggle, synchronizes the toggle with a 2-FF synchronizer, then detects edges (XOR of two consecutive samples) to regenerate a pulse in the destination domain. It fails when source pulses arrive faster than the synchronizer can process them -- specifically, if a second pulse arrives before the first toggle has been synchronized (less than ~2-3 destination clock cycles apart). The second pulse toggles the signal back, and if the synchronizer hasn't captured the first transition, it sees no net change and the pulse is lost. For high-rate pulse transfer, use an async FIFO or handshake with backpressure.
+**A:** A pulse synchronizer converts a source-domain pulse to a toggle, synchronizes the toggle with a 2-FF synchronizer, then detects edges (XOR, i.e. exclusive-OR, of two consecutive samples) to regenerate a pulse in the destination domain. It fails when source pulses arrive faster than the synchronizer can process them -- specifically, if a second pulse arrives before the first toggle has been synchronized (less than ~2-3 destination clock cycles apart). The second pulse toggles the signal back, and if the synchronizer hasn't captured the first transition, it sees no net change and the pulse is lost. For high-rate pulse transfer, use an async FIFO or handshake with backpressure.
 
 ### Q8: What CDC verification checks does SpyGlass perform?
 
-**A:** SpyGlass CDC performs: (1) **Structural checks**: missing synchronizers, combinational logic on CDC paths, incorrect synchronizer depth; (2) **Multi-bit CDC**: buses crossing without FIFO/handshake/Gray code; (3) **Reconvergence**: multiple synchronized versions of the same signal meeting at combinational logic; (4) **Protocol checks**: handshake protocol compliance, FIFO pointer Gray code correctness; (5) **Data stability**: ensuring data is stable when sampled by MUX-based synchronizers; (6) **Clock domain identification**: automatically determining clock domains from the netlist; (7) **Quasi-static checks**: signals marked as static that may actually change. Results are errors (must fix), warnings (review), and info (informational). Formal CDC mode uses model checking to exhaustively prove properties.
+**A:** SpyGlass CDC (Clock Domain Crossing) performs: (1) **Structural checks**: missing synchronizers, combinational logic on CDC paths, incorrect synchronizer depth; (2) **Multi-bit CDC**: buses crossing without FIFO/handshake/Gray code; (3) **Reconvergence**: multiple synchronized versions of the same signal meeting at combinational logic; (4) **Protocol checks**: handshake protocol compliance, FIFO pointer Gray code correctness; (5) **Data stability**: ensuring data is stable when sampled by MUX-based synchronizers; (6) **Clock domain identification**: automatically determining clock domains from the netlist; (7) **Quasi-static checks**: signals marked as static that may actually change. Results are errors (must fix), warnings (review), and info (informational). Formal CDC mode uses model checking to exhaustively prove properties.
 
 ### Q9: Explain level shifter ordering when both voltage and clock domains change.
 
@@ -227,7 +227,7 @@ functional coverage, allowing unified analysis.
 
 ### Q12: What are the timing constraints for signals inside a synchronizer?
 
-**A:** Within a 2-FF synchronizer, the path from FF1/Q to FF2/D must meet setup and hold timing in the destination clock domain. This is a NORMAL intra-domain timing check -- STA analyzes it as setup: Tc2q_FF1 + T_wire < T_period - T_setup_FF2, and hold: Tc2q_min_FF1 > T_hold_FF2. The path from the source domain to FF1/D is a CDC crossing -- declared as false_path in SDC (no timing check possible across async domains). The critical requirement is that FF1 and FF2 are placed close together (short wire, minimal delay) to maximize the resolution time. Some tools have special `set_max_delay` constraints on synchronizer paths to enforce close placement.
+**A:** Within a 2-FF synchronizer, the path from FF1/Q to FF2/D must meet setup and hold timing in the destination clock domain. This is a NORMAL intra-domain timing check -- STA (Static Timing Analysis) analyzes it as setup: Tc2q_FF1 + T_wire < T_period - T_setup_FF2, and hold: Tc2q_min_FF1 > T_hold_FF2. The path from the source domain to FF1/D is a CDC crossing -- declared as false_path in SDC (no timing check possible across async domains). The critical requirement is that FF1 and FF2 are placed close together (short wire, minimal delay) to maximize the resolution time. Some tools have special `set_max_delay` constraints on synchronizer paths to enforce close placement.
 
 ### Q13: Describe a scenario where a 2-FF synchronizer is NOT sufficient.
 
@@ -235,7 +235,7 @@ functional coverage, allowing unified analysis.
 
 ### Q14: How do you handle CDC for a signal that is used both as data and as a clock?
 
-**A:** This is a very dangerous pattern. A signal that is used as a gated clock in the destination domain must be treated as a clock signal, not a data signal. Metastability on a clock can cause double-clocking or clock glitches that corrupt many FFs simultaneously. Solution: (1) Never directly use a CDC signal as a clock; (2) Synchronize it as data, then feed the synchronized version to an ICG cell to gate the local clock; (3) Ensure the ICG setup/hold timing is met by the synchronized signal. Alternatively, use a clock multiplexer with glitch-free switching logic.
+**A:** This is a very dangerous pattern. A signal that is used as a gated clock in the destination domain must be treated as a clock signal, not a data signal. Metastability on a clock can cause double-clocking or clock glitches that corrupt many FFs simultaneously. Solution: (1) Never directly use a CDC signal as a clock; (2) Synchronize it as data, then feed the synchronized version to an ICG (Integrated Clock Gating) cell to gate the local clock; (3) Ensure the ICG setup/hold timing is met by the synchronized signal. Alternatively, use a clock multiplexer with glitch-free switching logic.
 
 ### Q15: What happens to a FIFO during reset if the write domain deasserts reset before the read domain?
 
@@ -275,7 +275,7 @@ functional coverage, allowing unified analysis.
 
 ### Q2: Why can't you use a simple MUX for clock switching?
 
-**A:** A combinational MUX `sel ? clk_b : clk_a` produces runt pulses when sel transitions while the two clocks are at different levels. Example: if sel goes from 0→1 while clk_a=HIGH and clk_b=LOW, the output drops from 1 to 0 creating a pulse shorter than a valid half-period. This runt pulse causes setup/hold violations in all downstream flip-flops. Additionally, clock tree buffers may filter the runt differently at different fanout points, causing some FFs to see an edge and others not — a catastrophic functional failure.
+**A:** A combinational MUX (multiplexer) `sel ? clk_b : clk_a` produces runt pulses when sel transitions while the two clocks are at different levels. Example: if sel goes from 0→1 while clk_a=HIGH and clk_b=LOW, the output drops from 1 to 0 creating a pulse shorter than a valid half-period. This runt pulse causes setup/hold violations in all downstream flip-flops. Additionally, clock tree buffers may filter the runt differently at different fanout points, causing some FFs to see an edge and others not — a catastrophic functional failure.
 
 ### Q3: Explain the glitch-free clock mux feedback mechanism.
 
@@ -283,11 +283,11 @@ functional coverage, allowing unified analysis.
 
 ### Q4: What is the jitter of a dual-modulus fractional divider?
 
-**A:** For divide-by-N.5 (alternating N and N+1): peak-to-peak jitter = T (one input clock period). For divide-by-N + K/F (general fractional): Jpp = T always (periods differ by 1 input cycle). The RMS jitter depends on the sequence pattern. A first-order sigma-delta modulator produces Jrms ≈ T/sqrt(12) for the divider output. Higher-order modulators shape the noise spectrum so that low-frequency jitter is reduced at the expense of high-frequency jitter, which the PLL loop filter attenuates. After PLL filtering, the output jitter can be sub-picosecond.
+**A:** For divide-by-N.5 (alternating N and N+1): peak-to-peak jitter = T (one input clock period). For divide-by-N + K/F (general fractional): Jpp = T always (periods differ by 1 input cycle). The RMS (root mean square) jitter depends on the sequence pattern. A first-order sigma-delta modulator produces Jrms ≈ T/sqrt(12) for the divider output. Higher-order modulators shape the noise spectrum so that low-frequency jitter is reduced at the expense of high-frequency jitter, which the PLL (Phase-Locked Loop) loop filter attenuates. After PLL filtering, the output jitter can be sub-picosecond.
 
 ### Q5: What is the difference between clock gating and clock division?
 
-**A:** Clock gating selectively enables/disables an existing clock using an ICG cell (latch + AND). It preserves the original frequency when active and eliminates toggling when gated. Used for power reduction of idle blocks. Clock division creates a new, lower-frequency clock signal. Used to generate clocks for slower domains (peripherals, IO). Key difference: gating saves power in the clock tree fanout when a block is idle; division reduces frequency for blocks that inherently need a slower clock. In an SoC, clock gating saves 30-60% of dynamic power.
+**A:** Clock gating selectively enables/disables an existing clock using an ICG cell (latch + AND). It preserves the original frequency when active and eliminates toggling when gated. Used for power reduction of idle blocks. Clock division creates a new, lower-frequency clock signal. Used to generate clocks for slower domains (peripherals, IO). Key difference: gating saves power in the clock tree fanout when a block is idle; division reduces frequency for blocks that inherently need a slower clock. In an SoC (System-on-Chip), clock gating saves 30-60% of dynamic power.
 
 ### Q6: How do you handle the case where one clock stops during switching?
 
@@ -295,7 +295,7 @@ functional coverage, allowing unified analysis.
 
 ### Q7: Why do ASIC designs use ICG cells instead of direct AND gating?
 
-**A:** A raw `clk & en` glitches if en transitions while clk is HIGH — the AND output produces a narrow pulse. The ICG cell contains a negative-phase latch that captures `en` when clk is LOW (inactive phase). When clk goes HIGH, the latched enable is stable, so the AND output is clean. Additionally, ICG cells are: (1) characterized by the foundry with accurate timing models (Tsetup for enable, Tclk-to-Q), enabling correct STA; (2) DFT-aware with a test-enable (TE) port for scan testing; (3) physically optimized for low insertion delay and balanced rise/fall times. Using raw AND gates for clock gating is a DRC violation in most ASIC methodologies.
+**A:** A raw `clk & en` glitches if en transitions while clk is HIGH — the AND output produces a narrow pulse. The ICG cell contains a negative-phase latch that captures `en` when clk is LOW (inactive phase). When clk goes HIGH, the latched enable is stable, so the AND output is clean. Additionally, ICG cells are: (1) characterized by the foundry with accurate timing models (Tsetup for enable, Tclk-to-Q), enabling correct STA; (2) DFT-aware (Design-for-Test) with a test-enable (TE) port for scan testing; (3) physically optimized for low insertion delay and balanced rise/fall times. Using raw AND gates for clock gating is a DRC violation in most ASIC (Application-Specific Integrated Circuit) methodologies.
 
 ### Q8: Can you implement a divide-by-1.5 clock?
 
@@ -323,7 +323,7 @@ The tool treats the divider output as a regular signal, not a clock. Paths from 
 
 ### Q12: Draw the PLL block diagram and explain each component's function.
 
-**A:** PFD (Phase-Frequency Detector): compares reference and feedback clock edges, outputs UP/DOWN error signals indicating whether VCO is too slow or too fast. Charge Pump: converts UP/DOWN pulses to current that charges/discharges the loop filter capacitor. UP → source current → V_ctrl increases → VCO speeds up. DOWN → sink current → V_ctrl decreases → VCO slows down. Loop Filter: integrates charge pump current into a smooth control voltage. Contains R-C network; the resistor provides a stabilizing zero. Determines bandwidth, stability, and lock time. VCO: converts control voltage to output frequency. Ring oscillator (digital) or LC tank (analog). Feedback Divider (÷N): divides VCO output frequency by N, producing f_fb = f_out/N. When locked, f_fb = f_ref, so f_out = N * f_ref.
+**A:** PFD (Phase-Frequency Detector): compares reference and feedback clock edges, outputs UP/DOWN error signals indicating whether VCO is too slow or too fast. Charge Pump: converts UP/DOWN pulses to current that charges/discharges the loop filter capacitor. UP → source current → V_ctrl increases → VCO speeds up. DOWN → sink current → V_ctrl decreases → VCO slows down. Loop Filter: integrates charge pump current into a smooth control voltage. Contains R-C network; the resistor provides a stabilizing zero. Determines bandwidth, stability, and lock time. VCO: converts control voltage to output frequency. Ring oscillator (digital) or LC (inductor-capacitor) tank (analog). Feedback Divider (÷N): divides VCO output frequency by N, producing f_fb = f_out/N. When locked, f_fb = f_ref, so f_out = N * f_ref.
 
 ### Q13: What are reference spurs and how do you minimize them?
 
@@ -331,15 +331,15 @@ The tool treats the divider output as a regular signal, not a clock. Paths from 
 
 ### Q14: Explain the DLL vs PLL trade-off. When would you choose each?
 
-**A:** DLL: first-order system (inherently stable), does not accumulate jitter (each output edge derived from a reference edge), cannot multiply frequency, simpler loop filter (just a capacitor), limited delay range. PLL: second-order system (requires stability analysis), VCO accumulates phase noise between corrections, CAN multiply frequency (f_out = N * f_ref), more complex loop filter (R + C for zero), wide frequency range. Choose DLL for: phase alignment without frequency change (DDR SDRAM interfaces, multiphase clock generation for interleaved ADCs). Choose PLL for: clock synthesis (generating 2.4 GHz from 25 MHz crystal), frequency multiplication, DVFS (changing frequency dynamically), CDR in SerDes. In practice, most SoC clock generators use PLLs because frequency synthesis is almost always needed. DLLs appear mainly in DDR PHY blocks.
+**A:** DLL (Delay-Locked Loop): first-order system (inherently stable), does not accumulate jitter (each output edge derived from a reference edge), cannot multiply frequency, simpler loop filter (just a capacitor), limited delay range. PLL: second-order system (requires stability analysis), VCO accumulates phase noise between corrections, CAN multiply frequency (f_out = N * f_ref), more complex loop filter (R + C for zero), wide frequency range. Choose DLL for: phase alignment without frequency change (DDR SDRAM interfaces, multiphase clock generation for interleaved ADCs). Choose PLL for: clock synthesis (generating 2.4 GHz from 25 MHz crystal), frequency multiplication, DVFS (changing frequency dynamically), CDR in SerDes. In practice, most SoC clock generators use PLLs because frequency synthesis is almost always needed. DLLs appear mainly in DDR PHY blocks.
 
 ### Q15: What is clock mesh and when is it used?
 
-**A:** A clock mesh is a grid of metal wires in the upper metal layers that distributes the clock signal. Multiple buffers drive the mesh from different points, and the mesh shorts them together, equalizing the clock arrival time across the chip. The mesh achieves very low skew (< 5 ps in some designs) because any load variation is shared across all drivers. The cost is high: the mesh wire capacitance is enormous (often the largest single contributor to dynamic power), consuming 10-30% of total chip power. Clock mesh is used in ultra-high-performance processors where skew must be minimized (IBM POWER, Intel server CPUs). It is combined with an H-tree: the H-tree drives the mesh grid points, and the mesh provides local distribution. In ASIC designs below ~1 GHz, a well-balanced CTS tree is sufficient and much more power-efficient.
+**A:** A clock mesh is a grid of metal wires in the upper metal layers that distributes the clock signal. Multiple buffers drive the mesh from different points, and the mesh shorts them together, equalizing the clock arrival time across the chip. The mesh achieves very low skew (< 5 ps in some designs) because any load variation is shared across all drivers. The cost is high: the mesh wire capacitance is enormous (often the largest single contributor to dynamic power), consuming 10-30% of total chip power. Clock mesh is used in ultra-high-performance processors where skew must be minimized (IBM POWER, Intel server CPUs). It is combined with an H-tree: the H-tree drives the mesh grid points, and the mesh provides local distribution. In ASIC designs below ~1 GHz, a well-balanced CTS (Clock Tree Synthesis) tree is sufficient and much more power-efficient.
 
 ### Q16: Explain CPPR (Clock Path Pessimism Removal) and why it matters.
 
-**A:** In OCV-aware STA, the launch and capture clock paths are derated differently (slow vs fast) to account for local variation. But the common portion of both paths — from the clock source to the divergence point — is physically the same gates and wires. Derating the common path slow on launch and fast on capture creates artificial pessimism that doesn't reflect physical reality. CPPR identifies the common clock path and removes the differential derate on it, applying OCV only from the divergence point onward. The impact is significant: CPPR typically recovers 50-200 ps of timing margin, which can mean the difference between meeting and failing timing closure. Without CPPR, 5-15% of paths may show false violations, requiring unnecessary optimization that increases area and power. All modern STA tools (PrimeTime, Tempus) support CPPR and it is enabled by default in signoff flows.
+**A:** In OCV-aware STA, the launch and capture clock paths are derated differently (slow vs fast) to account for local variation. But the common portion of both paths — from the clock source to the divergence point — is physically the same gates and wires. Derating the common path slow on launch and fast on capture creates artificial pessimism that doesn't reflect physical reality. CPPR identifies the common clock path and removes the differential derate on it, applying OCV (On-Chip Variation) only from the divergence point onward. The impact is significant: CPPR typically recovers 50-200 ps of timing margin, which can mean the difference between meeting and failing timing closure. Without CPPR, 5-15% of paths may show false violations, requiring unnecessary optimization that increases area and power. All modern STA tools (PrimeTime, Tempus) support CPPR and it is enabled by default in signoff flows.
 
 ### Q17: How does a clock gating check differ from a normal setup/hold check?
 
@@ -393,15 +393,15 @@ Common mistakes: forgetting `-add` for multiple clocks on the same pin (the seco
 
 ### Q24: Explain spread-spectrum clocking (SSC) and its implementation.
 
-**A:** Spread-spectrum clocking intentionally modulates the clock frequency (typically ±0.5% to ±1%) to spread the energy of clock harmonics across a wider bandwidth, reducing the peak EMI (electromagnetic interference) at any single frequency. This helps products pass FCC/CE emission regulations. Implementation: use a fractional-N PLL where the fractional part K is modulated by a triangular or Hershey-kiss profile. The modulation frequency is typically 30-33 kHz (below the resolution bandwidth of EMI measurement receivers). The modulation profile is stored in a small ROM or generated by a counter-based state machine that adjusts K each reference cycle. The PLL bandwidth must be wide enough to track the modulation (~100-500 kHz). Down-spread (only decrease frequency) is common because it maintains backward compatibility with the maximum frequency specification. Used in: PCIe, SATA, USB, DDR (all have SSC specifications).
+**A:** Spread-spectrum clocking intentionally modulates the clock frequency (typically ±0.5% to ±1%) to spread the energy of clock harmonics across a wider bandwidth, reducing the peak EMI (electromagnetic interference) at any single frequency. This helps products pass FCC/CE emission regulations. Implementation: use a fractional-N PLL where the fractional part K is modulated by a triangular or Hershey-kiss profile. The modulation frequency is typically 30-33 kHz (below the resolution bandwidth of EMI measurement receivers). The modulation profile is stored in a small ROM or generated by a counter-based state machine that adjusts K each reference cycle. The PLL bandwidth must be wide enough to track the modulation (~100-500 kHz). Down-spread (only decrease frequency) is common because it maintains backward compatibility with the maximum frequency specification. Used in: PCIe (Peripheral Component Interconnect Express), SATA (Serial ATA), USB, DDR (all have SSC specifications).
 
 ### Q25: What is clock jitter's impact on ADC sampling?
 
-**A:** Clock jitter directly limits ADC performance. When the sampling clock has jitter, the actual sampling instant deviates from the ideal, causing an amplitude error proportional to the signal's slew rate at that instant. For a full-scale sinusoidal signal at frequency f_in, the SNR limited by jitter is: SNR_jitter = -20*log10(2*pi*f_in*J_rms) dB. Example: for a 100 MHz input signal and 1 ps RMS jitter: SNR = -20*log10(2*pi*100e6*1e-12) = -20*log10(6.28e-4) = 64 dB ≈ 10.3 ENOB. This means even a "perfect" ADC with zero quantization noise would be limited to 10.3 effective bits by 1 ps of clock jitter at 100 MHz input. For a 14-bit ADC (86 dB SNR), the jitter requirement is J_rms < 0.1 ps — achievable only with an LC-based PLL or a DLL-cleaned clock. This is why high-speed ADC designs use DLLs (no jitter accumulation) or extremely low-noise LC PLLs for the sampling clock.
+**A:** Clock jitter directly limits ADC performance. When the sampling clock has jitter, the actual sampling instant deviates from the ideal, causing an amplitude error proportional to the signal's slew rate at that instant. For a full-scale sinusoidal signal at frequency f_in, the SNR (signal-to-noise ratio) limited by jitter is: SNR_jitter = -20*log10(2*pi*f_in*J_rms) dB. Example: for a 100 MHz input signal and 1 ps RMS jitter: SNR = -20*log10(2*pi*100e6*1e-12) = -20*log10(6.28e-4) = 64 dB ≈ 10.3 ENOB (Effective Number of Bits). This means even a "perfect" ADC with zero quantization noise would be limited to 10.3 effective bits by 1 ps of clock jitter at 100 MHz input. For a 14-bit ADC (86 dB SNR), the jitter requirement is J_rms < 0.1 ps — achievable only with an LC-based PLL or a DLL-cleaned clock. This is why high-speed ADC designs use DLLs (no jitter accumulation) or extremely low-noise LC PLLs for the sampling clock.
 
 ### Q26: How is clock skew managed in modern ASIC design?
 
-**A:** Clock skew is managed through the Clock Tree Synthesis (CTS) flow in P&R tools: (1) **Target:** useful skew = 0 for all flip-flop pairs in the same clock domain (or intentional useful skew to help timing). Typical achievable skew: 20-50 ps in 7nm, 50-100 ps in 28nm. (2) **CTS algorithm:** the tool builds a balanced buffer tree from the clock source to all sinks (flip-flops), inserting buffers and inverters to equalize path delays. H-tree topology for critical clocks, or spine-based for general use. (3) **Post-CTS optimization:** the tool adjusts buffer sizes and adds delay cells to fine-tune skew. Useful skew intentionally unbalances launch vs capture to help tight paths. (4) **Clock tree DRVs:** design rule violations specific to clock trees — maximum transition time, maximum capacitance, maximum fanout — are tighter than data path rules. (5) **Multi-corner multi-mode (MCMM):** CTS must balance skew across all PVT corners simultaneously, not just typical. A tree balanced at SS corner may be unbalanced at FF corner. CTS tools optimize across multiple corners jointly.
+**A:** Clock skew is managed through the Clock Tree Synthesis (CTS) flow in P&R (Place-and-Route) tools: (1) **Target:** useful skew = 0 for all flip-flop pairs in the same clock domain (or intentional useful skew to help timing). Typical achievable skew: 20-50 ps in 7nm, 50-100 ps in 28nm. (2) **CTS algorithm:** the tool builds a balanced buffer tree from the clock source to all sinks (flip-flops), inserting buffers and inverters to equalize path delays. H-tree topology for critical clocks, or spine-based for general use. (3) **Post-CTS optimization:** the tool adjusts buffer sizes and adds delay cells to fine-tune skew. Useful skew intentionally unbalances launch vs capture to help tight paths. (4) **Clock tree DRVs:** design rule violations specific to clock trees — maximum transition time, maximum capacitance, maximum fanout — are tighter than data path rules. (5) **Multi-corner multi-mode (MCMM):** CTS must balance skew across all PVT (Process, Voltage, Temperature) corners simultaneously, not just typical. A tree balanced at SS (slow-slow) corner may be unbalanced at FF (fast-fast) corner. CTS tools optimize across multiple corners jointly.
 
 ---
 
@@ -439,7 +439,7 @@ bit [3:0] two_state = four_state;  // two_state = 4'b1000
 **A:** Packed arrays are contiguous bit vectors -- dimensions before the variable name.
 Unpacked arrays are arrays of elements -- dimensions after the name. The distinction matters
 for: (1) Assignments -- packed arrays can be assigned to/from bit vectors of equal width;
-(2) Module ports -- must be packed or match exactly; (3) DPI calls -- packed maps to simple
+(2) Module ports -- must be packed or match exactly; (3) DPI (Direct Programming Interface) calls -- packed maps to simple
 C types, unpacked requires complex svOpenArrayHandle; (4) Part-select -- packed supports
 arbitrary bit-slicing like `arr[15:8]`, unpacked does not.
 
@@ -526,7 +526,7 @@ If `b` were `logic signed [15:0]`, the result would be `16'hFFFF = -1` (sign-ext
 
 **A:** Use a packed struct with explicit reserved fields. This maps directly to the hardware
 register layout and enables bitfield access by name while maintaining the ability to read/write
-the entire register as a single vector. See the `usb_ep_ctrl_t` example above. In UVM RAL,
+the entire register as a single vector. See the `usb_ep_ctrl_t` example above. In UVM (Universal Verification Methodology) RAL (Register Abstraction Layer),
 this maps to `uvm_reg_field` objects with `"RO"` or `"RsvdZ"` access policies.
 
 ### Q12: Explain the `with` clause in array methods.
@@ -615,15 +615,15 @@ compliance, and proving absence of bugs (deadlock, starvation, CDC violations).
 
 The design's transition relation is "unrolled" for K clock cycles. The initial state,
 K transitions, and the negation of the target property at step K are encoded as a single
-Boolean formula in CNF. A SAT solver determines satisfiability: if SAT, the satisfying
-assignment is a counterexample trace; if UNSAT, the property holds for K cycles. The bound
+Boolean formula in CNF (Conjunctive Normal Form). A SAT (Boolean satisfiability) solver determines satisfiability: if SAT, the satisfying
+assignment is a counterexample trace; if UNSAT (unsatisfiable), the property holds for K cycles. The bound
 K is incrementally increased to search for deeper bugs or achieve convergence.
 
 **Q3: What is the difference between BDD-based and SAT-based model checking?**
 
-BDD-based model checking computes the full set of reachable states as a BDD (fixed-point
+BDD-based model checking computes the full set of reachable states as a BDD (Binary Decision Diagram; fixed-point
 computation). It gives unbounded proofs but can fail due to BDD size explosion.
-SAT-based BMC unrolls the design for K steps — faster for finding bugs but only provides
+SAT-based BMC (Bounded Model Checking) unrolls the design for K steps — faster for finding bugs but only provides
 bounded proofs. Modern tools combine both: use SAT-based BMC to find shallow bugs quickly,
 then switch to BDD or IC3 for unbounded proofs.
 
@@ -639,12 +639,12 @@ lemmas if the property is not directly inductive.
 **Q5: What is IC3/PDR and why is it considered state-of-the-art?**
 
 IC3 (Property-Directed Reachability) incrementally builds an over-approximation of
-reachable states using clause learning, similar to how CDCL SAT solvers learn conflict
+reachable states using clause learning, similar to how CDCL (Conflict-Driven Clause Learning) SAT solvers learn conflict
 clauses. It maintains a sequence of "frames" that progressively tighten the reachable
 state set. It often converges much faster than k-induction because it learns exactly
 which states need to be excluded, rather than requiring uniform inductive depth.
 
-**Q6: What happens during LEC? Walk through the flow.**
+**Q6: What happens during LEC (Logic Equivalence Checking)? Walk through the flow.**
 
 LEC reads two designs (reference and implementation), sets up constants and scan modes,
 maps compare points (registers, IOs) between designs using name matching and signature
@@ -659,7 +659,7 @@ Standard combinational LEC can't handle this because compare points don't match 
 Solutions: (1) Enable retiming-aware LEC mode in the tool, which uses sequential equivalence
 checking. (2) Use the synthesis tool's retiming information (mapping file) to guide LEC.
 (3) If the tool still can't handle it, do incremental LEC — verify pre-retiming first,
-then verify the retiming step separately using SEC.
+then verify the retiming step separately using SEC (Sequential Equivalence Checking).
 
 **Q8: How do you handle clock gating in LEC?**
 
@@ -699,7 +699,7 @@ time the synchronized control is active. (2) The control signal is properly sync
 with a 2-FF synchronizer. (3) The data is only sampled in the destination domain when
 the control signal indicates validity.
 
-**Q13: What is the difference between CTL and LTL?**
+**Q13: What is the difference between CTL (Computation Tree Logic) and LTL (Linear Temporal Logic)?**
 
 LTL reasons about single linear execution paths (one possible future). CTL reasons about
 branching computation trees (all possible futures). LTL can express fairness naturally
@@ -717,7 +717,7 @@ someone other than the author. (5) No UNDETERMINED properties (tool converged on
 **Q15: When would you use sequential equivalence checking instead of standard LEC?**
 
 When the register structure has changed between the two designs. Standard LEC requires
-1-to-1 register mapping. SEC handles: retiming, FSM re-encoding, pipeline balancing,
+1-to-1 register mapping. SEC handles: retiming, FSM (Finite State Machine) re-encoding, pipeline balancing,
 C/C++ to RTL equivalence (different abstraction levels). SEC is much more computationally
 expensive — use it only when standard LEC can't handle the transformations.
 
@@ -807,11 +807,11 @@ via k-liveness (bounded liveness checking) or fair-cycle detection.
 
 *From [Gate_Level_Sim_and_Emulation.md](../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md)*
 
-**Q: Why run GLS if you already ran RTL sim and STA?** RTL sim doesn't run the actual netlist (misses synthesis/scan bugs and X-pessimism); STA is static (checks timing margins, not functional waveforms, and can't see glitches or async races). SDF GLS runs the real netlist with real delays and catches reset/X-propagation, scan-chain, and timing-dependent functional bugs neither can.
+**Q: Why run GLS (Gate-Level Simulation) if you already ran RTL sim and STA?** RTL sim doesn't run the actual netlist (misses synthesis/scan bugs and X-pessimism); STA is static (checks timing margins, not functional waveforms, and can't see glitches or async races). SDF (Standard Delay Format) GLS runs the real netlist with real delays and catches reset/X-propagation, scan-chain, and timing-dependent functional bugs neither can.
 
-**Q: Emulation vs FPGA prototype — when each?** Emulation: verification wants full signal visibility, fast compile, and HW/SW co-verification of long scenarios — accept ~MHz speed. FPGA prototype: software/system teams want near-real-time to develop apps and demo — accept lower visibility and slow compile. Same design, different consumer.
+**Q: Emulation vs FPGA (Field-Programmable Gate Array) prototype — when each?** Emulation: verification wants full signal visibility, fast compile, and HW/SW co-verification of long scenarios — accept ~MHz speed. FPGA prototype: software/system teams want near-real-time to develop apps and demo — accept lower visibility and slow compile. Same design, different consumer.
 
-**Q: How do you cut GLS pain?** Prove logical equivalence with formal LEC (fast), reserve GLS for what LEC can't do (X/reset, SDF timing, DFT), and run a focused suite (power-up + sanity + ATPG patterns) rather than the full regression.
+**Q: How do you cut GLS pain?** Prove logical equivalence with formal LEC (fast), reserve GLS for what LEC can't do (X/reset, SDF timing, DFT), and run a focused suite (power-up + sanity + ATPG (Automatic Test Pattern Generation) patterns) rather than the full regression.
 
 ---
 
@@ -836,7 +836,7 @@ the trigger to the NBA region.
 ### Q3: Explain UVM build_phase vs connect_phase.
 
 **A:** `build_phase` creates and configures components (top-down: parent creates children).
-`connect_phase` connects TLM ports between components (bottom-up convention). Separation is
+`connect_phase` connects TLM (Transaction-Level Modeling) ports between components (bottom-up convention). Separation is
 needed because you can't connect ports until ALL components exist. Build runs top-down so
 parents can configure children before children build. Connect runs bottom-up by convention
 but order doesn't strictly matter since ports are just handles.
@@ -862,7 +862,7 @@ This handshake ensures sequencer, sequence, and driver stay synchronized.
 **A:** The factory is a lookup table that maps type names to constructors. Instead of
 `new()`, components use `type_id::create()`. This allows type overrides (globally replace one
 type with another) and instance overrides (replace only at specific hierarchy paths) WITHOUT
-modifying source code. Essential for VIP reuse: end users can substitute custom transactions,
+modifying source code. Essential for VIP (Verification IP) reuse: end users can substitute custom transactions,
 drivers, etc., into reusable VIP without touching VIP code.
 
 ### Q7: Explain frontdoor vs backdoor register access in UVM RAL.
@@ -901,7 +901,7 @@ over wildcards. Later sets override earlier ones at the same specificity.
 **A:** A virtual sequence coordinates multiple sequences across multiple agents/sequencers.
 It doesn't run on any single sequencer (`start(null)`). Instead, it holds handles to multiple
 sequencers and starts sub-sequences on each. This enables test scenarios that require
-coordinated traffic from multiple bus masters (e.g., CPU and DMA accessing shared memory).
+coordinated traffic from multiple bus masters (e.g., CPU and DMA (Direct Memory Access) accessing shared memory).
 
 ### Q12: Draw the UVM phase execution order and explain why it matters.
 
@@ -953,7 +953,7 @@ a bug. `update()` writes desired to HW only if desired != mirror (conditional wr
 
 **Q: Why can't simulation find a missing CDC synchronizer?** RTL simulation is cycle-deterministic — it samples the crossing signal as a clean 0/1 each cycle and never models the metastable settling window. The bug only appears as real-time metastability in silicon. Only static CDC analysis (structure) or gate-sim with timing + metastability injection can flag it.
 
-**Q: You 2-FF-synchronized each bit of an 8-bit bus across clocks. What's wrong?** The bits can settle on *different* destination cycles, so the receiver can observe a transient value that never existed (e.g., 0111→1000 seen as 1111). Use gray code (if it's a counter, only 1 bit changes), a handshake/MCP formulation, or an async FIFO.
+**Q: You 2-FF-synchronized each bit of an 8-bit bus across clocks. What's wrong?** The bits can settle on *different* destination cycles, so the receiver can observe a transient value that never existed (e.g., 0111→1000 seen as 1111). Use gray code (if it's a counter, only 1 bit changes), a handshake/MCP (Multi-Cycle Path) formulation, or an async FIFO.
 
 **Q: What is RDC and how does it differ from CDC?** RDC is reset-domain crossing: a flop in reset-domain A feeding one in reset-domain B. When A asserts asynchronously, B (if running) can capture the mid-cycle transition and go metastable — same failure as CDC but caused by independent *reset assertion* rather than a clock edge. Fix with isolation or reset sequencing.
 
@@ -1068,7 +1068,7 @@ endclass
 
 **A:** Random stability means that a fixed seed produces the same random sequence regardless
 of unrelated code changes. SystemVerilog provides thread stability (each process has its own
-RNG) and type stability (each class type has independent state). This matters because: (1) you
+RNG (Random Number Generator)) and type stability (each class type has independent state). This matters because: (1) you
 can reproduce failures with `+seed=N`; (2) adding a printf in one component doesn't change
 the random sequence in another. However, changing object creation ORDER or adding new
 randomize() calls within the SAME thread will change that thread's sequence.
@@ -1175,8 +1175,8 @@ sequence items. The program block's restrictions conflict with all of these.
 
 ### Q8: What is the difference between blocking (=) and non-blocking (<=) assignments?
 
-**A:** Blocking assignments execute sequentially in the Active region -- the LHS updates
-immediately before the next statement. Non-blocking assignments evaluate the RHS in Active
+**A:** Blocking assignments execute sequentially in the Active region -- the LHS (left-hand side) updates
+immediately before the next statement. Non-blocking assignments evaluate the RHS (right-hand side) in Active
 but schedule the LHS update to the NBA region (after all Active evaluations). This means all
 non-blocking RHS values are sampled before any LHS updates, preventing read-after-write races
 in sequential logic. Rule: use `=` in combinational logic (`always_comb`), `<=` in sequential
@@ -1279,7 +1279,7 @@ sequence of other processes. The older `$random` is NOT thread-stable and should
 **A:** They're transient *programs* over the static testbench: created per-run, possibly many concurrent, layered/nested, and they must travel (start on any matching sequencer). Components are fixed topology built at elaboration; stimulus must not be.
 
 **Q: When do you reach for `grab()` over priority arbitration?**
-**A:** Atomicity, not preference: a multi-item protocol unit (e.g., locked RMW, interrupt service burst) where interleaving any other sequence's item corrupts the protocol. Priority biases the long-run mix; grab guarantees an uninterrupted window.
+**A:** Atomicity, not preference: a multi-item protocol unit (e.g., locked RMW (Read-Modify-Write), interrupt service burst) where interleaving any other sequence's item corrupts the protocol. Priority biases the long-run mix; grab guarantees an uninterrupted window.
 
 **Q: How does the scoreboard learn about register side-effects (e.g., write to CTRL flushes a FIFO)?**
 **A:** Subscribe the explicit RAL predictor to the config-bus monitor; scoreboard queries the register model's mirror (or the predictor publishes typed "config change" analysis transactions). DUT behavioral model keys off mirrored config — never off the stimulus side, or passive/firmware accesses break it.

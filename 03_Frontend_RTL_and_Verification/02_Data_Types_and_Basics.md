@@ -61,7 +61,7 @@ endmodule
 ```
 
 **Rule of thumb for industry practice:**
-- RTL signals: ALWAYS use 4-state (`logic`). You want X to propagate and catch bugs.
+- RTL (register-transfer level) signals: ALWAYS use 4-state (`logic`). You want X to propagate and catch bugs.
 - Testbench variables: Use 2-state (`bit`, `int`) for performance. Testbench data is
   initialized by your code, so X detection is irrelevant.
 - Scoreboards/coverage: 2-state for speed.
@@ -92,7 +92,7 @@ assign data = a & b;
 ### Memory Layout
 
 **Packed arrays** are stored as contiguous bit vectors. You can treat the entire array as a
-single vector, bit-select into it, and pass it across module ports or DPI boundaries cleanly.
+single vector, bit-select into it, and pass it across module ports or DPI (Direct Programming Interface) boundaries cleanly.
 
 **Unpacked arrays** are stored as arrays of elements -- each element may have its own memory
 alignment. The simulator is free to add padding between elements.
@@ -190,7 +190,7 @@ end
 | Memory overhead | Minimal | Higher (linked list / deque internals) |
 
 **Rule:** Use dynamic arrays for fixed-size-after-creation data. Use queues when you need
-push/pop. In UVM, queues are overwhelmingly preferred because transactions arrive one at a time.
+push/pop. In UVM (Universal Verification Methodology), queues are overwhelmingly preferred because transactions arrive one at a time.
 
 ---
 
@@ -340,7 +340,7 @@ q3 = da;                    // OK -- copies dynamic array to queue
 1. Transactions arrive one at a time -- `push_back` is O(1)
 2. Scoreboard drains from front -- `pop_front` is O(1)
 3. No need to know size in advance
-4. Natural FIFO behavior matches protocol ordering
+4. Natural FIFO (first-in, first-out) behavior matches protocol ordering
 5. `$` indexing for peeking at newest/oldest without removal
 
 ---
@@ -642,7 +642,7 @@ logic signed [8:0] good2 = a;  // Automatic sign extension: 9'h1FD = -3
 
 ### Verilog Expression Width and Sign Rules
 
-1. **Width determination** (before evaluation): result width = max(LHS width, RHS width)
+1. **Width determination** (before evaluation): result width = max(LHS (left-hand side) width, RHS (right-hand side) width)
    for most operators. Context-dependent -- assignment LHS sets the width context.
 2. **Sign determination**: result is signed ONLY if ALL operands are signed.
    One unsigned operand makes the entire expression unsigned.

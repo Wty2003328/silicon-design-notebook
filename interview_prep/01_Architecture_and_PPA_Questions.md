@@ -10,7 +10,7 @@ Consolidated interview Q&A and worked problems from every page in `01_Architectu
 
 ### Problem 1: ACE Transaction Sequence
 
-**Question:** Draw the ACE transaction sequence for: Core 0 ReadShared X, Core 1 ReadShared X, Core 0 ReadUnique X. Show all channel activity.
+**Question:** Draw the ACE (AXI Coherency Extensions) transaction sequence for: Core 0 ReadShared X, Core 1 ReadShared X, Core 0 ReadUnique X. Show all channel activity.
 
 **Answer:**
 
@@ -103,7 +103,7 @@ Answer: 65,536 entries, ~24 bits each, ~192 KB storage (4.7% of L3 size).
 
 ### Problem 3: CHI ReadUnique with Dirty and Clean Sharers
 
-**Question:** RN0 sends ReadUnique to HN. HN sends SNP to RN1 and RN2. RN1 has dirty data, RN2 has clean. Show the complete message flow.
+**Question:** RN0 sends ReadUnique to HN (home node). HN sends SNP (snoop) to RN1 and RN2. RN1 has dirty data, RN2 has clean. Show the complete message flow.
 
 **Answer:**
 
@@ -169,7 +169,7 @@ Key observations:
 
 ### Problem 4: TrustZone Preventing Non-Secure DMA Access
 
-**Question:** Explain how TrustZone prevents a Non-secure DMA master from reading Secure memory. Show the signal path.
+**Question:** Explain how TrustZone prevents a Non-secure DMA (direct memory access) master from reading Secure memory. Show the signal path.
 
 **Answer:**
 
@@ -189,7 +189,7 @@ sequenceDiagram
     Note over DMA,DRAM: DMA receives a bus error. Secure data never left DRAM — no leak.
 ```
 
-**How the TZC decides.** Input: address + `ARPROT[1]` (or `AWPROT[1]` for writes). Region config: Region 0 `0x0000_0000–0x0FFF_FFFF` Secure-only; Region 1 `0x1000_0000–0x1FFF_FFFF` Non-secure OK; Region 2 `0x2000_0000–0x2FFF_FFFF` Non-secure OK.
+**How the TZC (TrustZone Controller) decides.** Input: address + `ARPROT[1]` (or `AWPROT[1]` for writes). Region config: Region 0 `0x0000_0000–0x0FFF_FFFF` Secure-only; Region 1 `0x1000_0000–0x1FFF_FFFF` Non-secure OK; Region 2 `0x2000_0000–0x2FFF_FFFF` Non-secure OK.
 
 ```verilog
 if (ARPROT[1] == 0)        // Secure master
@@ -199,7 +199,7 @@ else if (ARPROT[1] == 1)   // Non-secure master
     -> Region 0 access -> DECERR
 ```
 
-Enforced in hardware, so a Non-secure master cannot bypass the TZC by software means. Additional layers: (1) the AXI interconnect may also check `AxPROT` and refuse to route Non-secure transactions to Secure slaves; (2) in ACE/CHI, snoop responses are tagged with security so a Non-secure snoop cannot interrogate Secure lines; (3) the SMMU provides per-device translation and permission checks, complementary to TrustZone.
+Enforced in hardware, so a Non-secure master cannot bypass the TZC by software means. Additional layers: (1) the AXI (Advanced eXtensible Interface) interconnect may also check `AxPROT` and refuse to route Non-secure transactions to Secure slaves; (2) in ACE/CHI, snoop responses are tagged with security so a Non-secure snoop cannot interrogate Secure lines; (3) the SMMU (system memory management unit) provides per-device translation and permission checks, complementary to TrustZone.
 
 ---
 
@@ -209,7 +209,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q1: What are the main differences between APB, AHB, and AXI?
 
-**A:** APB is non-pipelined, 2-cycle minimum per transfer, for low-bandwidth peripherals. AHB is address-pipelined (address phase overlaps previous data phase, achieving 1 transfer/cycle), supports bursts, and has a single shared bus. AXI4 has 5 independent channels (2 for writes, 2 for reads, 1 for write response), supporting simultaneous read+write, outstanding transactions (multiple in-flight), out-of-order completion (via IDs), and bursts up to 256 beats. Complexity and throughput increase from APB to AHB to AXI.
+**A:** APB (Advanced Peripheral Bus) is non-pipelined, 2-cycle minimum per transfer, for low-bandwidth peripherals. AHB (Advanced High-performance Bus) is address-pipelined (address phase overlaps previous data phase, achieving 1 transfer/cycle), supports bursts, and has a single shared bus. AXI4 has 5 independent channels (2 for writes, 2 for reads, 1 for write response), supporting simultaneous read+write, outstanding transactions (multiple in-flight), out-of-order completion (via IDs), and bursts up to 256 beats. Complexity and throughput increase from APB to AHB to AXI.
 
 ### Q2: Explain AXI's VALID/READY handshake rules and why they prevent deadlock.
 
@@ -217,7 +217,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q3: Calculate the bandwidth of an AXI4 64-bit interface at 200MHz with burst length 16.
 
-**A:** Peak bandwidth = 64b/8 * 200M = 1.6 GB/s. With INCR16 bursts: each burst transfers 16*8=128 bytes, taking 16 data cycles + 1 address cycle = 17 cycles. Effective BW = 128/(17*5ns) = 1.506 GB/s = 94.1% efficiency. With single-beat transfers: 8 bytes per 2 cycles (addr+data) = 800 MB/s = 50% efficiency. With 4 outstanding INCR16 reads and 40-cycle DDR latency: after pipeline fill, the data channel stays saturated at 1.6 GB/s. Outstanding transactions are essential for high-latency memories.
+**A:** Peak bandwidth = 64b/8 * 200M = 1.6 GB/s. With INCR16 bursts: each burst transfers 16*8=128 bytes, taking 16 data cycles + 1 address cycle = 17 cycles. Effective BW = 128/(17*5ns) = 1.506 GB/s = 94.1% efficiency. With single-beat transfers: 8 bytes per 2 cycles (addr+data) = 800 MB/s = 50% efficiency. With 4 outstanding INCR16 reads and 40-cycle DDR (double data rate) latency: after pipeline fill, the data channel stays saturated at 1.6 GB/s. Outstanding transactions are essential for high-latency memories.
 
 ### Q4: Explain WRAP burst with a numerical address calculation.
 
@@ -229,7 +229,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q6: How does out-of-order completion work? Give an example.
 
-**A:** Each transaction has an ID (AxID). Transactions with DIFFERENT IDs may complete in any order. Same-ID transactions must complete in order. Example: Master issues Read A (ID=0, to slow DDR), Read B (ID=1, to fast SRAM), Read C (ID=0, to SRAM). Response order can be: B first (ID=1, fast), then A (ID=0, slow), then C (ID=0, after A -- same ID ordering preserved). The master uses the returned RID/BID to match responses to requests. This prevents fast slaves from being blocked behind slow ones, improving overall bus utilization.
+**A:** Each transaction has an ID (AxID). Transactions with DIFFERENT IDs may complete in any order. Same-ID transactions must complete in order. Example: Master issues Read A (ID=0, to slow DDR), Read B (ID=1, to fast SRAM (static random-access memory)), Read C (ID=0, to SRAM). Response order can be: B first (ID=1, fast), then A (ID=0, slow), then C (ID=0, after A -- same ID ordering preserved). The master uses the returned RID/BID to match responses to requests. This prevents fast slaves from being blocked behind slow ones, improving overall bus utilization.
 
 ### Q7: Explain AHB pipelining. Why does HREADY affect both current and next transfer?
 
@@ -249,11 +249,11 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q11: How does AXI ID width expansion work in an interconnect?
 
-**A:** When multiple masters connect to the same slave through an interconnect, their ID spaces may overlap (e.g., both use ID=5). The interconnect prepends master-identification bits to the ID. If master 0 sends AWID=4'b0101 and master 1 sends AWID=4'b0101, the slave sees AWID=6'b00_0101 and AWID=6'b01_0101 respectively (different IDs, independent ordering). On the response path, the interconnect strips the prepended bits before routing to the master. This ensures: (1) the slave sees all transactions with unique IDs; (2) OoO completion works correctly; (3) the master's ID space is preserved. Width at slave = master_ID_width + log2(num_masters).
+**A:** When multiple masters connect to the same slave through an interconnect, their ID spaces may overlap (e.g., both use ID=5). The interconnect prepends master-identification bits to the ID. If master 0 sends AWID=4'b0101 and master 1 sends AWID=4'b0101, the slave sees AWID=6'b00_0101 and AWID=6'b01_0101 respectively (different IDs, independent ordering). On the response path, the interconnect strips the prepended bits before routing to the master. This ensures: (1) the slave sees all transactions with unique IDs; (2) OoO (out-of-order) completion works correctly; (3) the master's ID space is preserved. Width at slave = master_ID_width + log2(num_masters).
 
 ### Q12: Compare crossbar and shared bus interconnect architectures.
 
-**A:** Shared bus: one transaction at a time, all masters and slaves on the same bus, arbiter selects one master per cycle. Bandwidth = 1 * data_width * freq. Simple, low area, O(M+S) wires. Crossbar: parallel paths between any master-slave pair (up to min(M,S) simultaneous transactions). Bandwidth = min(M,S) * data_width * freq. Area = O(M*S) MUXes and arbiters. A 4-master/4-slave crossbar can achieve 4x the bandwidth of a shared bus. The trade-off is area: a 16x16 crossbar has 256 crosspoints and 16 arbiters. Modern SoCs use partial crossbar (common paths share resources) or NoC (mesh routing) to balance area and bandwidth.
+**A:** Shared bus: one transaction at a time, all masters and slaves on the same bus, arbiter selects one master per cycle. Bandwidth = 1 * data_width * freq. Simple, low area, O(M+S) wires. Crossbar: parallel paths between any master-slave pair (up to min(M,S) simultaneous transactions). Bandwidth = min(M,S) * data_width * freq. Area = O(M*S) MUXes (multiplexers) and arbiters. A 4-master/4-slave crossbar can achieve 4x the bandwidth of a shared bus. The trade-off is area: a 16x16 crossbar has 256 crosspoints and 16 arbiters. Modern SoCs (systems-on-chip) use partial crossbar (common paths share resources) or NoC (mesh routing) to balance area and bandwidth.
 
 ### Q13: What is a default slave and why is it needed?
 
@@ -265,7 +265,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q15: How does AXI4-Stream differ from AXI4? When do you use it?
 
-**A:** AXI4-Stream has NO address channel -- it's for unidirectional data streaming. One TVALID/TREADY data channel with TLAST (end of packet), TKEEP/TSTRB (byte qualifiers), TID (stream ID), TDEST (routing). Use it for: video pixel streams, DSP filter chains, DMA data paths, network packet processing, any point-to-point data flow where addresses are irrelevant. AXI4 is for memory-mapped access (read/write to specific addresses). AXI4-Stream can achieve 100% data channel utilization (no address overhead) making it ideal for high-throughput datapaths.
+**A:** AXI4-Stream has NO address channel -- it's for unidirectional data streaming. One TVALID/TREADY data channel with TLAST (end of packet), TKEEP/TSTRB (byte qualifiers), TID (stream ID), TDEST (routing). Use it for: video pixel streams, DSP (digital signal processing) filter chains, DMA data paths, network packet processing, any point-to-point data flow where addresses are irrelevant. AXI4 is for memory-mapped access (read/write to specific addresses). AXI4-Stream can achieve 100% data channel utilization (no address overhead) making it ideal for high-throughput datapaths.
 
 ### Q16: Explain AHB split/retry. When is split better than retry?
 
@@ -273,7 +273,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q17: How do you choose between AXI4-Lite and AXI4 for an IP interface?
 
-**A:** Use AXI4-Lite for simple register interfaces where: (1) only single-beat access is needed (no burst); (2) low bandwidth is sufficient (configuration, status); (3) no outstanding or OoO is needed; (4) gate count is a concern (AXI4-Lite slave is 50-70% smaller). Use full AXI4 when: (1) burst access is needed (DMA, memory controllers); (2) high bandwidth is required; (3) multiple outstanding transactions improve performance; (4) OoO completion is beneficial (multi-port slaves). Many SoCs use AXI4-Lite for all peripheral CSR blocks and AXI4 for memory-mapped high-performance paths, connected through an AXI4-to-AXI4-Lite bridge where needed.
+**A:** Use AXI4-Lite for simple register interfaces where: (1) only single-beat access is needed (no burst); (2) low bandwidth is sufficient (configuration, status); (3) no outstanding or OoO is needed; (4) gate count is a concern (AXI4-Lite slave is 50-70% smaller). Use full AXI4 when: (1) burst access is needed (DMA, memory controllers); (2) high bandwidth is required; (3) multiple outstanding transactions improve performance; (4) OoO completion is beneficial (multi-port slaves). Many SoCs use AXI4-Lite for all peripheral CSR (control and status register) blocks and AXI4 for memory-mapped high-performance paths, connected through an AXI4-to-AXI4-Lite bridge where needed.
 
 ### Q18: What is the AXI ordering model for reads and writes?
 
@@ -281,11 +281,11 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ### Q19: How does QoS work in practice? Give a real scenario.
 
-**A:** A display controller reading frame buffer data must never stall (causes visible tearing). It has a line buffer that holds 1-2 scan lines. The display reads one line while displaying another. If the line buffer runs empty, the display shows garbage. Solution: display master sets AxQOS=0xC (high). CPU sets AxQOS=0x8. DMA sets AxQOS=0x4. When display and CPU both request DDR access, the interconnect's QoS-aware arbiter prioritizes the display. Advanced: dynamic QoS -- the display monitors its line buffer fill level. If fill < 25%, raise QoS to 0xF (urgent). If fill > 75%, lower QoS to 0x4 (not urgent, share bandwidth with others). This prevents both starvation and over-allocation.
+**A:** A display controller reading frame buffer data must never stall (causes visible tearing). It has a line buffer that holds 1-2 scan lines. The display reads one line while displaying another. If the line buffer runs empty, the display shows garbage. Solution: display master sets AxQOS=0xC (high). CPU sets AxQOS=0x8. DMA sets AxQOS=0x4. When display and CPU both request DDR access, the interconnect's QoS-aware arbiter prioritizes the display. Advanced: dynamic QoS (quality of service) -- the display monitors its line buffer fill level. If fill < 25%, raise QoS to 0xF (urgent). If fill > 75%, lower QoS to 0x4 (not urgent, share bandwidth with others). This prevents both starvation and over-allocation.
 
 ### Q20: What signal integrity concerns exist in high-frequency AXI interfaces?
 
-**A:** At 500MHz+ AXI: (1) The VALID-to-READY combinational path (if READY depends on VALID) creates a long timing path across the interconnect -- insert register slices to break timing. Register slices add 1 cycle latency but enable higher frequency. (2) Wide data buses (512-bit) have high capacitance and crosstalk -- careful routing with shielding. (3) ID width expansion increases wire count -- consider ID remapping to keep widths manageable. (4) AXI protocol bridges (clock/width conversion) must handle handshake timing carefully across clock domains. (5) For chiplet or die-to-die AXI (e.g., UCIe), serialization and retiming add significant complexity.
+**A:** At 500MHz+ AXI: (1) The VALID-to-READY combinational path (if READY depends on VALID) creates a long timing path across the interconnect -- insert register slices to break timing. Register slices add 1 cycle latency but enable higher frequency. (2) Wide data buses (512-bit) have high capacitance and crosstalk -- careful routing with shielding. (3) ID width expansion increases wire count -- consider ID remapping to keep widths manageable. (4) AXI protocol bridges (clock/width conversion) must handle handshake timing carefully across clock domains. (5) For chiplet or die-to-die AXI (e.g., UCIe (Universal Chiplet Interconnect Express)), serialization and retiming add significant complexity.
 
 ---
 
@@ -296,9 +296,9 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 ### Problem 1: gshare Index Computation and Prediction
 
 **Given**:
-- 10-bit GHR = `1011010011`
-- PC = `0x0040_1A3C`
-- BHT has 1024 entries (10-bit index), each with a 2-bit counter
+- 10-bit GHR (global history register) = `1011010011`
+- PC (program counter) = `0x0040_1A3C`
+- BHT (branch history table) has 1024 entries (10-bit index), each with a 2-bit counter
 - Index = `PC[11:2] XOR GHR[9:0]`
 - After indexing, the counter value at that BHT entry is `2` (binary: `10`)
 
@@ -340,7 +340,7 @@ GHR update: shift left, insert 0 at bit 0
 ### Problem 2: TAGE Provider Selection
 
 **Given**:
-- TAGE with base bimodal + 3 tagged components (T1, T2, T3)
+- TAGE (TAgged GEometric history length) with base bimodal + 3 tagged components (T1, T2, T3)
 - History lengths: T1 = 4, T2 = 16, T3 = 64
 - GHR (64 bits): `...1101_0011_1010_1111_0000_1010_0101_1100`
 - Branch PC = `0x0040_2000`
@@ -399,7 +399,7 @@ Step 6: Update
 ### Problem 3: Speculative RAS with Misprediction
 
 **Given**:
-- 32-entry RAS, circular buffer, Top pointer (5 bits)
+- 32-entry RAS (return address stack), circular buffer, Top pointer (5 bits)
 - Initial state: Top = 0x04, RAS[4] = 0x8000
 
 **Sequence**:
@@ -623,7 +623,7 @@ history window.
 
 ### Q1: Describe the 5 pipeline stages in detail. What happens at each stage?
 
-**A:** **IF**: Send PC to I-cache, fetch instruction, predict next PC (BTB+BHT). **ID**: Decode opcode, read register file (rs1, rs2), generate immediate, detect hazards (load-use stall). **EX**: Execute ALU operation, compute branch target, resolve branch direction, compute load/store address. Forwarding MUXes select between register values and forwarded results. **MEM**: Access D-cache for loads/stores. Loads read data, stores write data. Cache misses stall the pipeline. **WB**: Write result (ALU or memory data) back to register file. Write-first design allows same-cycle read in ID.
+**A:** **IF (instruction fetch)**: Send PC to I-cache, fetch instruction, predict next PC (BTB+BHT). **ID**: Decode opcode, read register file (rs1, rs2), generate immediate, detect hazards (load-use stall). **EX**: Execute ALU (arithmetic logic unit) operation, compute branch target, resolve branch direction, compute load/store address. Forwarding MUXes select between register values and forwarded results. **MEM (memory access)**: Access D-cache for loads/stores. Loads read data, stores write data. Cache misses stall the pipeline. **WB (write-back)**: Write result (ALU or memory data) back to register file. Write-first design allows same-cycle read in ID.
 
 ### Q2: Show a detailed RAW hazard example with forwarding paths.
 
@@ -635,31 +635,31 @@ history window.
 
 ### Q4: Derive the CPI impact of branch misprediction. Why do deep pipelines suffer more?
 
-**A:** CPI = 1 + branch_freq * mispredict_rate * penalty. For a 5-stage pipeline (penalty=2, branch in EX): with 20% branches and 5% misprediction: CPI = 1 + 0.2*0.05*2 = 1.02. For a 20-stage pipeline (penalty=15): CPI = 1 + 0.2*0.05*15 = 1.15 (15% slower). Deep pipelines have more stages between fetch and branch resolution, so more instructions are fetched speculatively and wasted on misprediction. This is why Intel Pentium 4 (31 stages, penalty=20) needed very aggressive branch prediction (trace cache, sophisticated predictors) to be competitive, and ultimately lost to shorter-pipeline designs.
+**A:** CPI (cycles per instruction) = 1 + branch_freq * mispredict_rate * penalty. For a 5-stage pipeline (penalty=2, branch in EX): with 20% branches and 5% misprediction: CPI = 1 + 0.2*0.05*2 = 1.02. For a 20-stage pipeline (penalty=15): CPI = 1 + 0.2*0.05*15 = 1.15 (15% slower). Deep pipelines have more stages between fetch and branch resolution, so more instructions are fetched speculatively and wasted on misprediction. This is why Intel Pentium 4 (31 stages, penalty=20) needed very aggressive branch prediction (trace cache, sophisticated predictors) to be competitive, and ultimately lost to shorter-pipeline designs.
 
 ### Q5: Explain gshare prediction. How does XOR improve accuracy?
 
-**A:** Gshare indexes the Pattern History Table (PHT) with PC XOR Global History Register (GHR). The GHR is a shift register of the last N branch outcomes. XOR creates a unique index for each (PC, history) pair, capturing correlations between branches. Example: two branches at different PCs but with the same history pattern would collide in a simple PC-indexed table but get different PHT entries with XOR. This captures "if branches A,B were taken, branch C is usually not taken." Gshare achieves 93-95% accuracy on SPEC benchmarks with a 14-16 bit GHR and 16K-64K entry PHT. The main weakness is aliasing (different PC+history pairs mapping to the same entry), which can be reduced with larger tables or anti-aliasing techniques.
+**A:** Gshare indexes the Pattern History Table (PHT) with PC XOR (exclusive-OR) Global History Register (GHR). The GHR is a shift register of the last N branch outcomes. XOR creates a unique index for each (PC, history) pair, capturing correlations between branches. Example: two branches at different PCs but with the same history pattern would collide in a simple PC-indexed table but get different PHT entries with XOR. This captures "if branches A,B were taken, branch C is usually not taken." Gshare achieves 93-95% accuracy on SPEC benchmarks with a 14-16 bit GHR and 16K-64K entry PHT. The main weakness is aliasing (different PC+history pairs mapping to the same entry), which can be reduced with larger tables or anti-aliasing techniques.
 
 ### Q6: Walk through Tomasulo's algorithm for a 3-instruction sequence.
 
-**A:** Consider: `MUL F0,F2,F4` / `ADD F2,F0,F6` / `ADD F4,F0,F2`. Cycle 1: MUL issues to Mul1 RS {Op=MUL, Vj=F2, Vk=F4, Dest=F0}. Register status: F0->Mul1. Cycle 2: ADD issues to Add1 RS {Op=ADD, Vj=?, Qj=Mul1 (F0 not ready), Vk=F6}. F2->Add1. Cycle 3: Second ADD issues to Add2 RS {Op=ADD, Vj=?, Qj=Mul1 (F0), Vk=?, Qk=Add1 (F2)}. F4->Add2. Note: WAR on F2 (MUL reads F2, second ADD needs F2 from first ADD) is handled because MUL captured F2's value at issue time. WAW on F4 (original F4 vs Add2's new F4) is handled because Add2's tag replaces F4's register status.
+**A:** Consider: `MUL F0,F2,F4` / `ADD F2,F0,F6` / `ADD F4,F0,F2`. Cycle 1: MUL issues to Mul1 RS (reservation station) {Op=MUL, Vj=F2, Vk=F4, Dest=F0}. Register status: F0->Mul1. Cycle 2: ADD issues to Add1 RS {Op=ADD, Vj=?, Qj=Mul1 (F0 not ready), Vk=F6}. F2->Add1. Cycle 3: Second ADD issues to Add2 RS {Op=ADD, Vj=?, Qj=Mul1 (F0), Vk=?, Qk=Add1 (F2)}. F4->Add2. Note: WAR (write-after-read) on F2 (MUL reads F2, second ADD needs F2 from first ADD) is handled because MUL captured F2's value at issue time. WAW (write-after-write) on F4 (original F4 vs Add2's new F4) is handled because Add2's tag replaces F4's register status.
 
 ### Q7: What is the purpose of the Reorder Buffer? How does it enable precise exceptions?
 
-**A:** The ROB ensures instructions commit in program order, even though they execute out of order. Each issued instruction allocates an ROB entry at the tail. When execution completes, the result is written to the ROB entry (not to architectural state). Commit happens at the head: if the head entry is complete and has no exception, it commits (updates the register file/memory). If it has an exception, ALL entries from that point to the tail are flushed. This ensures: (1) Precise exceptions: at the exception point, all prior instructions have committed and all later ones haven't; (2) Speculative execution: on branch misprediction, flush ROB entries after the branch, restoring the RAT to the committed state. (3) In-order completion visible to software, despite out-of-order execution.
+**A:** The ROB (reorder buffer) ensures instructions commit in program order, even though they execute out of order. Each issued instruction allocates an ROB entry at the tail. When execution completes, the result is written to the ROB entry (not to architectural state). Commit happens at the head: if the head entry is complete and has no exception, it commits (updates the register file/memory). If it has an exception, ALL entries from that point to the tail are flushed. This ensures: (1) Precise exceptions: at the exception point, all prior instructions have committed and all later ones haven't; (2) Speculative execution: on branch misprediction, flush ROB entries after the branch, restoring the RAT (register alias table) to the committed state. (3) In-order completion visible to software, despite out-of-order execution.
 
 ### Q8: Explain MESI with all state transitions. Why does the E state exist?
 
-**A:** MESI has 4 states per cache line. Key transitions: I->E on read miss (sole copy, clean), I->M on write miss (invalidate others), E->M on write (silent upgrade, no bus traffic -- this is why E exists), E->S on snoop read (share), S->M on write (bus upgrade to invalidate others), M->S on snoop read (write back + share), M->I on snoop write (write back + invalidate). The E state's purpose: when a cache has the only copy, a subsequent write can transition E->M without any bus transaction (no invalidation needed since no other cache has it). Without E (like MSI), every write from S requires a bus invalidation even if no other cache has the line. E saves bus bandwidth for private data patterns, which are very common.
+**A:** MESI (Modified, Exclusive, Shared, Invalid) has 4 states per cache line. Key transitions: I->E on read miss (sole copy, clean), I->M on write miss (invalidate others), E->M on write (silent upgrade, no bus traffic -- this is why E exists), E->S on snoop read (share), S->M on write (bus upgrade to invalidate others), M->S on snoop read (write back + share), M->I on snoop write (write back + invalidate). The E state's purpose: when a cache has the only copy, a subsequent write can transition E->M without any bus transaction (no invalidation needed since no other cache has it). Without E (like MSI (Modified, Shared, Invalid)), every write from S requires a bus invalidation even if no other cache has the line. E saves bus bandwidth for private data patterns, which are very common.
 
 ### Q9: Calculate AMAT for a 3-level cache hierarchy. What dominates?
 
-**A:** Given L1: 4-cycle hit, 8% miss rate; L2: 15-cycle hit, 3% local miss rate; L3: 40-cycle hit, 25% local miss rate; Memory: 200 cycles. AMAT = 4 + 0.08*(15 + 0.03*(40 + 0.25*200)) = 4 + 0.08*(15 + 0.03*(40+50)) = 4 + 0.08*(15 + 2.7) = 4 + 0.08*17.7 = 4 + 1.416 = 5.42 cycles. L1 hit time dominates (4 out of 5.42). Reducing L1 hit time from 4 to 3 saves 1 cycle = 18% improvement. Reducing L3 miss rate from 25% to 20% saves 0.08*0.03*0.05*200 = 0.024 cycles = 0.4% improvement. Lesson: L1 hit time is by far the most important parameter.
+**A:** Given L1: 4-cycle hit, 8% miss rate; L2: 15-cycle hit, 3% local miss rate; L3: 40-cycle hit, 25% local miss rate; Memory: 200 cycles. AMAT (average memory access time) = 4 + 0.08*(15 + 0.03*(40 + 0.25*200)) = 4 + 0.08*(15 + 0.03*(40+50)) = 4 + 0.08*(15 + 2.7) = 4 + 0.08*17.7 = 4 + 1.416 = 5.42 cycles. L1 hit time dominates (4 out of 5.42). Reducing L1 hit time from 4 to 3 saves 1 cycle = 18% improvement. Reducing L3 miss rate from 25% to 20% saves 0.08*0.03*0.05*200 = 0.024 cycles = 0.4% improvement. Lesson: L1 hit time is by far the most important parameter.
 
 ### Q10: Explain VIPT caches. Why do they enable parallel TLB/cache access?
 
-**A:** VIPT uses virtual address bits for the cache set index and physical address bits for the tag. Since the index comes from the virtual address (available immediately), and the tag comes from the TLB translation (takes 1 cycle), both lookups happen in parallel. When both complete (same cycle), the tag from TLB is compared against the tag stored in the indexed cache set. Key constraint: the index bits must be within the page offset (same in VA and PA). For 4KB pages, bits [11:0] are identical in VA and PA. A 32KB, 8-way cache has 64 sets, using bits [11:6] for index -- all within page offset. If the cache were direct-mapped 32KB (512 sets, 9-bit index using bits [14:6]), bits [14:12] differ between VA and PA, causing aliasing problems.
+**A:** VIPT (virtually indexed, physically tagged) uses virtual address bits for the cache set index and physical address bits for the tag. Since the index comes from the virtual address (available immediately), and the tag comes from the TLB (translation lookaside buffer) translation (takes 1 cycle), both lookups happen in parallel. When both complete (same cycle), the tag from TLB is compared against the tag stored in the indexed cache set. Key constraint: the index bits must be within the page offset (same in VA and PA). For 4KB pages, bits [11:0] are identical in VA and PA. A 32KB, 8-way cache has 64 sets, using bits [11:6] for index -- all within page offset. If the cache were direct-mapped 32KB (512 sets, 9-bit index using bits [14:6]), bits [14:12] differ between VA and PA, causing aliasing problems.
 
 ### Q11: Compare snooping and directory-based coherence. When do you use each?
 
@@ -667,7 +667,7 @@ history window.
 
 ### Q12: Explain virtual memory page table walk for x86-64. How many memory accesses?
 
-**A:** x86-64 uses 4-level page tables for 48-bit virtual addresses. CR3 holds the physical address of the PML4 table. Walk: (1) Read PML4 entry at CR3 + VA[47:39]*8; (2) Read PDPT entry at PML4.addr + VA[38:30]*8; (3) Read PD entry at PDPT.addr + VA[29:21]*8; (4) Read PT entry at PD.addr + VA[20:12]*8; (5) Physical address = PT.PFN concatenated with VA[11:0]. That's 4 sequential memory reads for one translation. Without TLB, every load/store becomes 5 memory accesses. With TLB hit rate of 99%, average = 0.99*1 + 0.01*5 = 1.05 accesses. Modern hardware has page walk caches that cache intermediate page table entries, reducing most walks to 1-2 memory accesses.
+**A:** x86-64 uses 4-level page tables for 48-bit virtual addresses. CR3 holds the physical address of the PML4 (page map level 4) table. Walk: (1) Read PML4 entry at CR3 + VA[47:39]*8; (2) Read PDPT (page directory pointer table) entry at PML4.addr + VA[38:30]*8; (3) Read PD (page directory) entry at PDPT.addr + VA[29:21]*8; (4) Read PT (page table) entry at PD.addr + VA[20:12]*8; (5) Physical address = PT.PFN concatenated with VA[11:0]. That's 4 sequential memory reads for one translation. Without TLB, every load/store becomes 5 memory accesses. With TLB hit rate of 99%, average = 0.99*1 + 0.01*5 = 1.05 accesses. Modern hardware has page walk caches that cache intermediate page table entries, reducing most walks to 1-2 memory accesses.
 
 ### Q13: What is register renaming? How does it eliminate WAR and WAW?
 
@@ -695,11 +695,11 @@ history window.
 
 ### Q19: How does superscalar differ from VLIW? Give examples of each.
 
-**A:** Superscalar issues multiple instructions per cycle from a sequential instruction stream. Hardware dynamically detects dependencies, performs register renaming, and schedules out-of-order. Examples: Intel Core, AMD Zen (4-6 wide), ARM Cortex-A78 (4-wide). VLIW: the compiler statically schedules multiple operations into a single wide instruction word. Hardware is simple (no dynamic scheduling, no renaming). The compiler must find independent operations to fill all slots (NOP if not found). Examples: TI C6000 DSP (8-wide), Intel Itanium/IA-64 (6-wide, called EPIC). Superscalar advantages: binary compatibility across microarchitecture generations, adapts to runtime behavior. VLIW advantages: simpler hardware (lower power), deterministic timing (good for real-time DSP). Superscalar dominates general-purpose computing; VLIW is used in specialized DSPs.
+**A:** Superscalar issues multiple instructions per cycle from a sequential instruction stream. Hardware dynamically detects dependencies, performs register renaming, and schedules out-of-order. Examples: Intel Core, AMD Zen (4-6 wide), ARM Cortex-A78 (4-wide). VLIW (very long instruction word): the compiler statically schedules multiple operations into a single wide instruction word. Hardware is simple (no dynamic scheduling, no renaming). The compiler must find independent operations to fill all slots (NOP if not found). Examples: TI C6000 DSP (8-wide), Intel Itanium/IA-64 (6-wide, called EPIC — explicitly parallel instruction computing). Superscalar advantages: binary compatibility across microarchitecture generations, adapts to runtime behavior. VLIW advantages: simpler hardware (lower power), deterministic timing (good for real-time DSP). Superscalar dominates general-purpose computing; VLIW is used in specialized DSPs.
 
 ### Q20: Design considerations for a 4-wide superscalar processor. What are the bottlenecks?
 
-**A:** Key bottlenecks: (1) **Fetch bandwidth**: need I-cache with 4+ instruction fetch per cycle, must handle branches within the fetch group (branch in position 2 means positions 3-4 are potentially wrong-path). (2) **Decode**: 4 decoders in parallel, each handling different instruction formats. x86 is particularly complex (variable-length instructions). (3) **Rename**: 4 rename operations per cycle, each reading 2 source mappings and writing 1 destination mapping to the RAT. Need 8-read, 4-write port RAT. (4) **Issue**: check 4 new instructions against all in-flight instructions for dependencies (O(4*N) comparisons where N is the issue queue depth). (5) **Execution**: need multiple FUs (2-4 ALUs, 1-2 FPU, 2 load/store). (6) **Commit**: 4 entries from ROB head per cycle. Register file needs many ports: practical limit is 6-8 wide issue before the register file becomes the area/power bottleneck.
+**A:** Key bottlenecks: (1) **Fetch bandwidth**: need I-cache with 4+ instruction fetch per cycle, must handle branches within the fetch group (branch in position 2 means positions 3-4 are potentially wrong-path). (2) **Decode**: 4 decoders in parallel, each handling different instruction formats. x86 is particularly complex (variable-length instructions). (3) **Rename**: 4 rename operations per cycle, each reading 2 source mappings and writing 1 destination mapping to the RAT. Need 8-read, 4-write port RAT. (4) **Issue**: check 4 new instructions against all in-flight instructions for dependencies (O(4*N) comparisons where N is the issue queue depth). (5) **Execution**: need multiple FUs (2-4 ALUs, 1-2 FPU (floating-point unit), 2 load/store). (6) **Commit**: 4 entries from ROB head per cycle. Register file needs many ports: practical limit is 6-8 wide issue before the register file becomes the area/power bottleneck.
 
 ---
 
@@ -751,7 +751,7 @@ Total tag SRAM: $4 \times 2688 = 10752 \text{ bits} = 1344 \text{ B} \approx 1.3
 
 ### Problem 2: MSHR Contention
 
-**Given:** L1 D-cache with 4 MSHRs. The following misses occur in order: addresses
+**Given:** L1 D-cache with 4 MSHRs (miss status handling registers). The following misses occur in order: addresses
 A, B, C, D, E (all to different cache lines). Assume each miss takes 20 cycles to
 resolve and one new miss arrives every 5 cycles.
 
@@ -802,7 +802,7 @@ this rate causes structural stalls.
 Assume the set starts empty. Track which line is evicted for each compulsory miss
 and for the conflict miss(es).
 
-**LRU Solution:**
+**LRU (least recently used) Solution:**
 
 | Access | MRU --> LRU Order | Action |
 |--------|-------------------|--------|
@@ -818,7 +818,7 @@ and for the conflict miss(es).
 
 Evictions under LRU: A, B, C, D.
 
-**PLRU Solution (3 bits, initial 000):**
+**PLRU (pseudo least-recently-used) Solution (3 bits, initial 000):**
 Convention: on access, set bits on the path to point AWAY from the accessed way.
 On eviction, follow bits (0=left, 1=right).
 
@@ -999,7 +999,7 @@ tCCD_S = 4 tCK = 2.5 ns (minimum gap between column commands).
 **Solution:**
 
 **Per-request service time:**
-   - Row hit:  tCAS = 13.75 ns  (data appears after CAS latency)
+   - Row hit:  tCAS = 13.75 ns  (data appears after CAS (column address strobe) latency)
    - Row miss: tRP + tRCD + tCAS = 13.75 + 13.75 + 13.75 = 41.25 ns
 
 Each READ returns BL8 x 8 bytes = 64 bytes
@@ -1039,7 +1039,7 @@ Effective BW = 6400 / 750 = 8.5 GB/s (about 33% of peak)
 ### Problem 4: FR-FCFS Scheduler Walkthrough
 
 **Question:** Given 8 pending requests in the controller queue, determine the scheduling
-order using FR-FCFS. Assume 4 banks (B0-B3), open-page policy, and the following state:
+order using FR-FCFS (first-ready, first-come first-served). Assume 4 banks (B0-B3), open-page policy, and the following state:
 
 ```verilog
 Currently open rows: B0=row5, B1=row2, B2=no row, B3=row8
@@ -1131,11 +1131,11 @@ Step 3: Schedule accounting for bank conflicts
 
 ### Q1: Derive the read stability condition for a 6T SRAM cell.
 
-**A:** During read, BL (at VDD) connects to the "0" storage node through the access transistor, while the pull-down NMOS holds it at GND. The access and pull-down NMOS form a voltage divider. If the access transistor is too strong, the "0" node voltage rises above the inverter switching threshold, flipping the cell. Approximate analysis: V_Q ≈ (VDD - Vth) / (2 * CR) where CR = (W/L)_pulldown / (W/L)_access. For stability, V_Q must be below the switching threshold of the feedback inverter (~0.4 * VDD for typical sizing). With VDD=1.0V, Vth=0.3V: V_Q = 0.7/(2*CR). For V_Q < 0.4V: CR > 0.875. In practice, CR ≥ 1.2-2.0 is used for adequate margin including process variation.
+**A:** During read, BL (at VDD) connects to the "0" storage node through the access transistor, while the pull-down NMOS (n-channel MOS transistor) holds it at GND. The access and pull-down NMOS form a voltage divider. If the access transistor is too strong, the "0" node voltage rises above the inverter switching threshold, flipping the cell. Approximate analysis: V_Q ≈ (VDD - Vth) / (2 * CR) where CR = (W/L)_pulldown / (W/L)_access. For stability, V_Q must be below the switching threshold of the feedback inverter (~0.4 * VDD for typical sizing). With VDD=1.0V, Vth=0.3V: V_Q = 0.7/(2*CR). For V_Q < 0.4V: CR > 0.875. In practice, CR ≥ 1.2-2.0 is used for adequate margin including process variation.
 
 ### Q2: Why is 8T SRAM preferred for low-VDD operation?
 
-**A:** In 6T, the read SNM degrades with VDD because the voltage divider margin between the access and pull-down transistors shrinks. At 0.6V, read SNM is nearly zero. The 8T cell adds a separate read port (2 NMOS in series) that doesn't connect to the storage nodes during read. The read SNM equals the hold SNM (much higher), enabling reliable operation down to ~0.4V. The cost is ~30% area increase. Modern SoCs use 8T for memories that must operate across a wide voltage range (e.g., retention SRAM that stays powered during deep sleep at 0.5V).
+**A:** In 6T, the read SNM (static noise margin) degrades with VDD because the voltage divider margin between the access and pull-down transistors shrinks. At 0.6V, read SNM is nearly zero. The 8T cell adds a separate read port (2 NMOS in series) that doesn't connect to the storage nodes during read. The read SNM equals the hold SNM (much higher), enabling reliable operation down to ~0.4V. The cost is ~30% area increase. Modern SoCs use 8T for memories that must operate across a wide voltage range (e.g., retention SRAM that stays powered during deep sleep at 0.5V).
 
 ### Q3: Explain the DRAM charge sharing equation and why sense amplifiers are critical.
 
@@ -1143,11 +1143,11 @@ Step 3: Schedule accounting for bank conflicts
 
 ### Q4: Prove that the async FIFO full/empty detection is safe (no false negatives).
 
-**A:** Empty is detected in the read domain using the synchronized write pointer, which is possibly stale (2-3 cycles old). If wr_gray_sync2 == rd_gray, either: (a) the FIFO truly is empty, or (b) the FIFO has entries but the synchronized pointer hasn't caught up. Case (b) means we report empty when we shouldn't — but this is corrected on the next cycle when the pointer updates. The reader simply waits, which is safe. We never report NOT-empty when the FIFO IS empty (which would cause reading garbage). Similarly, full is detected using a stale read pointer — we may report full when the reader has freed space, but never report NOT-full when truly full. Both errors are "pessimistic" and self-correcting.
+**A:** Empty is detected in the read domain using the synchronized write pointer, which is possibly stale (2-3 cycles old). If wr_gray_sync2 == rd_gray, either: (a) the FIFO (first-in first-out) truly is empty, or (b) the FIFO has entries but the synchronized pointer hasn't caught up. Case (b) means we report empty when we shouldn't — but this is corrected on the next cycle when the pointer updates. The reader simply waits, which is safe. We never report NOT-empty when the FIFO IS empty (which would cause reading garbage). Similarly, full is detected using a stale read pointer — we may report full when the reader has freed space, but never report NOT-full when truly full. Both errors are "pessimistic" and self-correcting.
 
 ### Q5: Why must async FIFO depth be power-of-2?
 
-**A:** Gray code only guarantees single-bit transitions for the full 2^N sequence. For non-power-of-2 depth D, the counter wraps from Gray(D-1) to Gray(0), which may differ in multiple bits. Example: depth=5, Gray(4)=0110, Gray(0)=0000, 2 bits differ. When sampled across clock domains, any combination of the changing bits could be captured: 0110, 0010, 0100, 0000. Values 0010 (=Gray(3)=binary 2) and 0100 (=Gray(7)=binary 5) are completely wrong pointer values, causing the full/empty logic to malfunction catastrophically. Fix: use next power-of-2 depth and waste entries, or use more complex CDC schemes (e.g., handshake-based for non-power-of-2 depths).
+**A:** Gray code only guarantees single-bit transitions for the full 2^N sequence. For non-power-of-2 depth D, the counter wraps from Gray(D-1) to Gray(0), which may differ in multiple bits. Example: depth=5, Gray(4)=0110, Gray(0)=0000, 2 bits differ. When sampled across clock domains, any combination of the changing bits could be captured: 0110, 0010, 0100, 0000. Values 0010 (=Gray(3)=binary 2) and 0100 (=Gray(7)=binary 5) are completely wrong pointer values, causing the full/empty logic to malfunction catastrophically. Fix: use next power-of-2 depth and waste entries, or use more complex CDC (clock domain crossing) schemes (e.g., handshake-based for non-power-of-2 depths).
 
 ### Q6: Explain the March C- algorithm and its fault coverage.
 
@@ -1175,7 +1175,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ### Q12: Explain memory BIST architecture and why it's needed.
 
-**A:** Memory BIST contains: (1) Controller FSM that sequences through the March algorithm, (2) Address generator (up/down counter for ascending/descending), (3) Data generator (produces the test patterns: 0s, 1s, checkerboard, etc.), (4) Comparator (compares read data with expected), (5) Fail register (stores failing address and data for diagnosis). BIST is needed because external ATE (Automatic Test Equipment) cannot access embedded memories directly — they're buried inside the SoC with no external pins. BIST generates all stimuli and evaluates all responses on-chip, reporting only pass/fail and optionally repair information via a serial scan chain. For a modern SoC with 100+ memory instances, BIST is the only practical way to achieve manufacturing test coverage.
+**A:** Memory BIST (built-in self-test) contains: (1) Controller FSM (finite state machine) that sequences through the March algorithm, (2) Address generator (up/down counter for ascending/descending), (3) Data generator (produces the test patterns: 0s, 1s, checkerboard, etc.), (4) Comparator (compares read data with expected), (5) Fail register (stores failing address and data for diagnosis). BIST is needed because external ATE (Automatic Test Equipment) cannot access embedded memories directly — they're buried inside the SoC with no external pins. BIST generates all stimuli and evaluates all responses on-chip, reporting only pass/fail and optionally repair information via a serial scan chain. For a modern SoC with 100+ memory instances, BIST is the only practical way to achieve manufacturing test coverage.
 
 ### Q13: How does write-back cache handle a dirty eviction with a simultaneous cache miss?
 
@@ -1187,7 +1187,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ### Q15: What determines the access time of an SRAM memory macro?
 
-**A:** Access time (clock-to-Q for read data) has these components: (1) Clock distribution to the wordline drivers and sense amplifiers (~10-15% of total). (2) Wordline driver + wordline RC delay (depends on memory width: wider memory = longer WL). (3) Bitcell access time (current through access + pull-down creating BL differential). (4) Bitline RC delay + sense amplifier input development (depends on memory depth: deeper = longer BL, smaller signal). (5) Sense amplifier detection + amplification (~20% of total). (6) Output driver + data mux (column mux, output register). For a typical 1K×32 SRAM in 28nm: total access time ≈ 1.0 ns. Doubling depth roughly adds 0.3-0.5 ns (longer bitlines). Doubling width adds less (~0.1-0.2 ns, longer wordlines). The mux factor trades depth for width: mux=4 reads 4× as many columns but only delivers one, making the memory shorter (fewer rows) but wider. This reduces BL delay but increases column MUX delay.
+**A:** Access time (clock-to-Q for read data) has these components: (1) Clock distribution to the wordline drivers and sense amplifiers (~10-15% of total). (2) Wordline driver + wordline RC (resistance-capacitance) delay (depends on memory width: wider memory = longer WL). (3) Bitcell access time (current through access + pull-down creating BL differential). (4) Bitline RC delay + sense amplifier input development (depends on memory depth: deeper = longer BL, smaller signal). (5) Sense amplifier detection + amplification (~20% of total). (6) Output driver + data mux (column mux, output register). For a typical 1K×32 SRAM in 28nm: total access time ≈ 1.0 ns. Doubling depth roughly adds 0.3-0.5 ns (longer bitlines). Doubling width adds less (~0.1-0.2 ns, longer wordlines). The mux factor trades depth for width: mux=4 reads 4× as many columns but only delivers one, making the memory shorter (fewer rows) but wider. This reduces BL delay but increases column MUX delay.
 
 ---
 
@@ -1195,11 +1195,11 @@ Step 3: Schedule accounting for bank conflicts
 
 *From [Network_on_Chip.md](../01_Architecture_and_PPA/13_Network_on_Chip.md)*
 
-- **"Why a NoC over a bus/crossbar?"** → bandwidth scales with bisection not constant; $O(N^2)$ crossbar area/wire-delay avoided; links are short repeatable wires that close timing; modularity (tile + DFT + CDC per hop).
-- **"Wormhole vs cut-through?"** → buffer flits not packets (area), but blocked packets span routers → HoL blocking & deadlock pressure; VCs mitigate.
+- **"Why a NoC over a bus/crossbar?"** → bandwidth scales with bisection not constant; $O(N^2)$ crossbar area/wire-delay avoided; links are short repeatable wires that close timing; modularity (tile + DFT (design for test) + CDC per hop).
+- **"Wormhole vs cut-through?"** → buffer flits not packets (area), but blocked packets span routers → HoL (head-of-line) blocking & deadlock pressure; VCs (virtual channels) mitigate.
 - **"Why is XY deadlock-free?"** → forbidden turn set ⇒ acyclic channel-dependency graph (Dally–Seitz).
-- **"Why does CHI need 4 channels?"** → message-class isolation kills protocol deadlock: responses must never wait behind requests.
-- **"Where do NoC cycles go?"** → VA/SA allocation; cures: lookahead RC, speculative SA, bypass for straight-through traffic.
+- **"Why does CHI (Coherent Hub Interface) need 4 channels?"** → message-class isolation kills protocol deadlock: responses must never wait behind requests.
+- **"Where do NoC cycles go?"** → VA/SA allocation; cures: lookahead RC, speculative SA (switch allocation), bypass for straight-through traffic.
 
 ---
 
@@ -1209,7 +1209,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ### Problem 1: Design a 64-Entry 4-Way DTLB for RV64 Sv39
 
-**Question:** Design a 64-entry, 4-way set-associative DTLB for RISC-V Sv39. Compute
+**Question:** Design a 64-entry, 4-way set-associative DTLB (data translation lookaside buffer) for RISC-V Sv39. Compute
 the number of tag bits, index bits, and the total SRAM size in bits.
 
 **Solution:**
@@ -1222,13 +1222,13 @@ $$
 
 **Step 2: Tag bits.**
 
-The VPN is 27 bits for Sv39. Of these, 4 are used for the index:
+The VPN (virtual page number) is 27 bits for Sv39. Of these, 4 are used for the index:
 
 $$
 \text{Tag} = \text{VPN} - \text{index} = 27 - 4 = 23 \text{ bits}
 $$
 
-**Step 3: Data stored per entry (PPN + metadata).**
+**Step 3: Data stored per entry (physical page number PPN + metadata).**
 
 $$
 \underbrace{44}_{\text{PPN}} + \underbrace{16}_{\text{ASID}} + \underbrace{3}_{\text{R/W/X}} + \underbrace{1}_{\text{U}} + \underbrace{1}_{\text{G}} + \underbrace{1}_{\text{A}} + \underbrace{1}_{\text{D}} + \underbrace{1}_{\text{V}} = 68 \text{ bits}
@@ -1260,7 +1260,7 @@ bits (768 bytes), or 128 bits per entry yields $64 \times 128 = 8{,}192$ bits (1
 ### Problem 2: Sv39 Page Table Walk
 
 **Question.** A RISC-V Sv39 system has `satp.PPN = 0x80000` (root page table at physical
-address `0x80000000`). A process accesses virtual address `0x0000000080801000`. Each PTE is
+address `0x80000000`). A process accesses virtual address `0x0000000080801000`. Each PTE (page table entry) is
 8 bytes. Given the PTE values below, walk all three levels and compute the physical address.
 
 **PTE values (given by the examiner):**
@@ -1417,7 +1417,7 @@ of the highest index bit relative to the page offset boundary.
 
 ### Problem 4: TLB Miss Penalty Impact
 
-**Question:** If the L1 DTLB miss rate is 1%, the L2 STLB hit rate on L1 misses is
+**Question:** If the L1 DTLB miss rate is 1%, the L2 STLB (second-level TLB) hit rate on L1 misses is
 95%, the L2 STLB hit latency is 4 cycles, and a full page walk takes 30 cycles, what
 is the average TLB access time? What is the overhead added to every memory instruction
 assuming the base CPI (without TLB misses) is 1.0 and 30% of instructions are memory
@@ -1546,7 +1546,7 @@ Correct:                                     IF0  IF1  DEC  ...
 **Cycles lost:**
 
 1. Cycle 7: Mispredict detected in EX stage.
-2. Cycle 8: Signal propagated to BPU and FTQ.
+2. Cycle 8: Signal propagated to BPU (branch prediction unit) and FTQ (fetch target queue).
 3. Cycle 9: Frontend redirected; correct PC sent to I-Cache.
 4. Cycle 10: First correct instruction enters IF0.
 5. Cycle 11: First correct instruction enters IF1.
@@ -1637,7 +1637,7 @@ The overhead beyond data storage is approximately $\frac{5.6 + 0.27}{64} \approx
 
 ### Problem 3: Store Forwarding Logic Design
 
-**Question:** A load at LQ[8] has address `0x1000`. The store queue contains
+**Question:** A load at LQ (load queue)[8] has address `0x1000`. The store queue contains
 SQ[5] = `0x1000` (4 bytes, data = `0xDEADBEEF`) and SQ[6] = `0x1004` (4 bytes,
 data = `0xCAFEBABE`). Which store matches? How is data forwarded?
 
@@ -1700,7 +1700,7 @@ $$
 32 \times 7 = 224 \text{ bits} = 28 \text{ bytes}
 $$
 
-**Including FP RAT (32 arch regs, 96 phys regs):**
+**Including FP (floating-point) RAT (32 arch regs, 96 phys regs):**
 
 $$
 \lceil \log_2 96 \rceil = 7 \text{ bits}
@@ -1727,14 +1727,14 @@ negligible overhead (~130 bytes for 73 checkpoints).
 
 ### Problem 5: Performance Gap Analysis
 
-**Question:** Xiangshan Nanhu achieves IPC = 2.8 at 1.2 GHz. ARM Cortex-A76
+**Question:** Xiangshan Nanhu achieves IPC (instructions per cycle) = 2.8 at 1.2 GHz. ARM Cortex-A76
 achieves IPC = 3.5 at 2.8 GHz. Both run SPEC CPU2006. What is the performance
 gap in SPECscore?
 
 **Solution:**
 
 SPECscore is proportional to the product of IPC and frequency (assuming the same
-binary can run on both, which is an approximation since they use different ISAs):
+binary can run on both, which is an approximation since they use different ISAs (instruction set architectures)):
 
 $$
 \text{Score} \propto \text{IPC} \times \text{Frequency}

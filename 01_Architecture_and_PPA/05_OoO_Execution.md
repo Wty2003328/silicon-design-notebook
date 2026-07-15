@@ -115,9 +115,40 @@ flowchart TD
 
 ## 2. Register Renaming
 
+Renaming exists to remove one specific bottleneck: the ISA exposes only 32 register
+*names*, yet an OoO core keeps dozens of instructions in flight, so those names are reused
+constantly and every reuse looks to the hardware like a dependency it must honor. The job
+is to translate the small, heavily reused set of *architectural* names into a large pool of
+*physical* locations, so that the only thing that can still make an instruction wait is a
+genuine producer-to-consumer value flow (a true RAW). That one translation job is what
+forces the four pieces of map state in §2.2 through §2.5 — read each as a consequence, not
+a separate feature:
+
+1. **A current map — the RAT (§2.2).** Every source operand must be resolved from the name
+   the program wrote to the physical location holding the *live* value, so there must be a
+   table with one entry per architectural register giving its most-recent physical tag.
+   Without it, a consumer cannot be reconnected to its producer once a name has been reused.
+2. **A value pool — the PRF (§2.3) plus its free list (§2.4).** Handing every new
+   destination a *fresh* tag only works if free physical registers exist and the hardware
+   knows which ones: the PRF holds the values, the free list tracks availability. The pool
+   must be large enough to name every in-flight destination *and* the committed
+   architectural set at once, which is why sizing targets roughly
+   $N_{phys} \approx N_{arch} + N_{ROB}$ — a 32-register ISA with a 128-entry ROB carries
+   ~128-160 physical registers, not 32.
+3. **A record of what each rename displaced — `phys_dst_old` (§2.5).** The mapping a
+   destination overwrites cannot simply be dropped: older consumers may still read the old
+   value, and a mispredict may need to put it back. So rename saves the displaced tag in the
+   instruction's ROB entry, and that single record is exactly what reclamation (§2.5)
+   consumes on commit and what recovery (§2.6) replays on a flush.
+
+So the rename stage is really **the machine's naming authority** — it alone decides which
+physical location an architectural name currently means — and everything downstream
+(reclamation, checkpointing, the dual frontend/commit RAT) exists to keep that naming
+decision *recoverable* when a branch or exception rewinds the machine.
+
 ### 2.1 The Problem Renaming Solves
 
-A RISC-V processor has 32 architectural registers ($x_0$--$x_{31}$). When two instructions write the same arch register but to independent values, the second write creates a **Write-After-Write (WAW)** hazard that forces the second instruction to wait. Similarly, a **Write-After-Read (WAR)** hazard occurs when a later instruction wants to write a register that an earlier instruction has not yet read. Both are *false* (name) dependencies -- they arise from the scarcity of arch register names, not from any true data flow.
+A RISC-V (Reduced Instruction Set Computer, fifth generation) processor has 32 architectural registers ($x_0$--$x_{31}$). When two instructions write the same arch register but to independent values, the second write creates a **Write-After-Write (WAW)** hazard that forces the second instruction to wait. Similarly, a **Write-After-Read (WAR)** hazard occurs when a later instruction wants to write a register that an earlier instruction has not yet read. Both are *false* (name) dependencies -- they arise from the scarcity of arch register names, not from any true data flow.
 
 Renaming eliminates WAW and WAR by giving every new destination a fresh physical register tag. Only **Read-After-Write (RAW)** -- the true data dependency -- remains.
 
@@ -155,6 +186,15 @@ The PRF holds the actual 64-bit values. A typical design uses 128 physical regis
 - **Bypass:** The CDB feeds write ports directly; read ports may also source from the bypass network for zero-latency forwarding.
 
 Area scales as $O(W^2 \times N_{phys})$ for a crossbar-connected PRF. This is one reason issue width rarely exceeds 6.
+
+The physical-register *count* is itself a knee, not a free parameter. Below
+$N_{arch} + N_{ROB}$ the free list can drain while the ROB still has empty slots, stalling
+dispatch even though instruction bandwidth is available — an artificial ILP ceiling. Above it, the extra
+registers are seldom occupied yet still pay the full $O(W^2 \times N_{phys})$ port area and
+lengthen the read wordline (hurting the load-use path). So designers deliberately
+under-provision slightly — e.g. 128 physical registers against a ~160 "ideal" for a
+128-ROB, 32-arch machine — and absorb the rare rename stall rather than buy the last few
+registers at quadratic cost.
 
 ### 2.4 Free List
 
@@ -361,7 +401,7 @@ Mechanism:
 **Why checkpoints win in high-performance cores:** The difference between 1-cycle and
 15-cycle recovery is 14 cycles of fetch starvation. At 4 instructions/cycle, that is
 56 lost instruction slots. For a core running at 3% MPKI (mispredictions per 1000
-instructions), the extra recovery cost adds:
+instructions), the extra recovery cost adds (in CPI, cycles per instruction):
 
 $$
 \frac{3}{1000} \times 14 \text{ cycles} = 0.042 \text{ CPI penalty (ROB-walk extra cost)}
@@ -399,7 +439,7 @@ Typical rename bandwidth: 4-6 instructions per cycle in modern designs (2020s).
 | Fusion: RAM for common case, CAM for checkpoint restore | Hybrid | RAM indexed by arch_reg | RAM write + CAM for recovery | Medium | Fast lookup, 1-cycle restore |
 
 RAM-based is universally used for the active (speculative) RAT because the 32
-architectural registers make it a small, fast SRAM. CAM-based rename is used only
+architectural registers make it a small, fast SRAM (Static Random-Access Memory). CAM-based (Content-Addressable Memory) rename is used only
 for checkpointing (see below).
 
 **RAM-based RAT implementation details:**
@@ -574,14 +614,20 @@ discarded.
 
 ## 3. Reorder Buffer (ROB)
 
-The ROB is the data structure that enforces in-order retirement while allowing out-of-order execution. It is a circular buffer with two pointers:
+The ROB is the structure that lets a core execute out of order while presenting architectural state *as if* every instruction had run in program order. Before looking at its bits, derive **what it must hold from the three jobs it does** — every field in §3.1 is a consequence of one of these, not an arbitrary choice:
+
+1. **In-order retirement.** Results are produced out of order but must become *architecturally visible* in program order, so that software (and the next interrupt) sees a consistent machine. The ROB is the program-order queue: instructions are appended at dispatch (tail) in fetch order and made visible only from the head. This is *why* it is a FIFO/circular buffer at all, and why each entry needs a `completed` bit — the head must know whether the oldest instruction has finished before it may retire.
+2. **Precise architectural state.** On an exception, interrupt, or branch mispredict the machine must present the *exact* state at some instruction boundary: every older instruction applied, no younger one. That forces each entry to carry enough to (a) *name* the boundary — the `pc` and any `exception` raised during execution — and (b) guarantee nothing younger has already corrupted architectural state, which is exactly what deferring the register-map update and the store-to-cache write to retirement buys. Precise state is *the* reason retirement exists at all; without it a fault could not name a restart PC.
+3. **Speculation recovery.** Most in-flight instructions are speculative (past unresolved branches); when speculation is wrong their effects must be undone cheaply. For renaming that means restoring the map and freeing the physical registers the wrong path allocated — so each entry remembers the *old* physical mapping it displaced (`phys_dst_old`) alongside its own `phys_dst`, and a tail-to-boundary walk replays these to rebuild the RAT and free list (§2.6). For memory it means speculative stores must not reach the cache — which is why store data waits in the ROB/SQ and commits *only* at retirement (`is_store`, `store_data`).
+
+So the ROB is best understood not as "a table of twelve fields" but as **the program-order ledger that makes retirement the single point where speculation becomes fact** — the fields in §3.1 are simply what that ledger must remember to do those three jobs. Mechanically it is a circular buffer with two pointers:
 
 - **Tail pointer:** Points to the next free slot. Increments when instructions are dispatched.
 - **Head pointer:** Points to the oldest uncommitted instruction. Increments when instructions retire.
 
 ### 3.1 ROB Entry Fields
 
-Each ROB entry contains:
+Read the table as the *consequence* of §3's three jobs, not a bag of bits: `valid`/`completed` serve in-order retirement, `pc`/`exception` serve precise state, and `phys_dst_old`/`is_store`/`store_data` serve speculation recovery. Each ROB entry contains:
 
 | Field | Width | Purpose |
 |-------|-------|---------|
@@ -771,6 +817,34 @@ original (faulting) execution is returned to the free list during the walk-back.
 
 The issue queue (also called the reservation station in some texts) holds instructions that have been renamed and dispatched but are waiting for source operands to become ready. Once all operands are ready, the issue queue selects the instruction for execution.
 
+The IQ exists because dispatch happens in *program order* but execution must happen in
+*dataflow order* — an instruction becomes runnable the moment its last operand is produced,
+which may be many cycles later and out of order with respect to its neighbors. The IQ is
+the buffer that absorbs that reordering, and its two verbs — **wakeup** ("have my operands
+arrived?") and **select** ("am I chosen among those ready this cycle?") — dictate exactly
+what each entry must remember. Read §4.1 as the consequence:
+
+- **To be woken, an entry must name what it is still waiting for** — hence `src_tag_0/1`
+  (the physical tags whose production it watches) and `src_rdy_0/1` (whether each has
+  arrived). Wakeup is fundamentally a *match*: any result can satisfy any waiting consumer,
+  so every entry must compare its source tags against every result broadcast. That is why
+  the IQ is built from CAM cells and why the *compare count*, not the storage, dominates its
+  cost and its power (§4.2, §4.5, §12).
+- **To be selected fairly, an entry must carry its priority** — hence `age`. Oldest-ready
+  instructions are the ones most likely to sit on the critical dependency chain, so select
+  is an oldest-first arbitration over the ready set (§4.3), not a free-for-all.
+- **To execute and report back once chosen, an entry must be self-contained** — hence
+  `opcode`, `imm`, `dst_tag`, and `rob_idx`: everything the execution unit needs to compute,
+  plus where to broadcast the result and which ROB entry to mark complete. Notice the IQ
+  holds no operand *values*, only *tags* — the values live in the PRF and arrive on the CDB,
+  so the IQ tracks *readiness*, not data.
+
+So the issue queue is best read as **the scoreboard that turns a stream of completion events
+into issue decisions**, one per ready instruction per port. And the reason it — not the ROB
+or the PRF — sets the clock period is that this wakeup-select-issue loop must close in a
+*single* cycle for back-to-back dependent instructions (§12): a producer's result has to
+wake its consumer in time to issue the very next cycle, or every dependent chain stalls.
+
 ### 4.1 Issue Queue Entry
 
 | Field | Width | Purpose |
@@ -790,6 +864,21 @@ The issue queue (also called the reservation station in some texts) holds instru
 
 Wakeup is the process of marking source operands as ready when a producing
 instruction writes its result onto the Common Data Bus (CDB).
+
+The **Common Data Bus** is the structure that makes wakeup possible, and it is worth seeing
+*why it has to be a broadcast* rather than point-to-point wiring. At the instant a result is
+produced, the hardware does not know which waiting instructions consume it — any renamed
+instruction still sitting in the IQ could hold that physical tag as a source, and the set
+changes every cycle. The only tag-cheap way to satisfy an *unknown, time-varying* consumer
+set is to *announce*: each result-producing port drives a `{tag, value}` pair onto a shared
+bus that every IQ entry, the PRF, and the ROB snoop at once. The number of CDB lines is
+therefore a provisioned resource — equal to the peak results-completed-per-cycle — and it is
+costly on *both* ends: each line adds a PRF write port and multiplies the IQ's CAM work by
+another full sweep of the queue ($N \times S$ compares per line, §12.1). That is the central
+CDB trade-off: enough lines to drain the execution units without write-back stalls, but no
+more, because every extra line taxes the frequency-limiting wakeup path. Designs economize
+by *segregating* buses — a narrower CDB per cluster or per operand class — so that not every
+consumer must watch every producer.
 
 **CAM-based wake-up mechanism:**
 
@@ -816,7 +905,7 @@ For a 64-entry IQ with 4 CDB lines and 2 source operands per entry:
 - **Total CAM comparisons per cycle** = `64 entries * 2 sources * 4 CDB lines = 512`
 
 Each comparison is a 7-bit XOR + 7-input NOR + OR across CDB lines:
-XOR delay:  ~1.5 FO4 per bit (dynamic CMOS match line)
+XOR delay:  ~1.5 FO4 (fanout-of-4 inverter delays) per bit (dynamic CMOS — Complementary Metal-Oxide-Semiconductor — match line)
 NOR delay:  ~1 FO4 (dynamic NOR of mismatch lines)
 OR across CDB: ~0.5 FO4
 
@@ -870,7 +959,7 @@ Solution: Speculative wake-up (latency-aware scheduling)
 ```
 
 This technique hides the wakeup latency for multi-cycle operations. The risk is
-wasted energy on misspeculated wake-ups, but the IPC benefit outweighs the cost.
+wasted energy on misspeculated wake-ups, but the IPC (Instructions Per Cycle) benefit outweighs the cost.
 
 **Speculative wake-up cancellation on pipeline flushes:**
 
@@ -980,6 +1069,17 @@ Alternative policies:
 
 Most high-performance designs use distributed queues (e.g., separate integer, floating-point, and memory issue queues) but may share a unified queue within each domain.
 
+The choice is really a referendum on the wakeup CAM (§4.2, §12). A unified queue sees every
+ready instruction and so never idles a port for lack of visibility, but its match cost grows
+as $N \times S \times N_{CDB}$ and its match-line and select wires grow physically longer —
+both of which stretch the single-cycle wakeup-select loop. Splitting into per-class queues
+cuts each queue's $N$ and shortens its wires, buying frequency and power back, at the price
+of *fragmentation*: a burst of integer-ready instructions cannot borrow an idle slot in the
+FP queue, so utilization drops. Distributed wins in high-frequency cores because the loop
+*is* the frequency limiter and the lost utilization is small in practice — which is exactly
+why Zen 4 splits its scheduler 64+44+48 while it is the unified 128-entry scheduler that
+bounds Golden Cove's wakeup power (§14).
+
 ### 4.5 IQ Sizing and Power
 
 The issue queue is one of the most power-hungry structures in an OoO core because every entry performs a CAM comparison against every CDB line every cycle.
@@ -1001,6 +1101,37 @@ Techniques to reduce IQ power:
 ## 5. Load-Store Queue (LSQ)
 
 The LSQ enforces memory ordering -- it ensures that loads and stores appear to execute in program order with respect to their addresses, even though they may execute out of order internally.
+
+The deeper question is *why memory needs a dedicated ordered structure at all* when
+registers make do with renaming, the IQ, and the ROB. The answer is that a register
+dependency is knowable at **rename** — the register names are right there in the instruction
+encoding, so the hardware can wire producer to consumer before either executes. A memory
+dependency is not: whether a load aliases an older store depends on their *addresses*, which
+are not known until each has passed through the AGU at **execute**. Memory thus has a
+second, *late-binding* name space (addresses) that cannot be renamed away, so the machine
+cannot build the dependency graph up front — it must *discover* dependencies dynamically as
+addresses resolve. That single fact forces everything in §5.1 and §5.6:
+
+- **Program order must be represented explicitly**, because "does this load alias an *older*
+  store?" is only meaningful if age is recorded — hence loads and stores sit in age-ordered
+  queues (the LQ and SQ), not an unordered pool like the IQ.
+- **Each entry must hold its address and data behind *known* bits**, because they arrive at
+  different times (address from the AGU, store data possibly later) and disambiguation may
+  only compare fields that have actually resolved — hence `addr`/`data` alongside
+  `addr_known`/`va_known`.
+- **Two opposite searches must both be supported**, because a hazard can be discovered from
+  either end: a load scanning *backward* for the youngest older store that aliases it
+  (store-to-load forwarding, §5.2), and a resolving store scanning *forward* for a younger
+  load that already read stale data (violation detection, §5.6). Both are address CAMs.
+- **Stores must be withheld until commit**, because a speculative store that reached the
+  cache could not be undone on a mispredict or fault — hence the SQ buffers store data and
+  writes through only at retirement (§5.5), the memory-side mirror of deferring the
+  register-map update to commit.
+
+So the LSQ is, in the end, **the disambiguation engine for a name space that binds too late
+to rename** — an ordered ledger of in-flight memory ops whose entire purpose is to let loads
+and stores execute out of order while *reconstructing*, address by address, the program-order
+memory image they would have produced had they run in sequence.
 
 ### 5.1 Structure
 
@@ -1060,6 +1191,16 @@ A load may execute *before* an older store if their addresses are guaranteed to 
 **Conservative approach:** Stall the load until all prior stores have computed their addresses. Safe but limits ILP.
 
 **Aggressive approach:** Allow the load to execute speculatively. If a later store writes to the same address, the load was incorrect and must be re-executed (squash and replay).
+
+Neither pure policy is right, and the knee is set by economics. Stalling every load until
+all older store addresses are known is safe but forfeits most memory-level parallelism —
+loads sit on the critical path, and store addresses often resolve late. Speculating on every
+load maximizes ILP but pays a full pipeline flush (10-20 cycles, §5.6) on each ordering
+violation. Because violations are rare (~0.1-1% of loads, §5.6) while flushes are expensive,
+the optimum is to speculate *by default* and spend a small predictor to hold back only the
+loads that history says will alias — precisely the job of the store-set predictor in §5.4.
+The design target is to drive the *product* violation-rate x flush-cost below the stall cost
+the conservative policy would otherwise pay every cycle.
 
 ### 5.4 Memory Disambiguation
 
@@ -1134,7 +1275,7 @@ than a full address CAM. The trade-off is over-conservatism: two addresses that 
 to the same color but do not actually alias will cause unnecessary stalls. In practice,
 4-bit coloring (16 colors) achieves ~90% of the performance of a full store-set
 predictor at roughly half the area cost, making it attractive for mid-range cores
-where the store-set predictor's SSID table (typically 256--1024 entries x 8--16 bits)
+where the store-set predictor's SSID (Store-Set ID) table (typically 256--1024 entries x 8--16 bits)
 is too expensive.
 
 **Store-to-load forwarding with age-based priority:**
@@ -1631,7 +1772,7 @@ $$\text{addr} = \text{base} + \text{index} \times \text{scale} + \text{displacem
 
 - **Latency:** 1 cycle (a simple adder, often shared with an ALU).
 - **Throughput:** 2 per cycle (to support 2 memory operations per cycle).
-- **Virtual vs. physical:** The AGU produces a virtual address. Translation to a physical address (via TLB) happens in parallel with or after AGU computation.
+- **Virtual vs. physical:** The AGU produces a virtual address. Translation to a physical address (via the TLB, a Translation Lookaside Buffer) happens in parallel with or after AGU computation.
 
 ### 7.6 Latency / Throughput Summary for a 4-Wide Core
 
@@ -1794,7 +1935,7 @@ This lazy handling is what makes precise exceptions cheap -- no special fast-flu
 logic is needed at the detection point.
 
 Fetch-stage exception (instruction page fault):
-Detection: I-TLB miss -> page walk -> PTE not present or no execute permission
+Detection: I-TLB miss -> page walk -> PTE (Page Table Entry) not present or no execute permission
 Action at fetch: the faulting instruction cannot enter the pipeline normally.
 Instead, the fetch unit creates a "poison" fetch packet containing the PC
 and the exception code (CAUSE_INSN_PAGE_FAULT = 12). This packet travels
@@ -2042,7 +2183,7 @@ in a defined priority order (RISC-V privileged spec):
 | 14 | External interrupt (PLIC) |
 
 In RISC-V, exceptions can be *delegated* from M-mode to S-mode using the
-`medeleg` and `mideleg` CSRs. For example, setting bit 13 in `mideleg` causes
+`medeleg` and `mideleg` CSRs (Control and Status Registers). For example, setting bit 13 in `mideleg` causes
 timer interrupts to be delivered to the S-mode trap vector (`stvec`) instead of
 the M-mode vector (`mtvec`). This allows the OS (running in S-mode) to handle
 common exceptions without trapping into the firmware/hypervisor (M-mode),
@@ -2420,7 +2561,7 @@ of the art in x86 OoO design:
    1 cycle for exact-match stores, 3--5 cycles for partial overlaps.
 
 4. **ROB size rationale:** 512 entries was chosen to cover the memory
-   parallelism window for server workloads: at 100 ns DRAM latency and 4 GHz
+   parallelism window for server workloads: at 100 ns DRAM (Dynamic Random-Access Memory) latency and 4 GHz
    clock, a core can have ~400 loads in flight. The ROB must be large enough
    to keep independent instructions flowing while those loads complete.
 

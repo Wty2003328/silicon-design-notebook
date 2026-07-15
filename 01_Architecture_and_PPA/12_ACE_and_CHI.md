@@ -16,10 +16,10 @@ keeping caches coherent across multiple masters. When two CPU cores both cache
 address `0x8000_1000` and one of them writes to it, AXI4 has no built-in way to
 invalidate or update the other copy.
 
-This page covers two AMBA extensions that solve that problem:
+This page covers two AMBA (Advanced Microcontroller Bus Architecture) extensions that solve that problem:
 
 - **ACE** (AXI Coherence Extensions, AMBA 4) -- adds snoop channels on top of
-  AXI4 for bus-based snooping coherence. Targets 2--8 core mobile SoCs
+  AXI4 for bus-based snooping coherence. Targets 2--8 core mobile SoCs (systems-on-chip)
   (Cortex-A55/A78 clusters).
 - **CHI** (Coherent Hub Interface, AMBA 5) -- a clean-sheet packet-based
   coherent interconnect with directory-based coherence. Targets 8--128+ core
@@ -163,8 +163,8 @@ Why barriers on the bus?
 
 ### 3.1 Transaction Types and Cache State Model
 
-ACE uses MOESI-style coherence states. Each transaction type maps to a
-specific MESI state transition:
+ACE uses MOESI-style (Modified/Owned/Exclusive/Shared/Invalid) coherence states. Each transaction type maps to a
+specific MESI (Modified/Exclusive/Shared/Invalid) state transition:
 
 | Transaction   | Purpose                                               | MESI Transition       |
 |---------------|-------------------------------------------------------|-----------------------|
@@ -587,7 +587,7 @@ Deadlock prevention in CHI:
 ### 5.8 CHI Retry Mechanism
 
 When an HN-F cannot immediately service a request (directory entry busy,
-MSHR full, resource contention), it does not simply stall the requester.
+MSHR (Miss Status Handling Register) full, resource contention), it does not simply stall the requester.
 Instead, it actively sends back a **RetryAck**, telling the requester to
 hold off and retry later. This prevents head-of-line blocking in the
 interconnect.
@@ -1060,7 +1060,7 @@ flowchart TD
 
 CHI packets are encapsulated in UCIe flits: REQ ≈ 128 bits (opcode, src/tgt ID, addr, size), SNP ≈ 96 bits, RSP ≈ 64 bits, DAT ≈ 256+ bits (payload + BE + CC + poison). Bandwidth: UCIe 256-bit × 16 GT/s = 64 GB/s per direction (matched to PCIe 6.0 ×4); UCIe 512-bit × 32 GT/s = 256 GB/s per direction (high-performance chiplets).
 
-The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management across the D2D link, link-level retry (UCIe CRC + replay), and protocol-level flow control mapping between CHI valid/ready and UCIe credits.
+The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management across the D2D link, link-level retry (UCIe CRC (Cyclic Redundancy Check) + replay), and protocol-level flow control mapping between CHI valid/ready and UCIe credits.
 
 ---
 
@@ -1068,7 +1068,7 @@ The CHI-to-UCIe adapter must handle: flit packing/unpacking, credit management a
 
 ### CXL.cache and CHI Coexistence
 
-CXL.cache allows an accelerator (CXL Type-1 or Type-2 device) to participate in the host's coherence domain. When the host interconnect uses CHI, the CXL.cache protocol must be bridged to CHI transactions at the system-level interconnect.
+CXL.cache allows an accelerator (CXL (Compute Express Link) Type-1 or Type-2 device) to participate in the host's coherence domain. When the host interconnect uses CHI, the CXL.cache protocol must be bridged to CHI transactions at the system-level interconnect.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -1117,7 +1117,7 @@ CXL.mem (Type-3) extends the host's physical address space with device-attached 
 
 ### PCIe 6.0: PAM-4 Signaling and FLIT Mode
 
-PCIe 6.0 (ratified 2022) represents the most significant PHY change in PCIe history, moving from NRZ (Non-Return-to-Zero) to **PAM-4 (Pulse Amplitude Modulation, 4 levels)** signaling.
+PCIe 6.0 (ratified 2022) represents the most significant PHY (physical layer) change in PCIe history, moving from NRZ (Non-Return-to-Zero) to **PAM-4 (Pulse Amplitude Modulation, 4 levels)** signaling.
 
 | Parameter | PCIe 5.0 | PCIe 6.0 | PCIe 7.0 (spec announced) |
 |---|---|---|---|
@@ -1304,7 +1304,7 @@ flowchart TD
     class P0,P1,P2 pool
 ```
 
-Fabric manager assigns memory regions: Host 0 → Pool 0 (256 GB) + 128 GB of Pool 1 = 384 GB; Host 1 → 256 GB of Pool 1 + 256 GB of Pool 2 = 512 GB; Host 2 → 768 GB of Pool 2. Dynamic reassignment: when Host 2 is idle, Pool 2 can be reassigned to Host 0 for a batch job with no reboot — the OS sees CXL-attached memory as a separate NUMA node.
+Fabric manager assigns memory regions: Host 0 → Pool 0 (256 GB) + 128 GB of Pool 1 = 384 GB; Host 1 → 256 GB of Pool 1 + 256 GB of Pool 2 = 512 GB; Host 2 → 768 GB of Pool 2. Dynamic reassignment: when Host 2 is idle, Pool 2 can be reassigned to Host 0 for a batch job with no reboot — the OS sees CXL-attached memory as a separate NUMA (Non-Uniform Memory Access) node.
 
 ---
 

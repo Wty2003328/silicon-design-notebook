@@ -12,7 +12,7 @@
 
 Cache design is the single topic that bridges processor microarchitecture and memory
 system performance. Every high-performance core depends on its cache hierarchy to hide
-the 100--300 cycle DRAM latency, and the cache controller is the logic that makes this
+the 100--300 cycle DRAM (dynamic random-access memory) latency, and the cache controller is the logic that makes this
 possible. This page covers the internals of that controller: the tag-compare datapath,
 miss-handling state machines, write policies, refill optimizations, replacement
 policies, prefetch engines, coherence protocols, and the power-reduction techniques
@@ -22,11 +22,46 @@ This material appears in virtually every CPU design interview at companies that 
 cores -- Apple, Arm, Qualcomm, AMD, Intel, Google, and the GPU/accelerator vendors.
 The goal is to move beyond "caches store frequently used data" and reach the level
 where you can whiteboard a four-way set-associative L1 data cache controller with
-MSHR miss handling and MESI coherence.
+MSHR (Miss Status Holding Register) miss handling and MESI (Modified/Exclusive/Shared/Invalid) coherence.
 
 ---
 
 ## 1. Cache Pipeline
+
+A cache exists to bridge one widening gap. For decades core clock speeds improved far
+faster than DRAM (dynamic random-access memory) latency — the **memory wall** — so a load
+that misses all the way to DRAM costs 100--300 cycles, enough to drain any realistic
+instruction window and leave the machine idle. The cache is a bet that the access stream is
+not random but exhibits **locality**: *temporal* (a byte touched now is likely touched again
+soon) and *spatial* (its neighbors are likely touched soon). Every structure on this page
+follows from making that bet cheap to *place* data for and cheap to *check*.
+
+That bet dictates the shape. To exploit spatial locality the cache moves data in fixed
+**lines** (typically 64 B), so the low address bits become a **block offset** (which byte
+within the line). To find a line in $O(1)$ without searching, the cache is organized as a
+hardware hash table keyed by address: the **index** selects a set directly, and the **tag**
+(the remaining high bits) is stored so a candidate can be confirmed. The one-cycle hit path
+in §1.1 is exactly this decomposition realized in silicon — read the set, compare tags, steer
+the winning way — and the field widths in §1.3 are its consequence, not an arbitrary layout.
+
+**Why set-associative, and not direct-mapped?** A direct-mapped cache gives every line
+exactly one home set, so two hot lines whose addresses collide on the same index evict each
+other indefinitely — a **conflict miss** — even while the rest of the cache sits empty.
+Associativity gives each set $N$ homes, and it is the single knob that trades conflict misses
+against the cost of a hit:
+
+| Organization | What more associativity buys | What it costs |
+|--------------|------------------------------|---------------|
+| Direct-mapped ($N=1$) | Fastest hit (one comparator, no way-select MUX), lowest energy | Worst conflict-miss rate; pathological on strided or aliased patterns |
+| Set-associative ($N=4$--$8$) | Conflict misses fall sharply (diminishing returns past ~8-way) | $N$ parallel comparators plus an $N$-way data MUX in the hit path; more read energy per access |
+| Fully-associative | Zero conflict misses | $O(N)$ comparators — affordable only for tiny structures (TLBs, victim caches) |
+
+The knee for L1 data caches sits at 4--8 ways: enough to eliminate most conflict misses while
+keeping the tag-compare-and-select network inside one fast cycle. This same "add homes to cut
+conflicts, pay comparators and MUX delay" trade reappears wherever an associative lookup is on
+the critical path — the L2 STLB on the TLB page makes it too — and it directly motivates the
+power techniques in §8, where reading all $N$ ways on every hit wastes $(N-1)/N$ of the
+data-array energy.
 
 ### 1.1 The One-Cycle Hit Path
 
@@ -37,7 +72,7 @@ $$
 \text{Address} = [\,\underbrace{\text{Tag}}_{\text{upper bits}}\,|\,\underbrace{\text{Index}}_{\text{middle bits}}\,|\,\underbrace{\text{Block Offset}}_{\text{lower bits}}\,]
 $$
 
-In cycle 0, the index drives the word lines of all $N$ tag SRAMs and all $N$ data
+In cycle 0, the index drives the word lines of all $N$ tag SRAMs (static random-access memory) and all $N$ data
 SRAMs simultaneously. The tag bits from each way are compared against the CPU-provided
 tag using $N$ parallel equality comparators. The comparator outputs are OR-reduced into
 a single `hit` signal. A multiplexer steered by the winning way selects the correct
@@ -173,7 +208,7 @@ Set k:
 - **Tags** — 512 lines × 19 bits = 9728 bits = 1.19 KB
 - **Valid** — 512 bits
 - **Dirty** — 512 bits
-- **LRU** — 128 sets × 3 bits = 384 bits (pseudo-LRU)
+- **LRU (least recently used)** — 128 sets × 3 bits = 384 bits (pseudo-LRU)
 
 - **Total overhead** — ~1.2 KB for 32 KB cache = ~3.7% overhead
 
@@ -197,11 +232,46 @@ Latency: Tag read + comparator + MUX ≈ 2-4 cycles for L1 cache
 ### 2.1 Motivation
 
 A blocking cache stalls the entire pipeline on every miss. If the L1 miss rate is 5%
-and each miss costs 100 cycles, the CPI penalty is $0.05 \times 100 = 5.0$ -- half of
+and each miss costs 100 cycles, the CPI (cycles per instruction) penalty is $0.05 \times 100 = 5.0$ -- half of
 all cycles are wasted. A non-blocking cache allows the processor to continue executing
 independent instructions while the miss is serviced.
 
+The deeper lever is **memory-level parallelism (MLP)**. DRAM latency is stubbornly fixed at
+100--300 cycles, but DRAM *bandwidth* lets many requests be in flight at once. A blocking
+cache serializes misses and pays that latency once per miss; a non-blocking cache overlaps
+$k$ independent misses so their latencies hide under one another, driving the *effective* miss
+penalty toward $1/k$ of the serial cost. Converting one outstanding miss into many is the
+whole job — and it is exactly what forces the bookkeeping of the next section: to keep $k$
+misses in flight, the cache must *remember* $k$ misses' worth of state while the pipeline
+races ahead.
+
 ### 2.2 MSHR Structure -- Detailed Implementation
+
+An MSHR is the record that keeps one missed line "alive" from the cycle the miss is detected
+until its data returns and every waiting instruction has been satisfied. Before reading the
+field table, derive **what a single entry must hold from the three jobs it does** — each field
+below is a consequence of one of these, not an arbitrary choice:
+
+1. **Route the fill back to its consumers.** A miss is triggered by one or more instructions
+   now parked in the core waiting for data. When the line returns dozens of cycles later, the
+   entry must know *who* to wake and *where* the bytes go — hence the destination physical
+   register(s) (`dest_reg[]`) and the per-word `word_valid` bits. Without them the returning
+   line would be anonymous.
+2. **Merge secondary misses so one line means one fill.** While a line is outstanding, other
+   instructions may miss on the *same* line. Issuing a second fill would waste bandwidth and
+   risk two copies racing into the array, so the MSHR array is CAM-searched by `line_addr`: a
+   match *merges* the new request (set its bit in `req_vector`, record its `dest_reg`) rather
+   than allocating. This is *why* an entry is keyed by line address and carries a per-word
+   request vector instead of a single destination.
+3. **Sequence the eviction the fill requires.** Installing a new line usually evicts a victim,
+   and a dirty victim must be written back first. The entry therefore tracks the allocated
+   `way`, a `dirty_victim` flag, and a `state`, so the controller can order
+   writeback-before-fill (§2.4) without dropping the request.
+
+So an MSHR is best understood not as "nine fields" but as **the per-miss continuation that
+lets the core forget a miss and be reminded, correctly, when it completes** — and the number
+of MSHRs the array holds is precisely the machine's MLP ceiling (§2.5, MSHR Count). The table
+below is what that continuation must remember.
 
 The **Miss Status Holding Register (MSHR)** tracks every outstanding cache miss. Each
 entry contains:
@@ -230,7 +300,7 @@ For 16 MSHRs: 16 x 176 = 2,816 bits = 352 bytes of MSHR storage
 
 #### Secondary Miss Handling (Miss Merging)
 
-When a new miss arrives, the controller performs a **CAM lookup** across all valid
+When a new miss arrives, the controller performs a **CAM (content-addressable memory) lookup** across all valid
 MSHR entries, comparing the incoming `line_addr` against stored `line_addr` values:
 
 - **Primary miss** (no matching MSHR): Allocate a free MSHR. Set `valid=1`, store
@@ -309,7 +379,7 @@ flowchart TD
 Each MSHR entry captures all the information needed to service a cache miss, merge
 secondary misses, and deliver data to the correct destination registers when the fill
 returns. Below is a field-by-field analysis for a 4-way 32 KB L1D cache with 64 B lines
-and 7-bit physical register IDs (as found in a modern OoO core).
+and 7-bit physical register IDs (as found in a modern OoO (out-of-order execution) core).
 
 **MSHR entry fields:**
 
@@ -443,6 +513,19 @@ bandwidth utilization -- a single miss does not lock the bus for its entire late
 
 ## 3. Write Policy
 
+Writes are where a cache stops being a transparent speed-up and starts making policy. A read
+only ever *copies* data that already exists in the level below, so it can never make the two
+levels disagree. A write *creates* a new value, which means the cache must decide when the
+cached copy and the backing copy are allowed to diverge — and that decision splits into two
+independent knobs. On a write **miss**: pull the line in first and then write it
+(write-allocate), or push the store straight to the next level and skip the fetch
+(no-write-allocate). On a write **hit**: propagate the new value downward immediately
+(write-through), or hold it in the line and set a **dirty** bit, paying the write-down only on
+eviction (write-back). Both knobs trade **write bandwidth and coherence simplicity against
+traffic, latency, and dirty-state bookkeeping**; the sections below are those two axes, and the
+dirty bit, write buffer, and writeback path all exist to make the deferred (write-back) choice
+safe.
+
 ### 3.1 Write-Allocate vs. No-Write-Allocate
 
 | Policy | On Write Miss | Used By |
@@ -493,7 +576,7 @@ Typical write buffer depth: 4--16 entries (L1), 16--32 entries (L2).
 
 ---
 
-**Write-back controller FSM (RTL view):**
+**Write-back controller FSM (RTL (register-transfer level) view):**
 
 ```ascii-graph
 States: IDLE → TAG_CHECK → {HIT_UPDATE | MISS_ALLOCATE} → WRITEBACK → REFILL → IDLE
@@ -854,6 +937,20 @@ $$
 
 ### 6.3 Inclusive vs. Exclusive Hierarchies
 
+Inclusion policy answers one question: **when a line lives in a private cache, must the shared
+cache keep a copy of it too?** The answer is a direct trade between coherence cost and effective
+capacity, and it is forced by how a multicore *finds* lines. A coherence probe needs to know
+whether any private cache holds a line; if the outer level is **inclusive**, its tags are a
+complete superset of the inner caches, so a miss in the outer level *proves* no inner cache has
+it and the probe can stop at one place. That shortcut is paid for by storing every private line
+twice — the outer cache's effective capacity shrinks by roughly the aggregate size of the inner
+caches it must shadow. **Exclusive** spends the opposite way: no duplication, so effective
+capacity is the *sum* of the levels, but the outer level is no longer authoritative, so a probe
+must be broadcast to every private cache. The three policies below are three points on that
+duplication-versus-probe curve; §12 (Non-Inclusive Cache Hierarchies) shows how high-core-count
+chips add a snoop filter to buy the inclusive probe shortcut without paying the inclusive
+capacity tax.
+
 **Inclusive:** All data in L1/L2 is also present in L3.
 
 - Advantage: snooping for coherence only needs to check L3. If L3 does not contain a
@@ -883,6 +980,33 @@ proposed by Jouppi (1990).
 ---
 
 ## 7. Replacement Policies
+
+A replacement policy exists because associativity creates a choice it cannot dodge: when a miss
+lands in a set whose $N$ ways are all valid, exactly one resident line must be evicted to make
+room. The *optimal* choice (Belady's MIN) evicts the line whose next reference is furthest in
+the future — but the future is unknown, so every real policy is a **predictor of re-reference
+distance built from past behavior**, and each is defined precisely by the per-line (or per-set)
+state it keeps to make that prediction and the cost of updating that state on *every* hit:
+
+- **Recency** (LRU / PLRU) bets the least-recently-used line has the most distant reuse. That
+  requires storing an ordering of the ways: exact LRU keeps $\lceil\log_2 N!\rceil$ bits per set
+  and rewrites it on every access; PLRU keeps only $N-1$ bits by approximating the order with a
+  tree. The kept state *is* the recency order.
+- **Insertion age** (FIFO) keeps just a set pointer ($\lceil\log_2 N\rceil$ bits) and ignores
+  hits entirely — cheap, but it cannot distinguish a hot line from a cold one and is exposed to
+  Belady's anomaly.
+- **Re-reference prediction** (RRIP / SHiP) keeps a small $M$-bit counter per line estimating
+  *how soon* it will be reused, so a one-touch streaming line can be inserted as "evict first"
+  and kept from flushing the working set — the scan resistance that pure recency lacks.
+- **None** (Random) keeps zero state and trades prediction for area; it wins only because it
+  never *systematically* evicts the next-needed line, so it sidesteps the thrashing LRU suffers
+  once the working set just exceeds $N$.
+
+Read the policies below as points on a **prediction-accuracy versus state-and-update-cost**
+curve: LRU is the most faithful recency predictor and the most expensive to maintain; PLRU
+trades a little accuracy for far less state; RRIP changes *what* is predicted (distance, not
+merely order) to resist scans; Random abandons prediction to spend nothing. The worked traces in
+§7.5--§7.7 show exactly where these predictions diverge.
 
 ### 7.1 LRU (Least Recently Used)
 
@@ -1040,7 +1164,7 @@ repeatedly while a way in the other subtree ages.
 
 #### Random
 
-No storage per set (uses a PRNG). Selects a random way on eviction.
+No storage per set (uses a PRNG (pseudo-random number generator)). Selects a random way on eviction.
 
 Expected hit rate after warmup: $3/5 \times (3/4) \approx 45\%$ (probabilistic). Random
 avoids thrashing because it sometimes evicts a non-immediately-needed line. For working
@@ -1118,7 +1242,7 @@ stronger scan resistance: 97% of scan lines are inserted at the "evict me first"
 and quickly discarded, while the 3% that happen to be useful get a second chance.
 
 **Use case:** Large L3 caches serving many cores with mixed streaming and random-access
-workloads. BRRIP can reduce LLC miss rate by 10-20% over LRU for memory-intensive
+workloads. BRRIP can reduce LLC (last-level cache) miss rate by 10-20% over LRU for memory-intensive
 server workloads.
 
 #### Summary Table
@@ -1271,7 +1395,7 @@ leakage power by 40--60% with < 1% performance loss.
 Disable entire ways when the working set is small. A control register or hardware
 monitor disables ways by preventing their word lines from firing. Effective for L3
 caches in low-load situations. Modern Intel processors dynamically enable/disable L3
-ways based on demand (e.g., RAPL power management).
+ways based on demand (e.g., RAPL (Running Average Power Limit) power management).
 
 ---
 
@@ -1343,7 +1467,7 @@ variants and some directory protocols).
   the line arrives in S (multiple copies may exist). If no cache responds (Shared not
   asserted), the line arrives in E -- this cache has the only copy, and can silently
   upgrade to M on a subsequent write without any bus transaction. This is the critical
-  optimization that the E state provides over a pure MSI protocol.
+  optimization that the E state provides over a pure MSI (Modified/Shared/Invalid) protocol.
 
 - **I → M on PrWr:** The cache issues a BusRdX (read-for-ownership). All other caches
   must invalidate any copies. Memory supplies the data. The line arrives in M (dirty)
@@ -1581,7 +1705,7 @@ x 4 bytes = 1 KB each.
 
 ### 12.1 The Problem
 
-In a multi-core system running mixed workloads (e.g., an LLM inference server
+In a multi-core system running mixed workloads (e.g., an LLM (large language model) inference server
 alongside a web server), an AI workload with a large working set can evict
 useful data from the shared L3 cache, degrading the co-running workload's
 performance by 20--50%. This is called **cache interference** or **noisy
@@ -1624,7 +1748,7 @@ allocation.
 ARM MPAM (introduced in ARMv8.4, widely deployed in Neoverse V2/N2) provides
 a more fine-grained partitioning mechanism:
 
-- **Partition IDs (PARTID):** Each thread or VM is assigned a PARTID (up to
+- **Partition IDs (PARTID):** Each thread or VM (virtual machine) is assigned a PARTID (up to
   256 partitions).
 - **Cache maximum portion:** A partition can be limited to a percentage of the
   cache (in increments of ~1--4 KB, not whole ways). This is implemented by

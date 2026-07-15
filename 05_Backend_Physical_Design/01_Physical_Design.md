@@ -1,7 +1,7 @@
 # Physical Design (PnR) — Senior Engineer Deep Dive
 
 > Target audience: Engineers preparing for senior-level interviews at Apple, NVIDIA, AMD, Intel, Qualcomm.
-> Covers the complete PnR flow with quantitative depth, RTL/ASCII diagrams, and real design trade-offs.
+> Covers the complete PnR (place and route) flow with quantitative depth, RTL/ASCII diagrams, and real design trade-offs.
 
 ---
 
@@ -109,7 +109,7 @@ Seal ring, scribe line add another ~50 um per side.
 - Below 60%: wasting silicon area, longer wires, more power
 - 60-70%: comfortable routing, easy timing closure, good for high-performance
 - 70-80%: standard for moderate-frequency designs
-- Above 80%: severe routing congestion, timing closure becomes very difficult, DRC issues
+- Above 80%: severe routing congestion, timing closure becomes very difficult, DRC (design rule check) issues
 - Above 85%: nearly impossible to close timing without significant architectural changes
 
 ### 2.2 Aspect Ratio
@@ -122,7 +122,7 @@ Acceptable range: 0.7 to 1.4
 ```
 
 **Impact of non-unity AR:**
-- AR >> 1 (tall, narrow): horizontal routing tracks are short, vertical routing becomes congested, IR drop worsens along the long dimension
+- AR >> 1 (tall, narrow): horizontal routing tracks are short, vertical routing becomes congested, IR drop (current × resistance voltage drop across the power grid) worsens along the long dimension
 - AR << 1 (wide, short): opposite problem
 - Non-square dies also complicate package assembly and heat dissipation
 
@@ -155,9 +155,9 @@ Acceptable range: 0.7 to 1.4
   +--------------------------------------------------+
 ```
 
-- **Corner cells**: connect the IO ring power/ground at corners, ensure continuous ESD protection path.
+- **Corner cells**: connect the IO ring power/ground at corners, ensure continuous ESD (electrostatic discharge) protection path.
 - **Seal ring**: metal stack ring preventing moisture ingress into the die, mandatory foundry requirement.
-- **IO ring**: contains IO pads (wire bond) or RDL/bump pads (flip-chip), ESD protection cells, level shifters.
+- **IO ring**: contains IO pads (wire bond) or RDL (redistribution layer)/bump pads (flip-chip), ESD protection cells, level shifters.
 
 ### 2.4 Macro Placement Strategy
 
@@ -193,7 +193,7 @@ Before finalizing macro positions, check fly-lines (virtual connections from net
 **Macro orientation:**
 - Most macros have pins on specific sides (e.g., address/data pins on one side, power pins on another)
 - Rotate macro (R0, R90, R180, R270, MX, MY) so that signal pins face the logic that drives/receives them
-- SRAM: typically place with data pins facing standard cell rows, address pins on the side
+- SRAM (static random-access memory): typically place with data pins facing standard cell rows, address pins on the side
 
 ### 2.5 Power Planning
 
@@ -304,7 +304,7 @@ Solution: 80 VDD straps, each 5 um wide, plus rings on all edges.
 
 - IO pin locations drive the top-level signal routing topology
 - Place pins on the side closest to the logic they connect to (minimizes wirelength)
-- Clock pins: place centrally for balanced CTS
+- Clock pins: place centrally for balanced CTS (clock tree synthesis)
 - For hierarchical designs: pin placement must match between parent and child partitions
 - Pin spacing must satisfy minimum routing pitch on the pin layer
 
@@ -312,7 +312,7 @@ Solution: 80 VDD straps, each 5 um wide, plus rings on all edges.
 
 1. **Channel DRC**: ensure minimum spacing between macros, macros and core boundary
 2. **Placement density**: verify no region exceeds target utilization
-3. **Power EM**: early check that power straps can handle expected current density
+3. **Power EM (electromigration)**: early check that power straps can handle expected current density
 4. **Fly-line analysis**: verify no excessively long logical connections
 5. **Timing estimation**: virtual route + trial placement to check feasibility
 
@@ -413,7 +413,7 @@ Where Q is a connectivity matrix (Laplacian of the hypergraph).
   for large designs, but produces very high quality for small blocks.
 ```
 
-**Numerical Example -- HPWL Calculation:**
+**Numerical Example -- HPWL (half-perimeter wirelength) Calculation:**
 
 ```text
 Given a net with 4 pins at coordinates:
@@ -945,7 +945,7 @@ CTS uses special library cells optimized for:
 ```
 
 **Why NDR for clocks:**
-- **Double width**: reduces wire resistance → less RC delay variation → less skew
+- **Double width**: reduces wire resistance → less RC (resistance-capacitance) delay variation → less skew
   - R is inversely proportional to width: halved R means halved RC delay sensitivity
 - **Double spacing**: reduces coupling capacitance → less crosstalk → less jitter
   - Critical because clock jitter directly impacts timing margin
@@ -1079,7 +1079,7 @@ For clock mesh designs:
      runs. ~85-90% accuracy, much faster than trial routing.
 ```
 
-**Maze Routing (Lee's Algorithm / BFS):**
+**Maze Routing (Lee's Algorithm / BFS (breadth-first search)):**
 
 ```text
   For a 2-pin net that must be routed through the GCell grid:
@@ -1369,7 +1369,7 @@ Creates actual geometric shapes (rectangles on metal layers, vias):
 - **Reliability**: single via failure probability ~10^-6. Two independent vias: ~10^-12
 - **Resistance**: parallel vias reduce via resistance (important for IR drop)
 - **EM**: current distributed across multiple vias, reduces current density per via
-- **DFM requirement**: many foundries mandate multi-cut vias for signoff at 7nm and below
+- **DFM (design for manufacturability) requirement**: many foundries mandate multi-cut vias for signoff at 7nm and below
 - **Trade-off**: multi-cut vias need more space, can cause routing congestion
 
 ### 5.8 ECO Routing
@@ -1378,7 +1378,7 @@ Post-signoff changes (Engineering Change Order):
 1. Spare cells pre-placed in the design can be repurposed
 2. Only metal layers are re-routed (no base layer change = metal-only ECO)
 3. Tools perform incremental routing: fix only changed nets
-4. Critical: verify LVS, DRC, timing only for changed region + neighbors
+4. Critical: verify LVS (layout versus schematic), DRC, timing only for changed region + neighbors
 
 ```ascii-graph
   ECO flow:
@@ -1394,7 +1394,7 @@ Post-signoff changes (Engineering Change Order):
 
 PnR does not end at routing; the database must pass the signoff checks, which have their own pages:
 
-- **DRC / LVS / ERC / antenna / density-fill** — what each check is and how signoff runs it: [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (the in-practice detail formerly in this section lives there).
+- **DRC / LVS / ERC (electrical rule check) / antenna / density-fill** — what each check is and how signoff runs it: [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (the in-practice detail formerly in this section lives there).
 - **Electromigration** — Black's equation, per-layer current limits, self-heating: [Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md) §4.
 - **IR drop (static + dynamic)** — grid resistance models, vectorless vs vector-based, fixing: [Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md) §5 (grid design in §6).
 - Power-integrity signoff criteria and tools (Voltus/RedHawk): [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md).
@@ -1905,7 +1905,7 @@ For LELE:
 Types of ECOs:
 
 1. Functional ECO:
-   - Fix RTL bugs found late in the flow (post-layout)
+   - Fix RTL (register-transfer level) bugs found late in the flow (post-layout)
    - Modified netlist → minimal physical changes
    - Goal: Change as few cells as possible (minimize mask cost)
    - Spare cell approach: Pre-placed unused cells → can be repurposed without changing placement
@@ -1919,7 +1919,7 @@ Types of ECOs:
    - Useful skew: Adjust clock buffer placement
    - All changes must be legalized (no overlap, on-grid)
 
-3. ECO flow: Read post-route design → Apply netlist changes → ECO placement (place new cells in whitespace) → ECO routing (connect new cells, minimum wire disturbance) → Re-extract → Re-run STA → Re-verify LEC, DRC, LVS
+3. ECO flow: Read post-route design → Apply netlist changes → ECO placement (place new cells in whitespace) → ECO routing (connect new cells, minimum wire disturbance) → Re-extract → Re-run STA (static timing analysis) → Re-verify LEC (logic equivalence check), DRC, LVS
 
 4. Metal-only ECO mask costs: Full mask set: $5-15M at 7nm (60+ masks) Metal-only ECO: $1-3M (only metal layer masks changed) → Huge cost savings if ECO can be done in metal layers only
 
@@ -1931,7 +1931,7 @@ Types of ECOs:
 
 Google published a reinforcement learning approach to chip floorplanning that produces production-quality TPU floorplans.
 
-**Problem formulation as RL:**
+**Problem formulation as RL (reinforcement learning):**
 - State: current canvas with partially placed macros, netlist connectivity graph.
 - action: place one macro at a specific grid coordinate on the canvas.
 - reward: weighted sum of wirelength (HPWL), routing congestion, and placement density — measured after all macros are placed.
@@ -1964,13 +1964,13 @@ DREAMPlace reformulates analytical placement as a differentiable optimization pr
 ### 10.3 Other AI/ML Tools in Physical Design
 
 **NVIDIA cuLitho (GTC 2023):**
-- GPU-accelerated computational lithography. Transfers the full lithography simulation pipeline (OPC, lithographic process checking) onto NVIDIA GPUs.
+- GPU-accelerated computational lithography. Transfers the full lithography simulation pipeline (OPC (optical proximity correction), lithographic process checking) onto NVIDIA GPUs.
 - NVIDIA claims 40x speedup over CPU-based lithography — reducing computation that previously took weeks on CPU clusters to hours on GPU clusters.
 - Adopted by TSMC, Samsung, and Synopsys for production mask preparation at 4nm and below.
 
 **Synopsys DSO.ai:**
-- Applies reinforcement learning to design space optimization: automatically searches over synthesis parameters, cell sizing options, routing configurations, and PPA trade-off strategies.
-- Treats the EDA tool flow as an environment, PPA outcomes as reward, and knob settings as actions.
+- Applies reinforcement learning to design space optimization: automatically searches over synthesis parameters, cell sizing options, routing configurations, and PPA (power, performance, area) trade-off strategies.
+- Treats the EDA (electronic design automation) tool flow as an environment, PPA outcomes as reward, and knob settings as actions.
 - Reduces the number of design iterations from hundreds (manual exploration) to tens (ML-guided).
 
 **Cadence Cerebrus:**
@@ -1978,7 +1978,7 @@ DREAMPlace reformulates analytical placement as a differentiable optimization pr
 - Reported 5-15% power reduction or 10-20% performance improvement over manually tuned flows, depending on the optimization target.
 
 **Routing congestion prediction:**
-- ML models (CNNs, GNNs) trained on placement features predict routing congestion before the expensive routing step runs.
+- ML models (CNNs (convolutional neural networks), GNNs) trained on placement features predict routing congestion before the expensive routing step runs.
 - Enables early floorplan/placement feedback loops — identify congestion hotspots and adjust placement without waiting for a full routing iteration.
 
 ### 10.4 Industry Adoption Status

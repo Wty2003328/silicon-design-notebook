@@ -60,7 +60,7 @@ where:
 
 ### 1.3 MTBF (Mean Time Between Failures) Derivation
 
-The probability that the FF enters a metastable state within a clock period depends on the "metastability window" T_w:
+The probability that the FF (flip-flop) enters a metastable state within a clock period depends on the "metastability window" T_w:
 
 - **P(metastable)** = `T_w * f_data`
 
@@ -205,7 +205,7 @@ What if we need to determine synchronizer stages for a TARGET MTBF?
 
 3-FF needed when:
 - Very high clock frequencies (f_clk > 2 GHz, reduces t_r per stage)
-   - Safety-critical applications (automotive ASIL-D, aerospace)
+   - Safety-critical applications (automotive ASIL-D (Automotive Safety Integrity Level D), aerospace)
    - MTBF target > 10^9 years with 2-FF is marginal
    - Technology with poor tau (older nodes, high-Vt cells)
 
@@ -739,8 +739,8 @@ endfunction
 
 ### 5.4 Full and Empty Detection (Proof of Correctness)
 
-**Pointer width:** ADDR_W + 1 bits (extra MSB for wrap-around detection).
-For a FIFO with 2^ADDR_W entries, the pointers count from 0 to 2^(ADDR_W+1) - 1.
+**Pointer width:** ADDR_W + 1 bits (extra MSB (most significant bit) for wrap-around detection).
+For a FIFO (first-in, first-out) with 2^ADDR_W entries, the pointers count from 0 to 2^(ADDR_W+1) - 1.
 
 **Empty condition (in read clock domain):**
 
@@ -1251,10 +1251,10 @@ Ordered reset release:
 
 - Reset fanout can be enormous (every FF in a domain)
 - Reset net must meet timing (recovery and removal checks)
-- CTS tools can build a "reset tree" similar to a clock tree
+- CTS (clock tree synthesis) tools can build a "reset tree" similar to a clock tree
 - Or: use a hierarchical reset buffer tree with balanced fanout
 - Reset must NOT be clock-gated (it must reach all FFs even when clock is gated)
-- In scan mode, reset may need to be controllable (via DFT MUX)
+- In scan mode, reset may need to be controllable (via DFT (design for test) MUX (multiplexer))
 
 ---
 
@@ -1289,11 +1289,11 @@ The simpler case: input swings 0 to VDD_low, output must swing 0 to VDD_high.
     Output = 0 (correct low level)
 ```
 
-This works because the NMOS N1 only needs to pull down to ~0V, which is well below the PMOS threshold -- the VDD_LOW swing is sufficient to turn the NMOS on/off.
+This works because the NMOS (n-channel MOS) N1 only needs to pull down to ~0V, which is well below the PMOS (p-channel MOS) threshold -- the VDD_LOW swing is sufficient to turn the NMOS on/off.
 
 ### 7.2 High-to-Low Level Shifter
 
-Input swings 0 to VDD_high, output must swing 0 to VDD_low. Problem: VDD_high input can forward-bias the ESD protection diodes or damage thin-oxide transistors in the low-voltage domain.
+Input swings 0 to VDD_high, output must swing 0 to VDD_low. Problem: VDD_high input can forward-bias the ESD (electrostatic discharge) protection diodes or damage thin-oxide transistors in the low-voltage domain.
 
 ```ascii-graph
 Solution: Current-limiting resistor + level clamp
@@ -1514,7 +1514,7 @@ SpyGlass CDC and similar tools use **formal methods** (model checking, property 
    - No glitch paths
    - Data stability requirements met
    - Protocol compliance
-3. Use formal engines (BMC, k-induction) to prove/disprove assertions
+3. Use formal engines (BMC (bounded model checking), k-induction) to prove/disprove assertions
 4. Generate waivers for known-safe crossings (e.g., static config registers)
 
 Formal CDC catches bugs that simulation CANNOT:
@@ -1590,8 +1590,8 @@ CDC Verification Checklist (mandatory for tapeout):
 6. Formal CDC run clean with 0 errors
 7. CDC-aware simulation run with constrained-random clock ratios
 8. FIFO depths verified for all rate/burst scenarios
-9. SDC correctly declares all async clock relationships
-10. STA clean on all synchronizer FF-to-FF paths (within each domain)
+9. SDC (Synopsys Design Constraints) correctly declares all async clock relationships
+10. STA (static timing analysis) clean on all synchronizer FF-to-FF paths (within each domain)
 
 ---
 

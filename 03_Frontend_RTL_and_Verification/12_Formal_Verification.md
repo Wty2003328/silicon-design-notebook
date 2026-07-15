@@ -26,7 +26,7 @@ would take:
 2^64 / 10^9 = 1.84 × 10^10 seconds ≈ 584 years
 ```
 
-Even a "simple" 8-bit FSM with 256 states and 8-bit input has 256 × 256 = 65,536
+Even a "simple" 8-bit FSM (finite state machine) with 256 states and 8-bit input has 256 × 256 = 65,536
 state-input combinations per cycle — manageable for simulation, but add a 32-bit datapath
 and the space explodes.
 
@@ -97,7 +97,7 @@ function DPLL(formula, assignment):
 
 ### 2.1.1 CDCL Worked Example
 
-Walk through CDCL on a concrete problem to see conflict analysis, clause learning,
+Walk through CDCL (Conflict-Driven Clause Learning) on a concrete problem to see conflict analysis, clause learning,
 non-chronological backtracking, and pruning in action.
 
 **Problem (5 variables, 6 clauses):**
@@ -111,7 +111,7 @@ C6: ( x2 ∨  x4 ∨  x5)
 ```
 
 We track: current assignment, decision level (DL), implication graph (each literal
-annotated with the clause that forced it during BCP, or "d" for decision).
+annotated with the clause that forced it during BCP (Boolean constraint propagation), or "d" for decision).
 
 ---
 
@@ -729,7 +729,7 @@ transformations change the register structure (retiming, FSM re-encoding).
 - Does NOT require 1-to-1 register mapping
 - Proves: for same input sequences, outputs are identical cycle-by-cycle
 - Much more computationally expensive (SAT-based bounded unrolling)
-- Used for: retiming verification, C-to-RTL equivalence
+- Used for: retiming verification, C-to-RTL (register-transfer level) equivalence
 - Tools: Synopsys HECTOR, Cadence JasperGold SEQ
 
 ---
@@ -974,7 +974,7 @@ Solutions:
 
 ### 6.1 CDC Formal vs CDC Lint
 
-**CDC Lint (structural):**
+**CDC (clock-domain crossing) Lint (structural):**
    - Identifies CDC paths by tracing clock domain boundaries
    - Checks: synchronizer present? Correct topology?
    - Fast, handles million-gate designs
@@ -1090,7 +1090,7 @@ flowchart TD
     class SRC,FF1,FF2,DST s
 ```
 
-What formal proves: FF1 and FF2 are clocked by the destination clock (`clk_b`), not the source; there is no combinational logic between FF1 and FF2 (direct connection only); FF2's output is used consistently (not fed back without re-synchronization); MTBF is acceptable given the clock frequencies and metastability parameters.
+What formal proves: FF1 and FF2 are clocked by the destination clock (`clk_b`), not the source; there is no combinational logic between FF1 and FF2 (direct connection only); FF2's output is used consistently (not fed back without re-synchronization); MTBF (mean time between failures) is acceptable given the clock frequencies and metastability parameters.
 
 ```verilog
 // The synchronizer chain is exactly 2 flops with no combinational logic
@@ -1190,7 +1190,7 @@ What formal proves: data is held stable from req assertion until ack is received
 
 ### 7.1 Formal Connectivity Verification
 
-For large SoCs, manually verifying that thousands of signals are correctly connected
+For large SoCs (systems on chip), manually verifying that thousands of signals are correctly connected
 between subsystems is error-prone. Formal connectivity checking automates this:
 
 ```verilog

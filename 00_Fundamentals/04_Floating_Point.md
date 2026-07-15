@@ -4,7 +4,7 @@
 
 ### Why Bias = 127 (Not 128)?
 
-For 8-bit exponent, exponent values 0 and 255 are reserved (for denorms/zero and inf/NaN respectively). Usable exponent range: 1 to 254.
+For 8-bit exponent, exponent values 0 and 255 are reserved (for denorms/zero and inf/NaN (infinity / Not a Number) respectively). Usable exponent range: 1 to 254.
 
 The actual exponent range is: `E_actual = E_stored - bias`, so:
 ```text
@@ -152,7 +152,7 @@ Stage 5: ROUNDING + POST-NORMALIZATION
 
 ### The Dual-Path Adder (Why |d| <= 1 Is Special)
 
-In a naive implementation, the critical path goes through: alignment shift → adder → LZC → normalization shift → rounding. This is 5 serial stages, and the LZC + normalization shift is expensive.
+In a naive implementation, the critical path goes through: alignment shift → adder → LZC (leading-zero count) → normalization shift → rounding. This is 5 serial stages, and the LZC + normalization shift is expensive.
 
 **Key observation:** When |d| <= 1 (exponent difference is 0 or 1), subtraction can cause massive cancellation — the result might have many leading zeros (up to 24 for single precision). This is the ONLY case where a large normalization shift is needed.
 
@@ -198,7 +198,7 @@ The leading zero pattern of A - B can be predicted from the T/G/Z pattern with a
 LZA pattern bit f_i = T_{i+1} XOR (G_i | Z_i)  (approximately)
 ```
 
-The position of the leading 1 in the f vector gives the LZC, accurate to ±1. A 1-bit correction is applied after the actual subtraction result is available (just check if the MSB of the normalized result is 0, and if so, shift one more).
+The position of the leading 1 in the f vector gives the LZC, accurate to ±1. A 1-bit correction is applied after the actual subtraction result is available (just check if the MSB (most significant bit) of the normalized result is 0, and if so, shift one more).
 
 **Hardware:** The LZA is a parallel computation (just XOR/AND/OR gates across all bit positions), followed by a priority encoder. It adds O(log N) delay for the encoder but runs IN PARALLEL with the subtractor, so it doesn't add to the critical path.
 
@@ -232,14 +232,14 @@ The bias subtraction compensates for double-counting: each input already has bia
 ```text
 m_result = m_A * m_B    (m_A, m_B in [1, 2), with implicit 1)
 ```
-Product is in [1, 4). This is the critical path -- implemented via a Wallace/Dadda tree followed by a CPA. For FP32, this is a 24x24-bit unsigned multiply.
+Product is in [1, 4). This is the critical path -- implemented via a Wallace/Dadda tree followed by a CPA (carry-propagate adder). For FP32, this is a 24x24-bit unsigned multiply.
 
 **Stage 4: Normalization**
 - If product >= 2 (i.e., both inputs >= sqrt(2)): shift mantissa right by 1, increment exponent by 1.
 - If product < 1 (can only happen for denormal inputs): shift mantissa left, decrement exponent.
 
 **Stage 5: Rounding**
-Apply the rounding mode using GRS bits from the multiplication. This may cause a second normalization if rounding increments the mantissa to 10.000...0.
+Apply the rounding mode using GRS (Guard, Round, Sticky) bits from the multiplication. This may cause a second normalization if rounding increments the mantissa to 10.000...0.
 
 **Stage 6: Special case handling**
 ```text
@@ -343,7 +343,7 @@ R = r_{n-1} r_{n-2} ... r_1 r_0 . g r s_{k} s_{k-1} ... s_0
                           rounding point (between bit 0 and guard bit)
 ```
 
-We need to round R to n bits. The question is: does the exact truncated value `T = r_{n-1}...r_0` need to be incremented by 1 ULP?
+We need to round R to n bits. The question is: does the exact truncated value `T = r_{n-1}...r_0` need to be incremented by 1 ULP (unit in the last place)?
 
 **For round-to-nearest-even (default):**
 - If the tail `g r s_k...s_0` < 0.1000...0 (i.e., < half ULP): truncate. Decision depends on g only: g=0 → truncate.
@@ -542,7 +542,7 @@ where w is the partial remainder (initially = Dividend), D is the divisor, and q
 
 **The digit selection function** maps (w_j, D) to q_{j+1}. For radix-4 SRT with redundancy:
 
-The selection is based on a truncated estimate of w_j (typically top 7-8 bits) and a truncated D (top 3-4 bits). This forms a lookup table (PLA).
+The selection is based on a truncated estimate of w_j (typically top 7-8 bits) and a truncated D (top 3-4 bits). This forms a lookup table (PLA — programmable logic array).
 
 ### Quotient Digit Selection Table (Radix-4 SRT, partial)
 
@@ -647,7 +647,7 @@ Goldschmidt per iteration: 1 mul for F + 2 parallel muls (N*F, D*F) = 2 serial m
 
 **Goldschmidt disadvantage:** Requires two multipliers (more area). Also, the final result is not self-correcting — rounding to IEEE precision requires careful analysis of error bounds. N-R can be made self-correcting by computing the residual A - Q*B and correcting.
 
-**In practice:** High-performance FPUs (AMD, IBM) use Goldschmidt. Simpler FPUs (embedded) use N-R or SRT.
+**In practice:** High-performance FPUs (floating-point units; AMD, IBM) use Goldschmidt. Simpler FPUs (embedded) use N-R or SRT.
 
 ### SRT Division: Radix-2 and Radix-4
 
@@ -1007,7 +1007,7 @@ Residual: r               = fma(-S, S, A)      // r = A - S^2 (exact residual)
 
 IEEE 754 specifies:
 1. If ANY input to an operation is NaN, the result is NaN (with some exceptions)
-2. If one input is QNaN and one is SNaN, the SNaN takes priority (raises exception, then converts to QNaN)
+2. If one input is QNaN (quiet NaN) and one is SNaN (signaling NaN), the SNaN takes priority (raises exception, then converts to QNaN)
 3. For binary operations with two NaN inputs: result is one of the input NaNs (implementation-defined which one). Common choice: return the first (destination) operand's NaN.
 4. Operations that produce NaN from non-NaN inputs (0/0, inf-inf, 0*inf, sqrt(-1)): produce a canonical QNaN with payload = 0.
 
@@ -1051,8 +1051,8 @@ Denormal numbers have exponent = 0 (minimum) and no implicit leading 1. This cre
 
 **Common implementation strategies:**
 1. **Microcode trap:** Detect denormal input/output, trap to microcode handler. Fast common path, slow (100+ cycles) for denormals. Used in many x86 CPUs (including modern ones for some operations).
-2. **Flush-to-zero (FTZ) + denormals-are-zero (DAZ):** Set both denormal results and inputs to zero. Breaks IEEE compliance but avoids all special-case hardware. Used in GPUs and DSPs.
-3. **Full hardware support:** Handle denormals entirely in hardware with no performance penalty. Expensive (extra MUXes, wider shifters) but IEEE-compliant. Used in some server CPUs.
+2. **Flush-to-zero (FTZ) + denormals-are-zero (DAZ):** Set both denormal results and inputs to zero. Breaks IEEE compliance but avoids all special-case hardware. Used in GPUs and DSPs (digital signal processors).
+3. **Full hardware support:** Handle denormals entirely in hardware with no performance penalty. Expensive (extra MUXes (multiplexers), wider shifters) but IEEE-compliant. Used in some server CPUs.
 
 ---
 
@@ -1480,9 +1480,9 @@ DW_fp_add #(
 );
 ```
 
-**Custom RTL considerations:**
+**Custom RTL (register-transfer level) considerations:**
 
-When DesignWare is not available (open-source projects, FPGA with non-Synopsys tools), custom FP RTL must be written:
+When DesignWare is not available (open-source projects, FPGA (field-programmable gate array) with non-Synopsys tools), custom FP RTL must be written:
 
 1. **Berkeley HardFloat:** Open-source IEEE 754 FP units in Chisel/Verilog, used in RISC-V cores (BOOM, Rocket). Well-tested, synthesizable, supports recoded FP format for efficient internal representation.
 
@@ -1527,7 +1527,7 @@ Fewer pipeline stages:
   - May bottleneck the overall processor pipeline
 ```
 
-**ASIC vs FPGA:** FPGA designs typically need deeper pipelines because routing delays are much larger than in ASIC. A 3-stage ASIC FP adder at 1 GHz might need 6-8 stages on FPGA to achieve 300 MHz.
+**ASIC (application-specific integrated circuit) vs FPGA:** FPGA designs typically need deeper pipelines because routing delays are much larger than in ASIC. A 3-stage ASIC FP adder at 1 GHz might need 6-8 stages on FPGA to achieve 300 MHz.
 
 ### Area Comparison
 
@@ -1680,7 +1680,7 @@ FP4 (multiple competing formats, not yet standardized):
 
 **Hardware approach:**
    - FP4 stored in memory, decompressed to FP8/FP16 for compute
-   - Or: native FP4 MAC units (very small: 2x2 = 4 multiply units)
+   - Or: native FP4 MAC (multiply-accumulate) units (very small: 2x2 = 4 multiply units)
    - NVIDIA Blackwell: FP4 tensor core support
 
 ### MX (Microscaling) Formats — Block-Scaled Arithmetic

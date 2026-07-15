@@ -8,25 +8,25 @@ Consolidated interview Q&A and worked problems from every page in `07_Manufactur
 
 *From [Fabrication_Process.md](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md)*
 
-**Q1: Walk through the major steps in CMOS fabrication.**
+**Q1: Walk through the major steps in CMOS (Complementary Metal-Oxide-Semiconductor) fabrication.**
 
 STI isolation → well implants → Vt adjust → gate oxide (or high-k deposition) →
-gate patterning → halo implant → spacer formation → S/D implant → activation anneal →
+gate patterning → halo implant → spacer formation → S/D (source/drain) implant → activation anneal →
 silicidation → contact formation → M1 (Cu damascene) → repeat for M2-MN → passivation
-→ pad opening. For FinFET, add fin patterning before STI and replace gate with
+→ pad opening. For FinFET (Fin Field-Effect Transistor), add fin patterning before STI (shallow trench isolation) and replace gate with
 replacement metal gate (RMG) process.
 
 **Q2: What is the Rayleigh equation and why does it matter?**
 
-$CD_{min} = k_1 \times \lambda / NA$. It sets the fundamental resolution limit of lithography. To print
-smaller features: reduce wavelength (193nm → 13.5nm EUV), increase NA (immersion,
-high-NA EUV), or reduce k1 (OPC, phase shift masks, multi-patterning). At 193nm
+$CD_{min} = k_1 \times \lambda / NA$ (where $CD_{min}$ is the minimum printable critical dimension, $k_1$ a process/resist factor, $\lambda$ the exposure wavelength, and $NA$ the numerical aperture). It sets the fundamental resolution limit of lithography. To print
+smaller features: reduce wavelength (193nm → 13.5nm EUV (Extreme Ultraviolet)), increase NA (immersion,
+high-NA EUV), or reduce k1 (OPC (optical proximity correction), phase shift masks, multi-patterning). At 193nm
 immersion, the resolution wall (~36nm half-pitch) drove the need for multi-patterning
 and eventually EUV.
 
-**Q3: Explain the difference between DUV and EUV lithography.**
+**Q3: Explain the difference between DUV (Deep Ultraviolet) and EUV lithography.**
 
-DUV uses 193nm ArF excimer laser with refractive optics. EUV uses 13.5nm wavelength from
+DUV uses 193nm ArF (argon fluoride) excimer laser with refractive optics. EUV uses 13.5nm wavelength from
 tin plasma source with reflective optics in vacuum. EUV provides ~14× better resolution,
 eliminating the need for multi-patterning on many layers. But EUV tools cost $150M+, have
 lower throughput, and have unique challenges (mask defects, pellicle, stochastic effects).
@@ -35,16 +35,16 @@ lower throughput, and have unique challenges (mask defects, pellicle, stochastic
 
 SADP (Self-Aligned Double Patterning) deposits conformal spacers on mandrel sidewalls,
 then removes the mandrel. The spacers define features at half the mandrel pitch. Unlike
-LELE (two separate lithography steps), SADP has no overlay error between the two sets of
+LELE (Litho-Etch-Litho-Etch; two separate lithography steps), SADP has no overlay error between the two sets of
 features because they're self-aligned. This gives better pitch uniformity and is preferred
 for critical layers like fins and M1.
 
 **Q5: Why was copper adopted over aluminum for interconnects?**
 
-Cu has ~40% lower resistivity than Al (1.7 vs 2.7 μΩ·cm), which reduces RC delay and
+Cu has ~40% lower resistivity than Al (1.7 vs 2.7 μΩ·cm), which reduces RC (resistance-capacitance) delay and
 allows thinner wires. Cu also has ~100× better electromigration resistance than Al. But
 Cu cannot be plasma-etched (forms non-volatile etch products), requiring the damascene
-process (deposit dielectric → etch trenches → fill Cu → CMP). Cu also diffuses rapidly
+process (deposit dielectric → etch trenches → fill Cu → CMP (Chemical-Mechanical Polishing)). Cu also diffuses rapidly
 through SiO2, requiring barrier layers (TaN/Ta).
 
 **Q6: What is the dual damascene process?**
@@ -88,7 +88,7 @@ density per layer (typically 20-80%).
 **Q11: What determines defect density and how does it affect yield?**
 
 Defect density D (defects/cm²) comes from particles, pattern errors, and process
-excursions. Yield $Y = \exp(-D \times A)$ for Poisson model. A larger die has lower yield because
+excursions. Yield $Y = \exp(-D \times A)$ (with $A$ the die area) for Poisson model. A larger die has lower yield because
 each die has more chance of containing a defect. This is why new process nodes launch
 with smaller dies first, and why chiplet architectures improve effective yield by using
 multiple smaller dies instead of one large monolithic die.
@@ -117,7 +117,7 @@ In planar bulk CMOS, the body effect increases Vth when VSB > 0 (source above bo
 potential). In FinFETs, the body effect is much weaker because the thin, fully-depleted
 fin is mostly controlled by the gate rather than the substrate. The body is effectively
 floating (or weakly coupled). This is advantageous for stacked transistors in logic gates
-and for SRAM bit-cell stability.
+and for SRAM (Static Random-Access Memory) bit-cell stability.
 
 **Q15: Explain the concept of EOT and why it's used.**
 
@@ -162,17 +162,17 @@ but gate materials must withstand ~1050°C anneal. Gate-last (RMG): dummy poly g
 first, S/D processing done, then dummy gate replaced with real high-k + metal gate.
 More complex flow but avoids thermal damage to gate stack. Gate-last has been standard
 since 32nm (Intel) because gate-first couldn't achieve the required Vt and reliability
-targets with HKMG.
+targets with HKMG (High-K Metal Gate).
 
 **Q20: How does the wafer yield relate to die size and defect density?**
 
 $Y = \exp(-D \times A)$. If defect density D = 0.1/cm² and die area A = 50mm² = 0.5cm²,
-Y = exp(-0.05) = 95.1%. But if A = 500mm² = 5cm² (large SoC), Y = exp(-0.5) = 60.7%.
+Y = exp(-0.05) = 95.1%. But if A = 500mm² = 5cm² (large SoC (System-on-Chip)), Y = exp(-0.5) = 60.7%.
 This is why: (1) new processes launch with small dies, (2) chiplets (multiple small dies)
 can have much better effective yield than monolithic large dies, (3) yield improvement is
 the #1 priority in process development.
 
-**Q21: How is a GAA nanosheet transistor fabricated differently from a FinFET?**
+**Q21: How is a GAA (Gate-All-Around) nanosheet transistor fabricated differently from a FinFET?**
 
 The key difference is the channel release step. In GAA fabrication, a Si/SiGe superlattice
 is grown epitaxially (alternating Si channel layers and sacrificial SiGe layers). After fin
@@ -182,15 +182,15 @@ and metal gate are then deposited by ALD, wrapping all 4 sides of each nanosheet
 fundamentally different from FinFET where the fin is a single vertical structure with the
 gate wrapping 3 sides. The GAA process requires: (1) precise epitaxial growth of the
 superlattice, (2) highly selective SiGe etch, (3) careful inner spacer formation to
-isolate gate from S/D. Samsung was first to production (3nm MBCFET, 2022), followed by
+isolate gate from S/D. Samsung was first to production (3nm MBCFET (Multi-Bridge-Channel FET), 2022), followed by
 TSMC N2 (2025) and Intel 18A RibbonFET (2025).
 
 **Q22: What is backside power delivery and why is it needed?**
 
 As transistors scale, the frontside metal layers become increasingly congested with both
-signal routing and power delivery competing for the same metal tracks. IR drop on the
+signal routing and power delivery competing for the same metal tracks. IR (current-resistance) drop on the
 power grid worsens because narrower wires have higher resistance. Backside power delivery
-solves this by routing VDD/VSS through the back of the wafer: the wafer is thinned,
+solves this by routing VDD/VSS (power and ground) through the back of the wafer: the wafer is thinned,
 deep vias (TSV-like) are etched from the backside to reach frontside transistor terminals,
 and a power distribution network is formed on the backside using thick metal layers.
 Intel PowerVia (first in Intel 18A, 2025) demonstrates up to 50% IR drop reduction and
@@ -223,8 +223,8 @@ much better electrical performance than wire bonds.
 **Q3: What is CoWoS and how does it work?**
 
 TSMC CoWoS (Chip-on-Wafer-on-Substrate) is a 2.5D packaging technology. Multiple dies
-(e.g., GPU + HBM stacks) are mounted on a silicon interposer with fine-pitch RDL (0.4-2μm
-L/S) for die-to-die connections, and TSVs for vertical connection to the package substrate
+(e.g., GPU + HBM (High Bandwidth Memory) stacks) are mounted on a silicon interposer with fine-pitch RDL (redistribution layer; 0.4-2μm
+L/S (line/space)) for die-to-die connections, and TSVs for vertical connection to the package substrate
 below. CoWoS-S uses a standard silicon interposer, CoWoS-R uses RDL-only (organic),
 and CoWoS-L uses a larger interposer with embedded silicon bridges.
 
@@ -238,7 +238,7 @@ design complexity (multi-die floor planning, power delivery, thermal).
 
 **Q5: Explain HBM and why it's critical for AI accelerators.**
 
-HBM stacks 8-12 DRAM dies vertically using TSVs, providing a 1024-bit wide interface
+HBM stacks 8-12 DRAM (Dynamic Random-Access Memory) dies vertically using TSVs, providing a 1024-bit wide interface
 (vs DDR5's 64 bits). This gives enormous bandwidth (>1 TB/s per stack). AI workloads
 are memory-bandwidth limited — transformers need to move massive weight matrices
 between memory and compute. HBM provides 5-10× the bandwidth of GDDR6 in a compact
@@ -252,7 +252,7 @@ unprecedented inter-die bandwidth and lowest latency. Used in AMD V-Cache (3D SR
 Sony image sensors, and planned for future chiplet-to-chiplet connections. The key
 challenge is surface preparation — requires atomic-level flatness for reliable bonding.
 
-**Q7: What is UCIe and how does it compare to proprietary die-to-die links?**
+**Q7: What is UCIe (Universal Chiplet Interconnect Express) and how does it compare to proprietary die-to-die links?**
 
 UCIe is an open standard for chiplet interconnect, defining physical, link, and protocol
 layers. It supports both standard package (100-130 μm pitch) and advanced package
@@ -280,11 +280,11 @@ advantage grows with more chiplets and higher defect density.
 
 **Q10: How does power delivery work in a multi-die package?**
 
-Power flows: VRM → PCB → BGA balls → package substrate → C4 bumps → interposer (if 2.5D)
+Power flows: VRM (Voltage Regulator Module) → PCB (Printed Circuit Board) → BGA (Ball Grid Array) balls → package substrate → C4 bumps → interposer (if 2.5D)
 → μbumps → die. Each die has its own power domain (possibly different voltages). The
 power delivery network (PDN) impedance must be extremely low (< 0.2 mΩ for 200A at
 35mV drop). This requires massive parallelism in bumps and vias, multi-level decoupling
-(on-die MOS caps, on-package MIM caps, on-board MLCCs), and careful PDN design with
+(on-die MOS (metal-oxide-semiconductor) caps, on-package MIM (Metal-Insulator-Metal) caps, on-board MLCCs (Multi-Layer Ceramic Capacitors)), and careful PDN design with
 full-wave electromagnetic simulation.
 
 **Q11: What is the difference between 2.5D and 3D IC?**
@@ -297,9 +297,9 @@ HBM stacks. Many "3D" products are actually 2.5D with 3D memory stacks.
 
 **Q12: What is fan-out packaging and when is it used?**
 
-Fan-out WLP uses a reconstituted wafer where dies are embedded in mold compound with an
+Fan-out WLP (Wafer-Level Packaging) uses a reconstituted wafer where dies are embedded in mold compound with an
 RDL that extends beyond the die boundary. This allows more I/O than the die area alone
-would permit. TSMC InFO is a leading fan-out technology, used in Apple's A-series chips.
+would permit. TSMC InFO (Integrated Fan-Out) is a leading fan-out technology, used in Apple's A-series chips.
 Fan-out is cheaper than silicon interposer for applications that don't need the extreme
 die-to-die bandwidth of CoWoS. It's ideal for mobile SoCs and mid-range packages.
 
@@ -319,9 +319,9 @@ probe individual bonds. (6) Design rules for keep-out and dummy patterns become 
 
 **Q: First silicon draws huge current at power-on. First hypotheses?** A short — power-to-ground bridging that [LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) should have caught (or in an analog/IO area it didn't cover), a missing well tie, or a bus-contention/X-state driving fight (often a reset bug leaving outputs enabled). Drop voltage, use thermal imaging to localize the hot spot, scan-dump if it'll come up enough.
 
-**Q: Why is DFT critical for bring-up, not just production test?** Because silicon has no internal visibility. Scan lets you freeze and read out all flop state to see *where* a non-booting chip died; trace buffers capture internal activity. Without good DFT, debugging first silicon is nearly impossible — you're guessing at a black box.
+**Q: Why is DFT (Design-for-Test) critical for bring-up, not just production test?** Because silicon has no internal visibility. Scan lets you freeze and read out all flop state to see *where* a non-booting chip died; trace buffers capture internal activity. Without good DFT, debugging first silicon is nearly impossible — you're guessing at a black box.
 
-**Q: What's a shmoo plot and what does it tell you?** A 2-D pass/fail map over voltage × frequency (often × temperature). It reveals the real operating region, the actual fmax/Vmin vs STA's prediction, and the *shape* of failures — a clean diagonal edge suggests a speed path; a ragged or unexpected boundary suggests an electrical/SI or marginal-timing issue.
+**Q: What's a shmoo plot and what does it tell you?** A 2-D pass/fail map over voltage × frequency (often × temperature). It reveals the real operating region, the actual fmax/Vmin vs STA (Static Timing Analysis)'s prediction, and the *shape* of failures — a clean diagonal edge suggests a speed path; a ragged or unexpected boundary suggests an electrical/SI (signal integrity) or marginal-timing issue.
 
-**Q: A functional bug is found in silicon. Options?** If it can be fixed by changing logic reachable with spare cells, do a **metal-layer ECO** (cheap, weeks). If it needs base-layer changes, it's a **full respin** (expensive, months). Sometimes you can **work around it in firmware/software** and ship, fixing it in the next spin — often the fastest path to revenue.
+**Q: A functional bug is found in silicon. Options?** If it can be fixed by changing logic reachable with spare cells, do a **metal-layer ECO (Engineering Change Order)** (cheap, weeks). If it needs base-layer changes, it's a **full respin** (expensive, months). Sometimes you can **work around it in firmware/software** and ship, fixing it in the next spin — often the fastest path to revenue.
 

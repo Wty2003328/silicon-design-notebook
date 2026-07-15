@@ -4,7 +4,7 @@
 
 ### Divide-by-2: The T Flip-Flop
 
-A divide-by-2 is a toggle flip-flop. To build it from a D-FF:
+A divide-by-2 is a toggle flip-flop. To build it from a D-FF (D flip-flop):
 
 ```ascii-graph
         ┌──────────────┐
@@ -335,7 +335,7 @@ module clk_div_odd_50 #(parameter DIV = 5) (
 endmodule
 ```
 
-**Synthesis note:** Using both posedge and negedge clocks is common for clock dividers but creates multi-edge-triggered logic. In ASIC, this is acceptable for clock generation blocks but should be carefully constrained in STA. On FPGA, some tools may flag negedge-triggered FFs — use a PLL/MMCM instead for odd division on FPGA.
+**Synthesis note:** Using both posedge and negedge clocks is common for clock dividers but creates multi-edge-triggered logic. In ASIC (application-specific integrated circuit), this is acceptable for clock generation blocks but should be carefully constrained in STA (static timing analysis). On FPGA (field-programmable gate array), some tools may flag negedge-triggered FFs — use a PLL/MMCM (phase-locked loop / mixed-mode clock manager) instead for odd division on FPGA.
 
 ---
 
@@ -443,7 +443,7 @@ Over F cycles: outputs N+1 exactly K times, and N exactly (F-K) times
 Average ratio = (K*(N+1) + (F-K)*N) / F = N + K/F
 ```
 
-**Sigma-delta noise shaping:** A first-order sigma-delta modulator produces a sequence of N and N+1 with the quantization noise shaped to high frequencies. Higher-order modulators (MASH 1-1-1 is common) push more noise to higher frequencies, where the PLL's loop filter attenuates it.
+**Sigma-delta noise shaping:** A first-order sigma-delta modulator produces a sequence of N and N+1 with the quantization noise shaped to high frequencies. Higher-order modulators (MASH — multi-stage noise-shaping — 1-1-1 is common) push more noise to higher frequencies, where the PLL's loop filter attenuates it.
 
 **Phase noise impact:**
 ```ascii-graph
@@ -455,7 +455,7 @@ With sigma-delta: f_ref = 20-50 MHz (much higher), N = 48-120
   But sigma-delta adds high-frequency noise that must be filtered
 ```
 
-**Practical numbers:** A fractional-N PLL in 7nm can achieve ~100 fs RMS jitter (integrated 12 kHz to 20 MHz) with 50 MHz reference and fractional step of 1 Hz.
+**Practical numbers:** A fractional-N PLL in 7nm can achieve ~100 fs RMS (root-mean-square) jitter (integrated 12 kHz to 20 MHz) with 50 MHz reference and fractional step of 1 Hz.
 
 ---
 
@@ -1396,7 +1396,7 @@ which is covered by the reset logic (en_a defaults to 1, en_b defaults to 0).
 If clk_a has no edge for N cycles of a reference clock → force en_a = 0
 ```
 
-In practice, clock switching in SoCs assumes both clocks are running (or use a controlled sequence):
+In practice, clock switching in SoCs (systems-on-chip) assumes both clocks are running (or use a controlled sequence):
 
 **Safe switching protocol:**
 1. Ensure the target clock is stable and running (PLL locked)
@@ -1444,7 +1444,7 @@ Clock division reduces f. For a block that needs to run at half speed, gating ev
 
 ## Clock Gating Check in STA — moved
 
-The timing-check side of clock gating — which clock edge the enable is checked against, active-high (AND) vs active-low (OR) variants, and a worked gating-check slack report — lives with the rest of timing signoff: [STA](../06_Signoff/01_STA.md) §15 *Clock Gating Checks*. The ICG cell structure and the gating-vs-division decision are above on this page.
+The timing-check side of clock gating — which clock edge the enable is checked against, active-high (AND) vs active-low (OR) variants, and a worked gating-check slack report — lives with the rest of timing signoff: [STA](../06_Signoff/01_STA.md) §15 *Clock Gating Checks*. The ICG (integrated clock gating) cell structure and the gating-vs-division decision are above on this page.
 
 ---
 
@@ -1452,7 +1452,7 @@ The timing-check side of clock gating — which clock edge the enable is checked
 
 ### Clock MUX for DVFS
 
-During Dynamic Voltage and Frequency Scaling, the clock frequency must change to match the new voltage:
+During Dynamic Voltage and Frequency Scaling (DVFS), the clock frequency must change to match the new voltage:
 
 **Voltage UP transition (increase speed):**
    1. Raise voltage first (takes 10-100 us for voltage regulator to settle)
@@ -1488,7 +1488,7 @@ flowchart TD
     class MUX m
 ```
 
-Switching sequence (fast → slow): (1) PMC asserts `sel = Ring_OSC` (safe intermediate frequency); (2) the MUX switches to Ring OSC (dead time ~2–5 µs); (3) PMC reprograms PLL_slow to the new frequency; then the MUX switches to PLL_slow.
+Switching sequence (fast → slow): (1) PMC (power-management controller) asserts `sel = Ring_OSC` (safe intermediate frequency); (2) the MUX (multiplexer) switches to Ring OSC (dead time ~2–5 µs); (3) PMC reprograms PLL_slow to the new frequency; then the MUX switches to PLL_slow.
 
 ### Glitch-Free MUX with Power Domain Considerations
 

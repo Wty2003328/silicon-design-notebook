@@ -16,7 +16,7 @@ Carry = A AND B
 | 1 | 0 |  1  |   0   |
 | 1 | 1 |  0  |   1   |
 
-Gate count: 1 XOR + 1 AND = 2 gates, 6 transistors in CMOS.
+Gate count: 1 XOR + 1 AND = 2 gates, 6 transistors in CMOS (complementary metal-oxide-semiconductor).
 
 ---
 
@@ -96,7 +96,7 @@ For the rest of this document, we use the following gate delay model (representa
 
 To compute A - B using an adder, exploit 2's complement: A - B = A + (~B) + 1.
 
-**Implementation:** Invert all bits of B (NOT gate per bit) and set the carry-in of the LSB full adder to 1. The carry-in = 1 completes the 2's complement negation of B.
+**Implementation:** Invert all bits of B (NOT gate per bit) and set the carry-in of the LSB (least significant bit) full adder to 1. The carry-in = 1 completes the 2's complement negation of B.
 
 ```text
     A[N-1:0]   ~B[N-1:0]
@@ -106,7 +106,7 @@ To compute A - B using an adder, exploit 2's complement: A - B = A + (~B) + 1.
      S[N-1:0] = A - B
 ```
 
-A combined adder/subtractor uses a MUX on each B bit (select B or ~B) and sets Cin accordingly:
+A combined adder/subtractor uses a MUX (multiplexer) on each B bit (select B or ~B) and sets Cin accordingly:
 
 ```verilog
 wire [N-1:0] b_effective = sub ? ~b : b;
@@ -123,7 +123,7 @@ Overflow occurs when two same-sign numbers produce a different-sign result.
 Overflow = carry_in[MSB] XOR carry_out[MSB]
 ```
 
-Why: carry_in[MSB] and carry_out[MSB] disagree exactly when the sign of the result is wrong. If both are 1, the MSB propagated a carry correctly. If both are 0, no carry was involved. Only when they differ did a carry appear or disappear in a way that flipped the sign unexpectedly.
+Why: carry_in[MSB] and carry_out[MSB] (MSB = most significant bit) disagree exactly when the sign of the result is wrong. If both are 1, the MSB propagated a carry correctly. If both are 0, no carry was involved. Only when they differ did a carry appear or disappear in a way that flipped the sign unexpectedly.
 
 **Method 2 — Sign check:**
 ```text
@@ -759,7 +759,7 @@ The final Sum and Carry vectors must be added by a carry-propagate adder (CPA) t
 | Use case        | Multi-operand reduction | Final summation of 2 operands |
 | Carry chain     | None                 | Yes (this is the bottleneck)  |
 
-CSA trees are the backbone of multipliers (Wallace/Dadda trees), dot-product units, and FIR filter accumulators. The CPA at the end of the tree is the only stage with carry propagation.
+CSA trees are the backbone of multipliers (Wallace/Dadda trees), dot-product units, and FIR (finite impulse response) filter accumulators. The CPA at the end of the tree is the only stage with carry propagation.
 
 ---
 
@@ -919,7 +919,7 @@ result: P[2N-1:0]
 - One `N`-bit carry-propagate adder (CPA) — the only arithmetic unit, reused every cycle.
 - A `(2N+1)`-bit shift register (the product reg plus a carry bit).
 - AND-gating on the multiplicand (the conditional add = `M & {N{P[0]}}`).
-- A small control FSM / down-counter with a `start` / `valid` (busy) / `done` handshake.
+- A small control FSM (finite state machine) / down-counter with a `start` / `valid` (busy) / `done` handshake.
 
 ### Tradeoff vs Combinational Multipliers
 
@@ -929,7 +929,7 @@ result: P[2N-1:0]
 | Radix-4 Booth seq | 1 CPA + encoder    | 1 result / ~N/2 clk | ~N/2 cycles | area-critical, moderate rate |
 | Array / Wallace (comb) | O(N²) FAs     | 1 result / clk (if pipelined) | 1 deep comb path (or P stages) | high throughput |
 
-Rule of thumb: pick the architecture from the required multiply throughput. If you issue a multiply only occasionally (config math, address calc), the shift-add unit's near-zero area wins; if every cycle needs a product (datapath, MAC array), pay for the pipelined Wallace tree.
+Rule of thumb: pick the architecture from the required multiply throughput. If you issue a multiply only occasionally (config math, address calc), the shift-add unit's near-zero area wins; if every cycle needs a product (datapath, MAC (multiply-accumulate) array), pay for the pipelined Wallace tree.
 
 ---
 
@@ -937,7 +937,7 @@ Rule of thumb: pick the architecture from the required multiply throughput. If y
 
 ### When to Hand-Instantiate vs. Let the Tool Decide
 
-In modern ASIC flows (Synopsys Design Compiler with DesignWare, Cadence Genus):
+In modern ASIC (application-specific integrated circuit) flows (Synopsys Design Compiler with DesignWare, Cadence Genus):
 
 ```text
 // This is the RIGHT way for 99% of cases:
@@ -962,7 +962,7 @@ assign sum = a + b;
 // synopsys dc_script_end
 ```
 
-5. **FPGA carry chains:** On FPGAs, always use `+` — the dedicated carry chain hardware is faster than any custom LUT-based adder. Manually implementing a Kogge-Stone on FPGA would waste LUTs and be slower.
+5. **FPGA (field-programmable gate array) carry chains:** On FPGAs, always use `+` — the dedicated carry chain hardware is faster than any custom LUT-based adder. Manually implementing a Kogge-Stone on FPGA would waste LUTs (lookup tables) and be slower.
 
 ### Area-Delay Trade-off — Numerical Summary
 
@@ -989,7 +989,7 @@ These are representative numbers — actual values depend on the specific librar
 Neural network inference is inherently error-tolerant — small arithmetic errors in individual additions are absorbed by the network's redundancy and activation functions. This creates an opportunity to trade arithmetic accuracy for speed, area, and power using **approximate adders**.
 
 Error tolerance in neural networks:
-- ReLU activation clips negative values to 0 → errors on small values don't propagate
+- ReLU (rectified linear unit) activation clips negative values to 0 → errors on small values don't propagate
 - Sigmoid/tanh saturate for large values → errors on large values don't propagate
 - Weight regularization (L2, dropout) already introduces noise → approximate arithmetic fits naturally
 - Quantization to INT8/FP8 already loses 90%+ of precision → adder errors are secondary

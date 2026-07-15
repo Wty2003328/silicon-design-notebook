@@ -177,7 +177,7 @@ Region E (Vin > VDD + Vthp, noting Vthp < 0):
 
 ### 2.3 Switching Threshold (VM) Derivation
 
-At VM, Vin = Vout = VM, and NMOS current = PMOS current (both in saturation):
+At VM, Vin = Vout = VM, and NMOS (n-channel MOSFET — metal-oxide-semiconductor field-effect transistor) current = PMOS (p-channel MOSFET) current (both in saturation):
 
 ```text
 (1/2) * kn * (VM - Vthn)² = (1/2) * kp * (VDD - VM - |Vthp|)²
@@ -238,7 +238,7 @@ VOL                    Vin
 
 ### 3.2 Noise Margin Derivation for Symmetric CMOS Inverter
 
-For a symmetric CMOS inverter (kn = kp, Vthn = |Vthp| = Vt):
+For a symmetric CMOS (complementary metal-oxide-semiconductor) inverter (kn = kp, Vthn = |Vthp| = Vt):
 
 ```ascii-graph
 VIL ≈ (2*Vout + Vin - Vt) / (solving dVout/dVin = -1)
@@ -486,9 +486,9 @@ Domino: Add a static inverter after dynamic node
 
 ### 5.5 I/O Signaling Standards (Off-Chip)
 
-§5.1–5.4 are *on-chip* logic styles driving fF-scale gate loads. **I/O cells (pads)** are a different world: they drive pF-scale off-chip loads (package + PCB trace + connector + receiver), so they trade speed/area for **drive strength, slew-rate control, defined voltage levels, termination, and ESD**. The signaling *standard* is the TX↔RX contract on the board; pick it from three families.
+§5.1–5.4 are *on-chip* logic styles driving fF-scale gate loads. **I/O cells (pads)** are a different world: they drive pF-scale off-chip loads (package + PCB (printed circuit board) trace + connector + receiver), so they trade speed/area for **drive strength, slew-rate control, defined voltage levels, termination, and ESD (electrostatic discharge)**. The signaling *standard* is the TX (transmitter)↔RX (receiver) contract on the board; pick it from three families.
 
-**(1) Rail-referenced single-ended** — receiver compares to fixed thresholds referenced to its own rails. Cheapest (1 pin/signal), but noise margin is VDDQ-bounded and rate is limited by ground bounce / SSO noise.
+**(1) Rail-referenced single-ended** — receiver compares to fixed thresholds referenced to its own rails. Cheapest (1 pin/signal), but noise margin is VDDQ-bounded and rate is limited by ground bounce / SSO (simultaneous switching outputs) noise.
 
 | Standard | VDDQ | Thresholds | Typical use |
 |----------|------|-----------|-------------|
@@ -503,7 +503,7 @@ Domino: Add a static inverter after dynamic node
 | HSTL (High-speed Transceiver Logic) | VTT termination | QDR SRAM, older FPGA banks |
 | POD (Pseudo-Open-Drain) — POD12/135 | terminate to **VDDQ** (only a "0" sinks DC) | DDR4 / DDR5, GDDR |
 
-**(3) Differential** — two complementary wires; receiver senses the *difference*, so common-mode noise cancels → small swing, high speed, low EMI, at 2 pins/signal.
+**(3) Differential** — two complementary wires; receiver senses the *difference*, so common-mode noise cancels → small swing, high speed, low EMI (electromagnetic interference), at 2 pins/signal.
 
 | Standard | Swing / Vcm | Termination | Used by |
 |----------|-------------|-------------|---------|
@@ -516,10 +516,10 @@ Domino: Add a static inverter after dynamic node
 - **Single-ended vs differential:** SE is pin-efficient and cheap, but noise margin and max rate are limited by SSO/ground bounce; differential rejects common-mode, runs Gb/s+, and its small swing cuts dynamic I/O power — at 2× the pins.
 - **Why VREF + ODT for DRAM:** a wide bus at high rate can't tolerate full-swing reflections; centering on VREF with ODT yields clean eyes at low swing.
 - **SSTL → POD (DDR3→DDR4/5):** POD terminates to VDDQ, so a bus that idles high burns termination DC only on "0"s → lower I/O power as data rates climbed.
-- **Drive strength & slew:** a stronger driver gives faster edges but more SSO/overshoot/EMI; I/O cells expose selectable drive strength and slew-rate control to trade SI for speed.
+- **Drive strength & slew:** a stronger driver gives faster edges but more SSO/overshoot/EMI; I/O cells expose selectable drive strength and slew-rate control to trade SI (signal integrity) for speed.
 - **Open-drain (I²C/SMBus):** wired-AND with an external pull-up — bidirectional on one wire, but slow (RC pull-up).
 
-Related: noise-margin basis (§3 above); reflections/termination + SerDes equalization → [Signal Integrity](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md); DDR I/O & ODT → [DDR Controller](../01_Architecture_and_PPA/10_DDR_Controller.md); package-level high-speed I/O → [IC Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
+Related: noise-margin basis (§3 above); reflections/termination + SerDes (serializer/deserializer) equalization → [Signal Integrity](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md); DDR I/O & ODT → [DDR Controller](../01_Architecture_and_PPA/10_DDR_Controller.md); package-level high-speed I/O → [IC Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 
 ---
 
@@ -856,7 +856,7 @@ Doubling wire length → 4× delay (quadratic!)
 **Within-die (WID) vs Die-to-die (D2D):**
    - WID: transistors on the same chip differ from each other
    - D2D: average parameters differ between chips
-   - Both must be accounted for in timing analysis (OCV, AOCV, POCV)
+   - Both must be accounted for in timing analysis (OCV, AOCV, POCV — on-chip variation, and its advanced and parametric variants)
 
 ### 9.2 Process Corners
 
@@ -916,7 +916,7 @@ Examples:
 
 ### 9.4 GAA Nanosheet Channel Width Modulation
 
-Key advantage of GAA over FinFET: continuous width control
+Key advantage of GAA over FinFET (fin field-effect transistor): continuous width control
 
 FinFET width: W = N_fins * (2*H + W_fin), quantized in units of one fin
 GAA nanosheet: W = N_sheets * W_sheet, where W_sheet is continuously tunable
@@ -1016,7 +1016,7 @@ quadratically with length ($RC \propto L^2$), making wire delay dominant beyond 
 
 ### 12.1 Methodology
 
-Logical effort provides a quick delay estimation without full SPICE simulation. Define:
+Logical effort provides a quick delay estimation without full SPICE (Simulation Program with Integrated Circuit Emphasis) simulation. Define:
 
 - $g$ (logical effort): how much worse a gate's input capacitance is vs an inverter for
   the same output current. $g_{\text{inv}} = 1$.
@@ -1113,7 +1113,7 @@ The delay of 13.32τ is the theoretical minimum for this path topology; any othe
 
 ### 13.1 Cell Schematic
 
-The 6-transistor SRAM cell is the fundamental building block of on-chip SRAM arrays.
+The 6-transistor SRAM (static random-access memory) cell is the fundamental building block of on-chip SRAM arrays.
 
 ```ascii-graph
           VDD                VDD

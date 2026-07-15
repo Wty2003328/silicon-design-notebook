@@ -2,7 +2,7 @@
 
 **Digital IC design & verification — from transistor physics to tape-out and post-silicon bring-up.**
 
-A comprehensive, bottom-up technical reference covering digital IC design end to end: CMOS device physics, RISC-V CPU microarchitecture, memory/interconnect, RTL and verification methodology, synthesis, physical design, timing/power/DFT signoff, fabrication, and packaging.
+A comprehensive, bottom-up technical reference covering digital IC design end to end: CMOS (complementary metal-oxide-semiconductor) device physics, RISC-V CPU microarchitecture, memory/interconnect, RTL (register-transfer level) and verification methodology, synthesis, physical design, timing/power/DFT (design for test) signoff, fabrication, and packaging.
 
 Built for senior-level interview preparation and professional reference. Target roles: RTL design engineer, CPU/microarchitecture engineer, physical design/STA engineer, DFT engineer, verification engineer.
 

@@ -411,7 +411,7 @@ endclass
 
 ## 10. TLM deep dive — ports, exports, imps, analysis, FIFOs
 
-#### TLM 1.0: Ports, Exports, Imps
+### TLM 1.0: Ports, Exports, Imps
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -463,7 +463,7 @@ function void connect_phase(uvm_phase phase);
 endfunction
 ```
 
-#### Analysis Port: One-to-Many Broadcast
+### Analysis Port: One-to-Many Broadcast
 
 ```verilog
 // Monitor broadcasts to ALL subscribers (scoreboard, coverage, etc.)
@@ -503,7 +503,7 @@ function void connect_phase(uvm_phase phase);
 endfunction
 ```
 
-#### TLM FIFO: Decoupling Producer and Consumer
+### TLM FIFO: Decoupling Producer and Consumer
 
 ```verilog
 // Without TLM FIFO: producer and consumer must synchronize directly
@@ -544,7 +544,7 @@ endclass
 
 ## 11. Sequence mechanism — complete code
 
-#### Complete Sequence with body() Task
+### Complete Sequence with body() Task
 
 ```verilog
 class my_sequence extends uvm_sequence #(my_txn);
@@ -584,7 +584,7 @@ task run_phase(uvm_phase phase);
 endtask
 ```
 
-#### Sequencer Arbitration Modes
+### Sequencer Arbitration Modes
 
 ```verilog
 // Set arbitration mode on sequencer:
@@ -598,7 +598,7 @@ env.agent.sequencer.set_arbitration(UVM_SEQ_ARB_FIFO);
 // UVM_SEQ_ARB_USER:           User-defined arbitration
 ```
 
-#### Virtual Sequence for Multi-Agent Coordination
+### Virtual Sequence for Multi-Agent Coordination
 
 ```verilog
 class virtual_sequence extends uvm_sequence #(uvm_sequence_item);
@@ -647,7 +647,7 @@ endtask
 
 ## 12. Driver–sequencer handshake — complete code
 
-#### get_next_item / item_done Flow
+### get_next_item / item_done Flow
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -663,7 +663,7 @@ sequenceDiagram
     Note over S: seq's finish_item returns
 ```
 
-#### Complete Driver with Reset Handling
+### Complete Driver with Reset Handling
 
 ```verilog
 class my_driver extends uvm_driver #(my_txn);
@@ -728,7 +728,7 @@ class my_driver extends uvm_driver #(my_txn);
 endclass
 ```
 
-#### Pipelining with get/put (Advanced)
+### Pipelining with get/put (Advanced)
 
 ```verilog
 // For pipelined protocols where you want to overlap address and data phases:
@@ -753,7 +753,7 @@ endtask
 
 ## 13. Register model (RAL) deep dive
 
-#### Structure
+### Structure
 
 ```ascii-graph
 uvm_reg_block (my_reg_block)
@@ -774,7 +774,7 @@ uvm_reg_block (my_reg_block)
         [address mapping for frontdoor access]
 ```
 
-#### Register Definition
+### Register Definition
 
 ```verilog
 class ctrl_reg extends uvm_reg;
@@ -825,7 +825,7 @@ class my_reg_block extends uvm_reg_block;
 endclass
 ```
 
-#### Frontdoor vs Backdoor Access
+### Frontdoor vs Backdoor Access
 
 ```verilog
 // FRONTDOOR: goes through the bus (driver/sequencer/monitor)
@@ -855,7 +855,7 @@ task test_backdoor();
 endtask
 ```
 
-#### Mirror, Desired, and Actual Values
+### Mirror, Desired, and Actual Values
 
 ``` text
 Three Values Tracked Per Register:
@@ -874,7 +874,7 @@ Methods:
   - reg.get_mirrored_value() : Returns MIRROR value (no bus transaction)
 ```
 
-#### Built-in Register Test Sequences
+### Built-in Register Test Sequences
 
 ```verilog
 // Hardware reset test: verify all registers have correct reset values

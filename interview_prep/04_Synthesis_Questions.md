@@ -8,11 +8,11 @@ Consolidated interview Q&A and worked problems from every page in `04_Synthesis/
 
 *From [Constraints_SDC.md](../04_Synthesis/02_Constraints_SDC.md)*
 
-**Q: What breaks if you forget to declare a divided clock?** STA treats the divider output as a normal data net on the source clock, so every flop clocked by the /2 is timed against the wrong period/edges — paths that are actually fine look failing, and real violations on the divided domain go unchecked. Always `create_generated_clock`.
+**Q: What breaks if you forget to declare a divided clock?** STA (Static Timing Analysis) treats the divider output as a normal data net on the source clock, so every flop clocked by the /2 is timed against the wrong period/edges — paths that are actually fine look failing, and real violations on the divided domain go unchecked. Always `create_generated_clock`.
 
-**Q: You set a 3-cycle setup multicycle and the chip fails hold in silicon. Why?** You relaxed setup to 3 cycles but didn't set the matching hold multicycle (2). The default hold check still expects the data to be stable for the same-cycle relationship, which a genuinely multicycle path doesn't satisfy → hold violation. Setup MCP N needs hold MCP N−1.
+**Q: You set a 3-cycle setup multicycle and the chip fails hold in silicon. Why?** You relaxed setup to 3 cycles but didn't set the matching hold multicycle (2). The default hold check still expects the data to be stable for the same-cycle relationship, which a genuinely multicycle path doesn't satisfy → hold violation. Setup MCP (Multi-Cycle Path) N needs hold MCP N−1.
 
-**Q: When is a false path dangerous?** Always potentially — it tells STA to *stop checking* a path. If the path is in fact functionally active (you mis-judged the mode/CDC), STA never flags its violation and it fails in silicon. Treat every false_path as a reviewed waiver with explicit justification.
+**Q: When is a false path dangerous?** Always potentially — it tells STA to *stop checking* a path. If the path is in fact functionally active (you mis-judged the mode/CDC (Clock Domain Crossing)), STA never flags its violation and it fails in silicon. Treat every false_path as a reviewed waiver with explicit justification.
 
 ---
 
@@ -23,15 +23,15 @@ Consolidated interview Q&A and worked problems from every page in `04_Synthesis/
 ### Q1: Walk me through the synthesis flow from RTL to gates.
 
 **A:** Synthesis has three phases. (1) **Translation**: The tool parses RTL
-(Verilog/VHDL) into a technology-independent Boolean network using generic
+(Register-Transfer Level, in Verilog/VHDL) into a technology-independent Boolean network using generic
 (GTECH) cells. It infers flip-flops, latches, and memories from the coding
 style. (2) **Optimization**: Boolean and structural optimization including
 factoring, decomposition, retiming, resource sharing, and datapath
 optimization. All done at the GTECH level. (3) **Technology Mapping**: The
-optimized Boolean network is mapped to the target library cells using DAG
+optimized Boolean network is mapped to the target library cells using DAG (Directed Acyclic Graph)
 covering and Boolean matching algorithms. Cell selection considers timing
 (pick faster cells on critical paths), area (smallest cells off critical),
-and DRV constraints (max transition, capacitance, fanout). The output is a
+and DRV (Design Rule Violation) constraints (max transition, capacitance, fanout). The output is a
 gate-level netlist.
 
 ### Q2: What is the difference between set_false_path and set_clock_groups -asynchronous?
@@ -40,7 +40,7 @@ gate-level netlist.
 clk_a to clk_b only. You need a second command for clk_b to clk_a.
 `set_clock_groups -asynchronous -group clk_a -group clk_b` is bidirectional --
 it removes timing in BOTH directions. Additionally, set_clock_groups affects
-SI/crosstalk analysis (the tool knows both clocks are physically present),
+SI (signal integrity)/crosstalk analysis (the tool knows both clocks are physically present),
 while set_false_path does not convey this information. For truly asynchronous
 clock domains, set_clock_groups is the correct and preferred approach.
 
@@ -62,8 +62,8 @@ practice is always to pair `-setup N` with `-hold (N-1)`.
 ### Q4: What is the difference between -physically_exclusive and -logically_exclusive in set_clock_groups?
 
 **A:** Physically exclusive clocks CANNOT coexist on silicon (e.g., test_clk
-and func_clk through the same MUX -- only one propagates). The tool can share
-CTS resources between them since they never conflict. Logically exclusive
+and func_clk through the same MUX (multiplexer) -- only one propagates). The tool can share
+CTS (Clock Tree Synthesis) resources between them since they never conflict. Logically exclusive
 clocks DO coexist physically (both clock trees are built) but are functionally
 mutually exclusive (controlled by a mode register). The tool must build
 independent clock trees. Both remove timing analysis between the groups, but
@@ -84,9 +84,9 @@ Also cannot retime if register has dont_touch or scan attributes.
 ### Q6: Explain the impact of clock gating on power and area.
 
 **A:** Clock gating eliminates switching power on the clock tree and flip-flops
-when the enable is inactive. In a typical SoC, the clock tree consumes 30-50%
+when the enable is inactive. In a typical SoC (System-on-Chip), the clock tree consumes 30-50%
 of total dynamic power, so gating can save 20-40% dynamic power. Area overhead
-is one ICG cell per group of gated FFs (typically 4-32 FFs per ICG). The ICG
+is one ICG (Integrated Clock Gating) cell per group of gated FFs (typically 4-32 FFs per ICG). The ICG
 cell contains a latch (to prevent glitches) and an AND gate. It adds ~1 gate
 equivalent per group. The break-even point is typically 3-4 FFs: gating fewer
 FFs wastes area; gating more FFs saves net area by potentially reducing clock
@@ -99,14 +99,14 @@ tree buffering. Set minimum bitwidth with `set_clock_gating_style
 remove unused ports, and merge duplicate logic across hierarchical boundaries.
 For example, if a port is tied to constant 0, the tool can propagate this into
 the sub-module and simplify the logic. Disable it when: (1) You need to
-preserve the exact port interface for ECO or late integration. (2) The
+preserve the exact port interface for ECO (Engineering Change Order) or late integration. (2) The
 sub-module is shared (instantiated multiple times) and boundary optimization
 would specialize it differently for each instance. (3) You need to match a
 reference netlist for formal verification against a specific hierarchy.
 
 ### Q8: How do you constrain a DDR interface in SDC?
 
-**A:** DDR interfaces transfer data on both rising and falling clock edges.
+**A:** DDR (Double Data Rate) interfaces transfer data on both rising and falling clock edges.
 You need input/output delays referenced to both edges:
 ```tcl
 set_input_delay -clock ddr_clk -max 0.8 [get_ports data]
@@ -147,13 +147,13 @@ physical information wasn't available. They're largely obsolete at advanced
 nodes (< 28nm) because: (1) Wire delay is a dominant portion of total delay
 and statistical estimation is too inaccurate. (2) Topographical synthesis
 (DCT/DC-Topo or Genus physical mode) uses actual placement data for wire
-estimation. (3) Post-P&R timing can differ by 30-50% from WLM-based synthesis.
+estimation. (3) Post-P&R (Place-and-Route) timing can differ by 30-50% from WLM-based synthesis.
 Modern flows use physical-aware synthesis or directly feed floorplan data.
 
 ### Q12: Explain the concept of critical range and its importance.
 
 **A:** Critical range defines how deep below the worst negative slack the tool
-should optimize. If WNS = -0.5ns and critical range = 0.3ns, the tool
+should optimize. If WNS (Worst Negative Slack) = -0.5ns and critical range = 0.3ns, the tool
 optimizes all paths with slack between -0.5ns and -0.2ns. Without critical
 range, the tool focuses only on the single worst path, which may fix WNS but
 create new violations as resources are pulled from near-critical paths. Setting
@@ -177,7 +177,7 @@ timing on a critical path.
 
 **A:** The library provides cells in multiple threshold voltage variants:
 HVT (slow, low leakage), SVT (moderate), LVT (fast, high leakage), and
-sometimes ULVT. The tool starts with all-HVT (minimum leakage) and selectively
+sometimes ULVT (ultra-low threshold voltage). The tool starts with all-HVT (minimum leakage) and selectively
 swaps cells on timing-critical paths to lower Vt for speed. The result is
 typically 70-80% HVT, 15-25% SVT, and 5% LVT. This achieves 3-5x leakage
 reduction compared to all-LVT while meeting the same timing. The
@@ -201,16 +201,16 @@ frequency. This typically improves power estimation accuracy from +/-50% to
 **A:** Ungroup when: the module is on a critical timing path and hierarchy
 boundaries prevent cross-module optimization; the module is small glue logic;
 the module is a wrapper with no meaningful hierarchy. Do NOT ungroup when:
-the module is large (flattening makes optimization intractable -- DC may run
+the module is large (flattening makes optimization intractable -- DC (Design Compiler) may run
 out of memory); you need the hierarchy for ECO insertion; the module is
 instantiated multiple times and needs to be preserved as a single optimized
-entity; the module is a hard macro or IP. A good practice: ungroup small
+entity; the module is a hard macro or IP (Intellectual Property). A good practice: ungroup small
 modules (<5K gates) on critical paths, keep large modules (>50K gates) grouped.
 
 ### Q17: Explain the timing impact of source latency vs network latency.
 
 **A:** Source latency is the delay from the actual clock source (e.g.,
-oscillator) to the clock definition point (e.g., PLL input or chip clock
+oscillator) to the clock definition point (e.g., PLL (Phase-Locked Loop) input or chip clock
 port). Network latency is the delay from the clock definition point through
 the clock tree to flip-flop clock pins. Pre-CTS, network latency is estimated
 (set by the user); post-CTS, it's replaced by actual propagated delay. Source
@@ -222,7 +222,7 @@ affects when the external clock edge "actually" arrives.
 ### Q18: What is operand isolation and when is it beneficial?
 
 **A:** Operand isolation gates the inputs of arithmetic blocks (multipliers,
-adders, ALUs) to zero when their output is not needed. This prevents
+adders, ALUs (Arithmetic Logic Units)) to zero when their output is not needed. This prevents
 unnecessary toggling inside the block, saving dynamic power. It's beneficial
 when: (1) The block is large (multiplier, divider) with significant internal
 switching. (2) The block is inactive a significant fraction of cycles (>30%).

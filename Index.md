@@ -126,7 +126,7 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 
 ---
 
-## Interview Prep
+## [Interview Prep](interview_prep/00_Index.md)
 
 Per-folder Q&A consolidated out of the topic pages above, plus two cross-cutting banks.
 

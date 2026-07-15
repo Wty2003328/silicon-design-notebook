@@ -7,7 +7,7 @@
 
 ## 0. Why this page exists
 
-Synthesis, place-and-route, and STA are all just optimization/checking engines — they only know what "good timing" means because **you told them**, in SDC. An unconstrained path is an un-optimized, un-checked path; an over-constrained path wastes area and power chasing timing that doesn't matter; a wrongly-declared false path *hides a real violation* that surfaces in silicon. SDC bugs are silent and expensive. This page covers the core SDC commands, the four exception types, and the discipline that keeps constraints correct across the flow. (STA *interprets* these; here we focus on *authoring* them.)
+Synthesis, place-and-route, and STA (static timing analysis) are all just optimization/checking engines — they only know what "good timing" means because **you told them**, in SDC. An unconstrained path is an un-optimized, un-checked path; an over-constrained path wastes area and power chasing timing that doesn't matter; a wrongly-declared false path *hides a real violation* that surfaces in silicon. SDC bugs are silent and expensive. This page covers the core SDC commands, the four exception types, and the discipline that keeps constraints correct across the flow. (STA *interprets* these; here we focus on *authoring* them.)
 
 ---
 
@@ -48,8 +48,8 @@ set_clock_uncertainty -hold  0.020 [get_clocks clk]
 set_clock_latency 0.300 [get_clocks clk]   ;# pre-CTS estimate; real tree replaces it
 ```
 
-- **Primary clocks** (`create_clock`) come in on a port/PLL output. **Generated clocks** (`create_generated_clock`) are *derived* — divided, multiplied, gated, or muxed — and MUST be declared, or STA mis-times every path they feed ([Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md)).
-- **Uncertainty** models what STA can't yet know exactly: clock **jitter** plus, before CTS, an **estimated skew** budget. Post-CTS, real skew comes from the tree and uncertainty drops to jitter+margin.
+- **Primary clocks** (`create_clock`) come in on a port/PLL (phase-locked loop) output. **Generated clocks** (`create_generated_clock`) are *derived* — divided, multiplied, gated, or muxed — and MUST be declared, or STA mis-times every path they feed ([Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md)).
+- **Uncertainty** models what STA can't yet know exactly: clock **jitter** plus, before CTS (clock tree synthesis), an **estimated skew** budget. Post-CTS, real skew comes from the tree and uncertainty drops to jitter+margin.
 - **Asynchronous clock groups**: `set_clock_groups -asynchronous` tells STA two clocks have no phase relationship, so it doesn't try to time paths between them (those are [CDC](../03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md) paths handled structurally, not by STA).
 
 ### 2.1 create_clock
@@ -84,7 +84,7 @@ create_clock -name vclk_ext -period 5.0
 
 **When to use virtual clocks:**
 - Constraining IO timing when the external clock is not a port of the block
-- Specifying interface timing to an external chip or FPGA
+- Specifying interface timing to an external chip or FPGA (field-programmable gate array)
 - Creating a reference for IO timing that differs from the internal clock
 
 ### 2.2 create_generated_clock
@@ -251,7 +251,7 @@ set_input_delay  -clock clk 0.400 [get_ports data_in]
 set_output_delay -clock clk 0.300 [get_ports data_out]
 ```
 
-`set_input_delay` says "data arrives this late relative to the clock," leaving the remaining period for internal logic + setup. `set_output_delay` reserves time for the downstream flop's setup. Get these wrong and the block closes timing in isolation but fails at integration. **Budgeting** I/O delays across block boundaries so the pieces sum to the period is a core SoC discipline.
+`set_input_delay` says "data arrives this late relative to the clock," leaving the remaining period for internal logic + setup. `set_output_delay` reserves time for the downstream flop's setup. Get these wrong and the block closes timing in isolation but fails at integration. **Budgeting** I/O delays across block boundaries so the pieces sum to the period is a core SoC (system on chip) discipline.
 
 ### 3.1 set_input_delay / set_output_delay
 
@@ -332,7 +332,7 @@ set_multicycle_path 3 -setup -from [get_pins mac/*] -to [get_pins acc/*]
 set_multicycle_path 2 -hold  -from [get_pins mac/*] -to [get_pins acc/*]  ;# the matching hold!
 ```
 
-**The multicycle trap:** declaring `-setup 3` without the matching `-hold 2` is the classic bug — you relax the setup check but leave the hold check expecting same-cycle, which is now *wrong* and can fail silicon. Setup MCP of N almost always needs hold MCP of N−1.
+**The multicycle trap:** declaring `-setup 3` without the matching `-hold 2` is the classic bug — you relax the setup check but leave the hold check expecting same-cycle, which is now *wrong* and can fail silicon. Setup MCP (multicycle path) of N almost always needs hold MCP of N−1.
 
 **The false-path trap:** a false path is a *promise to the tool* that data never functionally propagates there. If that promise is wrong, STA never checks a path that's actually active → guaranteed escape. False paths are reviewed like waivers.
 
@@ -360,8 +360,8 @@ set_false_path -from [get_ports rst_n]
 ```
 
 **When NOT to use false path:**
-- Do NOT false-path CDC paths that need max_delay constraints for
-  reconvergence or MTBF. Use set_max_delay -datapath_only instead.
+- Do NOT false-path CDC (clock-domain crossing) paths that need max_delay constraints for
+  reconvergence or MTBF (mean time between failures). Use set_max_delay -datapath_only instead.
 - Do NOT false-path paths just because they have large slack -- they
   might become critical after optimization.
 

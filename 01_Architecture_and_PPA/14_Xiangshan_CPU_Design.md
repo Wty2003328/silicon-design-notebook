@@ -12,7 +12,7 @@
 ## 0 — Why This Page Exists
 
 Modern out-of-order processor design has long been the province of proprietary,
-closely-guarded RTL. Xiangshan (香山) breaks that mold: it is a **fully
+closely-guarded RTL (register-transfer level). Xiangshan (香山) breaks that mold: it is a **fully
 open-source, server-class RISC-V 64-bit processor** written in Chisel, developed
 at the Institute of Computing Technology (ICT) / University of Chinese Academy of
 Sciences (UCAS). Studying Xiangshan provides a rare, complete view of how a
@@ -48,7 +48,7 @@ trade-offs, sizing calculations, and interview-style design problems.
 | **Kunminghu** | 昆明湖 | `master` / `kunminghu-v3` | Current generation. 256-entry ROB, vector extension (V), CHI-based L2, enhanced prefetch, wider dispatch. |
 | **Kunminghu v2** | 昆明湖v2 | `kunminghu-v2` | Refined Kunminghu with CHI Issue B/C support, improved OoO pipeline tuning, enhanced vector unit throughput. |
 
-Each generation is a **clean microarchitectural iteration**: the ISA stays the
+Each generation is a **clean microarchitectural iteration**: the ISA (Instruction Set Architecture) stays the
 same but pipeline depth, queue sizes, predictor structures, and cache parameters
 evolve. Unless stated otherwise, quantitative figures in this page refer to
 **Nanhu** with Kunminghu deltas noted where relevant.
@@ -57,7 +57,7 @@ evolve. Unless stated otherwise, quantitative figures in this page refer to
 
 1. **Agile development**: Chisel enables rapid RTL iteration; the team targets
    month-scale design--verify--tapeout cycles.
-2. **Parameterized RTL**: Issue width, ROB size, cache capacity, and predictor
+2. **Parameterized RTL**: Issue width, ROB (reorder buffer) size, cache capacity, and predictor
    sizes are configurable Scala parameters.
 3. **Toolchain co-design**: Xiangshan ships with custom verification
    (DiffTest co-simulation), performance validation, and debugging frameworks.
@@ -189,7 +189,7 @@ flowchart TD
 5. **Issue queues** perform wakeup (tag broadcast) and selection (age-based
    arbitration).
 6. **Execution units** produce results broadcast on the Common Data Bus (CDB).
-7. **LSU** handles memory operations with store forwarding and memory
+7. **LSU (load-store unit)** handles memory operations with store forwarding and memory
    disambiguation.
 8. **ROB** commits uops in-order, writing back stores to D-cache at commit.
 
@@ -258,7 +258,7 @@ $$
 Index bits: $\lceil \log_2 128 \rceil = 7$ bits. Offset bits: $\lceil \log_2 64 \rceil = 6$.
 Total: $7 + 6 = 13$ bits. With 4 KB pages ($\text{offset} = 12$ bits), the
 index extends 1 bit into the page number -- this is handled by the tag comparison
-after TLB translation.
+after TLB (translation lookaside buffer) translation.
 
 **Fetch bandwidth:** Up to 8 instructions (32 bytes, matching a half-cache-line)
 per cycle on a hit.
@@ -428,14 +428,14 @@ cycle, a Wallace tree compresses them in the second cycle, and the final CPA
 | FPU 1 | 1 | FMUL, FMA (fused multiply-add) | 4 cycles (FMA: 5 cycles) |
 | Shared | -- | FDIV, FSQRT | 12--24 cycles (iterative) |
 
-Both FPUs share a common writeback port. FMA operations use a single uop in
+Both FPUs (floating-point units) share a common writeback port. FMA operations use a single uop in
 Xiangshan (the fusion is native, not decomposed).
 
 ### 6.3 Address Generation and Branch Resolution
 
 - **2 AGUs**: Compute effective addresses for loads and stores using
   $\text{addr} = \text{base} + \text{offset}$.
-- **Branch resolution**: Performed within integer ALUs. The branch condition is
+- **Branch resolution**: Performed within integer ALUs (arithmetic logic units). The branch condition is
   evaluated and compared against the prediction. A mispredict triggers:
 
 $$
@@ -624,7 +624,7 @@ comparison happens in parallel with data SRAM read to minimize latency.
 | **Coherence** | MESI directory | MESI directory |
 | **Interconnect** | TileLink | CHI Issue B/C (Coherent Hub Interface) |
 
-The L2 is a **non-blocking cache** with multiple MSHRs supporting concurrent
+The L2 is a **non-blocking cache** with multiple MSHRs (Miss Status Handling Registers) supporting concurrent
 miss handling. It maintains inclusion over the private L1 caches using a
 **directory-based MESI protocol**:
 
@@ -740,6 +740,8 @@ components:
 $$
 \text{Perf}_{\text{relative}} = \frac{\text{IPC} \times \text{Freq}}{\text{IPC}_{\text{ref}} \times \text{Freq}_{\text{ref}}}
 $$
+
+(IPC = instructions per cycle, Freq = clock frequency; the ref subscript denotes the reference core.)
 
 For Nanhu vs. A76:
 
@@ -944,8 +946,8 @@ Xiangshan has become a foundational platform for computer architecture research 
 
 - **University courses:** ICT/UCAS uses Xiangshan as the primary teaching platform for graduate-level processor design courses. Tsinghua University, Peking University, Zhejiang University, and University of Science and Technology of China (USTC) have adopted Xiangshan RTL in advanced computer architecture curricula.
 - **Chip design competitions:** Xiangshan serves as the baseline platform for the "China Computer Society (CCF) Chip Design Competition," where student teams propose and implement microarchitectural improvements (e.g., new prefetchers, better branch predictors, custom accelerators) and validate them on the DiffTest co-simulation framework.
-- **Research vehicle:** Academic papers have used Xiangshan as an open-source evaluation platform for novel prefetching algorithms, cache coherence extensions (CHI protocol enhancements), and security features (pointer authentication, PMP enhancements). The open RTL eliminates the need for proprietary cycle-accurate simulators.
-- **BOSC ecosystem:** The Beijing Institute of Open Source Chip (BOSC) provides documentation, tutorial labs, and cloud-based FPGA emulation environments for Xiangshan, lowering the barrier for students without local FPGA boards.
+- **Research vehicle:** Academic papers have used Xiangshan as an open-source evaluation platform for novel prefetching algorithms, cache coherence extensions (CHI protocol enhancements), and security features (pointer authentication, PMP (Physical Memory Protection) enhancements). The open RTL eliminates the need for proprietary cycle-accurate simulators.
+- **BOSC ecosystem:** The Beijing Institute of Open Source Chip (BOSC) provides documentation, tutorial labs, and cloud-based FPGA (field-programmable gate array) emulation environments for Xiangshan, lowering the barrier for students without local FPGA boards.
 
 ---
 

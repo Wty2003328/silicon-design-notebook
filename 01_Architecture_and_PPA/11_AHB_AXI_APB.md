@@ -244,7 +244,7 @@ flowchart TD
     class S0,S1,S2 s
 ```
 
-The bridge: (1) accepts an AHB/AXI transaction (address phase); (2) decodes the address to select the appropriate `PSEL`; (3) drives `PADDR`, `PWRITE`, `PWDATA` in the SETUP phase; (4) asserts `PENABLE` in the ACCESS phase; (5) waits for `PREADY` from the slave; (6) returns `HRDATA`/`RDATA` and `HRESP`/`BRESP` to the master side; (7) if the AXI side issues a burst, the bridge generates multiple APB transfers.
+The bridge: (1) accepts an AHB/AXI transaction (address phase); (2) decodes the address to select the appropriate `PSEL`; (3) drives `PADDR`, `PWRITE`, `PWDATA` in the SETUP phase; (4) asserts `PENABLE` in the ACCESS phase; (5) waits for `PREADY` from the slave; (6) returns `HRDATA`/`RDATA` and `HRESP`/`BRESP` to the master side; (7) if the AXI (Advanced eXtensible Interface) side issues a burst, the bridge generates multiple APB transfers.
 
 ---
 
@@ -405,7 +405,7 @@ bus cycles. The arbiter only re-grants when the slave is actually ready.
    - SPLIT/RETRY (HRESP is 1-bit: 0=OKAY, 1=ERROR)
    - HMASTER (only one master)
 
-AHB-Lite is the most widely used AHB variant in modern SoCs.
+AHB-Lite is the most widely used AHB variant in modern SoCs (systems-on-chip).
 Each subsystem typically has one AHB-Lite master with multiple slaves.
 
 ### 3.7 AHB Default Slave
@@ -583,7 +583,7 @@ register READY to break this path (at the cost of 1 cycle latency).
 **Read-Write ordering:**
 - There is NO ordering guarantee between reads and writes (even with the same ID).
 - If ordering is needed, the master must wait for the write response before issuing the read (or vice versa).
-- Memory barriers in software (e.g., DMB on ARM) enforce this at the system level.
+- Memory barriers in software (e.g., DMB (Data Memory Barrier) on ARM) enforce this at the system level.
 
 ### 4.5 Burst Address Calculation
 
@@ -905,7 +905,7 @@ Summary:
 
 ### 4.7 Exclusive Access (Atomic Operations)
 
-Exclusive access implements atomic read-modify-write operations (like CAS, LL/SC):
+Exclusive access implements atomic read-modify-write operations (like CAS (compare-and-swap), LL/SC (load-linked/store-conditional)):
 
 ```text
 Step 1: Exclusive Read
@@ -1002,7 +1002,7 @@ R:              [D0][D0][D0][D0][D1][D1][D1][D1][D2][D2][D2][D2]
 Total: 12 cycles for 3 reads (latency of first hidden by subsequent addresses)
 ```
 
-**Throughput improvement:** Outstanding transactions hide the address-to-data latency. The bus stays busy while waiting for slow memory responses. For DDR with 10-cycle latency:
+**Throughput improvement:** Outstanding transactions hide the address-to-data latency. The bus stays busy while waiting for slow memory responses. For DDR (double data rate) with 10-cycle latency:
 
 ```verilog
 Without outstanding: Efficiency = burst_length / (burst_length + latency)
@@ -1094,9 +1094,9 @@ AXI4 removed this:
 
 ### 6.3 When to Use AXI4-Lite
 
-- Control/status register interfaces (CSR) for IP blocks
+- Control/status register interfaces (CSR) for IP (intellectual property) blocks
 - Configuration registers (written once or infrequently)
-- Simple peripherals (UART, SPI, GPIO, timer)
+- Simple peripherals (UART (Universal Asynchronous Receiver/Transmitter), SPI (Serial Peripheral Interface), GPIO (General-Purpose Input/Output), timer)
 - Any interface where burst and outstanding are not needed
 - Reduces gate count of slave by 50-70% vs full AXI4
 
@@ -1885,7 +1885,7 @@ Non-secure master (AxPROT[1] = 1 always):
 
 ### 13.3 TrustZone Controller (TZC)
 
-The TZC sits between the AXI interconnect and DRAM. It acts as a security firewall:
+The TZC sits between the AXI interconnect and DRAM (dynamic random-access memory). It acts as a security firewall:
 
 TZC configuration (programmed by secure firmware at boot):
 Region 0: 0x0000_0000 - 0x0FFF_FFFF  -> Secure-only
@@ -1971,7 +1971,7 @@ independent address spaces without requiring the master to know the full decoded
 
 ### 14.2 Use Case: PCIe Address Space Mapping
 
-PCIe devices expose multiple independent address spaces (Memory, I/O, Configuration,
+PCIe (Peripheral Component Interconnect Express) devices expose multiple independent address spaces (Memory, I/O, Configuration,
 Message) through a single AXI slave interface. Region identifiers map naturally:
 
 ```text
@@ -2114,7 +2114,7 @@ interconnect can optionally suppress B channel responses for designated transact
 **Impact on ordering:** Posted writes relax the ordering guarantee. The master must not
 assume the write has reached its final destination until a subsequent non-posted
 transaction to the same address completes. This is similar to PCIe posted writes
-(write transactions that do not generate a completion TLP).
+(write transactions that do not generate a completion TLP (Transaction Layer Packet)).
 
 ### 15.3 AtomicLoad Operations -- Worked Example
 
@@ -2216,7 +2216,7 @@ $$
 T_{\text{ATOP}} = 1 \times t_{\text{round\_trip}}
 $$
 
-Where $p_{\text{retry}}$ is the probability of exclusive access failure under contention. Under high contention (many cores), $p_{\text{retry}}$ approaches 1.0, making ATOP significantly faster.
+Where $t_{\text{round\_trip}}$ is the memory round-trip latency, $t_{\text{compute}}$ is the master-side compute time between the exclusive read and write, and $p_{\text{retry}}$ is the probability of exclusive access failure under contention. Under high contention (many cores), $p_{\text{retry}}$ approaches 1.0, making ATOP significantly faster.
 
 ### 16.4 AtomicCompare (CAS) Detail
 

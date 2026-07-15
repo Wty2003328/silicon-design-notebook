@@ -7,7 +7,7 @@
 
 ### 6T SRAM Bitcell — M1 through M6 Transistor Roles
 
-The 6T SRAM cell uses six transistors organized as two cross-coupled CMOS inverters
+The 6T SRAM (static random-access memory) cell uses six transistors organized as two cross-coupled CMOS (complementary metal-oxide-semiconductor) inverters
 (storage) plus two access transistors (read/write port):
 
 | Transistor | Type | Role |
@@ -32,7 +32,7 @@ The 6T SRAM cell uses six transistors organized as two cross-coupled CMOS invert
 **Fundamental tension:**
    - Increasing access transistor strength (M5/M6) → improves PR (write) → degrades CR (read)
    - Must find a sizing that gives adequate margin for BOTH simultaneously.
-   - This becomes harder at low VDD where transistor I-V curves compress.
+   - This becomes harder at low VDD where transistor I-V (current-voltage) curves compress.
 
 ### Read Operation Sequence (Step-by-Step Timing)
 
@@ -133,8 +133,8 @@ $$
 
 For write success: $V_Q < V_m$. This requires $R_{M3} > R_{M5} \cdot \frac{V_{DD} - V_m}{V_m}$,
 which translates to PR > 1. With PR = 1.5, write margin is adequate at nominal VDD.
-Write margin degrades at low VDD because PMOS on-resistance increases faster than
-NMOS as VDD approaches Vth.
+Write margin degrades at low VDD because PMOS (p-type metal-oxide-semiconductor) on-resistance increases faster than
+NMOS (n-type metal-oxide-semiconductor) as VDD approaches Vth.
 
 ### Transistor Schematic with Sizing
 
@@ -400,7 +400,7 @@ Adds a differential read port (2 extra transistors on top of 8T, using both Q an
 
 ### SRAM Yield and Repair
 
-Manufacturing defects in SRAM arrays are the primary yield limiter for large SoCs. Because SRAM bitcells use the smallest feature sizes (minimum metal pitch, minimum gate length), they are disproportionately susceptible to random defects.
+Manufacturing defects in SRAM arrays are the primary yield limiter for large SoCs (systems-on-chip). Because SRAM bitcells use the smallest feature sizes (minimum metal pitch, minimum gate length), they are disproportionately susceptible to random defects.
 
 **Redundancy strategy:** Add spare rows (typically 2--4 per bank) and spare columns (2--8). At wafer test, defective rows/columns are replaced by fusing the address remapping.
 
@@ -437,7 +437,7 @@ The 1T1C cell (one transistor + one capacitor) is much smaller than a 6T SRAM ce
 
 ### HBM (High Bandwidth Memory) and GDDR
 
-**HBM:** 3D-stacked DRAM with a wide interface (1024-bit per stack), 3--8 stacks per GPU. HBM3E delivers 960 GB/s per stack with 36 GB capacity. Connected via TSV interposer. Used in AI accelerators (H100, B200).
+**HBM:** 3D-stacked DRAM with a wide interface (1024-bit per stack), 3--8 stacks per GPU. HBM3E delivers 960 GB/s per stack with 36 GB capacity. Connected via TSV (through-silicon via) interposer. Used in AI accelerators (H100, B200).
 
 **GDDR6X:** 384-bit interface per GPU, 24 Gbps per pin, $\sim$1.15 TB/s. Used in gaming/graphics GPUs (RTX 4090). Much cheaper than HBM but lower bandwidth.
 
@@ -449,7 +449,7 @@ Cosmic rays (neutrons) and alpha particles (from packaging materials) can flip S
 
 **Mitigation strategies:**
 
-- **ECC:** SECDED corrects 1-bit, detects 2-bit errors. Overhead: 7+1=8 bits per 64-bit word (12.5% for SECDED). For a 1 MB cache: 128 KB of ECC storage.
+- **ECC (error-correcting code):** SECDED (single error correction, double error detection) corrects 1-bit, detects 2-bit errors. Overhead: 7+1=8 bits per 64-bit word (12.5% for SECDED). For a 1 MB cache: 128 KB of ECC storage.
 - **Parity with scrubbing:** periodic read-check-correct cycle. Prevents accumulation of single-bit errors that could exceed ECC correction capability.
 - **Physical shielding:** overburden concrete for data centers reduces neutron flux by 2--10x depending on depth.
 
@@ -508,7 +508,7 @@ Cs = 25 fF, C_BL = 250 fF, VDD = 1.0V
 delta_V = 25/(25+250) * 0.5 = 25/275 * 0.5 ≈ 45.5 mV
 ```
 
-Only ~45 mV of signal! This is why DRAM needs sensitive sense amplifiers.
+Only ~45 mV of signal! This is why DRAM (dynamic random-access memory) needs sensitive sense amplifiers.
 
 ### Sense Amplifier — Cross-Coupled Latch
 
@@ -859,7 +859,7 @@ Cons: Long exit latency; no external access during self-refresh.
 
 ## Asynchronous FIFO — moved
 
-The complete async-FIFO treatment (architecture, binary↔Gray proofs, full/empty detection proof, production-quality RTL, worked pointer-state example, reset handling, non-power-of-2 depths) lives in [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §5 — it is a CDC structure first and a memory second. This page keeps the SRAM/DRAM device view.
+The complete async-FIFO treatment (architecture, binary↔Gray proofs, full/empty detection proof, production-quality RTL (register-transfer level), worked pointer-state example, reset handling, non-power-of-2 depths) lives in [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §5 — it is a CDC (clock domain crossing) structure first and a memory second. This page keeps the SRAM/DRAM device view.
 
 ---
 
@@ -880,13 +880,13 @@ Memory compilers (e.g., ARM Artisan, Synopsys, TSMC Memory Compiler) take these 
 
 ### What You Get Back
 
-1. .lib (Liberty): Timing models for STA
+1. .lib (Liberty): Timing models for STA (static timing analysis)
    - Setup/hold times for address, data, write-enable relative to clock
    - Clock-to-Q (access time) for read data output
    - Leakage power per state (all zeros, all ones, average)
    - Dynamic energy per read/write operation
 
-2. .lef (Library Exchange Format): Physical abstract for P&R
+2. .lef (Library Exchange Format): Physical abstract for P&R (place and route)
    - Cell outline (width, height)
    - Pin locations (metal layer, coordinates)
    - Blockage layers
@@ -967,7 +967,7 @@ March algorithms (element notation, March C- walkthrough, fault models, and the 
 
 ## Cache — moved
 
-Cache organization and microarchitecture have their own page: [Cache_Microarchitecture](07_Cache_Microarchitecture.md) — the worked 32KB/4-way/64B geometry example is in its §1, replacement policies (LRU/PLRU/RRIP) in §7, write policies + write-back FSM in §3, and MESI/MOESI coherence in §9 (protocol-level view: [CPU_Architecture](03_CPU_Architecture.md) §8).
+Cache organization and microarchitecture have their own page: [Cache_Microarchitecture](07_Cache_Microarchitecture.md) — the worked 32KB/4-way/64B geometry example is in its §1, replacement policies (LRU/PLRU/RRIP) in §7, write policies + write-back FSM (finite-state machine) in §3, and MESI/MOESI coherence in §9 (protocol-level view: [CPU_Architecture](03_CPU_Architecture.md) §8).
 
 ---
 
@@ -1061,7 +1061,7 @@ Column multiplexing trades sense amplifier area for taller memory (more rows for
 
 GPU shader cores require register files with very high port counts. A typical GPU thread in a warp/wavefront issues multiple operands per cycle, requiring simultaneous reads of several source registers.
 
-- **Example** — 4-wide GPU SIMD lane, 3-source instruction format
+- **Example** — 4-wide GPU SIMD (single instruction, multiple data) lane, 3-source instruction format
 - **Per-cycle register access** — 4 threads x 3 sources = 12 reads
 - **Plus results** — 4 threads x 1 result = 4 writes
 - **Total** — 12R + 4W = 16 ports (if implemented as monolithic SRAM)
@@ -1085,7 +1085,7 @@ Port count derivation for a 4-wide out-of-order machine:
   Total: 8R + 4W = 12 ports on the architectural register file
 ```
 
-For a physical register file with register renaming (typical in modern OoO cores), the file is larger because all committed and in-flight destination registers occupy physical entries.
+For a physical register file with register renaming (typical in modern OoO (out-of-order) cores), the file is larger because all committed and in-flight destination registers occupy physical entries.
 
 Physical register file parameters (example: ARM Cortex-A78 class):
 - **Entry count** — 128-160 physical registers (32 arch + 96-128 rename buffers)
@@ -1456,7 +1456,7 @@ As SRAM scales from 5nm to 3nm and 2nm (gate-all-around / GAA nanosheet transist
 Compute-in-Memory (CIM) or Processing-in-Memory (PIM) integrates arithmetic operations directly into the memory array, eliminating the data movement between memory and processor that dominates energy consumption in data-intensive workloads (AI inference, graph analytics, scientific computing).
 
 **Traditional von Neumann:**
-   - Memory Array -> Read data -> Bus -> ALU -> Result -> Bus -> Write back
+   - Memory Array -> Read data -> Bus -> ALU (arithmetic logic unit) -> Result -> Bus -> Write back
    - Energy per operation: ~100-1000 pJ (dominated by data movement)
    - Data movement energy: ~10-100x the energy of the computation itself
 
@@ -1508,7 +1508,7 @@ Basic SRAM CIM operation (1-bit multiply-accumulate):
 
 Energy per binary MAC operation in SRAM CIM:
 RBL discharge: ~0.5 fJ (capacitance x voltage swing)
-ADC per column: ~5 fJ (moderate-resolution SAR ADC)
+ADC per column: ~5 fJ (moderate-resolution SAR (successive-approximation register) ADC)
 WL driver: ~0.1 fJ per WL
 
 Total per MAC: ~5-10 fJ (vs ~100 pJ for SRAM read + ALU + writeback)
@@ -1780,7 +1780,7 @@ For an $N$-entry CAM, the match line spans all $N$ entries. If ANY entry has a m
 
 ### Binary CAM vs Ternary CAM
 
-**Binary CAM:** Each cell stores 0 or 1 and matches only the exact same value. Used for exact-match lookups: MAC address tables, ARP caches, TLB tag comparisons.
+**Binary CAM:** Each cell stores 0 or 1 and matches only the exact same value. Used for exact-match lookups: MAC address tables, ARP (Address Resolution Protocol) caches, TLB (translation lookaside buffer) tag comparisons.
 
 **Ternary CAM (TCAM):** Each cell stores one of three states -- 0, 1, or X (don't care). The X state matches any input value. TCAM is implemented with two storage bits per cell, encoding the three states.
 
@@ -1798,7 +1798,7 @@ TCAM cell: 12T-16T (two SRAM storage cells + compare logic)
 
 ### TCAM Application: IP Routing (Longest Prefix Match)
 
-IP routing tables store destination prefixes of varying lengths. A prefix 192.168.0.0/16 means "match the first 16 bits exactly, ignore the last 16 bits." This maps directly to TCAM: the first 16 bits are stored as 0/1 values, and the remaining 16 bits are stored as X (don't care).
+IP (Internet Protocol) routing tables store destination prefixes of varying lengths. A prefix 192.168.0.0/16 means "match the first 16 bits exactly, ignore the last 16 bits." This maps directly to TCAM: the first 16 bits are stored as 0/1 values, and the remaining 16 bits are stored as X (don't care).
 
 ```verilog
 Routing table example:

@@ -37,7 +37,7 @@ detecting gates that are "slow-to-rise" or "slow-to-fall."
 **A:** In **Launch-Off-Shift (LOS)**, the last shift clock serves as the launch
 clock. The test requires scan_enable to transition from HIGH to LOW between the
 launch and capture clocks -- within one functional clock period. This gives
-ATPG more control over the V2 pattern (it's V1 shifted by one position) and
+ATPG (Automatic Test Pattern Generation) more control over the V2 pattern (it's V1 shifted by one position) and
 typically yields higher TDF coverage. However, the tight SE timing requirement
 is challenging for high-frequency designs.
 
@@ -60,9 +60,9 @@ ATPG runtime and pattern count.
 
 ### Q5: How does test compression work and what is a typical compression ratio?
 
-**A:** Test compression uses an on-chip decompressor (typically LFSR + phase
+**A:** Test compression uses an on-chip decompressor (typically LFSR (Linear-Feedback Shift Register) + phase
 shifters) to expand a few external tester channels into hundreds of internal
-scan chains, and a compactor (XOR network) to compress hundreds of chain
+scan chains, and a compactor (XOR — exclusive-OR — network) to compress hundreds of chain
 outputs back to a few tester channels. This works because for any given test
 pattern, only 1-5% of scan cells need specific values; the rest are don't-care.
 The LFSR-based decompressor fills don't-cares with pseudo-random values while
@@ -79,7 +79,7 @@ N-input AND gate's output SA0 fault requires all N inputs = 1, with probability
 Solutions: (1) Test point insertion -- adding control points (AND/OR gates with
 scan FFs) that bias hard-to-control signals, and observation points (extra scan
 FFs) on hard-to-observe signals. (2) Weighted random patterns -- biasing LFSR
-outputs toward required values. (3) Deterministic BIST -- storing a small set
+outputs toward required values. (3) Deterministic BIST (Built-In Self-Test) -- storing a small set
 of deterministic seed values that the LFSR expands into targeted patterns for
 RPR faults.
 
@@ -96,7 +96,7 @@ adds CFst and NPSF detection.
 
 ### Q8: What is the aliasing problem in MISR-based signature analysis?
 
-**A:** Aliasing occurs when a faulty circuit accidentally produces the same MISR
+**A:** Aliasing occurs when a faulty circuit accidentally produces the same MISR (Multiple-Input Signature Register)
 signature as the fault-free circuit. Since the MISR compresses a large amount of
 response data into an n-bit signature, information is lost. The probability of
 aliasing is 2^(-n). For a 32-bit MISR, this is approximately 2.3 x 10^(-10),
@@ -114,11 +114,11 @@ silicon defects.
 
 ### Q10: Describe the JTAG TAP controller and its key states.
 
-**A:** The TAP controller is a 16-state FSM driven by TMS and TCK. Key states:
+**A:** The TAP (Test Access Port) controller is a 16-state FSM (Finite State Machine) driven by TMS (Test Mode Select) and TCK (Test Clock). Key states:
 Test-Logic-Reset (all test logic disabled), Run-Test/Idle (idle between
 operations), Select-DR/IR-Scan (choose data or instruction register path),
 Capture-DR/IR (load parallel data into shift register), Shift-DR/IR (serial
-shift through TDI→TDO), Update-DR/IR (transfer shift register to output
+shift through TDI (Test Data In)→TDO (Test Data Out)), Update-DR/IR (transfer shift register to output
 register). The state machine is deterministic -- from any state, TMS=0 and
 TMS=1 each lead to exactly one next state. Holding TMS=1 for 5 cycles from
 any state guarantees return to Test-Logic-Reset.
@@ -158,14 +158,14 @@ untestable. FC = 95,000/98,000 = 96.9%. TC = 95,000/100,000 = 95.0%.
 **A:** At advanced nodes (< 28nm), transistor leakage current increases
 exponentially due to thinner gate oxides and shorter channels. At 7nm, normal
 leakage can be several uA per gate. For a chip with millions of gates, the
-background IDDQ is milliamps to amps, making the additional current from a
+background IDDQ (quiescent supply current) is milliamps to amps, making the additional current from a
 single defect (also uA range) undetectable against the noise floor. Delta-IDDQ
 (comparing current between vectors) partially helps but adds test time and
-requires expensive current-sensing ATE hardware.
+requires expensive current-sensing ATE (Automatic Test Equipment) hardware.
 
 ### Q15: Explain the PODEM algorithm's advantage over the D-algorithm.
 
-**A:** PODEM restricts all decisions to primary inputs only. When it needs an
+**A:** PODEM (Path-Oriented Decision Making) restricts all decisions to primary inputs only. When it needs an
 internal line to have a certain value, it backtraces to a PI and assigns that
 PI. It then forward-simulates (implies) to determine all internal values. This
 eliminates the possibility of internal conflicts that plague the D-algorithm
@@ -187,11 +187,11 @@ faults at checkpoint locations, typically reducing the fault list by 50%+.
 ### Q17: How does boundary scan enable board-level testing?
 
 **A:** IEEE 1149.1 boundary scan places shift-register cells (BSCs) at every
-I/O pin. Multiple JTAG-compliant chips on a PCB are daisy-chained via
+I/O pin. Multiple JTAG-compliant chips on a PCB (Printed Circuit Board) are daisy-chained via
 TDI→TDO. Using EXTEST, we can drive known values from one chip's output BSCs
 and capture them at another chip's input BSCs, testing every PCB trace for
 opens, shorts, and stuck-at faults without physical probe access. This is
-especially critical for BGA packages where pins are not probe-accessible.
+especially critical for BGA (Ball Grid Array) packages where pins are not probe-accessible.
 SAMPLE/PRELOAD allows observing functional I/O values non-intrusively.
 
 ### Q18: What determines the number of scan chains in a design?
@@ -208,7 +208,7 @@ in length for efficient compression.
 ### Q19: What is the purpose of the BYPASS instruction in JTAG?
 
 **A:** BYPASS loads a single-bit (1-bit) shift register between TDI and TDO.
-In a multi-chip JTAG chain, if you only need to access one chip, other chips
+In a multi-chip JTAG (Joint Test Action Group) chain, if you only need to access one chip, other chips
 are put in BYPASS mode. This shortens the total chain length dramatically.
 Without BYPASS, shifting through all chips' boundary scan registers (possibly
 thousands of bits each) would be prohibitively slow. With BYPASS, non-targeted
@@ -248,7 +248,7 @@ input (over-constrained), the pattern is split or dropped.
   have no phase relationship. The tool doesn't time crossing paths but
   recognizes that both clock trees must be built and may interact physically.
 
-The distinction matters for CTS and power analysis: physically exclusive
+The distinction matters for CTS (Clock Tree Synthesis) and power analysis: physically exclusive
 clocks can share clock tree resources; the others cannot.
 
 ---
@@ -257,11 +257,11 @@ clocks can share clock tree resources; the others cannot.
 
 *From [Physical_Verification_DRC_LVS.md](../06_Signoff/03_Physical_Verification_DRC_LVS.md)*
 
-**Q: DRC passes but the chip is dead — what check did you skip?** Almost certainly **LVS**: DRC only proves the geometry is legal, not that it implements the right circuit. A poly-to-metal mis-connection or a power/ground short can be perfectly DRC-clean and electrically fatal. LVS (extract + compare to netlist) is what catches it.
+**Q: DRC (Design Rule Check) passes but the chip is dead — what check did you skip?** Almost certainly **LVS (Layout Versus Schematic)**: DRC only proves the geometry is legal, not that it implements the right circuit. A poly-to-metal mis-connection or a power/ground short can be perfectly DRC-clean and electrically fatal. LVS (extract + compare to netlist) is what catches it.
 
 **Q: What is the antenna effect and how is it fixed?** A long single-layer metal connected to a thin gate collects plasma charge during fab; if the charge/gate-area ratio exceeds the limit, the gate oxide is damaged. Fix by adding antenna diodes (bleed charge) or jumping the route to another layer so no single segment is too large relative to the gate.
 
-**Q: Why add dummy metal fill if the design already passes DRC?** For **CMP planarity** and yield: chemical-mechanical polishing dishes/erodes low-density regions, changing thickness and hurting yield and timing. Density-balancing fill (and double vias, hotspot fixes) is DFM — making a DRC-clean layout actually high-yielding.
+**Q: Why add dummy metal fill if the design already passes DRC?** For **CMP planarity** and yield: chemical-mechanical polishing dishes/erodes low-density regions, changing thickness and hurting yield and timing. Density-balancing fill (and double vias, hotspot fixes) is DFM (Design for Manufacturability) — making a DRC-clean layout actually high-yielding.
 
 ---
 
@@ -271,11 +271,11 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q1: Explain NLDM vs CCS delay models. When do you need CCS?
 
-**A:** NLDM uses a 2D lookup table (input slew x output load) to store delay and output slew as single numbers. It models the output load as a lumped capacitance. CCS models the cell as a time-varying current source, capturing the full output current waveform. CCS is needed at 16nm and below because: (1) the output waveform shape is distorted by Miller capacitance and multi-stage driver turn-on, which affects downstream gate delay; (2) the interconnect RC network means different fanout pins see different effective delays; (3) NLDM's lumped-C assumption introduces 10-15% error at advanced nodes, while CCS achieves 2-3% accuracy. The trade-off is CCS libraries are 4-10x larger and STA runs 2-4x slower.
+**A:** NLDM (Nonlinear Delay Model) uses a 2D lookup table (input slew x output load) to store delay and output slew as single numbers. It models the output load as a lumped capacitance. CCS (Composite Current Source) models the cell as a time-varying current source, capturing the full output current waveform. CCS is needed at 16nm and below because: (1) the output waveform shape is distorted by Miller capacitance and multi-stage driver turn-on, which affects downstream gate delay; (2) the interconnect RC (resistance-capacitance) network means different fanout pins see different effective delays; (3) NLDM's lumped-C assumption introduces 10-15% error at advanced nodes, while CCS achieves 2-3% accuracy. The trade-off is CCS libraries are 4-10x larger and STA runs 2-4x slower.
 
 ### Q2: What is timing arc unateness? Give examples.
 
-**A:** Unateness describes the relationship between input and output transitions. **Positive unate**: output moves in the same direction as input (AND, OR, buffer). A rise on input causes a rise on output. **Negative unate**: output moves opposite to input (NAND, NOR, inverter). A rise on input causes a fall on output. **Non-unate**: output direction depends on other inputs (XOR, MUX). For XOR, when B=0, A rise causes Y rise; when B=1, A rise causes Y fall. Non-unate arcs force the tool to evaluate both rise/fall combinations, increasing runtime. Unateness is declared in the .lib timing arc as `timing_sense: positive_unate | negative_unate | non_unate`.
+**A:** Unateness describes the relationship between input and output transitions. **Positive unate**: output moves in the same direction as input (AND, OR, buffer). A rise on input causes a rise on output. **Negative unate**: output moves opposite to input (NAND, NOR, inverter). A rise on input causes a fall on output. **Non-unate**: output direction depends on other inputs (XOR, MUX (multiplexer)). For XOR, when B=0, A rise causes Y rise; when B=1, A rise causes Y fall. Non-unate arcs force the tool to evaluate both rise/fall combinations, increasing runtime. Unateness is declared in the .lib timing arc as `timing_sense: positive_unate | negative_unate | non_unate`.
 
 ### Q3: Derive the setup constraint from first principles. What happens physically when setup is violated?
 
@@ -287,39 +287,39 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q5: Explain CRPR with an example. Why does it matter?
 
-**A:** CRPR (Clock Reconvergence Pessimism Removal) corrects the artificial pessimism when OCV derates the shared clock path differently for launch and capture. Example: launch and capture FFs share a common clock buffer B with 100ps delay. For setup, OCV derates launch (early, 95ps) and capture (late, 105ps). But B cannot be both 95ps and 105ps simultaneously -- it's one physical cell. CRPR removes this 10ps difference from the analysis. Without CRPR, the tool computes 10ps of false skew that doesn't exist. CRPR typically recovers 5-50ps of slack per path. It's automatically computed by PrimeTime when `timing_remove_clock_reconvergence_pessimism` is enabled. Larger shared clock path segments yield larger CRPR benefits.
+**A:** CRPR (Clock Reconvergence Pessimism Removal) corrects the artificial pessimism when OCV (On-Chip Variation) derates the shared clock path differently for launch and capture. Example: launch and capture FFs share a common clock buffer B with 100ps delay. For setup, OCV derates launch (early, 95ps) and capture (late, 105ps). But B cannot be both 95ps and 105ps simultaneously -- it's one physical cell. CRPR removes this 10ps difference from the analysis. Without CRPR, the tool computes 10ps of false skew that doesn't exist. CRPR typically recovers 5-50ps of slack per path. It's automatically computed by PrimeTime when `timing_remove_clock_reconvergence_pessimism` is enabled. Larger shared clock path segments yield larger CRPR benefits.
 
 ### Q6: Compare OCV, AOCV, and POCV with numbers.
 
-**A:** Consider a path with 30 cells, each with 50ps nominal delay (1500ps total). **Flat OCV** at 5%: late derate = 1575ps, adding 75ps pessimism. **AOCV** with depth-dependent table (depth 30, derate 1.02): late derate = 1530ps, adding 30ps pessimism. **POCV** with sigma=3ps per cell: path sigma = 3 * sqrt(30) = 16.4ps, 3-sigma delay = 1500 + 49.2ps. POCV saves 26ps over flat OCV. The savings increase with path depth. For a 5-cell path, POCV is similar to OCV because sqrt(5) ~= 2.2 doesn't buy much averaging. Modern signoff at 7nm uses POCV; AOCV is common at 16nm; flat OCV is obsolete for advanced nodes.
+**A:** Consider a path with 30 cells, each with 50ps nominal delay (1500ps total). **Flat OCV** at 5%: late derate = 1575ps, adding 75ps pessimism. **AOCV (Advanced On-Chip Variation)** with depth-dependent table (depth 30, derate 1.02): late derate = 1530ps, adding 30ps pessimism. **POCV (Parametric On-Chip Variation)** with sigma=3ps per cell: path sigma = 3 * sqrt(30) = 16.4ps, 3-sigma delay = 1500 + 49.2ps. POCV saves 26ps over flat OCV. The savings increase with path depth. For a 5-cell path, POCV is similar to OCV because sqrt(5) ~= 2.2 doesn't buy much averaging. Modern signoff at 7nm uses POCV; AOCV is common at 16nm; flat OCV is obsolete for advanced nodes.
 
 ### Q7: How do multi-cycle paths work? Why must you set the hold MCP?
 
-**A:** MCP tells STA that data takes N cycles to propagate. `set_multicycle_path N -setup` moves the setup check to the Nth capture edge, giving N * Tperiod budget. Without the hold MCP, the hold check remains at the launch edge (t=0), which is overly conservative -- data doesn't need to be stable after t=0, it needs to be stable after the (N-1)th edge. Setting `set_multicycle_path (N-1) -hold` moves the hold check to (N-1) * Tperiod. If you forget this, the tool inserts massive hold buffers between t=0 and the data arrival around N*Tperiod, which wastes area/power and can degrade setup. Rule: always pair setup MCP=N with hold MCP=N-1.
+**A:** MCP (Multi-Cycle Path) tells STA that data takes N cycles to propagate. `set_multicycle_path N -setup` moves the setup check to the Nth capture edge, giving N * Tperiod budget. Without the hold MCP, the hold check remains at the launch edge (t=0), which is overly conservative -- data doesn't need to be stable after t=0, it needs to be stable after the (N-1)th edge. Setting `set_multicycle_path (N-1) -hold` moves the hold check to (N-1) * Tperiod. If you forget this, the tool inserts massive hold buffers between t=0 and the data arrival around N*Tperiod, which wastes area/power and can degrade setup. Rule: always pair setup MCP=N with hold MCP=N-1.
 
 ### Q8: What is crosstalk delta delay and how does PrimeTime SI handle it?
 
-**A:** Crosstalk delta delay is the additional delay caused by capacitive coupling to switching aggressors. When an aggressor switches opposite to the victim, the coupling capacitance effectively increases (Miller effect), increasing the victim's delay. PrimeTime SI computes timing windows for all signals, identifies aggressors that switch during the victim's transition window, calculates the delta delay based on coupling capacitance and relative slew rates, and adds it to the path delay. It also performs glitch analysis to check if quiescent victims receive voltage bumps large enough to be captured as logic transitions. SI analysis can add 5-15% to path delay at advanced nodes, making it mandatory for signoff.
+**A:** Crosstalk delta delay is the additional delay caused by capacitive coupling to switching aggressors. When an aggressor switches opposite to the victim, the coupling capacitance effectively increases (Miller effect), increasing the victim's delay. PrimeTime SI (signal integrity) computes timing windows for all signals, identifies aggressors that switch during the victim's transition window, calculates the delta delay based on coupling capacitance and relative slew rates, and adds it to the path delay. It also performs glitch analysis to check if quiescent victims receive voltage bumps large enough to be captured as logic transitions. SI analysis can add 5-15% to path delay at advanced nodes, making it mandatory for signoff.
 
 ### Q9: Walk through a timing ECO flow. What fixes are available?
 
-**A:** After signoff STA shows violations: (1) Identify the violating paths from the timing report; (2) For setup violations: upsize cells (X1->X2), swap Vt (SVT->LVT), add buffers to reduce fanout, restructure logic; (3) For hold violations: insert delay buffers on short paths, swap to HVT; (4) Run incremental STA on affected paths to verify fix; (5) Check that fixes don't break other paths (setup fix may degrade hold, hold fix may degrade setup); (6) Verify physical DRC (max_transition, max_cap, min_spacing); (7) For metal-only ECO (cheapest), use spare cells of the same size/type. For functional ECO, may need to replace filler cells. Always prefer the minimum perturbation that fixes the violation.
+**A:** After signoff STA shows violations: (1) Identify the violating paths from the timing report; (2) For setup violations: upsize cells (X1->X2), swap Vt (SVT->LVT, i.e. standard-to-low threshold-voltage cells), add buffers to reduce fanout, restructure logic; (3) For hold violations: insert delay buffers on short paths, swap to HVT (high threshold-voltage); (4) Run incremental STA on affected paths to verify fix; (5) Check that fixes don't break other paths (setup fix may degrade hold, hold fix may degrade setup); (6) Verify physical DRC (max_transition, max_cap, min_spacing); (7) For metal-only ECO (Engineering Change Order; cheapest), use spare cells of the same size/type. For functional ECO, may need to replace filler cells. Always prefer the minimum perturbation that fixes the violation.
 
 ### Q10: Explain the complete SDC constraint strategy for a block with 3 clocks: 500MHz core, 200MHz bus, and 33MHz JTAG.
 
-**A:** (1) Define clocks: `create_clock -period 2.0` for core, `-period 5.0` for bus, `-period 30.0` for JTAG. (2) Generated clocks for any PLLs or dividers. (3) `set_clock_groups -asynchronous` between all three if they are truly async. If core and bus are from the same PLL, they are synchronous -- use normal timing or set_multicycle. (4) `set_clock_uncertainty` for each: core needs tight uncertainty (~100-200ps pre-CTS), JTAG can be loose (~500ps). (5) I/O delays on all ports referencing their respective clocks. (6) `set_false_path -from [get_ports TRST_N]` for async JTAG reset. (7) `set_multicycle_path` for any known multi-cycle operations. (8) `set_max_transition/capacitance` for signal integrity. (9) `set_input_transition` on clock ports to model the external clock driver.
+**A:** (1) Define clocks: `create_clock -period 2.0` for core, `-period 5.0` for bus, `-period 30.0` for JTAG. (2) Generated clocks for any PLLs (Phase-Locked Loops) or dividers. (3) `set_clock_groups -asynchronous` between all three if they are truly async. If core and bus are from the same PLL, they are synchronous -- use normal timing or set_multicycle. (4) `set_clock_uncertainty` for each: core needs tight uncertainty (~100-200ps pre-CTS), JTAG can be loose (~500ps). (5) I/O delays on all ports referencing their respective clocks. (6) `set_false_path -from [get_ports TRST_N]` for async JTAG reset. (7) `set_multicycle_path` for any known multi-cycle operations. (8) `set_max_transition/capacitance` for signal integrity. (9) `set_input_transition` on clock ports to model the external clock driver.
 
 ### Q11: What is temperature inversion and how does it affect MCMM signoff?
 
-**A:** At advanced nodes (< 28nm, especially FinFET), reducing temperature increases Vth (because the thermal voltage kT/q decreases, steepening the sub-threshold slope and effectively raising Vth). At low supply voltages near Vth, this Vth increase dominates over the mobility improvement, making cells SLOWER at cold temperatures. This means the traditional "slow = hot, fast = cold" mapping breaks. For setup, you must check both SS_hot and SS_cold corners. For hold, check both FF_hot and FF_cold. This can double the number of signoff corners from 2 to 4 for timing.
+**A:** At advanced nodes (< 28nm, especially FinFET (Fin Field-Effect Transistor)), reducing temperature increases Vth (because the thermal voltage kT/q decreases, steepening the sub-threshold slope and effectively raising Vth). At low supply voltages near Vth, this Vth increase dominates over the mobility improvement, making cells SLOWER at cold temperatures. This means the traditional "slow = hot, fast = cold" mapping breaks. For setup, you must check both SS_hot and SS_cold corners. For hold, check both FF_hot and FF_cold. This can double the number of signoff corners from 2 to 4 for timing.
 
 ### Q12: How does clock gating affect STA?
 
-**A:** Clock gating introduces setup and hold checks on the ICG enable signal. The enable must meet setup at the ICG's latch (before the clock falls, for a negative-latch ICG) and hold (after the clock falls). These are called **clock gating checks** and appear as a separate section in the timing report. If the enable fails setup, the gated clock may produce a glitch (partial pulse). If it fails hold, the enable may propagate to the wrong clock cycle. The gated clock then drives downstream FFs, and its timing must be analyzed as a generated clock with the ICG's insertion delay added to the clock tree latency.
+**A:** Clock gating introduces setup and hold checks on the ICG (Integrated Clock Gating) enable signal. The enable must meet setup at the ICG's latch (before the clock falls, for a negative-latch ICG) and hold (after the clock falls). These are called **clock gating checks** and appear as a separate section in the timing report. If the enable fails setup, the gated clock may produce a glitch (partial pulse). If it fails hold, the enable may propagate to the wrong clock cycle. The gated clock then drives downstream FFs, and its timing must be analyzed as a generated clock with the ICG's insertion delay added to the clock tree latency.
 
 ### Q13: What is a virtual clock and when do you use it?
 
-**A:** A virtual clock has no physical port -- it's defined with `create_clock -name vclk -period 5.0` without a `get_ports` argument. It's used as a timing reference for I/O constraints when the external clock is not directly available as a pin. For example, if an SPI interface is clocked by an external SPI master clock that doesn't enter your block, you create a virtual clock to model it, then reference it in `set_input_delay -clock vclk`. The tool uses the virtual clock's period and waveform for I/O timing checks but doesn't build a clock tree for it.
+**A:** A virtual clock has no physical port -- it's defined with `create_clock -name vclk -period 5.0` without a `get_ports` argument. It's used as a timing reference for I/O constraints when the external clock is not directly available as a pin. For example, if an SPI (Serial Peripheral Interface) interface is clocked by an external SPI master clock that doesn't enter your block, you create a virtual clock to model it, then reference it in `set_input_delay -clock vclk`. The tool uses the virtual clock's period and waveform for I/O timing checks but doesn't build a clock tree for it.
 
 ### Q14: How do you handle clock MUX selection in STA?
 
@@ -331,7 +331,7 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q16: What are max_transition and max_capacitance constraints? Why do they matter?
 
-**A:** `set_max_transition` limits the slew (rise/fall time) at any pin. Excessive slew causes: increased gate delay (NLDM tables extrapolate poorly), increased short-circuit power (PMOS/NMOS both on longer), potential signal integrity issues (slow edges couple more crosstalk). Typical limits: 200-300ps for data, 100-200ps for clocks. `set_max_capacitance` limits the load on any driver pin. Excessive load causes: slow slew (violates max_transition), increased cell delay, potential reliability issues (electromigration on the driver's output transistors). Both are DRC checks that must be clean for signoff.
+**A:** `set_max_transition` limits the slew (rise/fall time) at any pin. Excessive slew causes: increased gate delay (NLDM tables extrapolate poorly), increased short-circuit power (PMOS/NMOS, i.e. p- and n-channel MOS, both on longer), potential signal integrity issues (slow edges couple more crosstalk). Typical limits: 200-300ps for data, 100-200ps for clocks. `set_max_capacitance` limits the load on any driver pin. Excessive load causes: slow slew (violates max_transition), increased cell delay, potential reliability issues (electromigration on the driver's output transistors). Both are DRC checks that must be clean for signoff.
 
 ### Q17: Explain the timing impact of wire delay vs gate delay at different nodes.
 
@@ -339,7 +339,7 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q18: How do you verify that your SDC constraints are correct?
 
-**A:** (1) Check for unconstrained paths: `report_timing -unconstrained` should show zero paths. (2) Check for over-constrained paths: review false_path and multicycle_path lists -- each should have a design justification. (3) Check clock waveforms: `report_clocks` should show correct period, waveform, and source. (4) Check I/O budgets: input_delay + internal_delay + output_delay should sum to less than the clock period. (5) Check for conflicting constraints: a path cannot be both false_path and multicycle_path. (6) Run formal equivalence between SDC and the design spec. (7) Cross-check inter-clock relationships: are clocks that should be synchronous treated as synchronous?
+**A:** (1) Check for unconstrained paths: `report_timing -unconstrained` should show zero paths. (2) Check for over-constrained paths: review false_path and multicycle_path lists -- each should have a design justification. (3) Check clock waveforms: `report_clocks` should show correct period, waveform, and source. (4) Check I/O budgets: input_delay + internal_delay + output_delay should sum to less than the clock period. (5) Check for conflicting constraints: a path cannot be both false_path and multicycle_path. (6) Run formal equivalence between SDC (Synopsys Design Constraints) and the design spec. (7) Cross-check inter-clock relationships: are clocks that should be synchronous treated as synchronous?
 
 ### Q19: What is min pulse width check and why is it important?
 
@@ -347,7 +347,7 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q20: Explain how SPEF quality affects timing accuracy.
 
-**A:** SPEF contains extracted parasitic R and C for every net. Quality depends on: (1) **Extraction mode**: detailed (most accurate, models every segment), lumped (fast, less accurate), or coupled (includes coupling caps for SI); (2) **Corner calibration**: extraction must match the PVT corner being analyzed (Cmax for setup, Cmin for hold); (3) **Reduction**: how the RC network is simplified -- too much reduction loses accuracy, too little increases runtime. A 1% error in parasitic extraction can translate to 5-10% error in wire delay for long nets. For signoff, use post-route detailed extraction with corner-specific tech files, and verify extraction accuracy by comparing to a golden SPICE simulation on sample paths.
+**A:** SPEF (Standard Parasitic Exchange Format) contains extracted parasitic R and C for every net. Quality depends on: (1) **Extraction mode**: detailed (most accurate, models every segment), lumped (fast, less accurate), or coupled (includes coupling caps for SI); (2) **Corner calibration**: extraction must match the PVT (Process, Voltage, Temperature) corner being analyzed (Cmax for setup, Cmin for hold); (3) **Reduction**: how the RC network is simplified -- too much reduction loses accuracy, too little increases runtime. A 1% error in parasitic extraction can translate to 5-10% error in wire delay for long nets. For signoff, use post-route detailed extraction with corner-specific tech files, and verify extraction accuracy by comparing to a golden SPICE (Simulation Program with Integrated Circuit Emphasis) simulation on sample paths.
 
 ### Q21: What is useful skew and how does it trade off between paths?
 
@@ -355,7 +355,7 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q22: How do you handle timing for a path that goes off-chip and comes back (e.g., through an external SRAM)?
 
-**A:** Model it with I/O constraints: (1) `set_output_delay` on the address/data outputs representing the board trace delay + SRAM setup time; (2) `set_input_delay` on the data inputs representing the board trace delay + SRAM access time + Tc2q of SRAM output register; (3) The internal data path is from the output port back to the input port, constrained by `set_max_delay` or through the clock period. For a synchronous SRAM with 2-cycle latency, you might need a multicycle path on the internal feedback path. Always include board-level PCB trace delay (estimate 150ps/inch for FR4) in the I/O delay budgets.
+**A:** Model it with I/O constraints: (1) `set_output_delay` on the address/data outputs representing the board trace delay + SRAM (Static Random-Access Memory) setup time; (2) `set_input_delay` on the data inputs representing the board trace delay + SRAM access time + Tc2q of SRAM output register; (3) The internal data path is from the output port back to the input port, constrained by `set_max_delay` or through the clock period. For a synchronous SRAM with 2-cycle latency, you might need a multicycle path on the internal feedback path. Always include board-level PCB trace delay (estimate 150ps/inch for FR4) in the I/O delay budgets.
 
 ### Q23: What is the timing impact of FinFET self-heating?
 
@@ -368,7 +368,7 @@ clocks can share clock tree resources; the others cannot.
 ### Q25: What is the signoff checklist for taping out a design?
 
 **A:** The timing signoff checklist:
-1. All setup/hold/recovery/removal slack >= 0 at ALL MCMM scenarios
+1. All setup/hold/recovery/removal slack >= 0 at ALL MCMM (Multi-Corner Multi-Mode) scenarios
 2. Max transition clean (no pin exceeds transition limit)
 3. Max capacitance clean (no driver overloaded)
 4. Min pulse width clean (all clock pulses wide enough)
@@ -379,7 +379,7 @@ clocks can share clock tree resources; the others cannot.
 9. CRPR enabled and correctly computed
 10. POCV/AOCV tables validated against silicon data
 11. Parasitics extracted at all signoff corners with calibrated tech files
-12. IR drop analysis shows no timing-significant voltage droop
+12. IR (current-resistance) drop analysis shows no timing-significant voltage droop
 13. Electromigration clean on all signal and clock nets
 14. DFT timing clean (scan shift and capture modes)
 15. Formal verification of SDC constraints against design intent

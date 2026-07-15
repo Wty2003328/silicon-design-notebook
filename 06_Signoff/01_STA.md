@@ -256,7 +256,7 @@ timing () {
 
 ### 2.3 Timing Arc Conditions
 
-Conditional arcs model data-dependent delays (e.g., different delays through a MUX depending on select):
+Conditional arcs model data-dependent delays (e.g., different delays through a MUX (multiplexer) depending on select):
 
 ```text
 timing () {
@@ -268,7 +268,7 @@ timing () {
 }
 ```
 
-Used in SDF back-annotation for maximum accuracy.
+Used in SDF (Standard Delay Format) back-annotation for maximum accuracy.
 
 ---
 
@@ -473,7 +473,7 @@ A standard positive-edge-triggered D-FF consists of two transmission-gate latche
 1. D changes too close to the clock edge.
 2. TG1 closes while M_node is still transitioning.
 3. M_node is "caught" at an intermediate voltage (between VDD and GND).
-4. The inverter feedback pair (INV1) has both PMOS and NMOS partially on.
+4. The inverter feedback pair (INV1) has both PMOS (p-channel MOSFET) and NMOS (n-channel MOSFET) partially on.
 5. M_node slowly resolves via the regenerative latch -- this is **metastability**.
 6. If M resolves correctly before TG2 propagates it, we get a delayed but valid Q (increased Tc2q).
 7. If M does not resolve in time, Q goes metastable.
@@ -735,7 +735,7 @@ set_multicycle_path 3 -hold  -from [get_cells accum_stage1*] -to [get_cells accu
 ### 5.5 MCP Pitfalls
 
 1. **Forgetting the hold MCP**: Leaves hold check at the launch edge, causing massive hold buffer insertion that degrades setup.
-2. **Setting MCP on CDC paths**: Use `set_false_path` instead. MCP implies a known phase relationship.
+2. **Setting MCP on CDC (clock domain crossing) paths**: Use `set_false_path` instead. MCP implies a known phase relationship.
 3. **MCP on paths with multiple endpoints**: Verify each endpoint actually requires the MCP.
 4. **MCP with negative skew**: The hold constraint becomes harder; verify with your specific skew values.
 
@@ -745,7 +745,7 @@ set_multicycle_path 3 -hold  -from [get_cells accum_stage1*] -to [get_cells accu
 
 ### 6.1 The Problem
 
-In OCV analysis, the launch and capture clock paths are derated in opposite directions:
+In OCV (On-Chip Variation) analysis, the launch and capture clock paths are derated in opposite directions:
 
 - **Setup**: Launch path uses max delay, capture path uses min delay (pessimistic worst case).
 - **Hold**: Launch path uses min delay, capture path uses max delay.
@@ -1228,7 +1228,7 @@ PrimeTime SI considers:
 
 ### 9.1 What is a Timing ECO?
 
-After signoff STA reveals remaining violations, an **Engineering Change Order** (ECO) makes targeted fixes without re-running the full PnR flow.
+After signoff STA reveals remaining violations, an **Engineering Change Order** (ECO) makes targeted fixes without re-running the full PnR (place and route) flow.
 
 ### 9.2 Types of ECOs
 
@@ -2213,7 +2213,7 @@ Best practices:
 
 ### 17.1 Nanosheet Width Variation
 
-At N2 and beyond, Gate-All-Around (GAA / nanosheet) transistors introduce new variation sources beyond what FinFETs experienced:
+At N2 and beyond, Gate-All-Around (GAA / nanosheet) transistors introduce new variation sources beyond what FinFETs (Fin Field-Effect Transistors) experienced:
 
 ```ascii-graph
 GAA nanosheet structure:

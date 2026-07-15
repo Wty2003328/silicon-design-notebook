@@ -10,21 +10,21 @@ Consolidated interview Q&A and worked problems from every page in `00_Fundamenta
 
 ### Q1: Derive the carry equation for a 4-bit CLA from first principles.
 
-**A:** Starting from the full adder: Cout = AB + Cin*(A XOR B). Define G = AB (generate), P = A XOR B (propagate). Then C_{i+1} = G_i + P_i * C_i. Expand recursively:
+**A:** Starting from the full adder: Cout = AB + Cin*(A XOR (exclusive-OR) B). Define G = AB (generate), P = A XOR B (propagate). Then C_{i+1} = G_i + P_i * C_i. Expand recursively:
 - C1 = G0 + P0*C0
 - C2 = G1 + P1*C1 = G1 + P1*G0 + P1*P0*C0
 - C3 = G2 + P2*G1 + P2*P1*G0 + P2*P1*P0*C0
 - C4 = G3 + P3*G2 + P3*P2*G1 + P3*P2*P1*G0 + P3*P2*P1*P0*C0
 
-Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gate delays (just AND-OR). But fan-in grows linearly with bit width — C16 would need 17-input gates, so practical CLAs use hierarchical grouping.
+Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gate delays (just AND-OR). But fan-in grows linearly with bit width — C16 would need 17-input gates, so practical CLAs (carry-lookahead adders) use hierarchical grouping.
 
 ### Q2: Why is the prefix operator's associativity critical?
 
-**A:** The prefix operator (G_L, P_L) o (G_R, P_R) = (G_L + P_L*G_R, P_L*P_R) is associative: [(a o b) o c] = [a o (b o c)]. This means we can freely parenthesize the computation into a binary tree structure, evaluating pairs in parallel. Without associativity, we'd be stuck with sequential left-to-right evaluation (like RCA). Associativity enables O(log N) depth instead of O(N). Note: the operator is NOT commutative — order matters (it encodes the bit-position ordering).
+**A:** The prefix operator (G_L, P_L) o (G_R, P_R) = (G_L + P_L*G_R, P_L*P_R) is associative: [(a o b) o c] = [a o (b o c)]. This means we can freely parenthesize the computation into a binary tree structure, evaluating pairs in parallel. Without associativity, we'd be stuck with sequential left-to-right evaluation (like RCA (ripple-carry adder)). Associativity enables O(log N) depth instead of O(N). Note: the operator is NOT commutative — order matters (it encodes the bit-position ordering).
 
 ### Q3: Explain why Kogge-Stone is impractical beyond 32 bits.
 
-**A:** At level k of a Kogge-Stone tree, each prefix node connects to a node 2^(k-1) positions away. For a 64-bit adder, level 6 has wires spanning 32 bit positions. In physical design, these long wires cause: (1) significant RC delay (wire delay dominates gate delay in advanced nodes), (2) routing congestion (N*log(N) wires competing for limited metal tracks), (3) the need for repeater insertion, adding area and power. In 7nm, a 32-position wire can take 50+ ps — comparable to or exceeding the gate delay it's trying to save. Han-Carlson (which only computes even-position prefixes, halving the wiring) or hybrid architectures are preferred for wide adders.
+**A:** At level k of a Kogge-Stone tree, each prefix node connects to a node 2^(k-1) positions away. For a 64-bit adder, level 6 has wires spanning 32 bit positions. In physical design, these long wires cause: (1) significant RC (resistance-capacitance) delay (wire delay dominates gate delay in advanced nodes), (2) routing congestion (N*log(N) wires competing for limited metal tracks), (3) the need for repeater insertion, adding area and power. In 7nm, a 32-position wire can take 50+ ps — comparable to or exceeding the gate delay it's trying to save. Han-Carlson (which only computes even-position prefixes, halving the wiring) or hybrid architectures are preferred for wide adders.
 
 ### Q4: Derive optimal block size for carry-skip adder.
 
@@ -36,7 +36,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q6: Compare Wallace and Dadda tree multipliers.
 
-**A:** Both reduce N partial products to 2 in ceil(log_{1.5}(N)) levels. Wallace eagerly reduces every column that has 3+ bits, using more full adders but producing a narrower final CPA. Dadda lazily reduces only to the next target height (from the sequence 2, 3, 4, 6, 9, 13...), using fewer full adders but leaving a wider final CPA. Total gate count is similar (Dadda slightly lower). In practice, synthesis tools use proprietary reduction schemes that outperform both textbook algorithms.
+**A:** Both reduce N partial products to 2 in ceil(log_{1.5}(N)) levels. Wallace eagerly reduces every column that has 3+ bits, using more full adders but producing a narrower final CPA (carry-propagate adder). Dadda lazily reduces only to the next target height (from the sequence 2, 3, 4, 6, 9, 13...), using fewer full adders but leaving a wider final CPA. Total gate count is similar (Dadda slightly lower). In practice, synthesis tools use proprietary reduction schemes that outperform both textbook algorithms.
 
 ### Q7: What is a 4:2 compressor and why is it important?
 
@@ -48,15 +48,15 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q9: How do you handle signed vs unsigned multiplication?
 
-**A:** For unsigned: the partial products are simply A * b_i * 2^i, all positive. For signed (2's complement): the MSB of the multiplier has negative weight (-2^{N-1}), so the last partial product must be subtracted. Booth encoding handles this naturally — the encoding produces negative partial products when needed, and sign extension is built into the scheme. For mixed signed*unsigned, prepend a 0 to the unsigned operand to make it "positive signed" (one extra bit), then use the signed multiplier.
+**A:** For unsigned: the partial products are simply A * b_i * 2^i, all positive. For signed (2's complement): the MSB (most significant bit) of the multiplier has negative weight (-2^{N-1}), so the last partial product must be subtracted. Booth encoding handles this naturally — the encoding produces negative partial products when needed, and sign extension is built into the scheme. For mixed signed*unsigned, prepend a 0 to the unsigned operand to make it "positive signed" (one extra bit), then use the signed multiplier.
 
 ### Q10: What is the FPGA carry chain and why does it make custom adders pointless?
 
-**A:** Modern FPGAs (Xilinx, Intel/Altera) have dedicated carry chain hardware: a fast ripple-carry path within each logic cell (CLB/ALM) that bypasses the general routing fabric. The carry delay per bit is ~15-30 ps (much faster than a LUT-routed signal at ~300-500 ps). A 32-bit RCA using the carry chain takes ~500-1000 ps — comparable to a LUT-based parallel prefix adder that wastes 32+ LUTs on prefix logic. The carry chain is essentially "free" (it's hardwired into every logic cell). Always use the `+` operator on FPGA.
+**A:** Modern FPGAs (field-programmable gate arrays; Xilinx, Intel/Altera) have dedicated carry chain hardware: a fast ripple-carry path within each logic cell (CLB/ALM) that bypasses the general routing fabric. The carry delay per bit is ~15-30 ps (much faster than a LUT-routed signal at ~300-500 ps). A 32-bit RCA using the carry chain takes ~500-1000 ps — comparable to a LUT-based parallel prefix adder that wastes 32+ LUTs (lookup table) on prefix logic. The carry chain is essentially "free" (it's hardwired into every logic cell). Always use the `+` operator on FPGA.
 
 ### Q11: Explain the concept of a compound adder.
 
-**A:** A compound adder simultaneously computes Sum_0 (for Cin=0) and Sum_1 (for Cin=1) using a shared prefix tree. The prefix tree computes all G_{i:0} and P_{i:0} values. Then: Sum_0[i] = P_i ^ G_{i-1:0} and Sum_1[i] = P_i ^ (G_{i-1:0} | P_{i-1:0}). The final result is selected by a MUX based on the actual carry-in. This adds minimal overhead (~N MUX2 gates) to the prefix tree but provides both results. Compound adders are essential in FP addition where the exponent difference determines whether to add or subtract, and both results may be needed.
+**A:** A compound adder simultaneously computes Sum_0 (for Cin=0) and Sum_1 (for Cin=1) using a shared prefix tree. The prefix tree computes all G_{i:0} and P_{i:0} values. Then: Sum_0[i] = P_i ^ G_{i-1:0} and Sum_1[i] = P_i ^ (G_{i-1:0} | P_{i-1:0}). The final result is selected by a MUX (multiplexer) based on the actual carry-in. This adds minimal overhead (~N MUX2 gates) to the prefix tree but provides both results. Compound adders are essential in FP (floating-point) addition where the exponent difference determines whether to add or subtract, and both results may be needed.
 
 ### Q12: What does "in practice, let the tool decide" actually mean?
 
@@ -64,7 +64,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q13: What is a speculative adder?
 
-**A:** A speculative adder uses a fast but potentially incorrect adder (e.g., truncated carry chain or carry prediction) to produce a result quickly, alongside a slower but correct error-detection circuit. If the speculation is correct (which it is >99% of the time for random inputs), the result is used directly. If not, a correction cycle is invoked. This trades average-case performance for worst-case correctness. Used in high-frequency ALUs where even a Kogge-Stone is too slow, but the design can tolerate occasional 2-cycle operations. Also called "variable-latency adders."
+**A:** A speculative adder uses a fast but potentially incorrect adder (e.g., truncated carry chain or carry prediction) to produce a result quickly, alongside a slower but correct error-detection circuit. If the speculation is correct (which it is >99% of the time for random inputs), the result is used directly. If not, a correction cycle is invoked. This trades average-case performance for worst-case correctness. Used in high-frequency ALUs (arithmetic logic unit) where even a Kogge-Stone is too slow, but the design can tolerate occasional 2-cycle operations. Also called "variable-latency adders."
 
 ### Q14: How do you verify an adder design?
 
@@ -76,7 +76,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q16: What is an approximate adder and when would you use one in an AI accelerator?
 
-**A:** An approximate adder deliberately trades arithmetic correctness for reduced delay, area, or power. Common designs include: (1) Truncated carry chain: only propagate carries within K-bit blocks, ignoring inter-block carries. Delay drops from O(N) to O(K). Error rate ~50%, but average error magnitude is small. (2) Lower-Part-OR (LOA): use bitwise OR for lower bits, accurate adder for upper bits. Only the (1,1) input case per bit produces an error. (3) Speculative adder: predict carry-in to each block, compute in parallel, optionally check/correct. In AI accelerators, approximate adders are used in MAC units for the lower bits of the accumulator — neural networks tolerate 1-3% accuracy degradation from approximate arithmetic because ReLU activations absorb small errors, quantization to INT8/FP8 already dominates the error budget, and training with quantization-aware training (QAT) can compensate. Key design rule: always keep the sign bit and upper bits accurate. The first and last network layers should use accurate arithmetic since errors there propagate most.
+**A:** An approximate adder deliberately trades arithmetic correctness for reduced delay, area, or power. Common designs include: (1) Truncated carry chain: only propagate carries within K-bit blocks, ignoring inter-block carries. Delay drops from O(N) to O(K). Error rate ~50%, but average error magnitude is small. (2) Lower-Part-OR (LOA): use bitwise OR for lower bits, accurate adder for upper bits. Only the (1,1) input case per bit produces an error. (3) Speculative adder: predict carry-in to each block, compute in parallel, optionally check/correct. In AI accelerators, approximate adders are used in MAC (multiply-accumulate) units for the lower bits of the accumulator — neural networks tolerate 1-3% accuracy degradation from approximate arithmetic because ReLU (rectified linear unit) activations absorb small errors, quantization to INT8/FP8 already dominates the error budget, and training with quantization-aware training (QAT) can compensate. Key design rule: always keep the sign bit and upper bits accurate. The first and last network layers should use accurate arithmetic since errors there propagate most.
 
 ---
 
@@ -86,23 +86,23 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q1: What is the difference between a latch and a flip-flop at the transistor level?
 
-**A:** A latch is a single transmission gate followed by a feedback inverter pair — it's level-sensitive and transparent when the clock is active. A flip-flop is two latches in series (master-slave) with complementary clocks. The master samples during one clock phase and the slave outputs during the other. At the transistor level, a typical transmission-gate D-FF uses 16-20 transistors (two TG latches with inverters and clock buffers), while a D-latch uses 6-8. The edge-triggered behavior emerges because the master is opaque when the slave is transparent and vice versa — data passes through both stages only at the transition moment.
+**A:** A latch is a single transmission gate followed by a feedback inverter pair — it's level-sensitive and transparent when the clock is active. A flip-flop is two latches in series (master-slave) with complementary clocks. The master samples during one clock phase and the slave outputs during the other. At the transistor level, a typical transmission-gate D-FF (D-type flip-flop) uses 16-20 transistors (two TG latches with inverters and clock buffers), while a D-latch uses 6-8. The edge-triggered behavior emerges because the master is opaque when the slave is transparent and vice versa — data passes through both stages only at the transition moment.
 
 ### Q2: Derive the MTBF formula for a synchronizer and explain each parameter.
 
-**A:** When a flip-flop's setup time is violated by an amount delta, the internal node lands near the metastable voltage Vm. The voltage evolves as V(t) = Vm + delta * exp(t/tau), where tau is the metastability time constant (determined by the inverter pair's gain-bandwidth product, typically 8-12ps in 7nm). The probability of being within the metastable window is T0 * fdata (T0 is the setup-window width, ~40-80ps). Resolution fails if the extra time Tr is insufficient: P_fail = T0 * fdata * exp(-Tr/tau). Over fclk cycles per second: MTBF = exp(Tr/tau) / (T0 * fclk * fdata). Each additional synchronizer stage doubles Tr (adds one clock period), multiplying MTBF by exp(Tclk/tau), which is typically 10^15 to 10^20.
+**A:** When a flip-flop's setup time is violated by an amount delta, the internal node lands near the metastable voltage Vm. The voltage evolves as V(t) = Vm + delta * exp(t/tau), where tau is the metastability time constant (determined by the inverter pair's gain-bandwidth product, typically 8-12ps in 7nm). The probability of being within the metastable window is T0 * fdata (T0 is the setup-window width, ~40-80ps). Resolution fails if the extra time Tr is insufficient: P_fail = T0 * fdata * exp(-Tr/tau). Over fclk cycles per second: MTBF (mean time between failures) = exp(Tr/tau) / (T0 * fclk * fdata). Each additional synchronizer stage doubles Tr (adds one clock period), multiplying MTBF by exp(Tclk/tau), which is typically 10^15 to 10^20.
 
 ### Q3: Explain why a Gray code FIFO must have power-of-2 depth.
 
-**A:** Gray code guarantees single-bit transitions between consecutive values by construction: G(i) XOR G(i+1) = 1 bit. This holds for the full 2^N counting sequence (0 to 2^N-1). If the FIFO depth D is not a power of 2, the counter wraps from D-1 to 0, which is NOT a consecutive Gray code transition. For example, with depth=6: Gray(5) = 0111, Gray(0) = 0000 — three bits change simultaneously. When this multi-bit change is sampled by the other clock domain, an intermediate value (like 0100, 0110, etc.) could be captured, causing the full/empty logic to see a completely wrong pointer value. This can cause data corruption (reading from empty) or data loss (blocking writes when not full).
+**A:** Gray code guarantees single-bit transitions between consecutive values by construction: G(i) XOR G(i+1) = 1 bit. This holds for the full 2^N counting sequence (0 to 2^N-1). If the FIFO (first-in first-out) depth D is not a power of 2, the counter wraps from D-1 to 0, which is NOT a consecutive Gray code transition. For example, with depth=6: Gray(5) = 0111, Gray(0) = 0000 — three bits change simultaneously. When this multi-bit change is sampled by the other clock domain, an intermediate value (like 0100, 0110, etc.) could be captured, causing the full/empty logic to see a completely wrong pointer value. This can cause data corruption (reading from empty) or data loss (blocking writes when not full).
 
 ### Q4: How do you implement a glitch-free clock MUX, and why is a simple MUX dangerous?
 
-**A:** A simple `assign clk_out = sel ? clk_b : clk_a` produces runt pulses when sel transitions while the two clocks are at different levels. The safe design uses AND-OR gating with feedback-coupled synchronizers: each clock is ANDed with a synchronized enable signal, and the two gated clocks are ORed. The enables are generated by synchronizing `sel` to each clock domain through 2-FF synchronizers, with cross-feedback ensuring mutual exclusion — en_a can only be high when en_b is confirmed low. This creates a mandatory dead-time during switching where both clocks are gated off (output = 0), which is safe. In ASIC, the AND gates should be replaced with ICG cells for proper clock-gating behavior.
+**A:** A simple `assign clk_out = sel ? clk_b : clk_a` produces runt pulses when sel transitions while the two clocks are at different levels. The safe design uses AND-OR gating with feedback-coupled synchronizers: each clock is ANDed with a synchronized enable signal, and the two gated clocks are ORed. The enables are generated by synchronizing `sel` to each clock domain through 2-FF synchronizers, with cross-feedback ensuring mutual exclusion — en_a can only be high when en_b is confirmed low. This creates a mandatory dead-time during switching where both clocks are gated off (output = 0), which is safe. In ASIC (application-specific integrated circuit), the AND gates should be replaced with ICG (integrated clock gating) cells for proper clock-gating behavior.
 
 ### Q5: Compare one-hot and binary encoding for a 16-state FSM.
 
-**A:** Binary uses 4 FFs and ~60 combinational gates; one-hot uses 16 FFs but only ~35 gates. One-hot is ~30% faster because next-state logic is a simple OR of a few state bits instead of a 4-bit decode. One-hot total area is often smaller for <20 states due to the dramatic reduction in combinational logic. Binary wins on area for >32 states. On FPGA, one-hot is almost always preferred because FFs are free (unused LUT outputs have FFs). For ASIC synthesis, the tool typically decides based on constraints — if you need maximum speed, use `one_hot` encoding directive; if area-constrained, use binary.
+**A:** Binary uses 4 FFs (flip-flops) and ~60 combinational gates; one-hot uses 16 FFs but only ~35 gates. One-hot is ~30% faster because next-state logic is a simple OR of a few state bits instead of a 4-bit decode. One-hot total area is often smaller for <20 states due to the dramatic reduction in combinational logic. Binary wins on area for >32 states. On FPGA, one-hot is almost always preferred because FFs are free (unused LUT outputs have FFs). For ASIC synthesis, the tool typically decides based on constraints — if you need maximum speed, use `one_hot` encoding directive; if area-constrained, use binary.
 
 ### Q6: Calculate FIFO depth: fwr=200MHz, frd=150MHz, burst=256, continuous read.
 
@@ -110,11 +110,11 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q7: What is time borrowing and when should you use latch-based design?
 
-**A:** Time borrowing exploits latch transparency: a slow pipeline stage can "borrow" time from the next stage's budget. If stage 1 takes 60% of the clock period and stage 2 takes 40%, flip-flop design limits Fmax to stage 1's delay. With latches, stage 1 can use up to a full period (borrowing from stage 2) as long as the total constraint (Tcq1 + Tcomb1 + Tcomb2 + Tsu2 <= 2*Thalf) is met. Use latch-based design for: (1) deeply pipelined datapaths with unbalanced stages, (2) pulse-latch designs for power savings (latch + narrow pulse generator uses less dynamic power than a full FF), (3) high-frequency designs where the extra 5-10% Fmax from time borrowing matters. Avoid for: complex control logic (STA complexity explodes), designs with many clock domains, or when the team lacks experience with latch timing.
+**A:** Time borrowing exploits latch transparency: a slow pipeline stage can "borrow" time from the next stage's budget. If stage 1 takes 60% of the clock period and stage 2 takes 40%, flip-flop design limits Fmax to stage 1's delay. With latches, stage 1 can use up to a full period (borrowing from stage 2) as long as the total constraint (Tcq1 + Tcomb1 + Tcomb2 + Tsu2 <= 2*Thalf) is met. Use latch-based design for: (1) deeply pipelined datapaths with unbalanced stages, (2) pulse-latch designs for power savings (latch + narrow pulse generator uses less dynamic power than a full FF), (3) high-frequency designs where the extra 5-10% Fmax from time borrowing matters. Avoid for: complex control logic (STA — static timing analysis — complexity explodes), designs with many clock domains, or when the team lacks experience with latch timing.
 
 ### Q8: What is a static-1 hazard and how do you eliminate it?
 
-**A:** A static-1 hazard occurs when an output should remain 1 during an input transition but momentarily glitches to 0. It happens when two product terms in an SOP expression are "adjacent" (share all variables except one, which appears complemented in one term and uncomplemented in the other). During the transition of that variable, one product term falls before the other rises due to the inverter delay. Elimination: add the consensus term that bridges the two product terms. Example: F = AB' + BC has a hazard when B transitions with A=C=1. Add AC (the consensus of AB' and BC): F = AB' + BC + AC. The term AC = 1*1 = 1 regardless of B, preventing the glitch. In K-map terms, ensure every pair of adjacent 1-cells is covered by at least one common implicant.
+**A:** A static-1 hazard occurs when an output should remain 1 during an input transition but momentarily glitches to 0. It happens when two product terms in an SOP (sum-of-products) expression are "adjacent" (share all variables except one, which appears complemented in one term and uncomplemented in the other). During the transition of that variable, one product term falls before the other rises due to the inverter delay. Elimination: add the consensus term that bridges the two product terms. Example: F = AB' + BC has a hazard when B transitions with A=C=1. Add AC (the consensus of AB' and BC): F = AB' + BC + AC. The term AC = 1*1 = 1 regardless of B, preventing the glitch. In K-map terms, ensure every pair of adjacent 1-cells is covered by at least one common implicant.
 
 ### Q9: Explain the priority encoder tree and its application in floating-point normalization.
 
@@ -122,15 +122,15 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q10: What is a common tapeout bug related to FSMs?
 
-**A:** Several common FSM tapeout bugs: (1) Missing default state recovery — if the state register gets corrupted (cosmic ray, voltage glitch), the FSM enters an unencoded state and stays stuck forever. Always add `default: state <= IDLE` and consider adding one-hot validity checks. (2) Using `full_case`/`parallel_case` pragmas incorrectly — this creates simulation/synthesis mismatch where simulation sees X-propagation but synthesis assumes defined behavior. (3) Not constraining the state register for STA — if the synthesis tool doesn't know the valid state encodings, it may optimize based on unreachable states, creating paths that fail in silicon. (4) Forgetting to register Mealy outputs — combinational outputs can create long timing paths to the next block and are sensitive to input glitches.
+**A:** Several common FSM (finite state machine) tapeout bugs: (1) Missing default state recovery — if the state register gets corrupted (cosmic ray, voltage glitch), the FSM enters an unencoded state and stays stuck forever. Always add `default: state <= IDLE` and consider adding one-hot validity checks. (2) Using `full_case`/`parallel_case` pragmas incorrectly — this creates simulation/synthesis mismatch where simulation sees X-propagation but synthesis assumes defined behavior. (3) Not constraining the state register for STA — if the synthesis tool doesn't know the valid state encodings, it may optimize based on unreachable states, creating paths that fail in silicon. (4) Forgetting to register Mealy outputs — combinational outputs can create long timing paths to the next block and are sensitive to input glitches.
 
 ### Q11: How does the pull-up ratio affect SRAM write-ability?
 
-**A:** The pull-up ratio (PR = W/L_access / W/L_PMOS) determines write margin. During write, the BL driver tries to pull one storage node from VDD to 0 through the access transistor, fighting the PMOS pull-up. The access transistor and PMOS form a voltage divider. If PR is too low (weak access, strong PMOS), the storage node cannot be pulled below the switching threshold of the feedback inverter, and the write fails. Typical PR > 1.2-1.5. However, increasing PR (wider access transistor) also degrades read stability (weaker voltage divider during read). This is the fundamental 6T SRAM trade-off — the 8T cell eliminates it by decoupling read and write ports.
+**A:** The pull-up ratio (PR = W/L_access / W/L_PMOS) determines write margin. During write, the BL (bitline) driver tries to pull one storage node from VDD to 0 through the access transistor, fighting the PMOS (p-channel MOS transistor) pull-up. The access transistor and PMOS form a voltage divider. If PR is too low (weak access, strong PMOS), the storage node cannot be pulled below the switching threshold of the feedback inverter, and the write fails. Typical PR > 1.2-1.5. However, increasing PR (wider access transistor) also degrades read stability (weaker voltage divider during read). This is the fundamental 6T SRAM (static random-access memory) trade-off — the 8T cell eliminates it by decoupling read and write ports.
 
 ### Q12: Explain the trade-off between metastability MTBF and synchronizer latency.
 
-**A:** Each synchronizer flip-flop adds one clock period of latency (data takes N cycles to cross N synchronizer stages). A 2-FF synchronizer adds 1.5 to 2 cycles of latency (depending on when data arrives relative to the first FF). A 3-FF adds 2.5 to 3 cycles. The benefit: MTBF increases exponentially — adding one stage multiplies MTBF by exp(Tclk/tau). For 2 GHz clock and tau=10ps: exp(500/10) = exp(50) ≈ 5*10^21. So going from 2-FF to 3-FF multiplies MTBF by this astronomical factor. The cost: one extra cycle of latency, which matters for CDC paths that are performance-critical (e.g., request/acknowledge handshakes). In practice, 2-FF is sufficient (MTBF > 1000 years per crossing); 3-FF is for safety-critical applications where MTBF must exceed the age of the universe per crossing.
+**A:** Each synchronizer flip-flop adds one clock period of latency (data takes N cycles to cross N synchronizer stages). A 2-FF synchronizer adds 1.5 to 2 cycles of latency (depending on when data arrives relative to the first FF). A 3-FF adds 2.5 to 3 cycles. The benefit: MTBF increases exponentially — adding one stage multiplies MTBF by exp(Tclk/tau). For 2 GHz clock and tau=10ps: exp(500/10) = exp(50) ≈ 5*10^21. So going from 2-FF to 3-FF multiplies MTBF by this astronomical factor. The cost: one extra cycle of latency, which matters for CDC (clock domain crossing) paths that are performance-critical (e.g., request/acknowledge handshakes). In practice, 2-FF is sufficient (MTBF > 1000 years per crossing); 3-FF is for safety-critical applications where MTBF must exceed the age of the universe per crossing.
 
 ### Q13: What is the consensus theorem and why is it important for hazard-free design?
 
@@ -138,7 +138,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q14: How do you calculate FIFO depth when there are idle cycles on both sides?
 
-**A:** First compute effective rates: write_effective = fwr * (write_active_cycles / total_write_pattern_cycles), read_effective = frd * (read_active_cycles / total_read_pattern_cycles). Verify read_effective >= write_effective for steady-state sustainability. Then, find the worst-case period where net data accumulation is maximized. This is typically when a full write burst occurs while the reader is in its idle phase. Sum the peak accumulation: for each time step in the burst, track occupancy = sum(writes) - sum(reads). The maximum occupancy over the entire burst is the required depth. For periodic patterns, simulate one full LCM period (LCM of write and read patterns) and track the maximum occupancy.
+**A:** First compute effective rates: write_effective = fwr * (write_active_cycles / total_write_pattern_cycles), read_effective = frd * (read_active_cycles / total_read_pattern_cycles). Verify read_effective >= write_effective for steady-state sustainability. Then, find the worst-case period where net data accumulation is maximized. This is typically when a full write burst occurs while the reader is in its idle phase. Sum the peak accumulation: for each time step in the burst, track occupancy = sum(writes) - sum(reads). The maximum occupancy over the entire burst is the required depth. For periodic patterns, simulate one full LCM (least common multiple) period (LCM of write and read patterns) and track the maximum occupancy.
 
 ### Q15: How do you verify a glitch-free clock MUX in simulation?
 
@@ -150,16 +150,16 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 *From [CMOS_Fundamentals.md](../00_Fundamentals/01_CMOS_Fundamentals.md)*
 
-**Q1: Draw the VTC of a CMOS inverter and label all five regions of operation.**
+**Q1: Draw the VTC (voltage transfer characteristic) of a CMOS (complementary metal-oxide-semiconductor) inverter and label all five regions of operation.**
 
-(See Section 2.2 above.) Region A: NMOS off, PMOS linear, Vout=VDD. Region B: NMOS
+(See Section 2.2 above.) Region A: NMOS (n-channel MOS transistor) off, PMOS linear, Vout=VDD. Region B: NMOS
 saturation, PMOS linear. Region C: both saturation (transition). Region D: NMOS linear,
 PMOS saturation. Region E: NMOS linear, PMOS off, Vout=0.
 
 **Q2: Derive the switching threshold VM. How do you make VM = VDD/2?**
 
 Set IDn = IDp with both in saturation: kn(VM-Vthn)² = kp(VDD-VM-|Vthp|)². Solving gives
-$V_M = \dfrac{V_{thn} + r(V_{DD}-|V_{thp}|)}{1+r}$ where $r = \sqrt{k_p/k_n}$. For VM = VDD/2 with equal
+$V_M = \dfrac{V_{thn} + r(V_{DD}-|V_{thp}|)}{1+r}$ where $r = \sqrt{k_p/k_n}$ ($k_n, k_p$ = NMOS/PMOS transconductance parameters; $V_{thn}, V_{thp}$ = NMOS/PMOS threshold voltages). For VM = VDD/2 with equal
 thresholds: kp = kn, meaning $W_p/L_p \approx 2.5 \times W_n/L_n$ (to compensate for lower hole mobility).
 
 **Q3: Why is NAND preferred over NOR in CMOS?**
@@ -171,22 +171,22 @@ For an N-input NOR, each PMOS must be N×2.5× minimum width — prohibitively l
 
 **Q4: Explain latch-up. How is it triggered and prevented?**
 
-Latch-up occurs when parasitic PNP and NPN BJTs in CMOS form a positive feedback loop
+Latch-up occurs when parasitic PNP and NPN BJTs (bipolar junction transistors) in CMOS form a positive feedback loop
 (thyristor/SCR structure). Triggered when substrate or well current forward-biases one
 BJT, which then feeds the other. Once triggered, a low-impedance VDD-to-GND path forms
 with potentially destructive current. Prevention: guard rings (reduce well/substrate
 resistance), sufficient NMOS-PMOS spacing, epitaxial substrate, trench isolation, frequent
-well taps, and SOI processes (which eliminate latch-up entirely).
+well taps, and SOI (silicon-on-insulator) processes (which eliminate latch-up entirely).
 
 **Q5: What is the body effect and when does it matter?**
 
 The body effect increases Vth when source-to-body voltage (VSB) is non-zero:
-$V_{th} = V_{th0} + \gamma\left(\sqrt{2\phi_F+V_{SB}} - \sqrt{2\phi_F}\right)$. It matters in stacked transistors (e.g., 4-input
+$V_{th} = V_{th0} + \gamma\left(\sqrt{2\phi_F+V_{SB}} - \sqrt{2\phi_F}\right)$, where $V_{th0}$ is the zero-bias threshold voltage, $\gamma$ the body-effect coefficient, and $\phi_F$ the Fermi potential. It matters in stacked transistors (e.g., 4-input
 NAND: the NMOS closest to the output has its source above GND due to other NMOS below it,
 increasing VSB and thus Vth, which slows the gate). Also matters in source-follower
 circuits and transmission gates.
 
-**Q6: Compare planar MOSFET, FinFET, and GAAFET.**
+**Q6: Compare planar MOSFET (metal-oxide-semiconductor field-effect transistor), FinFET (fin field-effect transistor), and GAAFET (gate-all-around field-effect transistor).**
 
 Planar: gate contacts channel from one side. Good to ~28nm. Poor short-channel control
 below 22nm. FinFET: gate wraps 3 sides of a vertical fin. Used at 22nm-5nm. Quantized
@@ -235,7 +235,7 @@ switching. But also more leakage (lower Vth at VDS = VDD). DIBL creates a coupli
 between neighboring gates through shared drain nodes and is a major concern for timing
 variation at advanced nodes (η can be 50-100 mV/V at 7nm).
 
-**Q12: Compare HBM and CDM ESD models.**
+**Q12: Compare HBM (Human Body Model) and CDM (Charged-Device Model) ESD (electrostatic discharge) models.**
 
 HBM models a human touching a pin: 100pF through 1.5kΩ, peak ~1.3A over ~150ns. CDM
 models the IC itself discharging: very fast (<1ns), peak >10A. CDM is more damaging to
@@ -257,7 +257,7 @@ The subthreshold slope $S = (kT/q) \times \ln(10) \times (1 + C_d/C_{ox})$ defin
 transistor turns off. The theoretical minimum at room temperature is (kT/q) × ln(10) ≈
 60 mV/decade (when Cd/Cox → 0, i.e., perfect gate control). This is the Boltzmann tyranny
 — set by thermal physics. It limits how low VDD can go while maintaining adequate
-on/off ratio. Overcoming this requires non-classical devices (tunnel FET, negative
+on/off ratio. Overcoming this requires non-classical devices (tunnel FET (field-effect transistor), negative
 capacitance FET).
 
 **Q15: What is the difference between static and dynamic CMOS logic?**
@@ -324,7 +324,7 @@ vias, eliminating IR drop on frontside metal by up to 50%. TSMC N2P will use Sup
 Dynamic power ∝ VDD². Delay ∝ VDD/(VDD-Vth)^α where α ≈ 1-2. So a 10% VDD reduction
 gives ~19% power savings but only ~10-15% delay increase (when VDD >> Vth). The
 energy-delay product (EDP) improves with VDD reduction until VDD approaches ~3nVT
-(near-threshold). This is why DVFS is so effective — even modest voltage reduction
+(near-threshold). This is why DVFS (dynamic voltage and frequency scaling) is so effective — even modest voltage reduction
 yields significant power savings with manageable performance loss.
 
 **Q23: What is antenna effect and how is it fixed?**
@@ -366,7 +366,7 @@ capacitance, and timing. Design rules require metal density to stay within bound
 
 ### Q2: Prove that GRS bits are sufficient for correct rounding.
 
-**A:** For round-to-nearest-even: the decision depends on whether the truncated tail is <, =, or > 0.5 ULP. Guard bit tells us if >= 0.5 ULP (g=1). Round and Sticky together tell us if > 0.5 ULP (g=1 and (r=1 or s=1)). For the exact tie (g=1, r=0, s=0), we check LSB for the even rule. No additional bits can change these decisions — the Sticky bit captures the OR of ALL remaining bits, which is the only information we need (whether they're all zero or not). For directed rounding modes (toward +inf, -inf, zero): only the OR of (g, r, s) matters (are there any non-zero discarded bits?), which GRS fully determines.
+**A:** For round-to-nearest-even: the decision depends on whether the truncated tail is <, =, or > 0.5 ULP. Guard bit tells us if >= 0.5 ULP (g=1). Round and Sticky together tell us if > 0.5 ULP (g=1 and (r=1 or s=1)). For the exact tie (g=1, r=0, s=0), we check LSB (least significant bit) for the even rule. No additional bits can change these decisions — the Sticky bit captures the OR of ALL remaining bits, which is the only information we need (whether they're all zero or not). For directed rounding modes (toward +inf, -inf, zero): only the OR of (g, r, s) matters (are there any non-zero discarded bits?), which GRS (guard, round, sticky) fully determines.
 
 ### Q3: Explain the dual-path FP adder and why |d| <= 1 is the boundary.
 
@@ -378,11 +378,11 @@ capacitance, and timing. Design rules require metal density to stay within bound
 
 ### Q5: Compare SRT, Newton-Raphson, and Goldschmidt division.
 
-**A:** SRT (radix-4): digit-recurrence, 1 quotient digit (2 bits) per cycle, linear convergence, ~13 cycles for SP. Hardware: lookup table + adder + shifter. Moderate area. Newton-Raphson: multiplicative, quadratic convergence (bits double each iteration), 2-3 iterations for SP. Needs initial LUT + multiplier. Sequential dependency between iterations. Goldschmidt: also multiplicative/quadratic, but the two multiplications per iteration (N*F and D*F) are independent → parallelizable with 2 multipliers, roughly 2x throughput vs N-R. Both N-R and Goldschmidt are preferred for high-performance FPUs; SRT for area-constrained designs. The Pentium FDIV bug was in the SRT lookup table.
+**A:** SRT (radix-4): digit-recurrence, 1 quotient digit (2 bits) per cycle, linear convergence, ~13 cycles for SP (single precision). Hardware: lookup table + adder + shifter. Moderate area. Newton-Raphson: multiplicative, quadratic convergence (bits double each iteration), 2-3 iterations for SP. Needs initial LUT + multiplier. Sequential dependency between iterations. Goldschmidt: also multiplicative/quadratic, but the two multiplications per iteration (N*F and D*F) are independent → parallelizable with 2 multipliers, roughly 2x throughput vs N-R. Both N-R and Goldschmidt are preferred for high-performance FPUs (floating-point units); SRT for area-constrained designs. The Pentium FDIV bug was in the SRT lookup table.
 
 ### Q6: Why is FMA important and what is the "wide adder problem"?
 
-**A:** FMA computes round(A*B + C) with a single rounding, improving accuracy over separate multiply-then-add (which has 2 roundings). Hardware challenge: the product A*B is 2p bits wide (not rounded), and C must be aligned to it. The alignment shift can be up to 2*E_max positions, and the adder must be ~3p bits wide (161 bits for double precision). This makes the FMA significantly more expensive than a separate multiplier + adder. FMA is critical for: N-R division/sqrt iterations (no precision loss), dot products (reduced error accumulation), and polynomial evaluation (Horner's method).
+**A:** FMA (fused multiply-add) computes round(A*B + C) with a single rounding, improving accuracy over separate multiply-then-add (which has 2 roundings). Hardware challenge: the product A*B is 2p bits wide (not rounded), and C must be aligned to it. The alignment shift can be up to 2*E_max positions, and the adder must be ~3p bits wide (161 bits for double precision). This makes the FMA significantly more expensive than a separate multiplier + adder. FMA is critical for: N-R division/sqrt iterations (no precision loss), dot products (reduced error accumulation), and polynomial evaluation (Horner's method).
 
 ### Q7: Explain signed zero and when it matters in hardware.
 
@@ -418,7 +418,7 @@ capacitance, and timing. Design rules require metal density to stay within bound
 
 ### Q15: Explain the Pentium FDIV bug in detail — what went wrong and what's the lesson?
 
-**A:** The Pentium (P5, 1994) implemented radix-4 SRT division. The quotient digit selection table was stored in a PLA with 1066 entries. Five entries (for specific combinations of truncated partial remainder and divisor) were incorrectly omitted — they should have had quotient digit +2 but were left as 0. This happened because the table was generated by a script that used an incorrect loop bound, excluding certain valid (w, D) pairs. The error only manifested when division encountered those specific remainder/divisor combinations, which occurred for approximately 1 in 9 billion random SP divisions. The lesson: (1) formal verification of lookup table contents against mathematical specifications is essential — the table should have been verified by checking that for EVERY entry, the selected quotient digit keeps the partial remainder bounded; (2) manufacturing test coverage must include functional tests for all table entries, not just random vectors; (3) the cost of a recall ($475M for Intel) far exceeds the cost of thorough verification.
+**A:** The Pentium (P5, 1994) implemented radix-4 SRT division. The quotient digit selection table was stored in a PLA (programmable logic array) with 1066 entries. Five entries (for specific combinations of truncated partial remainder and divisor) were incorrectly omitted — they should have had quotient digit +2 but were left as 0. This happened because the table was generated by a script that used an incorrect loop bound, excluding certain valid (w, D) pairs. The error only manifested when division encountered those specific remainder/divisor combinations, which occurred for approximately 1 in 9 billion random SP divisions. The lesson: (1) formal verification of lookup table contents against mathematical specifications is essential — the table should have been verified by checking that for EVERY entry, the selected quotient digit keeps the partial remainder bounded; (2) manufacturing test coverage must include functional tests for all table entries, not just random vectors; (3) the cost of a recall ($475M for Intel) far exceeds the cost of thorough verification.
 
 ### Q16: How does a bipartite lookup table reduce area for reciprocal approximation?
 
@@ -426,15 +426,15 @@ capacitance, and timing. Design rules require metal density to stay within bound
 
 ### Q17: Compare FP32, bfloat16, and FP16 for neural network training.
 
-**A:** FP32 (23-bit mantissa, 8-bit exponent): baseline accuracy, no overflow/underflow issues, but large area and memory bandwidth. bfloat16 (7-bit mantissa, 8-bit exponent): same dynamic range as FP32 so gradient values don't overflow, but coarse precision (2.4 decimal digits) may cause stagnation in fine-tuning. The truncated mantissa means some small gradient updates are lost, but this acts as implicit regularization. FP16 (10-bit mantissa, 5-bit exponent): better precision than bfloat16 but limited range (max 65504) — gradient values during backprop can easily overflow, requiring "loss scaling" (multiply loss by a large factor, compute gradients, then divide). Memory savings are identical for bfloat16 and FP16 (both 16 bits). Hardware: bfloat16 multiplier is ~2.3x smaller than FP16 (8x8 vs 11x11 mantissa). Industry consensus for LLM training: bfloat16 compute with FP32 accumulation and master weights.
+**A:** FP32 (23-bit mantissa, 8-bit exponent): baseline accuracy, no overflow/underflow issues, but large area and memory bandwidth. bfloat16 (7-bit mantissa, 8-bit exponent): same dynamic range as FP32 so gradient values don't overflow, but coarse precision (2.4 decimal digits) may cause stagnation in fine-tuning. The truncated mantissa means some small gradient updates are lost, but this acts as implicit regularization. FP16 (10-bit mantissa, 5-bit exponent): better precision than bfloat16 but limited range (max 65504) — gradient values during backprop can easily overflow, requiring "loss scaling" (multiply loss by a large factor, compute gradients, then divide). Memory savings are identical for bfloat16 and FP16 (both 16 bits). Hardware: bfloat16 multiplier is ~2.3x smaller than FP16 (8x8 vs 11x11 mantissa). Industry consensus for LLM (large language model) training: bfloat16 compute with FP32 accumulation and master weights.
 
 ### Q18: What is the "wide adder problem" in FMA and how is it mitigated?
 
-**A:** The FMA must add the full 2p-bit product (unrounded) to the aligned addend c. The alignment shift can be up to 2*E_max positions. The resulting adder must be ~3p bits wide (161 bits for DP). This wide adder has O(log(3p)) delay — about 2x the delay of a normal FP adder's p-bit CPA. Mitigation strategies: (1) Use a fast parallel-prefix adder (Kogge-Stone) for the wide CPA, accepting the area cost. (2) Split the FMA into "close" and "far" paths analogous to a dual-path adder: when the product and addend exponents are similar, use the close path with full-width addition and LZA; when they differ greatly, the addend either dominates (just round c) or is negligible (just round the product), simplifying the adder. (3) Use carry-save representation through more of the pipeline, deferring the wide CPA. (4) Accept the longer critical path and add one more pipeline stage.
+**A:** The FMA must add the full 2p-bit product (unrounded) to the aligned addend c. The alignment shift can be up to 2*E_max positions. The resulting adder must be ~3p bits wide (161 bits for DP (double precision)). This wide adder has O(log(3p)) delay — about 2x the delay of a normal FP adder's p-bit CPA. Mitigation strategies: (1) Use a fast parallel-prefix adder (Kogge-Stone) for the wide CPA, accepting the area cost. (2) Split the FMA into "close" and "far" paths analogous to a dual-path adder: when the product and addend exponents are similar, use the close path with full-width addition and LZA; when they differ greatly, the addend either dominates (just round c) or is negligible (just round the product), simplifying the adder. (3) Use carry-save representation through more of the pipeline, deferring the wide CPA. (4) Accept the longer critical path and add one more pipeline stage.
 
 ### Q19: How do you verify a floating-point unit?
 
-**A:** FP verification requires multiple complementary approaches: (1) **Directed tests:** Cover all special cases — NaN propagation (QNaN/SNaN for both operands), infinity arithmetic (all combinations), signed zero (all sign/rounding-mode combinations), denormal inputs/outputs, exact tie-breaking in all rounding modes, exponent overflow/underflow boundaries. (2) **Random testing against reference:** Generate millions of random FP operands, compute results in hardware RTL simulation, and compare against a software reference (MPFR library gives arbitrary-precision results). Check both the result value and all status flags (inexact, overflow, underflow, invalid, divide-by-zero). (3) **Formal verification:** For the SRT quotient digit selection table, formally prove that every table entry maintains the partial remainder invariant. For rounding logic, prove equivalence to the mathematical rounding specification. (4) **Boundary testing:** Operand pairs near representable boundaries (largest normal, smallest normal, largest denormal, etc.) are most likely to trigger edge cases. (5) **IEEE 754 test suites:** Use standard test vectors (e.g., IBM FP test suite, TestFloat by Berkeley).
+**A:** FP verification requires multiple complementary approaches: (1) **Directed tests:** Cover all special cases — NaN propagation (QNaN/SNaN for both operands), infinity arithmetic (all combinations), signed zero (all sign/rounding-mode combinations), denormal inputs/outputs, exact tie-breaking in all rounding modes, exponent overflow/underflow boundaries. (2) **Random testing against reference:** Generate millions of random FP operands, compute results in hardware RTL (register-transfer level) simulation, and compare against a software reference (MPFR library gives arbitrary-precision results). Check both the result value and all status flags (inexact, overflow, underflow, invalid, divide-by-zero). (3) **Formal verification:** For the SRT quotient digit selection table, formally prove that every table entry maintains the partial remainder invariant. For rounding logic, prove equivalence to the mathematical rounding specification. (4) **Boundary testing:** Operand pairs near representable boundaries (largest normal, smallest normal, largest denormal, etc.) are most likely to trigger edge cases. (5) **IEEE 754 test suites:** Use standard test vectors (e.g., IBM FP test suite, TestFloat by Berkeley).
 
 ### Q20: Explain the concept of ULP (Unit in the Last Place) and why it matters.
 

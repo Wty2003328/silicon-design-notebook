@@ -72,7 +72,7 @@ Also: higher resistance wires → RC time constant grows → noise lingers longe
 3. Dynamic noise (IR drop induced):
    - Simultaneous switching output (SSO) noise
    - Many signals switching → current spike → VDD droops/GND bounces
-   - Not strictly "crosstalk" but a related SI effect
+   - Not strictly "crosstalk" but a related SI (signal integrity) effect
 
 ---
 
@@ -112,7 +112,7 @@ gate output switches → propagates further
 
 **Noise immunity levels:**
    - Level 1 (safe):       Noise < 0.1 × VDD → no functional impact
-   - Level 2 (marginal):   0.1 × VDD < Noise < NM → may cause issues at worst corner
+   - Level 2 (marginal):   0.1 × VDD < Noise < NM (noise margin) → may cause issues at worst corner
    - Level 3 (critical):   Noise > NM → can flip downstream gate → functional failure
 
 **Noise budget allocation:**
@@ -292,7 +292,7 @@ Width calculations:
   (This is why power straps must be wide!)
 ```
 
-**Worked wire-level EM check (PnR view):**
+**Worked wire-level EM check (PnR — place-and-route — view):**
 
 **Black's Equation:**
 ```text
@@ -883,7 +883,7 @@ PBTI (Positive BTI): Affects NMOS with high-k dielectric
 Similar mechanism but with electrons instead of holes
 10-year aging: ΔVth ≈ 10-30 mV (NMOS)
 
-**Aging-aware STA:**
+**Aging-aware STA (static timing analysis):**
    - Library provides aged cell models (fresh + 10-year)
    - PrimeTime: read_lib fresh.lib; read_lib -age aged.lib
    - Signoff against aged timing ensures chip meets spec over lifetime

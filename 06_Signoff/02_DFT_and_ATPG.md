@@ -304,7 +304,7 @@ see Section 4).
 
 ### 2.3 Path Delay Fault
 
-Models the cumulative delay along an entire sensitizable path from PI to PO
+Models the cumulative delay along an entire sensitizable path from PI (primary input) to PO (primary output)
 (or FF to FF).
 
 **Problem:** Number of paths can be **exponential** in circuit size.
@@ -350,7 +350,7 @@ intended values: one must be 0, the other must be 1.
 
 ### 2.5 IDDQ Testing
 
-**Concept:** In CMOS, a defect-free circuit has near-zero static current
+**Concept:** In CMOS (complementary metal-oxide-semiconductor), a defect-free circuit has near-zero static current
 (only leakage). A defect (bridge, gate oxide short, stuck-open) creates a
 DC path from VDD to GND, causing elevated quiescent supply current.
 
@@ -397,7 +397,7 @@ not modeled by pin-level faults.
 **Cell-aware test flow:**
 1. Library provider characterizes each cell for internal defects using SPICE
 2. Defect list (shorts, opens within layout) is generated per cell
-3. ATPG tool uses this defect list instead of simple SA/TDF models
+3. ATPG (Automatic Test Pattern Generation) tool uses this defect list instead of simple SA/TDF models
 4. Typically adds 5-15% more patterns beyond TDF tests
 5. Catches 2-5% additional defective parts in silicon
 
@@ -999,7 +999,7 @@ Common primitive polynomials:
   32    x^32 + x^22 + x^2 + x + 1  [32,22,2,1]
 ```
 
-**RTL for 4-bit LFSR:**
+**RTL (register-transfer level) for 4-bit LFSR:**
 
 ```verilog
 module lfsr_4bit (
@@ -1033,7 +1033,7 @@ in random patterns.
   These are "random pattern resistant" (RPR) faults.
 ```
 
-**Typical LBIST coverage without help:** 80-90% (insufficient for production)
+**Typical LBIST (Logic Built-In Self-Test) coverage without help:** 80-90% (insufficient for production)
 
 ### 6.4 Test Point Insertion
 
@@ -1218,7 +1218,7 @@ Step 4: ↓(r1, w0)      — Descending: read 1 (verify), write 0
 Step 5: ↑↓(r0)         — Read 0 from all addresses (final check)
 ```
 
-**Complexity:** 10N operations (N = number of addresses). For 1MB SRAM: 10M operations.
+**Complexity:** 10N operations (N = number of addresses). For 1MB SRAM (Static Random-Access Memory): 10M operations.
 
 ### Fault Coverage Proof
 
@@ -1352,7 +1352,7 @@ insufficient. Multiple backgrounds are needed:
 
 ### 8.1 TAP Controller FSM
 
-The **Test Access Port (TAP)** controller is a 16-state FSM driven by TCK
+The **Test Access Port (TAP)** controller is a 16-state FSM (finite state machine) driven by TCK
 (clock) and TMS (mode select).
 
 ```mermaid
@@ -1409,7 +1409,7 @@ stateDiagram-v2
     UIR --> SDR: TMS=1
 ```
 
-The 16-state TAP FSM is navigated purely by TMS on the rising edge of TCK. The DR and IR columns are structurally identical; from any state, holding TMS=1 for five cycles returns to Test-Logic-Reset.
+The 16-state TAP FSM is navigated purely by TMS on the rising edge of TCK. The DR (data register) and IR (instruction register) columns are structurally identical; from any state, holding TMS=1 for five cycles returns to Test-Logic-Reset.
 
 All 16 states:
 
@@ -1694,10 +1694,10 @@ stateDiagram-v2
 
 ### 10.1 Why JTAG (1149.1) Is Not Enough
 
-Classic IEEE 1149.1 JTAG provides a single serial scan chain (TDI-TDO) with
+Classic IEEE 1149.1 JTAG (Joint Test Action Group) provides a single serial scan chain (TDI-TDO) with
 an instruction register (IR) that selects which data register (DR) is connected.
-For a modern SoC with hundreds of embedded instruments (MBIST controllers, PLLs,
-temperature sensors, voltage monitors, PVT monitors, debug trace blocks), this
+For a modern SoC (system on chip) with hundreds of embedded instruments (MBIST controllers, PLLs,
+temperature sensors, voltage monitors, PVT (process, voltage, temperature) monitors, debug trace blocks), this
 architecture breaks down:
 
 ```mermaid
@@ -1708,7 +1708,7 @@ flowchart TD
     class TDI,IR,DR,TDO s
 ```
 
-With classic JTAG only one DR is in the chain at a time. Accessing the MBIST controller (200-bit DR) costs 8-bit IR + 200-bit DR = 208 bits; PLL config (50-bit DR) costs 58 bits. Switching instruments requires an IR reload every time — with 50 instruments this is very slow.
+With classic JTAG only one DR is in the chain at a time. Accessing the MBIST (Memory Built-In Self-Test) controller (200-bit DR) costs 8-bit IR + 200-bit DR = 208 bits; PLL config (50-bit DR) costs 58 bits. Switching instruments requires an IR reload every time — with 50 instruments this is very slow.
 
 ### 10.2 IJTAG Architecture
 
@@ -1925,7 +1925,7 @@ breaks down for large designs:
 
 ### 11.2 Hierarchical Test Approach: IEEE 1500 Wrappers
 
-The hierarchical approach wraps each IP block with a **test wrapper** (IEEE
+The hierarchical approach wraps each IP (intellectual property) block with a **test wrapper** (IEEE
 1500 for embedded cores, conceptually similar to 1149.1 boundary scan but for
 internal blocks). The wrapper isolates the block for individual testing and
 provides controlled access to its internal scan chains.

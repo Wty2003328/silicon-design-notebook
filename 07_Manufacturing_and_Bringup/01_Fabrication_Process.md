@@ -30,7 +30,7 @@
 4. Growth rate: ~1-2 mm/min, rotation: ~10-30 RPM
 
 **Crystal orientation:**
-   - (100): Most common for CMOS — lower interface trap density
+   - (100): Most common for CMOS (complementary metal-oxide-semiconductor) — lower interface trap density
    - (111): Used for some bipolar processes — higher mobility in certain directions
 
 **Wafer diameters (evolution):**
@@ -653,7 +653,7 @@ Cross-section:
    - remove dummy gate → deposit high-k + metal gate
 
 Advantage: High-k and metal gate not exposed to high temperature
-Used at: 32nm (Intel) and all subsequent FinFET nodes
+Used at: 32nm (Intel) and all subsequent FinFET (fin field-effect transistor) nodes
 
 Process:
 1. Dummy poly gate patterned (same as gate-first up to spacer)
@@ -1111,7 +1111,7 @@ DFM rules ensure designs are robust to process variation:
    - Double/triple vias wherever space permits
    - Single-cut via has ~0.01-0.1% fail rate
    - Double via: fail rate² → effectively zero
-   - DRC may flag single-cut vias as DFM violations
+   - DRC (design rule check) may flag single-cut vias as DFM violations
 
 3. Metal slotting/cheesing:
    - Wide metals must have slots cut in them

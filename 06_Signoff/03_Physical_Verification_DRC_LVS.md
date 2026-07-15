@@ -7,7 +7,7 @@
 
 ## 0. Why this page exists
 
-Timing signoff ([STA](01_STA.md)) proves the chip is *fast enough*; physical verification proves it can actually be *built and will be the circuit you designed*. The foundry will not accept a GDSII that violates its design rules, and a layout that passes DRC but doesn't match the schematic is a guaranteed dead chip. These checks — DRC (rules), LVS (layout = schematic), antenna, and DFM — are a hard, foundry-defined gate. Each catches a class of failure invisible to every earlier check. (The *physics* of why the rules exist is in [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md); this page is the *signoff*.)
+Timing signoff ([STA](01_STA.md)) proves the chip is *fast enough*; physical verification proves it can actually be *built and will be the circuit you designed*. The foundry will not accept a GDSII that violates its design rules, and a layout that passes DRC but doesn't match the schematic is a guaranteed dead chip. These checks — DRC (rules), LVS (layout = schematic), antenna, and DFM (Design for Manufacturability) — are a hard, foundry-defined gate. Each catches a class of failure invisible to every earlier check. (The *physics* of why the rules exist is in [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md); this page is the *signoff*.)
 
 ---
 
@@ -55,7 +55,7 @@ At advanced nodes there are **thousands** of rules, plus **DPT/MPT coloring** ru
 
 **Advanced Node DRC (7nm and below):**
 
-- **LELE double patterning**: features on one layer split into two masks (colors)
+- **LELE (litho-etch-litho-etch) double patterning**: features on one layer split into two masks (colors)
 ```ascii-graph
   Original M2:    |A| |B| |C| |D|
   
@@ -143,9 +143,9 @@ LVS clean is non-negotiable: a short between power and ground, or a swapped conn
 ### 2.2 ERC (Electrical Rule Check)
 
 - **Floating gate**: gate terminal not connected to any driver → undefined state, excessive leakage
-- **Antenna violation**: antenna ratio exceeds limit (see Section 5.5)
+- **Antenna violation**: antenna ratio exceeds limit (see Section 3)
 - **Well connectivity**: N-well must be connected to VDD, P-well to VSS (or body bias supply)
-- **ESD path check**: all IO pads have proper ESD protection path to VDD/VSS
+- **ESD (electrostatic discharge) path check**: all IO pads have proper ESD protection path to VDD/VSS
 
 
 
@@ -165,8 +165,8 @@ It's a DRC-class rule but distinct because the failure is **reliability/yield**,
 
 DFM goes past binary rule-checking to *improve yield*:
 - **CMP / density fill** — add dummy metal/poly to equalize density so [CMP](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) doesn't dish or erode.
-- **Litho hotspot / OPC-awareness** — flag patterns that print marginally even if DRC-legal; recommend wire spreading, via doubling.
-- **Redundant vias** — replace single vias with double vias where space allows (a single via is a yield/EM risk).
+- **Litho hotspot / OPC-awareness (optical proximity correction)** — flag patterns that print marginally even if DRC-legal; recommend wire spreading, via doubling.
+- **Redundant vias** — replace single vias with double vias where space allows (a single via is a yield/EM (electromigration) risk).
 - **Critical-area analysis** — estimate random-defect-limited yield from the layout's susceptibility to particle defects.
 
 DFM is "DRC-clean but better" — the gap between *manufacturable* and *high-yielding*.
@@ -208,7 +208,7 @@ flowchart TD
     class GDS g
 ```
 
-Physical verification is run on the **full-chip merged GDSII** (including IP, memories, analog) and must be **clean or fully waived** before the [tape-out](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) hand-off. It's typically the last thing standing between "design done" and "send to fab."
+Physical verification is run on the **full-chip merged GDSII** (including IP (intellectual property), memories, analog) and must be **clean or fully waived** before the [tape-out](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) hand-off. It's typically the last thing standing between "design done" and "send to fab."
 
 ---
 
@@ -229,7 +229,7 @@ Physical verification is run on the **full-chip merged GDSII** (including IP, me
 
 ## Cross-references
 
-- The in-practice subsections (1.1, 2.1, 2.2, 4.1) were moved here from [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) §6; PD keeps the hand-off summary.
+- The in-practice subsections (1.1, 2.1, 2.2, 4.1) were moved here from [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) §6; PD (physical design) keeps the hand-off summary.
 - Upstream layout: [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md). SI/reliability: [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md).
 - Rule physics: [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md). Hand-off: [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md).
 - Other signoffs: [STA](01_STA.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md), [DFT_and_ATPG](02_DFT_and_ATPG.md).

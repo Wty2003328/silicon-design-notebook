@@ -5,7 +5,7 @@
 ## SystemVerilog Scheduling Semantics
 
 Understanding the simulation scheduler is non-negotiable for senior verification engineers.
-Race conditions, assertion failures, and testbench/RTL interaction bugs all trace back to
+Race conditions, assertion failures, and testbench/RTL (register-transfer level) interaction bugs all trace back to
 which region executes when.
 
 ### The Simulation Time Slot Regions
@@ -63,8 +63,8 @@ endmodule
 
 ### Why Non-Blocking Assignments Use NBA Region
 
-The NBA region exists to prevent race conditions in sequential logic. All RHS values are
-captured in Active, then all LHS updates happen together in NBA. This ensures:
+The NBA (non-blocking assignment) region exists to prevent race conditions in sequential logic. All RHS (right-hand side) values are
+captured in Active, then all LHS (left-hand side) updates happen together in NBA. This ensures:
 
 ```verilog
 always @(posedge clk) begin
@@ -402,7 +402,7 @@ endtask
 
 ## Inter-Process Communication: Mailbox
 
-Processes spawned with fork need to synchronize and exchange data. SystemVerilog provides three IPC primitives: mailboxes (typed queues), semaphores (key pools), and events (triggers).
+Processes spawned with fork need to synchronize and exchange data. SystemVerilog provides three IPC (inter-process communication) primitives: mailboxes (typed queues), semaphores (key pools), and events (triggers).
 
 ### Bounded vs Unbounded with Blocking Behavior
 
@@ -779,7 +779,7 @@ endmodule
 
 ### Purpose: Model Setup/Hold Timing Relationships
 
-Clocking blocks define the timing relationship between testbench and DUT signals, abstracting
+Clocking blocks define the timing relationship between testbench and DUT (device under test) signals, abstracting
 away clock edges and skew. `input #1step` samples in the Preponed region — i.e., at the
 current time slot *before* the Active region evaluates, capturing DUT state as it was
 immediately before the clock edge. `output #0` drives at the exact clock edge (Re-Nba region).
@@ -863,9 +863,9 @@ endprogram
 
 ### Why UVM Deprecated Program Blocks
 
-1. **OOP incompatibility**: program blocks don't support class-based component hierarchies well
+1. **OOP (object-oriented programming) incompatibility**: program blocks don't support class-based component hierarchies well
 2. **Implicit $finish**: program blocks call `$finish` when all initial blocks complete, which
-   can terminate simulation prematurely when using phase-based UVM control
+   can terminate simulation prematurely when using phase-based UVM (Universal Verification Methodology) control
 3. **Limited fork-join**: some simulators restrict concurrent processes in program blocks
 4. **One-shot execution**: program blocks run once; UVM needs phases that can re-execute
 5. **Modern alternative**: UVM uses `uvm_test` with phase mechanism for simulation control,

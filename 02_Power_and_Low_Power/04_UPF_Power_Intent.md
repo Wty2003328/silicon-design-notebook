@@ -9,7 +9,7 @@ RTL (Verilog/VHDL) describes **functional behavior** only. It says nothing about
 - Which registers retain state across power-down
 - How power supplies are switched and sequenced
 
-Without a separate power intent specification, every tool in the flow (synthesis, P&R,
+Without a separate power intent specification, every tool in the flow (synthesis, P&R (place and route),
 simulation, verification, signoff) would need ad-hoc, inconsistent mechanisms to handle
 low-power design. UPF (IEEE 1801) provides a **single, standardized specification** that
 is consumed by ALL tools, ensuring consistent power-aware implementation and verification.
@@ -28,7 +28,7 @@ changing only the UPF file. This decouples functional design from power architec
 | Language         | TCL-based                  | TCL-based                    |
 | Key difference   | Supply sets, successive refinement | Explicit net connections |
 
-**Bottom line:** Use UPF for all new designs. CPF knowledge is useful for legacy projects.
+**Bottom line:** Use UPF for all new designs. CPF (Common Power Format) knowledge is useful for legacy projects.
 
 ### 1.2 UPF Versions
 
@@ -44,8 +44,8 @@ changing only the UPF file. This decouples functional design from power architec
 **UPF 4.0 (IEEE 1801-2024) in one interview answer:** the 2024 revision (published
 March 2025, available fee-free via the IEEE GET program) focuses on making power intent
 compose better across mixed abstraction levels: VCMs let UPF supplies connect to
-arbitrary HDL types (key for AMS and macro models), refinable macros and UPF libraries
-make IP-level power intent reusable and refinable at SoC level, and retention modeling
+arbitrary HDL (hardware description language) types (key for AMS and macro models), refinable macros and UPF libraries
+make IP-level power intent reusable and refinable at SoC (system on chip) level, and retention modeling
 is generalized. Tool adoption is incremental -- production flows in 2025-2026 are
 mostly UPF 2.x/3.x constructs with 4.0 features arriving feature-by-feature; citing
 that nuance signals real flow experience.
@@ -251,7 +251,7 @@ UPF triggers insertion of special cells at domain boundaries and within gated do
 - **Isolation cells:** clamp outputs of off domains to safe values
 - **Level shifters:** convert signal voltage between different-voltage domains
 - **Retention registers:** preserve state across power cycling
-- **Power switches:** PMOS/NMOS header/footer transistors to gate supply
+- **Power switches:** PMOS/NMOS (p-channel and n-channel metal-oxide-semiconductor) header/footer transistors to gate supply
 - **Always-on buffers:** buffers powered by the always-on supply within a gated domain
   (needed to buffer always-on signals that must reach deep into the gated domain)
 
@@ -610,7 +610,7 @@ Physical Design Level (UPF 3 - refines UPF 2):
   - Add placement constraints for special cells
 ```
 
-This allows IP blocks to be delivered with their own "local" UPF that is refined
+This allows IP (intellectual property) blocks to be delivered with their own "local" UPF that is refined
 at the SoC integration level.
 
 ### 4.3 Supply Set Handle Resolution Example
@@ -1253,6 +1253,6 @@ UPF is command- and cell-oriented, so the "memorize" set is the command vocabula
 
 ---
 
-*This document targets senior-engineer / staff-level ASIC power interview preparation.
+*This document targets senior-engineer / staff-level ASIC (application-specific integrated circuit) power interview preparation.
 Cross-reference with Power_Fundamentals.md, Power_Reduction_Techniques.md, and
 Power_Analysis_and_Signoff.md.*

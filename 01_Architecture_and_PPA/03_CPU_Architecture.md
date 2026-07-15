@@ -22,6 +22,30 @@
 
 ## 1. Five-Stage Pipeline -- Detailed Microarchitecture
 
+Before the stage-by-stage detail, it is worth being explicit about *what
+pipelining buys and what it therefore forces you to build* — nearly every
+mechanism in §2–§3 is a consequence of one choice made here. A non-pipelined core
+runs each instruction to completion before starting the next, so its throughput is
+capped at $1/t_{\text{instr}}$. Pipelining overlaps instructions in different
+stages so that, in steady state, one instruction *completes* every cycle even
+though each still takes five cycles end to end: it trades per-instruction latency
+(unchanged, in fact slightly worse) for throughput (up to 5x), and lets the clock
+run at the speed of the *slowest single stage* rather than of the whole datapath.
+
+That overlap is the entire source of the difficulty that follows. Because up to
+five instructions are now in flight at once, two things become mandatory:
+
+- **State per in-flight instruction.** Each stage must latch everything the later
+  stages will need — which is exactly what the IF/ID … MEM/WB *pipeline registers*
+  hold. They exist only because instructions now coexist.
+- **Hazards.** Overlap means a later instruction can reach a stage that needs a
+  result an earlier instruction has not yet produced (data), or the fetch stage
+  must choose a next PC before an in-flight branch has resolved (control), or two
+  instructions want the same unit in the same cycle (structural). None of these
+  exist in a non-pipelined core; every one is the *price* of throughput. §2
+  catalogs them; §3 builds the forwarding and stall machinery that pays that price
+  without handing the throughput back.
+
 ### 1.1 Stage 1: Instruction Fetch (IF)
 
 ```text
@@ -128,7 +152,7 @@ Inputs:  MEM/WB register
 Outputs: Write to register file
 
 **Components:**
-   - Result MUX: select between ALU result and memory data
+   - Result MUX (multiplexer): select between ALU (arithmetic logic unit) result and memory data
    - Register file write port
 
 **Operation:**
@@ -140,6 +164,29 @@ same-cycle read in ID stage -- "write-first" register file)
 ---
 
 ## 2. Pipeline Hazards with Instruction-Level Examples
+
+A hazard is any situation where naively advancing the pipeline one stage per cycle
+would produce a *wrong* result or a *resource* conflict. There are exactly three
+root causes, and it is worth naming the cost of each up front, because the rest of
+this chapter is about paying those costs cheaply:
+
+- **Data hazards** — an instruction needs an operand a still-in-flight predecessor
+  computed but has not yet written back. Cost if handled by waiting: 1–3 stall
+  cycles per dependent pair (the register file is written in WB but read in ID).
+  Forwarding (§3) reclaims almost all of it; the one case it *cannot* — the
+  load-use hazard, where the datum does not physically exist early enough — costs
+  an unavoidable 1-cycle bubble (§2.2).
+- **Control hazards** — the branch's direction and target are unknown when the next
+  fetch must launch. Cost: the number of stages between fetch and branch
+  resolution, squashed on every taken or mispredicted branch (2 cycles resolving in
+  EX, 1 in ID, 3+ in a deep pipe — §2.3). This is *the* reason branch prediction
+  (§4) exists: it moves the cost from *every* branch to only the mispredicted ones.
+- **Structural hazards** — two instructions need the same hardware in the same
+  cycle. Cost: one stalls. Removed by duplicating the resource (split I/D memory,
+  multiple ALUs) or by pipelining the shared unit.
+
+Data and control hazards are the expensive ones in a scalar pipeline; §3 and §4
+exist to drive their cost toward zero without serializing execution.
 
 ### 2.1 RAW (Read After Write) -- True Data Dependency
 
@@ -213,6 +260,15 @@ If branch resolved in ID (some implementations):
 If branch resolved in MEM (deeply pipelined):
   Penalty = 3 cycles
 ```
+
+The penalty numbers above are also a design knob, not a fixed cost. Moving branch
+resolution earlier (EX → ID) removes a squash cycle on every misprediction, but it
+drags the register comparison and its operand forwarding into the ID stage,
+lengthening that stage's critical path. In a frequency-limited design the added ID
+delay can cost more cycle time than the one squash cycle it saves — which is why
+deeply pipelined, high-frequency cores resolve branches *later* and attack the
+penalty with accurate prediction (§4) rather than with earlier resolution.
+
 ### 2.4 WAR and WAW (Out-of-Order Only)
 
 ```text
@@ -238,6 +294,27 @@ Solution: Register renaming. I1 writes P47, I2 writes P63 (different physical re
 ---
 
 ## 3. Forwarding (Bypassing) -- Complete MUX Diagrams
+
+Forwarding rests on a single observation: a result is *physically available* at the
+end of the stage that computes it (latched into EX/MEM at the end of EX), but the
+register-file copy a consumer would read is not written until WB, a few cycles
+later. The stall-only pipeline pretends the value does not exist until WB;
+forwarding instead *reads it from where it already sits* — the pipeline latch — and
+muxes it into the ALU input. So the machinery in this section is forced by that
+timing gap, and it must do exactly two things: (1) detect, for each source operand
+of the instruction in EX, whether a later-stage pipeline register holds a
+not-yet-committed write to that same register (the comparators in §3.2), and
+(2) select the *freshest* matching value when more than one matches — which is why
+an EX/MEM forward takes priority over a MEM/WB forward, the former being the more
+recent write.
+
+The load-use case (§2.2, §3.3) is the exception that proves the rule: forwarding
+can route a value to an *earlier stage*, but it cannot route it *earlier in time
+than it is produced*. A load's datum does not exist until the end of MEM, one cycle
+after the dependent ALU op needs it, so no bypass path can conjure it — the
+hazard-detection unit must inject one real stall cycle and only then forward. That
+is why detection (§3.3) is a separate unit from the forwarding muxes (§3.2): one
+decides *when to wait*, the other decides *where to read*.
 
 ### 3.1 Forwarding Paths
 
@@ -331,7 +408,7 @@ flowchart TD
 
 Bypass paths: **EX→EX** (Forward=01) — result available after EX, forwarded to the next instruction's EX; **MEM→EX** (Forward=10) — result available after MEM, forwarded to an instruction two cycles later; **WB→EX** — not needed in a classic 5-stage pipeline with a write-first register file (WB writes in the first half of the cycle, ID reads in the second, so the value is available same-cycle).
 
-In pipelines deeper than 5 stages a WB→EX (late-stage-to-early-stage) bypass *is* needed — e.g., a 7-stage pipeline with WB in stage 6 and a dependent EX in stage 4 must forward back two stages. In an out-of-order core the Common Data Bus handles this: on write-back, the result tag is broadcast to the issue queue's CAM, waking dependent instructions regardless of pipeline distance — replacing all explicit bypass paths with one broadcast.
+In pipelines deeper than 5 stages a WB→EX (late-stage-to-early-stage) bypass *is* needed — e.g., a 7-stage pipeline with WB in stage 6 and a dependent EX in stage 4 must forward back two stages. In an out-of-order core the Common Data Bus (CDB) handles this: on write-back, the result tag is broadcast to the issue queue's CAM (content-addressable memory), waking dependent instructions regardless of pipeline distance — replacing all explicit bypass paths with one broadcast.
 
 **Which forwarding is needed to avoid stalls:**
 
@@ -450,7 +527,7 @@ stateDiagram-v2
     SNT --> SNT: Not Taken
 ```
 
-Prediction rule: MSB = 1 → predict Taken; MSB = 0 → predict Not Taken. For a loop that runs 100×, a 1-bit predictor makes 2 mispredictions (first entry NT, last exit T); a 2-bit predictor makes only 1 (at exit — the weakly-taken state absorbs the first exit and stays taken for re-entry).
+Prediction rule: MSB (most significant bit) = 1 → predict Taken; MSB = 0 → predict Not Taken. For a loop that runs 100×, a 1-bit predictor makes 2 mispredictions (first entry NT, last exit T); a 2-bit predictor makes only 1 (at exit — the weakly-taken state absorbs the first exit and stays taken for re-entry).
 
 ### 4.3 Branch History Table (BHT) Organization
 
@@ -701,6 +778,20 @@ On flush (misprediction):
 
 ### 6.3 Reorder Buffer (ROB) Management
 
+The ROB exists to resolve a contradiction the previous two sections created:
+renaming and out-of-order issue let instructions *complete* in any order, yet
+software, interrupts, and exceptions must see architectural state change *in
+program order*. The ROB is what reconciles the two — the program-order queue
+through which every out-of-order result is funnelled back into in-order *commit*.
+That one job dictates its shape and its columns: it must be a FIFO (program order);
+each entry needs a `Done?` bit (the head cannot retire until the oldest instruction
+has actually completed), an `Exception` field (a fault is *recorded* at completion
+but *acted on* only when it reaches the head, which is what makes state precise),
+and the destination and old-mapping bookkeeping used to free registers and to undo
+speculation on a flush. The table below is that minimal column set; the full
+field-by-field derivation from these jobs, plus the commit and flush hardware, is
+the subject of [OoO_Execution](05_OoO_Execution.md) §3.
+
 ROB is a circular buffer — **Head** points to the oldest instruction (next to commit), **Tail** to the newest (most recently issued).
 
 | # | Instr | Dest | Value | Done? | Exception | Notes |
@@ -899,9 +990,9 @@ stall, which can become a bottleneck in write-heavy code (e.g., memcpy, memset).
 
 The three big OoO bookkeeping structures deserve full pages of detail; this page keeps only the survey view (§5–§6 cover the concepts):
 
-- **Load-Store Queue** — split LQ/SQ, CAM on address; enforces memory ordering, catches store→load ordering violations at store commit, and provides store-to-load forwarding (§7.6). Typical sizing: LQ 32–64 / SQ 24–56 entries. Full entry fields, CAM search, and violation recovery: [OoO_Execution](05_OoO_Execution.md) §5.
-- **Reorder Buffer** — circular SRAM buffer (head = oldest uncommitted, tail = next free) that re-serializes out-of-order completion into in-order commit: precise exceptions, register reclamation, misprediction cleanup. Entry layout, commit logic, and pointer-arithmetic worked examples: [OoO_Execution](05_OoO_Execution.md) §3.
-- **Register renaming** — RAT maps 32 architectural onto 100–200+ physical registers, eliminating WAR/WAW; RAM-based active table + checkpoints for recovery; free-list allocation and reclamation rules. Full implementation and worked rename trace: [OoO_Execution](05_OoO_Execution.md) §2.
+- **Load-Store Queue** — split LQ/SQ (load queue / store queue), CAM on address; enforces memory ordering, catches store→load ordering violations at store commit, and provides store-to-load forwarding (§7.6). Typical sizing: LQ 32–64 / SQ 24–56 entries. Full entry fields, CAM search, and violation recovery: [OoO_Execution](05_OoO_Execution.md) §5.
+- **Reorder Buffer** — circular SRAM (static random-access memory) buffer (head = oldest uncommitted, tail = next free) that re-serializes out-of-order completion into in-order commit: precise exceptions, register reclamation, misprediction cleanup. Entry layout, commit logic, and pointer-arithmetic worked examples: [OoO_Execution](05_OoO_Execution.md) §3.
+- **Register renaming** — RAT (register alias table) maps 32 architectural onto 100–200+ physical registers, eliminating WAR/WAW; RAM-based active table + checkpoints for recovery; free-list allocation and reclamation rules. Full implementation and worked rename trace: [OoO_Execution](05_OoO_Execution.md) §2.
 
 Exception handling in an OoO pipeline (stage-by-stage detection, precise-exception walkthrough) is summarized in §14 and detailed in [OoO_Execution](05_OoO_Execution.md) §9.
 
@@ -999,7 +1090,7 @@ effect through out-of-order execution with a large load/store queue and hardware
 prefetcher. The explicit split adds complexity and restrictive programming
 constraints without a clear advantage over the OoO approach for irregular code.
 
-**Where it is used.** Some DSPs and embedded processors (e.g., ADSP-2100,
+**Where it is used.** Some DSPs (digital signal processors) and embedded processors (e.g., ADSP-2100,
 TMS320C6000) employ decoupled access/execute pipelines where deterministic
 memory timing is more valuable than general-purpose flexibility.
 
@@ -1237,7 +1328,7 @@ Drawbacks:
 
 **The problem:**
    - Cache lookup needs the physical address (tag comparison).
-   - TLB provides physical address, but takes 1 cycle.
+   - TLB (translation lookaside buffer) provides physical address, but takes 1 cycle.
    - If cache uses physical index too, we need PA before indexing.
    - Total: 1 cycle (TLB) + 1 cycle (cache) = 2 cycles minimum.
 
@@ -1320,7 +1411,7 @@ Processor A is faster despite lower frequency!
 
 ## 11. Fetch Unit Microarchitecture — Summary
 
-A modern fetch unit is a pipeline of its own: the branch predictor writes predicted fetch targets into a **Fetch Target Queue (FTQ)** that decouples prediction from I-cache latency; fetch stages read the FTQ, access I-cache + ITLB, handle misses without blocking prediction, and **pre-decode** returned bytes (finding instruction boundaries and branches early). Fetch bandwidth — taken-branch breaks, cache-line straddling, alignment — commonly limits effective width more than execution resources do.
+A modern fetch unit is a pipeline of its own: the branch predictor writes predicted fetch targets into a **Fetch Target Queue (FTQ)** that decouples prediction from I-cache latency; fetch stages read the FTQ, access I-cache + ITLB (instruction TLB), handle misses without blocking prediction, and **pre-decode** returned bytes (finding instruction boundaries and branches early). Fetch bandwidth — taken-branch breaks, cache-line straddling, alignment — commonly limits effective width more than execution resources do.
 
 Full detail (FTQ entry fields, fetch pipeline stages, I-cache miss handling, bandwidth math, pre-decode): [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md) §8 *Fetch Unit Architecture*.
 
@@ -1328,7 +1419,7 @@ Full detail (FTQ entry fields, fetch pipeline stages, I-cache miss handling, ban
 
 ### 13.1 RV64I Base Instruction Formats
 
-RISC-V uses six base encoding formats, all fixed at 32 bits. The opcode always
+RISC-V (Reduced Instruction Set Computer, fifth generation) uses six base encoding formats, all fixed at 32 bits. The opcode always
 occupies bits [6:0], which makes early decode straightforward.
 
 | Format | Fields (bit ranges) |
@@ -1453,7 +1544,7 @@ $$
 
 Key design philosophy difference: MIPS accumulated instructions over decades
 (backward-compatible additions), while RISC-V was designed with a small
-frozen base ISA and modular extensions (M, A, F, D, C, V, ...) to keep
+frozen base ISA (instruction set architecture) and modular extensions (M, A, F, D, C, V, ...) to keep
 hardware minimal.
 
 ---
@@ -1550,7 +1641,7 @@ When both threads generate cache misses simultaneously:
 
 ## 14. Exception Pipeline in Out-of-Order Execution — Summary
 
-**Precise exceptions**: when the handler runs, architectural state reflects exactly "everything older than the faulting instruction committed; nothing younger did." The ROB provides this for free: exceptions detected anywhere in the pipeline are *recorded* in the instruction's ROB entry, not acted upon; only when the faulting instruction reaches the ROB **head** does the core flush, redirect to the handler, and update CSRs (`mepc`, `mcause`, `mtval`). Interrupts are simply injected at the commit point. Detection is distributed (fetch: instruction page/access faults; decode: illegal instruction; execute: misaligned/arith; memory: data page faults) — commit is centralized.
+**Precise exceptions**: when the handler runs, architectural state reflects exactly "everything older than the faulting instruction committed; nothing younger did." The ROB provides this for free: exceptions detected anywhere in the pipeline are *recorded* in the instruction's ROB entry, not acted upon; only when the faulting instruction reaches the ROB **head** does the core flush, redirect to the handler, and update CSRs (control and status registers — `mepc`, `mcause`, `mtval`). Interrupts are simply injected at the commit point. Detection is distributed (fetch: instruction page/access faults; decode: illegal instruction; execute: misaligned/arith; memory: data page faults) — commit is centralized.
 
 Stage-by-stage detection tables, the full OoO exception walkthrough, sync vs async classes, priority/delegation: [OoO_Execution](05_OoO_Execution.md) §9.
 
@@ -1696,7 +1787,7 @@ JO  target        } --> fused-add-overflow    JS  target        } --> fused-sub-
 The decoder recognizes these patterns by checking whether the first instruction
 is a flag-producing ALU operation and the second is a conditional branch that
 tests exactly those flags. If the condition code does not match the produced
-flags (e.g., `ADD` then `JNE` which checks ZF set by a different operation),
+flags (e.g., `ADD` then `JNE` which checks ZF (the zero flag) set by a different operation),
 fusion does not occur.
 
 **Benefit:** the fused uop counts as one entry in the ROB, issue queue, and
@@ -1735,7 +1826,7 @@ execution units (load port for uop 1, ALU port for uop 2).
   increases by ~8--10% beyond the nominal 512 entries.
 
 - **Apple M1:** extensive macro-fusion (compare+branch, test+branch, and
-  additional patterns) contributes to the M1's very high IPC despite a
+  additional patterns) contributes to the M1's very high IPC (instructions per cycle) despite a
   comparatively moderate ROB size (~600 entries reported).
 
 - **Limitation:** fusion only applies to adjacent instructions in program order.

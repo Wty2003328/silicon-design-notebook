@@ -55,7 +55,7 @@ false failures from glitches during delta cycles.
 
 Concurrent assertions use **sampled values**: the value of a signal at the END of the previous
 time step (technically, the Preponed region of the current time step). This avoids race
-conditions between assertion evaluation and RTL updates.
+conditions between assertion evaluation and RTL (register-transfer level) updates.
 
 ```verilog
 // At posedge clk, the assertion sees the values that were STABLE
@@ -966,7 +966,7 @@ endproperty
 
 ## Worked AXI4 Write Channel Protocol Assertion
 
-This is the single most common protocol assertion asked in interviews. It exercises multiple SVA features simultaneously.
+This is the single most common protocol assertion asked in interviews. It exercises multiple SVA (SystemVerilog Assertions) features simultaneously.
 
 ### Protocol Requirements
 

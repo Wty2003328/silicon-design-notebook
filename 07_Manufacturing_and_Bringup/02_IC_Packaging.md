@@ -119,7 +119,7 @@ Wire bonding: Thin metal wire connects die pad to package lead frame
 
 **Limitations:**
    - Peripheral I/O only (pads at die edge)
-   - High inductance → poor SI for high-speed signals
+   - High inductance → poor SI (signal integrity) for high-speed signals
    - Limited I/O count (perimeter-limited)
    - Sequential process → slow for high pin-count
 
@@ -587,13 +587,13 @@ Physical-layer details: source-synchronous (forwarded) clocking; single-ended si
 **Die-to-die signaling challenges:**
    1. Low voltage swing: ~0.4V (saves power) → noise-sensitive
 2. Crosstalk: dense bump array → significant coupling
-3. Impedance matching: bump + trace must match PHY impedance
+3. Impedance matching: bump + trace must match PHY (physical layer) impedance
 4. Power delivery: each die needs its own power bumps
 5. Clock distribution: forwarded clock must have low jitter
 
 **Power consumption:**
-   - UCIe: ~0.5 pJ/bit (advanced package)
-   - Compare: PCIe Gen5: ~5 pJ/bit, DDR5: ~8 pJ/bit
+   - UCIe (Universal Chiplet Interconnect Express): ~0.5 pJ/bit (advanced package)
+   - Compare: PCIe (Peripheral Component Interconnect Express) Gen5: ~5 pJ/bit, DDR5: ~8 pJ/bit
    - Die-to-die is 10-20× more energy-efficient than board-level I/O
 
 ---
@@ -734,14 +734,14 @@ Step-by-step from wafer to finished package:
    - Capillary underfill: epoxy flows between die and substrate by capillary action
    - Cure: 150-165°C for 30-60 minutes
    - Thickness: 20-50 μm (gap between die and substrate)
-   - Critical for solder joint reliability: distributes CTE-mismatch stress
+   - Critical for solder joint reliability: distributes CTE (coefficient of thermal expansion)-mismatch stress
 
 6. Lid attach / heat spreader (for FCBGA)
    - Thermal interface material (TIM): solder, thermal paste, or indium foil
    - Lid: Cu, Al, or Cu-W (CTE-matched)
    - Lid attaches to substrate with adhesive seal
 
-7. BGA ball attach (if not pre-mounted on substrate)
+7. BGA (ball grid array) ball attach (if not pre-mounted on substrate)
 
 8. Marking and final test
 

@@ -6,7 +6,7 @@
 
 ## 0. Why this page exists
 
-Hardware interviews almost always include live RTL. The problem set is remarkably stable — arbiters, FIFOs, dividers, detectors, CDC cells — because each one tests a specific habit: clean sequential/combinational separation, reset discipline, full-case thinking, and "what does this synthesize to." This page is the drill set: canonical solutions with the reasoning, plus the standard follow-up twists. Write every one of these from memory at least once.
+Hardware interviews almost always include live RTL (Register-Transfer Level). The problem set is remarkably stable — arbiters, FIFOs (first-in first-out), dividers, detectors, CDC (clock domain crossing) cells — because each one tests a specific habit: clean sequential/combinational separation, reset discipline, full-case thinking, and "what does this synthesize to." This page is the drill set: canonical solutions with the reasoning, plus the standard follow-up twists. Write every one of these from memory at least once.
 
 **House rules assumed everywhere below:** synchronous active-low reset shown (swap trivially); `always_ff` for state, `always_comb` for logic; no latches; one driver per signal.
 
@@ -29,7 +29,7 @@ module edge_det (input logic clk, rst_n, din,
 endmodule
 ```
 
-**Follow-ups:** If `din` is truly asynchronous → 2-FF synchronizer *before* this (and the edge pulse is then 1 cycle of the local clock). Why not `posedge din` as a clock? — gated/data clocks break STA and CTS; never clock on data.
+**Follow-ups:** If `din` is truly asynchronous → 2-FF (two flip-flop) synchronizer *before* this (and the edge pulse is then 1 cycle of the local clock). Why not `posedge din` as a clock? — gated/data clocks break STA (Static Timing Analysis) and CTS (Clock Tree Synthesis); never clock on data.
 
 ---
 
@@ -56,7 +56,7 @@ module div3_50 (input logic clk, rst_n, output logic clk_o);
 endmodule
 ```
 
-**Follow-ups:** generalize to any odd N (same trick: two phases, OR); is `clk_o` a "real" clock? — only via CTS-aware implementation; prefer clock generators/ICG cells in production ([Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) has the full zoo). Even N → counter + toggle at N/2.
+**Follow-ups:** generalize to any odd N (same trick: two phases, OR); is `clk_o` a "real" clock? — only via CTS-aware implementation; prefer clock generators/ICG (integrated clock gating) cells in production ([Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) has the full zoo). Even N → counter + toggle at N/2.
 
 ---
 
@@ -76,7 +76,7 @@ endmodule
 // gray→bin:  for (i=W-1;i>=0;i--) bin[i] = ^gray[W-1:i];
 ```
 
-**Why interviewers care:** exactly-one-bit-changes property → safe to synchronize a multi-bit pointer across clock domains (async FIFO, §6). Follow-up: prove the property — incrementing binary flips a suffix `0111→1000`; XOR with shift collapses it to one flip.
+**Why interviewers care:** exactly-one-bit-changes property → safe to synchronize a multi-bit pointer across clock domains (async FIFO, §6). Follow-up: prove the property — incrementing binary flips a suffix `0111→1000`; XOR (exclusive-OR) with shift collapses it to one flip.
 
 ---
 
@@ -103,7 +103,7 @@ module rr_arb #(parameter N=4)
 endmodule
 ```
 
-`x & ~(x-p)` isolates the least-significant 1 of `x` at or above one-hot `p` (subtract borrows through the low zeros). **Follow-ups:** fairness definition (work-conserving, bounded waiting ≤ N−1 grants); weighted RR (per-source credit counters); matrix arbiter alternative; how this becomes the SA stage of a NoC router ([Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md)).
+`x & ~(x-p)` isolates the least-significant 1 of `x` at or above one-hot `p` (subtract borrows through the low zeros). **Follow-ups:** fairness definition (work-conserving, bounded waiting ≤ N−1 grants); weighted RR (per-source credit counters); matrix arbiter alternative; how this becomes the SA (switch allocation) stage of a NoC (Network-on-Chip) router ([Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md)).
 
 ---
 
@@ -199,7 +199,7 @@ module seq1011 (input logic clk, rst_n, din, output logic hit);
 endmodule
 ```
 
-**Follow-ups:** Mealy (output on edge into accept, 1 cycle earlier, glitch-prone if outputs decode combinationally off inputs) vs Moore (registered state only, 1 cycle later, clean); overlapping vs not (non-overlapping: accept → S0); derive states = longest proper suffix of seen-input matching a prefix of pattern (KMP failure function — name-drop it); alternative for long patterns: shift register + compare.
+**Follow-ups:** Mealy (output on edge into accept, 1 cycle earlier, glitch-prone if outputs decode combinationally off inputs) vs Moore (registered state only, 1 cycle later, clean); overlapping vs not (non-overlapping: accept → S0); derive states = longest proper suffix of seen-input matching a prefix of pattern (KMP (Knuth-Morris-Pratt) failure function — name-drop it); alternative for long patterns: shift register + compare.
 
 ---
 
@@ -220,13 +220,13 @@ module debounce #(parameter N=16) // ~N clk of stability required
 endmodule
 ```
 
-**Follow-up — MTBF math** (memorize the form):
+**Follow-up — MTBF (Mean Time Between Failures) math** (memorize the form):
 
 $$
 \text{MTBF} = \frac{e^{t_r/\tau}}{T_0 \cdot f_{clk} \cdot f_{data}}
 $$
 
-Resolution time $t_r$ ≈ one clock period minus setup; adding the second FF adds a full period to $t_r$ → exponential MTBF improvement. That's *why two flops*: not filtering, but metastability resolution time.
+Here $\tau$ is the metastability time constant of the flop, $T_0$ and $f_{data}$ characterize the asynchronous input, and $f_{clk}$ is the sampling-clock frequency. Resolution time $t_r$ ≈ one clock period minus setup; adding the second FF adds a full period to $t_r$ → exponential MTBF improvement. That's *why two flops*: not filtering, but metastability resolution time.
 
 ---
 
@@ -260,7 +260,7 @@ module penc #(parameter W=8)
 endmodule
 ```
 
-**Follow-ups:** what does the loop synthesize to — a priority chain (O(W) depth from naive mapping; synthesis restructures to ~O(log W) mux tree); isolate-lowest-set-bit one-liner `in & (~in + 1)`; LZC via binary partition (check upper half nonzero → bit of result, recurse) for explicitly logarithmic depth — write it if asked for "fast."
+**Follow-ups:** what does the loop synthesize to — a priority chain (O(W) depth from naive mapping; synthesis restructures to ~O(log W) mux tree); isolate-lowest-set-bit one-liner `in & (~in + 1)`; LZC (leading-zero count) via binary partition (check upper half nonzero → bit of result, recurse) for explicitly logarithmic depth — write it if asked for "fast."
 
 ---
 
@@ -317,7 +317,7 @@ module skid #(parameter W=32)
 endmodule
 ```
 
-**Why it's asked:** it is the atom of every AXI register slice ([AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md)) and elastic pipeline. Follow-up: full-throughput proof (accepts every cycle downstream is ready; skid absorbs exactly the one in-flight beat) and the half-bandwidth naive alternative (deassert ready whenever output valid — 50% duty under stall).
+**Why it's asked:** it is the atom of every AXI (Advanced eXtensible Interface) register slice ([AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md)) and elastic pipeline. Follow-up: full-throughput proof (accepts every cycle downstream is ready; skid absorbs exactly the one in-flight beat) and the half-bandwidth naive alternative (deassert ready whenever output valid — 50% duty under stall).
 
 ---
 
@@ -325,13 +325,13 @@ endmodule
 
 **Q:** CRC-8/CRC-32 processing W bits per cycle.
 
-**Method (what they want to hear):** CRC is linear over GF(2): next_state = M·state ⊕ G·data for constant 0/1 matrices. Derive each next-state bit as XOR of current-state bits and data bits — by symbolically unrolling the serial LFSR W steps (script/table, not by hand at the board). Sketch the serial LFSR, state the linearity argument, write 2–3 unrolled equations, mention generator tools. Depth grows ~log(taps×W) XOR levels; wide-W CRC becomes a timing question → pipeline by splitting the message or using two interleaved CRCs combined at the end (CRC of concatenation via matrix powers).
+**Method (what they want to hear):** CRC (Cyclic Redundancy Check) is linear over GF(2) (the two-element Galois field): next_state = M·state ⊕ G·data for constant 0/1 matrices. Derive each next-state bit as XOR of current-state bits and data bits — by symbolically unrolling the serial LFSR (Linear-Feedback Shift Register) W steps (script/table, not by hand at the board). Sketch the serial LFSR, state the linearity argument, write 2–3 unrolled equations, mention generator tools. Depth grows ~log(taps×W) XOR levels; wide-W CRC becomes a timing question → pipeline by splitting the message or using two interleaved CRCs combined at the end (CRC of concatenation via matrix powers).
 
 ---
 
 ## 14. Divisible-by-3 detector (serial, MSB-first)
 
-**Q:** Bits of an unsigned integer arrive serially, **MSB first**, one per cycle. Assert `out` whenever the value received *so far* is divisible by 3.
+**Q:** Bits of an unsigned integer arrive serially, **MSB (most significant bit) first**, one per cycle. Assert `out` whenever the value received *so far* is divisible by 3.
 
 **Insight:** appending bit `b` to the low end of a binary number means `value' = 2·value + b`, so the remainder mod 3 follows `rem' = (2·rem + b) mod 3`. Only the remainder matters → 3 states `{0,1,2}`. Moore output `out = (rem == 0)`. (General rule: **divisible-by-N** needs exactly N states; this is unrelated to the divide-by-3 *clock* problem in §2, which is about waveforms, not arithmetic.)
 
@@ -360,7 +360,7 @@ module div3_detect (input logic clk, rst_n, vld, b, output logic out);
 endmodule
 ```
 
-**Follow-ups:** generalize to divisible-by-N (N states, $rem' = (2\cdot rem+b) \bmod N$); LSB-first instead needs tracking `2^k mod N` (powers cycle) — harder, usually you reverse to MSB-first. Mealy vs Moore: Moore output (shown) is glitch-free and registered-clean.
+**Follow-ups:** generalize to divisible-by-N (N states, $rem' = (2\cdot rem+b) \bmod N$); LSB-first (least-significant-bit-first) instead needs tracking `2^k mod N` (powers cycle) — harder, usually you reverse to MSB-first. Mealy vs Moore: Moore output (shown) is glitch-free and registered-clean.
 
 ---
 
@@ -389,7 +389,7 @@ end
 always_ff @(posedge clk) min3_q <= min(m_q, c_q);   // both from the SAME input cycle
 ```
 
-**General rule:** every operand entering a pipeline stage must originate from the **same source cycle**. Whenever one path through a pipe is deeper than another, insert matching FF delays (a delay line / "skid") on the shorter path so latencies balance. This "comparator data-alignment" point generalizes to any multi-operand pipelined datapath (a tree of adders, MAC arrays, sorting networks).
+**General rule:** every operand entering a pipeline stage must originate from the **same source cycle**. Whenever one path through a pipe is deeper than another, insert matching FF delays (a delay line / "skid") on the shorter path so latencies balance. This "comparator data-alignment" point generalizes to any multi-operand pipelined datapath (a tree of adders, MAC (multiply-accumulate) arrays, sorting networks).
 
 ---
 

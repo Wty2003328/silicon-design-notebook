@@ -7,11 +7,11 @@
 
 ## 0. Why this page exists
 
-RISC-V is the dominant open instruction set architecture. Every serious CPU design project
-in academia and most new commercial SoCs now target RV64G as their ISA. Unlike ARM or x86,
+RISC-V (Reduced Instruction Set Computer, fifth generation) is the dominant open instruction set architecture. Every serious CPU design project
+in academia and most new commercial SoCs (systems-on-chip) now target RV64G as their ISA. Unlike ARM or x86,
 RISC-V has no license fee and no hidden microarchitectural contract, which means a hardware
 engineer must understand the full RV64G specification at the bit level to build a compliant
-processor. This page covers the base integer ISA (RV64I), the M/A/F/D extensions, compressed
+processor. This page covers the base integer ISA (RV64I), the M/A/F/D (Multiply, Atomic, Float, Double) extensions, compressed
 instructions, privilege modes, and virtual memory, with enough encoding detail to debug a
 processor by reading hex dumps from an instruction trace.
 
@@ -48,7 +48,7 @@ test registers directly.
 Every RV64I instruction is 32 bits wide (unless compressed, see Section 5). The ISA uses
 six encoding formats. The bit-field layout for each is shown below.
 
-**R-type (Register-register ALU)**
+**R-type (Register-register ALU — Arithmetic Logic Unit)**
 
 ```verilog
 [31:25]  [24:20]  [19:15]  [14:12]  [11:7]   [6:0]
@@ -143,7 +143,7 @@ For RV64, `shamt` is 6 bits (shifts 0-63).
 Places the 20-bit U-type immediate into the upper 20 bits of `rd`, clearing the
 lower 12 bits. Opcode: `0110111`.
 
-**AUIPC (Add Upper Immediate to PC):** `rd = PC + (imm << 12)`
+**AUIPC (Add Upper Immediate to PC, the Program Counter):** `rd = PC + (imm << 12)`
 Computes PC-relative address with a 20-bit upper immediate. Essential for building
 large offsets when combined with a subsequent ADDI or JALR. Opcode: `0010111`.
 
@@ -463,7 +463,7 @@ Out-of-range conversions produce the nearest representable integer. The
 | FLE.S / FLE.D  | x[rd] = (f[rs1] <= f[rs2]) ? 1 : 0    |
 
 The result is written to an **integer** register `x[rd]`, not an FP register.
-FEQ never raises an invalid exception for NaN operands; FLT and FLE do.
+FEQ never raises an invalid exception for NaN (Not a Number) operands; FLT and FLE do.
 
 ### 4.6 Sign Injection
 
@@ -784,7 +784,7 @@ The `satp` register controls virtual memory for S-mode:
 | PPN    | 43:0    | Physical Page Number of root PT          |
 
 Writing `satp` with MODE=0 disables address translation (bare mode). The ASID
-is used for TLB tagging; on a context switch, the OS writes a new ASID so the
+is used for TLB (Translation Lookaside Buffer) tagging; on a context switch, the OS writes a new ASID so the
 TLB does not need a full flush.
 
 ---
@@ -797,6 +797,8 @@ Sv39 maps 39-bit virtual addresses to 56-bit physical addresses. The virtual
 address is decomposed as:
 
 $$\text{VA}[63:0] \rightarrow \underbrace{\text{VA}[38:30]}_{\text{VPN}[2]} \underbrace{\text{VA}[29:21]}_{\text{VPN}[1]} \underbrace{\text{VA}[20:12]}_{\text{VPN}[0]} \underbrace{\text{VA}[11:0]}_{\text{page offset}}$$
+
+Here each $\text{VPN}[i]$ (the virtual page number) is a 9-bit index selecting one page-table entry at level $i$, and the page offset is the low 12 bits addressing a byte within the 4 KB page.
 
 Bits 63:39 must equal bit 38 (sign extension of the 39-bit address), otherwise
 a page fault occurs. The translation proceeds through three levels:
@@ -902,9 +904,9 @@ page). For a process with $N$ pages of virtual memory:
 ## 8. V Extension (Vector)
 
 The V extension adds variable-length vector processing to RISC-V. Unlike fixed-width
-SIMD (ARM NEON, x86 AVX), RISC-V vectors are length-agnostic: the same binary runs
+SIMD (Single Instruction, Multiple Data; e.g. ARM NEON, x86 AVX), RISC-V vectors are length-agnostic: the same binary runs
 on hardware with different vector register lengths. This is critical for AI
-accelerators and DSP workloads where the implementer chooses the hardware parallelism.
+accelerators and DSP (Digital Signal Processing) workloads where the implementer chooses the hardware parallelism.
 
 ### 8.1 Core Parameters
 
@@ -1123,7 +1125,7 @@ consume one fewer issue slot and reduce register pressure.
 | clmulr rd, rs1, rs2 | Carry-less multiply (middle 64 bits) | CRC with bit reversal |
 
 Carry-less multiplication operates in GF(2) -- there is no carry propagation
-between bit positions. This is the core primitive for CRC computation: a CRC-32
+between bit positions. This is the core primitive for CRC (Cyclic Redundancy Check) computation: a CRC-32
 over a 64-bit word is `clmul(data, polynomial)` followed by a 32-bit XOR reduction.
 Without Zbc, CRC-32 requires a table lookup per byte (~8 loads + 8 XORs per word).
 
@@ -1141,7 +1143,7 @@ All have immediate variants (bseti, bclri, binvi, bexti).
 
 ### 9.3 Why Bitmanip Matters
 
-**Cryptography:** AES mixcolumns, SHA rotate-xor rounds, CRC integrity checks,
+**Cryptography:** AES (Advanced Encryption Standard) mixcolumns, SHA (Secure Hash Algorithm) rotate-xor rounds, CRC integrity checks,
 and GCM authentication all decompose into the instructions above. A 10x speedup
 on CRC via clmul is typical.
 
@@ -1210,7 +1212,7 @@ new `mtimecmp` value that is strictly greater than `mtime`. Forgetting to update
 
 Writing 1 to `msip[hart]` sets `mip.MSIP` (bit 3) for that hart. The handler must
 clear the interrupt by writing 0 to `msip`. Used for:
-- Booting secondary harts (SBI sends IPI to wake them).
+- Booting secondary harts (the SBI, or Supervisor Binary Interface, sends IPI to wake them).
 - TLB shootdown: hart 0 sends IPI to hart 1 to flush its TLB.
 
 ### 10.2 PLIC (Platform-Level Interrupt Controller)
@@ -1605,7 +1607,7 @@ is inside a tight loop with no intervening memory operations to the same line.
 
 **Microarchitectural note:** In a non-blocking cache, the reservation check
 during SC requires that the cache line is present and in an exclusive or
-modified state (MESI E or M). If the line is shared, the SC must issue a
+modified state (the E or M state of the MESI protocol, i.e. Modified/Exclusive/Shared/Invalid). If the line is shared, the SC must issue a
 bus upgrade transaction before checking the reservation.
 
 ### Problem 5: U-mode ecall to S-mode and sret
@@ -1823,7 +1825,7 @@ An RVA23-compliant core must implement:
 4. Crypto-constant-time guarantees in the pipeline (Zkt constrains the
    multiplier and divider to not have data-dependent latency).
 5. PAUSE as a no-op that signals the fetch/issue logic to yield resources to
-   the other SMT thread (Zihintpause).
+   the other SMT (Simultaneous Multithreading) thread (Zihintpause).
 
 ---
 
@@ -1835,7 +1837,7 @@ programs because of its license-free model and extensibility.
 ### 16.1 Alibaba Xuantie C910 / C920
 
 - **C910:** 6-wide out-of-order RV64GCV core at 2.5 GHz (TSMC 7 nm). Features a
-  256-bit vector unit (VLEN=256), 128-entry ROB, 3 ALU + 2 FPU execution units.
+  256-bit vector unit (VLEN=256), 128-entry ROB (Reorder Buffer), 3 ALU + 2 FPU (Floating-Point Unit) execution units.
   Achieves ~7 SPECint2006/GHz. Open-sourced in 2022.
 - **C920:** Successor with improved branch prediction (TAGE-based), larger
   L2 cache, and RISC-V hypervisor extension support. Targets cloud AI inference.
@@ -1859,7 +1861,7 @@ programs because of its license-free model and extensibility.
   math unit (Tensix core). Tiles communicate via a packet-switched network-on-chip.
 - The RISC-V core handles data movement, synchronization, and kernel dispatch;
   the matrix unit handles the compute-heavy GEMM operations.
-- Grayskull (2020): 120 tiles, 368 MB SRAM. Wormhole (2023): expanded with
+- Grayskull (2020): 120 tiles, 368 MB SRAM (Static Random-Access Memory). Wormhole (2023): expanded with
   Ethernet-die-to-die links for multi-chip scaling.
 
 ### 16.4 Other Notable RISC-V AI Designs
@@ -1879,7 +1881,7 @@ ratified in 2021 and enables virtualization without binary translation.
 
 ### 17.1 Two-Stage Address Translation
 
-Without the H extension, the MMU performs a single translation: VA -> PA. With
+Without the H extension, the MMU (Memory Management Unit) performs a single translation: VA -> PA. With
 the H extension active, the MMU performs **two-stage translation**:
 
 ```verilog
@@ -1952,7 +1954,7 @@ Stage-2 page tables. This enables:
 
 1. **Memory overcommitment:** Allocate more GPA space than physical HPA, swap
    unused guest pages to disk.
-2. **Device pass-through:** Map a physical device's MMIO range directly into
+2. **Device pass-through:** Map a physical device's MMIO (Memory-Mapped I/O) range directly into
    the guest GPA so the guest can access it without hypervisor intervention.
 3. **Memory isolation:** Ensure a malicious guest cannot access another VM's
    memory (enforced by Stage-2 PTE permissions).

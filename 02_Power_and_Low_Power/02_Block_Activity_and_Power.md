@@ -17,7 +17,7 @@ Stage 3 (Silicon)      : MONITOR activity live and CONTROL power with it
 
 This note covers all three. Cross-reference: [Power_Fundamentals](01_Power_Fundamentals.md)
 (activity factor physics), [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md)
-(SAIF/VCD annotation mechanics), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md)
+(SAIF (Switching Activity Interchange Format)/VCD (Value Change Dump) annotation mechanics), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md)
 (what to do about high activity).
 
 ---
@@ -36,7 +36,7 @@ This note covers all three. Cross-reference: [Power_Fundamentals](01_Power_Funda
 | Memory bitlines/wordlines | Access-rate dependent | Driven by transaction rate, not clock |
 
 **Key derived metric -- block activity ratio:** for a block, the fraction of cycles it
-performs useful work (issues an instruction, accepts a transaction, computes a MAC).
+performs useful work (issues an instruction, accepts a transaction, computes a MAC (multiply-accumulate)).
 Architecture teams call this *utilization*; power teams convert it to alpha through the
 block's power model. The two communities meeting at this number is exactly where
 "block activity power" questions come from in interviews.
@@ -47,7 +47,7 @@ block's power model. The two communities meeting at this number is exactly where
 
 ### 2.1 The Mode/Block Power Matrix
 
-Every serious SoC maintains a power model long before RTL is complete -- a matrix of
+Every serious SoC (System on Chip) maintains a power model long before RTL (register-transfer level) is complete -- a matrix of
 blocks (rows) vs operating modes (columns):
 
 |  | Camera 4K | Video play | Gaming | Idle screen-on | Standby |
@@ -64,8 +64,8 @@ blocks (rows) vs operating modes (columns):
 | TOTAL | ~3.8 W | ~1.1 W | ~4.3 W | ~0.34 W | ~13 mW |
 
 Each cell = (block's C_eff and leakage) x (activity in that mode) x (V,f in that mode).
-This matrix drives: battery-life projections, thermal design, PMIC rail planning,
-per-block power BUDGETS handed to design teams, and the UPF power-state table.
+This matrix drives: battery-life projections, thermal design, PMIC (power management integrated circuit) rail planning,
+per-block power BUDGETS handed to design teams, and the UPF (Unified Power Format) power-state table.
 
 ```text
 Per-block budget flowdown (what a mid-level engineer owns):
@@ -122,7 +122,7 @@ good enough to TREND and to catch architecture-level regressions.
 ```
 
 **Power regression in CI:** mature teams run RTL power on fixed workload snippets at
-every RTL drop, with budgets per block. A merge that drops CGE from 78% to 60% gets
+every RTL drop, with budgets per block. A merge that drops CGE (clock-gating efficiency) from 78% to 60% gets
 flagged like a failing test. Being able to describe this flow is a strong mid-level
 interview signal.
 
@@ -213,7 +213,7 @@ Once the chip exists, activity becomes something you MEASURE and CONTROL against
 
 2. **Digital power meters** (DPM) / energy counters
    - Hardware computes a POWER PROXY each cycle: a weighted sum of selected activity signals, weights fit during characterization so the proxy tracks true power within a few % P_proxy = w0 + sum_i ( w_i * event_i )    (per block, per cycle)
-   - Accumulated into energy counters firmware can read (e.g., the model behind Intel RAPL energy reporting on modern parts)
+   - Accumulated into energy counters firmware can read (e.g., the model behind Intel RAPL (Running Average Power Limit) energy reporting on modern parts)
    - Fast (ns-us) and per-block -- this IS "block activity power" in silicon
 
 3. **Analog telemetry**
@@ -221,7 +221,7 @@ Once the chip exists, activity becomes something you MEASURE and CONTROL against
    - On-die voltage droop monitors, thermal sensor grids (10s per die)
 
 4. **Speed monitors**
-   - Ring oscillators / critical-path replicas: how fast IS this silicon at this V,T -- closes the AVS/AVFS loop
+   - Ring oscillators / critical-path replicas: how fast IS this silicon at this V,T -- closes the AVS/AVFS (adaptive voltage/frequency scaling) loop
 
 ### 6.2 Closed-Loop Uses
 
@@ -312,9 +312,9 @@ standard analytical model for SRAM/cache access energy, delay, and area: given
 (capacity, block size, associativity, #banks/ports, tech node) it returns per-read and
 per-write energy by summing decoder, wordline, bitline (the dominant term -- precharge
 + discharge of long bitlines), sense-amp, and H-tree distribution energy. McPAT calls
-CACTI for every array (regfile, caches, TLBs, buffers). For arrays, leakage and (in
+CACTI for every array (regfile, caches, TLBs (translation lookaside buffers), buffers). For arrays, leakage and (in
 drowsy/retention modes) *retention* power often exceed dynamic in idle-heavy blocks --
-the reason large LLCs are aggressively power-gated way down or retained at low Vdd.
+the reason large LLCs (last-level caches) are aggressively power-gated way down or retained at low Vdd.
 
 ---
 
@@ -335,7 +335,7 @@ rung needs both a structural model (what's instantiated) and an activity source.
 - **Architectural (McPAT-style)** = `sum over components ( events_c * E_op,c ) + leakage`
    - bottom-up: each component's E_op from CACTI/closed-form, area-derived caps
    - activity = performance-counter / simulator event counts (NOT real toggles)
-   - used in early DSE: power as a first-class axis alongside perf and area
+   - used in early DSE (design-space exploration): power as a first-class axis alongside perf and area
 - **RTL power** = `fast-map RTL to gates, annotate real toggles -> per-hierarchy power`
 - **Gate PrimePower** = `mapped netlist + .spef parasitics + .lib energy + SDF activity`
    - this is signoff; the only rung that sees real glitch power (Section 4)
@@ -352,7 +352,7 @@ an un-validated cycle-accurate performance model.
 ## 9. Dynamic Power Management (DPM) -- Modeling Idleness as a State Machine
 
 Sections 1-8 model power *while a block works*. But **real workloads are idle-dominated**
--- a CPU, GPU, or NPU spends most wall-clock time waiting (between frames, between
+-- a CPU, GPU, or NPU (neural processing unit) spends most wall-clock time waiting (between frames, between
 requests, between training steps). A peak-power or even average-active model says nothing
 about the energy of those idle gaps, and *that energy is often the majority of the total*.
 DPM is the discipline of spending idleness: detect idle, transition to a low-power state,
@@ -433,7 +433,7 @@ Energy accounting for ANY policy over a run:
 
 The CPU is the most-engineered DPM instance, split into two orthogonal axes:
 
-- **ACPI C-states** = `the IDLE PSM (DPM proper -- "how asleep when not running")`
+- **ACPI (Advanced Configuration and Power Interface) C-states** = `the IDLE PSM (DPM proper -- "how asleep when not running")`
    - C0 = active (executing).  C1 = halt (clock-gated core).  C3/C6/C7... = deeper:
    - flush caches, power-gate the core, save state -> lower P_off but larger T_wake.
    - Deeper C-state <-> larger break-even time: the OS/firmware idle governor (e.g. Linux
@@ -442,7 +442,7 @@ The CPU is the most-engineered DPM instance, split into two orthogonal axes:
 
 - **ACPI P-states** = `DVFS while ACTIVE (voltage/frequency operating points, NOT idle)`
    - P0 highest V/f ... Pn lowest. Reduces alpha*C*V^2*f when running but slower.
-   - (DVFS is detailed in Power_Reduction_Techniques; counters drive P-state choice -- see Q8.)
+   - (DVFS (Dynamic Voltage and Frequency Scaling) is detailed in Power_Reduction_Techniques; counters drive P-state choice -- see Q8.)
 
 Package C-states (PC2/PC6...) = the WHOLE-PACKAGE PSM: once ALL cores are in a deep
 core C-state, the UNCORE (LLC, ring/mesh, memory controller, PLLs) can also retire to
@@ -478,7 +478,7 @@ accumulated into an ENERGY counter firmware reads. Accuracy ~3-5% on held-out wo
 | **IBM POWER on-die "power proxy"** | Per-core hardware estimator: weighted sum of activity events accumulated continuously | Feeds the on-chip power-management controller (OCC) for per-core DVFS, capping, and idle management -- a textbook silicon power proxy |
 | **Performance-counter regression models** | Software/OS builds a linear (or ML) model from existing PMU counters (IPC, LLC misses, etc.) to estimate power without dedicated HW | Used where no energy counter exists; the per-process/per-VM **energy attribution** and cloud metering mechanism |
 
-The deliberate trade: a proxy gives **per-block attribution** (one VRM rail feeds many
+The deliberate trade: a proxy gives **per-block attribution** (one VRM (voltage regulator module) rail feeds many
 blocks, so analog sense can't separate them) and **speed** (per-window vs ms-slow, noisy
 rail telemetry). Standard practice pairs a fast proxy with occasional analog calibration.
 
@@ -526,7 +526,7 @@ NPU (systolic/MAC array + vector unit + on-chip SRAM + HBM + ICI)
 
 **NPU power gating is a fine-grained DPM instance.** Because an NPU's array is idle
 during memory-bound or communication phases, accelerators power-gate (or clock-gate)
-unused PE tiles, vector units, and SRAM banks at sub-operator granularity. This is the
+unused PE (processing element) tiles, vector units, and SRAM banks at sub-operator granularity. This is the
 PSM of Section 9 applied per-tile: each tile has active/clock-gated/power-gated states
 with their own break-even times, and the dataflow schedule effectively *is* the DPM
 policy -- it decides which tiles sleep when, and for how long (must exceed the tile's

@@ -7,7 +7,7 @@
 
 ## 0. Why this page exists
 
-A chip is not built in one pass. It is built as a sequence of **abstraction lowerings** — spec → architecture → RTL → gates → transistors/polygons → mask → silicon — where each lowering is verified against the level above it, and almost every stage can throw the design back to an earlier one. An engineer who only knows their own stage ("I write RTL", "I do place-and-route") repeatedly ships problems downstream that cost weeks. The value of seeing the whole flow is knowing **what your stage owes the next one** and **what assumption you're allowed to make about the previous one**.
+A chip is not built in one pass. It is built as a sequence of **abstraction lowerings** — spec → architecture → RTL → gates → transistors/polygons → mask → silicon — where each lowering is verified against the level above it, and almost every stage can throw the design back to an earlier one. An engineer who only knows their own stage ("I write RTL (register-transfer level)", "I do place-and-route") repeatedly ships problems downstream that cost weeks. The value of seeing the whole flow is knowing **what your stage owes the next one** and **what assumption you're allowed to make about the previous one**.
 
 This page gives the end-to-end flow, the hand-off contract at each boundary, the iteration loops, and a single mental model for "where am I and what can break here."
 
@@ -48,7 +48,7 @@ flowchart TD
 
 Two cross-cutting concerns ride alongside every stage and therefore live in their own track:
 
-- **[02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md)** — power is *specified* at architecture, *intended* in RTL (UPF), *implemented* at synthesis/backend, and *signed off* at the end. The track is kept together so you can see the whole story.
+- **[02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md)** — power is *specified* at architecture, *intended* in RTL (UPF — Unified Power Format), *implemented* at synthesis/backend, and *signed off* at the end. The track is kept together so you can see the whole story.
 - **[00 · Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md)** — device physics, logic, and arithmetic the other stages assume.
 
 ---

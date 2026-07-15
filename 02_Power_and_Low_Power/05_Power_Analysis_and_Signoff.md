@@ -446,7 +446,7 @@ top-level number alone; check coverage **per hierarchy / per instance**.
 
 **Raising and trusting coverage:**
 - Use **representative and long-enough** simulation windows (real workload, post-reset steady state) so low-activity nets still get exercised.
-- Dump **hierarchical / per-instance SAIF** scoped to the DUT, not a flat top-only file.
+- Dump **hierarchical / per-instance SAIF** scoped to the DUT (device under test), not a flat top-only file.
 - Fix **name mapping** explicitly (`name_map`, `-strip_path`, `set_rtl_to_gate_name`) so renamed nets back-annotate.
 - **Force clock activity** on generated/divided clocks (`set_switching_activity -base_clock`) rather than letting them default.
 - **Reconcile vector-based vs vectorless** on a few blocks to calibrate the default toggle rate before relying on it elsewhere.
@@ -460,7 +460,7 @@ power and test-mode vectors.
 
 ## 3. IR Drop Analysis -- Deep Dive
 
-*Scope: the signoff view — methodology, criteria, decap/EM interplay. Grid-level resistance models, worked examples, and the PnR fixing levers: [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) §5–§6.*
+*Scope: the signoff view — methodology, criteria, decap/EM interplay. Grid-level resistance models, worked examples, and the PnR (place and route) fixing levers: [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) §5–§6.*
 
 ### 3.1 What Is IR Drop?
 
@@ -764,7 +764,7 @@ Typical Pitch Guidelines (for a medium-performance design):
 
 ### 4.1 Multi-Corner Power Analysis
 
-Power signoff requires analysis at multiple PVT corners:
+Power signoff requires analysis at multiple PVT (process, voltage, temperature) corners:
 
 | Corner              | Temp | Voltage | Process | Purpose                      |
 |---------------------|------|---------|---------|------------------------------|
@@ -993,7 +993,7 @@ generate_map -type dynamic_ir -net VDD -output ir_map.png
 
 Start from the total power constraint and allocate downward:
 
-**Example — Mobile Application Processor.** Total TDP 5 W at 85 °C junction temperature.
+**Example — Mobile Application Processor.** Total TDP (thermal design power) 5 W at 85 °C junction temperature.
 
 | Subsystem | Budget | % Total |
 |---|---|---|
@@ -1034,7 +1034,7 @@ Iteration:
 
 ### 5.3 Power Modes and Use Cases
 
-Mobile SoC Power Modes:
+Mobile SoC (system on chip) Power Modes:
 
 | Mode | CPU | GPU | Modem | IO | Total | Use Case |
 |---|---|---|---|---|---|---|
@@ -1065,7 +1065,7 @@ Active max (5W, gaming):
 
 ## 6. Thermal Analysis
 
-*Scope: chip/package thermal budgeting, runaway, DTM at signoff. Implementation-side thermal analysis (power maps, hotspot mitigation in PnR): [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) §7.*
+*Scope: chip/package thermal budgeting, runaway, DTM (dynamic thermal management) at signoff. Implementation-side thermal analysis (power maps, hotspot mitigation in PnR): [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) §7.*
 
 ### 6.1 Junction Temperature
 
@@ -1171,7 +1171,7 @@ Since sustainable power is often much less than peak power, DTM is essential:
 
 BJT-based (bandgap reference):
 - V_be decreases linearly with temperature (~-2 mV/C)
-- Compare V_be with reference using ADC
+- Compare V_be with reference using ADC (analog-to-digital converter)
 - Accuracy: +/- 1-3C (better than ring osc)
 - Used in most production SoCs
 
@@ -1209,8 +1209,8 @@ Recovery: resume when temperature drops below hysteresis threshold
 ### 6.4 Hotspot Analysis
 
 Not all parts of the chip have equal power density:
-- CPU ALU: 2-5 W/mm^2 (very hot)
-   - SRAM arrays: 0.5-1 W/mm^2 (moderate)
+- CPU ALU (arithmetic logic unit): 2-5 W/mm^2 (very hot)
+   - SRAM (static random-access memory) arrays: 0.5-1 W/mm^2 (moderate)
    - IO pads: 0.1-0.3 W/mm^2 (cool)
 
 **Hotspot mitigation in floorplanning:**
@@ -1352,7 +1352,7 @@ find the worst 1-10 us window -> drive dynamic IR analysis with it
 clock-ungating of a large cluster -- each is a load STEP that excites
 the package resonance (~50-300 MHz "first droop")
 4. Checks: peak droop within budget WITH the droop mitigation modeled
-(decap + adaptive clocking), current ramp within PMIC slew capability,
+(decap + adaptive clocking), current ramp within PMIC (power management integrated circuit) slew capability,
 no EM overstress on the burst profile
 
 ### 7.6 Backside Power Delivery (BSPDN) -- What Changes for Power Signoff
@@ -1454,6 +1454,6 @@ Pre-Signoff Checklist:
 
 ---
 
-*This document targets senior-engineer / staff-level ASIC power interview preparation.
+*This document targets senior-engineer / staff-level ASIC (application-specific integrated circuit) power interview preparation.
 Cross-reference with Power_Fundamentals.md, Power_Reduction_Techniques.md, and
 UPF_Power_Intent.md.*

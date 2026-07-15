@@ -7,7 +7,7 @@
 
 ## 0. Why this page exists
 
-Verification consumes ~60–70% of an ASIC project's effort, and the hardest question isn't "how do I write a test" — it's **"am I done?"** You can run a million random cycles and still have never exercised the FIFO-full-during-reset corner. Coverage-driven verification (CDV) answers "done" with data: a **verification plan** enumerates what must be checked, **coverage** measures what's actually been hit, and **closure** is the disciplined loop that drives coverage to the target. This page is that methodology — the management layer over [UVM](10_UVM_Methodology.md) and [SVA](09_Assertions_and_Coverage.md).
+Verification consumes ~60–70% of an ASIC (application-specific integrated circuit) project's effort, and the hardest question isn't "how do I write a test" — it's **"am I done?"** You can run a million random cycles and still have never exercised the FIFO-full-during-reset corner. Coverage-driven verification (CDV) answers "done" with data: a **verification plan** enumerates what must be checked, **coverage** measures what's actually been hit, and **closure** is the disciplined loop that drives coverage to the target. This page is that methodology — the management layer over [UVM](10_UVM_Methodology.md) and [SVA](09_Assertions_and_Coverage.md).
 
 ---
 
@@ -89,8 +89,8 @@ flowchart TD
     classDef c fill:#c7d2fe,stroke:#4338ca,color:#000
 ```
 
-- **Code coverage** (automatic): line, statement, branch, toggle, FSM state+transition. Measures *"did my tests execute the RTL?"* It is **necessary but not sufficient** — 100% code coverage with the wrong checks proves nothing about correctness. Its real value is the inverse: **un-covered code = definitely un-tested**.
-- **Functional coverage** (hand-written `covergroup`s): measures *"did my tests hit the scenarios I care about?"* — the FIFO going full, every opcode, every burst length. This is the one tied to the spec/vplan. **Cross coverage** captures *combinations* (full FIFO **AND** back-pressure **AND** error injection) — where the real bugs hide.
+- **Code coverage** (automatic): line, statement, branch, toggle, FSM (finite state machine) state+transition. Measures *"did my tests execute the RTL (register-transfer level)?"* It is **necessary but not sufficient** — 100% code coverage with the wrong checks proves nothing about correctness. Its real value is the inverse: **un-covered code = definitely un-tested**.
+- **Functional coverage** (hand-written `covergroup`s): measures *"did my tests hit the scenarios I care about?"* — the FIFO (first-in, first-out) going full, every opcode, every burst length. This is the one tied to the spec/vplan. **Cross coverage** captures *combinations* (full FIFO **AND** back-pressure **AND** error injection) — where the real bugs hide.
 - **Assertion coverage**: did the [SVA](09_Assertions_and_Coverage.md) properties actually fire (not vacuously pass)?
 
 ---
@@ -116,7 +116,7 @@ For each coverage hole, the triage is a decision tree:
 1. **Reachable by more random?** → add seeds / loosen constraints (cheap).
 2. **Random can't reach it economically?** → write a **directed test** or a targeted constraint.
 3. **Truly unreachable?** → it's dead code or an impossible cross → **waive** it (justified) or fix the coverage model.
-4. **Reachable but the test fails there?** → a real **DUT bug** → fix RTL.
+4. **Reachable but the test fails there?** → a real **DUT (device under test) bug** → fix RTL.
 
 Closure also means **all checks pass** (zero failing assertions/scoreboard mismatches) and **regression is green and stable** (no flakiness). Coverage at 100% with failing tests is not closed.
 
@@ -143,7 +143,7 @@ Skipping step 5 is the most common mistake: chasing 100% without understanding *
 **Regression management tiers:**
 
 - **Nightly regression**: full test suite, all seeds, report coverage.
-- **Smoke regression**: subset of critical tests, fast turnaround for CI.
+- **Smoke regression**: subset of critical tests, fast turnaround for CI (continuous integration).
 - **Coverage-focused**: run only tests that target uncovered bins.
 - **Seed management**: save seeds that hit interesting coverage, replay for debug.
 
@@ -158,8 +158,8 @@ A block is "verification-signed-off" when:
 - **Code coverage ≥ target** (commonly ~95–100% line/branch, ~90%+ toggle), gaps reviewed.
 - **All assertions** pass and are **proven non-vacuous** (assertion coverage).
 - **Regression green** across a clean, reproducible seed set.
-- **Formal** ([Formal_Verification](12_Formal_Verification.md)) has discharged the properties it owns (control logic, CDC, connectivity).
-- **GLS** ([Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md)) sanity + reset passes.
+- **Formal** ([Formal_Verification](12_Formal_Verification.md)) has discharged the properties it owns (control logic, CDC (clock-domain crossing), connectivity).
+- **GLS (gate-level simulation)** ([Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md)) sanity + reset passes.
 
 ---
 

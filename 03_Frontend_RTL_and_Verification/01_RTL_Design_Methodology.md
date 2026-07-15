@@ -1,13 +1,13 @@
 # RTL Design Methodology — Synchronous Discipline, Reset, Clocking, and Structure
 
-> **Stage:** 03 · Frontend RTL. The *principles* that turn a microarchitecture spec into synthesizable, verifiable, timing-clean RTL — distinct from the language mechanics ([Data_Types_and_Basics](02_Data_Types_and_Basics.md), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md)) and the whiteboard drills ([RTL_Coding_Questions](../interview_prep/08_RTL_Coding_Questions.md)).
+> **Stage:** 03 · Frontend RTL (register-transfer level). The *principles* that turn a microarchitecture spec into synthesizable, verifiable, timing-clean RTL — distinct from the language mechanics ([Data_Types_and_Basics](02_Data_Types_and_Basics.md), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md)) and the whiteboard drills ([RTL_Coding_Questions](../interview_prep/08_RTL_Coding_Questions.md)).
 > **Prerequisites:** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) (the spec), SystemVerilog basics. **Hands off to:** [Synthesis](../04_Synthesis/01_Synthesis_and_Optimization.md), [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md).
 
 ---
 
 ## 0. Why this page exists
 
-Most RTL bugs are not algorithmic — they are *methodology* failures: an inferred latch, a reset that isn't released cleanly, a clock gated without an ICG, a control/datapath tangle no one can verify. Synthesis and timing tools assume you followed a discipline; when you don't, they silently build something that mis-behaves in silicon. This page is that discipline: the synchronous-design contract, reset architecture, clock architecture, FSM and datapath/control structure, and the coding rules that keep RTL lint-clean and synthesizable.
+Most RTL bugs are not algorithmic — they are *methodology* failures: an inferred latch, a reset that isn't released cleanly, a clock gated without an ICG (integrated clock-gating cell), a control/datapath tangle no one can verify. Synthesis and timing tools assume you followed a discipline; when you don't, they silently build something that mis-behaves in silicon. This page is that discipline: the synchronous-design contract, reset architecture, clock architecture, FSM and datapath/control structure, and the coding rules that keep RTL lint-clean and synthesizable.
 
 ---
 
@@ -48,7 +48,7 @@ Reset is the most under-respected part of RTL. Decisions: **async vs sync**, **w
 
 **The reset synchronizer** (async assert, sync de-assert): two flops, reset input tied to their async clear, `D` of the first tied high. Reset asserts instantly anywhere; de-assertion ripples out **synchronously**, so no flop sees reset release inside its recovery/removal window. One per clock domain. (Mechanics in [Async_Design_and_CDC](06_Async_Design_and_CDC.md).)
 
-Further rules: **not every flop needs a reset** — reset only what the control logic requires for a clean start (FSMs, counters, valid bits); leaving datapath pipeline flops un-reset saves area and reset-tree routing, as long as a `valid` qualifier gates their use. **Reset domains** must be planned like clock domains — crossing a reset boundary needs the same care as a CDC.
+Further rules: **not every flop needs a reset** — reset only what the control logic requires for a clean start (FSMs (finite state machines), counters, valid bits); leaving datapath pipeline flops un-reset saves area and reset-tree routing, as long as a `valid` qualifier gates their use. **Reset domains** must be planned like clock domains — crossing a reset boundary needs the same care as a CDC (clock domain crossing).
 
 ---
 
@@ -57,14 +57,14 @@ Further rules: **not every flop needs a reset** — reset only what the control 
 - **Minimize clock domains.** Each new asynchronous clock is a [CDC](07_Lint_CDC_RDC_Signoff.md) liability. Prefer a single clock with enables over many clocks.
 - **Gate clocks only through ICG cells**, never with combinational AND on the clock — that creates glitches and untimeable paths. The synthesis tool inserts ICGs from RTL `if (enable)` patterns ([Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)).
 - **Generated/divided clocks** belong in a small, reviewed clocking block, not scattered ([Clock_Division_and_Switching](04_Clock_Division_and_Switching.md)).
-- **Clock enables** are the synchronous alternative to gating: `if (en) q <= d;` — one clock, behavior controlled by a data-path enable. Cheaper to verify, friendlier to STA.
+- **Clock enables** are the synchronous alternative to gating: `if (en) q <= d;` — one clock, behavior controlled by a data-path enable. Cheaper to verify, friendlier to STA (static timing analysis).
 
 ---
 
 ## 4. Datapath / control separation
 
 A clean block splits into:
-- **Datapath** — the registers, ALUs, muxes, FIFOs that move and transform data. Wide, regular, area-dominated; described structurally or with arithmetic operators the synthesizer maps to [adders/multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md).
+- **Datapath** — the registers, ALUs (arithmetic logic units), muxes, FIFOs (first-in, first-out) that move and transform data. Wide, regular, area-dominated; described structurally or with arithmetic operators the synthesizer maps to [adders/multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md).
 - **Control** — the FSM(s) that sequence the datapath via enables/selects, and consume status flags back from it.
 
 Separating them makes both verifiable: control is a small state space you can cover exhaustively (or formally), and datapath is checked with directed/random data. Tangling them produces RTL that is neither.
