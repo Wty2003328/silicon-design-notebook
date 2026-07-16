@@ -1,2626 +1,329 @@
-# Design for Testability (DFT) and ATPG -- Senior Engineer Deep Dive
+# Design for Test (DFT) and ATPG — Making an Opaque Chip Testable
 
-> Target audience: Engineers preparing for senior-level IC design interviews at
-> Apple, NVIDIA, AMD, Intel, Qualcomm, Broadcom, MediaTek, etc.
-
----
-
-## Table of Contents
-
-1. [Scan Chain Architecture](#1-scan-chain-architecture)
-2. [Fault Models](#2-fault-models)
-3. [ATPG Algorithms](#3-atpg-algorithms)
-4. [At-Speed Testing](#4-at-speed-testing)
-5. [Test Compression](#5-test-compression)
-6. [Logic BIST](#6-logic-bist)
-7. [Memory BIST](#7-memory-bist)
-8. [JTAG / Boundary Scan (IEEE 1149.1)](#8-jtag--boundary-scan-ieee-11491)
-9. [On-Chip Clocking (OCC)](#9-on-chip-clocking-occ)
-10. [IJTAG (IEEE 1687)](#10-ijtag-ieee-1687)
-11. [Hierarchical DFT](#11-hierarchical-dft)
-12. [DFT in Low-Power Designs](#12-dft-in-low-power-designs)
-13. [Numbers to Memorize](#13-numbers-to-memorize)
+> **Prerequisites:** [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (why yield is below 100% and defects are inevitable), [RTL_Design_Methodology](../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) (flip-flops and combinational clouds), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (what a physical defect *is*).
+> **Hands off to:** [STA](01_STA.md) (at-speed test validates the same paths STA signs off), [Gate_Level_Sim_and_Emulation](../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) (scan patterns are validated in GLS before tapeout), [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) (where these patterns run on the ATE).
 
 ---
 
-## 1. Scan Chain Architecture
+## 0. Why this page exists
 
-### 1.1 Mux-D Scan Flip-Flop
+Fabrication is a statistical process, so **some fraction of every wafer is born defective** — a particle bridges two wires, a via etches open, a thin oxide leaks. You cannot ship those dies, so every single die must be *tested*. But a finished chip is almost perfectly opaque: it has a few hundred pins and a few hundred *million* internal nodes, and the state machine that connects them buries any given node dozens of clock cycles deep. Proving that node #40,000,000 is defect-free by driving the pins is not merely expensive — for a large sequential design it is computationally hopeless.
 
-The fundamental DFT building block replaces every functional flip-flop with a
-scan-capable version. A 2:1 multiplexer is added in front of the D input.
+Two things follow, and they are the whole subject. First, we must **add hardware whose only job is to make internal state controllable and observable** — that is *design for test* (DFT), and its central instance, *scan*, is the most valuable structure on this page. Second, once the inside is reachable, we must **compute the input patterns that expose defects** — that is *automatic test pattern generation* (ATPG), which works not against real defects (unbounded, unknowable) but against a small **fault model** that stands in for them.
 
-```ascii-graph
-                 Mux-D Scan Flip-Flop
-                 =====================
+This page derives that machinery from the problem it solves. Every section asks *why must this exist*: why functional test collapses with sequential depth, why stitching flops into a shift register converts an impossible sequential search into a tractable combinational one, why we test a *proxy* defect instead of the real thing, why ATPG is a Boolean search with two obligations, why self-test and boundary scan and compression each become unavoidable at scale, and what each buys against what it costs. The reference material — the exact TAP state names, the LFSR bit-by-bit trace, the STIL field layout — is compressed to the idea; the reasoning is expanded. By the end you should be able to explain, from first principles, why a chip has scan at all, write the defect-level equation from memory, and reason quantitatively about the coverage-versus-cost knee that every real test program lives on.
 
-        SI ──────┐
-                 │  ┌─────┐
-                 ├──┤ 0   │
-                 │  │ MUX ├──── D ──┬──┐  ┌─────────┐
-        D  ──────┤──┤ 1   │        │  └──┤ D     Q ├──── Q (functional output)
-                 │  └──┬──┘        │     │         │      = SO (scan out)
-                 │     │           │     │  D-FF   │
-        SE ──────┘     │           │  ┌──┤ CLK   QB├──── QB
-                  (select)         │  │  └─────────┘
-                                   │  │
-                              (to next   CLK
-                               stage)
+---
 
-  Pin Definitions:
-  ─────────────────────────────────────────────────
-  SI  = Scan Input  (from previous FF in scan chain)
-  SO  = Scan Output (= Q output, to next FF in chain)
-  SE  = Scan Enable (1 = shift mode, 0 = capture/functional mode)
-  D   = Functional data input
-  Q   = Functional data output / scan data output
-  CLK = Clock
-```
+## 1. The test problem: defects are certain, and pins cannot reach inside
 
-**When SE = 1 (Shift Mode):** The mux selects SI. The flip-flop acts as a
-shift register element -- data flows from SI to Q on each clock edge.
+Start with the two facts that force the entire field.
 
-**When SE = 0 (Capture/Functional Mode):** The mux selects D. The flip-flop
-captures the combinational logic output, behaving as a normal functional FF.
+**Defects are inevitable — this is a yield statement.** The Poisson yield model (derived on the [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) page) gives the fraction of dies with *no* killer defect as
 
-**Gate-level implementation of the MUX:**
+$$
+Y \;=\; e^{-A\,D}
+$$
 
-```ascii-graph
-  SI ────┐
-         ├── AND ──┐
-  SE ────┘         │
-                   ├── OR ──── to D pin of FF
-  D  ────┐         │
-         ├── AND ──┘
-  SE_b ──┘
+where $A$ = die area (cm²) and $D$ = defect density (defects/cm²). A modest $D = 0.1\ \text{cm}^{-2}$ on a $2\ \text{cm}^2$ die gives $Y = e^{-0.2} \approx 0.82$ — roughly **one die in five is born bad**. Test does not improve yield; its job is to *sort*: pass the good, reject the bad, and — the metric that matters — let as few defective parts *escape* to the customer as possible. Escapes are counted in **defective parts per million (DPPM)**, and the link between test quality and DPPM is the central equation of §3.5.
 
-  SE_b = NOT(SE)
+**Testing a node requires controlling it and observing it.** To prove a given internal node is fault-free you must do two things: **control** it — drive it from the primary inputs to a known value (and, for many faults, to *both* values) — and **observe** it — arrange for its value to propagate to a primary output where the tester can see it. Controllability and observability are the two currencies of all testing, and both are cheap at the pins and ruinously expensive deep inside.
 
-  Equation: D_ff = (SI & SE) | (D & ~SE)
-```
+**Sequential depth makes both collapse.** Consider controlling one flip-flop $d$ logic-and-register stages from the inputs. From the pins you cannot *write* it directly; you must find an *input sequence* that walks the state machine into a state where that flop holds the value you want — a search through the reachable-state graph, which is exponential in the number of flops. Observing it is the mirror image: you must propagate its value forward through more cycles to an output. A useful way to see how fast control decays is signal probability: the output of a $k$-input AND is 1 only for $2^{-k}$ of random inputs, and these probabilities compound through depth, driving buried nodes toward near-constant values that a random stimulus almost never flips. Formally:
 
-Area overhead: typically 15-20% over a standard D flip-flop. In advanced nodes
-(7nm, 5nm), the scan mux is integrated into the standard cell library as a
-unified cell (SDFF -- Scan D Flip-Flop) to minimize area and timing penalty.
+- **Combinational ATPG is NP-complete** (Ibarra–Sahni; it reduces from Boolean SAT) — hard, but solved daily by good heuristics.
+- **Sequential ATPG** on a machine with no reset and unknown initial state is dramatically worse: the standard method *unrolls* the circuit into $k$ time-frames and solves the combinational equivalent, but the worst-case $k$ is the sequential depth of the state space — up to $2^{N_{ff}}$ for $N_{ff}$ flops. Nobody runs functional sequential ATPG on a large design for manufacturing.
 
-### 1.2 Scan Chain Stitching
+So the problem statement crystallizes into one question: *can we make every flip-flop directly controllable and observable, so the sequential search vanishes?* Section 2 is the answer, and it is worth more than everything after it.
 
-All scan flip-flops in a design are connected in one or more serial chains.
+---
+
+## 2. Scan: converting a sequential test problem into a combinational one
+
+The defect that kills sequential ATPG is that flop state is only reachable *through time*. Remove that and the problem changes character entirely. **Scan** does exactly this by giving every flop a second personality.
+
+### 2.1 The idea, derived
+
+Add to each flip-flop a mode select: in **functional mode** it captures its normal combinational input $D$; in **shift mode** it instead captures the output of the *previous* flop. Wire the flops so that in shift mode they form one long **shift register** — the *scan chain* — running from a `scan_in` pin to a `scan_out` pin. That single change buys both currencies at once:
+
+- **Controllability → total.** Shift any bit pattern you like into the chain; now *every* flop holds exactly the value you chose. The flops have become directly-writable **pseudo-primary inputs**.
+- **Observability → total.** After the circuit computes, capture the result into the same flops and shift it out. The flops have become directly-readable **pseudo-primary outputs**.
+
+The essential added state is minimal — there is no port table to memorize, only a consequence of the two-mode requirement:
+
+1. a **data-source select** on each flop (functional $D$ vs. scan input $SI$),
+2. a **scan-enable** $SE$ that drives that select for every flop at once ($SE{=}1$ shift, $SE{=}0$ capture), and
+3. a **chain order** making each flop's $Q$ the next flop's $SI$.
+
+In gate terms the added mux is just $D_{\text{ff}} = (SI \wedge SE) \vee (D \wedge \overline{SE})$; in a modern library it is absorbed into a single **scan flop (SDFF)** standard cell so the area and delay penalty is paid once, cleanly.
+
+### 2.2 Why this is the whole game: the combinational reduction
+
+With every flop a pseudo-PI and pseudo-PO, a test is exactly three steps: **shift in** a stimulus (many slow clocks), apply **one capture clock**, **shift out** the response (overlapped with shifting in the next stimulus). Between the flops there is now only the **combinational logic cloud** — and *that cloud is the only thing ATPG has to solve*.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    SI["scan_in"] --> F1["FF1"] --> F2["FF2"] --> F3["FF3"] --> DOTS["…"] --> FN["FFn"] --> SO["scan_out"]
-    classDef ff fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef io fill:#dcfce7,stroke:#15803d,color:#000
-    class F1,F2,F3,FN ff
-    class SI,SO io
+flowchart LR
+    SI["scan_in"] --> CH["Scan chain: all flops\nSHIFT = load stimulus / unload response"] --> SO["scan_out"]
+    CH -->|"capture edge:\nflops act as pseudo-PIs"| CL["Combinational cloud\n(the ONLY thing ATPG solves)"]
+    CL -->|"response captured:\nflops act as pseudo-POs"| CH
 ```
 
-During **shift** (SE=1) data flows scan_in → FF1 → … → FFn → scan_out. During **capture** (SE=0) each flop captures its own functional D input independently.
+This is the single most important idea in DFT: **scan replaces a search over the state space with a search over one time-frame.** The intractable sequential problem of §1 is gone *by construction*, not by cleverness — the price is the scan hardware, and the industry has judged that price obviously worth paying for four decades.
 
-**Stitching Ordering Strategies:**
+### 2.3 What scan costs — the overhead trade-offs
 
-| Strategy | Description | Pros | Cons |
-|---|---|---|---|
-| Physical proximity | FFs close together are chained | Shorter scan routing wires | May cross clock domains |
-| Clock-domain based | All FFs in same domain in one chain | Clean clock domain separation | Longer wires possible |
-| Hierarchical | Each module has its own sub-chain | Modular, easy debug | Sub-optimal chain balance |
-| Tool-optimized | EDA tool minimizes wire length | Best routing QoR | Less predictable ordering |
-| Random | No particular order | Simple to implement | Worst routing congestion |
+Scan is not free, and the design point is a coverage-versus-overhead balance:
 
-**Modern practice (Synopsys DFT Compiler / Cadence Modus):** The tool
-automatically stitches chains considering physical placement, clock domains,
-and power domains to minimize wire length and timing violations.
+- **Area.** The mux adds ~15–20% to a bare flop; folded into an SDFF cell and amortized over the whole design the net penalty is a few percent of logic area. Essentially universal because the alternative — untestable silicon — is worthless.
+- **Timing.** The mux sits in the flop's data path, costing a small setup penalty; the far larger physical-design task is the **scan-enable tree**, which fans out to *every* flop in the design (the largest net in the chip) and must be balanced so $SE$ is stable before capture.
+- **Chain count — test time vs. pins vs. power.** With $N$ scan flops split into $C$ chains, each chain is $L = N/C$ deep, and since capture is one cycle, test time is dominated by shifting:
 
-### 1.3 Shift Mode vs Capture Mode -- Timing Diagrams
+$$
+T_{\text{test}} \;\approx\; \frac{P \cdot L}{f_{\text{shift}}} \;=\; \frac{P \cdot N}{C \cdot f_{\text{shift}}}
+$$
 
-```wavedrom
-{ "signal": [
-  { "name": "CLK",      "wave": "p......" },
-  { "name": "SE",       "wave": "1......" },
-  { "name": "scan_in",  "wave": "x=====.", "data": ["b0","b1","b2","b3","b4"] },
-  { "name": "scan_out", "wave": "x.=====", "data": ["r0","r1","r2","r3","r4"] }
-], "head": { "text": "Shift mode (SE=1): stimulus b0..b4 shifted in while response r0..r4 (from the previous capture) shifts out" } }
-```
+where $P$ = pattern count, $f_{\text{shift}}$ = shift-clock frequency. More chains (larger $C$) cut test time linearly but demand more scan I/O pins and raise **shift power** (more flops toggling in parallel). Pin count is capped by the package and the ATE channel budget — which is exactly the wall that **test compression** (§7) is built to break, by decoupling *internal* chain count from *external* pin count.
+- **Shift power.** During shift, up to ~50% of flops toggle every cycle — far more switching than functional operation ever produces. The resulting IR-drop can corrupt the capture, and the peak current stresses the grid. Mitigations: **low-power ATPG fill** (fill the don't-care bits to minimize toggling, 30–50% less shift power), reduced shift voltage, and staggered chain activation.
 
-**Critical timing constraint during shift:** SE must be stable (HIGH) before
-the setup time of every scan FF with respect to the shift clock edge. The
-scan_enable signal has enormous fanout (every scan FF in the design), so
-buffering the SE tree is a major physical design task.
-
-### 1.4 Scan Chain Length Trade-offs
-
-If a design has N scan flip-flops and C scan chains:
-
-```text
-  Chain length L = N / C  (assuming balanced chains)
-
-  Shift cycles per pattern = L
-  Total test time for P patterns = P x (L + capture_cycles)
-                                 ≈ P x L  (since capture << shift)
-
-  Example:
-    N = 2,000,000 FFs (2M-gate design)
-    C = 200 chains
-    L = 2,000,000 / 200 = 10,000 FFs per chain
-    P = 5,000 patterns
-    Shift clock = 20 MHz (50 ns period)
-
-    Shift time per pattern = 10,000 x 50 ns = 500 us
-    Total shift time = 5,000 x 500 us = 2,500 s ≈ 42 min
-
-  If C = 1000 chains:
-    L = 2,000 FFs per chain
-    Shift time per pattern = 2,000 x 50 ns = 100 us
-    Total shift time = 5,000 x 100 us = 500 s ≈ 8.3 min
-```
-
-**Trade-off Summary:**
-
-| More chains (larger C) | Fewer chains (smaller C) |
-|---|---|
-| Shorter shift time per pattern | Longer shift time |
-| More scan I/O pins needed | Fewer pins |
-| More complex routing | Simpler routing |
-| Better test time on ATE | Less ATE channel usage |
-| Higher shift power (more FFs toggle in parallel) | Lower shift power |
-
-**Practical constraint:** Number of chains is limited by available ATE (tester)
-channels and chip I/O pins. With test compression (Section 5), we decouple
-internal chain count from external pin count.
-
-### 1.5 Lockup Latch
-
-**Problem:** When a scan chain crosses from a positive-edge triggered clock
-domain to a negative-edge triggered domain (or between two asynchronous
-domains), timing violations can occur during shift.
-
-```wavedrom
-{ "signal": [
-  { "name": "CLK_A (posedge)", "wave": "01010101" },
-  { "name": "CLK_B (negedge)", "wave": "10101010" },
-  { "name": "FF_A out",        "wave": "x=.=.=.=", "data": ["d0","d1","d2","d3"] }
-], "head": { "text": "No lockup latch: FF_A changes on CLK_A posedge but FF_B samples on CLK_B negedge -- if the edges are close, setup/hold is violated" } }
-```
-
-**Solution:** Insert a transparent latch (lockup latch) between the two domains.
-
-```wavedrom
-{ "signal": [
-  { "name": "CLK_A",     "wave": "01010101" },
-  { "name": "FF_A out",  "wave": "x=.=.=.=", "data": ["d0","d1","d2","d3"] },
-  { "name": "Latch out", "wave": "x..=.=.=", "data": ["d0","d1","d2"] },
-  { "name": "CLK_B",     "wave": "10101010" }
-], "head": { "text": "Lockup latch (transparent while CLK_A high, latches on its negedge) delays FF_A's change by a half cycle, giving FF_B full setup/hold margin" } }
-```
-
-The lockup latch converts a race condition (near-zero timing margin) into a
-comfortable half-cycle margin. It is transparent when its enable is HIGH and
-latches on the falling edge of its enable.
-
-**Key rules:**
-- Lockup latch uses the **source** domain clock as its enable
-- It is only active during scan shift; functionally it is bypassed (or its
-  effect is don't-care since the path is async anyway)
-- Modern DFT tools insert lockup latches automatically
+One implementation wrinkle worth keeping: when a chain crosses from one clock domain to another, the launch and capture edges can nearly coincide and race during shift. A **lockup latch** (a transparent latch clocked by the source domain) inserts a half-cycle of margin, converting a near-zero-slack race into a safe hand-off. DFT tools insert these automatically; the concept — a half-cycle buffer between domains in the chain — is all you need.
 
 ---
 
-## 2. Fault Models
+## 3. Fault models: a finite proxy for unbounded physical defects
 
-### 2.1 Stuck-At Fault Model (SA0 / SA1)
+Scan makes the inside reachable; now, *what do we test for?* You cannot enumerate physical defects — they are unbounded, layout- and process-dependent, and mostly invisible at the logic level. ATPG needs a **fault model**: a finite, technology-independent abstraction that (a) can be enumerated and targeted, and (b) *correlates* with real defects well enough that catching the model catches the silicon. The models form a hierarchy, each catching what the previous misses at rising pattern cost.
 
-**Definition:** A stuck-at fault models a signal line permanently tied to logic
-0 (SA0) or logic 1 (SA1), regardless of the intended logic value.
+### 3.1 Stuck-at: the workhorse
 
-For a circuit with N signal lines: total possible single stuck-at faults = 2N.
+Model every signal line as possibly **stuck-at-0 (SA0)** or **stuck-at-1 (SA1)**, independent of the gate. For $N$ lines there are exactly $2N$ single stuck-at faults — a *linear*, enumerable list. Its power is that this one crude abstraction catches a large fraction of gross defects (many opens and shorts manifest as a line held at a constant), and detecting a stuck-at fault forces the good machinery of §4 (drive the opposite value, propagate it out).
 
-**Example -- 2-input AND gate:**
+**Fault collapsing** shrinks the list before ATPG ever runs. Two faults are **equivalent** if they produce identical faulty behavior for *every* input (e.g., on an AND gate, `a`-SA0, `b`-SA0, and output-SA0 are one class — any input that would expose one exposes all). Fault $f_1$ **dominates** $f_2$ if every test for $f_2$ also detects $f_1$, so $f_2$ can be dropped. The **checkpoint theorem** caps the work: testing all stuck-at faults on *primary inputs and fan-out branches* covers all faults in a combinational circuit. Together these collapse the $2N$ list by ~50–70%, to roughly $0.3\text{–}0.5N$ — the reason ATPG is even affordable.
 
-```ascii-graph
-     a ──┐
-         ├── AND ── z
-     b ──┘
+### 3.2 Transition and path-delay: catching timing defects — the STA link
 
-  Signal lines: a, b, z
-  Possible faults: a/SA0, a/SA1, b/SA0, b/SA1, z/SA0, z/SA1
-  Total: 6 single stuck-at faults
-```
+A chip can pass every stuck-at test and still fail in the customer's system, because a gate produces the *correct* value but *too late*. Stuck-at is a static model; **delay defects** need a dynamic one. The **transition-delay fault (TDF)** marks each line **slow-to-rise** or **slow-to-fall** ($2N$ faults again), and detecting it needs a **two-vector at-speed test**: $V_1$ initializes the line, $V_2$ launches the transition, and the response is captured *one functional clock period later* (§5). If the gate is slow, the transition arrives after the capture edge and reads as the old value.
 
-#### Fault Equivalence
+This is where test meets **timing signoff**. Transition and **path-delay** ATPG launch transitions down the very paths that [STA](01_STA.md) declared critical — at-speed test is the *silicon confirmation* of the STA timing model, catching the slow gates STA's library abstraction could not predict (a resistive via, a mis-modeled coupling). Path-delay faults model the *cumulative* delay along one sensitized path, which is stronger but explodes combinatorially — a design with reconvergent structure has up to $2^{\text{(stages)}}$ paths, so path-delay test is applied only to a hand-picked set of the most timing-critical paths, not exhaustively.
 
-Two faults are **equivalent** if they produce identical faulty behavior for ALL
-possible input combinations.
+### 3.3 Bridging, cell-aware, and the death of IDDQ
 
-**Proof for AND gate:**
+- **Bridging faults** model an unintended short between two lines, behaving as a wired-AND or wired-OR; detection needs a pattern that drives the two lines to *opposite* values, so the short shows up.
+- **Cell-aware** models (standard below ~16 nm) target defects *inside* a standard cell — an open on an internal transistor drain, a resistive internal via — that pin-level stuck-at/TDF cannot represent. The library vendor SPICE-characterizes each cell's internal defects; ATPG targets them, adding ~5–15% more patterns to catch a few percent more defective parts. Supported across Synopsys TetraMAX, Cadence Modus, and Siemens Tessent.
+- **IDDQ** testing measures *quiescent* supply current: a defect-free CMOS circuit draws only leakage, while a bridge or gate-oxide short creates a DC path from VDD to GND. It was superb at older nodes (180 nm: ~nA/gate leakage, defects stood out) and is **effectively dead below ~28 nm**, because per-gate leakage rose to µA and swamped any defect signal. A clean example of a technique killed by scaling, not by a better idea.
 
-| a | b | z (good) | z (a/SA0) | z (b/SA0) | z (z/SA0) |
-|---|---|---|---|---|---|
-| 0 | 0 | 0 | 0 | 0 | 0 |
-| 0 | 1 | 0 | 0 | 0 | 0 |
-| 1 | 0 | 0 | 0 | 0 | 0 |
-| 1 | 1 | 1 | 0 | 0 | 0 |
+### 3.4 Coverage: fault coverage vs. test coverage
 
-`a/SA0 ≡ b/SA0 ≡ z/SA0` — all three faults produce identical faulty outputs, so they form one fault-equivalence class.
+Coverage is the metric that governs everything. Two definitions, and the distinction matters:
 
-Similarly: a/SA1 ≡ z/SA1 for an OR gate (output SA1 = input SA1 on any input).
+$$
+\text{Fault Coverage} = \frac{\text{detected}}{\text{total} - \text{untestable}}, \qquad
+\text{Test Coverage} = \frac{\text{detected}}{\text{total}}
+$$
 
-#### Fault Dominance
+Test coverage is the more honest (it does not forgive untestable faults). **Untestable** faults are real and instructive: an **ATPG-redundant** fault is one whose line is *logically redundant* — removable without changing the function — so ATPG doubles as a redundancy/DFT-quality check (§4.4). Typical production targets: **>99% stuck-at**, **>90–95% transition**, with automotive/safety parts pushing higher.
 
-Fault f1 **dominates** fault f2 if every test that detects f2 also detects f1
-(but not necessarily vice versa). If f1 dominates f2, we can remove f2 from
-the fault list without losing coverage.
+### 3.5 Defect level: why the *last* percent of coverage is the expensive one
 
-**Formal:** f1 dominates f2 iff T(f2) is a subset of T(f1), where T(f) is the
-set of tests detecting fault f.
+The payoff equation ties coverage to shipped quality. The Williams–Brown model gives the **defect level** — the fraction of *shipped* parts that are actually bad (the test escapes):
 
-#### Fault Collapsing and Checkpoint Theorem
+$$
+\boxed{\,DL \;=\; 1 - Y^{\,1-T}\,}
+$$
 
-**Checkpoint Theorem:** In a combinational circuit, testing all faults at
-**checkpoints** (primary inputs and fanout branches) is sufficient to test all
-faults in the circuit.
+where $Y$ = process yield (fraction of dies with no defect) and $T$ = fault coverage (as a fraction). The endpoints sanity-check it: at $T = 1$, $DL = 1 - Y^0 = 0$ (a perfect test ships nothing bad); at $T = 0$, $DL = 1 - Y$ (no test, so you ship every defective die). In between, the escapes are worked numbers you should be able to reproduce:
 
-```text
-  Before collapsing: 2N faults (N = number of signal lines)
-  After equivalence collapsing: typically reduced by 50-60%
-  After dominance collapsing: further 10-20% reduction
+- $Y = 0.80,\ T = 0.98 \Rightarrow DL = 1 - 0.80^{0.02} \approx 4{,}450\ \text{DPPM} \approx 0.45\%$.
+- $Y = 0.90,\ T = 0.99 \Rightarrow DL \approx 1{,}050\ \text{DPPM}$.
+- $Y = 0.90,\ T = 0.999 \Rightarrow DL \approx 105\ \text{DPPM}$.
 
-  Example: A circuit with 100,000 signal lines
-    Uncollapsed: 200,000 faults
-    After collapsing: ~60,000-80,000 faults
-```
-
-### 2.2 Transition Delay Fault (TDF)
-
-**Why stuck-at is insufficient:** A chip can pass all stuck-at tests yet fail
-at speed because a gate is "slow" -- it produces the correct value, but too
-late. This is a **delay defect**.
-
-**TDF model:** Each signal line can have:
-- **Slow-to-rise (STR):** The line is slow to transition from 0 to 1
-- **Slow-to-fall (STF):** The line is slow to transition from 1 to 0
-
-Total TDF faults = 2N (same count as stuck-at, different model).
-
-**Two-pattern test requirement:**
-
-```text
-  Pattern V1 (initialization): Sets the target line to the INITIAL value
-  Pattern V2 (launch/capture):  Causes the transition and captures result
-
-  To detect STR on line L:
-    V1 must set L = 0  (initialization)
-    V2 must cause L to transition 0 -> 1
-    Capture at speed to see if transition arrived in time
-
-  To detect STF on line L:
-    V1 must set L = 1
-    V2 must cause L to transition 1 -> 0
-```
-
-How V1 and V2 are applied depends on the at-speed test method (LOS vs LOC,
-see Section 4).
-
-### 2.3 Path Delay Fault
-
-Models the cumulative delay along an entire sensitizable path from PI (primary input) to PO (primary output)
-(or FF to FF).
-
-**Problem:** Number of paths can be **exponential** in circuit size.
-
-```ascii-graph
-  Example: A circuit with N stages, each with 2 reconverging paths:
-
-       ┌── gate_a1 ──┐     ┌── gate_a2 ──┐
-  IN ──┤              ├──>──┤              ├──> ... ──> OUT
-       └── gate_b1 ──┘     └── gate_b2 ──┘
-
-  Paths through N stages = 2^N
-
-  For N = 40 stages: 2^40 ≈ 10^12 paths -- UNTESTABLE exhaustively
-```
-
-**Robustness classification:**
-- **Robust test:** Detects the path delay fault regardless of other path delays
-- **Non-robust test:** May not detect if other paths also have delays
-- **Validatable non-robust:** Can be validated with additional conditions
-
-In practice, path delay testing is applied selectively to critical timing paths.
-
-### 2.4 Bridging Faults
-
-Models unintended shorts between two signal lines.
-
-```ascii-graph
-  AND-bridge: shorted lines behave as if ANDed
-    line_a ──┬── effective value = a AND b
-    line_b ──┘
-
-  OR-bridge: shorted lines behave as if ORed
-    line_a ──┬── effective value = a OR b
-    line_b ──┘
-
-  Dominant-bridge: one line forces its value on the other
-    (depends on driver strengths)
-```
-
-Detection requires input combinations where the two lines have different
-intended values: one must be 0, the other must be 1.
-
-### 2.5 IDDQ Testing
-
-**Concept:** In CMOS (complementary metal-oxide-semiconductor), a defect-free circuit has near-zero static current
-(only leakage). A defect (bridge, gate oxide short, stuck-open) creates a
-DC path from VDD to GND, causing elevated quiescent supply current.
-
-- **Defect-free** — IDDQ ≈ nA to uA range (leakage only)
-- **Defective** — IDDQ ≈ uA to mA range (defect current + leakage)
-
-Test procedure:
-1. Apply input vector
-2. Wait for circuit to settle
-3. Measure IDD (supply current)
-4. Compare against threshold
-5. Repeat for multiple vectors
-
-**Practical limitations at advanced nodes (< 28nm):**
-- Leakage current increases exponentially with each node
-  - 180nm: ~1 nA/gate → IDDQ works great
-  - 45nm:  ~100 nA/gate → IDDQ marginal
-  - 7nm:   ~1-10 uA/gate → IDDQ nearly impossible for large designs
-- Defect current becomes indistinguishable from normal leakage
-- Statistical methods (delta-IDDQ) partially compensate but add complexity
-
-### 2.6 Cell-Aware Fault Models
-
-**Why needed below 28nm:** Traditional stuck-at and TDF models assume faults
-at cell boundaries (inputs/outputs). But at advanced nodes, **intra-cell
-defects** (opens/shorts within the transistor-level layout) can cause failures
-not modeled by pin-level faults.
-
-```ascii-graph
-  Standard cell internal view (simplified NAND2):
-
-    VDD ──┬── PMOS_A ──┬── PMOS_B ──┬── OUT
-          │            │            │
-          └────────────┴────────────┘
-                                    │
-    GND ──── NMOS_A ──── NMOS_B ────┘
-
-  Intra-cell defects:
-    - Open on PMOS_A drain (not modeled by SA on inputs/output)
-    - Short between NMOS_A gate and drain
-    - Resistive via on internal metal connection
-```
-
-**Cell-aware test flow:**
-1. Library provider characterizes each cell for internal defects using SPICE
-2. Defect list (shorts, opens within layout) is generated per cell
-3. ATPG (Automatic Test Pattern Generation) tool uses this defect list instead of simple SA/TDF models
-4. Typically adds 5-15% more patterns beyond TDF tests
-5. Catches 2-5% additional defective parts in silicon
-
-**Industry adoption:** Cell-aware testing is now standard at 16nm and below.
-Synopsys TetraMAX, Cadence Modus, and Siemens Tessent all support it.
-
-### 2.7 Fault Coverage Calculation
-
-```ascii-graph
-  Fault Coverage (FC) = (Detected Faults) / (Total Faults - Untestable Faults)
-
-  Where:
-    Detected Faults = faults proven detected by test patterns
-    Untestable Faults = ATPG-untestable (tied, blocked, redundant)
-
-  Test Coverage (TC) = (Detected Faults) / (Total Faults)
-    -- more conservative, does not exclude untestable
-
-  Typical Industry Targets:
-  ─────────────────────────────────────────────
-  Fault Model         │ Target FC
-  ─────────────────────────────────────────────
-  Stuck-at             │ > 98% (often > 99%)
-  Transition (TDF)     │ > 95% (> 97% for auto/safety)
-  Cell-aware           │ > 92%
-  Path delay           │ Selective paths only
-  Bridging             │ > 90%
-  ─────────────────────────────────────────────
-
-  Defect Coverage Metrics (used for automotive ISO 26262):
-    DPPM = Defective Parts Per Million
-    Target: < 1 DPPM for ASIL-D automotive ICs
-```
+The lesson is stark: even 99% coverage at 90% yield ships ~1000 bad parts per million. Each additional *nine* of coverage cuts escapes ~10×, which is exactly why automotive **ASIL-D** (<1 DPPM) demands >99.9% coverage across multiple fault models *plus* burn-in — and why the last fraction of a percent, not the first 98%, is where the pattern count and engineering cost pile up.
 
 ---
 
-## 3. ATPG Algorithms
+## 4. ATPG: a Boolean search with two obligations
 
-### 3.1 D-Algorithm
+Given a fault model, ATPG must find, for each fault, an input pattern that makes the fault *visible* at an output. Every ATPG algorithm — from 1966 to today's tools — is a search satisfying two obligations.
 
-The **D-algorithm** (Roth, 1966) was the first complete ATPG algorithm. It uses
-a **5-valued logic system**: {0, 1, D, D', X}.
+### 4.1 Activate, then propagate
 
-```text
-  D  = 1 in good circuit, 0 in faulty circuit (fault effect)
-  D' = 0 in good circuit, 1 in faulty circuit (complement of D)
-  X  = unknown / unassigned
-```
+To detect a fault you must:
 
-**Core concepts:**
+1. **Activate** it — drive the fault site to the *opposite* of its stuck value, so the good and faulty circuits *differ* there. The classic bookkeeping uses the symbol $D$ = "1 in the good circuit, 0 in the faulty" (and $D'$ for the reverse), so activation creates a $D$ at the site.
+2. **Propagate (sensitize)** — choose a path from the site to an observable output and set every *side input* along it to its **non-controlling value** (0 for an OR, 1 for an AND), so the $D$ passes through unblocked and reaches a pseudo-PO.
+3. **Justify** — work backward from all the required internal values to a consistent assignment of the primary/pseudo-primary inputs.
 
-- **D-frontier:** Set of gates whose output is X but at least one input carries
-  D or D'. These are candidate gates for **propagating** the fault effect
-  toward an output.
+That is the entire problem, and it is **NP-complete** — it reduces from SAT, because "does an input assignment exist that makes this output differ" is a satisfiability question. The two work-lists that organize the search are the **D-frontier** (gates poised to propagate the fault effect forward) and the **J-frontier** (assigned values not yet justified backward).
 
-- **J-frontier:** Set of gates whose output is justified (assigned 0 or 1) but
-  whose inputs have not yet been determined. These need **backward
-  justification**.
+### 4.2 The algorithmic ladder: D-algorithm → PODEM → FAN
 
-**Algorithm steps:**
-1. **Activate the fault:** Force the faulty line to the opposite of its stuck
-   value. This creates D or D' at the fault site.
-2. **Propagate (D-drive):** Push D/D' through gates toward a primary output
-   (using D-frontier).
-3. **Justify (backtrack):** Assign values to primary inputs to justify all
-   internal line values (using J-frontier).
-4. **Backtrack:** If a conflict arises, undo the last decision and try
-   alternatives.
+The history is a story of *shrinking the decision space*:
 
-#### Worked Example: 3-Gate Circuit (Successful Detection)
+- **D-algorithm** (Roth, 1966) — the first complete algorithm. It makes decisions on *internal* signal lines. The flaw: an internal choice can conflict with the circuit's logic far from where it was made, so it backtracks a lot.
+- **PODEM** (Goel, 1981) — the key insight: **only ever decide values at primary inputs**, then *forward-imply* to see what happens. Since every state is a real, consistent input assignment by construction, whole classes of internal conflicts cannot arise, and the decision space is exactly the input space rather than the (much larger) space of all internal-line assignments. It *backtraces* an objective to a PI, sets it, simulates, and checks.
+- **FAN** (Fujiwara–Shimono, 1983) — accelerates PODEM with **multiple backtrace** (justify several objectives at once), **headlines** (fan-out-free regions solved directly), and unique-sensitization shortcuts. Modern tools are enhanced FAN plus static learning and massive parallelism.
 
-```ascii-graph
-  Circuit:
+The intuition to keep is *PODEM's*: decide at the inputs, imply forward, never paint yourself into a corner with an unjustifiable internal guess.
 
-    a ──┐
-        ├── G1 (AND) ── d ──┐
-    b ──┘                   ├── G2 (OR) ── e ──┐
-                            │                   ├── G3 (AND) ── Z (PO)
-              c ────────────┘                   │
-                                                │
-              f ────────────────────────────────┘
+### 4.3 Redundancy is a free by-product
 
-  Gates:
-    G1 = AND(a, b)       → d = ab
-    G2 = OR(d, c)        → e = d + c = ab + c
-    G3 = AND(e, f)       → Z = ef = (ab + c)f
-
-  Fault target: d/SA0 (output of G1 stuck-at-0)
-  This means: in good circuit d = 1, in faulty circuit d = 0
-  So we want d = D (good=1, faulty=0)
-
-  ──────────────────────────────────────────────────
-  Step 1: ACTIVATE the fault
-  ──────────────────────────────────────────────────
-  To create D at d (d must be 1 in good circuit):
-    G1 = AND(a, b) = 1  →  a = 1, b = 1
-    d = D  (good: 1, faulty: 0)   ← D-frontier = {G2}
-
-  ──────────────────────────────────────────────────
-  Step 2: PROPAGATE (D-drive) through G2
-  ──────────────────────────────────────────────────
-  G2 = OR(d, c) = OR(D, c)
-  To propagate D through an OR gate: set all other inputs to 0
-    → c = 0  (non-controlling value for OR)
-  Now: e = D  (good: 1, faulty: 0)   ← D-frontier = {G3}
-
-  IMPLICATION (forward propagate all assignments):
-    a=1, b=1, c=0 → d = 1·1 = 1 → d = D
-    d=D, c=0 → e = D + 0 = D → e = D
-  No conflicts so far.
-
-  ──────────────────────────────────────────────────
-  Step 3: PROPAGATE through G3 to PO
-  ──────────────────────────────────────────────────
-  G3 = AND(e, f) = AND(D, f)
-  To propagate D through an AND gate: set all other inputs to 1
-    → f = 1  (non-controlling value for AND)
-  Now: Z = D·1 = D  ← D reached a PO!
-
-  IMPLICATION:
-    a=1, b=1, c=0, f=1 → Z = D
-  All assignments consistent. No J-frontier entries.
-
-  ──────────────────────────────────────────────────
-  Step 4: JUSTIFY (backtrace to PIs)
-  ──────────────────────────────────────────────────
-  All values are already justified at PIs:
-    a = 1, b = 1, c = 0, f = 1
-
-  TEST VECTOR: (a, b, c, f) = (1, 1, 0, 1)
-
-  ──────────────────────────────────────────────────
-  VERIFICATION
-  ──────────────────────────────────────────────────
-  Good circuit:   d=1, e=1+0=1, Z=1·1=1
-  Faulty circuit: d=0, e=0+0=0, Z=0·1=0
-  Z_good=1 ≠ Z_faulty=0 → fault DETECTED. ✓
-
-  D-algorithm result: d/SA0 is detected by input vector (1,1,0,1).
-```
-
-#### Worked Example: Backtracking (Redundant Fault Identification)
-
-```ascii-graph
-  Circuit (same topology, different fault target):
-
-    a ──┐
-        ├── G1 (AND) ── d ──┐
-    b ──┘                   ├── G2 (OR) ── e ──┐
-                            │                   ├── G3 (AND) ── Z (PO)
-              c ────────────┘                   │
-                                                │
-              f ────────────────────────────────┘
-
-  Fault target: e/SA1 (output of G2 stuck-at-1)
-  To activate: e must be 0 in good circuit → e = D' (good=0, faulty=1)
-
-  ──────────────────────────────────────────────────
-  Step 1: ACTIVATE
-  ──────────────────────────────────────────────────
-  e = 0 in good circuit → G2 = OR(d, c) = 0 → d = 0 AND c = 0
-  d = 0 → G1 = AND(a, b) = 0 → at least one of a, b = 0
-
-  Assign: c = 0.  Now e = D'.
-
-  ──────────────────────────────────────────────────
-  Step 2: PROPAGATE D' through G3
-  ──────────────────────────────────────────────────
-  G3 = AND(e, f) = AND(D', f)
-  To propagate D' through AND: need f = 1
-  Now Z = D'·1 = D' ← D' reached PO!
-
-  IMPLICATION: a = ?, b = ?, c = 0, f = 1
-  d = AND(a, b) = 0 (since e=0 requires d=0)
-  At least one of {a, b} must be 0.
-
-  ──────────────────────────────────────────────────
-  Step 3: JUSTIFY
-  ──────────────────────────────────────────────────
-  Pick a = 0, b = 0 (satisfies d=0).
-  All consistent: a=0, b=0, c=0, f=1 → d=0, e=D', Z=D'
-
-  TEST VECTOR: (a, b, c, f) = (0, 0, 0, 1)
-
-  VERIFICATION:
-    Good circuit:   d=0, e=0+0=0, Z=0·1=0
-    Faulty circuit: d=0, e=1 (stuck), Z=1·1=1
-    Z_good=0 ≠ Z_faulty=1 → fault DETECTED. ✓
-
-  No backtracking was needed for this fault.
-```
-
-#### Worked Example: Backtracking Required
-
-```ascii-graph
-  Circuit:
-
-    a ──┐
-        ├── G1 (AND) ── d ──┐
-    b ──┘                   ├── G2 (OR) ── e ──┐
-                            │                   ├── G3 (AND) ── Z (PO)
-              c ────────────┘                   │
-                                                │
-              b ─────────────────── NOT ── g ───┘
-
-  G1 = AND(a, b) → d = ab
-  G2 = OR(d, c)  → e = d + c
-  G4 = NOT(b)    → g = b'
-  G3 = AND(e, g) → Z = e · g = (ab + c) · b'
-
-  Fault target: d/SA0
-
-  ──────────────────────────────────────────────────
-  Step 1: ACTIVATE
-  ──────────────────────────────────────────────────
-  d = D → a = 1, b = 1
-
-  ──────────────────────────────────────────────────
-  Step 2: PROPAGATE through G2
-  ──────────────────────────────────────────────────
-  G2 = OR(d, c): propagate D → c = 0 → e = D
-  So far: a=1, b=1, c=0, e=D
-
-  ──────────────────────────────────────────────────
-  Step 3: PROPAGATE through G3
-  ──────────────────────────────────────────────────
-  G3 = AND(e, g) = AND(D, g): propagate D → need g = 1
-  g = NOT(b) = b' = 1 → b = 0
-
-  ── BACKTRACK ── CONFLICT DETECTED!
-    b = 1 (from Step 1, fault activation) AND b = 0 (from Step 3)
-    → Cannot satisfy both simultaneously.
-
-  Backtrack to Step 3: no alternative propagation path from G3.
-  Backtrack to Step 2: no alternative gate to propagate D from G2
-    (G2's only fanout is G3).
-  Backtrack to Step 1: d/SA0 requires a=1, b=1 -- no alternative.
-
-  Exhaustive search complete: d/SA0 is REDUNDANT.
-
-  Algebraic verification:
-    Z = (ab + c) · b'
-    With b=1: Z = (a + c) · 0 = 0   (always 0!)
-    With b=0: d = a·0 = 0, so d/SA0 makes d=0 in both good and faulty.
-    Fault has NO effect on Z in any input combination → REDUNDANT.
-
-  The D-algorithm correctly proves redundancy through exhaustive backtracking.
-  This also reveals that gate G1 is logically redundant (Z never depends on a
-  when b=1, and d=0 when b=0).
-```
-
-### 3.2 PODEM (Path-Oriented Decision Making)
-
-**Key improvement over D-algorithm:** PODEM makes decisions ONLY at primary
-inputs, never at internal lines. This drastically reduces the search space.
-
-```ascii-graph
-  PODEM Algorithm:
-  ================
-  1. Determine an objective (line value needed for activation/propagation)
-  2. BACKTRACE: Map the objective to a primary input assignment
-  3. IMPLY: Forward simulate from PIs to determine all internal values
-  4. Check: fault detected? → SUCCESS
-            fault undetectable? → BACKTRACK (flip PI assignment)
-            neither? → set new objective, goto 1
-
-  Advantage: No internal line decisions → no inconsistencies from
-             conflicting internal assignments. Backtracking is simpler.
-
-  D-algorithm decides: "internal line X should be 1" (may conflict later)
-  PODEM decides: "PI a should be 1" (always consistent with itself)
-```
-
-### 3.3 FAN Algorithm
-
-FAN (Fanout-Oriented Test Generation) enhances PODEM with:
-
-1. **Multiple backtrace:** When an objective requires a gate input = 1 and the
-   gate has multiple fanout-free inputs, FAN traces ALL of them simultaneously
-   rather than picking one.
-
-2. **Headline:** A unique-D-driven gate whose output MUST carry D/D' for fault
-   propagation. FAN identifies these mandatory assignments early, avoiding
-   unnecessary backtracking.
-
-3. **Stop lines:** Fanout points where backtrace stops and direct implications
-   are made, reducing the search space.
-
-**Performance comparison:**
-
-Typical ATPG speed (patterns/second on industrial circuits):
-
-- **D-Algorithm** — ~100-1,000 (rarely used today)
-- **PODEM** — ~10,000-50,000
-- **FAN** — ~50,000-200,000
-- **Modern tools** — ~1,000,000+ (use enhanced FAN + learning + parallelism)
-
-### 3.4 ATPG Fault Classifications
-
-After ATPG runs, every fault is classified:
-
-```ascii-graph
-  ┌─────────────────────────────────────────────────────────┐
-  │                    Total Faults                         │
-  ├──────────────────┬──────────────────────────────────────┤
-  │    Detected      │          Not Detected                │
-  │  (test exists)   ├──────────────┬───────────────────────┤
-  │                  │  Undetected  │   ATPG Untestable     │
-  │                  │ (effort      │                       │
-  │                  │  limit hit)  ├─────────┬─────────────┤
-  │                  │              │ ATPG    │ Not          │
-  │                  │              │ proved  │ analyzed     │
-  │                  │              │ untestable│            │
-  └──────────────────┴──────────────┴─────────┴─────────────┘
-
-  ATPG Untestable sub-categories:
-  ─────────────────────────────────────────────
-  TIED:       Line is tied to constant (e.g., unused input tied to VDD)
-  BLOCKED:    Fault effect cannot propagate to any observable point
-  REDUNDANT:  Fault doesn't change circuit function (as shown in example above)
-  UNUSED:     Line drives nothing observable
-```
+When ATPG *exhaustively* fails to find any activating-and-propagating pattern, the fault is **redundant** — proof that the faulted line cannot affect any output for *any* input, i.e. the logic is **logically redundant** and could be removed. So ATPG is not only a test generator but a redundancy detector and a DFT-quality auditor: unexpectedly many untestable faults usually means a controllability/observability blind spot the designer should fix (with a test point, §6.1) rather than accept.
 
 ---
 
-## 4. At-Speed Testing
+## 5. At-speed test and on-chip clocking
 
-### 4.1 Launch-Off-Shift (LOS)
+Delay faults (§3.2) only appear at functional speed, and detecting one needs the two-vector launch-capture separated by *exactly one functional clock period*. Two schemes place that pair, trading ATPG difficulty against clocking difficulty:
 
-Also called "skewed-load" or "launch-from-shift."
+- **Launch-off-capture (LOC / broadside).** Shift in $V_1$, drop $SE$ with relaxed timing, then apply a launch clock and a capture clock one functional period apart. Here $V_2 = f(V_1)$ is whatever the *combinational logic* produces from $V_1$ — so ATPG is ordinary combinational generation, but you cannot freely choose $V_2$, which slightly *lowers* achievable coverage.
+- **Launch-off-shift (LOS / skewed-load).** The last *shift* clock launches the transition, so $V_2$ is $V_1$ shifted by one bit — high controllability and **higher coverage**, but $SE$ must switch from shift to capture within one at-speed period, an extremely tight constraint on the highest-fan-out net in the chip.
 
-```wavedrom
-{ "signal": [
-  { "name": "CLK (shift → capture)", "wave": "01010.1010" },
-  { "name": "SE",                     "wave": "1....0...." }
-], "head": { "text": "LOS (Launch-Off-Shift): the last shift clock launches; capture is one at-speed T_func later; SE must drop between launch and capture (tight)" } }
+The remaining problem is *generating* a precise GHz launch-capture pair. An ATE cannot place edges 1 ns apart with the <10 ps accuracy needed — tester skew and jitter make external at-speed clocking unreliable above a few hundred MHz. So the chip generates the pair itself: an **on-chip clock controller (OCC)** takes the slow shift clock from the ATE, and during capture muxes in exactly one launch and one capture pulse from the locked on-die **PLL**, then gates the clock off to prevent extra captures. The ATE supplies only slow shift and a "go" handshake; the precise timing is manufactured on-chip. This is the direct silicon check on the timing that [STA](01_STA.md) signed off.
+
+---
+
+## 6. BIST: bringing the tester on-chip
+
+External scan + ATE handles most random logic, but it has three limits: the ATE caps out below functional speed, some blocks (dense memories, analog) are unreachable by logic ATPG, and there is no test *in the field*. **Built-in self-test (BIST)** answers all three by embedding a pattern generator and a response checker in the silicon — enabling at-speed test, test of otherwise-unreachable blocks, cheaper ATE, and *periodic in-system self-test* (a hard requirement for functional-safety parts under ISO 26262, which run LBIST/MBIST at power-on and during operation).
+
+### 6.1 Logic BIST: pseudo-random stimulus, signature response
+
+The cheapest on-chip pattern source is a **linear-feedback shift register (LFSR)**: a shift register with XOR feedback whose taps form a **primitive polynomial**, which guarantees a **maximal-length** sequence cycling through all $2^n - 1$ nonzero states — a deterministic stream that *looks* random. The response side is a **multiple-input signature register (MISR)**, an LFSR fed by the circuit outputs that compacts an entire test session into one $n$-bit **signature**, compared against a precomputed golden value. Compaction is lossy — a faulty circuit can alias to the good signature — but only with probability $2^{-n}$, so a 32-bit MISR makes aliasing (≈0.23 ppb) negligible.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart LR
+    L["LFSR\n(pseudo-random stimulus)"] --> CUT["Logic under test\n(scan chains)"] --> M["MISR\n(compacts to a signature)"]
+    CT["BIST controller"] --> L
+    M --> Q{"signature ==\ngolden?"}
 ```
 
-Sequence: shift N-1 bits with `SE=1` (slow clock) → `SE` goes LOW → launch (last shift edge) → capture at-speed.
+The catch is **random-pattern-resistant (RPR) faults**: some faults need a specific input that pseudo-random patterns almost never produce. A 20-input AND needs all 20 inputs high — probability $2^{-20} \approx 10^{-6}$, so 10,000 LFSR patterns detect it ~1% of the time. This is the *same* signal-probability collapse from §1, and it caps pure-LBIST coverage at a disappointing **80–90%**. The fix is **test-point insertion**: add controllable **control points** (force a hard-to-set node) and observable **observation points** (expose a hard-to-see node) — the direct antidote to the controllability/observability deficits ATPG's redundancy analysis flags. About **2–5%** area buys the jump to **>95%** LBIST coverage.
 
-**V1 pattern** = state after N-1 shift clocks
-**V2 pattern** = state after the last (Nth) shift clock = V1 shifted by one position
+### 6.2 Memory BIST: memories need their own test
 
-**Critical SE timing:** SE must transition from HIGH to LOW between the last
-shift clock and the capture clock, within ONE functional clock period. This is
-the tightest timing constraint in LOS.
+Memories are the largest, densest, most defect-prone part of a modern die, and logic ATPG cannot test them — an SRAM array is not a net of standard cells but a regular grid with its own failure physics (cell stuck-at, transition, **coupling** between neighbors, **address-decoder** faults, pattern-sensitivity). So a dedicated **MBIST** engine applies **March algorithms**: sequences of read/write operations swept in ascending and descending address order. The canonical **March C-** is:
 
-### 4.2 Launch-Off-Capture (LOC / Broadside)
+$$
+\{\,\Updownarrow(w0);\ \Uparrow(r0,w1);\ \Uparrow(r1,w0);\ \Downarrow(r0,w1);\ \Downarrow(r1,w0);\ \Updownarrow(r0)\,\}
+$$
 
-```wavedrom
-{ "signal": [
-  { "name": "CLK (shift → launch/capture)", "wave": "01010..1010" },
-  { "name": "SE",                            "wave": "1.0........" }
-], "head": { "text": "LOC (Launch-Off-Capture): SE goes LOW well before the launch clock (relaxed); launch then capture one T_func later" } }
+Its **10N** operations (for $N$ words) detect all stuck-at and transition faults, address faults, and most coupling faults: the *ascending* passes catch coupling from a lower-addressed aggressor, the *descending* passes catch the reverse, so together they cover every ordered pair. Richer algorithms (March SS at 22N) add neighborhood-pattern-sensitive coverage at more test time.
+
+Because memory dominates both area and defect count, MBIST pairs with **built-in self-repair (BISR)**: the engine logs failing addresses, a repair-analysis step allocates **spare rows/columns**, and the remap is burned into fuses at test — recovering otherwise-scrapped dies and directly lifting the $Y$ in the defect-level equation.
+
+---
+
+## 7. Boundary scan and test compression: reaching the pins, and surviving the data volume
+
+### 7.1 Boundary scan (JTAG / IEEE 1149.1): board-level access
+
+Scan solves *inside-the-chip* access; once chips are soldered onto a board, a *new* access problem appears — the nets *between* packages are inaccessible to a bed-of-nails probe on a dense modern PCB. **Boundary scan** puts a scan cell at *every chip I/O*, chained into a **boundary register** reachable over a standard 4-wire **Test Access Port (TAP)**: `TCK`, `TMS`, `TDI`, `TDO`. The `EXTEST` instruction drives known values out of one chip's output cells and captures them at the neighbor's input cells, so a broken or shorted board trace shows up as a mismatch — testing *interconnect*, not logic. The mandatory instruction set is tiny (`BYPASS`, `EXTEST`, `SAMPLE/PRELOAD`); the TAP is a small FSM navigated by `TMS`, whose 16 states you can look up when you need them.
+
+The same serial port has become the universal on-chip debug and instrument backbone. When an SoC grows to hundreds of embedded instruments (MBIST controllers, PLLs, sensors, monitors), a single fixed instruction-register-selected data register does not scale, so **IJTAG (IEEE 1687)** replaces it with a **reconfigurable scan network**: **segment-insertion bits (SIBs)** dynamically splice only the instruments you are accessing into the chain, so access time scales with what you *use*, not with the total instrument count.
+
+### 7.2 Test compression: breaking the pattern-volume wall
+
+Full scan produces enormous test data. Uncompressed, the volume is (scan cells) × (patterns) × 2, which for a 2M-flop design and tens of thousands of patterns runs to *gigabits* — beyond ATE memory — while test time scales with chain length (§2.3). Both costs must come down together, and one observation makes it possible: **test cubes are almost entirely don't-cares.** ATPG typically specifies only **1–5%** of scan cells per pattern; the rest can be filled freely.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart LR
+    ATE1["ATE\n(few channels)"] --> DEC["Decompressor\n(LFSR + phase shifter)"]
+    DEC --> CH["Hundreds of short internal chains"]
+    CH --> CMP["Compactor\n(XOR / MISR)"]
+    CMP --> ATE2["ATE\n(few channels)"]
 ```
 
-Sequence: shift all N bits with `SE=1` → `SE` goes LOW (no tight constraint) → launch clock → capture clock one T_func later.
+So a few tester channels drive a **decompressor** (an LFSR + phase shifter) that expands them into *hundreds* of short internal chains, and the responses are squeezed back through an XOR/MISR **compactor** to a few output channels. This decouples internal chain count from pin count — the very constraint of §2.3 — cutting both data volume and test time by the compression ratio, typically **10–100×**.
 
-**V1 pattern** = directly loaded via scan shift
-**V2 pattern** = functional response to V1 (what the combinational logic
-produces from V1)
+The ratio is not unbounded, and the limit is theoretical, not a tool weakness. With $c$ input channels shifting for $L$ cycles, the ATE supplies $c \cdot L$ **free variables**; a pattern with $s$ specified care bits imposes $s$ linear equations on those variables, solvable with high probability only when $c \cdot L \gtrsim s$ (with ~20 bits of margin). Hence
 
-### 4.3 LOS vs LOC Comparison
+$$
+\text{compression ratio} \;\approx\; \frac{N_{\text{scan}}}{s} \quad\text{is bounded by the care-bit density } \frac{s}{N_{\text{scan}}}\text{, not by cleverness.}
+$$
 
-| Attribute | LOS | LOC |
+On the response side, compaction has its own cost: an unknown ($X$) value from an uninitialized flop or a bus corrupts the compactor and can mask good bits, so real designs spend effort on **X-masking / X-tolerant compactors** and on eliminating X-sources. Compression trades a little observability (through aggregation) and some silicon (the codecs) for a large drop in ATE time and data — almost always a winning trade, which is why every large SoC ships with it.
+
+---
+
+## 8. Scaling and economics: hierarchical DFT and the cost/quality trade
+
+**Flat DFT does not scale.** Stitching a 50M-gate SoC into top-level chains and running one ATPG job blows up on every axis: 100K-deep chains push test time past budget, full-chip pattern counts hit hundreds of thousands, ATPG runtime runs to days on >100 GB of RAM, and third-party IP must be re-characterized at every integration. The fix mirrors how the chip was *designed* — **hierarchically**. Each block is wrapped (IEEE 1500, a boundary register for an embedded core) so it can be tested in **isolation**; the IP provider generates and *verifies* its block patterns once, and the SoC integrator **retargets** them through the top-level compression network, adding only a small interconnect-test pattern set. Blocks close DFT in parallel, patterns are optimal per block, and diagnosis localizes to a block.
+
+**And the whole field is one economic trade-off.** Every mechanism on this page buys test *quality* with some mix of *area*, *design effort*, and *test time*:
+
+| Lever | Buys | Costs |
 |---|---|---|
-| V1–V2 relationship | V2 = V1 shifted by 1 bit | V2 = func(V1) |
-| V1 controllability | full (shift any value) | full (shift any value) |
-| V2 controllability | constrained (1-bit shift of V1) | low (depends on circuit function) |
-| Clock speed | fast scan enable needed | only functional clock at-speed |
-| Test generation | harder (correlated V1/V2) | easier (combinational ATPG) |
-| Coverage | higher | slightly lower |
+| Scan (§2) | the entire combinational reduction; controllability/observability | ~a few % area, SE routing, shift power |
+| At-speed / TDF (§5) | delay-defect coverage; STA silicon validation | OCC hardware, more patterns, tighter timing |
+| Cell-aware (§3.3) | intra-cell defects, a few % more escapes caught | +5–15% patterns |
+| Test points (§6.1) | LBIST 80–90% → >95% | +2–5% area |
+| Compression (§7.2) | 10–100× less test time and data | codec area, some X-handling, slight coverage loss |
+| BISR (§6.2) | recovers defective memory dies (raises $Y$) | spare arrays, repair logic, fuses |
 
-### 4.4 At-Speed Test Setup
+The governing equation is still $DL = 1 - Y^{1-T}$ from §3.5: a consumer SoC lives happily at ~99% stuck-at plus at-speed and calls it done; an ASIL-D automotive part spends heavily to reach >99.9% across stuck-at, transition, and cell-aware — plus burn-in — to get under 1 DPPM. The same yield arithmetic dominates **3D / chiplet** stacks, where the die must be proven **Known-Good (KGD)** *before* assembly because stack yield multiplies:
 
-```ascii-graph
-  On-chip at-speed test infrastructure:
-  ======================================
+$$
+Y_{\text{stack}} \;=\; \prod_{i} Y_{\text{KGD},i}, \qquad \text{e.g. an 8-die stack at } 0.995 \text{ each} \Rightarrow 0.995^8 \approx 0.96
+$$
 
-  ┌────────────────────────────────────────────────┐
-  │                    Chip                         │
-  │                                                │
-  │   ┌─────────┐    ┌──────────┐    ┌──────────┐ │
-  │   │ PLL     │    │ Clock    │    │  Scan    │ │
-  │   │ (bypass │───>│ Mux/Ctrl │───>│  Chains  │ │
-  │   │  mode)  │    │          │    │          │ │
-  │   └─────────┘    └──────────┘    └──────────┘ │
-  │        │              ^                        │
-  │        │         test_mode                     │
-  │   ext_clk             scan_en                  │
-  └────────┼──────────────┼────────────────────────┘
-           │              │
-        Tester         Tester
-
-  Key requirements:
-  1. PLL bypass mode: During scan shift, use external slow clock from tester.
-     During capture, either:
-     (a) Use PLL-generated at-speed clock (PLL must lock during shift), OR
-     (b) Use on-chip oscillator / DFT clock controller
-  
-  2. OCC (On-Chip Clock Controller): Generates precise launch-capture
-     clock pairs while rest of the time free-running clock is gated.
-
-  3. scan_enable timing: 
-     - LOC: Must be stable LOW at least setup time before launch clock
-     - LOS: Must transition HIGH→LOW between last shift and capture
-             (within one functional period -- often < 1 ns at GHz speeds)
-```
+so a per-die escape that would be a nuisance in a monolith becomes a scrapped *stack* of eight good dies — which is why 3D parts demand full scan + MBIST + TSV/interconnect test to <10 DPM per die *before* they are ever bonded.
 
 ---
 
-## 5. Test Compression
+## 9. Numbers to memorize
 
-### 5.1 The Problem
-
-```ascii-graph
-  Without compression:
-    Scan cells: 2,000,000
-    Patterns:   5,000 (stuck-at) + 10,000 (TDF)
-    Bits per pattern: 2 x 2,000,000 = 4,000,000 (stimulus + response)
-    Total test data: 15,000 x 4,000,000 = 60 Gbits = 7.5 GB
-
-  ATE memory: typically 256 Mbit - 4 Gbit per channel
-  → Cannot store all patterns! Need compression.
-```
-
-### 5.2 EDT / DFTMAX Architecture
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    T["Tester<br/>scan_in[0:3]<br/>(4 external channels)"] --> DEC["Decompressor<br/>(LFSR + phase shifters)"]
-    DEC --> CH["200 internal scan chains<br/>(~10K FFs each)"]
-    CH --> CMP["Compressor<br/>(MISR / XOR network)"]
-    CMP --> TO["scan_out<br/>(few external channels)"]
-    classDef ext fill:#dcfce7,stroke:#15803d,color:#000
-    classDef int fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class T,TO ext
-    class DEC,CH,CMP int
-```
-
-A few tester channels drive a decompressor that fans out to hundreds of short internal chains; the responses are compacted back to a few channels — this is what makes scan test feasible despite limited tester pins.
-
-**Decompressor (LFSR + Phase Shifters):**
-
-The decompressor expands a small number of external scan channels into many
-internal chains. It uses a Linear Feedback Shift Register (LFSR) seeded by
-external data, with phase shifter logic (XOR taps) to create pseudo-random
-but deterministic patterns for each internal chain.
-
-Key insight: Most scan cell values are don't-care (X) for any given pattern.
-ATPG only needs to specify ~1-5% of scan cells. The LFSR naturally fills the
-rest with pseudo-random values.
-
-**Compactor (XOR network / space compactor):**
-
-The compactor compresses responses from 200 internal chains down to 4 external
-channels using an XOR tree network.
-
-```ascii-graph
-  Example: 8 internal chains → 2 external outputs
-
-  chain[0] ──┐
-  chain[1] ──┼── XOR ──┐
-  chain[2] ──┼── XOR ──┼── XOR ── out[0]
-  chain[3] ──┘         │
-                        │
-  chain[4] ──┐         │
-  chain[5] ──┼── XOR ──┘
-  chain[6] ──┼── XOR ──┐
-  chain[7] ──┘         └──────── out[1]
-```
-
-### 5.3 X-Masking and X-Tolerance
-
-**Problem:** Unknown (X) values in scan chain responses corrupt the compactor
-output. One X can mask multiple good bits.
-
-```text
-  Without X-masking:
-    chain[0] response: 1 0 1 1 0  (good)
-    chain[1] response: X 1 0 1 X  (two unknowns)
-    XOR output:        X 1 1 0 X  ← two bits lost!
-
-  Sources of X:
-    - Uninitialized FFs (bus state machines, counters)
-    - Tri-state buses captured during scan
-    - Analog block outputs
-    - Multi-clock domain FFs during capture
-```
-
-**X-masking techniques:**
-1. **X-bounding:** Replace X-sources with mux + scan-controllable value
-2. **X-blocking:** Mask specific chain outputs during compaction per-pattern
-3. **X-tolerant compactors:** Use time-domain compaction (MISR with
-   selective masking) to tolerate some X values
-4. **X-chain:** Route X-heavy FFs into dedicated chains excluded from compactor
-
-Reducing X-values is a critical design-for-test task. Every X costs test
-quality.
+| Parameter | Typical | Why this value (section) |
+|---|---|---|
+| Stuck-at faults for $N$ lines | $2N$, collapse to $0.3\text{–}0.5N$ | linear model + equivalence/dominance (§3.1) |
+| Stuck-at coverage target | >99% | defect level vs. DPPM (§3.4–3.5) |
+| Transition coverage target | 90–95% (higher for auto) | at-speed delay defects (§3.2) |
+| Defect level | $DL = 1 - Y^{1-T}$ | the payoff equation (§3.5) |
+| Automotive ASIL-D target | <1 DPPM | needs >99.9% + burn-in (§3.5, §8) |
+| Scan mux / SDFF area | 15–20% per flop, few % net | scan overhead (§2.3) |
+| Scan chain length | 1K–10K flops/chain | test time vs. pins (§2.3) |
+| Shift-clock frequency | 10–50 MHz | limit shift power (§2.3) |
+| At-speed capture | functional freq (to 5 GHz+), via OCC | delay test needs functional period (§5) |
+| Test compression ratio | 10–100× | bounded by care-bit density (§7.2) |
+| Care-bit density per pattern | 1–5% | what makes compression work (§7.2) |
+| LFSR max sequence | $2^n - 1$ (primitive poly) | maximal-length stimulus (§6.1) |
+| MISR aliasing | $2^{-n}$ (32-bit ≈ 0.23 ppb) | signature compaction (§6.1) |
+| LBIST coverage w/o test points | 80–90% | random-pattern-resistant faults (§6.1) |
+| LBIST coverage w/ test points | >95% (+2–5% area) | controllability/observability aids (§6.1) |
+| March C- complexity | 10N ops | SAF + TF + coupling + address (§6.2) |
+| JTAG TAP wires | 4 (TCK/TMS/TDI/TDO) | board-level serial access (§7.1) |
+| Mandatory JTAG instructions | BYPASS, EXTEST, SAMPLE/PRELOAD | minimal boundary-scan set (§7.1) |
+| SoC test-time budget | 1–3 s on ATE | ATE cost ≈ \$0.01–0.10 / s / site (§8) |
 
 ---
 
-## 6. Logic BIST
+## 10. Worked problems
 
-### 6.1 Architecture
+**1 — Defect level from coverage (Williams–Brown).** A consumer part has yield $Y = 0.85$ and stuck-at coverage $T = 0.99$. Escapes: $DL = 1 - 0.85^{0.01} = 1 - e^{0.01\ln 0.85} = 1 - e^{-0.001625} \approx 0.001624 \approx 1{,}620\ \text{DPPM}$. To reach the automotive **<1 DPPM** at the same yield you need $Y^{1-T} > 1 - 10^{-6}$, i.e. $(1-T)\,|\ln Y| < 10^{-6}$, giving $T > 1 - 6.2\times10^{-6} \approx 99.9994\%$ — unreachable by ATPG alone, which is *why* safety flows add cell-aware faults, at-speed test, and burn-in rather than chasing coverage forever.
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    LFSR["LFSR<br/>(pattern generator)"] --> CUT["Circuit under test (CUT)"] --> MISR["MISR<br/>(signature analyzer)"]
-    CTRL["BIST controller"] --> LFSR
-    MISR --> CTRL
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef c fill:#fde68a,stroke:#b45309,color:#000
-    class LFSR,CUT,MISR s
-    class CTRL c
-```
+**2 — Scan test time and the case for compression.** $N = 2{,}000{,}000$ flops, $P = 15{,}000$ patterns, $f_{\text{shift}} = 20$ MHz. With $C = 200$ chains, $L = 10{,}000$, and $T_{\text{test}} \approx PL/f = 15{,}000 \times 10{,}000 / (20\times10^6) = 7.5\ \text{s}$ — over the 1–3 s budget. Push to $C = 2{,}000$ *internal* chains via a decompressor driven by, say, 20 ATE channels (a 100× compression): $L = 1{,}000$, $T_{\text{test}} \approx 0.75\ \text{s}$, without needing 2,000 physical scan pins. This is exactly the pin-count decoupling of §7.2.
 
-### 6.2 LFSR Theory
-
-An LFSR is a shift register with feedback through XOR gates defined by a
-**characteristic polynomial**.
-
-```ascii-graph
-  4-bit LFSR with polynomial x^4 + x + 1  (primitive)
-  =====================================================
-
-    ┌──────────────────────────────────────┐
-    │                                      │ (XOR feedback)
-    │   ┌────┐   ┌────┐   ┌────┐   ┌────┐ │
-    └──>│ Q3 ├──>│ Q2 ├──>│ Q1 ├──>│ Q0 ├─┘
-        └────┘   └────┘   └────┘   └────┘
-           │                  │        │
-           │                  └── XOR ─┘
-           │                      │
-           └── (feedback to Q3 input is XOR of Q1 and Q0)
-
-  Actually, for x^4 + x + 1:
-  Feedback: Q3_next = Q0 XOR Q1  (taps at positions 0 and 1)
-  
-  Or equivalently (external XOR form):
-  
-        ┌───────────────────────────── XOR <── feedback
-        │                               ^
-        v                               │
-    ┌────┐   ┌────┐   ┌────┐   ┌────┐  │
-    │ Q3 ├──>│ Q2 ├──>│ Q1 ├──>│ Q0 ├──┘
-    └────┘   └────┘   └────┘   └────┘
-
-  Sequence (seed = 1000):
-  ────────────────────────
-  Step  Q3 Q2 Q1 Q0
-    0    1  0  0  0
-    1    0  1  0  0
-    2    0  0  1  0
-    3    1  0  0  1
-    4    1  1  0  0
-    5    0  1  1  0
-    6    1  0  1  1
-    7    1  1  0  1
-    8    1  1  1  0
-    9    0  1  1  1
-   10    1  0  1  1  ← wait, let me recompute properly
-
-  For x^4 + x + 1, the feedback is: new_bit = Q0 XOR Q1
-
-  Step  [Q3 Q2 Q1 Q0]  new_bit = Q0 XOR Q1
-    0    1  0  0  0     0 XOR 0 = 0
-    1    0  1  0  0     0 XOR 0 = 0
-    2    0  0  1  0     0 XOR 1 = 1
-    3    1  0  0  1     1 XOR 0 = 1
-    4    1  1  0  0     0 XOR 0 = 0
-    5    0  1  1  0     0 XOR 1 = 1
-    6    1  0  1  1     1 XOR 1 = 0
-    7    0  1  0  1     1 XOR 0 = 1
-    8    1  0  1  0     0 XOR 1 = 1
-    9    1  1  0  1     1 XOR 0 = 1
-   10    1  1  1  0     0 XOR 1 = 1
-   11    1  1  1  1     1 XOR 1 = 0
-   12    0  1  1  1     1 XOR 1 = 0
-   13    0  0  1  1     1 XOR 1 = 0
-   14    0  0  0  1     1 XOR 0 = 1
-   15    1  0  0  0     ← back to initial state!
-
-  Maximum length sequence: 2^4 - 1 = 15 states (all nonzero states)
-```
-
-**Primitive polynomial** guarantees maximum-length sequence of 2^n - 1 states.
-
-Common primitive polynomials:
-
-```ascii-graph
-  Bits  Polynomial            Taps
-  ────  ──────────────────    ──────
-   4    x^4 + x + 1          [4,1]
-   8    x^8 + x^6 + x^5 + x^4 + 1  [8,6,5,4]
-  16    x^16 + x^15 + x^13 + x^4 + 1  [16,15,13,4]
-  32    x^32 + x^22 + x^2 + x + 1  [32,22,2,1]
-```
-
-**RTL (register-transfer level) for 4-bit LFSR:**
-
-```verilog
-module lfsr_4bit (
-    input  wire       clk, rst_n, enable,
-    output reg  [3:0] q
-);
-    // Polynomial: x^4 + x + 1
-    // Feedback: q[0] XOR q[1]
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            q <= 4'b1000;  // seed (must be nonzero)
-        else if (enable)
-            q <= {q[0] ^ q[1], q[3], q[2], q[1]};
-    end
-endmodule
-```
-
-### 6.3 Random Pattern Resistant Faults
-
-**Problem:** LFSR generates pseudo-random patterns. Some faults require very
-specific input combinations that have extremely low probability of occurrence
-in random patterns.
-
-```text
-  Example: An AND gate with 20 inputs
-    To detect SA0 on the output, ALL 20 inputs must be 1.
-    Probability with random patterns: (1/2)^20 = 1 in 1,048,576
-    Need ~1M patterns just for this ONE fault!
-
-  With 10,000 LFSR patterns: probability of detection ≈ 1%
-  These are "random pattern resistant" (RPR) faults.
-```
-
-**Typical LBIST (Logic Built-In Self-Test) coverage without help:** 80-90% (insufficient for production)
-
-### 6.4 Test Point Insertion
-
-To reach >95% LBIST coverage, **test points** are inserted into the logic.
-
-```ascii-graph
-  Control Point (AND-type):
-  ─────────────────────────
-  Before: signal_a ──────────────> (to logic)
-
-  After:  signal_a ──┐
-                     ├── AND ──> (to logic)
-  ctrl_FF (scan) ────┘
-
-  During BIST: ctrl_FF can force signal_a to 0 with 50% probability
-  During function: ctrl_FF = 1 (transparent)
-
-
-  Control Point (OR-type):
-  ────────────────────────
-  Before: signal_a ──────────────> (to logic)
-
-  After:  signal_a ──┐
-                     ├── OR ──> (to logic)
-  ctrl_FF (scan) ────┘
-
-  During BIST: ctrl_FF can force signal_a to 1 with 50% probability
-  During function: ctrl_FF = 0 (transparent)
-
-
-  Observation Point:
-  ──────────────────
-  Hard-to-observe signal ──> obs_FF (scan flip-flop)
-                              (added to scan chain, observed during shift)
-```
-
-Area overhead: 2-5% for test points to reach 95%+ LBIST coverage.
-
-### 6.5 Signature Analysis (MISR)
-
-**Multiple-Input Signature Register (MISR):** An LFSR-like structure that
-compresses all CUT responses into a single signature.
-
-```ascii-graph
-  k-bit MISR with m inputs:
-  
-  response[0] ──> XOR ─┐
-                       v
-                  ┌────────┐
-                  │  LFSR  │ (with feedback polynomial)
-                  │  stage │
-                  └────────┘
-  response[1] ──> XOR ─┐
-                       v
-                  ┌────────┐
-                  │  LFSR  │
-                  │  stage │
-                  └────────┘
-        ...         ...
-
-  After all P patterns applied:
-    MISR contains k-bit SIGNATURE
-
-  Compare signature with pre-computed GOLDEN signature:
-    Match    → PASS
-    Mismatch → FAIL
-```
-
-**Aliasing probability:**
-
-If the MISR has n bits, the probability that a faulty circuit produces the
-same signature as the good circuit (aliasing) is:
-
-```ascii-graph
-  P(alias) = 2^(-n)
-
-  For n = 32: P(alias) = 2^(-32) ≈ 2.3 x 10^(-10) ≈ 0.23 ppb
-  For n = 16: P(alias) = 2^(-16) ≈ 1.5 x 10^(-5) ≈ 15 ppm
-
-  Industry standard: 32-bit MISR → aliasing is negligible
-```
+**3 — Why memory gets BISR but random logic does not.** Memory is regular, so a defective bit can be swapped for a spare with a fuse remap (BISR, §6.2) — cheap, and it lifts $Y$ directly. Random logic is irregular: there is no "spare gate" to remap to, so its only yield lever is *design* (redundancy is expensive and rare). Hence the asymmetry across every SoC: repair the arrays, test-and-sort the logic.
 
 ---
 
-## 7. Memory BIST
+## Cross-references
 
-### 7.1 March Algorithm Family
-
-March algorithms test memory by writing and reading patterns in specific
-address orders. A March **element** is a sequence of operations applied to
-every address.
-
-**Notation:**
-
-```text
-  ↕  = address order doesn't matter (ascending or descending)
-  ↑  = ascending address order (0, 1, 2, ..., N-1)
-  ↓  = descending address order (N-1, N-2, ..., 1, 0)
-  w0 = write 0
-  w1 = write 1
-  r0 = read 0 (expect 0)
-  r1 = read 1 (expect 1)
-```
-
-### 7.2 March C- Algorithm
-
-```text
-  March C- = {↕(w0); ↑(r0,w1); ↑(r1,w0); ↓(r0,w1); ↓(r1,w0); ↕(r0)}
-
-  Element 0: ↕(w0)       -- Initialize all cells to 0
-  Element 1: ↑(r0, w1)   -- Read 0, write 1, ascending
-  Element 2: ↑(r1, w0)   -- Read 1, write 0, ascending
-  Element 3: ↓(r0, w1)   -- Read 0, write 1, descending
-  Element 4: ↓(r1, w0)   -- Read 1, write 0, descending
-  Element 5: ↕(r0)       -- Read all 0s (final check)
-
-  Complexity: 10N operations (where N = number of memory words)
-    Element 0: 1N, Element 1: 2N, Element 2: 2N,
-    Element 3: 2N, Element 4: 2N, Element 5: 1N
-    Total = 1+2+2+2+2+1 = 10N
-```
-
-**Execution trace for 4-word memory:**
-
-```ascii-graph
-  Address:    0    1    2    3    Operation
-  ─────────────────────────────────────────
-  E0 ↕w0:    w0   w0   w0   w0   Initialize
-  
-  E1 ↑r0w1:  r0   .    .    .    Read addr 0, expect 0
-             w1   .    .    .    Write addr 0 with 1
-              .   r0   .    .    Read addr 1, expect 0
-              .   w1   .    .    Write addr 1 with 1
-              .    .   r0   .    ...
-              .    .   w1   .
-              .    .    .   r0
-              .    .    .   w1
-
-  (Memory state after E1: all 1s)
-
-  E2 ↑r1w0:  r1   .    .    .    Read addr 0, expect 1
-             w0   .    .    .    Write addr 0 with 0
-              ... (ascending through all addresses)
-
-  (Memory state after E2: all 0s)
-
-  E3 ↓r0w1:  .    .    .   r0   Read addr 3, expect 0
-              .    .    .   w1   Write addr 3 with 1
-              .    .   r0   .    Read addr 2, expect 0
-              ... (descending)
-
-  (Memory state after E3: all 1s)
-
-  E4 ↓r1w0:  descending, read 1, write 0
-  E5 ↕r0:    final read-all-zeros verification
-```
-
-### 7.2B March C- Fault-Coverage Proof and Memory Fault Models (from the SRAM view)
-
-### Fault Models
-
-| Fault         | Abbr | Description                                | How to Detect            |
-|---------------|------|--------------------------------------------|--------------------------|
-| Stuck-At 0    | SA0  | Cell permanently reads 0                   | Write 1, read 1          |
-| Stuck-At 1    | SA1  | Cell permanently reads 1                   | Write 0, read 0          |
-| Transition 0→1| TF↑  | Cell cannot transition from 0 to 1         | Write 0, write 1, read 1 |
-| Transition 1→0| TF↓  | Cell cannot transition from 1 to 0         | Write 1, write 0, read 0 |
-| Coupling (inv)| CFin | Writing cell j inverts cell i              | Write j, read i          |
-| Coupling (st) | CFst | Writing cell j sets cell i to fixed value  | Write j, read i          |
-| Address fault | AF   | Address decoder maps two addresses to same cell | Write A, read B → should differ |
-
-### March C- Algorithm: Step by Step
-
-Notation: ↑ = ascending address, ↓ = descending address, (r0) = read expecting 0, (w1) = write 1.
-
-```verilog
-Step 0: ↑↓(w0)         — Write 0 to all addresses (any order)
-Step 1: ↑(r0, w1)      — Ascending: read 0 (verify), write 1
-Step 2: ↑(r1, w0)      — Ascending: read 1 (verify), write 0
-Step 3: ↓(r0, w1)      — Descending: read 0 (verify), write 1
-Step 4: ↓(r1, w0)      — Descending: read 1 (verify), write 0
-Step 5: ↑↓(r0)         — Read 0 from all addresses (final check)
-```
-
-**Complexity:** 10N operations (N = number of addresses). For 1MB SRAM (Static Random-Access Memory): 10M operations.
-
-### Fault Coverage Proof
-
-**SAF detection:**
-- SA0: Step 1 writes 1, Step 2 reads 1 → if SA0, read returns 0 → DETECTED
-- SA1: Step 0 writes 0, Step 1 reads 0 → if SA1, read returns 1 → DETECTED
-
-**Transition fault detection:**
-- TF↑ (can't go 0→1): Step 1 writes 1 after 0, Step 2 reads 1 → fails → DETECTED
-- TF↓ (can't go 1→0): Step 2 writes 0 after 1, Step 3 reads 0 → fails → DETECTED
-
-**Coupling fault (inversion) detection:**
-
-Consider cells i and j where writing j inverts i (CFin):
-- Steps 1-2 are ascending. If j < i: j is written (step 1 or 2) before i is read (later in same step or next step). If writing j inverts i, the subsequent read of i detects the corruption.
-- Steps 3-4 are descending: catches the case where j > i (j is visited first in descending order, so its write corrupts i which is visited later).
-- Together, ascending + descending covers all (i, j) pairs regardless of relative ordering.
-
-**Coupling fault (static) detection:**
-
-CFst: writing j forces i to a fixed value (e.g., 0). Step 1 ascending writes all to 1, then step 2 reads all as 1 in ascending order. If CFst forced some cell to 0 during step 1, step 2 detects it. Descending steps similarly cover the reverse-ordered pairs.
-
-**Address fault detection:**
-
-If addresses A and B map to the same physical cell: writing 1 to A then 0 to B overwrites the cell. Reading A returns 0 (wrong). Steps 1-4 exercise this: write 1 ascending, then read/write patterns that would expose aliased addresses.
-
-### 7.3 Fault Coverage Table
-
-```ascii-graph
-  ┌───────────────────┬─────────┬──────────┬──────────┬──────────┐
-  │ Fault Type        │March C- │ March SS │ March B  │ MATS+    │
-  ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
-  │ SAF (Stuck-at)    │   Yes   │   Yes    │   Yes    │   Yes    │
-  ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
-  │ TF (Transition)   │   Yes   │   Yes    │   Yes    │   No     │
-  ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
-  │ CF (Coupling)     │  Most   │   Yes    │   Yes    │   No     │
-  │  - CFin           │   Yes   │   Yes    │   Yes    │   No     │
-  │  - CFid           │   Yes   │   Yes    │   Yes    │   No     │
-  │  - CFst           │   No    │   Yes    │   No     │   No     │
-  ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
-  │ AF (Address        │   Yes   │   Yes    │   Yes    │   Yes    │
-  │    decoder)       │         │          │          │          │
-  ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
-  │ NPSF (Neighborhd  │   No    │   Yes    │   No     │   No     │
-  │  Pattern Sensitive)│         │          │          │          │
-  ├───────────────────┼─────────┼──────────┼──────────┼──────────┤
-  │ Complexity        │  10N    │   22N    │  17N     │   5N     │
-  └───────────────────┴─────────┴──────────┴──────────┴──────────┘
-
-  CF subtypes:
-    CFin  = inversion coupling (write to cell A inverts cell B)
-    CFid  = idempotent coupling (write to A forces B to 0 or 1)
-    CFst  = state coupling (state of A forces B to 0 or 1)
-```
-
-### 7.4 MBIST Controller FSM
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    subgraph MC["MBIST controller"]
-        direction LR
-        SEQ["March-algorithm<br/>sequencer (FSM)"] --> AG["Address generator<br/>(up/down counter)"] --> DBG["Data-background<br/>pattern gen<br/>(0x00, 0xFF, checkerboard)"]
-    end
-    DBG --> MEM["Memory under test"]
-    MEM --> CMP["Comparator → pass / fail"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef m fill:#fde68a,stroke:#b45309,color:#000
-    class SEQ,AG,DBG s
-    class MEM,CMP m
-```
-
-**Data background patterns:** Testing with a single data pattern (all 0s/1s) is
-insufficient. Multiple backgrounds are needed:
-
-```ascii-graph
-  Pattern    Value      Purpose
-  ─────────────────────────────────────────
-  Solid 0    0x0000...  Basic stuck-at
-  Solid 1    0xFFFF...  Basic stuck-at
-  Checker    0xAAAA...  Adjacent bit coupling
-  Inv-Check  0x5555...  Adjacent bit coupling
-  Column     0x00FF...  Column-adjacent faults
-```
-
-### 7.5 Memory Repair (BISR)
-
-```ascii-graph
-  BISR (Built-In Self-Repair) Flow
-  =================================
-
-  1. MBIST runs and logs failing addresses
-  2. Repair Analysis Unit determines if memory is repairable
-  3. Redundant rows/columns are allocated to replace failing ones
-  4. Repair configuration stored in non-volatile memory (fuses/anti-fuses)
-  5. On power-up, fuse values configure muxes to reroute failing addresses
-
-  Memory with Redundancy:
-  ┌──────────────────────────────────┐
-  │  Normal Array     │ Redundant   │
-  │                   │ Columns     │
-  │  Row 0  [.......] │ [..]       │
-  │  Row 1  [.......] │ [..]       │
-  │  ...              │             │
-  │  Row N  [.......] │ [..]       │
-  │─────────────────────────────────│
-  │  Redundant Rows   │             │
-  │  RR0   [.......] │ [..]       │
-  │  RR1   [.......] │ [..]       │
-  └──────────────────────────────────┘
-
-  Repair decision:
-    - Failing cells in same row → replace row with redundant row
-    - Failing cells in same column → replace column with redundant column
-    - Scattered failures → may need combination
-    - Too many failures → UNREPAIRABLE → chip rejected
-
-  Fuse Programming:
-    ┌────────┐     ┌──────────┐     ┌────────┐
-    │ MBIST  │────>│ Repair   │────>│ Fuse   │
-    │ fail   │     │ Analysis │     │ Blow   │
-    │ log    │     │ (on-chip │     │ Logic  │
-    └────────┘     │  or ATE) │     └────────┘
-                   └──────────┘
-```
+- **Down the stack (what test is built on):** [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (the $Y = e^{-AD}$ yield and defect taxonomy that make test necessary), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (what a physical defect is at the device level), [RTL_Design_Methodology](../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) (the flops and combinational clouds scan operates on).
+- **Adjacent (signoff siblings):** [STA](01_STA.md) (at-speed / transition test validates in silicon the very paths STA signs off; shares the OCC and clock model), [Physical_Verification_DRC_LVS](03_Physical_Verification_DRC_LVS.md) (the other half of "is the manufactured layout correct").
+- **Up the stack (where test patterns go):** [Gate_Level_Sim_and_Emulation](../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) (scan patterns are validated against the gate-level netlist before tapeout), [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) (wafer sort and final test, where these patterns run on the ATE and the DPPM is finally measured).
 
 ---
 
-## 8. JTAG / Boundary Scan (IEEE 1149.1)
-
-### 8.1 TAP Controller FSM
-
-The **Test Access Port (TAP)** controller is a 16-state FSM (finite state machine) driven by TCK
-(clock) and TMS (mode select).
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-stateDiagram-v2
-    [*] --> TLR
-    TLR: Test-Logic-Reset
-    RTI: Run-Test/Idle
-    SDR: Select-DR-Scan
-    CDR: Capture-DR
-    ShDR: Shift-DR
-    E1DR: Exit1-DR
-    PDR: Pause-DR
-    E2DR: Exit2-DR
-    UDR: Update-DR
-    SIR: Select-IR-Scan
-    CIR: Capture-IR
-    ShIR: Shift-IR
-    E1IR: Exit1-IR
-    PIR: Pause-IR
-    E2IR: Exit2-IR
-    UIR: Update-IR
-    TLR --> TLR: TMS=1
-    TLR --> RTI: TMS=0
-    RTI --> RTI: TMS=0
-    RTI --> SDR: TMS=1
-    SDR --> CDR: TMS=0
-    SDR --> SIR: TMS=1
-    CDR --> ShDR: TMS=0
-    CDR --> E1DR: TMS=1
-    ShDR --> ShDR: TMS=0
-    ShDR --> E1DR: TMS=1
-    E1DR --> PDR: TMS=0
-    E1DR --> UDR: TMS=1
-    PDR --> PDR: TMS=0
-    PDR --> E2DR: TMS=1
-    E2DR --> ShDR: TMS=0
-    E2DR --> UDR: TMS=1
-    UDR --> RTI: TMS=0
-    UDR --> SDR: TMS=1
-    SIR --> CIR: TMS=0
-    SIR --> TLR: TMS=1
-    CIR --> ShIR: TMS=0
-    CIR --> E1IR: TMS=1
-    ShIR --> ShIR: TMS=0
-    ShIR --> E1IR: TMS=1
-    E1IR --> PIR: TMS=0
-    E1IR --> UIR: TMS=1
-    PIR --> PIR: TMS=0
-    PIR --> E2IR: TMS=1
-    E2IR --> ShIR: TMS=0
-    E2IR --> UIR: TMS=1
-    UIR --> RTI: TMS=0
-    UIR --> SDR: TMS=1
-```
-
-The 16-state TAP FSM is navigated purely by TMS on the rising edge of TCK. The DR (data register) and IR (instruction register) columns are structurally identical; from any state, holding TMS=1 for five cycles returns to Test-Logic-Reset.
-
-All 16 states:
-
-```text
-  1.  Test-Logic-Reset    9.  Exit1-DR
-  2.  Run-Test/Idle      10.  Pause-DR
-  3.  Select-DR-Scan     11.  Exit2-DR
-  4.  Capture-DR         12.  Update-DR
-  5.  Shift-DR           13.  Select-IR-Scan
-  6.  Exit1-DR           14.  Capture-IR
-  7.  Pause-DR           15.  Shift-IR
-  8.  Exit2-DR           16.  Update-IR
-                          (Exit1/2 and Pause appear in both DR and IR paths)
-```
-
-### 8.2 TAP Signals
-
-```ascii-graph
-  Signal  Direction   Description
-  ─────── ─────────── ───────────────────────────────────────
-  TCK     Input       Test Clock (independent from system clock)
-  TMS     Input       Test Mode Select (drives TAP FSM transitions)
-  TDI     Input       Test Data In (serial data into IR or DR)
-  TDO     Output      Test Data Out (serial data from IR or DR)
-  TRST*   Input       Test Reset (optional, asynchronous reset of TAP)
-  
-  * TRST is optional in IEEE 1149.1. If not present, TAP can be
-    reset by holding TMS=1 for 5+ TCK cycles.
-```
-
-### 8.3 Standard JTAG Instructions
-
-```ascii-graph
-  ┌──────────────────┬──────────┬──────────────────────────────────┐
-  │ Instruction      │ Required │ Description                       │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ BYPASS           │ Yes      │ 1-bit DR, passes TDI to TDO      │
-  │                  │          │ with 1 cycle delay. Used to       │
-  │                  │          │ shorten chain in multi-chip scan. │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ EXTEST           │ Yes      │ Drives boundary scan outputs,    │
-  │                  │          │ captures boundary scan inputs.    │
-  │                  │          │ Tests INTER-chip connections.     │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ SAMPLE/PRELOAD   │ Yes      │ Captures IO values without       │
-  │                  │          │ affecting function. Preloads      │
-  │                  │          │ boundary cells before EXTEST.     │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ IDCODE           │ Optional │ Reads 32-bit device ID register  │
-  │                  │          │ (manufacturer, part#, version).   │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ INTEST           │ Optional │ Tests INTERNAL logic via          │
-  │                  │          │ boundary scan cells as stimulus/  │
-  │                  │          │ response points.                  │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ USERCODE         │ Optional │ User-programmable 32-bit code.   │
-  ├──────────────────┼──────────┼──────────────────────────────────┤
-  │ CLAMP            │ Optional │ Drives predetermined values on   │
-  │                  │          │ outputs while bypassing.          │
-  └──────────────────┴──────────┴──────────────────────────────────┘
-```
-
-### 8.4 Boundary Scan Cell
-
-```ascii-graph
-  Boundary Scan Cell (BSC)
-  ========================
-
-                          To next BSC
-                               ^
-  From previous BSC            │
-       │              ┌────────┴──────┐
-       │    Shift-DR  │   Update FF   │──── Mode MUX ───> To pad/core
-       │       │      │   (holds      │         ^
-       v       v      │    output)    │         │
-  ┌──────────────┐    └───────────────┘    Instruction
-  │  Capture FF  │──────────────^              (EXTEST
-  │  (shift reg  │              │               selects
-  │   element)   │         Clock-DR             BSC output)
-  └──────┬───────┘
-         ^
-    ┌────┴────┐
-    │  MUX    │
-    │ 0     1 │
-    └─┬─────┬─┘
-      │     │
-  From pad  Shift path
-  or core   (TDI chain)
-      
-  Capture-DR: MUX selects pad/core input → loaded into Capture FF
-  Shift-DR:   MUX selects shift path → serial shift TDI→TDO
-  Update-DR:  Capture FF value transferred to Update FF
-  EXTEST mode: Update FF drives pad output (instead of core logic)
-```
-
-### 8.5 Board-Level Testing
-
-```ascii-graph
-  Board with 3 JTAG-compliant ICs:
-  =================================
-
-  TDI ──> [Chip A BSR] ──> [Chip B BSR] ──> [Chip C BSR] ──> TDO
-           TCK, TMS (shared bus to all chips)
-
-  Inter-chip connectivity test:
-    1. Load EXTEST instruction into all chips
-    2. Preload known values into Chip A output BSCs
-    3. Capture values at Chip B input BSCs
-    4. Shift out and compare
-    5. Detects open, short, stuck-at faults on PCB traces
-
-  Trace: Chip A pin 42 ──────── Chip B pin 17
-         (BSC drives 1)   PCB   (BSC captures 1?)
-                          trace
-         If BSC captures 0 → open or short fault on trace!
-```
-
----
-
-## 9. On-Chip Clocking (OCC)
-
-### 9.1 Why OCC Is Needed
-
-At-speed transition and path-delay testing requires that launch and capture
-clock edges be separated by exactly one functional clock period (e.g., 1 ns at
-1 GHz). The ATE cannot deliver such precise high-frequency clock pairs directly:
-tester channel skew, jitter, and limited frequency range make external at-speed
-clocking unreliable above ~200 MHz. The **On-Chip Clock Controller (OCC)**
-solves this by generating precise, fast clock pulses on-chip while the ATE
-supplies only a slow shift clock.
-
-```ascii-graph
-  Without OCC:
-    ATE must deliver fast launch-capture pair at GHz frequencies
-    → Skew and jitter on tester channels make timing unpredictable
-    → Cannot test at true functional speed
-
-  With OCC:
-    ATE delivers slow shift clock (10-50 MHz)
-    OCC generates fast launch-capture pair internally using PLL
-    → Precise at-speed clock edges with <10 ps skew
-    → True functional-speed testing
-```
-
-### 9.2 OCC Architecture
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    EXT["ext_clk"] --> PLL["PLL<br/>f_vco"]
-    subgraph OCC["OCC controller"]
-        DIV["Clock divider (/N)"]
-        SEG["Scan-enable generator"]
-    end
-    PLL --> DIV --> GC["Gated at-speed clock<br/>to scan chains"]
-    SEG --> GC
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef c fill:#fde68a,stroke:#b45309,color:#000
-    class EXT,PLL,GC s
-    class DIV,SEG c
-```
-
-**Key components:**
-
-| Component | Function |
-|-----------|----------|
-| PLL | Generates VCO-frequency clock (e.g., 2-4 GHz); must be locked before capture |
-| Clock Divider | Divides PLL output to functional frequency (e.g., /2, /4) |
-| Clock MUX/Gate | Selects between slow shift clock and fast functional clock |
-| Scan Enable Generator | Produces SE signal: HIGH during shift, LOW before launch edge |
-| OCC Controller FSM | Sequences shift/capture phases; handshakes with ATE via control signals |
-
-### 9.3 OCC Timing for At-Speed Testing
-
-```ascii-graph
-  OCC Timing: LOC (Launch-Off-Capture) Mode
-  ==========================================
-
-  Phase 1: SHIFT (slow clock, SE=1)
-           ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
-  CLK_s   ┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──
-  SE      ──────────────────────────────────── (HIGH)
-
-  Phase 2: CAPTURE (fast clock, SE=0)
-                                          ┌─┐    ┌─┐
-  CLK_f                                  ┘ └────┘ └──
-                                          ^      ^
-                                       launch  capture
-                                      <── T_func ──>
-                                      (e.g., 1 ns at 1 GHz)
-
-  SE      ──────────────────────────── ──────────── (LOW)
-
-  Phase 3: SHIFT-OUT (slow clock, SE=1)
-                                                       ┌──┐  ┌──┐
-  CLK_s                                                ┘  └──┘  └──
-  SE      ─────────────────────────────────────────── (HIGH)
-
-  Timing annotation:
-    - SE must be LOW before launch edge (met by OCC, not by ATE)
-    - Launch-to-capture = exactly 1 functional clock period
-    - Only 2 fast clock pulses issued (launch + capture)
-    - Clock gated after capture to prevent additional captures
-```
-
-```wavedrom
-{ "signal": [
-  { "name": "CLK_shift", "wave": "0101010000" },
-  { "name": "CLK_fast",  "wave": "0000000101", "node": ".......a.b" },
-  { "name": "SE",        "wave": "1.....0..." }
-], "edge": ["a~b at-speed"], "head": { "text": "OCC LOS: slow shift clocks with SE=1, then SE drops and the OCC muxes in a fast launch+capture pair from the PLL" } }
-```
-
-### 9.4 OCC Controller FSM and ATE Handshaking
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> SHIFT: shift_start
-    SHIFT --> IDLE: shift_done (count = L)
-    SHIFT --> CAPTURE: capture_start
-    CAPTURE --> SHIFT: capture_done
-    SHIFT: SHIFT — slow clock
-    CAPTURE: CAPTURE — fast clock pulses
-```
-
-### 9.5 OCC in Production ATPG Flow
-
-```text
-  Production Flow Integration:
-  ============================
-
-  1. ATPG tool (TetraMAX/Modus/Tessent) generates patterns in STIL/WGL format
-  2. Patterns include OCC control fields:
-     - shift_cycle_count (chain length)
-     - capture_pulse_count (2 for LOC, 1 for LOS)
-     - clock_domain_select (which PLL domain)
-  3. ATE program interprets OCC fields and sequences handshake signals
-  4. OCC ensures:
-     - Only targeted clock domain receives fast pulses
-     - Cross-domain capture is avoided (or explicitly managed)
-     - Multiple clock domains can be tested sequentially or in parallel
-       with per-domain OCC instances
-
-  Multi-Domain OCC:
-    SoC has 4 clock domains (CPU, GPU, DDR, PCIe)
-    Each domain has its own PLL and OCC instance
-    ATPG pattern targets one domain at a time
-    Non-targeted domains: clock gated off during capture
-    OCC controller for each domain independent
-```
-
-### 9.6 OCC Design Considerations
-
-```ascii-graph
-  Key design points:
-  ─────────────────
-  1. PLL lock time: PLL must be locked before capture phase.
-     If shift phase is long (>100 us), PLL has time to lock.
-     For short chains, a pre-lock phase may be needed.
-
-  2. Clock glitch prevention: MUX switching between slow and fast
-     clocks must be glitch-free. Use a clock-gating cell with
-     enable synchronized to the clock domain.
-
-  3. SE generation: OCC must assert SE=0 before the first fast
-     clock edge. SE timing relative to launch clock is critical.
-     OCC generates SE internally, avoiding ATE skew.
-
-  4. Multiple capture pairs: For multi-cycle at-speed tests,
-     OCC can issue >2 fast pulses (launch, intermediate, capture).
-
-  5. Power: Fast clock pulses cause significant switching.
-     OCC can issue a single capture pair per pattern to limit
-     peak power during at-speed testing.
-```
-
----
-
-## 10. IJTAG (IEEE 1687) / IEEE 1149.1-2013
-
-### 10.1 Why JTAG (1149.1) Is Not Enough
-
-Classic IEEE 1149.1 JTAG (Joint Test Action Group) provides a single serial scan chain (TDI-TDO) with
-an instruction register (IR) that selects which data register (DR) is connected.
-For a modern SoC (system on chip) with hundreds of embedded instruments (MBIST controllers, PLLs,
-temperature sensors, voltage monitors, PVT (process, voltage, temperature) monitors, debug trace blocks), this
-architecture breaks down:
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    TDI --> IR["IR"] --> DR["selected DR"] --> TDO
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class TDI,IR,DR,TDO s
-```
-
-With classic JTAG only one DR is in the chain at a time. Accessing the MBIST (Memory Built-In Self-Test) controller (200-bit DR) costs 8-bit IR + 200-bit DR = 208 bits; PLL config (50-bit DR) costs 58 bits. Switching instruments requires an IR reload every time — with 50 instruments this is very slow.
-
-### 10.2 IJTAG Architecture
-
-IJTAG (IEEE 1687) replaces the fixed IR-selected DR model with a
-**reconfigurable scan network**. Instruments are connected via
-**Segment Insertion Bits (SIBs)** that dynamically include or exclude
-scan segments from the serial chain.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    TDI --> S1["SIB_1"] --> S2["SIB_2"] --> SN["SIB_N"] --> TDO
-    S1 -.->|open| I1["Instrument_1<br/>200 bits"]
-    S2 -.->|open| I2["Instrument_2<br/>50 bits"]
-    SN -.->|open| IN["Instrument_N<br/>100 bits"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef i fill:#fde68a,stroke:#b45309,color:#000
-    class TDI,S1,S2,SN,TDO s
-    class I1,I2,IN i
-```
-
-Each SIB (Segment Insertion Bit) gates its instrument into the scan path. When SIB_1 is open (bit = 1) the chain becomes TDI → SIB_1 → Instrument_1 → SIB_2 → … → TDO, so the active chain length grows only by the instruments you actually select.
-
-### 10.3 SIB (Segment Insertion Bit) Operation
-
-A SIB is a 1-bit scan element that acts as a dynamic multiplexer in the scan
-path. When the SIB is **closed** (default), the instrument segment is removed
-from the chain. When **opened**, the segment is inserted.
-
-```ascii-graph
-  SIB Internal Structure
-  ======================
-
-                   To next SIB in network
-                        ^
-                        │
-  From previous SIB     │     ┌─────────────────────┐
-       │                │     │  Segment (instrument)│
-       │    ┌───────┐   │     │  [scan cells ...]    │
-       ├───>│  SIB  ├───┤<──>│                      │
-       │    │  MUX  │   │     │                      │
-       │    └───┬───┘   │     └─────────────────────┘
-       │        │       │
-       └────────┘       │
-       (when closed:    │
-        bypass segment) │
-                        v
-                     To next SIB
-
-  SIB state bit stored in a capture-update FF pair:
-    Update-DR: if SIB_bit = 1 → open → insert segment into chain
-    Update-DR: if SIB_bit = 0 → closed → segment bypassed
-
-  Opening a SIB (2-pass operation):
-    Pass 1: Shift 1 into SIB position, update → segment now in chain
-    Pass 2: Shift through the newly inserted segment to access instrument
-
-  Closing a SIB (1-pass operation):
-    Shift 0 into SIB position, update → segment removed from chain
-```
-
-**SIB chaining example:**
-
-```ascii-graph
-  Opening SIB_1, SIB_2, accessing both instruments:
-
-  Initial state (all SIBs closed):
-    TDI → [SIB_1:0] → [SIB_2:0] → TDO    (2-bit chain)
-
-  Pass 1: Open SIB_1
-    Shift: TDI → 1 → 0 → TDO    (shift '1' into SIB_1, '0' into SIB_2)
-    Update: SIB_1 opens, Instrument_1 inserted
-    Chain: TDI → [SIB_1] → [Inst_1: 200 bits] → [SIB_2:0] → TDO  (202 bits)
-
-  Pass 2: Access Instrument_1 AND open SIB_2
-    Shift: 202 bits through chain
-      - SIB_1 position: don't care (keep open → shift 1)
-      - Instrument_1 positions: command/data for instrument
-      - SIB_2 position: 1 (to open SIB_2)
-    Update: Instrument_1 loaded, SIB_2 opens
-    Chain: TDI → [SIB_1] → [Inst_1: 200] → [SIB_2] → [Inst_2: 50] → TDO
-           (252 bits)
-
-  Pass 3: Access both instruments simultaneously
-    Shift: 252 bits (200 for Inst_1 + 50 for Inst_2 + 2 SIB bits)
-```
-
-### 10.4 Network Description Language (NCL)
-
-IJTAG defines a **Network Description Language** (NCL, also called ICL --
-Instrument Connectivity Language) and **Procedure Language** (Procedural
-Description Language, PDL) to describe instrument connectivity and access
-sequences in a vendor-neutral format.
-
-```text
-  ICL (Instrument Connectivity Language):
-    - Describes the scan network topology
-    - Defines instruments, SIBs, and their bit widths
-    - Maps signal names to scan segment positions
-    - Hierarchical: a sub-network can be instantiated multiple times
-
-  PDL (Procedural Description Language):
-    - Describes the SEQUENCE of operations to access instruments
-    - Defines procedures: iReset, iScan, iWrite, iRead
-    - Includes pre/post conditions (e.g., "PLL must be locked before read")
-    - Portable across EDA tools and ATE platforms
-
-  Example PDL pseudocode:
-    Procedure configure_pll:
-      iWrite pll_sib 1          // open PLL SIB
-      iWrite pll_config 0x1A3F  // write configuration
-      iWrite pll_ctrl.enable 1  // enable PLL
-      iWait 100us               // wait for lock
-      iRead pll_status.locked   // verify lock
-```
-
-### 10.5 JTAG vs IJTAG Comparison
-
-```ascii-graph
-  ┌────────────────────────┬──────────────────────┬──────────────────────────┐
-  │ Feature                │ JTAG (1149.1)        │ IJTAG (1687)             │
-  ├────────────────────────┼──────────────────────┼──────────────────────────┤
-  │ Instrument selection   │ IR opcode (fixed)    │ SIB-based (dynamic)      │
-  │                        │                      │                          │
-  │ Max instruments        │ Limited by IR width  │ Unlimited (SIB nesting)  │
-  │                        │ (typically <32)      │                          │
-  │                        │                      │                          │
-  │ Access granularity     │ Entire DR only       │ Per-instrument or subset │
-  │                        │                      │                          │
-  │ Network reconfig.      │ No (fixed topology)  │ Yes (SIBs open/close)    │
-  │                        │                      │                          │
-  │ Scan chain length      │ Fixed (longest DR)   │ Variable (only open SIBs)│
-  │                        │                      │                          │
-  │ Access latency         │ Always shift full DR │ Shift only active segs   │
-  │                        │                      │                          │
-  │ Instrument reuse       │ Manual integration   │ NCL/ICL portability      │
-  │                        │                      │                          │
-  │ Vendor neutrality      │ Limited              │ Standardized description │
-  │                        │                      │ (ICL + PDL)             │
-  │                        │                      │                          │
-  │ Hierarchy support      │ Flat                 │ Hierarchical (nested SIB)│
-  │                        │                      │                          │
-  │ Backward compat.       │ N/A                  │ Compatible with 1149.1   │
-  │                        │                      │ TAP (uses same TDI/TDO)  │
-  │                        │                      │                          │
-  │ Standard               │ IEEE 1149.1-2001/    │ IEEE 1687-2014 /         │
-  │                        │ 1149.1-2013          │ 1149.1-2013 (merged)     │
-  └────────────────────────┴──────────────────────┴──────────────────────────┘
-```
-
-### 10.6 IJTAG Use Cases
-
-1. MBIST Access:
-   - Open MBIST controller SIB
-   - Load march algorithm configuration
-   - Start MBIST, read pass/fail status
-   - Read failing address and data for debug
-   - Close SIB (MBIST runs autonomously)
-
-2. PLL Configuration:
-   - Open PLL SIB, write divider ratio and enable
-   - Read lock status via SIB
-   - Multiple PLLs: each has its own SIB, access independently
-
-3. Sensor Readout:
-   - Temperature sensors, voltage monitors, PVT monitors
-   - Open sensor SIB, trigger measurement, read result
-   - Periodic monitoring during production test
-
-4. Debug Trace:
-   - Open trace buffer SIB, read captured trace data
-   - Configure trace triggers via SIB-accessible registers
-
-5. Fuse/OTP Access:
-   - Read fuse values for trim, calibration, security keys
-   - Write fuse values during production programming
-
----
-
-## 11. Hierarchical DFT
-
-### 11.1 Why Flat DFT Doesn't Scale
-
-In a flat (top-level) DFT flow, all scan flip-flops across the entire SoC are
-stitched into chains and ATPG is run on the full flattened netlist. This approach
-breaks down for large designs:
-
-```ascii-graph
-  Flat DFT Problems (50M-gate SoC example):
-  ──────────────────────────────────────────
-  1. Chain length: 50M FFs / 500 chains = 100K FFs per chain
-     → Shift time per pattern: 100K / 20MHz = 5 ms
-     → 10K patterns x 5 ms = 50 seconds just for shift
-     → Exceeds test time budget (1-3 sec target)
-
-  2. Pattern count explosion:
-     Flat ATPG sees all faults in all blocks simultaneously
-     → Pattern interaction between unrelated blocks wastes patterns
-     → 500K+ patterns for full-chip stuck-at (vs 10K per block)
-
-  3. ATPG runtime:
-     Flat ATPG on 50M-gate netlist: days to weeks on a single machine
-     Memory: netlist + fault list can exceed 100 GB RAM
-
-  4. No IP reuse:
-     Third-party IP (CPU core, DDR PHY, PCIe controller) must be
-     re-characterized at top level every time it's instantiated
-     → Wasted effort, IP provider can't pre-verify test quality
-
-  5. Design concurrency:
-     Block-level teams cannot finalize DFT until full-chip integration
-     → Schedule bottleneck
-```
-
-### 11.2 Hierarchical Test Approach: IEEE 1500 Wrappers
-
-The hierarchical approach wraps each IP (intellectual property) block with a **test wrapper** (IEEE
-1500 for embedded cores, conceptually similar to 1149.1 boundary scan but for
-internal blocks). The wrapper isolates the block for individual testing and
-provides controlled access to its internal scan chains.
-
-```ascii-graph
-  IEEE 1500 Wrapper Around an IP Block
-  =====================================
-
-                    Wrapper Boundary
-                  ┌─────────────────────────────────────┐
-                  │                                     │
-  functional_in ──>│ WBR_in    ┌──────────────┐  WBR_out │──> functional_out
-                  │──────────>│              │──────────│
-                  │  WIR      │  IP Core     │  WBY     │
-  WSC ──────────>│(Wrapper   │  (internal   │(Bypass   │
-  (Wrapper       │ Instr.    │   scan       │ register │
-   Serial        │ Register) │   chains)    │ 1-bit)   │
-   Control)      │           │              │          │
-                  │  WSP      │              │          │
-  WSI ──────────>│(Wrapper   │              │          │──> WSO
-  (Wrapper       │ Serial    │              │          │    (Wrapper
-   Serial        │ Port)     │              │          │     Serial
-   In)           │           │              │          │     Out)
-                  └─────────────────────────────────────┘
-
-  Key Components:
-    WBR = Wrapper Boundary Register (boundary cells at block ports)
-    WIR = Wrapper Instruction Register (selects test mode)
-    WBY = Wrapper Bypass Register (1-bit, like JTAG BYPASS)
-    WSC = Wrapper Serial Control (clock, control signals)
-    WSI/WSO = Wrapper Serial In/Out (scan data port)
-```
-
-### 11.3 Wrapper Cell Types
-
-```ascii-graph
-  IEEE 1500 defines several wrapper cell types:
-
-  Type 0 (observe-only):
-    Functional_out ──> [Capture FF] ──> WSO (observe during test)
-    No drive capability (input-only observation)
-
-  Type 1 (basic wrapper cell -- most common):
-    Functional_in ──> [MUX] ──> To core     (functional or test data)
-                       ^
-                  WSI / WSO (shift path)
-    Can both drive and observe
-
-  Type 2 (bidirectional):
-    Supports bidirectional pins with direction control
-    Functional I/O + test drive + test observe
-
-  Type 3-6: Variants with different functional/scan muxing for
-  specialized I/O configurations (differential, tri-state, etc.)
-
-  Wrapper Cell = boundary scan cell equivalent for embedded cores
-```
-
-### 11.4 Test Modes in Hierarchical DFT
-
-```ascii-graph
-  ┌─────────────────────────────────────────────────────────────┐
-  │                    Hierarchical Test Modes                   │
-  ├──────────────────┬──────────────────────────────────────────┤
-  │ Mode             │ Description                              │
-  ├──────────────────┼──────────────────────────────────────────┤
-  │ Internal Test    │ Test block in isolation:                 │
-  │ (intra-block)    │  - Wrapper isolates block from top-level │
-  │                  │  - Stimulus enters via wrapper cells     │
-  │                  │  - Response exits via wrapper cells      │
-  │                  │  - Internal scan chains active           │
-  │                  │  - Tests: stuck-at, TDF, path delay      │
-  │                  │  within the block                        │
-  ├──────────────────┼──────────────────────────────────────────┤
-  │ External Test    │ Test inter-block wiring:                 │
-  │ (inter-block)    │  - Drive from one block's wrapper output │
-  │                  │  - Capture at adjacent block's wrapper   │
-  │                  │    input                                 │
-  │                  │  - Tests: opens, shorts, bridges on      │
-  │                  │    interconnect between blocks           │
-  ├──────────────────┼──────────────────────────────────────────┤
-  │ Functional Test  │ Normal operation mode:                   │
-  │                  │  - Wrappers transparent                  │
-  │                  │  - Functional signals pass through       │
-  │                  │  - No test overhead in functional path   │
-  ├──────────────────┼──────────────────────────────────────────┤
-  │ Bypass Mode      │ Skip block entirely:                     │
-  │                  │  - WBY (1-bit bypass) active             │
-  │                  │  - Block scan chain not in path          │
-  │                  │  - Used when accessing other blocks      │
-  └──────────────────┴──────────────────────────────────────────┘
-
-  Example: Testing a 4-block SoC
-  ───────────────────────────────
-
-  Block A (CPU)     Block B (GPU)     Block C (DDR)     Block D (PCIe)
-  [wrapper]         [wrapper]         [wrapper]         [wrapper]
-     │                  │                  │                  │
-     └──── interconnect ─┘── interconnect ─┘── interconnect ─┘
-
-  Step 1: Internal test Block A (bypass B, C, D)
-  Step 2: Internal test Block B (bypass A, C, D)
-  Step 3: Internal test Block C (bypass A, B, D)
-  Step 4: Internal test Block D (bypass A, B, C)
-  Step 5: External test A↔B interconnect
-  Step 6: External test B↔C interconnect
-  Step 7: External test C↔D interconnect
-```
-
-### 11.5 Test Compression at Block Level vs Top Level
-
-```ascii-graph
-  Block-Level Compression (Preferred):
-  ────────────────────────────────────
-  ┌────────────────────────────────────┐
-  │  Block A (e.g., CPU core)         │
-  │                                    │
-  │  [Decompressor] → [internal       │ → [Compactor]
-  │                   scan chains]    │
-  │                                    │
-  │  Block-level test data:            │
-  │    - Patterns generated for Block A│
-  │    - Only Block A faults targeted  │
-  │    - Compression ratio: 50-100x    │
-  │    - Pattern count: 5K-20K         │
-  │    - ATPG time: minutes            │
-  └────────────────────────────────────┘
-
-  Benefits:
-    1. Block-level ATPG is fast (smaller fault list)
-    2. Patterns are optimal for the block (no interference)
-    3. IP provider generates and verifies patterns
-    4. Patterns can be retargeted to top level
-
-  Top-Level Compression:
-  ──────────────────────
-  After block-level patterns are generated, they are retargeted
-  to the top-level compression infrastructure:
-
-  Top-level decompressor → Block A wrapper → Block A chains
-                         → Block B wrapper → Block B chains
-                         → Block C wrapper → Block C chains
-                         → Block D wrapper → Block D chains
-                                            → Top-level compactor
-
-  The retargeting process:
-    1. Block patterns specify internal chain values
-    2. Top-level wrapper configurations are prepended
-    3. Top-level decompressor/compactor equations are solved
-    4. Result: compact external test data for ATE
-
-  Additional top-level patterns for external test (interconnect)
-  are generated on the full chip netlist but only target wiring
-  faults between blocks -- much smaller fault list.
-```
-
-### 11.6 Hierarchical ATPG Flow Benefits
-
-```ascii-graph
-  ┌────────────────────────┬───────────────────────┬───────────────────────┐
-  │ Attribute              │ Flat ATPG              │ Hierarchical ATPG     │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ ATPG runtime           │ O(n^3) on full netlist │ O(n_b^3) per block    │
-  │                        │ (days)                 │ (minutes per block)   │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ Pattern count          │ 500K+ (full chip)      │ 10-20K per block,     │
-  │                        │                        │ ~100K total           │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ Parallelism            │ Single monolithic run  │ Each block generated  │
-  │                        │                       │ independently, in     │
-  │                        │                        │ parallel              │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ IP reuse               │ None (re-run each     │ IP provider ships     │
-  │                        │ integration)           │ patterns + models     │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ Design schedule        │ Block DFT blocked by   │ Block teams work      │
-  │                        │ top-level integration  │ independently         │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ Memory requirement     │ 100+ GB RAM            │ 4-16 GB per block     │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ Debug                  │ Full-chip diagnosis    │ Block-level isolation │
-  │                        │ (complex)              │ (simpler)             │
-  ├────────────────────────┼───────────────────────┼───────────────────────┤
-  │ Test quality           │ Pattern interaction    │ Optimal per-block     │
-  │                        │ may reduce coverage    │ coverage              │
-  └────────────────────────┴───────────────────────┴───────────────────────┘
-
-  Production Flow:
-    1. IP provider: generates block-level patterns (stuck-at, TDF)
-    2. SoC integrator: instantiates wrapped blocks
-    3. SoC integrator: generates interconnect patterns (external test)
-    4. EDA tool: retargets block patterns through top-level compression
-    5. EDA tool: merges all patterns into final ATE program
-    6. Total test time: sum of block test times + interconnect time
-       (with parallel block testing, this can be overlapped)
-```
-
----
-
-## 12. DFT in Low-Power Designs
-
-### 12.1 Power Gating and Scan
-
-```ascii-graph
-  Problem: Power-gated domain is OFF during certain test modes
-  
-  ┌─────────────────────────┐     ┌─────────────────────┐
-  │  Always-ON Domain       │     │  Power-Gated Domain  │
-  │                         │     │  (can be OFF)        │
-  │  [FF1] ──> [FF2] ──>   │ ──> │  [FF3] ──> [FF4]    │
-  │                         │     │                     │
-  │  Scan chain continues..│     │  ...into gated domain│
-  └─────────────────────────┘     └─────────────────────┘
-
-  Issues:
-  1. Scan chain broken when power domain is OFF
-  2. Scan shift through OFF domain → unpredictable values (X)
-  3. Cannot test gated logic when it's OFF
-
-  Solutions:
-  a) Force all power domains ON during scan test
-     - Simple but defeats purpose of power gating for test power
-     - Standard approach for stuck-at testing
-  
-  b) Isolation cells on scan chain at domain boundaries
-     - Clamp scan output to known value when domain is OFF
-     - Allows partial-chain testing
-
-  c) Separate scan chains per power domain
-     - Each domain has independent scan_in/scan_out
-     - Test each domain when it's ON
-     - More complex DFT insertion
-```
-
-### 12.2 Multi-Voltage Scan
-
-```ascii-graph
-  Scan chain crossing voltage domains:
-  
-  VDD_high (1.0V)          VDD_low (0.75V)
-  ┌───────────────┐        ┌───────────────┐
-  │  [FF_A] ──────┼── LS ──┼──> [FF_B]     │
-  │               │  (level │               │
-  │               │  shifter│               │
-  └───────────────┘   )     └───────────────┘
-
-  Level shifter (LS) required in scan path:
-    - High-to-low: may work without LS (0.75V can interpret 1.0V signals)
-    - Low-to-high: MUST have LS (1.0V domain cannot reliably interpret 
-      0.75V as logic HIGH)
-    
-  DFT tool must ensure:
-    1. Level shifters are present on all scan connections crossing domains
-    2. Level shifters meet scan shift timing requirements
-    3. Scan enable (SE) tree is properly level-shifted per domain
-```
-
-### 12.3 Scan Shift Power Reduction
-
-During scan shift, up to 50% of FFs toggle every cycle (random data pattern).
-This can cause:
-- IR drop → functional failure during capture
-- Excessive peak current → damage to power grid
-- Thermal issues
-
-**Mitigation techniques:**
-
-1. Lower voltage during shift:
-   - Shift at reduced VDD (e.g., 0.8V instead of 1.0V)
-   - Slower but lower power
-   - Capture at nominal VDD for at-speed testing
-
-2. Clock gating scan chains:
-   - Only shift a subset of chains at a time
-   - Reduces simultaneous switching
-   - Increases test time (more shift cycles needed)
-
-3. Scan chain partitioning:
-   - Alternate active/inactive chains per shift cycle
-   - "Staggered shift clocking"
-
-4. Low-power scan fill:
-   - ATPG fills don't-care bits to MINIMIZE transitions
-   - Adjacent-fill: fill X with same value as neighbor
-   - Reduces shift power by 30-50% vs random fill
-
-5. On-chip power management during test:
-   - DFT controller manages power switches
-   - Daisy-chain power-up sequence for power domains
-
----
-
-## 13. Numbers to Memorize
-
-Key DFT constants and typical values that come up in interviews and production
-planning.
-
-```ascii-graph
-  ┌──────────────────────────────────────┬──────────────────────────────────────┐
-  │ Parameter                            │ Typical Value                        │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Scan chain length                    │ 1,000 – 10,000 flops per chain       │
-  │                                      │ (longer = more test time, shorter    │
-  │                                      │  = more I/O pins needed)             │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Test compression ratio               │ 10x – 100x (modern tools: 100x+)    │
-  │                                      │ (internal chains / external channels)│
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Stuck-at fault coverage target       │ ≥ 98% (production), ≥ 99% (auto)    │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Transition delay fault coverage      │ ≥ 90% (production), ≥ 95% (auto)    │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Stuck-at pattern count               │ 1,000s – 10,000s                     │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Transition delay pattern count       │ 10,000s – 100,000s                   │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Path delay pattern count             │ 100,000s+ (only critical paths)     │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ ATPG runtime scaling (worst case)    │ O(n^3) where n = circuit size        │
-  │                                      │ (practical: much better with FAN +   │
-  │                                      │  learning + parallelism)             │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ JTAG TCK frequency (typical)         │ 10 – 50 MHz                          │
-  │                                      │ (limited by board-level signal       │
-  │                                      │  integrity and cable length)         │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ IEEE 1149.1 instruction register     │ Minimum 2 bits (3 mandatory opcodes  │
-  │ length                               │ needed: BYPASS, EXTEST, SAMPLE;      │
-  │                                      │ 2 bits can encode 4)                 │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ IEEE 1149.1 mandatory instructions   │ BYPASS, EXTEST, SAMPLE/PRELOAD       │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ IEEE 1500 wrapper cell types         │ Type 0: observe-only                 │
-  │                                      │ Type 1: basic drive + observe        │
-  │                                      │ Type 2: bidirectional                │
-  │                                      │ Types 3-6: specialized I/O           │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Typical SoC test time budget         │ 1 – 3 seconds on ATE                 │
-  │                                      │ (cost driver: ATE time ≈ $0.01-0.10  │
-  │                                      │  per second per site)                │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Scan shift clock frequency           │ 10 – 50 MHz (slow to limit power)   │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ At-speed capture clock               │ Functional frequency (100 MHz –      │
-  │                                      │ 5 GHz+, generated by OCC/PLL)        │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Scan mux area overhead               │ 15 – 20% per flip-flop               │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Test point insertion area overhead   │ 2 – 5% of total logic area           │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ MISR aliasing probability            │ 2^(-n) for n-bit MISR                │
-  │                                      │ 32-bit: ≈ 0.23 ppb (negligible)      │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Fault collapsing reduction           │ 50 – 70% (from 2N to ~0.3N-0.5N)    │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ LFSR max sequence length             │ 2^n - 1 (with primitive polynomial)  │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ DPPM target (automotive ASIL-D)      │ < 1 DPPM                             │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ LBIST coverage without test points   │ 80 – 90%                             │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ LBIST coverage with test points      │ ≥ 95%                                │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ IDDQ threshold (180nm)               │ ~1 nA/gate (practical)               │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ IDDQ threshold (7nm)                 │ ~1-10 uA/gate (impractical)          │
-  ├──────────────────────────────────────┼──────────────────────────────────────┤
-  │ Scan enable fanout                    │ Every scan FF in design              │
-  │                                      │ (largest fanout net in chip)         │
-  └──────────────────────────────────────┴──────────────────────────────────────┘
-```
-
----
-
-## 14. AI Accelerator DFT
-
-### 15.1 Tensor Core Testing
-
-```ascii-graph
-Tensor core / systolic array DFT challenges:
-
-  A modern AI accelerator tensor core:
-    - 4-8 systolic arrays, each 128×128 MAC units
-    - Per MAC: 8-bit multiply + 32-bit accumulate
-    - Total MAC units: 65,000-130,000
-    - Pipeline depth: 4-8 stages through the array
-
-  Testing approaches:
-
-  1. Systolic array BIST (SA-BIST):
-     - Built-in pattern generator feeds known matrices
-     - On-chip comparator checks against golden results
-     - Tests: all-zeros, all-ones, walking-1, random matrices
-     - Coverage: stuck-at, transition, bridging in MAC units
-
-     ┌──────────┐    ┌───────────────────┐    ┌──────────┐
-     │ Pattern  │───>│  Systolic Array   │───>│ Response │
-     │ Generator│    │  (MAC units)      │    │ Checker  │
-     └──────────┘    └───────────────────┘    └──────────┘
-                           ↑
-                     BIST Controller
-
-  2. MAC unit scan testing:
-     - Insert scan chains through MAC pipeline registers
-     - ATPG targets: multiplier stuck-at, accumulator stuck-at
-     - Challenge: massive sequential depth through pipeline
-       → pattern count can be very high
-     - Solution: pipeline-isolated scan segments with
-       capture points between stages
-
-  3. Accumulator overflow/underflow testing:
-     - Test wrap-around behavior at max/min values
-     - Verify saturation logic (if implemented)
-     - Test precision reduction (FP32 → FP16 → INT8)
-
-  DFT overhead for tensor core:
-    - Area: 3-5% (BIST controller + scan registers)
-    - Test time: ~2-5 seconds for SA-BIST
-    - Additional scan patterns: 5,000-20,000 for full ATPG coverage
-```
-
-### 15.2 HBM Stack Testing
-
-```ascii-graph
-HBM testing hierarchy:
-
-  Level 1: Known Good Die (KGD) testing
-    - Each DRAM die tested on wafer before stacking
-    - Memory BIST on wafer probe: March C- or March SS
-    - Redundancy repair analysis at wafer level
-    - KGD yield requirement: >99.5% per die
-      (8-die stack: 0.995^8 = 96% stack yield minimum)
-
-  Level 2: HBM interface testing (post-assembly)
-    - Boundary scan on HBM interface signals:
-      IEEE 1149.1 BSCs on all data, address, command pins
-      → Tests interconnect between GPU and HBM
-
-    - HBM BIST (built into HBM base logic die):
-      Read/write patterns to each DRAM die in stack
-      Tests TSV integrity between DRAM layers
-      Pattern: checkerboard, walking-1, March C-
-
-    - HBM PHY training and compliance:
-      Per-bit deskew calibration
-      Write leveling across 1024-bit interface
-      Read/write eye margin testing at speed
-
-  Level 3: System-level HBM test:
-    - Functional test: run AI workload, verify data integrity
-    - Margin testing: vary VDD and frequency to find operating limits
-    - Retention test: write pattern, wait, read back
-    - Temperature-accelerated stress test
-
-  HBM DFT architecture:
-    ┌─────────────────────────────────────────┐
-    │              GPU Die                     │
-    │  ┌──────────┐      ┌────────────────┐   │
-    │  │ HBM PHY  │──────│ HBM BIST Ctrl  │   │
-    │  │ (1024b)  │      │ (on GPU die)   │   │
-    │  └────┬─────┘      └───────┬────────┘   │
-    └───────┼────────────────────┼─────────────┘
-            │ μbumps             │
-    ════════╧════════════════════╧═══════════════
-            │ Interposer         │
-    ┌───────┼────────────────────┼─────────────┐
-    │       │    HBM Stack       │             │
-    │  ┌────┴──────┐    ┌────────┴──────────┐  │
-    │  │ HBM PHY   │    │ HBM Base Logic    │  │
-    │  │ (1024b)   │    │ (BIST, Repair,    │  │
-    │  │           │    │  TSV testing)     │  │
-    │  └───────────┘    └───────────────────┘  │
-    │         ┌──────────────────┐              │
-    │         │  DRAM Die Stack  │              │
-    │         │  (8-12 layers)   │              │
-    │         └──────────────────┘              │
-    └──────────────────────────────────────────┘
-```
-
-### 15.3 Die-to-Die Link Testing
-
-```ascii-graph
-UCIe / die-to-die link testing:
-
-  1. Loopback testing:
-     - TX sends known pattern → through interposer → RX receives
-     - Compare received vs expected at speed
-     - Pattern types: PRBS, walking-1, clock pattern (101010...)
-     - Tests: bit error rate (BER), eye margin, jitter tolerance
-
-     Die A TX ──→ Interposer ──→ Die A RX (loopback)
-                                 (on-chip compare)
-
-  2. UCIe compliance testing:
-     - Link training verification: verify handshake sequence
-     - Retrain testing: force link down, verify recovery
-     - CRC error injection: verify retry mechanism
-     - Power state transitions: verify link enters/exits low-power
-
-  3. NVLink compliance testing:
-     - 200+ GB/s per link, PAM-4 signaling
-     - TX eye diagram: verify eye height/width margin
-     - RX equalization: verify CTLE/DFE adaptation
-     - Link training: verify negotiation and lane deskew
-
-  4. Die-to-die boundary scan:
-     - IEEE 1149.1 extended for inter-die connections
-     - EXTEST mode: drive from die A, capture at die B
-     - Tests interposer routing, μbump integrity
-     - IEEE 1838 (3D test access): standardized for chiplet testing
-
-  DFT infrastructure per die-to-die link:
-    - Loopback mux at TX and RX
-    - Pattern generator / checker (PRBS-based)
-    - Error counter and status registers
-    - JTAG access for configuration and readback
-```
-
-### 15.4 3D IC Test: TSV and KGD
-
-```ascii-graph
-TSV testing:
-
-  Pre-bond TSV test (via-middle or via-last):
-    - Probe TSV from wafer backside
-    - Measure DC resistance: R < 50 mΩ (pass)
-    - Measure capacitance: C < 200 fF (pass)
-    - Open detection: R > 1 kΩ → defective TSV
-    - Short detection: C > 500 fF → likely shorted to substrate
-
-  Post-bond TSV test:
-    - Use boundary scan through TSV chain
-    - At-speed test: data pattern through TSV, check integrity
-    - TSV redundancy: spare TSVs can replace defective ones
-      via laser fuse or eFuse programming
-
-  Known Good Die (KGD) requirements for 3D:
-    ┌─────────────────────────────────────────────────┐
-    │ KGD test flow for 3D stacking:                  │
-    │                                                 │
-    │  Wafer test → Sort → Known Good Die selection   │
-    │  - Full scan ATPG (stuck-at + TDF)              │
-    │  - Memory BIST (all embedded SRAMs)             │
-    │  - IO test (boundary scan + at-speed IO)        │
-    │  - TSV test (if via-middle)                     │
-    │  - Speed binning (at-speed functional test)      │
-    │                                                 │
-    │  Target: <10 DPM (defective parts per million)  │
-    │  Reason: 2-die stack yield = KGD1 × KGD2        │
-    │    If KGD = 99.99%: stack yield = 99.98%        │
-    │    If KGD = 99.9%:  stack yield = 99.8%         │
-    │    If KGD = 99%:    stack yield = 98.01%        │
-    └─────────────────────────────────────────────────┘
-```
-
-### 15.5 Power-Aware Test Scheduling for 1000W+ Designs
-
-```ascii-graph
-Challenge: Testing a 1000W+ AI accelerator on ATE
-
-  ATE power limitations:
-    - Typical ATE per-pin current: 200-500 mA
-    - ATE total power delivery: 200-500W per test head
-    - Device may require 1000W+ during functional test
-
-  Power-aware test scheduling:
-    1. Partition test into power segments:
-       - Scan test (shift): ~100-200W (shift clock slow, moderate toggling)
-       - Scan test (capture): ~300-500W (at-speed burst, one clock cycle)
-       - IO test: ~50-100W (limited toggling)
-       - Memory BIST: ~200-400W (one SRAM at a time)
-       - Functional test: ~700-1000W (full power)
-
-    2. Test ordering for power management:
-       a. Low-power tests first (scan stuck-at, shift slow)
-       b. Medium-power tests (TDF, memory BIST per block)
-       c. High-power tests last (at-speed functional, link training)
-       d. Thermal soak between high-power segments
-
-    3. Power gating during test:
-       - Disable unused chiplets / tensor cores during block-level test
-       - Only power the block under test
-       - Sequence power domains: avoid simultaneous power-on surge
-       - Monitor on-die thermal sensors during test
-
-    4. Test insertion for power management:
-       - On-chip power management unit (PMU) accessible via JTAG
-       - PMU controls power switches, voltage regulators
-       - DFT controller coordinates with PMU during test
-       - Emergency shutdown if die temperature exceeds threshold
-
-  Shift power reduction for large designs:
-    - 2M+ FFs shifting simultaneously → 100-300W shift power alone
-    - Low-power fill: reduce toggle rate from ~50% to ~10-15%
-    - Staggered chain activation: only shift subset of chains at once
-    - Reduced VDD for shift: 0.6V instead of 0.75V (50% power savings)
-    - Split capture: limit simultaneous switching during capture pulses
-```
-
-### 15.6 High-Speed I/O Testing
-
-```ascii-graph
-PCIe 6.0 / CXL link testing:
-
-  PCIe 6.0 (PAM-4 signaling):
-    - Data rate: 64 GT/s per lane (x16 = 1024 Gbps)
-    - PAM-4: 4-level signaling (2 bits per symbol)
-    - Signal-to-noise ratio: ~10 dB lower than NRZ at same rate
-    - TX equalization: 3-tap pre-emphasis + 1-tap de-emphasis
-    - RX equalization: CTLE + 1-tap DFE
-
-  Test requirements:
-    1. Transmitter eye margin:
-       - Measure eye height and width at 1e-12 BER
-       - Target: >30% eye opening
-       - Jitter decomposition: RJ + DJ + ISI
-
-    2. Receiver sensitivity:
-       - Inject calibrated jitter (SJ, RJ)
-       - Find minimum detectable signal level
-       - Stress test: run at 64 GT/s with injected errors
-
-    3. Link training verification:
-       - PCIe link training sequence (TS1/TS2 ordered sets)
-       - Speed negotiation: 2.5 → 5.0 → 8.0 → 16.0 → 32.0 → 64.0 GT/s
-       - Equalization negotiation (preset/coeff exchange)
-       - CXL mode entry (if supported): verify mode switch
-
-    4. PAM-4 specific tests:
-       - Level separation: verify 4 voltage levels are distinct
-       - Non-linearity: check level spacing uniformity
-       - Crosstalk: measure coupling between adjacent lanes
-       - Forward error correction (FEC): verify CRC + retry
-
-  CXL link training:
-    - CXL.cache, CXL.mem, CXL.io protocol verification
-    - Link training at PCIe rate, then switch to CXL mode
-    - Flit-based testing: verify 256-byte flit integrity
-    - Latency measurement: round-trip latency < 150 ns target
-```
-
-### 15.7 Analog/Mixed-Signal BIST (AMBIST)
-
-```ascii-graph
-AMBIST: Built-In Self-Test for analog/mixed-signal blocks
-
-  Targets: PLLs, SerDes PHYs, ADCs, DACs, voltage regulators
-
-  1. PLL BIST:
-     - Frequency lock detection: verify PLL locks to target frequency
-     - Jitter measurement: on-chip jitter measurement circuit
-       (self-referenced or reference-based)
-     - Lock time: measure cycles from reset to lock
-     - Test flow:
-       a. Enable PLL, wait for lock
-       b. Measure output frequency (counter-based)
-       c. Measure jitter (self-referenced ring oscillator)
-       d. Compare against pass/fail thresholds
-
-  2. SerDes PHY BIST:
-     - Loopback: internal (near-end), external (far-end)
-     - PRBS pattern generator → SerDes TX → loopback → SerDes RX → checker
-     - Eye monitor: on-chip eye diagram measurement
-     - Calibration verification: verify impedance, equalization settings
-
-     ┌────────┐  PRBS  ┌────────┐  analog  ┌────────┐
-     │ Pattern│───────>│  TX    │────────>│ (loop) │
-     │ Gen    │        │  PHY   │         │        │
-     └────────┘        └────────┘         └────────┘
-                                             │
-     ┌────────┐  result ┌────────┐          │
-     │Checker │<────────│  RX    │<─────────┘
-     │        │         │  PHY   │  analog
-     └────────┘         └────────┘
-
-  3. ADC/DAC BIST:
-     - DAC: generate known digital pattern → analog output →
-       compare against reference (on-chip comparator or ADC loopback)
-     - ADC: apply known analog voltage (resistor ladder DAC) →
-       digital output → compare expected code
-     - INL/DNL testing: ramp input, check linearity
-     - Histogram-based testing: statistical analysis of output codes
-
-  4. Voltage regulator BIST:
-     - Output voltage accuracy: ±2-5% of target
-     - Load regulation: vary load current, measure voltage change
-     - Line regulation: vary input voltage, measure output stability
-     - Transient response: step load, measure settling time
-
-  AMBIST area overhead: 5-10% of analog block area
-  Test time per analog block: 10-100 ms
-  Industry trend: More analog BIST at advanced nodes to reduce
-  ATE cost and enable system-level self-test
-```
-
----
-
-*End of DFT and ATPG Deep Dive*
+## References
+
+1. Bushnell, M.L. and Agrawal, V.D., *Essentials of Electronic Testing for Digital, Memory and Mixed-Signal VLSI Circuits*, Springer, 2000. The standard graduate text; controllability/observability, ATPG, BIST.
+2. Abramovici, M., Breuer, M.A., and Friedman, A.D., *Digital Systems Testing and Testable Design*, IEEE Press, 1990. Fault models, fault collapsing, the D-calculus.
+3. Roth, J.P., "Diagnosis of Automata Failures: A Calculus and a Method," *IBM J. Res. Dev.*, 10(4), 1966. The D-algorithm.
+4. Goel, P., "An Implicit Enumeration Algorithm to Generate Tests for Combinational Logic Circuits" (PODEM), *IEEE Trans. Computers*, C-30(3), 1981.
+5. Fujiwara, H. and Shimono, T., "On the Acceleration of Test Generation Algorithms" (FAN), *IEEE Trans. Computers*, C-32(12), 1983.
+6. Williams, T.W. and Brown, N.C., "Defect Level as a Function of Fault Coverage," *IEEE Trans. Computers*, C-30(12), 1981. The $DL = 1 - Y^{1-T}$ model.
+7. van de Goor, A.J., *Testing Semiconductor Memories: Theory and Practice*, Wiley, 1991. March algorithms and memory fault models.
+8. Rajski, J. et al., "Embedded Deterministic Test," *IEEE Trans. CAD*, 23(5), 2004. The LFSR-based compression of §7.2.
+9. IEEE Std 1149.1 (JTAG boundary scan), 1500 (embedded-core wrapper), 1687 (IJTAG). The access-standard family of §7.

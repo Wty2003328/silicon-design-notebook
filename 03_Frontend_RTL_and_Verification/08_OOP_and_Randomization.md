@@ -1,1132 +1,301 @@
-# SystemVerilog OOP and Randomization -- Senior Engineer Deep Dive
+# OOP and Constrained Randomization — Machine-Generating Stimulus for an Unenumerable State Space
+
+> **Stage:** 03 · Verification. Two answers to one pressure — a modern design's input state space is astronomically larger than any hand-written test suite can enumerate: **constrained-random** stimulus to machine-sample the *legal* subspace, and **object orientation** to build the layered, reusable, randomizable testbench that generates it. This is not a language tour: every feature below is derived from the reuse/extensibility or state-space-coverage need it answers.
+> **Prerequisites:** [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (class types, dynamic arrays, queues), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the processes and fork/join the generator–driver pipeline runs on). **Hands off to:** [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (functional coverage — the measurement half of the loop), [UVM_Methodology](10_UVM_Methodology.md) (the full methodology these primitives are built into), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (coverage closure).
 
 ---
 
-## UVM Class Hierarchy -- Complete Reference
+## 0. Why this page exists
 
-### The Two Branches: uvm_object and uvm_component
+A modern block has more reachable behaviors than anyone can list. The input-plus-state space is exponential in bits, so the interesting scenarios live at deep cross-products of conditions no engineer can enumerate by hand — and the bugs live in exactly the interactions nobody thought to write a test for. Two ideas answer that single pressure, and this page derives both from it rather than cataloguing SystemVerilog syntax:
 
-```ascii-graph
-uvm_void (abstract root)
-├── uvm_object (data containers -- no hierarchy, no phasing)
-│   ├── uvm_transaction (deprecated, use uvm_sequence_item)
-│   │   └── uvm_sequence_item (THE base class for transactions)
-│   │       └── your_packet (user-defined transaction)
-│   ├── uvm_sequence #(REQ, RSP) (generates sequence_items)
-│   │   └── your_sequence
-│   ├── uvm_reg (register model objects)
-│   ├── uvm_reg_field
-│   ├── uvm_reg_map
-│   └── uvm_pool, uvm_queue, uvm_event (utility classes)
-│
-└── uvm_component (hierarchical, phased, permanent during simulation)
-    ├── uvm_test (top-level test class)
-    │   └── your_test
-    ├── uvm_env (encapsulates the verification environment)
-    │   └── your_env
-    ├── uvm_agent (bundles driver, monitor, sequencer, coverage)
-    │   └── your_agent
-    ├── uvm_driver #(REQ, RSP) (drives signals to DUT)
-    │   └── your_driver
-    ├── uvm_monitor (observes DUT signals, creates transactions)
-    │   └── your_monitor
-    ├── uvm_sequencer #(REQ, RSP) (arbitrates between sequences)
-    │   └── your_sequencer
-    ├── uvm_scoreboard (compares expected vs actual)
-    │   └── your_scoreboard
-    ├── uvm_subscriber #(T) (analysis port consumer)
-    │   ├── your_coverage_collector
-    │   └── your_logger
-    ├── uvm_reg_block (register block)
-    └── uvm_phase (phase management)
-```
+- **Constrained randomization** — let the machine *sample* the space instead of a human *enumerating* it. Constraints declare the legal subset as a set of relations; a solver draws legal-but-diverse points from it; reach then grows with *compute*, not with engineer-hours.
+- **Object orientation** — a testbench is long-lived, shared across derivatives, and must be *extended* (new protocol, error injection, new test) without rewriting what already works. Encapsulation, inheritance, polymorphism, and the factory are the exact tools for "extend without editing the base," and each is derived here from that reuse need.
 
-### How the Hierarchy Relates -- Data Flow
-
-```ascii-graph
-uvm_test
-  └── uvm_env
-        ├── uvm_agent (ACTIVE mode: drives stimulus)
-        │     ├── uvm_sequencer
-        │     │     └── uvm_sequence
-        │     │           └── creates uvm_sequence_item objects
-        │     │                 (these are uvm_object, NOT uvm_component)
-        │     ├── uvm_driver
-        │     │     └── receives uvm_sequence_item from sequencer
-        │     │           drives DUT pins via virtual interface
-        │     └── uvm_monitor
-        │           └── observes DUT pins, creates uvm_sequence_item
-        │                 publishes to analysis port
-        │
-        ├── uvm_agent (PASSIVE mode: observation only)
-        │     └── uvm_monitor only (no driver, no sequencer)
-        │
-        ├── uvm_scoreboard
-        │     └── subscribes to monitors via analysis ports
-        │           compares expected vs actual transactions
-        │
-        └── uvm_subscriber (coverage collector)
-              └── subscribes to monitors
-                    collects functional coverage on transactions
-
-Key relationships:
-  uvm_sequence IS-A uvm_object (created dynamically, garbage collected)
-  uvm_sequence_item IS-A uvm_object (created/destroyed per transaction)
-  uvm_driver IS-A uvm_component (exists for entire simulation)
-  uvm_sequencer IS-A uvm_component (exists for entire simulation)
-  
-  The sequencer is the bridge between the two branches:
-    - Sequencer is a component (permanent, phased)
-    - It holds a queue of uvm_sequence_item objects (temporary)
-    - Driver requests items from sequencer via get_next_item()
-    - Sequencer runs sequences which produce items
-```
+The two meet in the **coverage-driven loop** (§5): random stimulus reaches, functional coverage measures what was reached, and the constraints are the steering wheel between them. By the end you should be able to argue *why* random beats directed asymptotically, see the constraint solver as a sampler over a solution set, and reason about where each OOP abstraction earns its complexity — not recite which method disables which knob.
 
 ---
 
-## Class Fundamentals
+## 1. The state-space problem: why directed tests lose asymptotically
 
-### Handle vs Object -- The #1 Source of Confusion
+### 1.1 The counting argument
 
-A **handle** is a pointer/reference. An **object** is the actual memory allocation. Multiple
-handles can point to the same object. A handle can be `null`.
+Treat a block's behavior as a walk through its state space. If $b$ bits of design-plus-input state matter, the reachable space has up to
 
-```verilog
-class Packet;
-    int id;
-    function new(int id);
-        this.id = id;
-    endfunction
-endclass
+$$
+|S| \;\le\; 2^{b}
+$$
 
-initial begin
-    Packet p1;          // Handle declared -- currently NULL
-    Packet p2;          // Another NULL handle
+Even a small block — a few 32-bit registers and a control word — reaches $b \sim 100\text{–}200$, so $|S|$ is $10^{30}\text{–}10^{60}$. A long regression runs perhaps $N_{cyc} \sim 10^{9}\text{–}10^{12}$ cycles, so the fraction of states you can *possibly* visit,
 
-    // p1.id = 5;       // RUNTIME ERROR: null handle dereference
+$$
+\frac{N_{cyc}}{|S|} \;\approx\; 0
+$$
 
-    p1 = new(1);        // Object created, p1 points to it
-    p2 = p1;            // p2 points to SAME object (not a copy!)
-    p2.id = 99;
-    $display(p1.id);    // Prints 99 -- p1 and p2 share the same object!
+is effectively zero no matter how long you run. Covering the *raw* state space is hopeless, so verification never targets it: it targets a much smaller, hand-built set of **interesting behaviors** — the functional-coverage model of §5 — and asks stimulus to *reach* those. The problem shifts from "visit every state" (impossible) to "reach every interesting behavior" (hard, because those behaviors sit at cross-products a human cannot list).
 
-    p1 = new(2);        // p1 now points to NEW object (id=2)
-    $display(p2.id);    // Still 99 -- p2 still points to OLD object
+### 1.2 Directed vs constrained-random: reach grows with effort, or with compute
 
-    p2 = null;          // p2 no longer references the old object
-    // If no other handles reference it, garbage collector reclaims it
-end
-```
+Model a methodology by the set of interesting behaviors it reaches.
 
-### Complete Class Lifecycle
+- **Directed.** An engineer writes one scenario per test, so reach $R_d = k\,E$ is linear in engineer-effort $E$ (tests written), $k = O(1)$. Every new corner costs human time.
+- **Constrained-random.** One generator, many machine-drawn points. After $n$ independent draws, a reachable behavior $i$ with per-draw probability $p_i > 0$ is still unhit with probability
 
-```verilog
-class Transaction;
-    static int count = 0;
-    int id;
-    bit [31:0] data;
+$$
+\Pr[\text{behavior } i \text{ unhit after } n] \;=\; (1-p_i)^{n} \;\approx\; e^{-n\,p_i}
+$$
 
-    function new(bit [31:0] data = 0);
-        this.data = data;
-        this.id = count++;
-    endfunction
+so the expected draws to hit it is $1/p_i$ (geometric), and total reach after $n$ draws covers every behavior with $p_i \gtrsim 1/n$. Crucially reach grows with $n$ — with **compute** — at *fixed* human effort: you write the generator once and buy coverage with machine time.
 
-    // No explicit destructor in SV -- garbage collection handles cleanup
-    // Objects are reclaimed when no handles reference them
-endclass
+| Axis | Directed | Constrained-random | Coverage-driven (CR + §5) |
+|---|---|---|---|
+| Effort per corner | high (one test each) | ~zero (machine draws) | low bulk + targeted tail |
+| Reach ceiling | engineer's imagination (§1.3) | any legal behavior with $p_i>0$ | legal space, steered to holes |
+| Debuggability | high (test names the intent) | needs **seed replay** (§6) | same, plus coverage names the gap |
+| Determinism | inherent | per-seed (§6) | per-seed |
+| Best when | a *specific* corner, a smoke test | large legal space, unknown interactions | sign-off closure |
 
-initial begin
-    Transaction txn_array[100];
+### 1.3 Why random wins asymptotically — the imagination bound
 
-    // Create 100 objects
-    foreach (txn_array[i])
-        txn_array[i] = new($urandom);
+Directed tests can only cover behaviors the engineer *conceived*. Let the interesting set be $B$ and let a fraction $\theta < 1$ be imagined; directed coverage saturates at $\theta\,|B|$, and the escaped bugs live in the $(1-\theta)\,|B|$ nobody enumerated — the unanticipated interactions. Random stimulus draws from the whole legal space, reaching any behavior with $p_i > 0$ *whether or not anyone imagined it*:
 
-    // Use them...
-    foreach (txn_array[i])
-        $display("Txn %0d: data=%h", txn_array[i].id, txn_array[i].data);
+$$
+\lim_{n\to\infty} \text{Cov}_{CR}(n) \;=\; |B_{\text{reachable}}| \;\;>\;\; \theta\,|B| \;=\; \lim_{E\to\infty} \text{Cov}_{directed}(E)
+$$
 
-    // Deallocation: set handles to null or let them go out of scope
-    txn_array.delete();  // For dynamic arrays
-    // Garbage collector will reclaim all 100 Transaction objects
-end
-```
-
-### this Keyword
-
-```verilog
-class Node;
-    int value;
-    Node next;  // Handle to another Node
-
-    function new(int v);
-        this.value = v;    // this disambiguates parameter from field
-        this.next = null;
-    endfunction
-
-    function void append(Node n);
-        Node current = this;  // Start from this node
-        while (current.next != null)
-            current = current.next;
-        current.next = n;
-    endfunction
-endclass
-```
+So random wins asymptotically not because it is smarter per test — it is *dumber* — but because its reach is bounded by **compute and $\min_i p_i$**, not by human foresight. The crossover comes almost immediately for any nontrivial cross, because a human cannot enumerate a cross-product faster than a solver can sample it. That asymmetry — machine reach vs human reach — is the entire justification for the rest of this page.
 
 ---
 
-## Inheritance
+## 2. Constrained randomization: sampling the legal subspace
+
+Raw randomness is almost never *legal*. A uniformly random 32-bit "AXI control word" violates alignment, hits reserved encodings, and breaks burst rules — the legal subset is a vanishing fraction of $2^{32}$. Illegal stimulus is worse than useless: it either trips the checker on inputs the spec forbids (false failures that burn debug time) or is silently dropped by the DUT (a wasted cycle). So the draw must be *confined to the legal region*.
+
+A **constraint** is a relation the draw must satisfy. The set of constraints defines a region of the variable space, and `randomize()` returns a point sampled from it:
+
+$$
+\mathcal{S} \;=\; \Big\{\, x \in \textstyle\prod_v \text{dom}(v) \;:\; \bigwedge_j c_j(x) \,\Big\}
+$$
+
+where $x$ = the vector of `rand`/`randc` variables, $\text{dom}(v)$ = each variable's declared range, and $c_j$ = the $j$-th constraint. `randomize()` returns 1 and writes a point $x \in \mathcal{S}$, or returns **0** when $\mathcal{S} = \emptyset$ — *always check the return*, because an unchecked failure silently leaves the object un-randomized. This is the inverse of directed testing: there you state the *points*; here you state what *legal* means and let the solver find points.
 
 ```verilog
-class base_transaction;
-    rand bit [7:0] addr;
-    rand bit [31:0] data;
-    bit [3:0] kind;
+class packet;
+  rand  bit [7:0]  addr;
+  rand  bit [3:0]  len;
+  rand  bit        is_write;
 
-    function new(bit [3:0] kind = 0);
-        this.kind = kind;
-    endfunction
-
-    virtual function void display();
-        $display("BASE: addr=%h data=%h kind=%0d", addr, data, kind);
-    endfunction
-
-    virtual function base_transaction copy();
-        base_transaction t = new(this.kind);
-        t.addr = this.addr;
-        t.data = this.data;
-        return t;
-    endfunction
+  constraint legal {
+    addr inside {[8'h00:8'h3F], [8'hC0:8'hFF]};   // legal address windows
+    len  inside {[1:8]};                          // 1..8 beats
+    is_write -> addr[1:0] == 2'b00;               // writes are word-aligned
+  }
 endclass
-
-class error_transaction extends base_transaction;
-    rand bit       inject_error;
-    rand bit [2:0] error_type;
-
-    constraint c_error_rate { inject_error dist {0 := 90, 1 := 10}; }
-
-    function new();
-        super.new(4'hE);  // Call parent constructor with error kind
-    endfunction
-
-    // Override virtual functions
-    function void display();
-        super.display();  // Call parent version first
-        $display("  ERROR: inject=%b type=%0d", inject_error, error_type);
-    endfunction
-
-    function base_transaction copy();
-        error_transaction t = new();
-        t.addr = this.addr;
-        t.data = this.data;
-        t.inject_error = this.inject_error;
-        t.error_type = this.error_type;
-        return t;
-    endfunction
-endclass
+// if (!p.randomize()) fatal("no legal solution");  <-- never skip this
 ```
+
+### 2.1 The controls are levers on the *distribution*, not on legality
+
+Legality is one question (is $x \in \mathcal{S}$); *which* $x \in \mathcal{S}$ you get is another. Most randomization controls exist for the second — they move probability mass around inside $\mathcal{S}$:
+
+- **`rand` vs `randc`** — a memoryless draw vs a draw *without replacement* (a fresh permutation of the domain, every value once per cycle). §2.2.
+- **`dist` weighting** — bias toward corners: `val := w` gives weight $w$ to a value; `val :/ w` splits $w$ across a range.
+- **`soft` constraints** — defaults that *yield* to any hard or inline constraint that contradicts them. Precedence: **hard > inline `with` > soft**, and a later soft overrides an earlier one.
+- **inline `randomize() with {…}`** — per-call constraints a test adds *without editing the class*, the everyday extensibility hook.
+- **`solve a before b`** — orders the variables the solver picks, which reshapes the marginal distribution (§3) without changing $\mathcal{S}$.
+- **`rand_mode()` / `constraint_mode()`** — turn a variable's randomization or a whole constraint on/off at run time; **`pre_randomize`/`post_randomize`** hook the solve to set up state before and derive fields (checksums, sequence numbers) after.
+
+```verilog
+constraint c_addr { soft addr inside {[0:63]}; }         // default: low window
+// ...a specific test overrides the default without touching the class:
+if (!txn.randomize() with { addr inside {[200:255]}; })  // hard beats soft
+  $fatal(1, "randomize failed");
+// addr now in [200:255]; any *un*-overridden soft defaults still hold.
+```
+
+### 2.2 rand vs randc: the cost of "no repeats"
+
+`rand` is memoryless, so seeing *every* value of a $w$-bit field ($R = 2^{w}$ values) takes, by coupon-collector (§5), about $R\ln R$ draws, and any particular value may be missed for a long time ($\Pr[\text{miss in } n] = (1-1/R)^{n}$). `randc` guarantees each value exactly once per $R$ draws — a full sweep, zero repeats — which is what you want for arbiter channels, decode selects, and small opcode fields. The price is memory: `randc` must *remember* which values it has already emitted this cycle, so it carries
+
+$$
+\text{state}\big(\texttt{randc bit}[w]\big) \;=\; \Theta(2^{w})
+$$
+
+`randc bit[7:0]` is 256 states (fine); `randc bit[31:0]` is $4\times10^{9}$ states (impossible). `randc` is therefore a *small-field* tool, roughly $w \lesssim 8\text{–}16$ bits; wide fields use `rand` plus a `dist` or coverage feedback to get spread without the bookkeeping.
 
 ---
 
-## Polymorphism -- The #1 OOP Interview Question
+## 3. The constraint solver as a theoretical object
 
-### Virtual vs Non-Virtual: Proof by Example
+Constraint satisfaction is the right frame: find $x$ with $\bigwedge_j c_j(x)$. Boolean constraint satisfaction (SAT) is **NP-complete**, so worst-case solve time is exponential in the number of *interacting* variables. Production solvers take one of two routes:
 
-```verilog
-class Animal;
-    function string speak_static();       // NOT virtual
-        return "...";
-    endfunction
+- **BDD-based** — build a decision diagram representing the *whole* solution set, then sample from it. Exact and naturally uniform, but memory blows up on complex sets.
+- **SAT/SMT-based** — search for satisfying assignments. Scales to large problems, but needs extra machinery to sample *fairly* rather than returning the same corner repeatedly.
 
-    virtual function string speak_virtual();  // Virtual
-        return "...";
-    endfunction
-endclass
+### 3.1 The marginal law — why distribution shaping exists
 
-class Dog extends Animal;
-    function string speak_static();
-        return "Woof";
-    endfunction
+Ideal uniform sampling over $\mathcal{S}$ gives each variable a marginal proportional to its number of legal *completions*:
 
-    function string speak_virtual();
-        return "Woof";
-    endfunction
-endclass
+$$
+\Pr[x_v = k] \;=\; \frac{\big|\{\,x \in \mathcal{S} : x_v = k\,\}\big|}{|\mathcal{S}|}
+$$
 
-class Cat extends Animal;
-    function string speak_static();
-        return "Meow";
-    endfunction
+A value that participates in few legal completions is drawn rarely *by construction* — even if it is the most bug-prone corner. This is the deep reason `dist`, weighting, and `solve…before` exist: they override the solver's combinatorial bias and move mass to where verification value lives. Concretely, `solve a before b` makes the solver choose $a$ uniformly *first* and only then draw $b \mid a$, so $a$'s marginal becomes uniform instead of completion-weighted. Example: if $a{=}1$ admits 56 legal values of $b$ and $a{=}0$ admits only 10, plain solving draws $a{=}1$ about $56/66 \approx 85\%$ of the time; `solve a before b` restores 50/50. It changes the *distribution*, never the legal set.
 
-    function string speak_virtual();
-        return "Meow";
-    endfunction
-endclass
+### 3.2 Solver-friendly constraints
 
-initial begin
-    Animal animals[3];
-    animals[0] = new();
-    animals[1] = Dog::new();   // Upcast Dog to Animal handle
-    animals[2] = Cat::new();   // Upcast Cat to Animal handle
+Some relations explode the search and can make a regression **solver-bound rather than DUT-bound**, because the solver runs on *every* `randomize()` call:
 
-    foreach (animals[i]) begin
-        // NON-VIRTUAL: compile-time binding based on HANDLE type (Animal)
-        $display("Static:  %s", animals[i].speak_static());
-        // Prints: "...", "...", "..."  -- WRONG for Dog and Cat
+- **multiply / divide / modulo** (`a*b == c`) couple all bits nonlinearly — very hard;
+- **large `unique{}`** over $k$ variables — up to $k!$ orderings to consider;
+- **`size` + per-element** constraints on big arrays — the solver reasons about every element jointly.
 
-        // VIRTUAL: run-time binding based on OBJECT type
-        $display("Virtual: %s", animals[i].speak_virtual());
-        // Prints: "...", "Woof", "Meow"  -- CORRECT
-    end
-end
-```
+Friendly rewrites keep each call cheap: range the operands, `solve` the pivot variable first to linearize a chain, replace a *computed* constraint with a precomputed legal-value set, or partition one huge `randomize` into staged ones.
 
-**Key insight:** Without `virtual`, SystemVerilog uses the HANDLE type to determine which
-function to call (compile-time/static dispatch). With `virtual`, it uses the OBJECT type
-(run-time/dynamic dispatch). This is fundamental to UVM (Universal Verification Methodology) where base class handles store
-derived class objects.
+### 3.3 The central correctness knob: over- vs under-constraining
 
-### Practical Polymorphism in Verification
+The size of $\mathcal{S}$ relative to the true legal space is where constrained-random goes wrong:
 
-```verilog
-// A single scoreboard function handles ALL transaction types
-class scoreboard;
-    function void check(base_transaction expected, base_transaction actual);
-        // compare() is virtual -- calls the right version for error_transaction,
-        // burst_transaction, etc. without knowing the actual type
-        if (!expected.compare(actual)) begin
-            expected.display();  // Virtual -- shows error_transaction fields
-            actual.display();
-            `uvm_error("SCB", "Mismatch")
-        end
-    endfunction
-endclass
-```
+- **Over-constrain** ($\mathcal{S}$ smaller than legal) → legal-but-interesting stimulus is never generated → bugs missed, coverage silently plateaus, and in the limit $\mathcal{S} = \emptyset$ so `randomize()` fails.
+- **Under-constrain** ($\mathcal{S}$ larger than legal) → the DUT sees spec-illegal inputs → false failures that waste debug, or checker confusion that *masks* real bugs.
+
+The target is $\mathcal{S} =$ exactly the legal space. The constraint set is therefore a *model of legality* to be reviewed with the same care as the checker — not boilerplate. Getting it wrong fails quietly in one direction (missed coverage) and loudly in the other (false fails).
 
 ---
 
-## Deep Copy vs Shallow Copy
+## 4. Why OOP for the testbench: reuse and extensibility under change
 
-### The Bug That Bites Everyone
+A testbench is not throwaway code. It outlives the project, is shared across derivatives and teams, and must be *extended* — a new protocol variant, error injection, a new test — without rewriting the parts that already work. That is a software-engineering problem, and each OOP feature below is derived from "extend without editing the base," not presented as language trivia.
 
-```verilog
-class Payload;
-    bit [7:0] data[];
+### 4.1 Objects and handles: the transaction data model
 
-    function new(int size = 4);
-        data = new[size];
-    endfunction
-endclass
-
-class Packet;
-    int id;
-    Payload pl;  // Handle to another object
-
-    function new(int id, int pl_size = 4);
-        this.id = id;
-        this.pl = new(pl_size);
-    endfunction
-endclass
-
-initial begin
-    Packet p1 = new(1, 8);
-    p1.pl.data = '{8'h11, 8'h22, 8'h33, 8'h44, 8'h55, 8'h66, 8'h77, 8'h88};
-
-    // SHALLOW COPY: copies handle values, NOT the objects they point to
-    Packet p2 = new p1;       // Built-in shallow copy
-    p2.id = 2;                // p2 gets its own id -- OK
-    p2.pl.data[0] = 8'hFF;   // OOPS: modifies p1.pl.data[0] too!
-    // p1 and p2 share the SAME Payload object!
-
-    $display("p1.pl.data[0] = %h", p1.pl.data[0]);  // FF -- corrupted!
-end
-```
-
-### Implementing Proper Deep Copy
+Stimulus and observed traffic are modeled as **transactions** — dynamic objects created and destroyed per item, handed *by reference* along a pipeline (generator → driver → DUT → monitor → scoreboard). That per-item lifetime is why they are class objects (dynamically allocated, garbage-collected) rather than static module signals, and why they travel as **handles**, not copies. The hazard to internalize: a handle is a reference, so `p2 = p1` aliases *one* object — two names, one memory.
 
 ```verilog
-class Payload;
-    bit [7:0] data[];
-
-    function Payload copy();
-        Payload c = new(data.size());
-        foreach (data[i]) c.data[i] = this.data[i];
-        return c;
-    endfunction
-endclass
-
-class Packet;
-    int id;
-    Payload pl;
-
-    function Packet copy();
-        Packet c = new(this.id, 0);
-        c.pl = this.pl.copy();  // Deep copy -- create new Payload
-        return c;
-    endfunction
-endclass
-
-// UVM approach: do_copy()
-class my_txn extends uvm_sequence_item;
-    `uvm_object_utils(my_txn)
-    rand bit [7:0] addr;
-    rand bit [31:0] data;
-    bit [7:0] payload[];
-
-    function void do_copy(uvm_object rhs);
-        my_txn rhs_txn;
-        super.do_copy(rhs);  // Copy base class fields
-        if (!$cast(rhs_txn, rhs))
-            `uvm_fatal("COPY", "Cast failed in do_copy")
-        this.addr = rhs_txn.addr;
-        this.data = rhs_txn.data;
-        this.payload = new[rhs_txn.payload.size()];
-        foreach (rhs_txn.payload[i])
-            this.payload[i] = rhs_txn.payload[i];
-    endfunction
-endclass
-
-// Usage:
-my_txn t1 = my_txn::type_id::create("t1");
-my_txn t2 = my_txn::type_id::create("t2");
-t2.copy(t1);  // Calls do_copy -- full deep copy
+Packet p1 = new(1);
+Packet p2 = p1;      // alias: p2 and p1 are the SAME object
+p2.id = 99;          // p1.id is now 99 too
 ```
+
+Because a scoreboard must keep an *independent* snapshot to compare later, copying matters — and forces a choice. A **shallow copy** duplicates the top object but *shares* its sub-object handles (e.g. a payload array), so mutating the copy corrupts the original; a **deep copy** recursively clones the sub-objects. This is a *data-model* decision (reference vs value semantics), not a language quirk — the reason UVM standardizes `copy`/`clone` at all.
+
+### 4.2 Inheritance + polymorphism: specialize without touching the base
+
+Build the transaction (or component) once as a base; a variant *extends* it — adds an error field, overrides a compare — without re-touching the proven base. That is reuse by extension. But it only pays if the environment, written against the *base* type, actually runs the *derived* behavior at run time. That requires dynamic dispatch: a **`virtual`** method resolves by the **object's** real type, not the **handle's** declared type.
+
+```verilog
+Animal a = Dog::new();     // base handle, derived object
+a.speak_static();          // NON-virtual → handle type → base version (WRONG)
+a.speak_virtual();         // virtual     → object type → Dog version  (RIGHT)
+```
+
+This is the load-bearing mechanic of the whole methodology: the environment holds `base_txn` / `base_driver` handles but must invoke `error_txn::compare` / `my_driver::drive`. Forget `virtual` and dispatch falls back to the handle type — the base version runs and the specialization is *silently ignored*, one of the most common testbench bugs.
+
+### 4.3 The factory: making construction itself overridable
+
+Polymorphism routes *calls* to the right override, but *someone* still has to `new` the right type — and that `new` lives *inside* the reusable component you must not edit. A driver hard-coding `txn = new()` always builds a `base_txn`; to inject an `error_txn` you would have to modify VIP source, exactly what reuse forbids. The **factory** breaks this: components construct through a registry, and a test *registers an override* from the outside.
+
+```verilog
+// inside the reusable driver — never edited:
+txn = base_txn::type_id::create("txn");        // ask the factory, don't 'new'
+// inside the test — freely edited:
+base_txn::type_id::set_type_override(error_txn::get_type());  // now create() yields error_txn
+```
+
+So the last mile of extensibility — object *creation* — becomes configurable without touching the environment. That single indirection is why UVM is factory-centric (see [UVM_Methodology](10_UVM_Methodology.md)).
+
+### 4.4 Trade-off: abstraction vs simplicity
+
+The layering is not free. Indirection makes control flow harder to follow; factory-created types resolve at run time (a whole class of "why did I get the base type?" bugs); a newcomer pays a real ramp cost; parameterized/abstract base classes multiply the surface to learn. The judgment is about the **reuse horizon**:
+
+- Heavy OOP + factory **pays** when the testbench is reused — many derivatives, many tests, a shared VIP with a stable base and swappable specializations. This is the UVM case, and the indirection is what lets a test change behavior without a VIP edit.
+- The same machinery is **overhead** for a one-off 200-line block test that will never be extended; a flat, lightly-randomized testbench is the correct, cheaper choice.
+
+Match the abstraction to how many times the code will be reused and re-specialized — not to methodology fashion.
 
 ---
 
-## Factory Pattern (UVM Context)
+## 5. The coverage-driven loop: closing the feedback
 
-### Why Polymorphism Alone Is Not Enough
+Random stimulus *reaches*, but a run that reaches a corner tells you nothing unless you *measure* that it did. **Functional coverage** is that measurement: a hand-built model of interesting scenarios — values, ranges, transitions, and (where the bugs hide) *crosses* of conditions — sampled during simulation. Randomization and coverage are the two halves of one method, and the constraints are the steering wheel between them:
 
-```verilog
-// Problem: you can't override "new" with polymorphism
-class driver;
-    task run();
-        base_transaction txn;
-        txn = new();  // ALWAYS creates base_transaction
-        // Even if you want error_transaction, you'd have to modify this code
-        // In a reusable VIP, you CAN'T modify driver source code
-    endtask
-endclass
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart LR
+    RAND["Constrained-random stimulus\n(this page)"] --> DUT["DUT + checkers"]
+    DUT --> COV["Functional coverage\n(what was hit) — 09"]
+    COV --> HOLES{"Holes?"}
+    HOLES -->|yes: steer constraints/dist/weights\ntoward the gap| RAND
+    HOLES -->|stubborn corner| DIRECTED["Directed / heavily-steered test"]
+    DIRECTED --> DUT
+    HOLES -->|no| DONE["Converged — sign-off (11)"]
 ```
 
-### UVM Factory Solves This
+This page owns only the *generate* half. The coverage-model mechanics (covergroups, coverpoints, bins, crosses) live in [Assertions_and_Coverage](09_Assertions_and_Coverage.md); the closure *methodology* (vplan → model → regress → triage → sign-off) lives in [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md). Cross-link, don't duplicate.
 
-```verilog
-class base_txn extends uvm_sequence_item;
-    `uvm_object_utils(base_txn)  // Register with factory
-    rand bit [7:0] addr;
-    rand bit [31:0] data;
+### 5.1 Coupon-collector: why the tail dominates closure
 
-    function new(string name = "base_txn");
-        super.new(name);
-    endfunction
-endclass
+Suppose the model has $C$ coverage bins and pure-random stimulus hits each with equal probability $1/C$ per draw. Expected draws to fill *all* $C$ is the coupon-collector number:
 
-class error_txn extends base_txn;
-    `uvm_object_utils(error_txn)  // Register with factory
-    rand bit inject_error;
+$$
+E[n] \;=\; C\,H_C \;\approx\; C(\ln C + \gamma), \qquad \gamma \approx 0.577
+$$
 
-    function new(string name = "error_txn");
-        super.new(name);
-    endfunction
-endclass
+where $H_C = \sum_{i=1}^{C} 1/i$ is the $C$-th harmonic number. The sting is the *tail*: when one bin remains, each draw hits it with probability $1/C$, so the *last* bin alone costs $C$ draws on average — the familiar "90% of coverage in a day, the last 10% in a month" curve. Real bins are not equiprobable, and then the **rarest** bin dominates:
 
-// In the driver (VIP code -- never modified):
-class my_driver extends uvm_driver #(base_txn);
-    task run_phase(uvm_phase phase);
-        base_txn txn;
-        forever begin
-            txn = base_txn::type_id::create("txn");
-            // Factory returns whatever type is registered
-            // Default: base_txn. After override: error_txn.
-        end
-    endtask
-endclass
+$$
+E[n] \;\gtrsim\; \frac{1}{p_{\min}}
+$$
 
-// In the test (user code -- freely modified):
-class error_test extends uvm_test;
-    function void build_phase(uvm_phase phase);
-        super.build_phase(phase);
-        // TYPE override: ALL base_txn creations return error_txn
-        base_txn::type_id::set_type_override(error_txn::get_type());
-
-        // INSTANCE override: only specific instances affected
-        // factory.set_inst_override_by_type(
-        //     base_txn::get_type(), error_txn::get_type(),
-        //     "env.agent.driver.*");
-    endfunction
-endclass
-```
+and $p_{\min}$ for a deep cross of low-probability conditions is a *product* of small numbers — exponentially small. This is exactly why pure random asymptotes short of 100%, and why closure switches to **steering** (weight / `dist` / `solve` toward the hole) and finally to **directed** tests for the last handful of bins: you stop paying $1/p_{\min}$ per hole and pay $O(1)$ by *constructing* it. The coverage-driven method is the discipline of spending cheap random draws on the bulk and scarce human effort only on the tail they cannot reach.
 
 ---
 
-## Randomization Engine Deep Dive
+## 6. Reproducibility: what makes constrained-random debuggable
 
-### How the Solver Works (Conceptually)
+Constrained-random has one apparent weakness — a failure surfaces on a *random* draw — and determinism answers it. From a single **root seed**, the tool's hierarchical seeding makes every draw reproducible, so a failing regression is replayed bit-exact by re-running its seed. Two SystemVerilog guarantees keep this stable under everyday code churn:
 
-SystemVerilog constraint solvers use either **BDD** (Binary Decision Diagram) or **SAT/SMT**
-(Boolean Satisfiability) based approaches:
+- **Thread stability** — each process (`initial`, `always`, each `fork` branch) has its own RNG, so adding or removing code in one thread does not shift another thread's sequence.
+- **Object / type stability** — each object and each class type draws from independent RNG state, so creating more objects of one class does not perturb another's sequence.
 
-- **BDD-based**: builds a compact representation of all valid solutions, then uniformly samples.
-  Good for small constraint spaces. Exponential memory for complex constraints.
-- **SAT-based**: searches for satisfying assignments. Faster for large problems but may not
-  provide uniform distribution without extra work.
-
-**Solver complexity**: constraint solving is NP-complete in general. Certain patterns cause
-exponential blowup:
-- Multiplication/division constraints: `a * b == c` is very hard
-- Large `unique` constraints: N! possible orderings
-- Complex cross-variable dependencies
-
-### Basic Randomization
-
-```verilog
-class packet extends uvm_sequence_item;
-    rand bit [7:0]  addr;
-    rand bit [31:0] data;
-    rand bit [3:0]  burst_len;
-    randc bit [1:0] channel;  // Cyclic: all values before repeating
-
-    constraint c_addr_range {
-        addr inside {[8'h00:8'h3F], [8'hC0:8'hFF]};
-    }
-
-    constraint c_burst {
-        burst_len >= 1;
-        burst_len <= 8;
-    }
-
-    function new(string name = "packet");
-        super.new(name);
-    endfunction
-endclass
-
-initial begin
-    packet pkt = new("pkt");
-    if (!pkt.randomize())
-        `uvm_fatal("RAND", "Randomization failed!")
-    // ALWAYS check return value -- constraint conflicts cause silent failure
-end
-```
+Reproducibility is what makes constrained-random *debuggable at all* — it is the answer to the debuggability column of the §1 trade-off, and the reason "save the seed" is the first rule of any random regression. (`get_randstate`/`set_randstate` and per-object `srandom` give finer control when you need to replay a single object.)
 
 ---
 
-## Constraint Patterns (10+ Real Patterns)
+## Numbers to memorize
 
-### Pattern 1: Weighted Distribution for Error Injection
-
-```verilog
-class error_injection_txn;
-    rand enum {NORMAL, SHORT_PKT, LONG_PKT, CRC_ERROR, TIMEOUT} txn_type;
-
-    constraint c_error_dist {
-        txn_type dist {
-            NORMAL    := 90,   // 90% weight
-            SHORT_PKT := 3,    // 3% weight
-            LONG_PKT  := 3,
-            CRC_ERROR := 2,
-            TIMEOUT   := 2
-        };
-    }
-endclass
-// dist with := assigns weight to each value
-// dist with :/ distributes weight across range:
-//   value [1:4] :/ 40  means each value gets 40/4 = 10% weight
-```
-
-### Pattern 2: Unique Array Elements
-
-```verilog
-class unique_demo;
-    rand bit [3:0] arr[8];
-
-    constraint c_unique {
-        unique {arr};  // All elements must be different
-        // Only works if array size <= number of possible values (16 here)
-    }
-
-    // Alternative for older tools without 'unique' support:
-    constraint c_unique_manual {
-        foreach (arr[i])
-            foreach (arr[j])
-                if (i < j)
-                    arr[i] != arr[j];
-    }
-endclass
-```
-
-### Pattern 3: Conditional Constraints with Implication
-
-```verilog
-class protocol_txn;
-    rand bit        is_write;
-    rand bit [31:0] addr;
-    rand bit [31:0] data;
-    rand bit [3:0]  burst_len;
-
-    // Implication: if write, then specific address range
-    constraint c_write_addr {
-        is_write -> addr inside {[32'h1000:32'h1FFF]};
-    }
-
-    // Bidirectional: if-else constraint
-    constraint c_burst {
-        if (is_write) {
-            burst_len inside {1, 2, 4, 8};
-        } else {
-            burst_len == 1;  // Reads are always single-beat
-        }
-    }
-
-    // Chain: A -> B -> C
-    constraint c_chain {
-        (addr[31:28] == 4'hF) -> (is_write == 0);  // High addr = read only
-        (is_write == 0) -> (data == 0);              // Read data field unused
-    }
-endclass
-```
-
-### Pattern 4: Circular Dependency Detection
-
-```verilog
-class circular_demo;
-    rand int a, b;
-
-    // UNSOLVABLE circular dependency:
-    // constraint c_circular {
-    //     a > b;
-    //     b > a;  // Impossible! randomize() returns 0
-    // }
-
-    // Subtler circular issue with implication:
-    // (a > 5) -> (b < 3)
-    // (b < 3) -> (a < 2)
-    // Combined: (a > 5) -> (a < 2) -- contradiction when a > 5
-
-    // Fix: ensure constraint graph is acyclic or solvable
-    constraint c_valid {
-        a inside {[1:10]};
-        b inside {[1:10]};
-        a > b;  // Solvable: just needs a > b
-    }
-endclass
-```
-
-### Pattern 5: Array Size Constraint with Element Constraints
-
-```verilog
-class variable_payload;
-    rand bit [7:0] payload[];
-    rand int unsigned payload_size;
-
-    constraint c_size {
-        payload_size inside {[4:64]};
-        payload.size() == payload_size;
-    }
-
-    constraint c_elements {
-        foreach (payload[i]) {
-            payload[i] != 8'h00;  // No zero bytes
-            payload[i] != 8'hFF;  // No all-ones bytes
-        }
-    }
-
-    // GOTCHA: constraining size AND elements simultaneously can be slow
-    // for large arrays. Solver must reason about every element.
-endclass
-```
-
-### Pattern 6: solve...before for Controlling Solver Order
-
-```verilog
-class solve_before_demo;
-    rand bit       flag;
-    rand bit [7:0] value;
-
-    constraint c_flag_value {
-        flag -> (value inside {[200:255]});
-        !flag -> (value inside {[0:55]});
-    }
-
-    // WITHOUT solve-before:
-    // Solver picks (flag, value) pairs uniformly from solution space
-    // flag=1 has 56 solutions (200-255), flag=0 has 56 solutions (0-55)
-    // So flag is ~50/50
-
-    // WITH solve-before:
-    constraint c_order {
-        solve flag before value;
-    }
-    // Now solver picks flag first (50% each), then value given flag
-    // Distribution of value CHANGES based on flag probability
-
-    // Real example: solve burst_type before burst_len
-    // Ensures each burst_type is equally likely, then length varies
-endclass
-```
-
-### Pattern 7: Soft Constraints
-
-```verilog
-class configurable_txn;
-    rand bit [7:0] addr;
-    rand bit [31:0] data;
-
-    // Soft: provides defaults that can be overridden
-    constraint c_default_addr {
-        soft addr inside {[0:63]};  // Default: low address range
-    }
-
-    constraint c_default_data {
-        soft data < 32'h0000_FFFF;  // Default: small data values
-    }
-endclass
-
-// In a specific test:
-initial begin
-    configurable_txn txn = new();
-
-    // Override soft constraint with inline constraint
-    if (!txn.randomize() with {
-        addr inside {[200:255]};  // Hard constraint OVERRIDES soft
-    })
-        `uvm_fatal("RAND", "Failed")
-    // addr will be in [200:255] -- soft constraint yields
-    // data still < 0xFFFF (soft not overridden)
-end
-```
-
-### Pattern 8: constraint_mode() On/Off
-
-```verilog
-class multi_constraint_txn;
-    rand bit [7:0] addr;
-
-    constraint c_low_addr  { addr inside {[0:63]}; }
-    constraint c_high_addr { addr inside {[192:255]}; }
-
-    function new();
-        // Start with only low_addr enabled
-        c_high_addr.constraint_mode(0);  // Disable
-    endfunction
-endclass
-
-initial begin
-    multi_constraint_txn txn = new();
-    txn.randomize();  // addr in [0:63]
-
-    txn.c_low_addr.constraint_mode(0);   // Disable low
-    txn.c_high_addr.constraint_mode(1);  // Enable high
-    txn.randomize();  // addr in [192:255]
-
-    // Disable ALL constraints
-    txn.constraint_mode(0);  // Called on object, disables all
-    txn.randomize();         // addr = any 8-bit value
-end
-```
-
-### Pattern 9: randc for Permutation
-
-```verilog
-class fair_arbiter_test;
-    randc bit [1:0] channel;  // Cycles through 0,1,2,3 before repeating
-
-    // randc guarantees: each value appears exactly once per cycle
-    // After all values used, the cycle restarts (new random permutation)
-
-    // Example sequence: 2,0,3,1 | 1,3,0,2 | 3,2,1,0 | ...
-    //                    cycle 1   cycle 2   cycle 3
-endclass
-
-// GOTCHA: randc + constraints can make cycling impossible
-// If constraint eliminates some values, randc cycles only through remaining
-```
-
-### Pattern 10: Complex Cross-Variable Constraint
-
-```verilog
-class axi_txn;
-    rand bit [1:0]  burst_type;  // 0=FIXED, 1=INCR, 2=WRAP
-    rand bit [7:0]  burst_len;   // 0-255 (actual length = burst_len + 1)
-    rand bit [2:0]  burst_size;  // 2^burst_size bytes per beat
-    rand bit [31:0] addr;
-
-    // AXI WRAP burst: length must be 2, 4, 8, or 16
-    constraint c_wrap_len {
-        (burst_type == 2) -> burst_len inside {1, 3, 7, 15};
-    }
-
-    // AXI: address must be aligned to burst_size
-    constraint c_addr_align {
-        (addr % (1 << burst_size)) == 0;
-    }
-
-    // AXI4: burst_len max depends on burst_type
-    constraint c_max_len {
-        (burst_type == 0) -> (burst_len <= 15);   // FIXED: max 16 beats
-        (burst_type == 2) -> (burst_len inside {1, 3, 7, 15}); // WRAP
-        // INCR: up to 256 beats (burst_len up to 255)
-    }
-
-    // 4KB boundary check (AXI cannot cross 4KB boundary)
-    constraint c_4kb {
-        (burst_type == 1) ->
-            ((addr % 4096) + ((burst_len + 1) * (1 << burst_size))) <= 4096;
-    }
-endclass
-```
+| Fact | Rule / value | Why (section) |
+|---|---|---|
+| `randomize()` failure | returns **0**; unchecked = silent no-randomization | §2 |
+| Solve complexity | constraint satisfaction is **NP-complete** (worst case exponential) | §3 |
+| `dist` weights | `:=` weight *per value*; `:/` weight *split across a range* | §2.1 |
+| Constraint precedence | **hard > inline `with` > soft**; later soft overrides earlier soft | §2.1 |
+| `randc` cost | $\Theta(2^{w})$ state → practical only for $w \lesssim 8\text{–}16$ bits | §2.2 |
+| `rand` full sweep | coupon-collector $\approx R\ln R$ draws to see all $R=2^w$ values | §2.2 |
+| Marginal law | uniform-over-solutions ⇒ $\Pr[v{=}k] \propto$ #completions; `solve…before` re-shapes it | §3.1 |
+| Solver blowup | multiply/mod, large `unique` ($k!$), `size`+element on big arrays | §3.2 |
+| Constraint sizing | over-constrain ⇒ miss bugs; under-constrain ⇒ illegal stimulus | §3.3 |
+| `virtual` dispatch | virtual = object type (correct override); non-virtual = handle type (base runs) | §4.2 |
+| Factory | `type_id::create()` + `set_type_override` ⇒ swap types without editing VIP | §4.3 |
+| Coverage closure | coupon-collector $C\ln C$; rarest bin $\sim 1/p_{\min}$ dominates the tail | §5.1 |
+| Reproducibility | one root seed ⇒ deterministic replay; thread + type stability | §6 |
+| `pre/post_randomize` | hooks around the solve: set state before, derive fields (checksums) after | §2.1 |
 
 ---
 
-## Constraint Solving Worked Example
+## Cross-references
 
-### A Class With 5 Constraint Types -- Step by Step
-
-```verilog
-class axi_burst_txn;
-    rand bit [1:0]  burst;     // 00=FIXED, 01=INCR, 10=WRAP
-    rand bit [7:0]  len;       // 0-255 (beats = len+1)
-    rand bit [2:0]  size;      // bytes per beat = 2^size
-    rand bit [31:0] addr;
-    rand bit        is_cacheable;
-
-    // Constraint 1: RANGE constraint
-    constraint c_size_range {
-        size inside {[0:4]};  // 1, 2, 4, 8, or 16 bytes per beat
-    }
-
-    // Constraint 2: IMPLICATION constraint
-    constraint c_wrap_len {
-        // WRAP burst: len must be power-of-2 minus 1
-        (burst == 2'b10) -> (len inside {1, 3, 7, 15});
-    }
-
-    // Constraint 3: SET MEMBERSHIP constraint
-    constraint c_burst_type {
-        burst inside {2'b00, 2'b01, 2'b10};  // exclude reserved 2'b11
-    }
-
-    // Constraint 4: SOFT constraint (can be overridden)
-    constraint c_default_addr {
-        soft addr[3:0] == 4'b0000;  // Default: aligned to 16 bytes
-    }
-
-    // Constraint 5: SOLVE-BEFORE constraint
-    constraint c_solve_order {
-        solve burst before len;  // Pick burst type first, then solve len
-    }
-endclass
-```
-
-**Step-by-step solver walkthrough:**
-
-``` text
-1. SOLVE-BEFORE:
-   - Solver picks `burst` first.
-   - Available: {00, 01, 10} (Constraint 3 excludes 11).
-   - Probability: 1/3 each.
-   - Example: Solver picks `burst = 10` (WRAP).
-
-2. RANGE Constraint (`c_size_range`): 
-   - `size` must be in {0, 1, 2, 3, 4}.
-   - Example: Solver picks `size = 2` (4 bytes per beat), probability 1/5.
-
-3. IMPLICATION Constraint (`c_wrap_len`):
-   - If `burst == 10`, `len` must be in {1, 3, 7, 15}.
-   - Available: {1, 3, 7, 15} (4 values).
-   - Example: Solver picks `len = 7` (8-beat burst), probability 1/4.
-
-4. SOFT Constraint (`c_default_addr`):
-   - `addr[3:0] == 4'b0000` (default: aligned).
-   - Since no hard constraint overrides it, `addr[3:0] = 0`.
-   - `addr[31:4] = random` (any value).
-   - Result: `addr` is aligned to a 16-byte boundary.
-
-5. Remaining Unconstrained Variables:
-   - `is_cacheable`: random (50% each).
-
-Sample Output:
-- burst = 10 (WRAP)
-- len = 7 (8 beats)
-- size = 2 (4 bytes/beat)
-- addr = 32'h0001_0010 (16-byte aligned)
-- is_cacheable = 1
-```
-
-**Overriding the soft constraint:**
-```verilog
-initial begin
-    axi_burst_txn txn = new();
-    
-    // Override soft addr alignment with hard constraint
-    txn.randomize() with {
-        addr inside {[32'h1000_0000:32'h1000_FFFF]};
-    };
-    // addr[3:0] is now random (soft constraint yields to hard inline constraint)
-    // addr is in range 0x10000000-0x1000FFFF
-    // burst, len, size still follow their hard constraints
-    
-    // If we try to violate a hard constraint:
-    // txn.randomize() with { burst == 2'b11; };  // FAILS! Returns 0.
-end
-```
+- **Down the stack (what this is built from):** [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (class types, dynamic arrays and queues the transaction model uses), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the processes and fork/join the generator–driver pipeline runs on).
+- **Up the stack (what builds on it):** [UVM_Methodology](10_UVM_Methodology.md) (the factory, phasing, and sequences built on these primitives — the "factory = polymorphism + registry" of §4.3), [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (functional coverage — the measurement half of the §5 loop), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the closure methodology that drives constraints toward holes).
+- **Adjacent:** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (the design this stimulus exercises), [Formal_Verification](12_Formal_Verification.md) (the complement — formal *proves* over the whole legal space where constrained-random only *samples* it, and takes over exactly where §5.1's rare-bin tail defeats sampling).
 
 ---
 
-## Coverage-Driven Verification — moved
+## References
 
-Coverage is the measurement half of the constrained-random loop this page's randomization
-sections implement. Its two halves now live where they belong:
-
-- **Mechanics** — covergroups, coverpoints, bins (auto/range/transition/wildcard), crosses with
-  `binsof`, `illegal_bins`/`ignore_bins`, `option.*` knobs, sampling: [Assertions_and_Coverage](09_Assertions_and_Coverage.md) *Functional Coverage Deep Dive*.
-- **Methodology** — vplan → coverage model → regressions → hole triage → closure and sign-off:
-  [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md).
-
-## rand_mode: Enable/Disable Randomization Per Variable
-
-```verilog
-class txn;
-    rand bit [7:0] addr;
-    rand bit [31:0] data;
-
-    function void set_directed_addr(bit [7:0] a);
-        this.addr = a;
-        this.addr.rand_mode(0);  // Don't randomize addr anymore
-    endfunction
-endclass
-
-initial begin
-    txn t = new();
-    t.set_directed_addr(8'hAB);
-    t.randomize();  // Only data is randomized, addr stays 8'hAB
-end
-```
-
----
-
-## pre_randomize and post_randomize
-
-```verilog
-class sequenced_packet extends uvm_sequence_item;
-    static int seq_counter = 0;
-    rand bit [7:0] addr;
-    rand bit [31:0] data;
-    int sequence_num;
-    bit [7:0] checksum;
-
-    function void pre_randomize();
-        // Called BEFORE randomization -- set up state
-        $display("About to randomize packet");
-    endfunction
-
-    function void post_randomize();
-        // Called AFTER randomization -- compute derived fields
-        sequence_num = seq_counter++;
-        checksum = addr ^ data[7:0] ^ data[15:8] ^ data[23:16] ^ data[31:24];
-        $display("Packet #%0d: addr=%h data=%h csum=%h",
-                 sequence_num, addr, data, checksum);
-    endfunction
-endclass
-```
-
----
-
-## std::randomize -- Randomize Without a Class
-
-```verilog
-initial begin
-    bit [7:0] addr;
-    bit [31:0] data;
-    bit [3:0] len;
-
-    // Randomize local variables with inline constraints
-    if (!std::randomize(addr, data, len) with {
-        addr inside {[0:63]};
-        len < 8;
-        data[7:0] == addr;  // Low byte of data matches addr
-    })
-        $fatal("std::randomize failed");
-
-    $display("addr=%h data=%h len=%0d", addr, data, len);
-end
-```
-
-### The local:: Scope Qualifier
-
-```verilog
-class driver;
-    bit [7:0] min_addr;
-    bit [7:0] max_addr;
-
-    task generate_addr();
-        bit [7:0] addr;
-        // local:: refers to variables in the calling scope (this class)
-        if (!std::randomize(addr) with {
-            addr >= local::min_addr;
-            addr <= local::max_addr;
-        })
-            $fatal("randomize failed");
-    endtask
-endclass
-```
-
----
-
-## Random Stability
-
-### How Seeds Propagate
-
-SystemVerilog guarantees **thread stability** and **type stability**:
-
-- **Thread stability**: each process (initial, always, fork branch) has its own random number
-  generator (RNG) state. Adding/removing code in one process doesn't affect random sequences
-  in other processes.
-
-- **Type stability**: each class type has independent random state. Creating more objects of
-  class A doesn't change the random sequence for class B objects.
-
-### Why Reordering Code Changes Random Sequences
-
-```verilog
-initial begin
-    Packet p1 = new();
-    Packet p2 = new();
-    p1.randomize();  // Gets random value sequence R1
-    p2.randomize();  // Gets random value sequence R2
-end
-
-// If you swap creation order:
-initial begin
-    Packet p2 = new();  // p2 is created first
-    Packet p1 = new();
-    p1.randomize();  // Gets DIFFERENT sequence than before!
-    // Because p1's RNG was seeded differently (creation order matters)
-end
-```
-
-### Getting Reproducible Results
-
-- Use `+seed=<value>` on the command line to set the root seed
-- From a fixed root seed, the hierarchical seeding is deterministic
-- `srandom(seed)` on an object sets its RNG explicitly
-- For debug: print the seed with `get_randstate()` and restore with `set_randstate()`
-
-```verilog
-Packet p = new();
-string saved_state = p.get_randstate();  // Save RNG state
-p.randomize();  // Some random values
-p.set_randstate(saved_state);  // Restore state
-p.randomize();  // SAME random values as before
-```
-
----
-
-## Parameterized Classes
-
-```verilog
-class fifo #(type T = int, int DEPTH = 16);
-    T storage[$:DEPTH-1];
-
-    function bit push(T item);
-        if (storage.size() >= DEPTH) return 0;
-        storage.push_back(item);
-        return 1;
-    endfunction
-
-    function bit pop(output T item);
-        if (storage.size() == 0) return 0;
-        item = storage.pop_front();
-        return 1;
-    endfunction
-endclass
-
-// Usage:
-fifo #(Packet, 32) pkt_fifo = new();
-fifo #(int, 256) int_fifo = new();
-fifo #(bit [7:0]) byte_fifo = new();  // Default DEPTH = 16
-```
-
----
-
-## Abstract Classes and Pure Virtual Methods
-
-```verilog
-virtual class base_driver;  // Cannot instantiate directly
-    pure virtual task drive(input Transaction txn);  // Must be overridden
-    pure virtual function bit check_ready();
-
-    // Concrete methods allowed in abstract class
-    function void log(string msg);
-        $display("T=%0t [%s] %s", $time, get_name(), msg);
-    endfunction
-
-    pure virtual function string get_name();
-endclass
-
-class axi_driver extends base_driver;
-    task drive(input Transaction txn);
-        // AXI-specific driving logic
-    endtask
-
-    function bit check_ready();
-        return vif.ARREADY | vif.AWREADY;
-    endfunction
-
-    function string get_name();
-        return "AXI_DRV";
-    endfunction
-endclass
-
-// base_driver d = new();  // COMPILE ERROR -- abstract class
-axi_driver d = new();      // OK
-base_driver handle = d;    // OK -- polymorphic handle
-```
-
----
-
-## Typedef Class (Forward Declaration)
-
-```verilog
-// When two classes reference each other:
-typedef class B;  // Forward declare B
-
-class A;
-    B b_handle;  // OK because B is forward-declared
-endclass
-
-class B;
-    A a_handle;
-endclass
-```
-
----
-
-## Interface Classes (SystemVerilog 2012)
-
-```verilog
-interface class printable;
-    pure virtual function void print();
-endclass
-
-interface class comparable;
-    pure virtual function bit compare(uvm_object rhs);
-endclass
-
-// A class can implement multiple interface classes
-class my_txn extends uvm_sequence_item implements printable, comparable;
-    function void print();
-        $display("my_txn: addr=%h", addr);
-    endfunction
-
-    function bit compare(uvm_object rhs);
-        my_txn rhs_txn;
-        if (!$cast(rhs_txn, rhs)) return 0;
-        return (this.addr == rhs_txn.addr && this.data == rhs_txn.data);
-    endfunction
-endclass
-```
-
----
-
+1. IEEE Std 1800-2023, *IEEE Standard for SystemVerilog — Unified Hardware Design, Specification, and Verification Language*. Clause 18 (constrained random) and Clause 8 (classes).
+2. Spear, C. and Tumbush, G., *SystemVerilog for Verification*, 3rd ed., Springer, 2012. Classes, randomization, and the coverage-driven flow.
+3. Yuan, J., Pixley, C., and Aziz, A., *Constraint-Based Verification*, Springer, 2006. The constraint-solving view of stimulus generation.
+4. Kitchen, N. and Kuehlmann, A., "Stimulus generation for constrained random simulation," *ICCAD*, 2007. Uniform sampling of a constraint solution set (§3.1).
+5. Piziali, A., *Functional Verification Coverage Measurement and Analysis*, Springer, 2004. Coverage models and closure (§5).
+6. Accellera / IEEE Std 1800.2-2020, *Universal Verification Methodology (UVM)*. The methodology built on the OOP and randomization primitives of this page.

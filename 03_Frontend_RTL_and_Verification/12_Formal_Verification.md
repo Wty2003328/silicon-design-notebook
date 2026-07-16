@@ -1,1738 +1,334 @@
-# Formal Verification — Senior Engineer Deep Dive
+# Formal Verification — Proving Absence Instead of Sampling for Presence
 
-## Table of Contents
-1. Why Formal Verification
-2. Mathematical Foundations (SAT, BDD)
-3. Equivalence Checking (LEC)
-4. Model Checking / Property Verification
-5. Assertion-Based Formal Verification
-6. CDC Formal Verification
-7. Connectivity and X-Propagation Formal
-8. Formal in the ASIC Design Flow
-9. Tools Comparison
-10. Numbers to Memorize
+> **Prerequisites:** [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (SVA — the properties formal turns into proof obligations, and the assume/assert/cover triad), [OOP_and_Randomization](08_OOP_and_Randomization.md) (constrained-random simulation — the *sampling* method formal is the exhaustive counterpart to).
+> **Hands off to:** [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md) (the same prove-over-all-inputs idea aimed at structural bug *classes* — CDC/RDC/lint), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (how a proof counts toward signoff), and [Synthesis_and_Optimization](../04_Synthesis/01_Synthesis_and_Optimization.md) (the RTL→netlist transform that equivalence checking certifies).
 
 ---
 
-## 1. Why Formal Verification
+## 0. Why this page exists
 
-### The Simulation Coverage Gap
+Every dynamic verification method — directed tests, constrained-random, emulation — is a **sampler**. It drives some finite set of input trajectories through the design and watches for a violation. A pass therefore means one thing only: *the bug you are looking for did not appear on the trajectories you happened to run.* This is Dijkstra's dictum made mechanical — **testing shows the presence of bugs, never their absence.**
 
-Simulation tests specific input sequences — it's inherently incomplete. A 32-bit adder has
-2^64 possible input combinations. At 1 GHz simulation speed, exhaustively testing all inputs
-would take:
+Formal verification is the one method that inverts the quantifier. Instead of running trajectories, it reasons about the **set of all reachable states at once** and asks whether *any* of them can violate the property. The answer is a genuine theorem — "no reachable state violates $P$, for all inputs, for all time" — or a **concrete counterexample trace** that violates it. That exhaustiveness is the entire value of formal, and it has exactly one cost, from which every strength and every limitation of the field descends: to quantify over all reachable states you must somehow represent or search a set whose size is exponential in the number of state bits. That is **state explosion**, and it is the whole reason formal is a scalpel for control logic rather than a hammer for datapaths.
 
-```text
-2^64 / 10^9 = 1.84 × 10^10 seconds ≈ 584 years
-```
-
-Even a "simple" 8-bit FSM (finite state machine) with 256 states and 8-bit input has 256 × 256 = 65,536
-state-input combinations per cycle — manageable for simulation, but add a 32-bit datapath
-and the space explodes.
-
-**Formal verification** mathematically proves properties hold for ALL possible input sequences,
-ALL reachable states, for ALL time — not just the cases you thought to test.
-
-### Where Formal Excels
-
-```verilog
-Control logic:      FSMs, arbiters, schedulers (small state space, complex protocols)
-Protocol checkers:  AXI, AHB handshakes        (temporal properties are natural fits)
-CDC verification:   Synchronizer presence/correctness
-FIFOs:              Never overflow/underflow, data integrity
-Connectivity:       SoC-level signal routing verification
-Deadlock/livelock:  Prove absence with fairness constraints
-```
-
-### Where Formal Struggles
-
-- **Datapaths** — 32-bit multipliers → state space > 2^64 → "state explosion"
-- **Memories** — Large RAMs create enormous state spaces
-- **Floating point** — Complex algorithms with wide operands
-- **Deep pipelines** — Unrolling depth required > 100 cycles
-
-**Key insight:** Formal and simulation are complementary. Use formal for control, simulation
-for datapath. The best verification plans combine both.
+This page derives the field from that one tension. The old version of this page was a reference dump — a 170-line CDCL trace, four BDD worked examples, TCL command listings, and page after page of copy-paste SVA for AXI, FIFOs, tensor cores, NoCs, and GPUs. That is *lookup*, not understanding; the SVA belongs in [09](09_Assertions_and_Coverage.md), the CDC formal in [07](07_Lint_CDC_RDC_Signoff.md), and the solver internals in a SAT textbook. Here we build the concepts a senior engineer reasons *with*: why a bounded proof and a full proof guarantee different things, why a proof is only as strong as its assumptions, why equivalence checking scales to 50M gates while a 32-bit multiplier proof does not, and why — even though finite hardware is *decidable* — state explosion, not undecidability, is the wall you actually hit.
 
 ---
 
-## 2. Mathematical Foundations
+## 1. The one idea: sampling a space vs quantifying over it
 
-### 2.1 Boolean Satisfiability (SAT)
+Model a synchronous design as a finite-state machine $(S, I, T)$:
 
-**SAT Problem:** Given a Boolean formula in Conjunctive Normal Form (CNF), find an assignment
-of variables that makes the formula TRUE, or prove no such assignment exists (UNSAT).
+$$
+S = \{0,1\}^{n}, \qquad I \subseteq S, \qquad T \subseteq S \times S
+$$
 
-**CNF (Conjunctive Normal Form):**
-```ascii-graph
-Formula = (clause1) ∧ (clause2) ∧ ... ∧ (clauseN)
-Each clause = (literal1 ∨ literal2 ∨ ... ∨ literalK)
-Each literal = variable or its negation
+where $n$ = number of state bits (flip-flops), $S$ = the state space, $I$ = the set of initial (post-reset) states, and $T(s, s')$ = the transition relation, true when input drives state $s$ to $s'$ in one clock. The **reachable set** $R$ is the least fixed point of forward image starting from $I$:
 
-Example:
-  F = (a ∨ ¬b ∨ c) ∧ (¬a ∨ b) ∧ (b ∨ ¬c)
+$$
+R_0 = I, \qquad R_{i+1} = R_i \cup \operatorname{Image}(R_i, T), \qquad R = \bigcup_i R_i
+$$
 
-  Satisfying assignment: a=1, b=1, c=0 → F = (1∨1∨0) ∧ (0∨1) ∧ (1∨1) = 1
-```
+where $\operatorname{Image}(X, T) = \{\,s' \mid \exists s \in X.\; T(s, s')\,\}$ = the set of states one step from $X$. A **safety property** $P$ partitions $S$ into good and bad states; the design is correct iff no bad state is reachable, $R \cap \neg P = \varnothing$.
 
-**DPLL Algorithm (1962):**
-```verilog
-function DPLL(formula, assignment):
-    // Unit propagation: if a clause has only one unassigned literal, assign it
-    formula = unit_propagate(formula, assignment)
+The two verification paradigms attack this set membership question from opposite ends:
 
-    if formula is empty:              return SAT    // all clauses satisfied
-    if formula contains empty clause: return UNSAT  // contradiction
+- **Simulation samples $R$.** A run is *one* path $s_0 \to s_1 \to \dots$ through $R$. Passing means "no state on this path was bad." Coverage is the fraction of $R$ (or of a hand-built interesting subset) the samples touched; undetected bugs live in the unsampled remainder. Simulation can exhibit a bad state (a failing trace) but can never certify $\neg P \cap R = \varnothing$ short of enumerating all of $R$.
+- **Formal quantifies over $R$.** It represents $R$ (or an over-approximation of it) *symbolically* — as a Boolean formula, a BDD, or implicitly by unrolling $T$ — and decides $R \cap \neg P \overset{?}{=} \varnothing$ in one shot. If empty: **PROVEN**. If not: it extracts a witness path from $I$ to the bad state — a **counterexample** that is as concrete and waveform-inspectable as any simulation failure.
 
-    // Choose an unassigned variable
-    var = pick_variable(formula)
+The asymmetry is the whole point. Simulation is a one-sided test (can refute, cannot prove absence); formal is two-sided (proves absence *or* produces presence). And because $R$ is a set, not a sequence, formal's cost is set-representation, not trajectory-count — which is why it is **complementary** to simulation, not a rival: exhaustive over a small space versus sampled over a large one.
 
-    // Try var = TRUE
-    if DPLL(formula ∧ var, assignment ∪ {var=TRUE}) == SAT:
-        return SAT
-
-    // Backtrack, try var = FALSE
-    return DPLL(formula ∧ ¬var, assignment ∪ {var=FALSE})
-```
-
-### 2.1.1 CDCL Worked Example
-
-Walk through CDCL (Conflict-Driven Clause Learning) on a concrete problem to see conflict analysis, clause learning,
-non-chronological backtracking, and pruning in action.
-
-**Problem (5 variables, 6 clauses):**
-```text
-C1: ( x1 ∨  x2 ∨  x3)
-C2: ( x1 ∨ ¬x2 ∨  x4)
-C3: (¬x1 ∨  x3 ∨  x5)
-C4: (¬x3 ∨ ¬x4)
-C5: (¬x3 ∨ ¬x5)
-C6: ( x2 ∨  x4 ∨  x5)
-```
-
-We track: current assignment, decision level (DL), implication graph (each literal
-annotated with the clause that forced it during BCP (Boolean constraint propagation), or "d" for decision).
-
----
-
-**DL 0 — No unit clauses at the start, so no BCP possible.**
-
----
-
-**DL 1 — Decision: x1 = 0**
-```ascii-graph
-BCP (unit propagation from x1=0):
-  C1: (x1 ∨ x2 ∨ x3)   → only x2, x3 remain. Not unit yet.
-  C2: (x1 ∨ ¬x2 ∨ x4)  → only ¬x2, x4 remain. Not unit yet.
-  C3: (¬x1 ∨ x3 ∨ x5)  → clause satisfied (¬x1 = 1). Remove from watch.
-
-  No forced assignments. Assignment so far: {¬x1}
-```
-
-**DL 2 — Decision: x3 = 1**
-```ascii-graph
-BCP from x3=1:
-  C4: (¬x3 ∨ ¬x4)  → only ¬x4 remains → unit! Force x4 = 0   [reason: C4]
-  C5: (¬x3 ∨ ¬x5)  → only ¬x5 remains → unit! Force x5 = 0   [reason: C5]
-  C6: (x2 ∨ x4 ∨ x5) → with x4=0, x5=0, only x2 remains → unit! Force x2 = 1  [reason: C6]
-
-  Assignment: {¬x1, x3, ¬x4, ¬x5, x2}
-  All variables assigned. Check all clauses:
-    C1: (0 ∨ 1 ∨ 1) = 1 ✓    C2: (0 ∨ 0 ∨ 0) = 0 ✗ CONFLICT!
-```
-
-**Conflict on C2 under assignment {¬x1, x3, ¬x4, ¬x5, x2}:**
-
-Build the implication graph. Nodes are literals with their reason clauses:
-```ascii-graph
-  ¬x1 [d, DL1]
-        \
-  x3 [d, DL2] ──→ ¬x4 [C4, DL2] ──→ ¬x2 must be true for C2 ──┐
-     │                                                           │
-     ├──→ ¬x5 [C5, DL2] ──────────────────────────┐              │
-     │                                             │              │
-     └──→ x2 [C6, DL2] ← (x4=0, x5=0 forced x2)  ▼              ▼
-                                    CONFLICT at C2: (x1 ∨ ¬x2 ∨ x4)
-                                    needs 1 but ¬x1, x2, ¬x4 all contradict
-```
-
-**Conflict analysis (1-UIP scheme):**
-
-Starting from the conflicting clause C2 = (x1 ∨ ¬x2 ∨ x4), resolve backwards.
-The Unique Implication Point (UIP) is the closest decision-made literal on the
-conflict side that "dominates" the conflict in the implication graph.
-
-```text
-Resolve C2 with the reason for x2 (= C6):
-  C2:  (x1 ∨ ¬x2 ∨  x4)
-  C6:  (x2 ∨  x4 ∨  x5)    ← reason x2 was forced (x4=0, x5=0 left x2 unit)
-  Resolvent: (x1 ∨ x4 ∨ x5)
-
-This resolvent only involves literals from DL ≤ 2, and x4, x5 were implied at DL2.
-The 1-UIP is x3 (the decision at DL2 that caused the implications).
-
-Resolve further — the resolvent (x1 ∨ x4 ∨ x5) already has no DL2 decision literal
-(x3) in it, but all of x4, x5 were implied from x3. The asserting clause is:
-
-  LEARNED CLAUSE: (x1 ∨ x4 ∨ x5)
-  This says: if x1=0 and (x4=0 ∨ x5=0) is forced, the solver will never
-  need to explore this branch again.
-```
-
-A more precise analysis (resolving until we reach the asserting literal):
-```text
-Actually, (x1 ∨ x4 ∨ x5) still has two implied literals from DL2.
-Continue resolving to simplify:
-
-  Resolve (x1 ∨ x4 ∨ x5) with reason for ¬x4 (= C4):
-    (x1 ∨  x4 ∨ x5)
-    (¬x3 ∨ ¬x4)        ← reason ¬x4 was forced by x3=1
-    Resolvent: (x1 ∨ x5 ∨ ¬x3)
-
-  Resolve (x1 ∨ x5 ∨ ¬x3) with reason for ¬x5 (= C5):
-    (x1 ∨  x5 ∨ ¬x3)
-    (¬x3 ∨ ¬x5)        ← reason ¬x5 was forced by x3=1
-    Resolvent: (x1 ∨ ¬x3)
-
-  LEARNED CLAUSE (refined): (x1 ∨ ¬x3)
-  This is the asserting clause — it is unit at DL1 (x1=0 is the DL1 decision).
-```
-
-**Non-chronological backtrack to DL1 and apply learned clause:**
-```ascii-graph
-Backtrack to DL1 (where x1 = 0 was decided).
-Learned clause (x1 ∨ ¬x3) is now unit: x1=0 forces ¬x3.
-  → x3 = 0   [reason: learned clause, DL1]
-
-Assignment: {¬x1, ¬x3}
-```
-
-**BCP after learning:**
-```ascii-graph
-C1: (x1 ∨ x2 ∨ x3)  → with ¬x1, ¬x3: only x2 remains → unit! Force x2 = 1  [C1]
-C6: (x2 ∨ x4 ∨ x5)  → satisfied by x2=1.
-
-Assignment: {¬x1, ¬x3, x2}
-Check remaining open clauses:
-  C2: (x1 ∨ ¬x2 ∨ x4) = (0 ∨ 0 ∨ x4) → only x4 → unit! Force x4 = 1  [C2]
-  C3: (¬x1 ∨ x3 ∨ x5) = (1 ∨ ...) → satisfied by ¬x1.
-
-Assignment: {¬x1, ¬x3, x2, x4}
-C4: (¬x3 ∨ ¬x4) = (1 ∨ 0) = 1 ✓ (satisfied by ¬x3)
-C5: (¬x3 ∨ ¬x5) = (1 ∨ ...) ✓
-
-x5 is unassigned. All clauses containing x5:
-  C3: satisfied, C5: satisfied, C6: satisfied.
-  x5 can be either value. Set x5 = 0 (arbitrary).
-
-FINAL ASSIGNMENT: {¬x1, ¬x3, x2, x4, ¬x5}
-Verify: C1=✓ C2=✓ C3=✓ C4=✓ C5=✓ C6=✓  → SAT
-```
-
-**How the learned clause (x1 ∨ ¬x3) prunes future search:**
-Without the learned clause, if the solver later tried:
-DL1: x1=0, DL2: x3=1 → same conflict → wasted work.
-
-**With the learned clause:**
-   - DL1: x1=0 → learned clause (x1 ∨ ¬x3) becomes unit → ¬x3 forced immediately.
-   - The solver never explores x1=0 ∧ x3=1 again.
-
-In industrial problems with millions of clauses, CDCL learns tens of thousands
-of clauses. Each one prunes a subtree of the search space that would otherwise
-cause repeated conflicts. This is why CDCL solves problems in seconds that would
-take DPLL longer than the age of the universe.
-
----
-
-**Modern CDCL Solvers (Conflict-Driven Clause Learning):**
-
-CDCL extends DPLL with:
-1. **Conflict analysis:** When a contradiction is found, analyze WHY it occurred
-2. **Learned clauses:** Add new clauses that prevent the same conflict
-3. **Non-chronological backtracking:** Jump back to the decision level that caused the conflict
-4. **Variable activity heuristics (VSIDS):** Prioritize variables involved in recent conflicts
-
-```text
-Performance:
-  DPLL:  Exponential backtracking, no learning
-  CDCL:  Can solve problems with millions of variables
-         (used in industrial verification tools since ~2000)
-```
-
-**Why SAT matters for formal verification:**
-Any bounded verification problem can be encoded as SAT:
-- "Can the design reach a bad state within K clock cycles?"
-- Encode the transition relation for K cycles as CNF
-- Add the negation of the property
-- If SAT → counterexample found (property violated)
-- If UNSAT → property holds for K cycles
-
-### 2.2 Binary Decision Diagrams (BDD)
-
-A BDD is a directed acyclic graph (DAG) that represents a Boolean function.
-
-**Example: F = (a ∧ b) ∨ c**
-
-```text
-Truth table:            BDD (after reduction):
-a b c | F
-0 0 0 | 0                     a
-0 0 1 | 1                    / \
-0 1 0 | 0                 0/   \1
-0 1 1 | 1                 b     1 (terminal)
-1 0 0 | 0                / \
-1 0 1 | 1             0/   \1
-1 1 0 | 1              c     1
-1 1 1 | 1             / \
-                    0/   \1
-                    0     1
-
-  Dashed edges = variable=0, Solid edges = variable=1
-  (Reduced: nodes with identical children are merged)
-```
-
-**Reduced Ordered BDD (ROBDD):**
-- **Ordered:** Variables appear in same order on all paths (e.g., a before b before c)
-- **Reduced:** No two nodes represent the same function; no redundant tests
-- **Canonical:** For a given variable ordering, the ROBDD is UNIQUE
-
-**Variable ordering MATTERS enormously:**
-```text
-Function: x1*y1 + x2*y2 + x3*y3 + ... + xn*yn
-
-Good ordering (x1, y1, x2, y2, ...):              BDD size = O(n)   — linear!
-Bad ordering  (x1, x2, ..., xn, y1, y2, ..., yn): BDD size = O(2^n) — exponential!
-```
-
-This is why BDD-based model checking can fail for certain designs — the BDD "blows up"
-depending on the function structure and variable ordering.
-
-**BDD Operations (polynomial time for fixed BDDs):**
-```text
-Operation          | Complexity
-AND(f, g)          | O(|f| × |g|)       — product of BDD sizes
-OR(f, g)           | O(|f| × |g|)
-NOT(f)             | O(|f|)             — swap terminal nodes
-Restrict(f, xi=v)  | O(|f|)             — cofactor
-Compose(f, xi, g)  | O(|f|^2 × |g|^2)
-Satisfying count   | O(|f|)             — traverse, accumulate
-Equivalence check  | O(1)               — just compare root pointers!
-```
-
-### 2.2.1 BDD Worked Example — Building, Ordering, and Conjunction
-
-**Function: f(a,b,c) = (a ∧ b) ∨ (¬a ∧ c)**
-
-Truth table:
-```text
-a b c | a∧b | ¬a∧c | f
-0 0 0 |  0  |  0   | 0
-0 0 1 |  0  |  1   | 1
-0 1 0 |  0  |  0   | 0
-0 1 1 |  0  |  1   | 1
-1 0 0 |  0  |  0   | 0
-1 0 1 |  0  |  0   | 0
-1 1 0 |  1  |  0   | 1
-1 1 1 |  1  |  0   | 1
-```
-
-**Building the ROBDD with ordering a < b < c:**
-
-Start with a full binary tree, then apply reduction rules:
-(R1) Eliminate redundant nodes where both children are identical.
-(R2) Merge identical subtrees (share nodes).
-
-```text
-Unreduced tree:                  After reduction (ROBDD):
-
-        a                              a
-       / \                            / \
-      b   b                          b   b
-     / \ / \                        / \ / \
-    c  c c  c                      c  1 0  c
-   /\ /\ /\ /\                    / \      / \
-  0 1 0 1 0 0 1 1                0  1     0   1
-
-Applying R1: b-node with c→0, c→0 → merge. c-nodes with same children → merge.
-```
-
-**Step-by-step reduction:**
-```text
-Level c (leaf parents):
-  Node c₀: children (0, 1) — from b-left, c-left
-  Node c₁: children (0, 1) — from b-left, c-right   → same as c₀, MERGE
-  Node c₂: children (0, 0) — from b-right, c-left   → REDUNDANT (both 0), eliminate → terminal 0
-  Node c₃: children (1, 1) — from b-right, c-right  → REDUNDANT (both 1), eliminate → terminal 1
-
-After c-level reduction:
-  Only two distinct c-nodes: c₀ (0/1 children) and terminals 0, 1.
-
-Level b:
-  b-left:  0-child → c₀,  1-child → c₀   → REDUNDANT? No — wait, b-left's
-           0-branch and 1-branch both go to c₀? Let me recount.
-
-Actually, from the truth table with ordering a < b < c:
-
-  When a=0: f = c (independent of b). So b-node on the a=0 branch is REDUNDANT.
-  When a=1: f = b (independent of c). So c-node on the a=1 branch is REDUNDANT.
-
-Final ROBDD (ordering a < b < c):
-
-          a
-         / \
-        /   \
-       c     b       ← a=0 skips b (b is irrelevant), a=1 skips c
-      / \   / \
-     0   1 0   1
-
-  Size: 3 non-terminal nodes (a, c, b). Very compact!
-```
-
-**Impact of variable ordering — swap to ordering b < a < c:**
-
-```text
-With b < a < c, the function f = (a∧b) ∨ (¬a∧c):
-
-When b=0: f = (a∧0) ∨ (¬a∧c) = ¬a∧c = f depends on a and c
-When b=1: f = (a∧1) ∨ (¬a∧c) = a ∨ (¬a∧c) = a ∨ c
-
-        b
-       / \
-      a    a          ← can these be merged? No — different subfunctions.
-     / \  / \
-    c  c  1  c        ← a-left(b=0,a=0) and a-right(b=1) share c-node? Partially.
-   /\  /\    /\
-  0  1 1 0  0  1
-
-After reduction: still need separate a-nodes because their 0-children differ.
-Final size: 4 non-terminal nodes (b, a₀, a₁, c).
-
-Worse than the a < b < c ordering (3 nodes vs 4 nodes).
-```
-
-**Scaling example — why ordering matters for large functions:**
-```text
-Function: f = (x₁∧y₁) ∨ (x₂∧y₂) ∨ (x₃∧y₃)
-
-Ordering 1: x₁, y₁, x₂, y₂, x₃, y₃
-  Each xi-yi pair is local. ROBDD "remembers" only the current pair.
-  Size: O(n) — 2n + constant nodes for n pairs.
-
-Ordering 2: x₁, x₂, x₃, y₁, y₂, y₃
-  After deciding x₁, x₂, x₃, the BDD must "remember" ALL x values
-  because each xi needs its corresponding yi. The number of distinct
-  subfunctions that need to be represented DOUBLES with each new x.
-  Size: O(2ⁿ) — exponential blowup.
-
-For n=20:  Ordering 1 → ~40 nodes.  Ordering 2 → ~1,048,576 nodes.
-```
-
-**BDD Conjunction — combining two BDDs:**
-
-Given f(a,b) = a ∧ b and g(a,b) = ¬a ∨ b, compute h = f ∧ g = (a∧b) ∧ (¬a∨b):
-
-```text
-BDD for f = a∧b (ordering a < b):       BDD for g = ¬a∨b (ordering a < b):
-        a                                      a
-       / \                                    / \
-      0   b                                  1   b
-         / \                                    / \
-        0   1                                  0   1
-
-BDD AND operation (Apply algorithm):
-  Start at roots of both BDDs. For each pair (f_node, g_node):
-    If both terminals: return terminal(f_val AND g_val)
-    If same variable:  recurse on (f_lo, g_lo) and (f_hi, g_hi)
-    If different vars: recurse on the higher-variable node with both branches
-                       of the lower-variable node.
-
-  Pair (a_f, a_g): same variable
-    (a=0 branch): f→0, g→1 → terminal 0∧1 = 0
-    (a=1 branch): f→b_f, g→b_g
-      (b=0): f→0, g→0 → 0∧0 = 0
-      (b=1): f→1, g→1 → 1∧1 = 1
-
-  Result BDD for h:
-        a
-       / \
-      0   b
-         / \
-        0   1
-
-  h = a ∧ b, which makes sense: (a∧b) ∧ (¬a∨b) = a∧b∧¬a ∨ a∧b∧b = 0 ∨ a∧b = a∧b.
-
-  Complexity: O(|f| × |g|) node pairs visited. For large BDDs, this product
-  can be expensive — but with good variable ordering, individual BDD sizes
-  stay small and the product remains tractable.
-```
-
-**When to prefer BDDs over SAT:**
-**Use BDDs when:**
-   - Circuit is small-to-medium (< 10K state variables)
-   - You need equivalence checking (BDD: O(1) pointer comparison!)
-   - You need to COUNT solutions (SAT only gives one or proves none)
-   - The function has good variable ordering (compact BDD)
-   - You need an explicit representation of the state set (not just SAT/UNSAT)
-
-**Use SAT when:**
-   - Problem is large (> 100K variables)
-   - BDD blows up regardless of ordering (many interdependent variables)
-   - You only need one counterexample (not the full state set)
-   - Bounded model checking (unroll K cycles → solve once)
-   - The problem structure has "local" conflicts that CDCL exploits well
-
-**Symbolic Model Checking with BDDs:**
-
-Represent the set of reachable states as a BDD. Compute the fixed point:
-
-```text
-Reachable = Initial_States
-repeat:
-    Reachable_new = Reachable ∪ Image(Reachable, Transition_Relation)
-until Reachable_new == Reachable      // fixed point reached
-
-If Bad_States ∩ Reachable == ∅:       Property HOLDS
-Otherwise:                            Property FAILS (extract counterexample from BDD)
-```
-
-The Image computation uses BDD operations:
-```text
-Image(S, T) = ∃x . (S(x) ∧ T(x, x'))
-           // existentially quantify current-state vars
-           // leaving next-state vars
-```
-
-### 2.3 SAT-Based Bounded Model Checking (BMC)
-
-Instead of BDD-based fixed-point, unroll the transition relation for K steps and encode
-as a SAT problem:
-
-```verilog
-BMC formula for property P, bound K:
-
-  I(s_0) ∧ T(s_0, s_1) ∧ T(s_1, s_2) ∧ ... ∧ T(s_{K-1}, s_K) ∧ ¬P(s_K)
-
-  I(s_0):           Initial state constraints
-  T(s_i, s_{i+1}):  Transition relation (one clock cycle)
-  ¬P(s_K):          Negation of property at step K
-
-  If SAT:           The satisfying assignment is a counterexample (K-cycle trace)
-  If UNSAT:         Property holds for all traces up to K cycles
-```
-
-**Increasing K:** Start with K=0, increment. First K where SAT is found gives the
-shortest counterexample.
-
-**Completeness:** How do you know when to stop increasing K?
-- Completeness threshold: the smallest K beyond which BMC is complete
-- For safety properties: K = diameter of the state graph (longest shortest path)
-- In practice: use k-induction or IC3/PDR for unbounded proofs
-
-### 2.4 k-Induction
-
-A technique for proving properties hold for ALL time (unbounded):
-
-```text
-Base case (depth K):
-  I(s_0) ∧ T(s_0,s_1) ∧ ... ∧ T(s_{K-1},s_K) ∧ ¬P(s_K)  must be UNSAT
-
-Inductive step:
-  P(s_0) ∧ P(s_1) ∧ ... ∧ P(s_{K-1})
-  ∧ T(s_0,s_1) ∧ ... ∧ T(s_{K-1},s_K)
-  ∧ ¬P(s_K)
-  must be UNSAT
-
-If both are UNSAT → P holds for ALL reachable states
-```
-
-**Intuition:** If the property has held for K consecutive states, it must hold for the next
-state. Combined with the base case (it holds for the first K states from initial), this
-proves it holds forever — mathematical induction over time.
-
-**Strengthening:** Sometimes simple 1-induction fails (inductive step is SAT because
-unreachable states provide a "fake" counterexample). Solutions:
-- Increase K (try 2-induction, 3-induction, ...)
-- Add auxiliary lemmas (strengthening invariants) that eliminate unreachable states
-
-### 2.5 IC3/PDR (Property-Directed Reachability)
-
-The state-of-the-art algorithm for unbounded model checking (2011, Aaron Bradley):
-
-```text
-Key idea: Incrementally build an over-approximation of reachable states
-           using clause learning (similar to SAT solver's CDCL)
-
-Maintain a sequence of "frames" F_0, F_1, ..., F_N:
-  - F_0 = Initial states
-  - F_i ⊇ states reachable in exactly i steps
-  - F_i ⊇ F_{i+1}  (monotone: earlier frames are weaker)
-  - Each F_i is a conjunction of clauses (over-approximation)
-
-Algorithm:
-  1. Check if ¬P ∧ F_N is SAT
-     - If SAT: found a potential bad state. Try to prove it's reachable
-       by backward-tracing through frames (generalize and block)
-     - If a trace reaches F_0: real counterexample found → FAIL
-  2. Block: add clauses to frames to exclude unreachable states
-  3. Propagate: push clauses forward through frames
-  4. If F_i == F_{i+1} for some i: fixed point reached → PROVEN
-
-IC3 advantages:
-  - Often proves properties much faster than k-induction
-  - Works well for control-heavy designs
-  - Integrated into JasperGold, VC Formal, and other tools
-```
-
----
-
-## 3. Equivalence Checking (LEC)
-
-### 3.1 What LEC Proves
-
-LEC mathematically proves that two representations of a design produce identical outputs
-for ALL possible input sequences. It does NOT require simulation vectors.
-
-### 3.2 Where LEC is Used in the ASIC Flow
-
-```text
-                    RTL
-                     |
-                  Synthesis
-                     |
-              Gate-level netlist (pre-layout)
-                     |
-               LEC #1: RTL vs post-synthesis netlist
-                     |
-              Place & Route
-                     |
-              Gate-level netlist (post-layout)
-                     |
-               LEC #2: pre-layout vs post-layout netlist
-                     |
-              Timing ECO / Functional ECO
-                     |
-               LEC #3: pre-ECO vs post-ECO netlist
-                     |
-                  Signoff
-```
-
-### 3.3 LEC Flow (Formality / Conformal)
-
-```tcl
-Step 1: READ DESIGNS
-  // Formality
-  read_verilog -r reference.v        // Golden (reference)
-  read_verilog -i implementation.v   // Revised (implementation)
-  read_db -r library.db
-
-  // Conformal LEC
-  read design -golden reference.v
-  read design -revised implementation.v
-  read library library.lib
-
-Step 2: SETUP
-  // Set scan mode, constants, don't-verify points
-  set_constant -golden scan_enable 0
-  set_constant -revised scan_enable 0
-  // Black-box memories or IPs if needed
-  set_black_box mem_inst
-
-Step 3: MATCH (Mapping)
-  // Tool automatically matches compare points between designs
-  match
-
-  // Compare points = {primary outputs, register data inputs,
-  //                    black-box inputs, primary inputs}
-
-  // Match types:
-  //   By name: FF "reg_a" in golden matches "reg_a" in implementation
-  //   By signature: Logic cone analysis when names differ
-  //   Manual: User-guided for complex transformations
-
-Step 4: VERIFY
-  verify
-  // For each compare point:
-  //   Extract logic cone (combinational fan-in)
-  //   Prove golden_cone ≡ implementation_cone using BDD or SAT
-
-Step 5: DEBUG (if non-equivalent points exist)
-  // Analyze failing points
-  report_failing_points
-  // Visualize logic cones
-  analyze_points -failing
-```
-
-### 3.4 Key Points and Compare Points
-
-```verilog
-KEY POINTS (internal reference nodes):
-  - Registers (D-input of flip-flops)
-  - Primary inputs / outputs
-  - Black-box boundaries
-
-COMPARE POINTS (what gets verified):
-  - Each compare point has a "logic cone" in both designs
-  - The logic cone = all combinational logic feeding that compare point
-  - LEC proves: for all inputs, golden_cone(inputs) == impl_cone(inputs)
-
-  Example:
-    Golden:   a → AND → OR → FF.D     (compare point = FF.D)
-    Impl:     a → NAND → INV → FF.D   (same function, different gates)
-    LEC:      proves AND-OR ≡ NAND-INV  ✓
-```
-
-### 3.5 Common LEC Failures and Root Causes
-
-| Failure Type | Root Cause | Solution |
-|---|---|---|
-| Unmapped points | Naming changes during synthesis | Use name mapping file, set_dont_verify |
-| Retimed registers | Synthesis moved registers | Enable retiming-aware LEC, set_dp_option |
-| Register merging | Two FFs merged into one multibit FF | Setup multibit handling in LEC |
-| Boundary optimization | Constant ports removed, tied-off logic | set_constant, guidance from synthesis log |
-| Clock gating | ICG cells added, enable logic changed | Setup clock-gating style, map ICG cells |
-| Scan insertion | MUX added to FF input | Set scan_enable = 0 in both designs |
-| State encoding change | FSM re-encoded during synthesis | Map state registers, or set_dont_verify FSM |
-| Datapath optimization | Carry-save, Booth encoding | Enable DP-aware verification |
-| Sequential optimization | Constant registers removed | Read synthesis change log, verify manually |
-| Phase inversion | Inverter pushed through register | Enable phase mapping |
-
-### 3.6 Debugging Methodology
-
-```text
-1. Start with clean LEC (no optimizations)
-   - Disable retiming, boundary opt in synthesis
-   - If passes: incrementally enable optimizations
-
-2. Incremental LEC
-   - Verify at each synthesis step:
-     RTL → elaborate → generic → mapped → optimized
-   - Narrows down which transformation broke equivalence
-
-3. Use synthesis log
-   - Synthesis tools report what transformations were applied
-   - e.g., "Information: register 'cnt_reg[3]' merged with 'cnt_reg[7]'"
-   - Use this info to set up LEC correctly
-
-4. Hierarchical vs Flat LEC
-   Hierarchical: Verify each module separately (faster, but misses cross-boundary issues)
-   Flat: Verify entire design at once (slower, but catches everything)
-   
-   Practical: Use hierarchical for blocks, flat for top-level integration
-```
-
-### 3.7 Sequential Equivalence Checking
-
-Standard LEC is combinational — it compares logic cones between registers. But some
-transformations change the register structure (retiming, FSM re-encoding).
-
-**Sequential Equivalence Checking (SEC)** handles this:
-- Does NOT require 1-to-1 register mapping
-- Proves: for same input sequences, outputs are identical cycle-by-cycle
-- Much more computationally expensive (SAT-based bounded unrolling)
-- Used for: retiming verification, C-to-RTL (register-transfer level) equivalence
-- Tools: Synopsys HECTOR, Cadence JasperGold SEQ
-
----
-
-## 4. Model Checking / Property Verification
-
-### 4.1 Temporal Logic
-
-Properties express behavior over time. Two main logics:
-
-**LTL (Linear Temporal Logic) — reasoning over single execution paths:**
-```text
-G p      : Globally p holds (always)
-F p      : Finally p holds (eventually)
-X p      : neXt cycle p holds
-p U q    : p holds Until q becomes true
-p R q    : q holds unless and until p Releases it
-
-Examples:
-  G(req → F ack)             // Every request is eventually acknowledged
-  G(¬(grant_a ∧ grant_b))   // Mutual exclusion always holds
-  G(req → X(X ack))          // Ack comes exactly 2 cycles after req
-```
-
-**CTL (Computation Tree Logic) — reasoning over branching execution trees:**
-```text
-Path quantifiers: A (for All paths), E (Exists a path)
-Combined with temporal operators:
-
-  AG p   : On All paths, Globally p         (p is an invariant)
-  EF p   : there Exists a path where Finally p  (p is reachable)
-  AF p   : on All paths, Finally p           (p is inevitable)
-  AX p   : on All paths, neXt cycle p
-  A[p U q]: on All paths, p Until q
-
-Examples:
-  AG(¬deadlock)              // No deadlock on any execution path
-  AG(req → AF ack)           // Every request always eventually gets ack
-  EF(state == DONE)          // It's possible to reach DONE state
-  AG(EF(state == IDLE))      // From any state, IDLE is always reachable
-```
-
-**SVA to Temporal Logic Mapping:**
-```text
-SVA:   @(posedge clk) req |-> ##[1:3] ack;
-LTL:   G(req → (X ack ∨ X X ack ∨ X X X ack))
-
-SVA:   @(posedge clk) req |-> s_eventually ack;
-LTL:   G(req → F ack)
-
-SVA:   @(posedge clk) $rose(req) |=> ##1 ack ##1 !ack;
-LTL:   G(rose(req) → X(X(ack ∧ X(¬ack))))
-```
-
-### 4.2 How Model Checking Works
-
-**Inputs:**
-   1. Design (FSM: states, transitions, initial state)
-2. Property (temporal logic formula)
-
-**Output:**
-   - PROVEN: Property holds for all reachable states and all time
-   - FAILED: Counterexample trace (sequence of states violating property)
-   - UNDETERMINED: Tool ran out of resources (time/memory)
-
-**Algorithm choices:**
-   - BDD-based symbolic model checking (good for small/medium designs)
-   - SAT-based BMC (good for finding bugs quickly)
-   - IC3/PDR (good for unbounded proofs)
-   - k-induction (good when property is "almost" inductive)
-   - Combination of all above (modern tools try multiple engines)
-
-### 4.3 Convergence and Proof Depth
-
-```text
-Formal tool reports:
-  "Property PROVEN at depth 42"   → Unbounded proof achieved
-  "Property PROVEN at bound 100"  → Only proven for 100 cycles (bounded)
-  "Property FIRED at cycle 17"    → Counterexample found
-  "Property UNDETERMINED"         → Could not prove or disprove
-
-Bounded vs Unbounded:
-  Bounded proof:   Safe for K cycles. Bug might exist at cycle K+1.
-  Unbounded proof: Safe FOREVER. Mathematical guarantee.
-
-  Always aim for unbounded proofs. If tool can't converge:
-    1. Simplify the design (abstract datapaths)
-    2. Add helper assertions (strengthening lemmas)
-    3. Break into smaller sub-properties
-    4. Use assume-guarantee reasoning
-```
-
----
-
-## 5. Assertion-Based Formal Verification
-
-### 5.1 Formal vs Simulation Assertions
-
-```verilog
-In simulation:
-  - Assertions are MONITORS — they watch for violations in tested scenarios
-  - Coverage depends on testbench quality
-  - assert (fifo_count <= DEPTH);  // only fires if simulation exercises this
-
-In formal:
-  - Assertions are PROOFS — tool exhaustively checks ALL reachable states
-  - 100% coverage for the property (if proven)
-  - assert property (@(posedge clk) fifo_count <= DEPTH);  // proven for ALL inputs
-```
-
-### 5.2 Assumptions vs Assertions
-
-**ASSUMPTIONS (assume):**
-   - Constrain the input space (tell the tool what inputs are legal)
-   - If you over-constrain: proof is vacuous (true but meaningless)
-   - If you under-constrain: false failures (tool finds "impossible" scenarios)
-
-**ASSERTIONS (assert):**
-   - Properties to prove about the design
-   - Must hold under ALL legal inputs (those satisfying assumptions)
-
-**COVER PROPERTIES (cover):**
-   - Reachability checks
-   - CRITICAL for catching over-constrained environments
-   - If a cover can't be hit → your assumptions may be too restrictive
-
-**Example: AXI Write Channel Formal Verification**
-```verilog
-// ASSUMPTIONS — constrain AXI master behavior (legal inputs)
-assume property (@(posedge clk) disable iff (!rst_n)
-    awvalid && !awready |=> awvalid);          // AW must stay valid until ready
-
-assume property (@(posedge clk) disable iff (!rst_n)
-    wvalid && !wready |=> wvalid);             // W must stay valid until ready
-
-assume property (@(posedge clk) disable iff (!rst_n)
-    awvalid |-> awlen inside {[0:255]});       // Legal burst length
-
-// ASSERTIONS — prove about the DUT (AXI slave)
-assert property (@(posedge clk) disable iff (!rst_n)
-    bvalid && !bready |=> bvalid);             // B must stay valid until ready
-
-assert property (@(posedge clk) disable iff (!rst_n)
-    bvalid |-> bresp inside {OKAY, SLVERR});   // Legal response codes only
-
-assert property (@(posedge clk) disable iff (!rst_n)
-    awvalid && awready |-> ##[1:MAX_LAT] bvalid);  // Response within bounded time
-
-// COVER — check environment is not over-constrained
-cover property (@(posedge clk)
-    awvalid && awready && awlen == 8'hFF);     // Can we see max-length bursts?
-
-cover property (@(posedge clk)
-    bvalid && bready && bresp == SLVERR);      // Can we see error responses?
-```
-
-### 5.3 Common Formal Verification Targets
-
-**FIFO Formal Properties:**
-```verilog
-// Data integrity: what goes in comes out in order
-// (requires auxiliary modeling — shadow FIFO or scoreboard)
-logic [WIDTH-1:0] shadow_fifo [0:DEPTH-1];
-int shadow_wr_ptr, shadow_rd_ptr, shadow_count;
-
-assert property (@(posedge clk) disable iff (!rst_n)
-    rd_en && !empty |-> rd_data == shadow_fifo[shadow_rd_ptr]);
-
-// No overflow
-assert property (@(posedge clk) disable iff (!rst_n)
-    !(wr_en && full && !rd_en));   // Can't write when full (unless reading)
-
-// No underflow
-assert property (@(posedge clk) disable iff (!rst_n)
-    !(rd_en && empty));
-
-// Count consistency
-assert property (@(posedge clk) disable iff (!rst_n)
-    count == shadow_count);
-
-// Eventually not full (liveness — needs fairness constraint)
-assert property (@(posedge clk) disable iff (!rst_n)
-    full |-> s_eventually !full);
-```
-
-**Arbiter Formal Properties:**
-```verilog
-// Mutual exclusion: at most one grant at a time
-assert property (@(posedge clk) disable iff (!rst_n)
-    $onehot0(grant));
-
-// No spurious grants: grant only when requested
-assert property (@(posedge clk) disable iff (!rst_n)
-    |grant |-> |(grant & req));
-
-// No starvation (with fairness): every persistent request eventually granted
-assert property (@(posedge clk) disable iff (!rst_n)
-    req[0] && !grant[0] |-> s_eventually grant[0]);
-
-// Priority correctness (for fixed-priority arbiter)
-assert property (@(posedge clk) disable iff (!rst_n)
-    grant[1] |-> !req[0]);   // grant[1] only if higher-priority req[0] is inactive
-```
-
-### 5.4 Complexity Management
-
-```verilog
-Problem: Formal tools hit state-space explosion on large designs
-
-Solutions:
-
-1. BLACK-BOXING
-   - Replace large sub-blocks (memories, datapaths) with abstract models
-   - Memory: assume reads return any valid value
-   - Datapath: assume output is within legal range
-   - Tradeoff: may miss bugs in black-boxed logic
-
-2. CUTPOINTS
-   - Break internal signals free from their logic — treat as free variables
-   - Reduces cone of influence
-   - May cause false failures if the signal has constraints
-
-3. CASE SPLITTING
-   - Verify property under specific configurations separately
-   - e.g., verify read path and write path independently
-   - set_case_analysis mode_pin 0  // analyze read mode only
-
-4. ABSTRACTION
-   - Reduce data width: prove with 4-bit data, assume holds for 32-bit
-   - Counter abstraction: model counter as "zero / nonzero / max"
-   - Symmetry reduction: if design is symmetric, verify one instance
-
-5. ASSUME-GUARANTEE
-   - Decompose: verify module A assuming B behaves correctly
-   - Then verify B assuming A behaves correctly
-   - Circular: needs careful soundness argument
-```
-
----
-
-## 6. CDC Formal Verification
-
-### 6.1 CDC Formal vs CDC Lint
-
-**CDC (clock-domain crossing) Lint (structural):**
-   - Identifies CDC paths by tracing clock domain boundaries
-   - Checks: synchronizer present? Correct topology?
-   - Fast, handles million-gate designs
-   - Misses: functional correctness of synchronization schemes
-
-**CDC Formal (functional):**
-   - PROVES that the synchronization scheme is correct
-   - Example: DMUX scheme — formal proves select signal is stable
-   - during the entire data transfer window
-   - Slower, may need design partitioning
-   - Catches bugs that lint cannot
-
-### 6.2 What CDC Formal Checks
-
-1. Synchronizer verification:
-   - 2-FF synchronizer present on every CDC path
-   - Synchronizer output used correctly (no combinational logic between FFs)
-
-2. Multi-bit CDC:
-   - Gray code correctness: only 1 bit changes per transition
-   - DMUX/recirculation MUX: data stable when enable is asserted
-   - Handshake protocols: REQ-ACK timing is correct
-
-3. Reconvergence:
-   - Multiple CDC signals that reconverge in destination domain
-   - Risk: if they resolve metastability differently → inconsistent values
-   - Formal proves signals are properly synchronized and consistent
-
-4. Reset domain crossing:
-   - Reset synchronizer present
-   - Async assert, sync de-assert verified
-   - No glitch on synchronized reset
-
-5. FIFO pointer CDC:
-   - Gray encoding of FIFO pointers verified
-   - No multi-bit transition possible
-   - Full/empty generation is safe
-
-### 6.3 What CDC Formal Actually Proves
-
-CDC formal verification addresses three fundamental questions for every signal
-crossing a clock domain boundary:
-
-```verilog
-1. STABILITY: Is the data signal stable for long enough in the source domain
-   that the destination domain can sample a consistent value?
-   - For a 2-FF synchronizer: formal proves the signal is stable for at least
-     1.5 destination clock cycles (covers both edges of the source clock).
-   - For a MUX-based synchronizer: proves the select signal transitions
-     only when data is stable.
-
-2. NO DATA LOSS: Does the synchronization scheme guarantee that every
-   meaningful data transition is captured by the destination domain?
-   - For gray-code pointers: proves only one bit changes per increment,
-     so the destination never reads a partially-updated value.
-   - For handshake protocols: proves every REQ is eventually acknowledged
-     before the source changes the data.
-
-3. NO METASTABILITY PROPAGATION: If metastability occurs (which it will),
-   is it contained to the synchronizer and never reaches functional logic?
-   - Formal models metastability as an unknown (X) value at the first
-     synchronizer flop output.
-   - Proves that after the second flop, the value resolves deterministically
-     for all legal input transitions.
-   - Proves no downstream logic receives X.
-```
-
-### 6.4 CDC Formal vs Simulation-Based CDC Checks
-
-```verilog
-                    | CDC Formal              | CDC Simulation (with metastability injection)
---------------------|--------------------------|-----------------------------------------------
-Exhaustiveness      | Proves for ALL input    | Tests sampled sequences; may miss rare
-                    | sequences and timings    | corner-case violations
-                    |                          |
-Coverage metric     | 100% of CDC paths,      | Depends on test plan coverage of clock
-                    | 100% of property space   | ratio combinations and data patterns
-                    |                          |
-Metastability model | Mathematical: models     | Simulated: injects X or random values at
-                    | all possible resolved    | specific injection points; limited to
-                    | values simultaneously    | simulated scenarios
-                    |                          |
-Clock relationship  | Explores ALL phase       | Tests specific phase relationships;
-                    | relationships between    | corner cases may be missed if not
-                    | domains (ratio + skew)   | explicitly targeted
-                    |                          |
-Multi-cycle paths   | Proves stability window  | Checks stability in simulated cycles;
-                    | is sufficient for ALL    | may miss the one cycle where data
-                    | possible timing combos   | changes during the sampling window
-                    |                          |
-Reconvergence       | Proves all reconvergent  | Only catches if the injected metastable
-                    | paths produce consistent  values happen to cause divergence
-                    | values for any resolve   in the simulated test
-                    |                          |
-False paths         | Can prove a crossing is  | Cannot prove safety — absence of failure
-                    | safe (no bug exists)     | in simulation ≠ proof of correctness
-                    |                          |
-Runtime             | Minutes to hours per     | Seconds per test; weeks for comprehensive
-                    | block                    | regression
-                    |                          |
-Scalability         | State explosion for      | Handles full-chip with no state issues;
-                    | large CDC path count     | but coverage gaps grow with complexity
-```
-
-### 6.5 Common CDC Patterns — Formal Verification Targets
-
-**Pattern 1: 2-Flop Synchronizer (single-bit)**
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    SRC["Source domain"] --> FF1["FF1 @ clk_b"] --> FF2["FF2 @ clk_b"] --> DST["Destination domain"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class SRC,FF1,FF2,DST s
+    F["Formal verification\n(quantify over all reachable states)"]
+    F --> EC["Equivalence checking\n(does impl == golden?)"]
+    F --> PC["Property checking / model checking\n(can any reachable state be bad?)"]
+    EC --> CEC["Combinational EC\n(1:1 register map -> per-cone SAT)"]
+    EC --> SEC["Sequential EC\n(no register map -> unroll)"]
+    PC --> BMC["BMC\n(bounded: unroll k, hand to SAT/SMT)"]
+    PC --> UNB["Unbounded proof\n(k-induction, IC3/PDR, BDD fixpoint)"]
 ```
 
-What formal proves: FF1 and FF2 are clocked by the destination clock (`clk_b`), not the source; there is no combinational logic between FF1 and FF2 (direct connection only); FF2's output is used consistently (not fed back without re-synchronization); MTBF (mean time between failures) is acceptable given the clock frequencies and metastability parameters.
-
-```verilog
-// The synchronizer chain is exactly 2 flops with no combinational logic
-assert property (@(posedge clk_b)
-    $changed(sync_in) |-> ##2 sync_out == $past(sync_in, 2));
-```
-
-**Pattern 2: MUX-Based Synchronizer (multi-bit, controlled crossing)**
-```ascii-graph
-Source Domain                Destination Domain
-  data_bus[7:0]───→ MUX ────→ data_out[7:0]
-                     ↑
-  select ──→ 2-FF sync ──→ sel_sync
-
-What formal proves:
-  - data_bus is stable during the entire window when sel_sync transitions.
-  - select is properly synchronized through a 2-FF chain before use.
-  - Data is only sampled when sel_sync indicates a valid transfer.
-  - No data change occurs between sel_sync assertion and consumption.
-```
-
-**Pattern 3: Asynchronous FIFO (multi-bit, gray-code pointers)**
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    WR["wr_ptr"] --> GE["gray_enc"] --> SY1["2-FF sync"] --> GD["gray_dec"] --> RSW["rd_side_wr_ptr"]
-    RPG["rd_ptr_gray"] --> SY2["2-FF sync"] --> WSR["wr_side_rd_ptr"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class WR,GE,SY1,GD,RSW,RPG,SY2,WSR s
-```
-
-Flags: `full = (wr_ptr_gray == {¬rd_ptr_gray[MSB], rd_ptr_gray[MSB-1:0]})`, `empty = (rd_ptr_gray == wr_ptr_gray_synced)`. What formal proves: gray encoding changes exactly one bit per increment; the full flag never deasserts falsely (conservative even with a stale synced read pointer); the empty flag never deasserts falsely; no data overwrite; and data integrity — each read returns the value written.
-
-**Pattern 4: Handshake Synchronizer (req/ack)**
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    subgraph src["Source domain"]
-        REQ["req"]
-        DATA["data"]
-    end
-    subgraph dst["Destination domain"]
-        RS["req_sync"]
-        DO["data_out"]
-    end
-    DATA --> DO
-    REQ -->|2-FF sync| RS
-    ACKD["ack_dom"] -->|2-FF sync| ACKS["ack (source)"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class REQ,DATA,RS,DO,ACKD,ACKS s
-```
-
-What formal proves: data is held stable from req assertion until ack is received; req is not deasserted until `ack_sync` is seen in the source domain; ack is not asserted until `req_sync` is seen in the destination domain; no data is lost (every req eventually gets an ack — liveness with fairness); and there is no spurious ack (ack only follows req, never self-generated).
-
-### 6.6 What Formal CDC Can Prove That Simulation Cannot
-
-```verilog
-1. COVERAGE COMPLETENESS
-   Simulation: "We tested with clk_a:clk_b ratios of 1:1, 2:1, 3:1, 1:2"
-   Formal: "We proved correctness for ALL possible clock ratios and ALL
-   phase alignments." No ratio is untested.
-
-2. METASTABILITY CORRECTNESS
-   Simulation: Injects X on one signal at a time; tests N scenarios.
-   Formal: Simultaneously considers ALL possible metastable resolutions
-   for ALL synchronized signals. Proves no resolution combination causes
-   a protocol violation.
-
-3. RECONVERGENCE SAFETY
-   Simulation: Rarely catches the case where two synchronized versions of
-   the same signal (taken through different synchronizer depths) cause
-   functional errors — it depends on which metastable values were injected.
-   Formal: Proves that for ALL possible metastable resolutions at ALL
-   synchronizers, reconvergent logic produces consistent results.
-
-4. ABSENCE OF BUGS
-   Simulation: Can only show bugs ARE found, never that they are ABSENT.
-   Formal: Proves no bug exists for the checked property. A PROVEN CDC
-   property means the crossing is correct for all time, all inputs, all phases.
-```
-
-### 6.7 CDC Formal Tools
-
-```verilog
-| Tool                    | Vendor    | Type          |
-|-------------------------|-----------|---------------|
-| SpyGlass CDC            | Synopsys  | Lint + Formal |
-| VC Formal CDC           | Synopsys  | Formal        |
-| Meridian CDC            | Cadence   | Lint          |
-| JasperGold CDC          | Cadence   | Formal        |
-| Questa CDC              | Siemens   | Lint + Formal |
-```
+The rest of the page is these two branches — property checking (§3) and equivalence checking (§5) — plus the two things that govern both: the state-explosion budget that decides what is tractable (§2), and the environment model that decides whether a proof means anything (§4).
 
 ---
 
-## 7. Connectivity and X-Propagation Formal
+## 2. State explosion: the one fact that decides what formal can do
 
-### 7.1 Formal Connectivity Verification
+Everything formal is good at and everything it is bad at follows from a single inequality. The reachable set to be represented has size
 
-For large SoCs (systems on chip), manually verifying that thousands of signals are correctly connected
-between subsystems is error-prone. Formal connectivity checking automates this:
+$$
+|R| \;\le\; |S| \;=\; 2^{\,n}
+$$
 
-```verilog
-Specification (CSV or spreadsheet):
-  Source                  | Destination            | Transform
-  top.cpu.irq_out[0]     | top.intc.irq_in[3]    | direct
-  top.cfg.base_addr[31:0]| top.dma.base_reg[31:0]| direct
-  top.pll.clk_out        | top.cpu.clk_in         | direct
-  top.gpio.pin[7:0]      | top.iomux.gpio_in[7:0] | mux (sel=iomux_cfg)
+where $n$ = state bits. **The cost of formal scales with $n$ (sequential state), not with logic depth or gate count.** This is the exact opposite of a human's intuition that "complicated" means "hard to verify," and it explains the entire good-at / bad-at split:
 
-Tool generates formal properties automatically:
-  assert property (top.intc.irq_in[3] == top.cpu.irq_out[0]);
-  // ... hundreds of such properties
+| Formal is **good** at | Why (state-space argument) |
+|---|---|
+| Control logic: FSMs, arbiters, schedulers | Few state bits ($n$ small), but deep, corner-case-rich sequential behavior — exactly where sampling misses and $2^n$ stays tractable |
+| FIFOs, credit counters, queues | Small $n$; the interesting bugs (overflow, underflow, ordering) are rare deep interleavings a testbench rarely hits |
+| Protocol compliance (AXI/CHI handshakes) | Temporal rules over a handful of control signals — natural safety/liveness properties, small state |
+| Cache-coherence corner cases | Narrow but deep: few agents, but a combinatorial blowup of *interleavings* that only exhaustive search covers |
+| Equivalence (RTL vs netlist) | Factors into millions of tiny independent combinational proofs (§5) — never builds the $2^n$ product |
+| Formal is **bad** at | Why |
+| Wide datapaths, 32/64-bit multipliers | Inputs alone span $2^{64}$–$2^{128}$; the transition relation over wide arithmetic explodes the symbolic representation |
+| Large memories / register files | $n$ grows by one bit per storage bit; a 1 KB RAM adds 8192 state bits — $2^{8192}$ |
+| Floating-point units | Wide operands + deep algorithms; the mantissa datapath is the multiplier problem with rounding on top |
+| Deep pipelines end-to-end | Need to unroll >100 cycles; the depth $\times$ width product overwhelms the solver |
 
-Benefit: Catches integration bugs immediately, before simulation
-```
-
-### 7.2 X-Propagation Formal
-
-**The X problem:**
-```ascii-graph
-Simulation has two X semantics:
-  X-optimism (Verilog default): X in condition → both branches explored
-    if (x_signal) a = 1; else a = 0;
-    // Simulation: a could be 0 OR 1 — but just picks one!
-
-  X-pessimism: X in condition → output is X
-    // More conservative but causes X-explosion
-
-Neither is correct — real hardware will resolve to 0 or 1 (we just don't know which)
-```
-
-**Formal X-prop verification proves:**
-```verilog
-1. After reset, all FFs have known values (no X)
-   - Formal proves: after N reset cycles, every FF ∈ {0, 1}
-   - Catches: FFs not in reset list, incomplete reset sequencing
-
-2. X cannot propagate to critical outputs
-   - Formal proves: if any input goes X, the output remains deterministic
-   - Catches: uninitialized registers affecting control logic
-
-3. X-safety of control signals
-   - FSM state register: formal proves no X can reach state bits
-   - Memory write enable: formal proves wr_en is never X
-```
+The lesson is a *partitioning* one: point formal at the **control** (small $n$, deep behavior) and simulation or word-level/SMT methods at the **datapath** (large $n$, shallow-but-wide behavior). A 32-bit multiplier is not "too complex" for formal — it has trivial control — it is too *wide*: its state and its input space are what explode. Conversely a 12-state arbiter with a subtle two-deep livelock is trivially small yet nearly impossible to hit by sampling. Recognizing which side of this line a block sits on is the single most valuable judgment in deploying formal, and it is why the datapath circuits themselves ([Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md)) are verified by other means.
 
 ---
 
-## 8. Formal in the ASIC Design Flow
+## 3. Property checking: an assertion as a proof target
 
-### 8.1 Where Formal Fits
+In simulation an assertion is a **monitor** — it fires only if the stimulus happens to drive the violating scenario ([09](09_Assertions_and_Coverage.md)). In formal the *same* assertion becomes a **proof obligation**: the tool treats $\neg P$ as the bad-state predicate and searches all of $R$ for a state that satisfies it. Nothing about the SVA changes; what changes is that reaching the violation is now the tool's job, discharged exhaustively, not the testbench's job, discharged by luck.
 
-```ascii-graph
-Spec → Architecture → RTL → Synthesis → PnR → Signoff
-         |                  |            |        |
-    Property          LEC #1      LEC #2   LEC #3
-    Verification    (RTL vs     (pre vs   (pre vs
-    (model check)   netlist)   post-PnR)  post-ECO)
-         |
-    CDC Formal
-         |
-    Connectivity
-    Formal
-```
+Two families of property matter, and they need different machinery:
 
-### 8.2 Formal Sign-off Criteria
+- **Safety** — "nothing bad ever happens" (`$onehot0(grant)`, `count <= DEPTH`). Violated by a *finite* trace to a bad state. This is the bread and butter of formal.
+- **Liveness** — "something good eventually happens" (`$rose(req) |-> s_eventually ack`). Violated only by an *infinite* trace (a loop that starves the good event forever). Needs fairness constraints and lasso-shaped counterexamples; more expensive and more fragile, so used sparingly for the properties that genuinely require it (no deadlock, no starvation).
 
-- **All assertions** — PROVEN (unbounded) or BOUNDED to sufficient depth
-- **All covers** — COVERED (reachable) — no vacuous proofs
-- **No assumptions** — That weaken the property unintentionally
-- **Complexity** — All properties converged (no UNDETERMINED)
-- **Review** — Formal plan reviewed, assumptions justified
+The symbolic solution to safety is the reachability fixpoint of §1: iterate $R_{i+1} = R_i \cup \operatorname{Image}(R_i, T)$ until $R_{i+1} = R_i$, then test $R \cap \neg P$. Done with BDDs this is *symbolic model checking* — exact, canonical, but it dies when the BDD for $R$ blows up (below). The modern engines avoid ever building $R$ explicitly.
 
-### 8.3 Formal Regression
+### 3.1 BMC: unroll the transition relation and hand it to SAT
 
-```verilog
-Nightly runs:
-  - Re-run all formal properties on latest RTL
-  - Report: new failures, convergence changes, cover hits
-  - Track: proof depth trends (deeper = design growing more complex)
+Bounded model checking asks the strictly easier question "is there a bad state reachable **within $k$ cycles**?" and encodes it directly as one satisfiability problem by unrolling $T$:
 
-Property management:
-  - Version-controlled property files (.sv, .tcl)
-  - Ownership: each property has an author and reviewer
-  - Status tracking: proven/bounded/failing/waived
-```
+$$
+\underbrace{I(s_0)}_{\text{start reachable}} \;\wedge\; \underbrace{\bigwedge_{i=0}^{k-1} T(s_i, s_{i+1})}_{\text{$k$ legal steps}} \;\wedge\; \underbrace{\Big(\bigvee_{i=0}^{k} \neg P(s_i)\Big)}_{\text{some step is bad}}
+$$
 
----
+where $s_0,\dots,s_k$ are fresh copies of the state variables, one per cycle. Hand this CNF to a SAT solver (or an SMT solver, when the design has word-level structure worth exploiting):
 
-## 9. Tools Comparison
+- **SAT** → the satisfying assignment *is* a counterexample: a concrete $k$-cycle waveform from reset to the violation. BMC is therefore a superb **bug hunter** — it finds the shortest failing trace and does it fast.
+- **UNSAT** → the property holds for **all** inputs for the first $k$ cycles. Note what this is: a real theorem, exhaustive over the whole input space to depth $k$ — categorically stronger than any simulation sample of the same depth.
 
-### 9.1 Equivalence Checking Tools
+The engine underneath is a modern CDCL SAT solver, whose one trick worth knowing is **conflict-driven clause learning**: on each contradiction it derives a new clause that forbids the *class* of assignments that caused it, pruning an exponential subtree so the same conflict never recurs. That single mechanism is why solvers dispatch instances with millions of variables in seconds where naive backtracking would run past the age of the universe — but it is an implementation detail, not a concept you reason with. What you reason with is the shape of the formula above.
 
-| Feature | Formality (Synopsys) | Conformal LEC (Cadence) |
+BMC's limitation is in its name: UNSAT at depth $k$ says nothing about cycle $k{+}1$. A bug hiding one cycle past your bound is invisible. To turn a bounded result into a full proof you either reach the **completeness threshold** (the reachability diameter — the longest shortest path in the state graph, beyond which no new states appear) or, far more commonly, switch to an inductive engine.
+
+### 3.2 From bounded to unbounded: k-induction, and why naive induction fails
+
+Induction over *time* promotes a bounded check into a proof for all time. It has two obligations:
+
+$$
+\textbf{Base:}\quad I(s_0) \wedge \textstyle\bigwedge_{i=0}^{k-1} T(s_i,s_{i+1}) \;\wedge\; \bigvee_{i=0}^{k}\neg P(s_i) \quad\text{is UNSAT}
+$$
+
+$$
+\textbf{Step:}\quad \underbrace{\textstyle\bigwedge_{i=0}^{k-1} P(s_i)}_{k \text{ good states}} \wedge \textstyle\bigwedge_{i=0}^{k-1} T(s_i,s_{i+1}) \;\wedge\; \neg P(s_k) \quad\text{is UNSAT}
+$$
+
+The base case (identical to BMC) says no violation occurs in the first $k$ steps from reset. The inductive step says: from *any* run of $k$ consecutive good states, the next state is also good. Both UNSAT ⇒ $P$ holds on all of $R$ forever.
+
+The subtlety — the thing worth internalizing — is **why $k=1$ so often fails**. The inductive step lets $s_0$ be *any* state satisfying $P$, **not only a reachable one**. If some *unreachable* state $s_0$ happens to satisfy $P$ yet has a transition into $\neg P$, the step is SAT and induction fails — even though the property is actually true, because that $s_0$ can never occur. This spurious witness is a **counterexample to induction (CTI)**, and it is an artifact of the gap $\{s : P(s)\} \supsetneq R$: you are inducting over a superset of the reachable states. Two fixes:
+
+1. **Increase $k$.** Requiring $k$ consecutive $P$-states with real transitions between them rules out many unreachable $s_0$, because no path of length $k$ actually leads into them. Most real properties are $k$-inductive for small $k$ (typically 1–20; needing $k>50$ is a strong signal the property really needs strengthening instead).
+2. **Strengthen the invariant.** Prove $P \wedge \varphi$ instead of $P$, where $\varphi$ is an auxiliary invariant that excludes the offending unreachable states — tightening $\{s : P \wedge \varphi\}$ down toward $R$ until it is *inductive*. Finding $\varphi$ by hand (extra assertions that "help" the proof) is the real intellectual labor of formal signoff.
+
+### 3.3 IC3/PDR: learning the strengthening automatically
+
+The state-of-the-art unbounded engine, IC3 / property-directed reachability (Bradley, 2011), removes the hand-written-invariant burden. It maintains a sequence of **frames** $F_0 = I,\ F_1,\ F_2,\dots$, each an over-approximation of the states reachable in at most $i$ steps, represented as a growing conjunction of learned clauses. When it finds a state in $F_N$ that can reach $\neg P$, it tries to prove that state unreachable by recursively **blocking** it — learning a clause, *relatively inductive* to the current frame, that excludes it — and either traces the obligation back to $I$ (a real counterexample) or converges when two adjacent frames coincide, $F_i = F_{i+1}$ (that frame *is* an inductive invariant → PROVEN). It never unrolls to the diameter and never builds the $2^n$ product; it discovers the strengthening $\varphi$ of §3.2 incrementally, the same way CDCL discovers clauses. This is why IC3/PDR routinely proves control-heavy designs that defeat both BDD fixpoints and plain k-induction, and why it is the default engine behind JasperGold and VC Formal.
+
+### 3.4 Bounded proof vs full proof: what each guarantees, and when each is enough
+
+The single most important distinction to state cleanly at a review:
+
+| | **Bounded proof (BMC to depth $k$)** | **Full proof (unbounded: k-induction / IC3)** |
 |---|---|---|
-| Engine | BDD + SAT hybrid | BDD + SAT hybrid |
-| Retiming support | Via setup options | Via mapping guidance |
-| Multibit handling | Automatic | Automatic |
-| Hierarchical LEC | Supported | Supported |
-| Datapath verification | DP option (extra license) | Built-in |
-| Typical capacity | 50M+ gates | 50M+ gates |
-| Integration | Works best with DC/Fusion | Works best with Genus/Innovus |
+| Guarantee | No violation in the first $k$ cycles, over **all** inputs | No violation **ever**, over all inputs and all time |
+| Silent about | Anything at cycle $k{+}1$ and beyond | Nothing |
+| Best at | Finding bugs fast; shallow properties | Signoff; safety invariants |
+| Fails by | Bug just past the bound | Non-convergence (needs strengthening/abstraction) |
 
-### 9.2 Property Verification Tools
+The design decision is **bug-hunting formal vs full-proof signoff**, and it has a clean cost model. Empirically bug depth is front-loaded — most real bugs manifest within a few transactions of reset — so the probability that BMC to depth $k$ catches a given bug rises steeply with $k$ and then saturates, while SAT solve time grows with the unrolled formula size $\propto k\cdot|T|$, usually super-linearly. So in *bug-hunting mode* you push $k$ until either the property converts to an unbounded proof or solve time explodes, and you accept the bounded result: a bounded proof to a depth of (reset depth + a few times the deepest transaction) catches essentially every real bug, which is why BMC alone is a huge net even before any full proof. In *signoff mode* you spend the extra effort — strengthening invariants, abstraction — to convert the properties that actually gate tape-out into unbounded proofs, and you argue explicitly for any property left bounded (tool reports "PROVEN at depth 42" for unbounded vs "bounded to 100" for the rest). "Always aim for unbounded, budget for bounded" is the whole policy.
 
-| Feature | VC Formal (Synopsys) | JasperGold (Cadence) |
+---
+
+## 4. Assumptions: a proof is only as good as its environment
+
+A DUT is an **open system** — its primary inputs are driven by an environment you are not verifying. Formal must model that environment, and it does so with **assumptions** (`assume property`) that carve out the legal input space. Every result is conditional on them:
+
+$$
+\text{the tool proves}\quad \Big(\bigwedge \text{Assumptions}\Big) \;\Rightarrow\; \text{Assertion}
+$$
+
+This conditional is a knife-edge with a failure mode on each side, and getting it wrong is the most common way a "green" formal run is worthless:
+
+- **Under-constrained** → **false counterexamples.** Too few assumptions leave the tool free to drive inputs the real environment never would (an AXI master that drops `awvalid` mid-handshake, a bus that violates its own protocol). The tool dutifully finds a "bug" that cannot occur in the system. Each spurious CEX costs engineer time to diagnose and dismiss, and the temptation is to over-correct.
+- **Over-constrained** → **vacuous / false proof.** Too many (or too strong) assumptions shrink the legal input space until the property becomes trivially or vacuously true — you proved something about a subspace the design never actually operates in, possibly the empty set. The assertion is green and *meaningless*. This is the dangerous failure, because it is silent: an over-constrained proof looks exactly like a real one.
+
+The formal guard against vacuity is the third member of the triad — **cover properties**. A `cover` is a reachability check ("can this scenario happen at all under the assumptions?"). If a cover you *expect* to be reachable comes back unreachable, your assumptions have strangled the input space — the environment is over-constrained. Every serious formal run therefore pairs assertions with a battery of covers whose job is to prove the assumptions did not accidentally rule out legal behavior. The minimal shape:
+
+```systemverilog
+// environment model: legal inputs only (too many of these -> vacuous proof)
+assume property (@(posedge clk) disable iff (!rst_n)
+    awvalid && !awready |=> awvalid);            // master holds AW until accepted
+
+// obligation on the DUT (an assertion == the proof target)
+assert property (@(posedge clk) disable iff (!rst_n)
+    bvalid |-> bresp inside {OKAY, SLVERR});     // slave never emits an illegal response
+
+// vacuity guard: prove the interesting case is still reachable
+cover  property (@(posedge clk)
+    awvalid && awready && awlen == 8'hFF);        // can a max-length burst even happen?
+```
+
+**Assume-guarantee** reasoning is how the same idea scales past state explosion. Instead of composing two blocks A and B into one machine (whose $n$ is the sum, blowing up $2^n$), you verify A *assuming* B's outputs obey B's specification, then verify B *assuming* A's, and compose the two proofs. Each sub-proof sees a small state space; the *guarantee* one block proves becomes the *assumption* the other relies on. The soundness obligation is that the reasoning is not viciously circular — either the dependency is acyclic, or the circular case is discharged by an induction over time (each block's guarantee at cycle $t$ depends only on the other's up to $t{-}1$). This is the decomposition that lets formal touch subsystems it could never verify monolithically, and it is why interface specifications are written as reusable assume/guarantee pairs.
+
+---
+
+## 5. Equivalence checking (LEC): the formal workhorse
+
+Logic equivalence checking answers a different question from property checking — not "is this design correct?" but "does **this** design compute the same function as **that** one?" It is the most-used formal method in the industry by a wide margin, because every RTL-to-GDSII flow transforms the design many times and each transform must be certified functionally identical:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart LR
+    RTL["RTL (golden)"] -->|synthesis| N1["netlist"]
+    N1 -->|place & route| N2["netlist (post-PnR)"]
+    N2 -->|timing / functional ECO| N3["netlist (post-ECO)"]
+    RTL -. "LEC #1" .-> N1
+    N1 -. "LEC #2" .-> N2
+    N2 -. "LEC #3" .-> N3
+```
+
+Re-simulating equivalence is hopeless for the same $2^{64}$ reason a 32-bit adder is (§0): you would need every input vector. LEC instead **proves** golden ≡ revised over all inputs with no vectors, via a **miter**: drive identical inputs into both designs, XOR each pair of corresponding outputs, OR the XORs into one *difference* signal, and prove that signal is unsatisfiable (0 for every input). Equivalent iff the miter is UNSAT.
+
+### 5.1 Combinational EC — why it scales to 50M gates
+
+The workhorse case assumes the two designs share a **1:1 register mapping** — synthesis kept the flops, only the combinational logic between them changed (gate substitution, De Morgan, constant propagation, tech mapping). Then the sequential problem *factors*: cut the design at every register boundary, and each register data input and primary output becomes a **compare point** whose combinational fan-in is a **cone of logic**. Prove each cone pair equivalent independently:
+
+$$
+\forall\,\text{inputs}:\quad \text{cone}^{\text{golden}}_j(\text{inputs}) \;\equiv\; \text{cone}^{\text{revised}}_j(\text{inputs}) \qquad \text{for each compare point } j
+$$
+
+An $N$-gate design with $M$ registers becomes $M$ small, *independent* SAT/BDD checks instead of one $2^n$ sequential problem — the state never has to be enumerated at all. This factorization is the entire reason LEC handles 50M+ gate designs in minutes-to-hours: it converts one intractable sequential proof into millions of tractable combinational ones. When cones differ only in *how* they compute (AND-OR vs NAND-INV, a re-associated adder tree), the SAT/BDD proof still shows them functionally identical. BDDs shine at this specific step because equivalence of two BDDs is an $O(1)$ pointer comparison once built — though the build itself can blow up on multiplier-like cones with a bad variable ordering, which is where SAT and datapath-aware engines take over.
+
+### 5.2 Sequential EC — when the register map is gone
+
+Some transforms deliberately change the state encoding: **retiming** moves logic across flops, **FSM re-encoding** renumbers states, **clock-gating** insertion and **high-level (C-to-RTL)** synthesis break the 1:1 map entirely. Now there is no compare-point-to-compare-point correspondence to exploit, and combinational EC does not apply. **Sequential equivalence checking (SEC)** proves the weaker-but-sufficient claim that the two designs produce identical output *sequences* for identical input *sequences*, cycle by cycle — reasoning across time by bounded unrolling or by finding an inductive relation between the two state spaces. It is far more expensive (it is essentially model checking a product machine) and is reserved for exactly the transforms that broke the map. The practical rule: combinational EC on every ordinary synthesis/PnR/ECO step (cheap, run constantly), SEC only when retiming or re-encoding forces it.
+
+The reason LEC is the method every shop runs — even shops that do zero property checking — is that it is **push-button relative to model checking**: no assertions to write, no environment to constrain, no invariants to strengthen. The property is fixed ("compute the same function") and the compare-point structure is derived automatically. Its failures are almost always *setup* issues, not real bugs — an unmapped point from a name change, a constant the tool did not know was tied off, a merged multibit flop — which is why the debug loop is "reconcile the mapping against the synthesis log," not "find the design error."
+
+---
+
+## 6. The trade-offs: formal vs simulation, and the knobs inside formal
+
+### 6.1 Exhaustive-but-small vs sampled-but-scalable
+
+The top-level choice is not formal *or* simulation — it is which method owns which block, and the deciding variable is again the state-space size $n$ of §2.
+
+| | **Formal** | **Simulation** |
 |---|---|---|
-| Engines | BMC, k-ind, IC3, BDD | BMC, k-ind, IC3, BDD, hybrid |
-| Formal Apps | CDC, connectivity, X-prop, DPV, SEQ | CDC, connectivity, X-prop, SEC, FPV |
-| Assertion language | SVA, PSL | SVA, PSL |
-| Abstraction support | Auto-abstraction | Auto-abstraction + user-guided |
-| Debug | Waveform, schematic | Waveform, schematic, source-level |
-| Scripting | Tcl | Tcl |
-| Strength | Tight integration with VCS | Strongest formal app ecosystem |
+| Guarantee | Exhaustive: absence of bugs for the property | Sampled: presence only; coverage is a fraction |
+| Scales with | Small $n$ (control); dies on large $n$ (datapath) | Any $n$, but reach grows only with cycles run |
+| Setup cost | High: assumptions, invariants, expertise | Moderate: stimulus, checkers, coverage model |
+| Best block | Arbiters, FIFOs, protocol, coherence, control FSMs | Wide datapaths, full-chip integration, system scenarios |
+| Best mode | Corner cases sampling never hits | Bulk functional coverage, realistic workloads |
 
-### 9.3 CDC Tools
+They are complements: formal nails the deep, narrow control corners that random stimulus ([08](08_OOP_and_Randomization.md)) would need astronomically many cycles to hit, and simulation carries the wide datapaths and full-system scenarios where $2^n$ puts formal out of reach. The crossover is roughly where a block's *control* state is small enough to prove but its *datapath* state is too wide — which is why the standard pattern is "formal the controller, simulate the datapath, and let the two coverage stories add up" in the plan ([11](11_Verification_Planning_and_Coverage_Closure.md)).
 
-| Feature | SpyGlass CDC (Synopsys) | JasperGold CDC (Cadence) | Questa CDC (Siemens) |
+### 6.2 Abstraction vs precision — fighting state explosion on purpose
+
+When a proof will not converge because $n$ is too large, you shrink $n$ by **abstraction**, replacing the design $D$ with an over-approximation $\hat D$ that has *more* behaviors ($\hat D \supseteq D$). Abstraction is sound *for proving*: if $P$ holds on $\hat D$ it holds on the smaller $D$. The price is precision — $\hat D$'s extra behaviors can yield a **spurious counterexample** on abstract-only behavior, which you must check against the concrete design and, if spurious, use to *refine* the abstraction (the CEGAR loop). The menu, from lossless to lossy:
+
+- **Cone-of-influence (COI) reduction** — delete every signal outside the property's fan-in. **Exact and free**: those signals provably cannot affect the property, so removing them changes nothing. Always on.
+- **Black-boxing** — replace a memory or datapath sub-block with a free input (reads return any value). Cheap, large $n$ reduction; may mask bugs inside the box.
+- **Data / width abstraction** — prove at 4-bit datapath, argue structurally up to 32-bit. Turns an intractable width into a tractable one; needs a soundness argument to lift.
+- **Counter / symmetry abstraction** — model a counter as {zero, nonzero, max}; verify one instance of a symmetric array and extend by argument.
+
+The trade is always the same: each abstraction buys tractability with a risk of false counterexamples (never false proofs — over-approximation is sound in the safe direction). COI is the free lunch; everything below it trades precision for reach.
+
+### 6.3 Effort and expertise vs coverage; the two operating modes
+
+Formal's dominant cost is **engineer expertise**, not compute. Writing the right assumptions (§4), inventing the strengthening invariants that make a property inductive (§3.2), and choosing abstractions (§6.2) is skilled, iterative labor — the reason formal is deployed selectively rather than everywhere. The ROI split is:
+
+- **Bug-hunting formal** — light setup, run BMC, accept bounded proofs, harvest deep bugs simulation missed. High return per hour, low ceiling. Appropriate for most blocks as a supplement to a simulation plan.
+- **Full-proof signoff** — heavy setup, unbounded proofs, exhaustive assumption review, vacuity/cover checks. High assurance, high cost. Reserved for blocks where a proof *replaces* simulation as the signoff argument — small, critical, control-dominated IP (arbiters, coherence, security-critical access control).
+
+The signoff bar itself is qualitatively unlike simulation's: there is no "percentage covered." A property is PROVEN (unbounded) or BOUNDED to a justified depth or it is not signed off; every cover must be reachable (no vacuity); and every assumption must be reviewed as a real environmental constraint, not a proof crutch. Coverage in formal is binary per property — which is exactly the exhaustiveness of §0 cashed out as a signoff criterion.
+
+---
+
+## 7. Theoretical limits: decidable but intractable, and why bounded proofs still matter
+
+It is worth being precise about *what kind* of hard formal verification is, because the folklore ("verification is undecidable") is only half right:
+
+- **Finite-state hardware is decidable.** With $n$ flops the reachable set $R$ is finite and computable, so model checking a fixed RTL block *always terminates* with PROVEN or a counterexample. This is the sharp difference from general **software** verification, which is undecidable — Rice's theorem says no algorithm decides nontrivial semantic properties of arbitrary programs, a direct descendant of the halting problem. Hardware escapes this because it has no unbounded memory or unbounded loops: the state is finite by construction.
+- **Decidable is not tractable.** Reachability/model-checking is **PSPACE-complete** in the size of the machine description, and the state graph is $2^n$. So the wall you actually hit is not undecidability but the **exponential** — state explosion (§2). The problem is solvable in principle and often intractable in practice; all the engineering (BDDs, BMC, IC3, abstraction) is about dodging the $2^n$, not about dodging undecidability.
+- **The undecidability flavor returns with unboundedness.** The moment the thing you verify has an *unbounded* parameter — arbitrary memory depth, a parameterized $N$-agent protocol proved for *all* $N$, or a software/ISA model with unbounded data — you leave the finite-state world and lose the termination guarantee. Then you are back to induction and abstraction with no completeness promise, exactly as in software proof.
+
+This is why **bounded results still matter**, and matter a great deal. Even when a full proof is out of reach, a BMC run to depth $k$ is a genuine theorem — *no violation for any input for $k$ cycles* — which is categorically stronger than a simulation sample of the same depth, because it is exhaustive over the input space rather than a handful of trajectories through it. Three facts make bounded formal indispensable rather than a consolation prize: (1) if $k$ reaches the completeness threshold (the diameter), the bounded proof *is* a full proof; (2) real bugs are overwhelmingly shallow, so modest $k$ catches what directed simulation never would; and (3) a bounded proof composes cleanly with a coverage argument to bound residual risk in the plan. Exhaustive-to-depth-$k$ beats sampled-to-depth-$k$ every time — which is the whole thesis of this page, restated at its theoretical floor.
+
+---
+
+## 8. Where formal actually ships (and where its details live)
+
+Formal is not one tool but a family of **apps**, each a specialization of §3–§5 aimed at a bug class. To keep this page concept-first, the mechanics of the two biggest apps live on their own pages; the rest are one-liners you should recognize:
+
+- **Assertion-based property checking (FPV)** — the general model checking of §3–§4, applied to designer- or protocol-supplied SVA. The property *language* and the observability/completeness theory of assertions is [Assertions_and_Coverage](09_Assertions_and_Coverage.md); this page is what happens when those assertions become proof targets.
+- **CDC / RDC formal** — proves synchronizer *stability* and no-metastability-propagation across a clock or reset crossing exhaustively, catching functional CDC bugs structural lint cannot. This is a formal app but it belongs to the static-signoff story: see [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md), with the metastability/MTBF physics in [Async_Design_and_CDC](06_Async_Design_and_CDC.md). Not re-derived here.
+- **Connectivity formal** — auto-generates thousands of "source pin $\equiv$ destination pin" properties from an SoC spreadsheet and proves the routing at integration, before any simulation. A trivial property class ($n$ tiny per net) that would be maddening to test by hand.
+- **X-propagation formal** — proves that after reset every flop is $\in \{0,1\}$ and that no `X` from an uninitialized register can reach control logic, closing the well-known gap between optimistic and pessimistic `X` semantics in simulation.
+- **Domain sweet spots** worth naming, all instances of "small control / deep corners": **cache-coherence** protocols ([Cache_Microarchitecture](../01_Architecture_and_PPA/07_Cache_Microarchitecture.md), [ACE_and_CHI](../01_Architecture_and_PPA/12_ACE_and_CHI.md)), **NoC deadlock/livelock freedom** ([Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md)), and **ISA compliance** via the open riscv-formal framework ([RISC_V_ISA](../01_Architecture_and_PPA/04_RISC_V_ISA.md)). For wide accelerator datapaths (tensor cores, GEMM arrays) formal is used only *with* datapath abstraction (§6.2) — prove a 4-bit tile, argue up — with the wide arithmetic left to simulation.
+
+---
+
+## 9. Numbers to memorize
+
+Order-of-magnitude values a senior engineer should carry; the *why* is in the cited section.
+
+| Quantity | Typical | Range | Why / note (section) |
 |---|---|---|---|
-| Lint | ✓ | ✓ | ✓ |
-| Formal | Via VC Formal | Built-in | Built-in |
-| Metastability injection | ✓ | ✓ | ✓ |
-| Protocol verification | ✓ | ✓ | ✓ |
-| Reconvergence analysis | ✓ | ✓ | ✓ |
-| Integration | Best with Synopsys flow | Best with Cadence flow | Standalone |
+| Exhaustive-sim cost, 32-bit adder | infeasible | $2^{64}$ vectors ≈ 584 yr @ 1 GHz | Motivates proof over sampling (§0) |
+| SAT solver capacity | ~1M vars | 1M–100M+ vars, 5M–500M+ clauses | CDCL + clause learning (§3.1) |
+| BDD practical limit | — | $10^{6}$–$10^{8}$ reachable states | Blows up on bad ordering / multipliers (§3, §5.1) |
+| BMC depth (bug hunting) | 10–100 cyc | up to 1000+ w/ abstraction | Bounded proof; front-loaded bug depth (§3.1, §3.4) |
+| Completeness threshold | design-specific | 20–200 cyc | Diameter → bounded becomes full (§3.1, §7) |
+| k-induction depth $k$ | 1–20 | 1 (most props) to <50 | $k>50$ ⇒ needs strengthening (§3.2) |
+| LEC design capacity | 50M+ gates | 100K–50M+ per block | Cone factorization (§5.1) |
+| LEC compare points | — | 10K–1M+ per run | One per register/output cone (§5.1) |
+| LEC first-pass rate | >99% | — | Failures are setup, not bugs (§5.2) |
+| Properties per block | — | 50–200 (FIFO/arbiter) to 1K–10K (CPU) | Complexity-driven (§3, §8) |
+| Property mix | — | safety 70–80%, liveness 10–20%, cover 10–15% | Safety dominates (§3) |
+| Assumptions | — | 20–50% of assertion count | Environment model (§4) |
+
+Memory-hierarchy and metastability MTBF numbers that used to live here belong with the physics: MTBF and the $\tau$/$W$ synchronizer model are in [Async_Design_and_CDC](06_Async_Design_and_CDC.md); the CDC signoff numbers are in [07](07_Lint_CDC_RDC_Signoff.md).
 
 ---
 
-## 10. Numbers to Memorize
+## 10. Worked reasoning
 
-### 10.1 SAT Solver Capacity
+**1 — Why a bounded proof beats a directed test of equal depth.** A control FSM has a livelock reachable only by a specific 6-cycle input interleaving. A directed/random suite samples, say, $10^6$ 6-cycle windows out of a legal input space of $2^{6\cdot w}$ (with $w$ input bits/cycle); the chance of hitting the exact interleaving is vanishing. BMC to $k=6$ encodes $I(s_0)\wedge\bigwedge T \wedge \bigvee \neg P$ over *all* inputs and returns the interleaving as its SAT witness on the first solve. Same depth; exhaustive vs sampled — the entire value proposition (§0, §7).
 
-- **Variables** — 1M–100M+ variables per instance
-- **Clauses** — 5M–500M+ clauses per instance
-Runtime:           Seconds to hours (varies wildly; industrial instances are hard to predict)
-- **Memory** — 1–50 GB for large instances
-- **Learned clauses** — 100K–10M during a single solve (clause deletion manages this)
+**2 — Diagnosing an over-constrained proof.** An AXI slave's response-legality assertion (§4) proves instantly. Suspicious. The `cover` for `bresp == SLVERR` comes back **unreachable** — meaning an assumption forbade every error scenario, so the assertion held vacuously over a subspace with no errors in it. Fix: relax the offending assumption until the cover is reachable, then re-prove. Without the cover, the green assertion was worthless (§4).
 
-- **MiniSat (open-source)** — Handles ~1M variable instances in minutes
-- **CryptoMiniSat** — ~10M variables with XOR reasoning and Gaussian elimination
-- **CaDiCaL (used in ABC)** — State-of-the-art competition winner, ~100M variables
+**3 — Choosing LEC mode after synthesis.** Ordinary tech-mapping and constant propagation preserve the flop map → **combinational EC**: factor into per-cone SAT, minutes on 20M gates. But the synthesis log reports "retimed register `cnt_reg[3]`" → the map is broken for that region → **sequential EC** on the affected partition only, accepting the higher cost precisely where retiming forced it (§5.1–5.2).
 
-### 10.2 LEC Runtime and Capacity
-
-- **Design size** — 100K–50M+ gates per block
-- **Compare points** — 10K–1M+ per design
-Runtime scaling:   O(n log n) for well-structured designs (hierarchical LEC)
-O(n²) worst-case for flat LEC with many optimization changes
-- **Typical runtime** — Minutes (single block, clean synthesis) Hours (full chip, many ECOs, retiming)
-- **Typical pass rate** — >99% on first run with correct setup
-- **Common failures** — Unmapped points, retiming, register merging
-- **Tool capacity** — Formality and Conformal both handle 50M+ gates
-
-### 10.3 Model Checking State Space
-
-```verilog
-Practical limit:   ~10⁶–10⁸ reachable states for BDD-based model checking
-                    (depends heavily on variable ordering and function structure)
-
-BMC depth:         10–100 cycles typical for bug finding
-                    1000+ cycles for deep pipelines (rare, requires abstraction)
-                    Completeness threshold: design-specific, often 20–200 cycles
-
-IC3/PDR:           No explicit state enumeration; handles designs where BDD fails
-                    Practical limit: ~10⁴–10⁵ state variables for unbounded proofs
-
-k-induction:       k = 1–20 typical (most properties are 1-inductive or need k < 10)
-                    k > 50 usually indicates the property needs strengthening lemmas
-```
-
-### 10.4 Formal Verification Coverage and Properties
-
-```verilog
-Coverage target:    100% of properties proven (unbounded preferred, bounded accepted)
-                     Unlike simulation: no "percentage coverage" concept — either
-                     proven for ALL cases or not.
-
-Property count:     100–10,000 SVA assertions per block (depending on complexity)
-                     Small block (FIFO, arbiter): 50–200 properties
-                     Medium block (cache controller): 200–1,000 properties
-                     Large block (CPU pipeline): 1,000–10,000 properties
-
-Property categories:
-  - Safety (no bad state): 70–80% of all properties
-  - Liveness (good thing happens): 10–20%
-  - Covers (reachability): 10–15%
-
-Assumption count:   Typically 20–50% of assertion count
-Vacuity check:      Every formal run must verify all covers are reachable
-```
-
-### 10.5 CDC Metastability MTBF
-
-```verilog
-MTBF formula:  MTBF = (e^(t_r / τ)) / (W × f_clk_src × f_clk_dst × f_data)
-
-Where:
-  t_r         = Resolution time available (seconds)
-                = destination clock period - setup time - clk-to-Q of FF1
-  τ           = Metastability time constant (seconds, technology-dependent)
-                Typically: 20–100 ps for modern processes
-  W           = Metastability window (seconds)
-                Typically: 10–100 ps (portion of clock period vulnerable to metastability)
-  f_clk_src   = Source domain clock frequency (Hz)
-  f_clk_dst   = Destination domain clock frequency (Hz)
-  f_data      = Data toggle rate (Hz)
-
-Typical values for 28nm process:
-  τ  ≈ 50 ps
-  W  ≈ 30 ps
-  2-FF synchronizer with f_clk = 500 MHz, f_data = 100 MHz:
-    t_r ≈ 2 ns (one full destination clock period for resolution)
-    MTBF ≈ e^(2000/50) / (30e-12 × 500e6 × 500e6 × 100e6)
-         ≈ e^40 / 7.5e-7 ≈ 2.35 × 10^17 / 7.5e-7 ≈ 3.1 × 10^23 seconds
-         ≈ 10^16 years (effectively never fails)
-
-  With 1-FF synchronizer (half the resolution time):
-    t_r ≈ 1 ns
-    MTBF ≈ e^(1000/50) / 7.5e-7 ≈ e^20 / 7.5e-7 ≈ 7.2 × 10^12 seconds
-         ≈ 228,000 years (may not be sufficient for high-reliability)
-
-Rules of thumb:
-  - 2-FF synchronizer: MTBF > 10^10 years for most clock frequencies
-  - 3-FF synchronizer: needed when f_clk > 500 MHz or t_r < 1 ns
-  - Always use 2-FF minimum; never rely on 1-FF in production
-```
-
-### 10.6 Formal Tool Landscape
-
-```verilog
-Property Verification (FPV):
-  JasperGold (Cadence)   — Strongest formal app ecosystem; multiple engines
-  VC Formal (Synopsys)   — Tight VCS integration; good for Synopsys flows
-  OneSpin (Siemens)      — Strong assertion-based verification
-  Ifram (Intel, internal) — Used within Intel for processor verification
-
-Equivalence Checking (LEC):
-  Formality (Synopsys)   — Paired with Design Compiler
-  Conformal LEC (Cadence) — Paired with Genus/Innovus
-  Hector (Synopsys)      — Sequential equivalence checking
-
-CDC Verification:
-  SpyGlass CDC (Synopsys) — Structural lint + formal
-  JasperGold CDC (Cadence) — Full formal CDC analysis
-  Meridian CDC (Cadence)   — Structural lint
-  Questa CDC (Siemens)     — Lint + formal
-
-Connectivity / X-Prop:
-  JasperGold Connectivity App
-  VC Formal Connectivity App
-  SpyGlass CDC (also handles some connectivity)
-
-Open-Source / Academic:
-  ABC (UC Berkeley)       — Synthesis and verification framework (SAT-based)
-  MiniSat                 — Minimalist SAT solver (educational baseline)
-  Pono (Stanford)         — Modern open-source model checker
-  AIGER format            — Standard for circuit verification benchmarks
-```
-
-### 10.7 Quick Reference — Key Numbers for Interviews
-
-```ascii-graph
-| Metric                              | Value / Range                    |
-|-------------------------------------|----------------------------------|
-| SAT solver capacity                 | 1M–100M+ variables               |
-| SAT clauses per instance            | 5M–500M+                         |
-| BDD practical state limit           | 10⁶–10⁸ reachable states         |
-| BMC typical depth                   | 10–100 cycles                    |
-| k-induction typical k               | 1–20                             |
-| LEC design capacity                 | 50M+ gates                       |
-| LEC runtime scaling                 | O(n log n) to O(n²)              |
-| Property count per block            | 100–10,000 SVA assertions        |
-| Formal coverage target              | 100% of properties proven        |
-| 2-FF synchronizer MTBF (28nm)      | > 10^10 years                    |
-| Metastability τ (28nm)             | 20–100 ps                        |
-| Metastability window W (28nm)      | 10–100 ps                        |
-| Resolution time for 2-FF (500 MHz) | ~2 ns                            |
-| Compare points per LEC run          | 10K–1M+                          |
-| CDCL learned clauses per solve      | 100K–10M                         |
-```
+**4 — When to stop pushing $k$.** A pipeline property is not 1-inductive (a CTI from an unreachable state, §3.2). Rather than hand-write an invariant, raise $k$: at $k=4$ the inductive step goes UNSAT because no real 4-cycle path enters the offending state. Cost paid: a $4\times$ larger unroll for a full proof — cheaper than the invariant-hunting it replaced (§3.2, §3.4).
 
 ---
 
-## 11. AI Hardware Formal Verification
-
-### 12.1 Tensor Core Correctness Verification
-
-```verilog
-Challenge: Proving a GEMM (General Matrix Multiply) array produces correct results
-
-  Formal verification target:
-    Result = A × B + C  (matrix multiply-accumulate)
-    Where A, B, C are NxN matrices (typically N=4 for a tensor core tile)
-
-  Verification approach:
-    1. Abstract datapath: reduce 32-bit to 4-bit for tractability
-    2. Prove: systolic array output matches specification for ALL inputs
-    3. Specification: golden reference model (simple loop implementation)
-
-  SVA properties for tensor core:
-    // After N cycles of valid input, output matches reference
-    assert property (@(posedge clk) disable iff (!rst_n)
-        output_valid |-> result_matrix == reference_matrix);
-
-    // No data corruption in accumulation
-    assert property (@(posedge clk) disable iff (!rst_n)
-        accumulate_en |-> accumulator_next == accumulator_curr + product);
-
-    // Pipeline integrity: no data lost between stages
-    assert property (@(posedge clk) disable iff (!rst_n)
-        stage_N_valid |-> stage_N_data == expected_stage_N_data);
-
-  Challenge with wide datapaths:
-    - 32-bit multiply: 2^64 input combinations
-    - Must use data abstraction or word-level solvers
-    - Some tools support bit-blasting with SAT for small widths
-    - Alternative: word-level formal (SMT solvers, SMT-LIB QF_BV)
-
-  Practical approach:
-    - Prove correctness for 4×4 tiles with reduced precision (4-bit elements)
-    - Use structural arguments to extend to full precision
-    - Verify rounding / saturation / overflow behavior separately
-    - Combine formal proof with constrained-random simulation for full-width
-```
-
-### 12.2 NoC (Network-on-Chip) Deadlock Freedom
-
-```verilog
-NoC formal verification targets:
-
-  1. Deadlock freedom:
-     Prove: No cycle of dependencies among virtual channels can form
-
-     Approach:
-       - Model the routing function as a formal model
-       - Prove: the channel dependency graph (CDG) is acyclic
-       - This is a graph-theoretic property → naturally suited to formal
-
-     Property:
-       assert property (@(posedge clk) disable iff (!rst_n)
-           !(packet_stuck && no_progress_for_N_cycles));
-       // No packet can be indefinitely blocked
-
-  2. Liveness (no starvation):
-     Prove: Every injected packet eventually reaches its destination
-
-     assert property (@(posedge clk) disable iff (!rst_n)
-         packet_injected |-> s_eventually packet_received);
-
-  3. In-order delivery (if required):
-     Prove: Packets from same source to same destination arrive in order
-
-     assert property (@(posedge clk) disable iff (!rst_n)
-         packet_A_injected_before_packet_B |->
-         packet_A_received_before_packet_B);
-
-  4. Flow control correctness:
-     Prove: credit-based flow control never overflows buffers
-
-     assert property (@(posedge clk) disable iff (!rst_n)
-         buffer_occupancy <= BUFFER_DEPTH);
-
-  Abstraction strategies for NoC:
-    - Model data payload abstractly (only headers matter for routing)
-    - Reduce number of virtual channels in proof (prove structure holds)
-    - Use symmetry: prove for one router, extend by structural argument
-    - Topology-specific: mesh, torus, butterfly each have known proof methods
-```
-
-### 12.3 Dataflow Accelerator Verification
-
-```verilog
-Dataflow accelerators (Google TPU, SambaNova, Groq):
-
-  Verification challenge:
-    Prove: the computation graph executes correctly on the dataflow fabric
-
-  Formal targets:
-    1. Schedule correctness:
-       Prove: all operations execute in the correct order
-       (respecting data dependencies)
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           consumer_en |-> producer_done);
-
-    2. Buffer sizing correctness:
-       Prove: no buffer overflow occurs for any valid schedule
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           fifo_count <= FIFO_DEPTH);
-
-    3. Memory consistency:
-       Prove: reads and writes to shared memory are correctly ordered
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           write_complete |-> ##1 read_sees_new_data);
-
-    4. Data integrity through the pipeline:
-       Prove: output matches the intended computation for all inputs
-       (requires abstraction for large tensors)
-
-  Approach:
-    - Extract computation graph from compiler output
-    - Generate formal properties from the graph structure
-    - Verify hardware implementation satisfies graph execution requirements
-    - Tools: custom property generators + JasperGold/VC Formal backends
-```
-
-### 12.4 RISC-V Formal Verification
-
-```verilog
-RISC-V formal verification ecosystem:
-
-  riscv-formal framework (open source, by Clifford Wolf):
-    - Defines ISA-level formal properties for RISC-V processors
-    - Covers: RV32I, RV64I, M, A, F, D extensions
-    - Properties verify: instruction semantics, exception handling,
-      privilege mode transitions, CSR behavior
-
-  ISA formal specification:
-    Prove: processor implementation matches ISA specification for ALL
-    legal instruction sequences
-
-    // Example: ADD instruction correctness
-    assert property (@(posedge clk) disable iff (!rst_n)
-        decode_ADD && execute_valid |->
-        reg_file[rd] == reg_file_prev[rs1] + reg_file_prev[rs2]);
-
-    // Example: No unintended side effects
-    assert property (@(posedge clk) disable iff (!rst_n)
-        decode_ADD && retire_valid && (rd != rs1) && (rd != rs2) |->
-        reg_file[rs1] == reg_file_prev[rs1] &&
-        reg_file[rs2] == reg_file_prev[rs2]);
-
-  Verification levels:
-    Level 1: ISA compliance (riscv-formal)
-    Level 2: Microarchitecture-specific (pipeline hazards, forwarding)
-    Level 3: Implementation-level (cache coherence, TLB correctness)
-
-  Tools:
-    riscv-formal:   Open-source ISA-level formal checks
-    RVVI (RISC-V Verification Interface): Standardized formal interface
-    Formal ASIC tools: JasperGold/VC Formal for custom properties
-```
-
-### 12.5 GPU Shader Verification
-
-```verilog
-GPU shader core verification challenges:
-
-  Formal targets:
-    1. SIMT execution correctness:
-       Prove: all threads in a warp execute the same instruction
-       (divergence handled correctly by hardware)
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           warp_active && !divergence |->
-           all_threads_same_pc);
-
-    2. Warp scheduling fairness:
-       Prove: no warp is starved indefinitely
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           warp_valid[i] && !warp_issued[i] |->
-           s_eventually warp_issued[i]);
-
-    3. Register file banking correctness:
-       Prove: bank conflicts are detected and resolved
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           bank_conflict_detected |-> stall_or_arbitrate);
-
-    4. Memory consistency (GPU memory model):
-       Prove: memory operations obey the GPU memory model rules
-       (e.g., CUDA memory model or OpenCL memory model)
-       - This is extremely complex: requires reasoning about
-         multiple memory scopes and ordering guarantees
-
-  Why GPU shader verification is hard for formal:
-    - Wide datapaths (32 threads × 32-bit = 1024-bit)
-    - Deep pipelines (10-20 stages)
-    - Complex memory hierarchy (L1, shared memory, L2, global)
-    - Dynamic scheduling and dependency resolution
-    - State space: exponentially larger than CPU cores
-
-  Practical approach:
-    - Verify control logic formally (scheduling, scoreboarding)
-    - Verify datapath with simulation (wide arithmetic)
-    - Use formal for memory ordering properties
-    - Cache coherence protocol verification (formal is essential here)
-```
-
-### 12.6 Security Verification
-
-```verilog
-Formal verification for hardware security:
-
-  1. Side-channel resistance:
-     - Prove: no data-dependent timing variation in crypto engines
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           crypto_operation_valid |->
-           ##CONSTANT_LATENCY crypto_done);
-
-     - Constant-time execution: prove number of cycles is input-independent
-     - Power-equalized paths: formally prove no correlation between
-       secret data and switching activity
-     - Cache timing attacks: prove secret-dependent data does not
-       influence cache access patterns
-
-  2. Secure boot verification:
-     - Prove: boot ROM code is immutable
-     - Prove: chain of trust is maintained from ROM → bootloader → OS
-     - Prove: no unauthorized code can execute before authentication
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           boot_phase == PHASE_ROM |->
-           pc inside {ROM_START:ROM_END});
-
-  3. Access control verification:
-     - Prove: untrusted domain cannot access trusted resources
-     - Prove: firewall/MPU rules are enforced for ALL access patterns
-
-       assert property (@(posedge clk) disable iff (!rst_n)
-           untrusted_master_access && target_requires_trusted |->
-           access_denied);
-
-  4. Information flow security (non-interference):
-     - Prove: secret inputs do not influence observable outputs
-     - Formalized as: for all secret states S1, S2 with same public state,
-       the observable outputs are identical
-
-     This is the strongest security guarantee — proving that
-     no amount of observation of public outputs can reveal secret data.
-
-  5. Glitch-free clock gating:
-     - Prove: clock gating control cannot produce glitches
-     - Glitches could be exploited for fault injection attacks
-
-  Tools for security formal:
-    - CW308/CW305 (ChipWhisperer): side-channel analysis (measurement)
-    - Formal tools: prove absence of vulnerabilities (JasperGold, VC Formal)
-    - Logic synthesis: verify no timing channels introduced during optimization
-```
+## Cross-references
+
+- **Down the stack (what formal is built on / points at):** [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (the SVA properties and the observability theory that make an assertion a proof target), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md) (the wide datapaths §2 says formal *cannot* absorb, handled by other means / word-level SMT).
+- **Up the stack (what consumes formal):** [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md) (formal CDC/RDC as a static-signoff app; the prove-over-all-inputs idea specialized to structural bug classes), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (how proven/bounded properties combine with simulation coverage into a signoff argument), [Synthesis_and_Optimization](../04_Synthesis/01_Synthesis_and_Optimization.md) (the transforms LEC §5 certifies).
+- **Adjacent / complementary:** [OOP_and_Randomization](08_OOP_and_Randomization.md) (constrained-random — the sampling method formal is the exhaustive complement of; §1, §6.1), [UVM_Methodology](10_UVM_Methodology.md) & [Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md) (the dynamic flow that carries the wide datapaths), [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (metastability/MTBF physics behind CDC formal).
+- **Formal sweet-spot domains:** [Cache_Microarchitecture](../01_Architecture_and_PPA/07_Cache_Microarchitecture.md) & [ACE_and_CHI](../01_Architecture_and_PPA/12_ACE_and_CHI.md) (coherence corner cases), [Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md) (deadlock freedom), [RISC_V_ISA](../01_Architecture_and_PPA/04_RISC_V_ISA.md) (ISA-compliance formal), [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) (control-heavy precise-exception logic).
+
+---
+
+## References
+
+1. Clarke, E.M., Grumberg, O., and Peled, D., *Model Checking*, MIT Press, 1999. The reachability fixpoint, temporal logic, and symbolic model checking of §1, §3.
+2. Biere, A., Cimatti, A., Clarke, E., and Zhu, Y., "Symbolic Model Checking without BDDs," *TACAS*, 1999. The BMC unrolling of §3.1.
+3. Sheeran, M., Singh, S., and Stålmarck, G., "Checking Safety Properties Using Induction and a SAT-Solver," *FMCAD*, 2000. k-induction and the CTI/strengthening problem of §3.2.
+4. Bradley, A.R., "SAT-Based Model Checking without Unrolling," *VMCAI*, 2011. IC3/PDR of §3.3.
+5. Silva, J.P.M. and Sakallah, K.A., "GRASP: A Search Algorithm for Propositional Satisfiability," *IEEE Trans. Computers*, 48(5), 1999. Conflict-driven clause learning behind §3.1.
+6. Bryant, R.E., "Graph-Based Algorithms for Boolean Function Manipulation," *IEEE Trans. Computers*, C-35(8), 1986. ROBDDs, canonicity, and the ordering-blowup of §3, §5.1.
+7. Kuehlmann, A. and Krohm, F., "Equivalence Checking Using Cuts and Heaps," *DAC*, 1997. The compare-point/cone methodology of combinational LEC (§5.1).
+8. Clarke, E., Grumberg, O., Jha, S., Lu, Y., and Veith, H., "Counterexample-Guided Abstraction Refinement," *CAV*, 2000. The CEGAR loop of §6.2.
+9. Rice, H.G., "Classes of Recursively Enumerable Sets and Their Decision Problems," *Trans. AMS*, 74, 1953. The undecidability boundary of §7.

@@ -1,1361 +1,324 @@
-# SystemVerilog Assertions and Coverage -- Senior Engineer Deep Dive
+# SystemVerilog Assertions and Coverage — Observability and Completeness
+
+> **Prerequisites:** [Data_Types_and_Basics](02_Data_Types_and_Basics.md) and [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the language, the 4-state `x`, and the event scheduler these mechanisms sample), [OOP_and_Randomization](08_OOP_and_Randomization.md) (the constrained-random stimulus that fills functional coverage).
+> **Hands off to:** [UVM_Methodology](10_UVM_Methodology.md) (the testbench that orchestrates checkers and collectors), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the closure loop that consumes coverage), [Formal_Verification](12_Formal_Verification.md) (where an assertion becomes a proof target instead of a monitor).
 
 ---
 
-## Immediate Assertions
+## 0. Why this page exists
 
-Executed as procedural statements at the point they appear in code.
+A directed test that passes tells you almost nothing. It says *one* stimulus produced *no error you happened to be watching for* — and both halves of that sentence are blind spots. This page is about the two mechanisms that close them, and it treats them as duals, not as a list of syntax:
 
-```verilog
-// Simple immediate assertion
-always_comb begin
-    assert (state != ILLEGAL_STATE)
-        else $error("Illegal state: %s", state.name());
-end
+- **A bug's effect appears far from its cause — in time and in space.** A control FSM takes a wrong branch at cycle 4,000; the symptom is a corrupted packet at an output port 3,000 cycles later, if it surfaces at all. Watching outputs, you see the wreck, not the collision. **Assertions** embed the design's intent as always-on temporal checks that fire *at the cycle and the signal of the violation*, collapsing debug from a backward trace over thousands of cycles to a single named event. This is an **observability** problem, and assertions are observation points placed where bugs are born.
 
-// Three forms: assert, assume, cover
-always @(posedge clk) begin
-    a_valid: assert (data !== 'x)
-        $display("Data valid");      // Pass action
-    else
-        $error("Data is X at T=%0t", $time);  // Fail action
+- **Passing tests say nothing about what you did *not* exercise.** A green regression is silent about the FIFO-full-during-reset corner you never hit. **Coverage** measures which behaviors the stimulus actually reached, converting "the tests pass" into the far stronger "we know what we tested." This is a **completeness** problem, and coverage is the map of where the stimulus has and has not been.
 
-    a_input: assume (req inside {0, 1});  // Input constraint (formal)
-
-    c_full: cover (fifo_full)             // Reachability check
-        $display("FIFO full observed");
-end
-```
-
-### Deferred Immediate Assertions
-
-Standard immediate assertions fire in the Active region, so they can trigger on combinational
-glitches before values settle. Deferred assertions fix this.
-
-```verilog
-always_comb begin
-    // #0: deferred to Observed region (after all Active/NBA settle)
-    assert #0 (onehot(grant))
-        else $error("Grant not one-hot: %b", grant);
-
-    // "final": deferred to Reactive region (after Observed)
-    assert final (checksum_valid)
-        else $error("Checksum failed");
-end
-```
-
-**When to use:** Always prefer `assert #0` or `assert final` in combinational logic to avoid
-false failures from glitches during delta cycles.
+Everything below is derived from those two purposes. The old version of this page was a signal-and-operator reference — every repetition operator, every `$past` gating form, three full protocol-checker modules, a 170-line AXI4 dump. That content is *lookup*, not understanding; the operator table belongs in the LRM, and the mechanical closure loop belongs in [Verification_Planning](11_Verification_Planning_and_Coverage_Closure.md). Here we build the concepts a senior engineer reasons *with*: why an assertion localizes a bug, why it is simultaneously a spec and a formal target, why 100% code coverage is necessary but not sufficient, and why coverage closure is a coupon-collector problem that random simulation cannot finish on its own.
 
 ---
 
-## SVA (Concurrent Assertions) Deep Dive
+## 1. The two blind spots: observability and completeness
 
-### Sampled Values and the Preponed Region
+Verification asks two independent questions about a design under test (DUT), and they do not answer each other:
 
-Concurrent assertions use **sampled values**: the value of a signal at the END of the previous
-time step (technically, the Preponed region of the current time step). This avoids race
-conditions between assertion evaluation and RTL (register-transfer level) updates.
+1. **When it ran, was it correct?** — the *checking* question. Answered by assertions, scoreboards, and reference models.
+2. **Did it run enough?** — the *completeness* question. Answered by coverage.
 
-```verilog
-// At posedge clk, the assertion sees the values that were STABLE
-// before the clock edge, not the values being computed in this cycle
-property p_stable;
-    @(posedge clk) req |-> data == $past(data);
-endproperty
+You need both because they fail in opposite directions. A testbench with perfect checkers but thin stimulus is *correct on a tiny corner* — it never lies, but it barely looked. A testbench with exhaustive stimulus but no checkers *looked everywhere and saw nothing* — it exercises the whole design and verifies none of it. Real confidence is the intersection: broad stimulus (high coverage) run against always-on checks (assertions). This page's two halves are those two axes.
 
-// GOTCHA: if a signal changes in the same cycle as the clock edge,
-// the assertion sees the OLD value (from before the edge)
-always @(posedge clk) data <= new_data;  // NBA update
-// Assertion sees data's value from BEFORE this NBA update
-```
+### 1.1 Detection = controllability × observability
 
-### Where Assertions Execute in the Scheduler
+The theoretical spine, borrowed from test/ATPG, is that catching a bug requires two things at once:
 
-- **Preponed** — Sample signal values for assertions
-- **Active** — RTL logic executes
-- **NBA** — Non-blocking assignments
-Observed:   CONCURRENT ASSERTIONS EVALUATED HERE (using Preponed samples)
-- **Reactive** — Program block code, assertion pass/fail actions
+- **Controllability** — the stimulus must *activate* the bug (drive the DUT into the state where the fault manifests). This is what coverage measures and constrained-random ([08](08_OOP_and_Randomization.md)) tries to maximize.
+- **Observability** — the activated fault's effect must *propagate to a point you are checking*. Primary outputs are few, far, and lossy; an effect can be masked (overwritten, `AND`ed with 0, dropped by a full FIFO) before it ever reaches one.
+
+$$
+\text{detected} \;=\; \text{activated} \;\wedge\; \text{propagated-to-a-checked-point}
+$$
+
+Output-only checking maximizes the *distance* the effect must survive. Model a corruption born at internal node $n$ at cycle $t_0$; suppose its effect needs $\Delta$ cycles and passage through a logic cone of $F$ nodes to reach an observed output. Output checking detects it — *if it survives masking at all* — at $t_0+\Delta$, and diagnosis is a backward trace over that $\Delta\times F$ cone. An assertion on $n$'s invariant is an observation point *at the birthplace*: it fires at $t_0$, at $n$, naming the violated rule.
+
+$$
+\text{debug effort:}\quad \underbrace{O(\Delta \cdot F)}_{\text{output trace}} \;\longrightarrow\; \underbrace{O(1)}_{\text{assertion}}
+$$
+
+That is the whole value proposition of assertion-based verification in one line: **assertions raise observability**, turning bugs that were activated-but-not-propagated (invisible to output checking) into immediate, localized failures.
 
 ---
 
-## Sequence Operators with Exact Semantics
+## 2. Assertions as executable intent
 
-### ##N: Fixed Cycle Delay
+### 2.1 What an assertion fundamentally is
 
-```text
-##N means "N clock cycles later"
+An assertion is a **machine-checkable statement of a design invariant that is always on**. Not a print, not a test case — a fragment of the specification, written in a form the simulator (or a formal tool) evaluates every place it is bound and every cycle it is active. "One-hot grant," "a full FIFO is never written," "every `req` is answered within 10 cycles" are sentences in English and assertions in SVA; the assertion is the version that *runs*.
 
-Signal:   req ------+                   ack ------+
-                    |                             |
-Clock:    ___|---|___|---|___|---|___|---|___|---|___
-Cycle:          0       1       2       3       4
+Because it is always on, an assertion is checked under *every* stimulus the regression happens to drive — not just the scenario whose author was thinking about it. A one-hot check written for the arbiter test also fires during the DMA test, the reset test, and the random soak. This is why assertions are written *at* the design (bound near the RTL) rather than *in* individual tests: intent stated once, checked everywhere.
 
-req ##2 ack: req at cycle 0, ack at cycle 2
+### 2.2 Immediate vs concurrent — two evaluation models
+
+There are exactly two kinds, and the split is *when the check is evaluated*:
+
+| | Immediate | Concurrent |
+|---|---|---|
+| Nature | procedural statement, like a software `assert()` | a **temporal property** over a clock |
+| Evaluates | *now*, when control reaches it | every clock edge, across cycles |
+| Sees | current simulation values (glitch-prone in combinational code) | **sampled** values (stable, race-free) |
+| Expresses | "this condition holds at this instant" | "this pattern holds *over time*" |
+| Typical use | argument/state sanity inside a process | protocol, handshake, latency, sequencing |
+
+Immediate assertions answer a point-in-time question and are subject to the same delta-cycle glitches as any combinational read — which is why the *deferred* forms (`assert #0`, `assert final`) exist: they postpone the check until values have settled, so a transient mid-cycle value cannot raise a false failure. Keep that as the one rule worth memorizing about immediate assertions; everything interesting lives in the concurrent form.
+
+The concurrent form needs a race-free notion of "the value." SystemVerilog resolves the race between *the checker reading a signal* and *the RTL updating it* by defining that a concurrent assertion evaluates on **sampled** values — the value as of just before the clock edge (the Preponed region), not the value being computed at the edge. So an assertion always sees the pre-edge, stable image of the design, and can never race the assignment it is checking:
+
+```systemverilog
+// Sees data's value from BEFORE this edge's non-blocking update — deterministic.
+property p_hold; @(posedge clk) (valid && !ready) |-> ##1 (data == $past(data)); endproperty
 ```
 
-```verilog
-sequence s_req_ack;
-    req ##2 ack;  // req true now, ack true exactly 2 cycles later
-endsequence
+That is the entire reason "sampled values / preponed region" exists; the region-by-region scheduler walk in the old page was mechanism without motive.
+
+### 2.3 The temporal property: antecedent implies consequent, across time
+
+Almost every useful concurrent assertion has one shape:
+
+$$
+@(\text{clk})\quad \underbrace{\text{antecedent}}_{\text{when this pattern occurs}} \;\; |\!\!\rightarrow \;\; \underbrace{\text{consequent}}_{\text{this must follow}}
+$$
+
+Two ideas compose to fill it:
+
+- **Sequences** describe a *pattern over cycles*: "`req` now, then within 1–5 cycles `ack`." The temporal glue is delay (`##N`, `##[M:N]`) and repetition (a signal held or recurring for several cycles). You do not need the operator zoo to reason about assertions — you need the intuition that a sequence is a *timed pattern*, matched against the waveform as time advances.
+- **Implication** (`|->` overlapping, `|=>` next-cycle) turns a pattern into a *conditional obligation*: "**whenever** the antecedent matches, the consequent is **required** to follow." `|=>` is just `|-> ##1`. The antecedent is a trigger; the consequent is the promise.
+
+```systemverilog
+// "Every request is acknowledged within 1 to 5 cycles."
+property p_req_ack; @(posedge clk) req |-> ##[1:5] ack; endproperty
 ```
 
-### ##[M:N]: Window (Range Delay)
+This is where temporal reach comes from: the antecedent can be cycles wide, the consequent can span a window, and the single sentence constrains *behavior across time*, which no combinational check can. It is also where the localization of §1.1 becomes concrete — if `ack` is missing, the assertion fails at the deadline cycle, on the `ack` signal, in this handshake, not 3,000 cycles downstream at a starved consumer.
 
-```verilog
-sequence s_window;
-    req ##[1:3] ack;  // req now, ack true 1, 2, OR 3 cycles later
-endsequence
+**Vacuity — the subtlety that couples assertions to coverage.** If the antecedent *never matches*, the implication is **vacuously true**: it passes without ever checking the consequent. An assertion guarding a case your stimulus never triggers is green and worthless, and it looks identical to one that is genuinely holding. The only defense is to *measure* that the antecedent fired — a `cover` on the trigger:
 
-// CRITICAL: this creates MULTIPLE threads!
-// At time of req, the checker spawns evaluation threads for:
-//   Thread 1: check ack at cycle+1
-//   Thread 2: check ack at cycle+2
-//   Thread 3: check ack at cycle+3
-// If ANY thread matches, the sequence matches
-// If used with |-> and NONE match, assertion fails
-
-// ##[0:$] means "zero or more cycles" ($ = unbounded)
-// ##[1:$] means "eventually" -- ack must happen at some future cycle
+```systemverilog
+cover property (@(posedge clk) req);   // if this never hits, p_req_ack is passing vacuously
 ```
 
-### [*N]: Consecutive Repetition
+Note what just happened: an *assertion's* trustworthiness is established by *coverage*. The two mechanisms are not separate chapters; they are two ends of one contract (§5).
 
-```verilog
-// Signal must be true for N consecutive cycles
-sequence s_stable;
-    valid[*4];  // valid must be 1 for 4 consecutive cycles
-endsequence
+### 2.4 Safety vs liveness: assertions are bounded-safety properties
 
-// [*M:N]: range of consecutive repetitions
-sequence s_hold;
-    valid[*2:5];  // valid true for 2 to 5 consecutive cycles
-endsequence
+Temporal logic sorts properties into two classes, and the distinction explains a practical rule that otherwise looks arbitrary:
 
-// [*0]: zero repetitions (empty sequence -- matches immediately)
-// [*0:N]: optional presence (0 to N consecutive)
-```
+- **Safety** — "nothing bad *ever* happens" ($G\,\neg\text{bad}$). Violated by a *finite* trace: once the bad thing occurs, a finite prefix is a complete counterexample. One-hot grant, no-overflow, valid-stable are safety.
+- **Liveness** — "something good *eventually* happens" ($F\,\text{good}$). Violated only by an *infinite* trace in which the good thing never comes. "Every request is eventually granted" is liveness.
 
-### [->N]: Goto Repetition (THE COMMON INTERVIEW QUESTION)
+Simulation runs *finite* traces. It can therefore **falsify** a safety property (exhibit the finite bad prefix) but can never **confirm** a liveness one (it cannot run forever to prove "eventually" fails). So real, simulatable "liveness" assertions are always **bounded** — a deadline turns eventuality into safety:
 
-```text
-[->N] means: eventually true for the Nth time, AND the match point
-is at that Nth occurrence.
+$$
+\underbrace{F\,\text{ack}}_{\text{true liveness, unsimulatable}} \;\;\longrightarrow\;\; \underbrace{F_{\le N}\,\text{ack}}_{\text{bounded safety, a timeout}} \;\equiv\; \text{req} \; |\!\!\rightarrow\; \text{\#\#[1:N] ack}
+$$
 
-Waveform for ack[->2]:
-Cycle:    1    2    3    4    5    6    7
-ack:      0    1    0    0    1    0    0
-               ^              ^
-               1st            2nd (MATCH POINT IS HERE -- cycle 5)
-```
+This is *why* you write `##[1:N]` and not `##[1:$]` in a simulation assertion: the bounded window is a safety property with a finite counterexample (the deadline passes), which a finite run can catch. Unbounded liveness ($F$, `##[1:$]`) is the province of **formal** model checking ([12](12_Formal_Verification.md) §4–5), which reasons about all infinite behaviors symbolically rather than by running them. The choice of bound $N$ is a real design decision — too tight and legal slow paths false-fail; too loose and a genuine hang runs for $N$ cycles before the assertion notices.
 
-```verilog
-sequence s_goto;
-    req ##1 ack[->2];
-    // req at cycle 0
-    // then ack goes high for the 2nd time (non-consecutive OK)
-    // match ends at the cycle where ack is high the 2nd time
-endsequence
-```
+### 2.5 Three lives of one assertion: spec, monitor, proof target
 
-### [=N]: Non-Consecutive Repetition
+The same property text serves three roles, and this is the deepest reason to invest in assertions:
 
-```text
-[=N] means: true for N times total (not necessarily consecutive).
-Unlike [->N], the match does NOT have to end on the Nth occurrence.
+1. **As specification.** `full |-> !wr_en` is an unambiguous, executable statement of a rule that a prose spec would render as a sentence someone can misread. Assertions are the spec that cannot drift from the check, because they *are* the check.
+2. **As a simulation monitor.** Bound to the DUT, the assertion watches every regression run and fires on violation — the observability mechanism of §1.1. Its limitation is inherited from simulation: it only checks the paths your stimulus actually drives (hence coverage, hence vacuity guards).
+3. **As a formal proof target.** Handed to a model checker, the *same* assertion is proven to hold on **all** legal inputs, or a counterexample trace is produced ([12](12_Formal_Verification.md) §5). This is why assertions are called "formal-ready": no rewrite is needed to escalate a monitored property to a proved one. Simulation says "not violated in the runs I did"; formal says "cannot be violated." Control-intensive blocks (arbiters, FIFOs, protocol bridges) are routinely *closed by formal* on their assertions, retiring the coverage burden for those properties entirely.
 
-Waveform for ack[=2]:
-Cycle:    1    2    3    4    5    6    7
-ack:      0    1    0    0    1    0    0
-               ^              ^
-               1st            2nd occurrence met
-               But match point can be cycles 5, 6, OR 7
-```
+The **bind** construct is the plumbing that makes all three practical without touching the design: it attaches an assertion module to RTL from the outside, so encrypted IP or synthesis-clean RTL gets checked without editing its source.
 
-### THE CRITICAL DIFFERENCE: [->2] vs [=2]
-
-```text
-Consider: req ##1 ack[->2] ##1 done
-vs:       req ##1 ack[=2]  ##1 done
-
-Timeline:
-Cycle:    0    1    2    3    4    5    6
-req:      1    0    0    0    0    0    0
-ack:      0    0    1    0    1    0    0
-done:     0    0    0    0    0    ?    ?
-
-[->2]: Match point is cycle 4 (2nd ack). Then ##1 checks done at cycle 5.
-[=2]:  Match point is cycle 4 OR LATER. Then ##1 checks done at cycle 5, 6, 7...
-       The [=2] is satisfied once 2 acks occur, but it doesn't end there.
-       It allows more non-ack cycles before ##1 done.
-
-Key: [->N] ENDS at Nth occurrence.
-     [=N] requires N occurrences but allows trailing cycles.
-```
-
-```verilog
-// Interview example: check that exactly 2 acks occur, then done on next cycle
-// Use [->2] (not [=2]) because you want the sequence to end at the 2nd ack:
-property p_two_acks_then_done;
-    @(posedge clk) req |-> ##1 ack[->2] ##1 done;
-endproperty
+```systemverilog
+bind fifo_rtl fifo_assertions u_chk (.*);   // checker instantiated inside every fifo_rtl, source untouched
 ```
 
 ---
 
-## Implication Operators
+## 3. Where assertions pay — the trade-off
 
-### |-> Overlapping (Same Cycle)
+Assertions are not free and not always the right tool. The cost model:
 
-```text
-The consequent starts in the SAME cycle the antecedent completes.
+- **Authoring effort.** Every assertion is hand-written intent. Temporal properties are subtle (vacuity, off-by-one in `|->` vs `|=>`, reset gating via `disable iff`), and a subtly wrong assertion is worse than none: a false *failure* wastes debug time, and a false *pass* (an assertion that encodes the wrong intent, or is vacuous) gives unearned confidence — a green light on an unchecked road. **An assertion is only as correct as the spec it encodes.**
+- **Runtime cost.** A windowed antecedent like `##[1:100]` spawns an evaluation thread per possible match; complex sequences can multiply threads. `first_match` and bounded windows are the pruning levers — concept enough; the point is that assertion density trades against simulation speed.
 
-Timeline for: req |-> ack
-Cycle:      0    1    2
-req:        1
-ack:        1              <-- checked in same cycle as req
+Against that, the payoff is bug localization (§1.1) plus formal-readiness (§2.5). The decision is *where the invariant is local, temporal, high-value, and clearly specified* — which is exactly the profile of control and interface logic:
 
-Timeline for: (req ##2 grant) |-> ack
-Cycle:      0    1    2
-req:        1
-grant:                1
-ack:                  1    <-- checked at cycle 2 when grant completes
+| Assertions pay most on… | Because the invariant is… | Canonical checks |
+|---|---|---|
+| **Interfaces / protocols** (AXI, APB, handshakes) | a published, temporal contract many blocks must obey | `valid` stable until `ready`; payload stable while stalled; no `valid`↔`ready` deadlock |
+| **FIFOs / queues** | a small set of always-true structural rules | never write when `full`, never read when `empty`, count consistency |
+| **Arbiters** | mutual-exclusion + fairness, both temporal | at-most-one grant (one-hot), grant only if requested, no starvation (bounded) |
+| **One-hot / X-freedom** | a per-cycle sanity invariant | `$onehot(state)`, `!$isunknown(bus)` on qualified cycles |
+
+```systemverilog
+property p_mutex;     @(posedge clk) disable iff(!rst_n) |grant |-> $onehot(grant); endproperty   // arbiter
+property p_no_ovf;    @(posedge clk) disable iff(!rst_n) full  |-> !wr_en;          endproperty   // FIFO
+property p_vld_stbl;  @(posedge clk) disable iff(!rst_n) (vld && !rdy) |=> vld;      endproperty   // handshake
 ```
 
-### |=> Non-Overlapping (Next Cycle)
+(The `disable iff(!rst_n)` clause exempts reset — a standard reset gate; the AXI valid/ready contract these encode lives in [AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md).)
 
-```text
-The consequent starts ONE cycle AFTER the antecedent completes.
-Equivalent to: |-> ##1
+Where assertions **do not** pay: deep *datapath* correctness — "did this 3,000-cycle DSP pipeline compute the right transform?" is not a local temporal invariant, and forcing it into SVA is painful. That is a **scoreboard / reference-model** job: mirror the DUT in behavioral code and compare results (the FIFO data-integrity check is the small end of this — a `queue` reference model comparing read data against expected). Assertions check *rules*; reference models check *values*. Knowing which a property is keeps you from abusing either.
 
-Timeline for: req |=> ack
-Cycle:      0    1    2
-req:        1
-ack:             1         <-- checked one cycle AFTER req
-
-Timeline for: (req ##2 grant) |=> ack
-Cycle:      0    1    2    3
-req:        1
-grant:                1
-ack:                       1  <-- checked at cycle 3 (one after grant)
-```
-
-### Vacuous Truth
-
-If the antecedent never matches, the implication is **vacuously true** (passes by default).
-This is correct mathematically but can hide bugs.
-
-```verilog
-// If req never goes high, this assertion ALWAYS passes -- no checking done!
-property p_req_ack;
-    @(posedge clk) req |-> ##[1:5] ack;
-endproperty
-
-// To detect vacuous passes, use cover to verify the antecedent fires:
-cover property (@(posedge clk) req);
-// If this never hits, your assertion is vacuously passing and not testing anything
-```
+**Assertion density heuristic.** Industry rules of thumb: on the order of **1 assertion per 2–5 lines of control RTL**, or **tens of assertions per standardized interface** (a full AXI checker is dozens). Density is highest on control/interface logic and near-zero on pure datapath. The metric to distrust is raw count; the metric that matters is whether the *invariants that would localize a real bug* are the ones asserted.
 
 ---
 
-## first_match
-
-```verilog
-// Without first_match, ##[1:5] creates 5 threads:
-property p_multi_thread;
-    @(posedge clk) req |-> ##[1:5] ack;
-endproperty
-// 5 separate evaluation threads -- expensive, confusing failure messages
+## 4. Coverage: turning "tests pass" into "we know what we tested"
 
-// With first_match, only the earliest matching thread survives:
-property p_first;
-    @(posedge clk) req |-> first_match(##[1:5] ack);
-endproperty
-// Only one thread succeeds -- cleaner, lower simulator overhead
-
-// When it matters: in complex sequences with multiple windows,
-// thread count can explode exponentially. first_match prevents this.
-```
-
----
-
-## disable iff
-
-```verilog
-property p_handshake;
-    @(posedge clk) disable iff (!rst_n)  // Disable during reset
-    req |-> ##[1:10] ack;
-endproperty
-
-// GOTCHA: disable iff is ASYNCHRONOUS -- checked every evaluation,
-// not just at clock edges. A glitch on rst_n during the cycle can
-// cause a vacuous pass.
-
-// If rst_n has a short low pulse (glitch) that happens between clock edges,
-// the assertion may be disabled even though the RTL didn't see a reset.
-
-// Recommendation: use a synchronous version when possible:
-property p_handshake_sync;
-    @(posedge clk)
-    (!rst_n) || (req |-> ##[1:10] ack);
-endproperty
-```
-
----
-
-## System Functions for Assertions
-
-### $rose, $fell, $stable
-
-```verilog
-// $rose(sig): true if sig changed from 0 to 1 (based on SAMPLED values)
-// $fell(sig): true if sig changed from 1 to 0
-// $stable(sig): true if sig didn't change
-
-property p_valid_rose;
-    @(posedge clk) $rose(valid) |-> !$isunknown(data);
-endproperty
-// When valid rises, data must not be X
-
-// GOTCHA: $rose/$fell compare current and previous SAMPLED values
-// At the very first clock edge, previous value is X (4-state) or 0 (2-state)
-// $rose(sig) at first edge: true if sig is 1 (previous was X->treated as 0)
-```
-
-### $past
-
-```verilog
-// $past(signal, N) -- value of signal N cycles ago (default N=1)
-property p_data_held;
-    @(posedge clk) valid && !ready |-> ##1 (data == $past(data));
-endproperty
-// If valid but not ready, data must be held stable next cycle
-
-// $past with clock gating:
-// $past(signal, N, gating_signal, @(posedge clk))
-// Returns value of signal N clock edges ago WHEN gating_signal was true
-```
-
-### $countones, $onehot, $isunknown
-
-```verilog
-// $onehot(expr): exactly one bit is 1
-property p_onehot_grant;
-    @(posedge clk) |grant |-> $onehot(grant);
-endproperty
-// If any grant is active, exactly one must be active
-
-// $onehot0(expr): zero or one bit is 1
-// $countones(expr): number of 1-bits
-// $isunknown(expr): true if any bit is X or Z
-
-property p_no_x;
-    @(posedge clk) disable iff (!rst_n)
-    !$isunknown(data_bus);
-endproperty
-```
-
----
-
-## Bind Construct
-
-### Why Bind Is Essential
-
-You CANNOT modify RTL source code to add verification assertions (IP may be encrypted, or you
-need clean RTL for synthesis). `bind` lets you attach assertion modules to RTL modules from
-outside.
-
-```verilog
-// assertion module -- separate file
-module fifo_assertions (
-    input logic        clk,
-    input logic        rst_n,
-    input logic        wr_en,
-    input logic        rd_en,
-    input logic        full,
-    input logic        empty,
-    input logic [7:0]  wr_data,
-    input logic [7:0]  rd_data,
-    input logic [3:0]  count
-);
-    // Never write when full
-    property p_no_write_when_full;
-        @(posedge clk) disable iff (!rst_n)
-        full |-> !wr_en;
-    endproperty
-    assert property (p_no_write_when_full)
-        else $error("Write attempted on full FIFO");
-
-    // Never read when empty
-    property p_no_read_when_empty;
-        @(posedge clk) disable iff (!rst_n)
-        empty |-> !rd_en;
-    endproperty
-    assert property (p_no_read_when_empty)
-        else $error("Read attempted on empty FIFO");
-
-    // Count consistency
-    property p_count;
-        @(posedge clk) disable iff (!rst_n)
-        (wr_en && !rd_en && !full) |=> (count == $past(count) + 1);
-    endproperty
-    assert property (p_count)
-        else $error("Count mismatch after write");
-endmodule
-
-// Bind statement -- in testbench top or separate file
-bind fifo_rtl fifo_assertions u_fifo_asserts (
-    .clk     (clk),
-    .rst_n   (rst_n),
-    .wr_en   (wr_en),
-    .rd_en   (rd_en),
-    .full    (full),
-    .empty   (empty),
-    .wr_data (wr_data),
-    .rd_data (rd_data),
-    .count   (count)
-);
-// This instantiates fifo_assertions INSIDE every instance of fifo_rtl
-// without modifying fifo_rtl source code
-```
-
-### Bind to Specific Instance
-
-```verilog
-// Bind to ALL instances of a module type:
-bind fifo_rtl fifo_assertions u_assert (...);
-
-// Bind to a SPECIFIC instance by hierarchical path:
-bind tb.dut.u_tx_fifo fifo_assertions u_assert (...);
-```
-
----
-
-## Real Protocol Assertions
-
-### AXI Handshake Protocol
-
-```verilog
-module axi_protocol_checker (
-    input logic        ACLK,
-    input logic        ARESETn,
-    input logic        AWVALID,
-    input logic        AWREADY,
-    input logic [31:0] AWADDR,
-    input logic        WVALID,
-    input logic        WREADY,
-    input logic [31:0] WDATA,
-    input logic        BVALID,
-    input logic        BREADY
-);
-    // AXI RULE: Once VALID is asserted, it must not deassert until READY
-    property p_valid_stable(valid, ready);
-        @(posedge ACLK) disable iff (!ARESETn)
-        valid && !ready |=> valid;
-    endproperty
-
-    assert property (p_valid_stable(AWVALID, AWREADY))
-        else $error("AWVALID deasserted before AWREADY handshake");
-    assert property (p_valid_stable(WVALID, WREADY))
-        else $error("WVALID deasserted before WREADY handshake");
-    assert property (p_valid_stable(BVALID, BREADY))
-        else $error("BVALID deasserted before BREADY handshake");
-
-    // AXI RULE: Data must be stable while VALID is high and READY is low
-    property p_data_stable(valid, ready, data);
-        @(posedge ACLK) disable iff (!ARESETn)
-        valid && !ready |=> $stable(data);
-    endproperty
-
-    assert property (p_data_stable(AWVALID, AWREADY, AWADDR))
-        else $error("AWADDR changed before handshake complete");
-    assert property (p_data_stable(WVALID, WREADY, WDATA))
-        else $error("WDATA changed before handshake complete");
-
-    // AXI RECOMMENDATION: VALID should not depend on READY
-    // (VALID can assert independently of READY's state)
-    // This is a design guideline, not always assertable directly.
-    // One way: check VALID can rise without READY being high
-    property p_valid_no_wait_ready(valid, ready);
-        @(posedge ACLK) disable iff (!ARESETn)
-        $rose(valid) |-> 1;  // VALID can always rise (vacuously true check)
-    endproperty
-
-    // Handshake must complete within N cycles (liveness)
-    property p_handshake_timeout(valid, ready);
-        @(posedge ACLK) disable iff (!ARESETn)
-        valid |-> ##[0:100] (valid && ready);  // Complete within 100 cycles
-    endproperty
-
-    assert property (p_handshake_timeout(AWVALID, AWREADY))
-        else $error("AW handshake timeout");
-endmodule
-```
-
-### Arbiter Assertions
-
-```verilog
-module arbiter_checker #(parameter N = 4) (
-    input logic       clk,
-    input logic       rst_n,
-    input logic [N-1:0] req,
-    input logic [N-1:0] grant
-);
-    // Mutual exclusion: at most one grant at a time
-    property p_mutex;
-        @(posedge clk) disable iff (!rst_n)
-        |grant |-> $onehot(grant);
-    endproperty
-    assert property (p_mutex)
-        else $error("Multiple grants: %b", grant);
-
-    // Grant only if requested
-    property p_grant_needs_req;
-        @(posedge clk) disable iff (!rst_n)
-        |grant |-> |(grant & req);
-    endproperty
-    assert property (p_grant_needs_req)
-        else $error("Grant without request");
-
-    // No starvation: every persistent request eventually granted
-    generate
-        for (genvar i = 0; i < N; i++) begin : gen_fair
-            property p_no_starvation;
-                @(posedge clk) disable iff (!rst_n)
-                req[i] |-> ##[0:100] grant[i];
-            endproperty
-            assert property (p_no_starvation)
-                else $error("Starvation: req[%0d] not granted in 100 cycles", i);
-        end
-    endgenerate
-
-    // No grant during reset
-    property p_no_grant_in_reset;
-        @(posedge clk) !rst_n |-> grant == '0;
-    endproperty
-    assert property (p_no_grant_in_reset);
-endmodule
-```
-
-### FIFO Data Integrity
-
-```verilog
-module fifo_data_checker #(parameter DEPTH = 16, WIDTH = 8) (
-    input logic             clk,
-    input logic             rst_n,
-    input logic             wr_en,
-    input logic             rd_en,
-    input logic [WIDTH-1:0] wr_data,
-    input logic [WIDTH-1:0] rd_data,
-    input logic             full,
-    input logic             empty
-);
-    // Reference model for data integrity
-    logic [WIDTH-1:0] ref_queue[$];
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            ref_queue.delete();
-        end else begin
-            if (wr_en && !full)
-                ref_queue.push_back(wr_data);
-            if (rd_en && !empty) begin
-                automatic logic [WIDTH-1:0] expected = ref_queue.pop_front();
-                assert (rd_data == expected)
-                    else $error("Data mismatch: expected %h, got %h", expected, rd_data);
-            end
-        end
-    end
-
-    // Overflow protection
-    property p_no_overflow;
-        @(posedge clk) disable iff (!rst_n)
-        full |-> !wr_en;
-    endproperty
-
-    // Underflow protection
-    property p_no_underflow;
-        @(posedge clk) disable iff (!rst_n)
-        empty |-> !rd_en;
-    endproperty
-
-    assert property (p_no_overflow)
-        else $error("FIFO overflow: write while full");
-    assert property (p_no_underflow)
-        else $error("FIFO underflow: read while empty");
-endmodule
-```
-
----
-
-## Functional Coverage Deep Dive
-
-### Covergroups and Coverpoints
-
-```verilog
-class my_coverage extends uvm_subscriber #(my_txn);
-    `uvm_component_utils(my_coverage)
-
-    my_txn txn;
-
-    covergroup cg_txn @(cov_event);
-        // Coverpoint with automatic bins
-        cp_addr: coverpoint txn.addr {
-            bins low_addr    = {[0:63]};
-            bins mid_addr    = {[64:191]};
-            bins high_addr   = {[192:255]};
-            bins zero        = {0};
-            bins max_val     = {255};
-            illegal_bins reserved = {[240:249]};
-            ignore_bins dont_care = {128};
-        }
-
-        // Coverpoint with automatic bins (auto-created per value)
-        cp_opcode: coverpoint txn.opcode {
-            bins opcodes[] = {[0:15]};  // 16 individual bins
-        }
-
-        // Transition coverage
-        cp_state: coverpoint txn.state {
-            bins idle_to_active = (IDLE => ACTIVE);
-            bins active_to_done = (ACTIVE => DONE);
-            bins full_seq       = (IDLE => ACTIVE => DONE => IDLE);
-            bins any_to_error   = (IDLE, ACTIVE, DONE => ERROR);
-        }
-
-        // Wildcard bins
-        cp_cmd: coverpoint txn.cmd {
-            wildcard bins read_cmds  = {4'b00??};  // Any read command
-            wildcard bins write_cmds = {4'b01??};  // Any write command
-        }
-    endgroup
-
-    function new(string name, uvm_component parent);
-        super.new(name, parent);
-        cg_txn = new();
-    endfunction
-
-    function void write(my_txn t);
-        txn = t;
-        cg_txn.sample();
-    endfunction
-endclass
-```
-
-### Cross Coverage and the Explosion Problem
-
-```verilog
-covergroup cg_cross;
-    cp_op:   coverpoint txn.opcode   { bins ops[] = {[0:7]}; }   // 8 bins
-    cp_size: coverpoint txn.size     { bins sizes[] = {1,2,4,8}; } // 4 bins
-    cp_addr: coverpoint txn.addr_type { bins types[] = {[0:3]}; }  // 4 bins
-    cp_prot: coverpoint txn.prot     { bins prots[] = {[0:3]}; }   // 4 bins
-
-    // FULL CROSS: 8 * 4 * 4 * 4 = 512 bins
-    // This is manageable, but add more coverpoints and it explodes
-
-    cx_all: cross cp_op, cp_size, cp_addr, cp_prot;
-endgroup
-
-// Managing cross coverage explosion:
-covergroup cg_managed;
-    cp_op:   coverpoint txn.opcode   { bins ops[] = {[0:7]}; }
-    cp_size: coverpoint txn.size     { bins sizes[] = {1,2,4,8}; }
-    cp_addr: coverpoint txn.addr_type { bins types[] = {[0:3]}; }
-
-    // Selective cross -- only interesting combinations
-    cx_op_size: cross cp_op, cp_size {
-        // Ignore irrelevant combinations
-        ignore_bins ig = binsof(cp_op) intersect {0,1}
-                      && binsof(cp_size) intersect {8};
-        // Read ops (0,1) never use size 8
-
-        // Only care about specific combos
-        bins write_large = binsof(cp_op) intersect {2,3}
-                        && binsof(cp_size) intersect {4,8};
-    }
+### 4.1 The coverage-space model
+
+Model the design as able to exhibit a set $\mathcal{B}$ of *interesting behaviors* — the things a spec-literate engineer would list as "must be exercised." A test run visits a subset $\mathcal{V}\subseteq\mathcal{B}$. Coverage is the fraction of the interesting space the stimulus reached:
+
+$$
+\text{Coverage} \;=\; \frac{|\mathcal{V} \cap \mathcal{B}|}{|\mathcal{B}|}
+$$
+
+The entire subtlety is *what you put in $\mathcal{B}$*, and that splits coverage into two orthogonal kinds along one axis: **structural** (did the *code* execute) vs **functional** (did the *intended scenario* happen). They are complementary, and neither implies the other.
+
+### 4.2 Code coverage: structural, automatic, necessary — not sufficient
+
+Code coverage takes $\mathcal{B}$ to be structural events the tool extracts *for free* from the RTL:
+
+- **Line** — each statement executed.
+- **Branch / condition** — each `if`/`case` arm, and each sub-condition's true/false, taken.
+- **Toggle** — each bit observed at both 0 and 1 (catches stuck / never-driven nets).
+- **FSM** — each state entered and each defined transition taken.
+
+Its virtue is that it is automatic and objective: no one writes it, and it directly measures whether stimulus *reached* the RTL. A block with 60% branch coverage has 40% of its logic that *no test has ever activated* — an unarguable gap. So high code coverage is **necessary**.
+
+It is not **sufficient**, for two structural reasons:
+
+1. **Execution ≠ verification.** A line can run under the condition that *hides* its bug and never under the one that reveals it. `assign y = a + b;` reaches 100% line coverage on the first vector; an off-by-one that only bites when `a+b` overflows is fully "covered" and fully unverified. Coverage says the line *ran*, not that it ran *under the input that matters* — and it certainly doesn't confirm the result was *checked* (that's the assertion/scoreboard's job; §5).
+2. **It cannot cover what isn't there.** Code coverage measures the RTL that *exists*. A missing `case` item, a forgotten corner, an unhandled request type — a behavior the spec requires but the RTL omits — has *no line to leave uncovered*. Structural coverage is blind to sins of omission by construction.
+
+$$
+\text{100\% code coverage} \;\Rightarrow\; \text{every written line ran} \;\;\not\Rightarrow\;\; \text{every required behavior is correct}
+$$
+
+That gap — bugs of omission and of unchecked execution — is exactly what functional coverage exists to fill.
+
+### 4.3 Functional coverage: intent, hand-written, the design-scenario question
+
+Functional coverage makes $\mathcal{B}$ the set of **design-intent scenarios**, written by hand from the spec, independent of how the RTL is coded:
+
+- **Coverpoint** — sample a variable and bin its values (`opcode`, `burst_len`, `addr` region), including transitions (`IDLE => ACTIVE => DONE`).
+- **Covergroup** — a bundle of coverpoints sampled together at a meaningful event (a transaction complete, a clock edge).
+- **Cross** — the *combination* space: did we see every (opcode × size), every (state × interrupt)? Crosses are where the real corners hide, and where the *explosion* lives.
+
+```systemverilog
+covergroup cg_txn @(txn_done);
+  cp_op:   coverpoint txn.opcode { bins rd = {[0:1]}; bins wr = {[2:3]}; }
+  cp_size: coverpoint txn.size   { bins s[] = {1,2,4,8}; }
+  x_os:    cross cp_op, cp_size;                    // did every op meet every size?
 endgroup
 ```
 
-### Coverage Options
+The trade against code coverage is the mirror image: functional coverage **captures intent that structure cannot** (a scenario absent from the RTL still has a bin, so omissions show up as holes) — but it is **only as complete as the engineer's imagination**. There is no tool to tell you a bin is *missing*; an un-modeled corner is invisible to functional coverage exactly as an un-coded corner is invisible to code coverage. This is why the two are run together and why a **verification plan** ([11](11_Verification_Planning_and_Coverage_Closure.md) §1) — the enumerated list of what $\mathcal{B}$ should contain — is the real deliverable, not the covergroup code.
 
-```verilog
-covergroup cg_options;
-    option.per_instance = 1;     // Track coverage per instance (not merged)
-    option.at_least = 5;         // Each bin needs 5 hits (default: 1)
-    option.auto_bin_max = 64;    // Max auto-generated bins (default: 64)
-    option.weight = 2;           // Weight in overall coverage calculation
-    option.goal = 90;            // Coverage goal percentage
+| | Code (structural) coverage | Functional coverage |
+|---|---|---|
+| $\mathcal{B}$ defined by | the RTL, automatically | the engineer, from the spec |
+| Effort | ~zero (tool-instrumented) | high (hand-written model) |
+| Catches | unexercised *code* | unexercised *scenarios*, incl. omissions |
+| Blind to | bugs of omission; unchecked execution | corners you forgot to model |
+| Sign-off role | necessary hygiene (≈100%) | the completeness gate |
 
-    cp_addr: coverpoint addr {
-        option.auto_bin_max = 8; // Override per-coverpoint
-    }
-endgroup
-```
+**Coverage overhead vs signal.** Coverage is not free: instrumentation slows simulation (typically a few to ~20%), and every covergroup sample and cross is stored and merged across thousands of runs. Over-sampling — crossing uncorrelated points, binning every value of a wide bus — produces a bin count that is both *slow to collect* and *impossible to close* (unreachable combinations that no stimulus can hit) while burying the signal. So functional coverage is *curated*, not maximal: sample at transaction boundaries, cross only correlated points, cap bins with `option.auto_bin_max`, and require `option.at_least` hits before a bin counts (a single fluke hit is noise, not evidence). The skill is choosing a small $\mathcal{B}$ that is *dense in real risk*.
 
-**Covergroup `option.*` knobs** (scoring/reporting control):
+**Reachable, not total.** The goal is **100% of *reachable* bins, not 100% of bins.** Impossibility is encoded *in the model*: `illegal_bins` (error if ever hit — a spec violation, e.g. a reserved encoding) and `ignore_bins` (excluded from the score — a genuine don't-care), each with a documented justification. An excluded bin without a rationale is a hidden hole.
 
-```verilog
-covergroup cg @(posedge clk);
-    option.per_instance = 1;   // report each instance separately (default: merged per type)
-    option.at_least     = 3;   // a bin needs >= 3 hits to count as covered
-    option.goal         = 95;  // target % for this covergroup
-    option.weight       = 2;   // weight in the parent/merged coverage score
-    option.comment      = "AXI burst coverage";
-    ...
-endgroup
-```
+### 4.4 Why closure is a coupon-collector problem
 
----
+Constrained-random stimulus ([08](08_OOP_and_Randomization.md)) samples the coverage space: each run hits some bins, and the union grows as runs accumulate. The growth is fast, then agonizingly slow, and the reason is exactly the **coupon-collector** phenomenon.
 
-## Coverage-Driven Verification Methodology — see Verification_Planning
+If each run hit one of $N$ bins uniformly at random, the expected number of runs to collect *all* $N$ is
 
-The CDV loop — write the coverage model from the spec, run random regressions, analyze holes,
-tune constraints / add directed tests, iterate to closure — and the hole-triage decision tree are
-centralized in [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) §1, §3–§4.
+$$
+E[\text{runs}] \;=\; N\,H_N \;\approx\; N(\ln N + \gamma), \qquad H_N = \textstyle\sum_{k=1}^{N}\tfrac1k,\;\; \gamma \approx 0.577
+$$
 
-The mechanics-side rule that stays here: **100% of bins is not the goal — 100% of *reachable* bins is.**
-Encode impossibility in the model itself: `illegal_bins` (error if ever hit) for spec violations,
-`ignore_bins` (excluded from the score) for don't-cares, and a documented justification for every
-other excluded bin.
+and the punchline is the *tail*: collecting the **last** bin alone takes on average $N$ runs, as much as the first $\sim\!63\%$ combined. Real bins are far from uniform — a corner reached with probability $p$ needs about $1/p$ runs, and deep corners (FIFO full *during* reset *while* a back-to-back burst retires) have astronomically small $p$:
 
-## Multi-Clock Assertions
+$$
+E[\text{runs to hit a bin}] \;\approx\; \frac{1}{p}, \qquad p_{\text{corner}} \to 0 \;\Rightarrow\; E \to \infty
+$$
 
-```verilog
-// Sequence spanning two clock domains
-// (Use with caution -- multi-clock assertions are complex)
-sequence s_cross_domain;
-    @(posedge clk_a) req_a ##1 @(posedge clk_b) ack_b;
-endsequence
+This is the mathematical reason **random simulation saturates**: coverage climbs to ~90% quickly and then crawls, because what remains are the low-$p$ bins that more of the *same* random stimulus will essentially never reach. Getting from 90% to 100% can cost more cycles than 0→90% — and often *cannot* be bought with cycles at all.
 
-// The ##1 here means: one tick of clk_b AFTER the posedge clk_a event
-// Not one cycle of clk_a!
-// This is useful for CDC (Clock Domain Crossing) verification
-```
+The escape is the **cover-hole → new-test loop**, the heart of coverage-driven verification:
+
+$$
+\text{run random} \;\to\; \text{measure coverage} \;\to\; \text{find holes} \;\to\; \underbrace{\text{tighten constraints / add directed test}}_{\text{raise }p\text{ for that bin}} \;\to\; \text{repeat}
+$$
+
+Each hole is diagnosed (is it *reachable*? if not, `ignore_bins` it with justification; if so, what stimulus reaches it?) and closed by *raising the probability* of the missing behavior — biasing constraints toward it, or writing a directed test that hits it deterministically ($p=1$). That is how verification *ends*: not when random runs stop failing, but when the curated, reachable coverage model is full. The full triage decision tree and sign-off criteria are the subject of [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) §3–§4; the concept to carry there is that closure is a *sampling* problem with a heavy tail, which is why it needs directed intervention and cannot be brute-forced.
 
 ---
 
-## Complete SVA Property Operator Reference
+## 5. The contract: check what happens, measure what you reached
 
-One worked example per operator -- the cheat sheet you need in an interview.
+Assertions and coverage are duals, and neither is sufficient alone:
 
-### $rose / $fell / $stable
+- **Coverage without checkers** = you drove the design everywhere and verified nothing. Every bin is hit; no one asked whether the outputs were right.
+- **Assertions without coverage** = you checked rigorously on a sliver of behavior and don't know how small the sliver is — and can't even tell which assertions ran (vacuity, §2.3).
 
-```verilog
-// $rose(sig): true when sampled value changed from 0→1 since previous clock edge
-// $fell(sig): true when sampled value changed from 1→0
-// $stable(sig): true when sampled value is same as previous clock edge
+The two close each other's loop. The clean statement:
 
-// Example: req must stay high until ack (both edges are meaningful)
-property p_req_holds;
-    @(posedge clk) $rose(req) |-> req throughout ##[1:20] $fell(req);
-endproperty
-// When req rises, it must stay 1 until it eventually falls
+$$
+\text{confidence} \;=\; \underbrace{\text{coverage}}_{\text{did I reach the behavior?}} \;\wedge\; \underbrace{\text{assertions/checkers}}_{\text{was it correct when I did?}}
+$$
 
-// Example: data must be stable when valid is high
-property p_data_stable_with_valid;
-    @(posedge clk) valid |-> $stable(data);
-endproperty
+Two coverage constructs correspond to the two assertion styles, closing the symmetry:
+
+- **`cover property`** measures that a *temporal* scenario occurred (a handshake completed, a back-to-back burst happened) — the coverage dual of a concurrent assertion, and the tool for killing vacuity.
+- **`covergroup`** measures that a *value/state* scenario occurred (this opcode, this cross) — the sampled, data-oriented axis.
+
+```systemverilog
+cover property (@(posedge clk) (vld && rdy) ##1 (vld && rdy));   // back-to-back beats actually happened
 ```
 
-### $past
-
-```verilog
-// $past(expr, N, gate, clk): value of expr N clock ticks ago
-// Default N=1, gate=1 (ungated), clock = current clock
-
-// Example: counter should increment by 1
-property p_cnt_incr;
-    @(posedge clk) disable iff (!rst_n)
-    cnt == $past(cnt) + 1;
-endproperty
-
-// Example with gating: check data matches what was on bus when en was asserted
-property p_gated_past;
-    @(posedge clk)
-    $rose(ready) |-> data == $past(wr_data, 1, wr_en, @(posedge clk));
-endproperty
-// Returns value of wr_data from the last cycle where wr_en was 1
-```
-
-### $onehot / $onehot0 / $countones / $isunknown
-
-```verilog
-// $onehot(expr): exactly one bit is 1
-// $onehot0(expr): at most one bit is 1 (zero or one)
-// $countones(expr): number of 1 bits
-// $isunknown(expr): any bit is X or Z
-
-// Example: arbiter one-hot grant with X detection
-property p_grant_valid;
-    @(posedge clk) disable iff (!rst_n)
-    |grant |-> $onehot(grant) && !$isunknown(grant);
-endproperty
-
-// Example: bus ownership -- at most one master active
-property p_bus_owner;
-    @(posedge clk) $onehot0(bus_req);
-endproperty
-```
-
-### ##N (fixed delay) and ##[M:N] (range delay)
-
-```verilog
-// ##N: exact N cycles later
-// ##[M:N]: between M and N cycles later (creates N-M+1 threads)
-// ##[0:$]: zero or more cycles (unbounded)
-
-// Example: pipeline with known latency of 3 cycles
-property p_pipe_latency;
-    @(posedge clk) $rose(issue) |-> ##3 $rose(done);
-endproperty
-
-// Example: interrupt must be serviced within 10-100 cycles
-property p_irq_service;
-    @(posedge clk) $rose(irq) |-> ##[1:100] $rose(irq_ack);
-endproperty
-```
-
-### [*N] (consecutive repetition) and [*M:N]
-
-```verilog
-// expr[*N]: expr true for N consecutive cycles
-// expr[*M:N]: expr true for M to N consecutive cycles
-// expr[*0]: empty match (matches immediately, zero-length)
-
-// Example: reset must be held low for at least 5 cycles
-sequence s_reset_duration;
-    !rst_n[*5];
-endsequence
-
-// Example: backoff period -- bus idle for 3-8 cycles between transactions
-property p_backoff;
-    @(posedge clk) $fell(bus_valid) |=> !bus_valid[*3:8] ##1 bus_valid;
-endproperty
-```
-
-### [->N] (goto repetition)
-
-```verilog
-// expr[->N]: expr becomes true for the Nth time (non-consecutive OK)
-// Match point IS at the Nth occurrence.
-// Equivalent to: (!expr[*0:$] ##1 expr) repeated N times
-
-// Example: receive exactly 4 data beats, then assert last
-property p_rx_4_beats;
-    @(posedge clk) $rose(rx_start) |-> data_valid[->4] ##1 rx_last;
-endproperty
-// Matches: rx_start → (eventually data_valid 4 separate times) → then rx_last
-```
-
-### [=N] (non-consecutive repetition)
-
-```verilog
-// expr[=N]: expr has been true N times (non-consecutive)
-// Unlike [->N], match continues AFTER the Nth occurrence
-// Allows trailing cycles where expr is 0
-
-// Example: monitor that at least 3 errors occurred before system halt
-property p_3_err_then_halt;
-    @(posedge clk) $rose(monitor_start) |-> error[=3] ##1 halt;
-endproperty
-// After 3 errors, halt can come on any subsequent cycle (not necessarily
-// the cycle right after the 3rd error)
-```
-
-### |-> (overlapping implication) and |=> (non-overlapping)
-
-```verilog
-// |-> : consequent evaluated SAME cycle as antecedent match
-// |=> : consequent evaluated NEXT cycle after antecedent match
-// |=> B  is equivalent to  |-> ##1 B
-
-// Example (|->): grant must be one-hot in the same cycle as any grant
-property p_grant_onehot;
-    @(posedge clk) |grant |-> $onehot(grant);
-endproperty
-
-// Example (|=>): after write, data appears in SRAM one cycle later
-property p_sram_write;
-    @(posedge clk) wr_en |=> (sram[$past(addr)] == $past(wr_data));
-endproperty
-```
-
-### throughout
-
-```verilog
-// expr1 throughout sequence2: expr1 must hold continuously for the
-// entire duration of sequence2
-
-// Example: burst transfer -- burst_active must stay high for entire burst
-property p_burst_active;
-    @(posedge clk)
-    $rose(burst_start) |-> burst_active throughout (data_valid[->4] ##1 burst_end);
-endproperty
-// burst_active must be true from burst_start through the 4th data_valid and burst_end
-```
-
-### intersect
-
-```verilog
-// seq1 intersect seq2: both sequences must start AND end at the same time
-// Both must match over the SAME number of cycles
-
-// Example: verify that a read completes in exactly 5 cycles AND
-// the bus is continuously owned during those 5 cycles
-sequence s_read_takes_5;
-    ##[5:5] read_done;  // exactly 5 cycles
-endsequence
-
-sequence s_bus_owned;
-    bus_owned[*5];  // bus_owned for 5 consecutive cycles
-endsequence
-
-property p_read_5_with_bus;
-    @(posedge clk) $rose(read_req) |-> s_read_takes_5 intersect s_bus_owned;
-endproperty
-```
-
-### within
-
-```verilog
-// seq1 within seq2: seq1 must complete entirely during seq2
-// seq1 can start AFTER seq2 starts and end BEFORE seq2 ends
-
-// Example: NACK must occur somewhere within a transaction window
-property p_nack_in_window;
-    @(posedge clk)
-    $rose(txn_start) |-> (nack within (txn_start ##[1:50] txn_end));
-endproperty
-// nack must occur somewhere between txn_start and txn_end
-```
-
-### first_match
-
-```verilog
-// first_match(seq): only the first matching thread of seq is kept
-// Critical for performance when ranges create many threads
-
-// Example: only care about first ack after req, ignore redundant matches
-property p_first_ack;
-    @(posedge clk) req |-> first_match(##[1:100] ack);
-endproperty
-// Without first_match, 100 threads would be spawned
-// With first_match, only the first ack match survives
-```
-
-### ended
-
-```verilog
-// seq.ended: true at the clock tick where sequence seq completes
-// Useful for checking that one sequence ended when another event occurs
-
-// Example: verify that a training sequence has completed before data transfer
-sequence s_training;
-    txd ##1 txd ##1 txd;  // 3 training words
-endsequence
-
-property p_data_after_training;
-    @(posedge clk) data_valid |-> s_training.ended;
-endproperty
-// data_valid is only allowed after the training sequence has completed
-```
+A property with an assertion *and* a cover on its antecedent is the fully-formed unit: it is checked when it applies, and you can prove it applied. That pairing — not any single operator — is what "assertion-based, coverage-driven verification" means.
 
 ---
 
-## Worked AXI4 Write Channel Protocol Assertion
+## 6. Numbers to memorize
 
-This is the single most common protocol assertion asked in interviews. It exercises multiple SVA (SystemVerilog Assertions) features simultaneously.
-
-### Protocol Requirements
-
-**AXI4 Write Address (AW) channel:**
-   - AWVALID, AWREADY, AWADDR, AWLEN, AWSIZE, AWBURST
-
-**AXI4 Write Data (W) channel:**
-   - WVALID, WREADY, WDATA, WSTRB, WLAST
-
-**AXI4 Write Response (B) channel:**
-   - BVALID, BREADY, BRESP
-
-**Rules to check:**
-   1. AW→W→B ordering: write address before or with write data; response last
-2. WLAST must be asserted on the last W beat
-3. BVALID must not assert until after WLAST handshake completes
-4. Number of W transfers must equal AWLEN + 1
-5. Once VALID asserted, it must stay high until READY handshake
-6. Payload must be stable while VALID is high and READY is low
-
-### Complete Assertion Module
-
-```verilog
-module axi4_write_protocol_checker #(
-    parameter ADDR_WIDTH = 32,
-    parameter DATA_WIDTH = 64,
-    parameter ID_WIDTH   = 4
-)(
-    input logic                  ACLK,
-    input logic                  ARESETn,
-    // AW channel
-    input logic                  AWVALID,
-    input logic                  AWREADY,
-    input logic [ADDR_WIDTH-1:0] AWADDR,
-    input logic [7:0]            AWLEN,    // burst length - 1
-    input logic [2:0]            AWSIZE,
-    input logic [1:0]            AWBURST,
-    input logic [ID_WIDTH-1:0]   AWID,
-    // W channel
-    input logic                  WVALID,
-    input logic                  WREADY,
-    input logic [DATA_WIDTH-1:0] WDATA,
-    input logic [DATA_WIDTH/8-1:0] WSTRB,
-    input logic                  WLAST,
-    // B channel
-    input logic                  BVALID,
-    input logic                  BREADY,
-    input logic [1:0]            BRESP,
-    input logic [ID_WIDTH-1:0]   BID
-);
-
-    // -------------------------------------------------------
-    // Rule 1: VALID must stay asserted until READY handshake
-    // -------------------------------------------------------
-    property p_valid_stable(valid, ready);
-        @(posedge ACLK) disable iff (!ARESETn)
-        valid && !ready |=> valid;
-    endproperty
-
-    assert property (p_valid_stable(AWVALID, AWREADY))
-        else $error("AWVALID deasserted before AWREADY at T=%0t", $time);
-    assert property (p_valid_stable(WVALID, WREADY))
-        else $error("WVALID deasserted before WREADY at T=%0t", $time);
-    assert property (p_valid_stable(BVALID, BREADY))
-        else $error("BVALID deasserted before BREADY at T=%0t", $time);
-
-    // -------------------------------------------------------
-    // Rule 2: Payload stability while VALID && !READY
-    // -------------------------------------------------------
-    property p_payload_stable(valid, ready, payload);
-        @(posedge ACLK) disable iff (!ARESETn)
-        valid && !ready |=> $stable(payload);
-    endproperty
-
-    assert property (p_payload_stable(AWVALID, AWREADY, {AWADDR, AWLEN, AWSIZE, AWBURST, AWID}))
-        else $error("AW payload changed before handshake at T=%0t", $time);
-    assert property (p_payload_stable(WVALID, WREADY, {WDATA, WSTRB}))
-        else $error("W payload changed before handshake at T=%0t", $time);
-
-    // -------------------------------------------------------
-    // Rule 3: WLAST must be 0 for all beats except the last
-    // -------------------------------------------------------
-    // Count W handshakes per burst using a reference model
-    logic [7:0] w_beat_count;
-    logic       aw_captured;
-    logic [7:0] expected_len;
-
-    always @(posedge ACLK or negedge ARESETn) begin
-        if (!ARESETn) begin
-            w_beat_count  <= 8'd0;
-            aw_captured   <= 1'b0;
-            expected_len  <= 8'd0;
-        end else begin
-            // Capture AWLEN on AW handshake
-            if (AWVALID && AWREADY) begin
-                aw_captured  <= 1'b1;
-                expected_len <= AWLEN;
-            end
-
-            // Count W handshakes
-            if (WVALID && WREADY) begin
-                if (WLAST) begin
-                    // Verify beat count matches AWLEN + 1
-                    assert (w_beat_count == expected_len)
-                        else $error("W beat count mismatch: expected %0d transfers, got %0d at T=%0t",
-                                    expected_len + 1, w_beat_count + 1, $time);
-                    w_beat_count <= 8'd0;
-                    aw_captured  <= 1'b0;
-                end else begin
-                    // WLAST must be 0 for non-final beats
-                    assert (!WLAST)
-                        else $error("WLAST=0 expected on non-final beat at T=%0t", $time);
-                    w_beat_count <= w_beat_count + 8'd1;
-                end
-            end
-        end
-    end
-
-    // -------------------------------------------------------
-    // Rule 4: BVALID must not appear before WLAST handshake
-    // -------------------------------------------------------
-    sequence s_wlast_handshake;
-        WVALID && WREADY && WLAST;
-    endsequence
-
-    property p_b_after_wlast;
-        @(posedge ACLK) disable iff (!ARESETn)
-        !BVALID throughout (first_match(s_wlast_handshake)) |=> 1;
-        // Before WLAST handshake, BVALID must be 0
-    endproperty
-
-    // Alternative (simpler) using $past:
-    property p_b_after_wlast_alt;
-        @(posedge ACLK) disable iff (!ARESETn)
-        BVALID |-> $past(WVALID && WREADY && WLAST, 1, 1, @(posedge ACLK))
-               || $past(WVALID && WREADY && WLAST, 2, 1, @(posedge ACLK))
-               || $past(WVALID && WREADY && WLAST, 3, 1, @(posedge ACLK));
-        // BVALID can appear 1-3 cycles after WLAST handshake (pipelining allowed)
-    endproperty
-
-    // -------------------------------------------------------
-    // Rule 5: BRESP must be OKAY (0) or SLVERR (2) or DECERR (3)
-    // Never undefined
-    // -------------------------------------------------------
-    property p_bresp_valid;
-        @(posedge ACLK) disable iff (!ARESETn)
-        BVALID |-> BRESP inside {2'b00, 2'b10, 2'b11};
-    endproperty
-    assert property (p_bresp_valid)
-        else $error("BRESP undefined value: %b at T=%0t", BRESP, $time);
-
-    // -------------------------------------------------------
-    // Rule 6: EXOKAY (2'b01) not allowed on BRESP for non-exclusive
-    // -------------------------------------------------------
-    property p_no_exokay;
-        @(posedge ACLK) disable iff (!ARESETn)
-        BVALID |-> BRESP != 2'b01;
-    endproperty
-    assert property (p_no_exokay)
-        else $error("EXOKAY on BRESP without exclusive access at T=%0t", $time);
-
-    // -------------------------------------------------------
-    // Rule 7: WLAST must be asserted exactly once per burst
-    // (WLAST can only be 1 when WVALID is 1, and only on the last beat)
-    // -------------------------------------------------------
-    property p_wlast_only_with_valid;
-        @(posedge ACLK) disable iff (!ARESETn)
-        WLAST |-> WVALID;
-    endproperty
-    assert property (p_wlast_only_with_valid)
-        else $error("WLAST asserted without WVALID at T=%0t", $time);
-
-    // -------------------------------------------------------
-    // Coverage: ensure all protocol events are exercised
-    // -------------------------------------------------------
-    cover property (@(posedge ACLK) AWVALID && AWREADY);       // AW handshake
-    cover property (@(posedge ACLK) WVALID  && WREADY);        // W handshake
-    cover property (@(posedge ACLK) WVALID  && WREADY && WLAST); // Last W beat
-    cover property (@(posedge ACLK) BVALID  && BREADY);        // B handshake
-    cover property (@(posedge ACLK) BRESP == 2'b00);           // OKAY response
-    cover property (@(posedge ACLK) BRESP == 2'b10);           // SLVERR response
-
-    // Coverage: back-to-back W beats (full bandwidth)
-    cover property (@(posedge ACLK)
-        (WVALID && WREADY) ##1 (WVALID && WREADY));
-
-    // Coverage: AW and W handshake in same cycle
-    cover property (@(posedge ACLK)
-        (AWVALID && AWREADY) && (WVALID && WREADY));
-
-endmodule
-```
-
-### Key Design Decisions Explained
-
-```verilog
-1. Why reference model for beat counting instead of pure assertions?
-   - The number of W transfers depends on AWLEN (runtime variable).
-   - Pure SVA cannot express "count exactly AWLEN+1 W handshakes" without
-     auxiliary state. The always block acts as a reference model.
-
-2. Why first_match on s_wlast_handshake?
-   - WVALID && WREADY && WLAST could be true for multiple consecutive cycles
-     (if WREADY stays high). first_match ensures we only trigger on the
-     first occurrence.
-
-3. Why p_b_after_wlast_alt uses $past with gating?
-   - AXI4 allows pipelining: BVALID can appear several cycles after WLAST
-     handshake, not necessarily the very next cycle. The $past check with
-     gating allows a window of 1-3 cycles.
-
-4. Why cover property on each handshake?
-   - Without these covers, the assertions could pass vacuously if the
-     stimulus never exercises the protocol. The covers ensure test quality.
-```
+| Concept | Value / rule | Why (section) |
+|---|---|---|
+| Immediate vs concurrent | procedural *now* vs temporal *over a clock* | the two evaluation models (§2.2) |
+| Deferred immediate | `assert #0` / `assert final` | glitch-free combinational check (§2.2) |
+| Sampled values | Preponed (pre-edge) region | race-free vs RTL updates (§2.2) |
+| Implication | `\|->` same cycle · `\|=>` next cycle (`= \|-> ##1`) | conditional obligation (§2.3) |
+| Vacuous pass | antecedent never fires ⇒ trivially true | guard with a `cover` on the antecedent (§2.3) |
+| Reset gating | `disable iff (!rst_n)` | exempt reset from the check (§3) |
+| Bounded liveness | `##[1:N]`, never `##[1:$]` in sim | safety has a finite counterexample (§2.4) |
+| Assertion density | ~1 per 2–5 lines of control RTL; tens per interface | control/interface, not datapath (§3) |
+| Code coverage | line / branch / toggle / FSM; target ≈100% | necessary, automatic, not sufficient (§4.2) |
+| Functional coverage | covergroups / coverpoints / crosses; **100% of reachable bins** | the completeness gate (§4.3) |
+| Bin hygiene | `illegal_bins` (error), `ignore_bins` (excluded), `at_least ≥ N` | reachable-not-total; noise rejection (§4.3) |
+| Coverage overhead | ~few–20% sim slowdown | curate, don't maximize $\mathcal{B}$ (§4.3) |
+| Coupon collector | $E \approx N\ln N$; last bin alone $\approx N$ runs | random saturates ~90% (§4.4) |
+| Corner cost | $E[\text{runs}] \approx 1/p$ | why directed tests exist (§4.4) |
 
 ---
 
-## CDC (Clock Domain Crossing) Assertions
+## Cross-references
 
-### Why You Cannot Assert at the Crossing Point
-
-```ascii-graph
-Signal crossing from clk_a to clk_b:
-
-  clk_a domain          CDC signal (metastable)     clk_b domain
-  ┌──────────┐          ═══════════════════         ┌──────────┐
-  │ source   ├─────────►│ glitch / metastable │────►│ 2-FF     ├─► synchronized
-  │ FF       │          ═════════════════════         │ sync     │   signal
-  └──────────┘                                        └──────────┘
-
-At the crossing point (between source and synchronizer input), the signal
-is METASTABLE. It may be X, it may oscillate, it may settle to the wrong
-value temporarily. You CANNOT write a meaningful assertion here.
-
-The correct place to assert: AFTER the synchronizer, in the destination
-clock domain.
-```
-
-### CDC Assertion Patterns
-
-```verilog
-// Pattern 1: Verify synchronizer output is stable (no glitches after sync)
-// After a 2-FF synchronizer, the signal should be clean in clk_b domain
-module cdc_assertions #(
-    parameter SYNC_STAGES = 2
-)(
-    input  logic clk_a,        // source domain
-    input  logic clk_b,        // destination domain
-    input  logic rst_n,
-    input  logic cdc_data_a,   // signal in source domain (before crossing)
-    input  logic cdc_synced_b  // signal after 2-FF synchronizer in clk_b
-);
-
-    // After the synchronizer, the signal should not glitch within a clk_b cycle
-    property p_no_glitch_after_sync;
-        @(posedge clk_b) disable iff (!rst_n)
-        $stable(cdc_synced_b);  // No intra-cycle changes after synchronizer
-    endproperty
-    // Note: this checks sampled stability only; actual glitch detection
-    // requires real-time comparison (not possible in SVA)
-
-    // Pattern 2: Gray-code pointer crossing for async FIFO
-    // After synchronization, the gray-code pointer must differ by at most 1 bit
-    // from its previous value (gray code property: adjacent values differ by 1 bit)
-    property p_gray_code_ptr_stability;
-        @(posedge clk_b) disable iff (!rst_n)
-        $countones(cdc_synced_b ^ $past(cdc_synced_b)) <= 1;
-    endproperty
-    // If this fails, the synchronizer output was corrupted (metastability
-    // caused a multi-bit change, violating gray-code assumption)
-
-    // Pattern 3: Verify data is held stable during crossing (req-ack handshake)
-    // Source must hold data stable until destination acknowledges
-    property p_data_held_during_cross;
-        @(posedge clk_a) disable iff (!rst_n)
-        cdc_req_a && !cdc_ack_a |-> $stable(cdc_data_a);
-    endproperty
-    // In clk_a domain: while req is high and ack has not returned,
-    // data must not change
-
-    // Pattern 4: Verify req-ack handshake completion
-    // After req is asserted, ack must eventually return
-    property p_handshake_completion;
-        @(posedge clk_a) disable iff (!rst_n)
-        $rose(cdc_req_a) |-> ##[1:500] cdc_ack_a;
-    endproperty
-
-    // Pattern 5: Verify ack deasserts after req deasserts
-    property p_ack_follows_req;
-        @(posedge clk_a) disable iff (!rst_n)
-        $fell(cdc_req_a) |-> ##[0:10] !cdc_ack_a;
-    endproperty
-
-endmodule
-```
-
-### Common CDC Mistake: Asserting Before the Synchronizer
-
-```verilog
-// WRONG: Asserting on the metastable signal
-property p_bad_cdc;
-    @(posedge clk_b) disable iff (!rst_n)
-    $stable(metastable_signal);  // This WILL fire false failures!
-    // metastable_signal can change mid-cycle due to metastability resolution
-endproperty
-
-// CORRECT: Assert after the synchronizer
-property p_good_cdc;
-    @(posedge clk_b) disable iff (!rst_n)
-    $stable(synchronized_signal);  // Clean, settled signal
-endproperty
-
-// CORRECT: Assert source-side stability (in source domain)
-property p_source_holds;
-    @(posedge clk_a) disable iff (!rst_n)
-    cdc_req && !cdc_ack |-> $stable(cdc_data);
-    // Verify source discipline in source clock domain -- no metastability issues
-endproperty
-```
-
-### Multi-bit CDC Assertion Strategy
-
-```verilog
-// For a multi-bit bus crossing clock domains:
-// Option 1: Verify gray-code encoding (async FIFO pointers)
-//   Adjacent gray-code values differ by exactly 1 bit
-//   After synchronization, check single-bit transitions
-
-// Option 2: Verify req-ack handshake discipline
-//   Source holds bus stable from req assertion until ack return
-//   Destination samples bus only when req is high after synchronization
-
-// Option 3: Verify MUX-based synchronization discipline
-//   A control signal (crossed via 2-FF sync) gates the data bus
-//   Data bus is only sampled when control signal is stable (after sync)
-
-// Example: MUX-based CDC bus
-module cdc_bus_checker #(
-    parameter WIDTH = 32
-)(
-    input logic             clk_b,
-    input logic             rst_n,
-    input logic             enable_synced,   // control signal after synchronizer
-    input logic [WIDTH-1:0] data_bus_b,      // data bus in destination domain
-    input logic [WIDTH-1:0] captured_data    // latched data when enable was high
-);
-
-    // Data should only be captured when enable is stable for 2 cycles
-    // (after the synchronizer)
-    property p_capture_only_when_stable;
-        @(posedge clk_b) disable iff (!rst_n)
-        $rose(enable_synced) |=> ##1 $stable(enable_synced);
-        // Enable must be stable for at least 2 cycles (sync latency)
-    endproperty
-
-    // Captured data must be stable
-    property p_captured_data_valid;
-        @(posedge clk_b) disable iff (!rst_n)
-        !enable_synced |-> $stable(captured_data);
-        // When enable is low, captured data must not change
-    endproperty
-
-endmodule
-```
+- **Down the stack (what these mechanisms observe and are built from):** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (the DUT whose invariants become assertions), [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (the 4-state `x` that `$isunknown` checks), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the event scheduler and regions that define *sampled* semantics), [AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md) (the valid/ready protocol contract the interface assertions of §3 encode).
+- **Up the stack (what builds on this):** [OOP_and_Randomization](08_OOP_and_Randomization.md) (the constrained-random stimulus that fills the coverage model of §4), [UVM_Methodology](10_UVM_Methodology.md) (the components — subscribers, scoreboards — that orchestrate checkers and collectors), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the vplan and the closure loop of §4.4), [Formal_Verification](12_Formal_Verification.md) (the same assertions proven exhaustively, and true unbounded liveness, §2.4–2.5).
+- **Adjacent / prerequisite:** [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (the metastability physics behind CDC checks — assert in the *destination* domain, after the synchronizer, never on the metastable crossing net), [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md) (static structural checking, the complement to these dynamic assertions), [Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md) (where a subset of assertions carries into gate-level and emulation runs).
 
 ---
 
-## Assertion Coverage and Action Blocks
+## References
 
-```verilog
-// Track how often an assertion fires (antecedent matches)
-a_req_ack: assert property (
-    @(posedge clk) req |-> ##[1:5] ack
-) begin
-    // PASS action block
-    pass_count++;
-end else begin
-    // FAIL action block
-    fail_count++;
-    $error("Handshake failed at T=%0t", $time);
-end
-
-// Cover property: track that the property was exercised
-c_req_ack: cover property (
-    @(posedge clk) req ##[1:5] ack
-);
-// Coverage tools report how many times this property matched
-```
-
----
-
+1. Foster, H., Krolnik, A., and Lacey, D., *Assertion-Based Design*, 2nd ed., Springer, 2004. The observability/localization argument of §1.1 and the spec/monitor/proof-target roles of §2.5.
+2. IEEE Std 1800-2017, *SystemVerilog LRM*. Clause 16 (assertions, sampled-value semantics) and Clause 19 (functional coverage) — the operator/option reference this page deliberately does not reproduce.
+3. Cohen, B., Venkataramanan, S., Kumari, A., and Piper, L., *SystemVerilog Assertions Handbook*, 4th ed., 2016. Temporal-property idioms and vacuity.
+4. Piziali, A., *Functional Verification Coverage Measurement and Analysis*, Springer, 2004. The coverage-space model of §4.1 and the code-vs-functional distinction.
+5. Manna, Z. and Pnueli, A., *The Temporal Logic of Reactive and Concurrent Systems: Specification*, Springer, 1992. Safety vs liveness (§2.4).
+6. Motwani, R. and Raghavan, P., *Randomized Algorithms*, Cambridge, 1995. The coupon-collector result and its heavy tail (§4.4).

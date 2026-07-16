@@ -1,976 +1,284 @@
-# SystemVerilog Procedural Blocks, Processes, and IPC -- Senior Engineer Deep Dive
+# SystemVerilog Procedural Code, Processes, and IPC — Deriving the Rules from the Event Scheduler
+
+> **Stage:** 03 · Frontend RTL (register-transfer level). The *language mechanics* of concurrent behaviour — processes, assignments, and inter-process communication — derived from the one thing that governs them all: the simulation **event scheduler**. Distinct from the synchronous *discipline* ([RTL_Design_Methodology](01_RTL_Design_Methodology.md)) and the data model ([Data_Types_and_Basics](02_Data_Types_and_Basics.md)).
+> **Prerequisites:** [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (variables vs nets, 2/4-state, automatic vs static storage). **Hands off to:** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (inference, reset, coding rules), [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (multi-clock races the scheduler cannot resolve), [OOP_and_Randomization](08_OOP_and_Randomization.md) & [UVM_Methodology](10_UVM_Methodology.md) (class-based testbench threads), [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (the Observed/Reactive regions in use).
 
 ---
 
-## SystemVerilog Scheduling Semantics
+## 0. Why this page exists
 
-Understanding the simulation scheduler is non-negotiable for senior verification engineers.
-Race conditions, assertion failures, and testbench/RTL (register-transfer level) interaction bugs all trace back to
-which region executes when.
+Hardware is *spatially concurrent*: a million gates settle at once, in continuous time, with no notion of "which one goes first." A simulator is the opposite — a single sequential machine that does one thing at a time. To run concurrent hardware on a sequential CPU, SystemVerilog defines an **event-scheduling model**: it discretises time into slots, iterates zero-delay updates to a fixed point within each slot (the *delta cycle*), and — crucially — stratifies the work inside a slot into an *ordered set of regions* so the result does not depend on the arbitrary order the simulator happens to run your processes.
 
-### The Simulation Time Slot Regions
+That scheduler is not background trivia; it is the **axiom from which almost every rule on this page is a theorem.** Blocking (`=`) vs non-blocking (`<=`) — the single most consequential choice in RTL — is not a style preference but a forced consequence of modelling a clock edge deterministically on a sequential machine. Why combinational logic uses one and sequential the other, why an event can be silently missed, why `#0` is a code smell, why a race survives even "correct" code — all fall out of the region model. So this page leads with the scheduler and *derives* the rest, instead of cataloguing signal names and method signatures. By the end you should be able to look at two processes and **predict whether the simulator's answer is even defined**, not merely recall that flops "use `<=`."
 
-Each simulation time step is divided into these ordered regions:
+---
+
+## 1. The problem: concurrency on a sequential machine
+
+Real hardware has no execution order — every gate is a continuous analog process evolving in parallel. A software simulator cannot do that; it must serialise. The event-driven abstraction is the compromise that makes serialisation faithful:
+
+- **Nothing happens unless a value changes.** A change on a signal is an *event*; an event *schedules* the re-evaluation of every process sensitive to that signal. Idle logic costs nothing — this is why a billion-gate netlist that is 99 % quiescent simulates cheaply (§8).
+- **Time is discrete and advances only when the current instant is exhausted.** The simulator drains all work scheduled *now* before moving the clock forward. "Now" is therefore not one computation but potentially many — the delta cycles of §2.
+- **The answer must be deterministic.** If the value the simulator computed depended on the order it happened to pick among same-time processes, the same RTL would behave differently run-to-run and tool-to-tool, and verification would be meaningless. Determinism is the hard requirement, and it is what forces the *stratified* queue rather than a single unordered "do everything now" bag.
+
+Hold onto that third point. Every structural feature below — the regions, the deferred NBA update, the single-driver rules baked into `always_comb`/`always_ff` — exists to buy determinism back from a machine that is free to reorder.
+
+---
+
+## 2. The stratified event queue and the delta cycle
+
+Within one simulation time $T$, the scheduler does not run processes in a free-for-all. It sorts every pending action into a **fixed total order of regions** and executes region by region. The conceptual order (not the exhaustive LRM list) is:
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 45, "htmlLabels": false}}}%%
 flowchart TD
-    P["Preponed — sample values for assertions (read-only)"]
-    A["Active — always, always_comb, assign, blocking assigns"]
-    I["Inactive — #0 delayed assignments"]
-    N["NBA — non-blocking (&lt;=) assignments execute"]
-    O["Observed — concurrent assertions evaluated"]
-    R["Reactive — program blocks"]
-    P --> A --> I --> N --> O --> R
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class P,A,I,N,O,R s
+    PRE["Preponed: sample stable values for assertions"]
+    ACT["Active: blocking =, RHS eval, always_comb, assign"]
+    INA["Inactive: #0 delayed"]
+    NBA["NBA: commit non-blocking <= updates"]
+    OBS["Observed: concurrent assertions evaluate"]
+    REA["Reactive: testbench / program / class threads"]
+    POST["Postponed: $strobe / $monitor (read-only)"]
+    PRE --> ACT --> INA --> NBA
+    NBA -->|"more events at same T (delta cycle)"| ACT
+    NBA -->|"queue empty"| OBS --> REA --> POST
+    POST -->|"advance simulation time"| PRE
 ```
 
-Within Active/Reactive, events iterate until no more are pending (delta cycle convergence).
+**Why regions exist — the derivation.** Two updates in the same instant, written in any order across separate processes, must still resolve deterministically. A total order over *classes* of action does exactly that: no matter which process the simulator picks first, a blocking write always lands before a non-blocking commit, which always lands before an assertion reads, which always lands before the testbench reacts. The regions quotient out the scheduler's freedom. The two that carry the whole page are **Active** (compute-now: blocking assigns, RHS evaluation, combinational settling) and **NBA** (commit-later: the deferred left-hand side of every `<=`).
 
-### How This Matters in Practice
+**The delta cycle — the theoretical core.** A time slot at $T$ is not one instant of computation but a sequence of delta cycles $\delta_0,\delta_1,\dots$. Signal values are a function $v(s,T,\delta)$. At fixed $T$ the simulator runs the Active set; any resulting scheduled updates (Inactive `#0`, then NBA) open a *new* delta at the *same* $T$; it iterates until a delta produces no new events — a **fixed point**:
 
-```verilog
-module scheduler_demo;
-    logic clk = 0;
-    logic [7:0] a, b, c;
+$$
+v(s,T,\delta_{k+1}) = v(s,T,\delta_k)\quad \forall s \;\Longrightarrow\; \text{advance } T
+$$
 
-    always #5 clk = ~clk;
-
-    // Active region: combinational logic evaluates
-    always_comb c = a + b;
-
-    // Active region: blocking assignment in always block
-    always @(posedge clk) begin
-        a = 8'h10;   // Executes in Active region
-    end
-
-    // NBA region: non-blocking assignment
-    always @(posedge clk) begin
-        b <= 8'h20;  // Scheduled to NBA region
-    end
-
-    // Observed region: assertion checks sampled values from Preponed
-    property p_sum;
-        @(posedge clk) (c == a + b);
-    endproperty
-    assert property (p_sum);
-
-    // Reactive region: program block testbench code
-    // (If using program block -- deprecated in modern UVM)
-endmodule
-```
-
-### Why Non-Blocking Assignments Use NBA Region
-
-The NBA (non-blocking assignment) region exists to prevent race conditions in sequential logic. All RHS (right-hand side) values are
-captured in Active, then all LHS (left-hand side) updates happen together in NBA. This ensures:
-
-```verilog
-always @(posedge clk) begin
-    a <= b;   // Captures b's current value
-    b <= a;   // Captures a's current value (not the one just assigned!)
-end
-// Result: a and b SWAP correctly. With blocking (=), order matters and one value is lost.
-```
+where $s$ ranges over signals, $T$ = simulation time, $\delta_k$ = delta index within the slot. Zero-delay logic thus consumes zero *simulation time* but a nonzero number of *deltas*. A combinational loop that never reaches this fixed point is precisely the "zero-delay oscillation" a simulator reports as a hang — the network has no stable assignment to converge to.
 
 ---
 
-## always_comb vs always @(*)
+## 3. Blocking vs non-blocking: the central theorem
 
-### The TWO Critical Differences
+This is the concept the whole page is built to explain, and it is a direct consequence of §2 — not a convention to memorise.
 
-**Difference 1: always_comb triggers at time 0**
+**What a clock edge must do.** In real silicon every flip-flop samples its `D` input at the *same instant* (the value that was stable *before* the edge) and drives its `Q` *together* an instant later. There is no ordering among flops: a shift register shifts; it does not collapse. To be faithful, the simulator must reproduce "sample all, then update all" — even though it can only touch one process at a time.
 
-```verilog
-module time_zero_demo;
-    logic [7:0] a = 8'hFF;
-    logic [7:0] y1, y2;
-
-    // always_comb: evaluates at time 0, y1 = 8'hFF immediately
-    always_comb y1 = a;
-
-    // always @(*): does NOT trigger at time 0, y2 is X until a changes
-    always @(*) y2 = a;
-
-    initial begin
-        #0;
-        $display("y1=%h y2=%h", y1, y2);  // y1=FF, y2=xx
-        // y2 only updates when 'a' changes -- but a never changes!
-        // This is a REAL BUG that always_comb catches
-    end
-endmodule
-```
-
-**Difference 2: always_comb is sensitive to function contents**
+**Why blocking breaks it (the read-after-write hazard).** With blocking `=`, the left side is updated *immediately*, in the Active region, before the next statement or process runs. So if the simulator happens to evaluate stage 1 before stage 2, stage 2 reads the value stage 1 just wrote — a read-after-write hazard — and the pipeline collapses into a single stage. Worse, whether it collapses *depends on the order the simulator chose*, which the language does not fix: it is a genuine race.
 
 ```verilog
-logic [7:0] lut [256];    // Lookup table
-logic [7:0] addr, result1, result2;
-
-function logic [7:0] lookup(logic [7:0] idx);
-    return lut[idx];       // Reads from lut[] internally
-endfunction
-
-// always_comb: sensitive to addr AND lut (reads inside lookup)
-always_comb result1 = lookup(addr);
-// If lut[x] changes, result1 re-evaluates
-
-// always @(*): sensitive to addr ONLY (doesn't analyze function body)
-always @(*) result2 = lookup(addr);
-// If lut[x] changes but addr doesn't, result2 is STALE -- BUG
-```
-
-### Other always_comb Restrictions
-
-```verilog
-always_comb begin
-    // These are all ILLEGAL in always_comb:
-    // #10 y = a;            // No delays
-    // @(posedge clk) y = a; // No event controls
-    // wait (enable) y = a;  // No waits
-    // fork ... join         // No fork
-end
-
-// always_comb also enforces: variable assigned in always_comb
-// cannot be assigned by any other process
-logic y;
-always_comb y = a & b;
-// assign y = c;  // ERROR: y already driven by always_comb
-```
-
----
-
-## always_ff
-
-### Single-Clock Enforcement
-
-```verilog
-// CORRECT: single clock edge, optional async reset
-always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        q <= '0;
-    else
-        q <= d;
-end
-
-// GOTCHA: multiple clock edges -- some tools allow, some flag as error
-always_ff @(posedge clk or posedge clk2) begin  // Questionable
-    // Which clock drives this register? Ambiguous for synthesis
-end
-
-// Note: always_ff does NOT enforce non-blocking assignments per the LRM.
-// The LRM (1800-2017 §9.2.2.4) only mandates a single event expression.
-// However, most synthesis tools will warn/error on blocking assignments
-// in always_ff as a best-practice check (tool-specific enforcement).
+// Two pipeline flops. The RHS must read the OLD value to model a real edge.
 always_ff @(posedge clk) begin
-    q = d;    // WARNING in most synthesis tools, but technically legal per LRM
+    stage2 <= stage1;   // RHS sampled in Active (old stage1); LHS committed in NBA
+    stage1 <= d;        // committed in NBA too -> stage2 gets OLD stage1, not d
 end
+// Correct 2-deep shift. Swap <= for =, and stage2 = stage1 = d in ONE edge:
+// the pipeline collapses to a single stage, and the result depends on line order.
 ```
 
-### Synthesis Mapping
+**Why non-blocking fixes it.** `<=` splits the assignment across regions exactly as the hardware does: the **RHS is evaluated in Active** (reading the pre-edge values), but the **LHS update is deferred to NBA**. Because every clocked process samples in Active *before* any of them commits in NBA, no flop can observe another flop's new value within the same edge. The order the simulator picks becomes unobservable — determinism restored, clock edge modelled. The same mechanism makes a same-edge *swap* (`a<=b; b<=a;`) exchange the two values instead of copying one over the other.
 
-`always_ff` tells synthesis tools this is a register. The sensitivity list determines:
-- `@(posedge clk)` -> flip-flop with synchronous behavior only
-- `@(posedge clk or negedge rst_n)` -> flip-flop with async active-low reset
-- `@(posedge clk or posedge rst)` -> flip-flop with async active-high reset
+**The determinism guarantee, stated.** *Confluence theorem (informal):* if (1) every variable has a single driving process and (2) state is written with `<=` while pure combinational logic is written with `=` reading only settled inputs, then the values latched at each edge are **independent of the intra-region execution order.** Sketch: NBA gathers all state writes into one later region whose inputs were sampled in Active before any commit, so no state write can feed another state read within the slot — the schedule cannot be observed.
+
+**Why combinational logic wants blocking.** Inside a combinational block you *want* immediate, sequential data flow: compute an intermediate with `=`, use it in the next line, and let the block settle in a single Active pass. Using `<=` there forces an extra delta cycle to converge, and — because the update lands after the block finishes — invites missed-sensitivity and sim/synth mismatch. Blocking is not just allowed for combinational logic; it is the faithful and faster choice.
+
+**What determinism does *not* cover — the residual race.** The scheduler still leaves two things undefined, and discipline (not the language) must close them:
+
+- **Multiple drivers of one variable in the same region** — two `=` (or two `<=`) to the same signal resolve in arbitrary order. `always_comb`/`always_ff` forbid multiple drivers precisely to make this unrepresentable.
+- **Sharing a variable between a clocked and a combinational process** — the reader may see the old or new value depending on order.
+
+One rule removes all of it: **one driver per signal · `<=` for state · `=` for pure combinational · never share a variable across a clocked and a combinational process.**
 
 ---
 
-## always_latch
+## 4. Blocking vs non-blocking as a correctness trade-off
 
-```verilog
-always_latch begin
-    if (enable)
-        q <= d;
-    // No else: intentional latch behavior
-end
+Because the choice is derived, not stylistic, its "trade-off" is about *correctness*, with a small real performance tail — never preference:
 
-// This is equivalent to always_comb for latches, but makes intent explicit
-// Tools won't warn about latch inference (they would with always_comb)
-```
+| Logic | `=` (blocking) | `<=` (non-blocking) |
+|---|---|---|
+| **Sequential** (`always_ff`) | RAW hazard across flops → shift-register collapse; **order-dependent = race** | sample-old / commit-together → models the edge; **deterministic** ✅ |
+| **Combinational** (`always_comb`) | one-pass settle, natural data flow → **correct and fast** ✅ | needs an extra delta to settle; sensitivity/order pitfalls, sim/synth-mismatch risk → **avoid** |
+
+The only cost `<=` carries is scheduler overhead: each non-blocking assignment schedules a deferred NBA event, so NBA-heavy code touches the event queue more than pure blocking code (§8). That cost is negligible against the correctness it buys for state, and it is exactly the wrong economy to make for combinational logic, where the extra delta buys nothing. The decision is therefore mechanical: **state → `<=`, combinational → `=`**, every time.
 
 ---
 
-## Fork-Join Deep Dive
+## 5. Processes as declarations of intent
 
-### Three Variants
+`always` is the raw looping process; `initial` runs once from time 0; `final` runs once at end of simulation (both testbench-only — no hardware to map to, §11). The `always_*` variants add **nothing to the scheduler** — they are *contracts* that let the tool check your intent statically and infer sensitivity for you. Each solves a specific silent bug that the legacy forms miss.
+
+**`always_comb` over `always @(*)`.** Two differences are real bugs, not pedantry, and both trace to sensitivity:
 
 ```verilog
-// fork-join: waits for ALL child processes to complete
+logic [7:0] lut [256];
+function logic [7:0] lookup(logic [7:0] i); return lut[i]; endfunction
+
+always_comb  r1 = lookup(addr);  // sensitive to addr AND lut[] (reads inside the call);
+                                 // also evaluates once at time 0
+always @(*)  r2 = lookup(addr);  // sensitive to addr ONLY, and never fires at time 0
+// If lut[] changes but addr does not, r2 is STALE. If addr never changes, r2 is X forever.
+```
+
+`always_comb` derives sensitivity from everything *read* (including inside called functions), fires once at $T{=}0$ to establish outputs, and enforces a single driver. `always @(*)` builds its list only from signals textually read in the block and skips $T{=}0$ — the two omissions are how stale-output and stuck-at-X bugs slip through.
+
+**`always_ff`.** Declares "this is a register": one clock/reset event expression, and the tool infers a flop from the sensitivity list (`@(posedge clk)` → sync; `@(posedge clk or negedge rst_n)` → async-reset flop). The LRM does not *mandate* `<=` inside it (§9.2.2.4 only requires a single event expression), but every synthesis tool warns on blocking assignments there — because §3 makes them a latent race. Treat the warning as an error.
+
+**`always_latch`.** Declares an intentional level-sensitive latch (an `if` with no `else`), which silences the accidental-latch lint that `always_comb` would raise for the same code. Its value is purely the *stated intent*.
+
+**Sensitivity semantics.** `@(posedge/negedge sig)` is edge-triggered (a flop/synchroniser); `@(*)` and `always_comb` are level-sensitive (combinational). Detailed inference — what maps to a flop, a latch, a mux — lives in [RTL_Design_Methodology](01_RTL_Design_Methodology.md); here the point is only that the process *keyword* is a machine-checkable promise about which region behaviour and which hardware you intend.
+
+---
+
+## 6. Concurrency: fork/join and process control
+
+A testbench is itself concurrent — a driver, a monitor, a scoreboard, and several timeout watchers all live at once. `fork` spawns its statements as independent child processes into the scheduler; the **`join` variant is the synchronisation barrier**, and choosing it is a pure sync-cost-vs-parallelism trade:
+
+| Construct | Parent resumes when | Sync cost | Canonical use |
+|---|---|---|---|
+| `join` | **all** children finish | full barrier | run N independent stimuli, wait for completion |
+| `join_any` | **first** child finishes | partial | timeout: race a transaction against a deadline |
+| `join_none` | **immediately** | none | launch background monitors/daemons that outlive the spawn |
+
+**The classic fork-in-a-loop race — a scheduler consequence.** With `join_none`, the children do not run until the parent next blocks; by then the loop has advanced. If they capture the loop *variable* rather than a *value*, all of them read its final value:
+
+```verilog
+for (int i = 0; i < 4; i++)
+    fork automatic int j = i; begin #1 $display(j); end join_none  // prints 0 1 2 3
+//  ^ without 'automatic int j = i', every child shares one i and prints 4 4 4 4
+```
+
+The fix is an `automatic` copy per iteration — a per-activation variable so each child snapshots the value (storage-class background: [Data_Types_and_Basics](02_Data_Types_and_Basics.md), §9 below). This is not a fork bug; it is closure-over-mutable-state meeting deferred scheduling.
+
+**Process control.** `disable fork` kills *all* child processes of the **current** process — including background monitors spawned earlier in the same scope, which is usually too much. Wrapping the region to isolate (`fork begin … disable fork; end join`) creates a fresh parent whose only children are the ones you mean to reap. A `process` handle (`process::self()`) is the reflective control — `status()`, `suspend()`, `kill()` — used to build watchdogs and timeouts; the class-thread patterns that use it belong to [OOP_and_Randomization](08_OOP_and_Randomization.md) and [UVM_Methodology](10_UVM_Methodology.md).
+
+---
+
+## 7. Inter-process communication: one need, one primitive
+
+Once threads are concurrent they need three *orthogonal* services, and SystemVerilog gives one primitive to each. Read the table as a derivation — the need dictates the shape:
+
+| Need | Primitive | Carries data? | Capacity | Blocking behaviour |
+|---|---|---|---|---|
+| **Synchronisation** ("it happened") | **event** | no | none (a pulse) | `@`/`wait` block until triggered |
+| **Data hand-off + flow control** | **mailbox** | yes (typed) | unbounded, or bounded `N` | `put`/`get` block on full/empty |
+| **Resource arbitration** | **semaphore** | no (keys) | `N` interchangeable keys | `get` blocks until keys free |
+
+**Event — pure synchronisation, and its scheduler race.** An event has no data and no memory, so *when* it fires relative to the waiter matters. `->` triggers in the Active region; a plain `@(ev)` only catches a trigger that happens *after* the wait suspends. Same-instant, `->` can run first and the pulse is lost:
+
+```verilog
 fork
-    begin task_A(); end   // Process 1
-    begin task_B(); end   // Process 2
-    begin task_C(); end   // Process 3
-join                      // Blocks until ALL three finish
-
-// fork-join_any: waits for ANY ONE child to complete
-fork
-    begin task_A(); end
-    begin task_B(); end
-    begin task_C(); end
-join_any                  // Blocks until FIRST one finishes
-// Other two still running in background!
-
-// fork-join_none: doesn't wait at all, spawns and continues
-fork
-    begin task_A(); end
-    begin task_B(); end
-join_none                 // Returns immediately, tasks run in background
-// Parent continues executing here while tasks run concurrently
+    begin #10; -> ev;             end   // trigger in Active
+    begin #10; @(ev); /*missed*/  end   // wait registered after the trigger -> lost
+join
 ```
 
-### Timing Diagram Example
+Two fixes, both region-based: `wait(ev.triggered)` reads a flag that persists for the whole slot (order-independent within $T$); `->>` schedules the trigger in **NBA**, after every `@` has had a chance to arm. This race is the event primitive's defining hazard and the reason `.triggered`/`->>` exist.
 
-```text
-Time:    0   10   20   30   40   50
-Task A:  |=========|                   (finishes at t=20)
-Task B:  |==================|          (finishes at t=30)
-Task C:  |===========================| (finishes at t=50)
+**Mailbox — typed hand-off with back-pressure.** A parameterised `mailbox #(T)` is a type-safe queue. Unbounded (`new()`) never blocks on `put`; bounded (`new(N)`) blocks `put` when full and `get` when empty — and that blocking *is* flow control: a fast producer is throttled to the consumer's rate with no extra handshake logic. (`try_put`/`try_get`/`peek` are the non-blocking probes.) Prefer the parameterised form; the unparameterised mailbox accepts any type and defers the mismatch to a runtime error.
 
-fork-join      : parent resumes at t=50
-fork-join_any  : parent resumes at t=20 (A finishes first)
-fork-join_none : parent resumes at t=0  (immediate)
-```
+**Semaphore — arbitration over interchangeable resources.** `new(N)` holds `N` keys; `get(k)` blocks until `k` are free, `put(k)` returns them. `N=1` is a mutex; `N>1` is a resource pool (e.g. two shared bus slots among four agents). The failure mode is not the primitive but the *protocol*: acquiring two semaphores in opposite orders in two threads deadlocks. The standard prevention is a global lock order — always acquire `A` before `B` — which no primitive can enforce for you.
 
-### THE CLASSIC BUG: For-Loop + Fork
-
-This is one of the most common interview questions and real-world bugs.
-
-```verilog
-// BUG: All spawned processes see the SAME variable i
-initial begin
-    for (int i = 0; i < 4; i++) begin
-        fork
-            begin
-                #10;
-                $display("i = %0d", i);  // ALL print "i = 4"!
-            end
-        join_none
-    end
-    wait fork;
-end
-// Output: i = 4, i = 4, i = 4, i = 4
-// WHY: fork captures the VARIABLE i, not its VALUE.
-// By the time #10 passes, the for loop is done and i == 4.
-```
-
-```verilog
-// FIX 1: Automatic variable captures a copy
-initial begin
-    for (int i = 0; i < 4; i++) begin
-        automatic int j = i;  // j gets a COPY of i at each iteration
-        fork
-            begin
-                #10;
-                $display("j = %0d", j);  // Prints 0, 1, 2, 3
-            end
-        join_none
-    end
-    wait fork;
-end
-
-// FIX 2: Extra begin-end with automatic (more idiomatic)
-initial begin
-    for (int i = 0; i < 4; i++) begin
-        fork
-            begin
-                automatic int k = i;
-                #10;
-                $display("k = %0d", k);  // Prints 0, 1, 2, 3
-            end
-        join_none
-    end
-    wait fork;
-end
-```
+**Choosing between them.** Need to know an instant occurred, with no payload → **event**. Need to move data and rate-match producer to consumer → **mailbox** (its bounded blocking subsumes an event's "ready" signalling *and* carries the data). Need to cap concurrent access to `k` identical resources → **semaphore**. A mailbox can emulate an event (put a token) or a semaphore (pre-fill `N` tokens), but the purpose-built primitive states intent and avoids reinventing back-pressure or key accounting.
 
 ---
 
-## Disable Fork: Scope and the Isolation Wrapper
+## 8. The simulation-performance cost of fine-grained processes
 
-### The Problem: disable fork Kills TOO Much
+Because the scheduler is event-driven, wall-clock simulation time tracks *events processed*, not gates:
 
-```verilog
-initial begin
-    fork
-        begin  // Background monitor -- should run forever
-            forever @(posedge clk) check_protocol();
-        end
-    join_none
+$$
+T_{sim}\;\propto\;\sum_{\text{slots}} N_{events}\;\approx\;N_{sig}\times\alpha\times\bar{F}\times\bar{D}
+$$
 
-    // Later, run a transaction with timeout
-    fork
-        begin drive_transaction(); end
-        begin #1000 $display("Timeout!"); end
-    join_any
-    disable fork;  // KILLS EVERYTHING -- including the background monitor!
-end
-```
+where $N_{sig}$ = signals, $\alpha$ = activity factor (fraction toggling per slot), $\bar{F}$ = mean fanout (processes woken per toggle), $\bar{D}$ = mean delta iterations to settle. A mostly-idle billion-gate netlist is cheap; a small oscillating combinational loop ($\bar{D}\to\infty$) is ruinous. This makes coding style a genuine performance lever:
 
-### The Fix: Isolation Wrapper Pattern
+- **Coarse over fine processes.** One vector `always_comb` over `[31:0]` costs one wakeup per change; thirty-two per-bit blocks cost up to thirty-two. Fewer, wider processes shrink $\bar{F}$.
+- **2-state where X-accuracy is not needed** halves storage and event work ([Data_Types_and_Basics](02_Data_Types_and_Basics.md)).
+- **Avoid gratuitous `#0` and NBA churn**, which add deltas ($\bar{D}$) without modelling anything.
+- **Reap your forks.** Spawning one never-joined `join_none` child per transaction lets the process population — and the event queue it feeds — grow without bound.
 
-```verilog
-initial begin
-    fork
-        begin  // Background monitor
-            forever @(posedge clk) check_protocol();
-        end
-    join_none
-
-    // Isolate the disable fork scope
-    fork begin  // <-- This begin creates a NEW child process scope
-        fork
-            begin drive_transaction(); end
-            begin #1000 $display("Timeout!"); end
-        join_any
-        disable fork;  // Only kills processes within THIS begin-end
-    end join  // <-- join waits for the isolating process
-
-    // Background monitor is still alive!
-end
-```
-
-The key insight: `disable fork` disables all child processes of the **current** process.
-By wrapping in `fork begin...end join`, you create a new process whose children are only
-the timeout and the transaction -- not the background monitor.
+This is the concrete meaning of "fine-grained processes are expensive": each is fixed scheduler bookkeeping multiplied by activity.
 
 ---
 
-## Process Class (IEEE 1800)
+## 9. Tasks vs functions, automatic vs static — time and reentrancy
 
-### Complete Watchdog Timer Using process::self()
+Two rules here are pure scheduler consequences, worth keeping when the rest is trimmed.
 
-```verilog
-class watchdog;
-    process proc_handle;
-    int timeout_ns;
+**Function = zero time; task = may consume time.** A `function` cannot contain anything that suspends the process — no `#delay`, `@event`, `wait`, or `fork…join` — because it must return within the *same* region it was called from; it therefore may be called from `always_comb`. A `task` may consume time and so may only be called from a time-consuming context. A `void function` is still a function (zero-time), not a task in disguise. This is why combinational logic can call helper functions but never tasks.
 
-    function new(int timeout = 10000);
-        this.timeout_ns = timeout;
-    endfunction
+**Automatic vs static = reentrancy under concurrency.** Module-level tasks/functions default to **static** — one shared copy of their locals. Two concurrent activations (two `fork` calls, or a task called each clock) then *collide* on those locals, corrupting each other's state. Declaring them `automatic` gives each activation its own stack frame. Class methods are automatic by default (each object call is independent); program-block subprograms too. The rule: **anything that can be active in more than one process at once must be `automatic`** — the same reason the fork-loop copy in §6 must be `automatic`.
 
-    task start();
-        fork begin
-            proc_handle = process::self();
-            #(timeout_ns * 1ns);
-            `uvm_fatal("WATCHDOG", $sformatf("Timeout after %0d ns", timeout_ns))
-        end join_none
-    endtask
+---
 
-    task stop();
-        if (proc_handle != null) begin
-            if (proc_handle.status() != process::FINISHED &&
-                proc_handle.status() != process::KILLED) begin
-                proc_handle.kill();
-                $display("Watchdog stopped");
-            end
-        end
-    endtask
+## 10. Building on the regions: clocking blocks and reactive code
 
-    function bit is_running();
-        if (proc_handle == null) return 0;
-        return (proc_handle.status() == process::RUNNING ||
-                proc_handle.status() == process::WAITING);
-    endfunction
-endclass
+Two testbench constructs are best understood as *applications* of §2's regions, not new mechanisms:
 
-// Usage in a test:
-task run_phase(uvm_phase phase);
-    watchdog wd = new(50000);  // 50us timeout
-    phase.raise_objection(this);
+- **Clocking block** — bundles DUT signals under a clock with explicit *skews* so the testbench samples and drives in defined regions rather than racing RTL. `input #1step` samples in the **Preponed** region — the stable pre-edge value, modelling setup time exactly as real hardware sees it — and `output #0` drives at the edge. It is a race-avoidance wrapper whose whole job is to pin testbench I/O to safe regions.
+- **Reactive-region code** — the (now largely legacy) `program` block ran stimulus in the **Reactive** region, after all RTL Active/NBA and assertion Observed work had settled, so the testbench saw stable values. UVM replaced it: class-based components schedule their own threads into the Reactive region and use clocking blocks plus disciplined coding for the same race freedom, without the program block's one-shot `$finish` and OOP limitations. The detail lives in [UVM_Methodology](10_UVM_Methodology.md).
 
-    wd.start();
-    run_all_sequences();
-    wd.stop();
+The takeaway is uniform: every "how do I avoid a testbench/RTL race" answer is "drive and sample in the right region," which is why the region model (§2) is the prerequisite for all of it.
 
-    phase.drop_objection(this);
-endtask
-```
+---
 
-### process::status() Values
+## 11. Which constructs have hardware, and which are scheduler-only
 
-| Status | Meaning |
+The scheduler runs both the design and its testbench, but only a subset of constructs has a gate mapping — the rest exist purely as simulation behaviour (and are the $\alpha$/$\bar F$ terms of §8). Keeping the split straight is what stops testbench idioms from leaking into RTL:
+
+| Maps to hardware (RTL) | Scheduler-only (no hardware) |
 |---|---|
-| `process::FINISHED` | Process completed normally |
-| `process::RUNNING` | Currently executing |
-| `process::WAITING` | Blocked on event/delay/wait |
-| `process::SUSPENDED` | Explicitly suspended |
-| `process::KILLED` | Killed by kill() or disable |
+| `always_ff` / `always_comb` / `always_latch`, `assign` | `initial` / `final`, `fork…join{,_any,_none}` |
+| static-bound `for`, `generate` | `#delay`, `wait`, untimed `forever`, `@event` as control |
+| zero-time combinational `function` | `$display`/`$strobe`/`$finish`, `mailbox`/`semaphore`/`event`, classes |
+| module/cell instantiation | `#1step`/`#0`, clocking blocks, `program`/reactive code |
+
+One line: **the tool maps register-transfer structure to gates; time-consuming and object-based constructs have no hardware to map to.** A `for` bound or `generate` range must be static precisely because synthesis unrolls it into fixed structure instead of executing it over time. Coding-construct choices that live on the *synthesis* side of this line — `case`/`casez`/`casex` (and the `unique`/`priority` qualifiers), latch avoidance, full/parallel semantics — are the province of [RTL_Design_Methodology](01_RTL_Design_Methodology.md) and [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md); the one trap worth carrying across is that `casex` treats an `x` on the selector as a wildcard, silently *masking* a real bug, so it is banned in RTL.
 
 ---
 
-## Inter-Process Communication: Mailbox
+## Numbers to memorize
 
-Processes spawned with fork need to synchronize and exchange data. SystemVerilog provides three IPC (inter-process communication) primitives: mailboxes (typed queues), semaphores (key pools), and events (triggers).
-
-### Bounded vs Unbounded with Blocking Behavior
-
-```verilog
-mailbox #(Transaction) mbx_unbounded = new();   // Unbounded: never blocks on put
-mailbox #(Transaction) mbx_bounded = new(4);    // Bounded: blocks put when 4 items stored
-
-// put():  blocks if bounded mailbox is full (waits for space)
-// get():  blocks if mailbox is empty (waits for item)
-// try_put(): non-blocking put, returns 0 if full
-// try_get(): non-blocking get, returns 0 if empty
-// peek(): blocks until item available, copies without removing
-// try_peek(): non-blocking peek, returns 0 if empty
-// num(): returns current number of items (never blocks)
-```
-
-### Producer-Consumer with Timing
-
-```verilog
-class producer;
-    mailbox #(Transaction) mbx;
-    
-    task run();
-        for (int i = 0; i < 10; i++) begin
-            Transaction txn = new();
-            txn.randomize();
-            txn.id = i;
-            #($urandom_range(5, 20));  // Variable production rate
-            mbx.put(txn);  // Blocks if bounded and full
-            $display("T=%0t: Producer put txn %0d", $time, i);
-        end
-    endtask
-endclass
-
-class consumer;
-    mailbox #(Transaction) mbx;
-    
-    task run();
-        Transaction txn;
-        forever begin
-            mbx.get(txn);  // Blocks until item available
-            $display("T=%0t: Consumer got txn %0d", $time, txn.id);
-            #10;  // Processing time
-        end
-    endtask
-endclass
-
-// Wiring:
-initial begin
-    mailbox #(Transaction) mbx = new(4);  // Bounded: max 4
-    producer prod = new();
-    consumer cons = new();
-    prod.mbx = mbx;
-    cons.mbx = mbx;
-    fork
-        prod.run();
-        cons.run();
-    join_any
-end
-// When bounded mailbox is full, producer blocks on put()
-// When empty, consumer blocks on get()
-// This naturally provides back-pressure flow control
-```
-
-### Type Safety
-
-```verilog
-// Parameterized mailbox ensures type safety at compile time
-mailbox #(Transaction) txn_mbx = new();
-mailbox #(int) int_mbx = new();
-
-Transaction t = new();
-txn_mbx.put(t);    // OK
-// int_mbx.put(t);  // COMPILE ERROR: wrong type
-
-// Unparameterized mailbox accepts any type (like void*)
-mailbox generic_mbx = new();
-generic_mbx.put(t);         // OK
-generic_mbx.put(42);        // Also OK -- dangerous!
-// You must cast when getting:
-Transaction t2;
-generic_mbx.get(t2);        // Runtime error if item isn't a Transaction
-```
+| Fact | Value / rule | Why (section) |
+|---|---|---|
+| Region order in a slot | Preponed → Active → (Inactive) → NBA → Observed → Reactive → Postponed | determinism via stratification (§2) |
+| Delta cycle | zero sim-time, ≥1 delta; loops Active↔NBA to a fixed point | zero-delay convergence (§2) |
+| Sequential logic assignment | **`<=`** (sample-old in Active, commit in NBA) | models a clock edge deterministically (§3) |
+| Combinational logic assignment | **`=`** (settles in one Active pass) | immediate data flow, no extra delta (§3–4) |
+| Blocking in `always_ff` | tool warning; latent race | RAW hazard across flops (§3) |
+| `always_comb` vs `@(*)` | fires at $T{=}0$; sensitive to called-function reads | catches stale-output / stuck-X bugs (§5) |
+| `fork…join` variants | all / first / none complete before parent resumes | sync-cost vs parallelism (§6) |
+| Fork-in-loop capture | needs `automatic` per-iteration copy | closure + deferred scheduling (§6) |
+| Event same-slot race | `->` may beat `@`; use `wait(ev.triggered)` or `->>` | Active vs NBA trigger timing (§7) |
+| Mailbox `new()` vs `new(N)` | unbounded (never blocks put) vs bounded (back-pressure) | flow control from blocking (§7) |
+| Semaphore `new(N)` | `N` keys; `N=1` mutex, `N>1` pool; deadlock on lock-order | resource arbitration (§7) |
+| function vs task | function = 0 time (callable from `always_comb`); task = may consume time | region-return constraint (§9) |
+| module subprogram default | **static** (shared locals) → make `automatic` for concurrency | reentrancy (§9) |
+| Clocking-block skews | `input #1step` (Preponed sample), `output #0` (drive at edge) | testbench/RTL race avoidance (§10) |
 
 ---
 
-## Semaphore
+## Worked problems
 
-### Counting Semaphore -- Not Just a Mutex
+**1 — Is this deterministic?** Two clocked processes, `always_ff @(posedge clk) q1 = d;` and `always_ff @(posedge clk) q2 = q1;`, both blocking. *Answer:* no. If the simulator runs the first block before the second, `q2` gets the *new* `q1` (a one-cycle collapse); the other order gives the old `q1`. The language fixes no order among same-region processes, so this is a race. Switching both to `<=` moves the commits to NBA, so `q2` always samples the old `q1` in Active — deterministic two-flop behaviour (§3).
 
-```verilog
-// Semaphore with N keys = counting semaphore
-// N=1: binary semaphore (mutex)
-// N>1: resource pool
+**2 — Why does the pulse get lost?** A generator does `#10; -> ev;` while a checker does `#10; @(ev);`. At $T{=}10$ the trigger executes in Active; if it runs before the checker suspends on `@`, the checker waits forever. *Fix:* `wait(ev.triggered)` reads a slot-persistent flag, or the generator uses `->>` to fire in NBA after the checker has armed (§7).
 
-semaphore bus_slots = new(2);  // 2 available bus slots
-
-// 4 agents competing for 2 bus slots:
-task automatic agent_task(int id);
-    repeat (5) begin
-        bus_slots.get(1);  // Acquire 1 slot (blocks if none available)
-        $display("T=%0t: Agent %0d acquired bus slot", $time, id);
-        #($urandom_range(10, 50));  // Use the bus
-        bus_slots.put(1);  // Release 1 slot
-        $display("T=%0t: Agent %0d released bus slot", $time, id);
-        #5;  // Idle time
-    end
-endtask
-
-initial begin
-    fork
-        agent_task(0);
-        agent_task(1);
-        agent_task(2);
-        agent_task(3);
-    join
-end
-// At most 2 agents use the bus simultaneously
-// Others block on get() until a slot is released
-```
-
-### Semaphore Methods
-
-```verilog
-semaphore sem = new(3);  // 3 keys initially
-
-sem.get(2);     // Acquire 2 keys. Blocks if < 2 available.
-sem.put(1);     // Return 1 key. Never blocks.
-sem.try_get(1); // Non-blocking: returns 1 if success, 0 if not enough keys.
-
-// GOTCHA: put() can add MORE keys than initially created!
-semaphore s = new(1);
-s.put(1);       // Now 2 keys available (no upper bound enforced)
-s.put(100);     // Now 102 keys -- probably a bug
-```
-
-### Deadlock Scenario and Prevention
-
-```verilog
-semaphore sem_a = new(1);
-semaphore sem_b = new(1);
-
-// DEADLOCK: two processes acquire semaphores in opposite order
-task automatic process_1();
-    sem_a.get(1);  // Gets A
-    #10;           // Window for deadlock
-    sem_b.get(1);  // Waits for B (held by process_2) -- DEADLOCK
-    // ... work ...
-    sem_b.put(1);
-    sem_a.put(1);
-endtask
-
-task automatic process_2();
-    sem_b.get(1);  // Gets B
-    #10;           // Window for deadlock
-    sem_a.get(1);  // Waits for A (held by process_1) -- DEADLOCK
-    // ... work ...
-    sem_a.put(1);
-    sem_b.put(1);
-endtask
-
-// PREVENTION: always acquire in the same order
-task automatic process_1_fixed();
-    sem_a.get(1);  // Always acquire A first
-    sem_b.get(1);  // Then B
-    // ... work ...
-    sem_b.put(1);
-    sem_a.put(1);
-endtask
-
-task automatic process_2_fixed();
-    sem_a.get(1);  // Same order: A first
-    sem_b.get(1);  // Then B
-    // ... work ...
-    sem_b.put(1);
-    sem_a.put(1);
-endtask
-```
+**3 — Sizing back-pressure.** A producer emits every ~12 ns; a consumer takes ~20 ns each. With an *unbounded* mailbox the queue grows without bound (arrivals outrun service) and memory/event load climbs (§8). A *bounded* `new(N)` blocks the producer on full, pinning throughput to the 20 ns service rate and capping in-flight items at `N` — the blocking `put` *is* the flow-control loop, no extra handshake needed (§7).
 
 ---
 
-## Events
+## Cross-references
 
-### The Race Between -> and @
-
-```verilog
-event done;
-
-// RACE: if trigger and wait happen in the same time step
-initial begin
-    fork
-        begin
-            #10;
-            -> done;         // Trigger at T=10
-        end
-        begin
-            #10;
-            @(done);         // Wait at T=10 -- MAY MISS the trigger!
-            // The @ was evaluated before the -> in this time step
-        end
-    join
-end
-
-// FIX 1: use .triggered (persistent within the time step)
-initial begin
-    fork
-        begin #10; -> done; end
-        begin
-            #10;
-            wait (done.triggered);  // Catches same-time-step trigger
-        end
-    join
-end
-
-// FIX 2: use nonblocking trigger ->>
-initial begin
-    fork
-        begin #10; ->> done; end  // Trigger in NBA region
-        begin
-            #10;
-            @(done);              // Now safely catches it
-        end
-    join
-end
-```
-
-### wait_order: Event Sequence Checking
-
-```verilog
-event e1, e2, e3;
-
-// Block until e1, e2, e3 fire in that exact order
-initial begin
-    wait_order(e1, e2, e3)
-        $display("Events fired in correct order");
-    else
-        $error("Events fired out of order");
-end
-```
+- **Down the stack (what this is built on):** [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (variables vs nets, 2/4-state cost in §8, automatic/static storage behind §6 and §9).
+- **Up the stack (what builds on it):** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (turns §3–§5 into the synchronous coding discipline: inference, reset, latch avoidance, case qualifiers), [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (lives in the Preponed/Observed/Reactive regions of §2), [OOP_and_Randomization](08_OOP_and_Randomization.md) & [UVM_Methodology](10_UVM_Methodology.md) (class-based testbench threads, IPC, and clocking blocks of §6–§10 at scale).
+- **Adjacent:** [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (a multi-clock crossing is a race *no* scheduler can make deterministic — metastability, not a coding rule — which is exactly why it needs synchronisers), [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md) (static rules that flag the §3 blocking-in-`always_ff` and §11 `casex` hazards before simulation).
 
 ---
 
-## Task vs Function
-
-### Fundamental Rule
-
-- **Functions** cannot consume simulation time. No `#delay`, `@event`, `wait`, `fork-join`.
-  They execute in zero time and return a value.
-- **Tasks** can consume time. They can have delays, waits, event controls, fork-join.
-  They do not return values (use output/inout arguments instead).
-
-```verilog
-// Function: zero-time computation
-function logic [7:0] compute_crc(logic [31:0] data);
-    // Cannot have: #10, @(posedge clk), wait(signal), fork-join
-    logic [7:0] crc = 0;
-    for (int i = 0; i < 32; i++)
-        crc = crc ^ data[i];
-    return crc;
-endfunction
-
-// Task: can consume time
-task drive_data(input logic [31:0] data);
-    @(posedge clk);        // Wait for clock edge
-    valid <= 1'b1;
-    bus_data <= data;
-    @(posedge clk);
-    wait (ready);           // Wait for handshake
-    valid <= 1'b0;
-endtask
-
-// Calling context restrictions:
-always_comb begin
-    crc = compute_crc(data);   // OK -- function is zero-time
-    // drive_data(data);        // ERROR -- cannot call task from always_comb
-end
-```
-
-### Void Functions: Not Syntactic Sugar for Tasks
-
-A `void function` returns nothing but is still a FUNCTION -- zero time, no delays. It is NOT
-equivalent to a task. You can call void functions from always_comb; you cannot call tasks.
-
-```verilog
-function void log_event(string msg);  // No return value, but zero-time
-    $display("T=%0t: %s", $time, msg);
-endfunction
-
-always_comb begin
-    log_event("Combinational block evaluated");  // OK
-end
-```
-
-### Functions Can Call Functions, Tasks Can Call Both
-
-```text
-Function -> Function : OK
-Function -> Task     : ERROR (task may consume time)
-Task     -> Function : OK
-Task     -> Task     : OK
-```
-
----
-
-## Automatic vs Static
-
-### The Default Is DANGEROUS
-
-- **Module-level** tasks/functions default to **static** (shared variables)
-- **Class methods** are always **automatic** (each call gets its own copy)
-- **Program block** tasks/functions default to **automatic**
-
-### The Critical Bug With Static Tasks
-
-```verilog
-module static_bug;
-    task count(input int id);  // DEFAULT: static!
-        int local_var;          // Shared across all concurrent calls!
-        local_var = 0;
-        repeat (3) begin
-            #10;
-            local_var++;
-            $display("T=%0t ID=%0d count=%0d", $time, id, local_var);
-        end
-    endtask
-
-    initial begin
-        fork
-            count(1);  // Both calls share the SAME local_var!
-            count(2);
-        join
-    end
-endmodule
-
-// Output (WRONG -- variables collide):
-// T=10 ID=1 count=1
-// T=10 ID=2 count=2   <- Expected 1, got 2!
-// T=20 ID=1 count=3   <- Expected 2, got 3!
-// T=20 ID=2 count=4   <- Expected 2, got 4!
-```
-
-```verilog
-// FIX: declare as automatic
-module fixed;
-    task automatic count(input int id);
-        int local_var;  // Each call gets its OWN copy
-        local_var = 0;
-        repeat (3) begin
-            #10;
-            local_var++;
-            $display("T=%0t ID=%0d count=%0d", $time, id, local_var);
-        end
-    endtask
-endmodule
-
-// Output (CORRECT):
-// T=10 ID=1 count=1
-// T=10 ID=2 count=1
-// T=20 ID=1 count=2
-// T=20 ID=2 count=2
-```
-
-### Making an Entire Module Automatic
-
-```verilog
-module automatic my_module;  // ALL tasks/functions in this module are automatic
-    // ...
-endmodule
-```
-
----
-
-## Clocking Blocks
-
-### Purpose: Model Setup/Hold Timing Relationships
-
-Clocking blocks define the timing relationship between testbench and DUT (device under test) signals, abstracting
-away clock edges and skew. `input #1step` samples in the Preponed region — i.e., at the
-current time slot *before* the Active region evaluates, capturing DUT state as it was
-immediately before the clock edge. `output #0` drives at the exact clock edge (Re-Nba region).
-
-```verilog
-interface bus_if (input logic clk);
-    logic [7:0] data;
-    logic       valid;
-    logic       ready;
-
-    clocking driver_cb @(posedge clk);
-        default input #1step output #0;
-        output data;
-        output valid;
-        input  ready;   // Sampled 1step before posedge clk
-    endclocking
-
-    clocking monitor_cb @(posedge clk);
-        default input #1step output #0;
-        input data;
-        input valid;
-        input ready;
-    endclocking
-
-    modport driver_mp (clocking driver_cb);
-    modport monitor_mp (clocking monitor_cb);
-endinterface
-```
-
-### Using Clocking Blocks in a Testbench
-
-```verilog
-class driver;
-    virtual bus_if.driver_mp vif;
-
-    task drive_transaction(Transaction txn);
-        // Wait for clock edge using clocking block
-        @(vif.driver_cb);
-
-        // Drive outputs through clocking block (automatically clocked)
-        vif.driver_cb.data  <= txn.data;
-        vif.driver_cb.valid <= 1'b1;
-
-        // Wait for ready (sampled at previous 1step)
-        while (!vif.driver_cb.ready)
-            @(vif.driver_cb);
-
-        @(vif.driver_cb);
-        vif.driver_cb.valid <= 1'b0;
-    endtask
-endclass
-```
-
-### Why #1step and #0 Specifically?
-
-`#1step` is the smallest representable time unit in the simulator -- it samples in the
-Preponed region, BEFORE any Active-region logic executes. This models setup time: the
-testbench sees values that were stable before the clock edge, exactly as real hardware would.
-
-`#0` output drives at the clock edge itself, in the same time slot. Since RTL evaluates in
-Active region and testbench drives in Reactive region (via program blocks) or the same Active
-region with clocking block scheduling, this ensures proper ordering.
-
----
-
-## Program Block
-
-### Why It Exists: Race-Free Testbench Execution
-
-```verilog
-program automatic test (bus_if.driver_mp drv_if);
-    initial begin
-        // This executes in the REACTIVE region
-        // All RTL (Active region) and assertions (Observed) are done
-        // So testbench sees stable, settled values -- no races
-        @(drv_if.driver_cb);
-        drv_if.driver_cb.data <= 8'hFF;
-    end
-endprogram
-```
-
-### Why UVM Deprecated Program Blocks
-
-1. **OOP (object-oriented programming) incompatibility**: program blocks don't support class-based component hierarchies well
-2. **Implicit $finish**: program blocks call `$finish` when all initial blocks complete, which
-   can terminate simulation prematurely when using phase-based UVM (Universal Verification Methodology) control
-3. **Limited fork-join**: some simulators restrict concurrent processes in program blocks
-4. **One-shot execution**: program blocks run once; UVM needs phases that can re-execute
-5. **Modern alternative**: UVM uses `uvm_test` with phase mechanism for simulation control,
-   and clocking blocks + careful coding practices to avoid races
-
----
-
-## Wait Statements and Event Control
-
-```verilog
-// Edge-triggered wait
-@(posedge clk);           // Wait for rising edge of clk
-@(negedge rst_n);         // Wait for falling edge of rst_n
-@(posedge clk or negedge rst_n);  // Wait for either
-
-// Level-sensitive wait
-wait (ready == 1);         // Block until ready is 1
-// GOTCHA: if ready is already 1, wait returns immediately (no blocking)
-
-// Named event
-event done;
--> done;                   // Trigger the event (Active region)
-@(done);                   // Wait for trigger
-
-// RACE CONDITION: if -> and @ happen in same time step
-// The @ might miss the trigger (it was registered before the ->)
-// Fix: use .triggered
-wait (done.triggered);     // Catches same-time-step triggers
-
-// Nonblocking event trigger
-->> done;                  // Trigger in NBA region (avoids some races)
-```
-
----
-
-## Disable Statement
-
-```verilog
-// Disable a named block
-begin : my_block
-    forever begin
-        @(posedge clk);
-        if (condition) disable my_block;  // Exits the named block
-    end
-end
-
-// Disable a task (all instances!)
-task automatic long_task();
-    // ...
-endtask
-
-initial begin
-    fork
-        long_task();   // Instance 1
-        long_task();   // Instance 2
-    join_none
-
-    #100;
-    disable long_task;  // Disables ALL active instances of long_task!
-end
-```
-
----
-
-## RTL Coding Constructs and Synthesizability
-
-### case vs casez vs casex
-
-All three pick a branch by comparing the selector against each case-item, **bit by bit**. They differ only in how `x`/`z` bits are treated during that compare:
-
-- **`case`** — exact 4-state compare. Every bit must match literally, including `x` and `z`. There is **no wildcard**: an item bit written as `?` is just `z` and is matched literally (see trap below).
-- **`casez`** — `z` (and its shorthand `?`) bits are **don't-care** wildcards, on *either* the selector or the item. This is the idiom for priority / one-hot decoders: list patterns like `4'b1???`, or use the reverse-case form `case (1'b1)` with the conditions as items.
-- **`casex`** — **both** `x` and `z` are wildcards. This is **dangerous**: a propagated `x` on the selector silently matches some item, so a real bug (uninitialized/contended signal) is masked instead of producing `x`. Avoid in RTL; lint rules flag every `casex`.
-
-**Trap:** in plain `case`, `?` is **not** a wildcard — it is `z`, matched literally. Writing `casez`-style patterns such as `4'b1?_??` inside a plain `case` is a classic bug: those items only match if the selector actually carries `z` bits, so the branch never fires for normal `0/1` inputs.
-
-Per-bit match table (selector bit value down, statement across — does the item wildcard bit match it?):
-
-| selector bit | `case` (item `?`=`z`) | `casez` (item `?`/`z`) | `casex` (item `?`/`z`/`x`) |
-|--------------|-----------------------|------------------------|----------------------------|
-| `0`          | no (item `z` ≠ `0`)   | **yes**                | **yes**                    |
-| `1`          | no (item `z` ≠ `1`)   | **yes**                | **yes**                    |
-| `x`          | no                    | no (only `z` wild)     | **yes**                    |
-| `z`          | yes (literal `z`=`z`) | **yes**                | **yes**                    |
-
-**Qualifiers.** Prefix the keyword with `unique` / `unique0` / `priority` to state intent: `unique` asserts the items are mutually exclusive and (for `unique`) fully cover the selector — the tool both checks this in simulation and uses it to drop priority/default logic; `priority` asserts at least one item matches and preserves top-to-bottom precedence. Prefer these over the legacy `// synopsys full_case parallel_case` pragmas, which assert the same facts to **synthesis only** — if the assertion is false, the gates and the simulation disagree (a sim/synth mismatch that the qualifiers would have caught in sim). See the Synthesis/Lint notes elsewhere in `03_Frontend_RTL_and_Verification` for how these are enforced.
-
-### Synthesizable vs Non-Synthesizable Constructs
-
-Think of an abstraction ladder, and the synthesis tool as a mapper that only understands the lower rungs:
-
-- **Behavioral / algorithmic** — describes *what* to compute, possibly untimed. May be non-synthesizable.
-- **RTL (register-transfer)** — clocked registers + combinational logic between them. This is the synthesizable contract: the tool maps it to gates and flops.
-- **Gate / structural** — explicit primitives or instantiated cells.
-
-| Synthesizable (maps to hardware) | Non-synthesizable (simulation / testbench only) |
-|----------------------------------|-------------------------------------------------|
-| `always` / `always_ff` / `always_comb` / `always_latch` | `initial` blocks |
-| `assign`, `if`/`case` (see above) | `fork…join` / `join_any` / `join_none` (see [Fork-Join Deep Dive](#fork-join-deep-dive)) |
-| statically-bound `for` loops, `generate` | `#delay`, `wait`, untimed `forever`, `@event` as control |
-| combinational `function` (zero-time, no time controls) | `$display` / `$monitor` / `$finish` / `$strobe` |
-| module / cell instantiation | `real`, `time`; classes, `mailbox`, `semaphore` |
-| parameters, constants | `===` / `!==` (4-state compare — usually TB only) |
-
-One line to remember: **the tool maps RTL to gates; testbench constructs have no hardware to map to.** A loop bound or `generate` range must be static (resolvable at elaboration) precisely because the tool must unroll it into fixed structure rather than execute it over time.
-
----
-
+## References
+
+1. IEEE Std 1800-2017, *SystemVerilog LRM*. Clause 4 (scheduling semantics / regions), Clause 9 (processes), Clause 15 (events, mailboxes, semaphores).
+2. Cummings, C.E., "Nonblocking Assignments in Verilog Synthesis, Coding Styles That Kill!," SNUG 2000. The blocking/non-blocking derivation of §3.
+3. Cummings, C.E., "SystemVerilog Event Regions, Race Avoidance & Guidelines," SNUG 2006. The stratified regions and delta-cycle model of §2.
+4. Spear, C. and Tumbush, G., *SystemVerilog for Verification*, 3rd ed., Springer, 2012. Processes, fork/join, and IPC primitives of §6–§7.
