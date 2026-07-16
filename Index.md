@@ -41,7 +41,7 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 | [06 · Branch Prediction Deep Dive](01_Architecture_and_PPA/06_Branch_Prediction_Deep_Dive.md) | BTB, gshare, TAGE-SC-L, perceptron, RAS, ITTAGE, fetch unit + FTQ |
 | [07 · Cache Microarchitecture](01_Architecture_and_PPA/07_Cache_Microarchitecture.md) | pipeline, MSHR, write policy, prefetch, replacement, coherence implementation |
 | [08 · TLB and Virtual Memory](01_Architecture_and_PPA/08_TLB_and_Virtual_Memory.md) | TLB format, page-table walker, VIPT, shootdown, superpages, 5-level |
-| [09 · Memory](01_Architecture_and_PPA/09_Memory.md) | 6T/8T/10T SRAM (transistor-level), DRAM cell + refresh, memory compiler, multi-port SRAM, register files, ECC, CAM/TCAM, CIM |
+| [09 · Memory](01_Architecture_and_PPA/09_Memory.md) | the bit-storage trade surface: 6T/8T/10T SRAM (SNM vs area vs speed), DRAM 1T1C density-vs-refresh, memory compiler, multi-port/register-file port cost, ECC coding theory, CAM/TCAM, compute-in-memory |
 | [10 · DDR Controller](01_Architecture_and_PPA/10_DDR_Controller.md) | commands, timing, row-buffer, FR-FCFS, ECC, DDR5, LPDDR5X |
 | [11 · AHB / AXI / APB](01_Architecture_and_PPA/11_AHB_AXI_APB.md) | AMBA bus protocols, AXI4 spec, CDC bridges, ATOP |
 | [12 · ACE and CHI](01_Architecture_and_PPA/12_ACE_and_CHI.md) | cache-coherence protocols, snoop, CXL/PCIe |

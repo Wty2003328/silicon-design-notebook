@@ -1,904 +1,277 @@
-# Power Fundamentals in Digital IC / ASIC Design
+# Power Fundamentals — Where a Chip's Power Goes, and the Levers That Move It
 
-## 1. Why Power Matters
-
-Power consumption is the dominant constraint in modern ASIC and SoC design. It determines
-battery life (mobile), package cost (thermal dissipation capability), cooling requirements
-(heatsink, fan, liquid cooling), reliability (electromigration, hot-carrier injection), and
-ultimately the end-user experience. As technology scales below 28nm, power has supplanted
-area and even timing as the primary limiter -- a phenomenon known as the "power wall."
-
-Key metrics every engineer must internalize:
-
-| Metric               | Definition                                         | Why It Matters                                    |
-|----------------------|----------------------------------------------------|---------------------------------------------------|
-| **Average power**    | Time-averaged power over a workload                | Battery life, thermal steady-state, TDP rating    |
-| **Peak power**       | Maximum instantaneous power draw                   | IR drop, supply integrity, package current limit   |
-| **Power density**    | Power per unit area (W/mm^2)                       | Hotspot formation, reliability, thermal runaway   |
-| **Energy per op**    | Energy consumed per useful operation (pJ/op)       | True efficiency metric for accelerators           |
-| **Leakage power**    | Power consumed when circuit is idle (no switching) | Standby battery drain, always-on domain budgets   |
+> **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) — this page *assumes* its §4 (the transistor-level derivation of the three powers and the energy–delay knee), §1.3 (subthreshold conduction and the 60 mV/dec wall), §13 (the leakage family), and §4.5 (Dennard). We take those results as given and reason one level up, at the chip/budget scale.
+> **Hands off to:** [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (the flow that *spends* these levers), [Block_Activity_and_Power](02_Block_Activity_and_Power.md) (per-block/per-mode modelling), [UPF_Power_Intent](04_UPF_Power_Intent.md) (encoding the intent), [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (measuring it).
 
 ---
 
-## 2. Total Power Equation
+## 0. Why this page exists
 
-```text
-P_total = P_dynamic   + P_static
-P_total = P_switching + P_short_circuit + P_leakage
-P_total = (alpha * C_L * V_DD^2 * f_clk) + (I_SC * V_DD) + (I_leak * V_DD)
-```
+A modern chip is not compute-limited or area-limited — it is **power-limited, from three directions at once**: you can only pull so many watts off a die (thermal), push so much current through the package and grid (delivery), and draw so much energy from a battery or a datacenter budget (energy). Every one of those is a hard ceiling, and every architectural decision — a wider core, a bigger cache, a higher clock, a second thread — is really a decision about how to *spend a fixed power/energy budget*. That is what "the power wall" means as an engineering statement: since roughly 2005, power, not transistors, has been the scarce resource.
 
-| Component       | Typical Share (65nm) | Typical Share (7nm) | Trend                        |
-|-----------------|----------------------|---------------------|------------------------------|
-| Switching       | 60-70%               | 40-50%              | Decreasing fraction          |
-| Short-circuit   | 5-10%                | 5-10%               | Roughly stable               |
-| Leakage         | 20-30%               | 40-50%              | Increasing (until FinFET)    |
+The transistor-level question — *why* switching a node costs $\tfrac12 CV^2$, *why* the switch leaks, *why* the energy–delay product has a minimum — is answered in [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md). This page starts where that ends and asks the **budget** questions a senior engineer actually has to answer:
+
+- Where does the power physically go across a real chip's blocks, and why is the clock the first thing you attack?
+- What are the fundamental levers — $V_{DD}$, $f$, activity $\alpha$, capacitance $C$, $V_{th}$, and parallelism — and where is the *knee* on each?
+- Why does the same physics land a phone at 5 W of many slow cores and a server at 250 W of few fast ones, and why did both eventually go wide?
+
+The organising idea is that all of power reduces to **one equation with a small number of knobs**, and every technique in the rest of the track is an attack on one term of it. Understand which term each knob moves, and the whole low-power flow becomes derivable rather than memorised.
 
 ---
 
-## 3. Switching Power -- Derivation from First Principles
+## 1. Why power is the binding constraint: three ceilings
 
-### 3.1 The RC Charging/Discharging Circuit
+Power is not one limit but three, and they bind at different times and care about different metrics. Confusing them is the classic mistake — a design can be comfortably inside its battery budget yet trip its delivery ceiling on a single peak, or meet peak delivery yet cook itself in thermal steady state.
 
-Consider a CMOS inverter driving a load capacitance C_L. During a 0-to-1 output transition,
-the PMOS transistor turns on and charges C_L through its channel resistance R_p:
+**Thermal — a power-*density* ceiling.** Heat must leave through a cooling solution whose capacity is fixed, so what binds is watts per unit area, not total watts. The ceilings are stark and set the whole product class:
 
-```text
-          Vdd
-           |
-         [R_p]    (PMOS on-resistance)
-           |
-           +------ Vout
-           |
-         [C_L]
-           |
-          GND
-```
+| Cooling class | Power-density ceiling | Practical total | Product |
+|---|---|---|---|
+| Passive (no fan) | ~5 W/cm² | ~2–8 W | phone, wearable, IoT |
+| Forced air (laptop) | ~30 W/cm² | ~15–65 W | laptop, thin client |
+| Forced air (desktop) | ~80 W/cm² | ~65–250 W | desktop, workstation |
+| Liquid | ~200 W/cm² | ~300–700 W | server, HPC, GPU |
 
-The voltage across C_L rises exponentially:
+Cross a thermal ceiling and two things bite back exponentially: **leakage rises ~2× per 10 °C** (§4), which is *positive feedback* — hotter → leakier → hotter, the **thermal-runaway** loop — and reliability wear-out (electromigration, hot-carrier injection, NBTI) accelerates. This is why the thermal budget is enforced at the *hottest* junction corner, not the average.
 
-```text
-V_out(t) = Vdd * (1 - e^(-t / (R_p * C_L)))
-```
+**Delivery — a peak-current and $di/dt$ ceiling.** The power-delivery network (PDN) — board VRM, package, on-die grid — has finite resistance and inductance, so a current surge droops the on-die voltage ($IR$ drop) and rings it ($L\,di/dt$). Two consequences: **peak power, not average, sizes the PDN and the decoupling**, and a voltage droop under a sudden all-cores-active event can violate timing unless the design either budgets guard-band voltage (which costs $V^2$ power everywhere, always) or throttles. Backside power delivery (Intel PowerVia, TSMC/Samsung at 2 nm — see [CMOS §8](../00_Fundamentals/01_CMOS_Fundamentals.md)) is fundamentally a delivery-ceiling fix: it cuts $IR$ drop ~30–50 % by moving the grid off the signal layers.
 
-Energy delivered by the supply during charging:
+**Energy — a battery / TCO ceiling.** For anything mobile the currency is **energy per task** (joules to decode a frame, run an inference), because that sets battery life; for a datacenter it is energy per useful op, because that sets the electricity bill and the cooling opex that often exceeds it. Crucially, energy is the *time-integral* of power, so it is moved by different knobs than instantaneous power — a slower, lower-voltage design can burn *more* time but *less* energy (§3).
 
-```text
-E_supply = integral(0 to inf) { Vdd * i(t) dt }
-         = integral(0 to inf) { Vdd * C_L * dV/dt * dt }
-         = Vdd * C_L * integral(0 to Vdd) { dV }
-         = C_L * Vdd^2
-```
+These three ceilings are why the metrics below are not interchangeable; each serves a different ceiling, and a power spec must state which:
 
-Energy stored on the capacitor after charging:
-
-```text
-E_cap = (1/2) * C_L * Vdd^2
-```
-
-Energy dissipated in the PMOS resistance during charging:
-
-```text
-E_PMOS = E_supply - E_cap = C_L * Vdd^2 - (1/2) * C_L * Vdd^2 = (1/2) * C_L * Vdd^2
-```
-
-During a 1-to-0 transition, the NMOS turns on and discharges C_L. The stored energy
-(1/2)*C_L*Vdd^2 is dissipated in the NMOS channel resistance. So for one complete
-cycle (0->1->0):
-
-```text
-E_cycle = E_PMOS_charging + E_NMOS_discharging
-        = (1/2) * C_L * Vdd^2 + (1/2) * C_L * Vdd^2
-        = C_L * Vdd^2
-```
-
-### 3.2 Why It Is C*V^2 (Not 1/2 * C * V^2)
-
-This is a classic interview question. The answer depends on what you mean by "per transition"
-versus "per cycle":
-
-- **Energy per full cycle** (0->1->0) = C_L * Vdd^2
-- **Energy per transition** (one edge) = (1/2) * C_L * Vdd^2
-
-The factor of 2 appears or disappears depending on whether you count one transition or a
-full switching cycle. In the standard power equation:
-
-```text
-P_switching = alpha * C_L * Vdd^2 * f_clk
-```
-
-Here, **alpha** is the activity factor defined as the average number of 0->1 transitions
-per clock cycle (NOT total transitions). Since only the 0->1 transition draws energy from
-Vdd (the 1->0 transition dissipates stored energy to ground), we get:
-
-```text
-P = alpha * (1/2 * C_L * Vdd^2 * 2) * f = alpha * C_L * Vdd^2 * f
-```
-
-Some textbooks write $P = \tfrac{1}{2}\,\alpha\,C_L\,V_{dd}^2\,f$ where alpha counts BOTH 0->1 and
-1->0 transitions per cycle. Both are equivalent -- the factor of 1/2 either sits in the
-energy term or the activity term. Be clear about your definition in interviews.
-
-### 3.3 Activity Factor (alpha) in Detail
-
-For a signal with static probability p (probability of being 1):
-
-```text
-alpha = 2 * p * (1 - p) * f_clk    [if alpha counts both transitions]
-alpha = p * (1 - p) * f_clk        [if alpha counts only 0->1]
-```
-
-For random data (p=0.5): alpha = 0.25 (one transition out of every 4 clock cycles on average
-if counting 0->1 only) or alpha = 0.5 (both transitions).
-
-Important: Clock signals have alpha = 1.0 (toggle every half-cycle on both edges), which is
-why clock networks consume 30-50% of total dynamic power.
-
-### 3.4 Numerical Example
-
-```text
-Given:
-  28nm design, 10 million equivalent gates
-  Average switching activity (alpha)  = 0.15 (realistic for data path)
-  Average load capacitance per gate   = 1.2 fF
-  Vdd                                 = 0.9 V
-  Clock frequency                     = 500 MHz
-
-P_switching = alpha * C_total * Vdd^2 * f
-  C_total     = 10M * 1.2 fF = 12 nF
-
-  P_switching = 0.15 * 12e-9 * (0.9)^2 * 500e6
-              = 0.15 * 12e-9 * 0.81 * 500e6
-              = 0.15 * 12 * 0.81 * 500 * (1e-9 * 1e6)
-              = 0.15 * 12 * 0.81 * 500 * 1e-3
-              = 0.15 * 4860 * 1e-3
-              = 0.15 * 4.86
-              = 0.729 W
-
-Result: ~730 mW of switching power.
-```
-
-Add clock network (~40% of dynamic power) and this block might draw ~1.2W dynamic total.
+| Metric | Serves which ceiling | Set by |
+|---|---|---|
+| Average power | thermal steady-state, battery | workload-averaged $\alpha C V^2 f$ + leakage |
+| Peak power / $di/dt$ | delivery, IR-drop integrity | worst-case simultaneous activity |
+| Power density (W/mm²) | hotspot, thermal runaway | local activity × local $C$, floorplan |
+| Energy per op (pJ/op) | battery life, datacenter TCO | $\alpha C V^2$ **per useful result** |
+| Leakage / standby power | always-on domains, sleep battery | $V_{DD} I_{leak}$ at temperature |
 
 ---
 
-## 4. Short-Circuit Power
+## 2. Where the power goes: three currents, and the block budget
 
-### 4.1 The Physical Mechanism
+### 2.1 The taxonomy, from what draws current and when
 
-During an input transition on a CMOS gate, there is a brief period when BOTH the PMOS and
-NMOS transistors are simultaneously conducting. This creates a direct path from Vdd to GND
-(a "short circuit") and draws crowbar current.
+A powered chip draws current in exactly three ways, and the clean way to derive the taxonomy is to ask **when** each flows:
 
-```ascii-graph
-        Vdd
-         |
-      [PMOS]---+
-         |     |
-  Vin ---+     +--- Vout
-         |     |
-      [NMOS]---+
-         |
-        GND
+- **Dynamic (switching) current** flows *only when a node toggles*, to charge or discharge its capacitance. It is the current that pays for computation, and it is zero for a node that never switches. Aggregated over a clock this is $\alpha C V_{DD}^2 f$.
+- **Short-circuit current** flows *only during an input edge*, in the brief instant both the pull-up and pull-down networks conduct and momentarily short $V_{DD}$ to ground. It rides on switching activity but is a small tax on it.
+- **Leakage (static) current** flows *whenever the block is powered, switching or not*, because a real transistor never fully turns off ([CMOS §1.3](../00_Fundamentals/01_CMOS_Fundamentals.md)). It is the current of an idle chip.
 
-  When Vin is between Vtn and (Vdd - |Vtp|):
-    - NMOS is ON (Vgs_n > Vtn)
-    - PMOS is ON (|Vgs_p| > |Vtp|)
-    - Both conduct simultaneously
+That "when" axis *is* the taxonomy, and it gives the master equation this whole track builds on — stated here as the budget-level starting point; its per-transition $\tfrac12 CV^2$ origin is derived at the transistor level in [CMOS §4.2–4.3](../00_Fundamentals/01_CMOS_Fundamentals.md):
+
+$$
+P_{total}=\underbrace{\alpha\,C\,V_{DD}^2\,f}_{\text{switching}}\;+\;\underbrace{P_{sc}}_{\text{short-circuit}}\;+\;\underbrace{V_{DD}\,I_{leak}}_{\text{leakage}}
+$$
+
+where $\alpha$ = **activity factor** (average power-consuming transitions per node per cycle, ~0.05–0.15 for random logic), $C$ = total switched capacitance (gate + wire + diffusion), $V_{DD}$ = supply, $f$ = clock frequency, $P_{sc}$ = short-circuit power (typically 5–10 % of dynamic, →0 for sharp edges and vanishes once $V_{DD}<2V_{th}$), $I_{leak}$ = total leakage current (subthreshold-dominant; the full family is in [CMOS §13](../00_Fundamentals/01_CMOS_Fundamentals.md)).
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    P["Chip power budget"] --> DYN["Dynamic\n(flows only when nodes toggle)"]
+    P --> STAT["Static\n(flows whenever powered)"]
+    DYN --> SW["Switching\nalpha*C*Vdd^2*f"]
+    DYN --> SC["Short-circuit\n~5-10% of dynamic"]
+    STAT --> LEAK["Leakage\nVdd*I_leak"]
+    SW --> CLK["Clock tree\nalpha=1  ->  30-50%"]
+    SW --> LOGIC["Logic + glitch"]
+    SW --> MEM["Memory access"]
+    SW --> WIRE["Interconnect"]
+    LEAK --> SUB["Subthreshold\n(dominant)"]
+    LEAK --> ETC["Gate / junction / GIDL"]
 ```
 
-### 4.2 Voltage Transfer Characteristic (VTC) and the Overlap Window
+The single most useful rearrangement is **energy per operation**, because it is what the battery and the datacenter actually pay:
 
-```ascii-graph
-  Vdd|          ___________
-     |         /
-     |        /    <-- Both ON in this transition region
-     |       /         (Vtn < Vin < Vdd-|Vtp|)
- Vout|      /
-     |     /
-     |____/
-     +-----|------|-------> Vin
-          Vtn  Vdd-|Vtp|
-```
+$$
+E_{op}=\frac{P_{dyn}}{f}=\alpha\,C\,V_{DD}^2
+$$
 
-The short-circuit current flows during the time the input voltage is between Vtn and
-(Vdd - |Vtp|). For Vdd = 0.8V and Vth = 0.3V:
+Read it and stop: **energy per op depends on voltage and capacitance, not on frequency.** Running slower does not save energy per op — only lowering $V_{DD}$, $C$, or wasted activity $\alpha$ does. That one fact is the seed of every trade-off on this page (§3–§5).
 
-```text
-Short-circuit window = Vdd - 2*Vth = 0.8 - 2*(0.3) = 0.2 V
-```
+### 2.2 The dynamic budget across blocks
 
-### 4.3 Analytical Model for Short-Circuit Power
+The abstract $\alpha C V_{DD}^2 f$ hides a very uneven distribution across a chip, and knowing the distribution is what tells you *where to spend engineering effort*. Two structural facts dominate.
 
-For a symmetric inverter with matched PMOS/NMOS strengths and a linear input ramp:
+**The clock tree is the single largest dynamic consumer — 30–50 % of dynamic power — because its activity factor is pinned at $\alpha=1$.** Every other node toggles a fraction of cycles; the clock toggles *every* cycle, by definition, and it fans out to every flip-flop in the design through a heavily buffered, high-capacitance H-tree. Nothing else in the chip has both maximal activity and maximal fan-out. This is precisely why **clock gating is the first and highest-leverage dynamic technique** (§6): it drives the clock's local $\alpha$ to zero wherever a block is idle, attacking the biggest term directly.
 
-```text
-I_peak = (beta / 12) * (Vdd - 2*Vth)^3
+**Everything else is set by real activity, and some of that activity is waste.** Combinational logic runs at $\alpha\approx0.05$–0.15, but a chunk of its switching is **glitch power** — spurious transitions when unbalanced path delays make a node toggle several times before settling. In an unoptimised datapath glitch can be **15–30 % of logic switching**, worst in deep reconvergent structures like multiplier/adder trees where a single input change ripples through many arrival times. Glitch is "activity you computed but did not want," and it is attacked by path balancing, retiming, and pipelining (the details live in [Block_Activity_and_Power](02_Block_Activity_and_Power.md)). Memory contributes **access energy** (charging long, high-capacitance bitlines and wordlines every read/write — often the dominant per-op cost in SRAM-heavy or register-file-heavy blocks) plus a large *leakage* term from the array (§4). Interconnect is a growing share as wires stop scaling ([CMOS §8.4](../00_Fundamentals/01_CMOS_Fundamentals.md)): long buses and NoC links move real charge over real distance.
 
-Where:
-  beta = mu * Cox * (W/L)  (transconductance parameter)
-  
-P_sc = (beta / 12) * (Vdd - 2*Vth)^3 * tau * f
+The energy-per-op spread across these is enormous and drives architecture directly: a 64-bit integer add is ~0.1–1 pJ, a floating-point FMA a few pJ, an 8 KB SRAM read tens of pJ, and a **DRAM access ~100× a compute op** (Horowitz's ISSCC-2014 framing). When a data movement costs 100× the arithmetic it feeds, the efficient architecture is the one that *moves data least* — which is the entire thesis behind register files, cache hierarchies, and the local-SRAM dataflow of accelerators ([NPU_Accelerators](../01_Architecture_and_PPA/16_NPU_Accelerators.md)).
 
-Where:
-  tau = input transition time (rise or fall time)
-  f   = switching frequency
-```
+### 2.3 The dynamic ↔ leakage crossover
 
-### 4.4 Numerical Example
+Dynamic and leakage are spent on completely different axes — dynamic is proportional to *activity*, leakage is proportional to *area × time × temperature* — so their *ratio* shifts with node, temperature, and workload, and where it crosses is a budgeting decision, not a physics constant.
 
-```text
-Given:
-  Vdd        = 0.8 V
-  Vth        = 0.3 V (both NMOS and PMOS)
-  beta       = 200 uA/V^2 (typical for minimum-size in 28nm)
-  tau_rise   = tau_fall = 50 ps
-  f          = 1 GHz
-  C_L        = 2 fF
+**Across nodes, leakage grew from a rounding error to a co-equal term.** As $V_{th}$ stopped scaling to keep leakage bounded (the 60 mV/dec wall, [CMOS §1.3](../00_Fundamentals/01_CMOS_Fundamentals.md)), each generation's transistors leaked more relative to their dynamic draw, FinFET clawed some back, but transistor *count* kept climbing:
 
-P_sc = (200e-6 / 12) * (0.8 - 0.6)^3 * 50e-12 * 1e9
-     = 16.67e-6 * 8e-3 * 50e-3
-     = 16.67e-6 * 4e-4
-     = 6.67 nW per gate
+| Component | ~65 nm | ~7 nm FinFET | Trend |
+|---|---|---|---|
+| Switching | 60–70 % | 40–50 % | shrinking fraction |
+| Short-circuit | 5–10 % | 5–10 % | roughly stable |
+| Leakage | 20–30 % | 40–50 % | rose until FinFET, then flat-high |
 
-P_switching = 0.5 * 2e-15 * (0.8)^2 * 1e9
-            = 0.5 * 2e-15 * 0.64 * 1e9
-            = 640 nW
+**Across temperature, the crossover moves within a single chip.** Dynamic power is nearly temperature-flat; leakage roughly **doubles every 10–12 °C** (§4). So a block that is 70 % dynamic at 25 °C can be leakage-dominated at 105 °C — which is why leakage signoff runs at the *hot* corner and why the thermal-runaway loop of §1 exists at all.
 
-P_sc / P_switching = 6.67 / 640 = ~1%
-```
-
-For this example, short-circuit power is about 1% of switching power. In practice, with
-slow input transitions (large tau) or when Vdd >> 2*Vth, short-circuit can be 5-15%.
-
-### 4.5 Key Design Implications
-
-- **Matched rise/fall times minimize short-circuit power.** If input rise time >> fall time
-  (or vice versa), the slow edge causes prolonged overlap.
-- **When Vdd < 2*Vth, short-circuit power is zero.** Both devices cannot be on simultaneously.
-  This happens in ultra-low-voltage (near-threshold) designs.
-- **Fast transitions help.** Strong drivers with sharp edges reduce the overlap window.
-- **Short-circuit power is proportional to tau (transition time)**, while switching power is
-  independent of tau. As loads get heavier (slower transitions), short-circuit fraction grows.
+**Across activity, the crossover defines when to power-gate.** As a block idles, its dynamic term falls toward zero while leakage holds constant, so **standby power is pure leakage** and standby battery life is set entirely by it. Below some activity threshold a block leaks more than it computes, and the correct response is not to gate its clock (which leaves leakage untouched) but to **cut its rail entirely** — power gating (§6). The whole reason there are two different "off" techniques is that they attack the two different currents.
 
 ---
 
-## 5. Sub-threshold Leakage -- MOSFET Physics
+## 3. The voltage lever: why $V_{DD}$ is the master knob, and DVFS is ~cubic
 
-### 5.1 The Sub-threshold Current Equation
+### 3.1 One knob moves two terms — and their product is a cube
 
-Below threshold (Vgs < Vth), the MOSFET is in weak inversion. Current does not abruptly
-go to zero -- it decays exponentially:
+$V_{DD}$ is the strongest lever in low-power design because it appears in the dynamic term *squared* while every other knob is linear. But its true power comes from a second effect: lowering $V_{DD}$ also **lowers the maximum frequency the logic can run at**, so on a real chip voltage and frequency are not independent — they move together along the DVFS curve, and the two effects compound.
 
-```text
-I_ds = I_0 * exp((Vgs - Vth) / (n * V_T)) * (1 - exp(-Vds / V_T))
+Take the two results from [CMOS §4](../00_Fundamentals/01_CMOS_Fundamentals.md) as given. Energy per op and max frequency:
 
-Where:
-  I_0 = technology-dependent reference current
-      = mu * Cox * (W/L) * (n - 1) * V_T^2
-  n   = subthreshold swing ideality factor (1.3 - 1.5 for bulk, ~1.1 for FinFET)
-  V_T = thermal voltage = kT / q
-      = 26 mV at T = 300K (27C)
-      = 33.5 mV at T = 125C (398K)
-  Vth = threshold voltage (depends on process, body bias, temperature)
-  Vgs = gate-to-source voltage
-  Vds = drain-to-source voltage
-```
+$$
+E_{op}\propto C\,V_{DD}^2, \qquad f_{max}\propto\frac{1}{t_p}\propto\frac{(V_{DD}-V_{th})^{\alpha}}{V_{DD}}
+$$
 
-### 5.2 Understanding Each Parameter
+where $t_p\propto C V_{DD}/(V_{DD}-V_{th})^{\alpha}$ is the gate delay, $\alpha\approx1.3$ is the velocity-saturation exponent ([CMOS §4.1](../00_Fundamentals/01_CMOS_Fundamentals.md)), and **overdrive** $V_{DD}-V_{th}$ is what actually buys speed. Because a DVFS operating point runs at $f\approx f_{max}(V_{DD})$, substitute:
 
-**Subthreshold slope (S):**
-```text
-S = n * V_T * ln(10) = n * 2.3 * V_T
+$$
+P_{dyn}=\alpha\,C\,V_{DD}^2\,f \;\propto\; V_{DD}^2\cdot\frac{(V_{DD}-V_{th})^{\alpha}}{V_{DD}} \;=\; V_{DD}\,(V_{DD}-V_{th})^{\alpha}
+$$
 
-At 300K:     S = 1.3 * 2.3 * 26 mV = ~78 mV/decade (bulk CMOS)
-For FinFET:  S = 1.1 * 2.3 * 26 mV = ~66 mV/decade (closer to ideal 60 mV/decade)
-```
-This means: reducing Vgs by 78mV reduces leakage by 10x in bulk CMOS.
+Over the practical DVFS window the overdrive tracks the supply closely enough that $f\propto V_{DD}$ empirically, and the relation collapses to the rule every architect carries:
 
-**Ideality factor (n):**
-- **n** = `1 + C_depletion / C_oxide`
+$$
+\boxed{\,P_{dyn}\propto V_{DD}^2\,f \quad\text{with}\quad f\propto V_{DD}\ \Longrightarrow\ P\propto f^{3}\,}
+$$
 
-For bulk CMOS: C_dep/Cox is significant -> n = 1.3-1.5
-For FinFET: gate wraps channel, C_dep/Cox is small -> n ~ 1.05-1.1
-For GAAFET: even better electrostatic control -> n ~ 1.02-1.05
+**Power runs as the cube of frequency across the DVFS range.** This is the quantitative heart of the "chase the last 10 % of clock and pay disproportionately" behaviour: the top of the V/f curve is where you are pushing $V_{DD}$ hard just to hold frequency, so a 10 % clock bump can cost ~33 % power. It runs both ways — **halving frequency-and-voltage cuts power ~8× while only doubling runtime, a net ~4× energy win** — which is exactly why DVFS throttles down aggressively under a thermal or battery cap. Near threshold the approximation *understates* the benefit: as $V_{DD}\to V_{th}$ the overdrive $(V_{DD}-V_{th})^{\alpha}$ collapses, so frequency falls *faster* than voltage and the low end of the curve is even more energy-favourable than the cube suggests (§3.2). The hard floor on $V_{DD}$ is not power but **noise-margin and regeneration collapse** at ~0.3–0.5 V ([CMOS §3.2](../00_Fundamentals/01_CMOS_Fundamentals.md)) and SRAM read-margin failure ([CMOS §12.4](../00_Fundamentals/01_CMOS_Fundamentals.md)).
 
-### 5.3 Temperature Dependence
+### 3.2 Energy per op and the minimum-energy point
 
-Leakage has a strong exponential temperature dependence through two mechanisms:
+If energy per op is $\propto V_{DD}^2$, why not scale $V_{DD}$ to the floor for every workload? Because leakage sets a lower bound. Total energy per op has two parts, and lowering voltage moves them in *opposite* directions:
 
-1. **V_T = kT/q increases with temperature** -- wider thermal distribution of carriers
-2. **Vth decreases with temperature** -- approximately -1 to -2 mV/C
+$$
+E_{op}=\underbrace{\alpha C V_{DD}^2}_{\text{dynamic}\,\downarrow}\;+\;\underbrace{V_{DD}\,I_{leak}\cdot t_{op}}_{\text{leakage}\,\uparrow},\qquad t_{op}\propto\frac{V_{DD}}{(V_{DD}-V_{th})^{\alpha}}
+$$
 
-Combined effect:
+As $V_{DD}$ drops the dynamic part falls quadratically, but the clock slows, so each op *takes longer* and the block **leaks for more time per op** — the leakage-energy term rises. Their sum has a genuine minimum, the **minimum-energy point (MEP)**, derived at the transistor level in [CMOS §4.4](../00_Fundamentals/01_CMOS_Fundamentals.md) and sitting near threshold, typically **~0.3–0.4 V**.
 
-```text
-I_leak(T2) / I_leak(T1) = exp((Vth(T1) - Vth(T2)) / (n * V_T(T2))) * (V_T(T2) / V_T(T1))^2
-
-Rule of thumb: Leakage approximately DOUBLES for every 10-12C increase
-               in junction temperature for typical processes.
-
-Example:
-  At 25C:   I_leak = 10 nA/um
-  At 85C:   I_leak = 10 * 2^((85-25)/10)  = 10 * 2^6  = 640 nA/um
-  At 125C:  I_leak = 10 * 2^((125-25)/10) = 10 * 2^10 = ~10 uA/um
-```
-
-This is why leakage power analysis must be done at the worst-case temperature corner
-(typically 125C for commercial, 105C for industrial).
-
-### 5.4 Drain-Induced Barrier Lowering (DIBL)
-
-DIBL is a short-channel effect where the drain voltage influences the source-channel barrier:
-
-```text
-Vth_effective = Vth0 - eta * Vds
-
-Where:
-  eta = DIBL coefficient (typically 20-100 mV/V for planar, 10-30 mV/V for FinFET)
-```
-
-Physical explanation:
-- In a short-channel device, the drain depletion region extends closer to the source
-- This lowers the potential barrier at the source, allowing more carriers to flow
-- Higher Vds -> lower effective Vth -> more subthreshold leakage
-
-```text
-Example:
-  Vth0 = 0.35 V, eta = 50 mV/V
-  
-  At Vds = 0.1 V:  Vth_eff = 0.35 - 0.005 = 0.345 V
-  At Vds = 0.8 V:  Vth_eff = 0.35 - 0.040 = 0.310 V
-
-  Leakage ratio = exp((0.345 - 0.310) / (1.3 * 0.026))
-                = exp(0.035 / 0.0338)
-                = exp(1.035)
-                = 2.8x increase due to DIBL alone
-```
-
-### 5.5 Body Effect
-
-The threshold voltage depends on the source-to-body voltage (Vsb):
-
-```text
-Vth = Vth0 + gamma * (sqrt(2 * phi_f + Vsb) - sqrt(2 * phi_f))
-
-Where:
-  gamma = body effect coefficient = sqrt(2 * q * epsilon_si * N_A) / Cox
-          (typically 0.3 - 0.5 V^(1/2) for bulk CMOS)
-  phi_f = Fermi potential = V_T * ln(N_A / n_i)
-          (typically 0.3 - 0.4 V)
-```
-
-Implications for power:
-- **Stacked NMOS** (series transistors): bottom transistor has Vsb > 0 due to virtual
-  ground node, increasing Vth and reducing leakage. This is the "stack effect" -- a
-  2-input NAND leaks less than a 2-input NOR in an NMOS pull-down stack.
-- **Reverse body bias (RBB):** applying positive Vsb to NMOS increases Vth, reduces leakage.
-  Used as active leakage reduction technique.
-- **Forward body bias (FBB):** applying negative Vsb to NMOS decreases Vth, increases speed
-  but also increases leakage. Used for performance boosting.
-
-### 5.6 Leakage Numbers Across Technology Nodes
-
-| Node   | Vdd   | I_leak (NMOS, SVT, per um width) | Total chip leakage (typical SoC) | Notes                        |
-|--------|-------|----------------------------------|----------------------------------|------------------------------|
-| 130nm  | 1.2V  | ~1 nA/um                         | < 100 mW                        | Leakage not yet dominant     |
-| 65nm   | 1.0V  | ~10 nA/um                        | 200-500 mW                      | Leakage becoming significant |
-| 45nm   | 0.9V  | ~50-100 nA/um                    | 500 mW - 1W                     | Multi-Vt essential           |
-| 28nm   | 0.9V  | ~100-200 nA/um                   | 1-3W                            | Power gating widespread      |
-| 16nm FF| 0.8V  | ~5-10 nA/um                      | 0.5-2W                          | FinFET dramatically helps    |
-| 7nm FF | 0.75V | ~10-20 nA/um                     | 1-3W                            | More transistors offset gain |
-| 5nm FF | 0.7V  | ~15-30 nA/um                     | 2-5W                            | Density drives total leakage |
-| 3nm GAA| 0.65V | ~10-20 nA/um                     | 2-5W                            | GAAFET helps electrostatics  |
-
-Note: per-transistor leakage decreased with FinFET (16nm) but total chip leakage kept growing
-because transistor count scaled faster.
+This is the whole rationale for **near-threshold computing (NTC)**: run at $V_{DD}\approx0.4$–0.6 V, a few $\times V_T$ above $V_{th}$, for **~5–10× better energy per op at roughly a third to a half the frequency**. It is the right operating point wherever throughput-per-watt beats latency — wake-word engines, always-on sensor hubs, IoT, and the efficiency cores of a big.LITTLE cluster. The frequency loss is real, which is why NTC is paired with parallelism (§5): recover throughput by going wide at low voltage rather than fast at high voltage. The MEP is bounded below by the same margin and SRAM-collapse floors as §3.1, which is why nobody ships logic at 0.2 V.
 
 ---
 
-## 6. Gate Oxide Tunneling Leakage
+## 4. The leakage lever: $V_{th}$ flavours, temperature, and the standby budget
 
-### 6.1 Quantum Mechanical Tunneling
+Leakage is the other lever, and it is governed by a *different* variable — $V_{th}$ — through an exponential, which makes it both powerful and dangerous. The subthreshold current, taken from [CMOS §1.3/§13](../00_Fundamentals/01_CMOS_Fundamentals.md):
 
-As gate oxide thickness scaled below ~3nm (starting at 90nm node), electrons can quantum-
-mechanically tunnel through the thin SiO2 barrier. This is a fundamentally different mechanism
-from subthreshold leakage.
+$$
+I_{leak}\propto \exp\!\left(-\frac{V_{th}}{n\,kT/q}\right)\equiv 10^{-V_{th}/S},\qquad S=\frac{kT}{q}\ln 10\,(1+C_{dep}/C_{ox})
+$$
 
-### 6.2 Direct Tunneling vs Fowler-Nordheim Tunneling
+where $V_{th}$ = threshold voltage, $S$ = subthreshold swing (~70–80 mV/dec, ideal floor 60 at 300 K), $n$ = body factor, $kT/q$ = thermal voltage (26 mV at 27 °C). The exponential is the entire story: at $S=70$ mV/dec, **every 70 mV of $V_{th}$ is a 10× change in leakage** — but also a change in speed, because overdrive $V_{DD}-V_{th}$ falls as $V_{th}$ rises (§3.1). That is the fundamental **$V_{th}$ / performance / leakage triangle**: you cannot lower $V_{th}$ for speed without paying exponentially in leakage, and you cannot raise it to save leakage without losing speed.
 
-```text
-Direct Tunneling (thin oxide, < ~3nm):
-  - Electron tunnels directly through the full oxide barrier
-  - Current is exponential in oxide thickness: I ~ exp(-alpha * t_ox)
-  - Dominant mechanism for modern thin oxides
-  - Cannot be reduced by lowering Vdd (barrier shape doesn't change much)
+The architectural response is to **not pick one $V_{th}$**. Standard-cell libraries ship in **multi-$V_t$ flavours — LVT (fast, leaky), SVT, HVT (slow, low-leak)** — and synthesis places them cell-by-cell: LVT only on the few timing-critical paths, HVT on the vast majority that have timing slack. Because leakage is exponential in $V_{th}$, swapping the ~80–90 % of non-critical cells to HVT can cut block leakage several-fold at zero frequency cost. **Body biasing** reaches the same knob electrically (reverse bias raises $V_{th}$ to save standby leakage; forward bias lowers it for a speed burst), and its effectiveness has faded on FinFET/GAA where the body is nearly isolated — a real generational trade-off documented in [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md).
 
-Fowler-Nordheim Tunneling (thick oxide, > ~3nm, high electric field):
-  - High gate voltage creates a triangular barrier
-  - Electron tunnels through the triangular portion
-  - Dominant in flash memory programming (intentionally used)
-  - Not significant in normal digital CMOS operation at modern Vdd
-```
+Two budget facts make leakage a first-class worry rather than a footnote:
 
-### 6.3 Gate Leakage Numbers
-
-```text
-Pure SiO2:
-  t_ox = 5.0 nm:  I_gate ~ 10^-5 A/cm^2 (negligible)
-  t_ox = 2.0 nm:  I_gate ~ 1     A/cm^2 (problematic)
-  t_ox = 1.2 nm:  I_gate ~ 100   A/cm^2 (unacceptable)
-```
-
-### 6.4 High-k Dielectrics
-
-The solution was to replace SiO2 (k ~ 3.9) with high-k materials:
-
-```text
-HfO2 (k ~ 22):
-  Can use physically thicker oxide while maintaining same
-  capacitance (same "electrical thickness" or EOT)
-
-  EOT = t_high-k * (k_SiO2 / k_high-k)
-
-Example:
-  Physical HfO2 thickness = 4 nm
-  EOT = 4 * (3.9 / 22)    = 0.71 nm equivalent SiO2
-
-  4 nm physical barrier -> dramatically reduced tunneling current
-  0.71 nm EOT           -> same capacitance as ultra-thin SiO2
-```
-
-Intel introduced HfO2/metal gate at 45nm (2007). This reduced gate leakage by
-~100x compared to SiO2 of equivalent EOT.
+- **Temperature: leakage ~doubles every 10–12 °C.** Both mechanisms push the same way — $kT/q$ widens the Boltzmann tail and $V_{th}$ itself falls ~1–2 mV/°C with heat. A block at 10 nA/µm at 25 °C is ~40× leakier at 85 °C. This forces leakage signoff at the **hot corner** and couples directly into the thermal-runaway loop of §1.
+- **Standby is all leakage.** When activity → 0 the only current left is $I_{leak}$, so idle/sleep battery life is a pure leakage number. Clock gating does nothing for it (the rail is still up); only **power gating** — inserting header/footer sleep transistors to cut the rail — removes it, at the cost of state loss (hence retention flops) and wake-up latency. The leakage of an *always-on* domain is an irreducible budget line, which is why those domains are kept tiny and HVT.
 
 ---
 
-## 7. Gate-Induced Drain Leakage (GIDL)
+## 5. Frequency vs parallelism: the power wall and why computing went wide
 
-### 7.1 Physical Mechanism
+### 5.1 The energy argument: wider-and-slower beats faster-and-hotter
 
-GIDL occurs at the gate-drain overlap region when:
-- Gate voltage is LOW (0V)
-- Drain voltage is HIGH (Vdd)
+Suppose you need to double a workload's throughput. There are two pure ways, and the $V^2$/cubic physics of §3 makes them wildly unequal.
 
-This creates a high electric field in the gate-drain overlap that causes band-to-band
-tunneling (BTBT):
+**Path A — go faster.** Push one unit to $2f$. But $f_{max}$ is voltage-bound, so hitting $2f$ requires raising $V_{DD}$, and by the cube law $P\propto f^3$: **~2× throughput costs ~8× power.** Energy per op *rises* (you raised $V_{DD}$, and $E_{op}\propto V_{DD}^2$).
 
-```text
-Energy Band Diagram at Gate-Drain Overlap:
+**Path B — go wide.** Put down two units at the *same* $(V_{DD},f)$. Throughput doubles (if the work is parallel); power is **2×**, linear; energy per op is *unchanged*. Better still, spend the parallelism to go **wide-and-slow**: two units at reduced $(V_{DD},f)$ can match one fast unit's throughput while each sits deep in the efficient part of the $V^2$ curve, so total power *drops*. Formally, at fixed throughput $T=N\cdot f$, power is
 
-                     Gate = 0V        Drain = Vdd
-                        |                |
-  Ec _______________    |    ___         |     ___________
-                    \   |   /   \        |    /
-                     \__|__/     \       |   /
-                        |        \______|__/
-  Ev _______________    |               |     ___________
-                        |               |
-                     oxide          overlap
-                                    region
+$$
+P\propto N\cdot V_{DD}^2\,f \;\;\text{with}\;\; f=\frac{T}{N},\ V_{DD}\!\downarrow\text{ as }f\!\downarrow \;\Longrightarrow\; P \text{ falls as } N\uparrow
+$$
 
-  The valence band on the channel side aligns with the conduction band
-  on the drain side -> band-to-band tunneling of electrons
-```
+— spreading a fixed throughput across more, slower, lower-voltage units trades **area (linear) for energy (super-linear savings)**. This is the founding result of low-power design (Chandrakasan–Brodersen, 1992) and the reason GPUs and NPUs are thousands of slow lanes rather than a few fast ones, and the reason phones use many efficiency cores near threshold (§3.2).
 
-### 7.2 When GIDL Matters
+The limits are equally important, or you would build an infinitely wide chip: **Amdahl's serial fraction** caps the speedup parallelism can extract, **area and cost** scale with $N$, and — decisively at advanced nodes — **you cannot power all the width at once** (§5.2).
 
-- **SRAM cells:** wordline (gate) is LOW during hold, bitline/internal node (drain) is at
-  Vdd. GIDL can corrupt stored data.
-- **Power-gated domains:** when header/footer switch is off, internal node voltages float --
-  GIDL can create unexpected current paths.
-- **DRAM retention:** GIDL at the access transistor can discharge the storage capacitor.
+### 5.2 Dennard's end, the power wall, and dark silicon
 
-### 7.3 GIDL Mitigation
+The reason this became *the* organising constraint of the field is a specific historical break, derived in [CMOS §4.5](../00_Fundamentals/01_CMOS_Fundamentals.md) and used here as the causal capstone. For thirty years **Dennard scaling** held power density constant: shrink dimensions and voltage together by $\kappa$, and $P/A$ stayed flat while frequency rose. It **ended ~2005 when $V_{th}$ (and therefore $V_{DD}$) stopped scaling** at the 60 mV/dec leakage wall — $V_{DD}$ crept from ~1.2 V to only ~0.75 V over the next fifteen years instead of halving each generation.
 
-- Lightly doped drain (LDD) extensions reduce the overlap field
-- Underlap devices (gate does not fully overlap drain) reduce GIDL at cost of performance
-- FinFET naturally reduces GIDL due to better gate control and thinner body
+With transistors still shrinking but voltage frozen, power *density* began to climb — the **power wall** — and three architectural consequences followed directly, and they are the "why" behind this entire notebook track:
+
+1. **Single-thread frequency stalled at 3–5 GHz.** The delay improvement of §3.1 was still there to cash in, but cashing it in means raising $V_{DD}$, and the cube law made that thermally impossible. Frequency has not meaningfully moved in twenty years. ([Performance_Modeling](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) treats this as the "frequency lever hits the power wall, $P\sim f^3$" row of its DSE table.)
+2. **The industry pivoted to parallelism** — multicore, wide SIMD, and specialised accelerators — because §5.1 says that is the *only* energy-efficient way to spend a growing transistor budget once frequency is capped.
+3. **Dark silicon became a first-class constraint.** If a chip cannot power all its transistors within the thermal ceiling, a growing fraction must stay dark at any instant:
+
+| Node | Fraction that must stay off at peak |
+|---|---|
+| 45 nm | ~30 % |
+| 16 nm FinFET | ~40 % |
+| 7 nm FinFET | ~50 % |
+| 3 nm GAA | ~55–60 % |
+
+The Apple-class SoC makes it concrete: fully activating a ~5 nm phone SoC would draw ~30–50 W against a ~5–8 W passive-thermal ceiling (§1), so only the cores and accelerators a task actually needs are ever powered. Dark silicon is *why* modern SoCs are heterogeneous forests of power-gated, DVFS-managed, near-threshold-capable blocks rather than one big uniform core — the physics of §3–§4 dictating the floorplan.
 
 ---
 
-## 8. Junction Leakage
+## 6. The reduction map: four levers, and what each attacks
 
-### 8.1 Reverse-Biased PN Junction
+Every power-reduction technique in existence is an attack on one term of $P_{total}=\alpha C V_{DD}^2 f + V_{DD}I_{leak}$, and the discipline is matching the technique to the term — clock gating does nothing for leakage; power gating does nothing for a busy block's dynamic; DVFS touches both but is bounded by latency and margin. This table is the map from lever to term; the *how* (flow, UPF, corner cases) is [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md).
 
-Every MOSFET has PN junctions at source/drain to substrate (or well). When reverse-biased,
-these junctions conduct a small reverse current:
+| Lever | Term attacked | Mechanism | Costs / bounds |
+|---|---|---|---|
+| **Activity reduction** | $\alpha$ | operand isolation, data gating, glitch reduction (path balance / retime) | logic/verification effort; bounded by real work |
+| **Clock gating** | $\alpha$ on the clock ($\to$ the 30–50 % term) | stop the clock to idle flops/blocks | detection logic, a few cycles; leakage untouched |
+| **Voltage / DVFS** | $V_{DD}^2$ (and $f$) | scale supply+frequency with demand; $V_{DD}$ islands | margin floor ~0.3–0.5 V, transition latency, $L\,di/dt$ |
+| **Capacitance** | $C$ | shorter wires, smaller cells, less data movement | area/placement; floorplan-limited |
+| **Power gating** | $V_{DD}I_{leak}$ | cut the rail on idle blocks (sleep transistors) | state loss → retention flops, wake latency, area |
+| **Multi-$V_t$ / body bias** | $I_{leak}$ (exponential in $V_{th}$) | HVT off-critical, LVT on-critical; RBB/FBB | speed↔leakage per path; body bias weak on FinFET |
 
-```text
-I_junction = I_s * (exp(V_forward / V_T) - 1)
-
-For reverse bias (V < 0):
-  I_junction ~ -I_s = -A * J_s
-
-Where:
-  A   = junction area
-  J_s = saturation current density
-      ~ 10^-7 A/cm^2 at 25C for modern processes
-        (much less than subthreshold)
-```
-
-### 8.2 Temperature Dependence
-
-Junction leakage has even stronger temperature dependence than subthreshold leakage:
-
-```text
-I_junction(T) ~ T^2 * exp(-E_g / (2 * k * T))
-
-Where:
-  E_g = bandgap energy of silicon (1.12 eV)
-
-Roughly doubles every 8-10C (faster than subthreshold).
-```
-
-At room temperature, junction leakage is typically 10-100x smaller than subthreshold leakage.
-But at high temperatures (125C+), it can become significant, especially for large diffusion
-areas.
-
-### 8.3 Leakage Breakdown by Mechanism Across Nodes
-
-How the leakage mechanisms of sections 5-8 split up as a fraction of total leakage:
-
-```text
-| Source           | 65nm | 28nm | 7nm FinFET |
-|------------------|------|------|------------|
-| Sub-threshold    | 70%  | 80%  | 85%        |
-| Gate tunneling   | 20%  | 10%  | 5%         |
-| Junction/GIDL    | 10%  | 10%  | 10%        |
-
-Note: FinFET dramatically reduced gate leakage (thicker effective oxide
-due to the fin geometry) and improved sub-threshold slope (n closer to 1.0),
-but sub-threshold leakage still dominates due to the sheer number of transistors.
-```
+The framework for a new design falls straight out of the taxonomy: attribute power to **dynamic (~40–60 % at modern nodes)** — of which the clock tree is 30–50 %, glitch 5–15 %, short-circuit 5–10 % — and **leakage (~40–50 %)**, subthreshold-dominant and worst at the hot corner; then reach for the lever that moves the biggest attributable term you can afford to move. Clock and voltage first (they move the largest dynamic terms cheaply), multi-$V_t$ next (free leakage), power gating where duty cycle justifies the retention overhead.
 
 ---
 
-## 9. Glitch Power (Hazard-Related Switching)
-
-### 9.1 What Causes Glitches
-
-Glitches (spurious transitions) occur due to unbalanced path delays through combinational logic,
-particularly at reconvergent fanout points:
-
-```ascii-graph
-               +------[delay=2]------+
-   Input A --->|                     |---> AND ---> Y
-               +------[delay=5]------+
-
-   A changes at t=0
-   Fast path: input arrives at AND at t=2 -> Y changes
-   Slow path: input arrives at AND at t=5 -> Y changes AGAIN (back to original)
-   
-   Result: Y glitches between t=2 and t=5 even though final value is the same
-```
-
-### 9.2 Impact on Power
-
-In an unoptimized datapath:
-- Glitch power can be 15-30% of total switching power
-- Multiplier trees are notorious for glitches (many reconvergent paths)
-- Each glitch propagates downstream, causing more glitches (glitch amplification)
-
-### 9.3 Timing Diagram
-
-```wavedrom
-{ "signal": [
-  { "name": "Input A",  "wave": "0.1......" },
-  { "name": "Fast path","wave": "0..1....." },
-  { "name": "Slow path","wave": "0....1..." },
-  {},
-  { "name": "Output",   "wave": "0..1010.." }
-], "head": { "text": "Reconvergent glitch: fast and slow paths arrive at different times, so the output pulses spuriously — wasting C·Vdd² per glitch" } }
-```
-
-### 9.4 Mitigation Techniques
-
-1. **Path balancing:** equalize delay paths through logic (add buffers on fast paths)
-2. **Retiming:** move registers to break long combinational paths
-3. **Guard registers:** insert pipeline registers at reconvergent points
-4. **Hazard-free logic synthesis:** decompose functions to avoid static hazards
-5. **Clock gating downstream logic:** if the glitch happens before the clock edge and
-   settles before capture, it doesn't matter for functionality -- but it STILL wastes power
-
----
-
-## 10. Technology Scaling Trends -- Dennard Scaling and Its Breakdown
-
-### 10.1 Dennard Scaling (1974-2005)
-
-Robert Dennard's 1974 paper established that as MOSFET dimensions shrink by a factor k:
-- W, L -> W/k, L/k (gate length and width shrink)
-- Vdd -> Vdd/k (voltage scales proportionally)
-- Cox -> k * Cox (thinner oxide, higher capacitance per area)
-- I_ds -> I_ds/k (current scales with voltage and dimensions)
-- Delay -> Delay/k (circuits get faster)
-- Power density remains CONSTANT (more transistors, same power per area)
-
-The math: Power per gate $= C V^2 f$. After scaling: $(C/k)(V/k)^2(kf) = CV^2f / k$.
-But k times as many gates fit in the same area: total power density = $(CV^2f/k)\,k = CV^2f =$ constant.
-
-This was the foundation of "frequency doubles every generation" for 30 years.
-
-### 10.2 Why Dennard Scaling Broke (~65nm)
-
-Dennard scaling requires Vdd to scale with Vth. But as Vth drops, leakage increases exponentially:
-
-```verilog
-For Vth = 0.3V at 130nm:
-  If we scale Vdd from 1.2V to 0.6V (k=2), Vth should also halve to 0.15V.
-  But at Vth = 0.15V: I_off = I_0 * exp(-0.15 / (1.3 * 0.026)) = I_0 * exp(-4.44)
-  vs Vth = 0.3V:       I_off = I_0 * exp(-0.30 / (1.3 * 0.026)) = I_0 * exp(-8.88)
-  
-  Ratio = exp(4.44) = 85x more leakage per transistor!
-
-  With 2x more transistors per area: total leakage density increases by ~170x.
-  The chip would be entirely leakage-dominated -- unusable.
-
-Resolution: Vth stopped scaling below ~0.25-0.35V.
-Consequence: Vdd could not scale as Dennard predicted (Vdd/Vth ratio dropped).
-  130nm: Vdd = 1.2V, Vth = 0.35V, overdrive = 0.85V
-   65nm: Vdd = 1.0V, Vth = 0.30V, overdrive = 0.70V  (Vdd didn't halve!)
-   28nm: Vdd = 0.9V, Vth = 0.28V, overdrive = 0.62V
-    7nm: Vdd = 0.75V, Vth = 0.25V, overdrive = 0.50V
-```
-
-The fundamental limit is the **Boltzmann tyranny** (60 mV/decade subthreshold swing): you cannot
-reduce Vth below ~0.25V without I_off exceeding design limits.
-
-### 10.3 Consequences of Broken Dennard Scaling
-
-```ascii-graph
-1. Power density INCREASES with scaling (instead of staying constant):
-   Each generation: ~2x more transistors, Vdd drops only ~10-15% (not 30%)
-   Power density grows ~30-50% per generation
-
-2. Dark silicon: A chip cannot power all its transistors simultaneously.
-   At 7nm, only ~50-70% of a chip can be active at full frequency.
-   The rest must be power-gated or clock-gated ("dark silicon").
-   
-   Example: Apple A15 (5nm, ~15B transistors):
-     Full activation would draw ~30-50W (exceeds mobile thermal budget of ~5-8W)
-     Only the active cores and accelerators are powered at any time
-
-3. Frequency plateaued: Clock frequency stalled at ~3-5 GHz around 2005
-   - Further frequency increase requires higher Vdd -> exponentially more power
-   - Instead: more cores, wider SIMD, specialized accelerators
-   - The industry moved to multi-core (parallelism) instead of frequency scaling
-
-4. Voltage scaling slowed dramatically:
-   250nm → 130nm: Vdd dropped from 2.5V → 1.2V (halved in 2 generations)
-   130nm → 7nm:   Vdd dropped from 1.2V → 0.75V (only 38% in 5+ generations)
-```
-
-### 10.4 FinFET Advantage for Leakage
-
-```verilog
-Why FinFET (16nm and below) partially restored scaling:
-
-Planar MOSFET at 20nm:
-  Subthreshold slope = 80-100 mV/decade (n = 1.3-1.5)
-  DIBL = 50-100 mV/V
-  Vth variability = +/- 30-50 mV (random dopant fluctuation)
-
-FinFET at 16nm:
-  Subthreshold slope = 65-70 mV/decade (n = 1.05-1.15)
-  DIBL = 20-30 mV/V
-  Vth variability = +/- 15-25 mV (undoped channel)
-  
-Consequence: FinFET can use LOWER Vth at same leakage budget:
-  Planar at Vth = 0.35V: I_off = I_0 * exp(-0.35/(1.35*0.026)) = I_0 * exp(-9.97)
-  FinFET at Vth = 0.28V: I_off = I_0 * exp(-0.28/(1.10*0.026)) = I_0 * exp(-9.79)
-  
-  Similar I_off, but FinFET's lower Vth gives (0.75-0.28)/(0.75-0.35) = 1.175x more
-  overdrive at Vdd = 0.75V. This means faster at same leakage, or same speed at lower Vdd.
-  
-  FinFET enabled Vdd to drop from ~0.9V (28nm planar) to ~0.75V (7nm FinFET)
-  while maintaining performance. Without FinFET, the 7nm node would not be viable.
-```
-
-### 10.5 Dark Silicon and Power Density Limits
-
-```verilog
-Power density ceiling for different cooling:
-  Passive (mobile, no fan):     ~5 W/cm^2  -> ~5-8W total
-  Active air cooling (laptop):  ~30 W/cm^2 -> ~45-65W total
-  Active air cooling (desktop): ~80 W/cm^2 -> ~150-250W total
-  Liquid cooling:               ~200 W/cm^2 -> ~300-500W total
-
-At 7nm with ~100M gates/mm^2:
-  If ALL gates switch at 2 GHz with alpha = 0.1:
-  P = 0.1 * 100e6 * 1.2e-15 * 0.75^2 * 2e9 = 13.5 W/mm^2 = 1350 W/cm^2
-  
-  This is 10x beyond even liquid cooling!
-  Hence: only a fraction of the chip can be active at any time.
-
-Dark silicon fraction (fraction that must be off at peak performance):
-  45nm planar: ~30% dark
-  16nm FinFET: ~40% dark
-   7nm FinFET: ~50% dark
-   3nm GAA:    ~55-60% dark
-  
-  This drives architecture: heterogeneous cores, power-gated accelerators,
-  near-threshold computing for background tasks.
-```
-
-### 10.6 Worked Leakage Calculation With All Parameters
-
-```text
-Calculate subthreshold leakage for a single NMOS in 28nm at 85C:
-
-Given:
-  W/L = 2.0 um / 0.028 um (minimum-size inverter NMOS)
-  Vth0 = 0.32V (SVT at 25C)
-  n = 1.25 (bulk CMOS)
-  mu = 300 cm^2/V*s (electron mobility at 85C)
-  Cox = 25 fF/um^2 (equivalent)
-  Vds = 0.9V (Vdd)
-  Vgs = 0V (transistor is OFF)
-  eta_DIBL = 60 mV/V
-  gamma = 0.4 V^(1/2)
-  Vsb = 0V (body tied to source)
-
-Step 1: Temperature effects on Vth and Vt
-  V_T(85C = 358K) = k*358/q = 1.381e-23 * 358 / 1.602e-19 = 30.8 mV
-  Vth(85C) = Vth0 - 2mV/K * (85-25) = 0.32 - 0.12 = 0.20V
-
-Step 2: DIBL effect
-  Vth_eff = Vth(85C) - eta * Vds = 0.20 - 0.060 * 0.9 = 0.20 - 0.054 = 0.146V
-
-Step 3: I_0 calculation
-  I_0 = mu * Cox * (W/L) * (n-1) * V_T^2
-      = 300e-4 * 25e-15/1e-12 * (2.0e-6/0.028e-6) * 0.25 * (30.8e-3)^2
-      = 300e-4 * 25e-3 * 71.4 * 0.25 * 9.49e-4
-      = 300e-4 * 25e-3 * 71.4 * 2.37e-4
-      = 300e-4 * 4.24e-4
-      = 1.27e-5 A/um ... let me simplify
-
-  Simplified: I_0 ~ 0.5 uA per um of width for 28nm SVT
-  For W = 2.0 um: I_0 = 1.0 uA
-
-Step 4: Subthreshold leakage
-  I_sub = I_0 * exp((Vgs - Vth_eff) / (n * V_T)) * (1 - exp(-Vds / V_T))
-        = 1.0e-6 * exp((0 - 0.146) / (1.25 * 0.0308)) * (1 - exp(-0.9/0.0308))
-        = 1.0e-6 * exp(-0.146 / 0.0385) * (1 - ~0)     [Vds >> V_T, so exp(-Vds/Vt) ~ 0]
-        = 1.0e-6 * exp(-3.79)
-        = 1.0e-6 * 0.0225
-        = 22.5 nA per transistor
-
-Step 5: Power per transistor
-  P_leak = I_sub * Vdd = 22.5e-9 * 0.9 = 20.3 nW per transistor
-
-Step 6: Scale to a 10M-gate block
-  Total leakage power = 10e6 * 20.3 nW = 203 mW at 85C
-
-  Compare with 25C (Vth_eff ~ 0.32 - 0.054 = 0.266V, V_T = 25.9mV):
-  I_sub_25C = 1.0e-6 * exp(-0.266 / (1.25*0.0259)) = exp(-8.22) = 0.27e-3
-  = 0.27 nA per transistor
-  P_leak_25C = 10e6 * 0.27e-9 * 0.9 = 2.4 mW at 25C
-
-  Ratio: 203/2.4 = 85x from 25C to 85C (consistent with ~2x per 10C rule: 2^6 = 64,
-  actual ratio is higher due to the Vth temperature coefficient being more aggressive here)
-
-This calculation shows why leakage analysis MUST be done at worst-case temperature.
-A design that meets power budget at 25C will fail catastrophically at 85C.
-```
-
----
-
-## 11. Power at Advanced Technology Nodes
-
-### 11.1 FinFET Advantages (16nm/14nm/7nm/5nm)
-
-FinFET dramatically improved the power-performance trade-off:
-
-```verilog
-Planar MOSFET:       Gate controls channel from ONE side
-                     -> poor electrostatics at short gate lengths
-                     -> high subthreshold slope (~80-100 mV/decade)
-                     -> high DIBL (~50-100 mV/V)
-
-FinFET:              Gate wraps channel on THREE sides
-                     -> excellent electrostatic control
-                     -> subthreshold slope ~65-70 mV/decade
-                     -> DIBL ~20-30 mV/V
-                     -> Can use lower Vth for same leakage -> faster or lower Vdd
-```
-
-Power impact compared to equivalent planar node:
-- ~50% reduction in dynamic power at same performance
-- ~80-90% reduction in leakage at same Vth target
-- Enables lower Vdd operation (0.7-0.8V vs 0.9-1.0V)
-
-### 11.2 Gate-All-Around (GAAFET) / Nanosheet (3nm and below)
-
-```verilog
-GAAFET:              Gate wraps channel on ALL FOUR sides
-                     -> Best possible electrostatic control
-                     -> Subthreshold slope ~62-65 mV/decade (near ideal)
-                     -> DIBL ~10-15 mV/V
-                     -> Variable channel width via nanosheet width adjustment
-                        (unlike FinFET where width is quantized to fin pitch)
-```
-
-### 11.3 Backside Power Delivery Network (BSPDN)
-
-Traditional approach: power and signal routing share the same metal stack (front side).
-Power rails consume routing resources and have high IR drop.
-
-Backside power delivery (Intel PowerVia, TSMC backside):
-- Power rails routed on the backside of the wafer (through TSVs)
-- Signal routing on the front side gets more resources
-- IR drop reduced by ~30-50% (shorter, wider power paths)
-- Enables denser standard cell libraries
-- Allows thinner front-side metal stack (lower parasitic capacitance -> less switching power)
-
-### 11.4 Complementary FET (CFET) and Stacked Transistors
-
-Future (2nm and beyond): stack NMOS directly on top of PMOS:
-- ~50% area reduction per logic cell
-- Shorter interconnects -> lower capacitance -> lower dynamic power
-- Potential for ~30% power reduction at same performance vs GAAFET
-- Manufacturing complexity is extreme (precise alignment, thermal budget)
-
----
-
-## 12. Power Measurement, Annotation, and Tool Flow — moved
-
-How switching activity is captured and fed to the tools (SAIF/VCD/FSDB, annotation flow and
-its coverage pitfalls, vectorless estimation) and the PrimeTime PX / Voltus tool flows now live in
-[Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) §1–2, next to the rest of the
-signoff methodology. This page stays focused on the physics and mechanisms of power itself.
-
-## 13. Summary: Power Breakdown Decision Framework
-
-```verilog
-When analyzing power for a new design, think:
-
-1. DYNAMIC POWER (~50-60% at modern nodes)
-   |-- Switching: alpha * C * Vdd^2 * f
-   |   |-- Clock tree: 30-50% of dynamic (alpha=1)
-   |   |-- Data path: proportional to switching activity
-   |   |-- Memory: access power dominates for SRAM/register files
-   |   \-- Glitch power: 5-15% in optimized designs
-   |
-   \-- Short-circuit: ~5-10% of dynamic (minimize with fast transitions)
-
-2. STATIC/LEAKAGE POWER (~40-50% at 7nm and below)
-   |-- Subthreshold: dominant component, exponential in Vth and temperature
-   |-- Gate tunneling: mitigated by high-k but still present
-   |-- GIDL: important for SRAM and power-gated designs
-   \-- Junction: significant only at high temperatures
-
-3. KEY KNOBS FOR REDUCTION
-   |-- Vdd reduction: quadratic dynamic, moderate leakage
-   |-- Clock gating: targets the largest dynamic component
-   |-- Multi-Vt: directly trades leakage for performance
-   |-- Power gating: eliminates leakage in unused blocks
-   \-- Activity reduction: operand isolation, data gating
-```
-
----
-
-## 14. Numbers to Memorize
+## Numbers to memorize
 
 | Quantity | Value | Why it matters |
 |---|---|---|
-| Dynamic : static split (≤7nm) | ~50–60% : 40–50% | leakage is now a co-equal term |
-| Switching share, 65nm → 7nm | 60–70% → 40–50% of total | shrinking fraction as nodes scale |
-| Leakage share, 65nm → 7nm | 20–30% → 40–50% | rises until FinFET reins it in |
-| Clock-tree share of dynamic | 30–50% | α=1 on every clock node → gate it first |
-| Glitch power | 5–15% of dynamic | path balancing reduces it |
-| Short-circuit power | ~5–10% of dynamic (≈1% with fast edges) | minimize with sharp transitions |
-| Switching energy/cycle | **α·C·Vdd²·f** (full C·V², not ½) | charge *and* discharge each cycle |
-| Subthreshold swing | ~78 mV/dec bulk, ~66 FinFET (ideal 60) | one decade of leakage per S |
-| Thermal voltage kT/q | 26 mV @ 27 °C, 33.5 mV @ 125 °C | sets the swing |
-| Leakage vs temperature | ~**2× per 10–12 °C** | the thermal-runaway risk |
-| Vth temperature coefficient | −1 to −2 mV/°C | Vth falls → leakage climbs with heat |
-| Vdd as a knob | **quadratic** on dynamic, moderate on leakage | the single biggest lever |
+| Energy per op | $\alpha C V_{DD}^2$ | **independent of $f$** — only $V$, $C$, $\alpha$ save energy |
+| Dynamic : leakage (≤7 nm) | ~40–60 % : 40–50 % | leakage is now a co-equal budget term |
+| Switching share, 65 → 7 nm | 60–70 % → 40–50 % | shrinking dynamic fraction |
+| Leakage share, 65 → 7 nm | 20–30 % → 40–50 % | rises until FinFET reins it in |
+| Clock-tree share of dynamic | 30–50 % | $\alpha=1$ on every clock node → **gate it first** |
+| Glitch power | 15–30 % unopt, 5–15 % optimised | path balancing / retiming |
+| Short-circuit power | ~5–10 % of dynamic | sharp edges; →0 when $V_{DD}<2V_{th}$ |
+| **DVFS power law** | $P\propto V_{DD}^2 f$, and $P\propto f^{3}$ over the range | the cube: last 10 % of clock is ~33 % more power |
+| Leakage vs temperature | ~**2× per 10–12 °C** | thermal-runaway risk; sign off hot |
+| $V_{th}$ swing on leakage | ~**10× per 70–80 mV** ($=S$) | multi-$V_t$ leverage is exponential |
+| Near-threshold win | ~5–10× energy at ~⅓–½ $f$ | run wide-and-slow at MEP ~0.3–0.4 V |
+| $V_{DD}$ floor (margin) | ~0.3–0.5 V | regeneration/SRAM collapse, not power |
+| Cooling ceilings | ~5 / 30–80 / 200 W/cm² (passive / air / liquid) | sets the product class and TDP |
+| Dark-silicon fraction | ~30 % (45 nm) → ~50–60 % (3 nm) | can't power all transistors → heterogeneity |
+| DRAM access energy | ~100× a compute op | move data least; the accelerator thesis |
+
+**The one-liner:** power reduces to $\alpha C V^2 f + V I_{leak}$; $V$ is the master knob (dynamic quadratic, DVFS cubic), leakage is exponential in $V_{th}$ and temperature, and since Dennard ended (~2005) the only efficient way to spend more transistors is **wide-and-slow**, not fast-and-hot.
 
 ---
 
-*This document targets senior-engineer / staff-level ASIC power interview preparation.
-All numerical examples use realistic process parameters. Cross-reference with
-Power_Reduction_Techniques.md, UPF_Power_Intent.md, and Power_Analysis_and_Signoff.md.*
+## Cross-references
+
+- **Down the stack (the physics this page assumes):** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) — §4 derives the three powers and the energy–delay/MEP knee at the transistor level, §1.3 the subthreshold current and 60 mV/dec wall, §13 the full leakage family (gate/junction/GIDL), §4.5 Dennard scaling and its end, §8 FinFET/GAA and backside power delivery, §3.2 the noise-margin floor that bounds $V_{DD}$.
+- **Up the stack (what spends these levers):** [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (clock/power gating, DVFS, multi-$V_t$, body bias — the *how* of §6), [Block_Activity_and_Power](02_Block_Activity_and_Power.md) (per-block/per-mode activity and glitch modelling behind §2.2), [UPF_Power_Intent](04_UPF_Power_Intent.md) (encoding domains, retention, isolation), [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (measuring average/peak/IR/thermal against the §1 ceilings).
+- **Adjacent (where the budget meets architecture):** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) (the power half of PPA and the $P\sim f^3$ DVFS lever), [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md) (composing DVFS/thermal across a chip), [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) (the wakeup/RF power that made the scheduler the $\sim W^2$ hot spot), [GPU_Architecture](../01_Architecture_and_PPA/15_GPU_Architecture.md) & [NPU_Accelerators](../01_Architecture_and_PPA/16_NPU_Accelerators.md) (the wide-and-slow / data-movement thesis of §5.1 and §2.2), [Memory](../01_Architecture_and_PPA/09_Memory.md) (SRAM access and array-leakage budgets).
+
+---
+
+## References
+
+1. Chandrakasan, A., Sheng, S., and Brodersen, R., "Low-Power CMOS Digital Design," *IEEE JSSC*, 27(4), 1992. The voltage-scaling and parallelism (wide-and-slow) argument of §3/§5.1.
+2. Horowitz, M., "Computing's Energy Problem (and what we can do about it)," *ISSCC*, 2014. Energy-per-op accounting and the data-movement cost of §2.2.
+3. Dennard, R. et al., "Design of Ion-Implanted MOSFETs with Very Small Physical Dimensions," *IEEE JSSC*, 9(5), 1974. Constant-field scaling (§5.2).
+4. Esmaeilzadeh, H. et al., "Dark Silicon and the End of Multicore Scaling," *ISCA*, 2011. The dark-silicon limit of §5.2.
+5. Dreslinski, R. et al., "Near-Threshold Computing: Reclaiming Moore's Law Through Energy Efficient Integrated Circuits," *Proc. IEEE*, 98(2), 2010. The MEP and NTC operating point of §3.2.
+6. Rabaey, J., Chandrakasan, A., and Nikolić, B., *Digital Integrated Circuits: A Design Perspective*, 2nd ed., Prentice Hall, 2003. The power taxonomy and activity factor of §2.

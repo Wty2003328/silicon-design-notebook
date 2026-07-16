@@ -1,2043 +1,375 @@
-# CPU Architecture -- The Complete Interview Bible
+# CPU Architecture — The Pipelined Machine and Its Contract
 
-## Table of Contents
-1. Five-Stage Pipeline -- Detailed Microarchitecture
-2. Pipeline Hazards with Instruction-Level Examples
-3. Forwarding (Bypassing) -- Complete MUX Diagrams
-4. Branch Prediction -- Deep Dive
-5. Tomasulo's Algorithm -- Step-by-Step Execution
-6. Superscalar and Register Renaming
-7. Memory Hierarchy -- AMAT, Cache Design, Store Buffer, and MLP
-8. Cache Coherence -- MESI with All Transitions
-9. Virtual Memory and TLB
-10. Performance Analysis
-11. Fetch Unit Microarchitecture
-12. RISC-V Instruction Examples
-13. SMT Resource Partitioning
-14. Exception Pipeline in Out-of-Order Execution
-15. Memory Ordering and Consistency Models
-16. Micro-op Fusion
+> **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and the gate-delay budget a stage must fit), [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md) (the ALU that sits in EX).
+> **Hands off to:** [RISC_V_ISA](04_RISC_V_ISA.md), [OoO_Execution](05_OoO_Execution.md), [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md), [Cache_Microarchitecture](07_Cache_Microarchitecture.md), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md).
 
 ---
 
-## 1. Five-Stage Pipeline -- Detailed Microarchitecture
+## 0. Why this page exists
 
-Before the stage-by-stage detail, it is worth being explicit about *what
-pipelining buys and what it therefore forces you to build* — nearly every
-mechanism in §2–§3 is a consequence of one choice made here. A non-pipelined core
-runs each instruction to completion before starting the next, so its throughput is
-capped at $1/t_{\text{instr}}$. Pipelining overlaps instructions in different
-stages so that, in steady state, one instruction *completes* every cycle even
-though each still takes five cycles end to end: it trades per-instruction latency
-(unchanged, in fact slightly worse) for throughput (up to 5x), and lets the clock
-run at the speed of the *slowest single stage* rather than of the whole datapath.
+Almost everything in a scalar CPU is a consequence of one decision: **overlap the execution of consecutive instructions instead of running them to completion one at a time.** Overlap is the only source of throughput a single ALU can offer — and it is also the sole reason hazards, forwarding, branch prediction, store buffers, and precise-state machinery exist at all. None of them is needed in a machine that finishes one instruction before fetching the next; every one is the *price* of the overlap that buys speed.
 
-That overlap is the entire source of the difficulty that follows. Because up to
-five instructions are now in flight at once, two things become mandatory:
+This page derives that machine from its purpose. We start from *why overlap raises throughput* and let the theory (ideal CPI, the frequency-versus-depth trade-off, the diminishing return of deeper pipes) tell us how far to push it. From the overlap itself we derive the three hazard classes and price each one. We present forwarding not as a table of bypass multiplexers but as the answer to a single timing gap. Then we place the pipelined core in the system it actually lives in — a memory hierarchy it must hide, a coherence invariant it must preserve, a consistency contract it must honour, sibling threads it can share with, and a speculation side-channel it must not leak through. For each we ask the same question: *what invariant does this thing maintain or break, and why must it exist?*
 
-- **State per in-flight instruction.** Each stage must latch everything the later
-  stages will need — which is exactly what the IF/ID … MEM/WB *pipeline registers*
-  hold. They exist only because instructions now coexist.
-- **Hazards.** Overlap means a later instruction can reach a stage that needs a
-  result an earlier instruction has not yet produced (data), or the fetch stage
-  must choose a next PC before an in-flight branch has resolved (control), or two
-  instructions want the same unit in the same cycle (structural). None of these
-  exist in a non-pipelined core; every one is the *price* of throughput. §2
-  catalogs them; §3 builds the forwarding and stall machinery that pays that price
-  without handing the throughput back.
-
-### 1.1 Stage 1: Instruction Fetch (IF)
-
-```text
-Inputs:  PC (Program Counter), Branch prediction signals
-Outputs: Instruction bits, PC+4, predicted branch target
-
-Components:
-  - PC register (updated every cycle)
-  - PC MUX: selects between:
-    * PC + 4 (sequential)
-    * Branch target (from branch predictor or resolved branch)
-    * Exception/interrupt vector
-  - Instruction Memory / I-Cache
-  - Branch Target Buffer (BTB) lookup (parallel with I-Cache)
-  - Next-PC logic
-
-Operation:
-  1. Send PC to I-Cache
-  2. Simultaneously look up PC in BTB
-  3. If BTB hit and BHT predicts taken: next PC  = BTB target
-  4. If BTB miss or not taken: next PC           = PC + 4
-  5. Fetch instruction from I-Cache (1 cycle for cache hit)
-  6. On I-Cache miss: pipeline stalls, fill from L2 (10-20 cycles)
-
-Pipeline register IF/ID:
-  {instruction[31:0], PC+4, predicted_target, prediction_direction}
-```
-### 1.2 Stage 2: Instruction Decode / Register Read (ID)
-
-```text
-Inputs:  Instruction from IF/ID register
-Outputs: Control signals, register values, immediate, decoded opcode
-
-Components:
-  - Instruction decoder (opcode -> control signals)
-  - Register file (read ports: rs1, rs2; write port from WB stage)
-  - Immediate generator (sign-extend, shift for different formats)
-  - Hazard detection unit (detects RAW hazards, generates stalls)
-  - Branch comparator (for branch-in-ID optimization)
-  - Control signal generation:
-    * ALUSrc (register or immediate)
-    * ALUOp (add, sub, and, or, slt, etc.)
-    * MemRead, MemWrite
-    * RegWrite
-    * MemtoReg (ALU result or memory data)
-    * Branch type
-
-Operation:
-  1. Decode instruction opcode and function fields
-  2. Read rs1 and rs2 from register file
-  3. Generate immediate value
-  4. Check for data hazards (compare rs1/rs2 with EX/MEM/WB destinations)
-  5. If load-use hazard detected: insert pipeline bubble (stall IF, ID)
-
-Pipeline register ID/EX:
-  {rs1_data, rs2_data, immediate, rd, ALUOp, control_signals, PC+4}
-```
-### 1.3 Stage 3: Execute (EX)
-
-```text
-Inputs:  Operands from ID/EX register, forwarded values
-Outputs: ALU result, branch decision, target address
-
-Components:
-  - ALU (arithmetic, logic, comparison)
-  - Forwarding MUX on each ALU input (select: ID/EX, EX/MEM forward, MEM/WB forward)
-  - Branch target adder (PC + immediate)
-  - Branch resolution (compare register values)
-  - Address calculation (for loads/stores: base + offset)
-
-Operation:
-  1. Select ALU operands (from register file or forwarded values)
-  2. Execute ALU operation
-  3. For branches: compare operands, determine taken/not-taken
-  4. If branch misprediction: flush IF and ID stages, correct PC
-  5. For loads/stores: compute effective address = rs1 + immediate
-
-Pipeline register EX/MEM:
-  {ALU_result, rs2_data (for store), rd, control_signals, branch_taken, target}
-```
-### 1.4 Stage 4: Memory Access (MEM)
-
-```text
-Inputs:  ALU result (address), store data from EX/MEM register
-Outputs: Memory read data or ALU pass-through
-
-Components:
-  - Data Memory / D-Cache
-  - Memory read/write control
-  - Write buffer (for store buffering)
-
-Operation:
-  1. For loads: send address to D-Cache, receive data (1 cycle if hit)
-  2. For stores: write data to D-Cache (or write buffer)
-  3. For ALU instructions: pass ALU result through (no memory access)
-  4. On D-Cache miss: pipeline stalls, fill from L2
-
-Pipeline register MEM/WB:
-  {ALU_result, mem_read_data, rd, control_signals}
-```
-### 1.5 Stage 5: Write Back (WB)
-
-Inputs:  MEM/WB register
-Outputs: Write to register file
-
-**Components:**
-   - Result MUX (multiplexer): select between ALU (arithmetic logic unit) result and memory data
-   - Register file write port
-
-**Operation:**
-   1. Select result (MemtoReg: memory data or ALU result)
-2. Write to destination register rd (if RegWrite is asserted)
-3. Write occurs on the first half of the clock cycle (allows
-same-cycle read in ID stage -- "write-first" register file)
+The deep dives — dynamic scheduling, the ROB and LSQ, TAGE prediction, cache and TLB internals — live on the sibling pages this one hands off to. Here we build the foundation they relax.
 
 ---
 
-## 2. Pipeline Hazards with Instruction-Level Examples
+## 1. Pipelining: why overlap buys throughput, and how deep to go
 
-A hazard is any situation where naively advancing the pipeline one stage per cycle
-would produce a *wrong* result or a *resource* conflict. There are exactly three
-root causes, and it is worth naming the cost of each up front, because the rest of
-this chapter is about paying those costs cheaply:
+### 1.1 The throughput argument
 
-- **Data hazards** — an instruction needs an operand a still-in-flight predecessor
-  computed but has not yet written back. Cost if handled by waiting: 1–3 stall
-  cycles per dependent pair (the register file is written in WB but read in ID).
-  Forwarding (§3) reclaims almost all of it; the one case it *cannot* — the
-  load-use hazard, where the datum does not physically exist early enough — costs
-  an unavoidable 1-cycle bubble (§2.2).
-- **Control hazards** — the branch's direction and target are unknown when the next
-  fetch must launch. Cost: the number of stages between fetch and branch
-  resolution, squashed on every taken or mispredicted branch (2 cycles resolving in
-  EX, 1 in ID, 3+ in a deep pipe — §2.3). This is *the* reason branch prediction
-  (§4) exists: it moves the cost from *every* branch to only the mispredicted ones.
-- **Structural hazards** — two instructions need the same hardware in the same
-  cycle. Cost: one stalls. Removed by duplicating the resource (split I/D memory,
-  multiple ALUs) or by pipelining the shared unit.
+A non-pipelined core drives one instruction through fetch → decode → execute → memory → writeback and only then starts the next. Its clock must be slow enough for the *entire* datapath to settle, and it completes one instruction every $t_{\text{logic}}$ seconds. Throughput is $1/t_{\text{logic}}$; the expensive ALU sits idle four-fifths of the time.
 
-Data and control hazards are the expensive ones in a scalar pipeline; §3 and §4
-exist to drive their cost toward zero without serializing execution.
-
-### 2.1 RAW (Read After Write) -- True Data Dependency
+Pipelining cuts the datapath into $N$ stages separated by registers and lets $N$ instructions occupy different stages at once. The clock now only has to cover the *slowest single stage*, and in steady state **one instruction completes every cycle** even though each still takes $N$ cycles end to end:
 
 ```text
-Instruction sequence (MIPS):
-  I1: ADD  $1, $2, $3       # Writes $1 in WB (cycle 5)
-  I2: SUB  $4, $1, $5       # Reads $1 in ID (cycle 3) -- $1 not yet written!
-  I3: AND  $6, $1, $7       # Reads $1 in ID (cycle 4) -- $1 not yet written!
-  I4: OR   $8, $1, $9       # Reads $1 in ID (cycle 5) -- $1 written this cycle (OK with write-first RF)
-
-Pipeline without forwarding:
-  Cycle:  1    2    3    4    5    6    7    8
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  stall stall EX  MEM  WB    <- 2-cycle stall for $1
-  I3:              IF  stall stall ID   EX  MEM  WB
-  I4:                   stall stall IF   ID   EX  MEM  WB
-
-With forwarding (see Section 3):
-  Cycle:  1    2    3    4    5    6    7    8
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID   EX  MEM  WB               <- Forward from EX/MEM
-  I3:              IF   ID   EX  MEM  WB          <- Forward from MEM/WB
-  I4:                   IF   ID   EX  MEM  WB     <- Normal read (WB to ID same cycle)
-
-  No stalls! Forwarding eliminates 2 stall cycles.
-```
-### 2.2 Load-Use Hazard (Forwarding Can't Solve It)
-
-```text
-  I1: LW   $1, 0($2)        # Load: data available END of MEM (cycle 4)
-  I2: ADD  $4, $1, $5       # Needs $1 at BEGINNING of EX (cycle 3)
-
-Pipeline:
-  Cycle:  1    2    3    4    5    6    7
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  stall EX  MEM  WB     <- 1 stall UNAVOIDABLE
-  I3:              IF  stall ID   EX  MEM  WB
-
-Why forwarding can't help:
-  I1 produces data at end of MEM (cycle 4 clock edge).
-  I2 needs data at beginning of EX (cycle 3 clock edge).
-  Data isn't ready yet! Must wait 1 cycle.
-
-  After the stall: I2's EX is in cycle 4, and I1's MEM result is
-  available at the end of cycle 4 -> can forward from MEM/WB to EX.
-
-Compiler optimization (load delay slot scheduling):
-  I1: LW   $1, 0($2)
-  I3: AND  $6, $7, $8                        <- Independent instruction moved here
-  I2: ADD  $4, $1, $5                        <- Now 1 cycle later, no stall needed
-```
-### 2.3 Control Hazards (Branch Penalty)
-
-```text
-  I1: BEQ  $1, $2, target   # Branch resolved in EX (cycle 3)
-  I2: ADD  $3, $4, $5       # Fetched speculatively (may be wrong)
-  I3: SUB  $6, $7, $8       # Fetched speculatively (may be wrong)
-
-If branch is taken (mispredicted as not-taken):
-  Cycle:  1    2    3    4    5
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  flush               <- Wrong path, flushed
-  I3:              IF  flush               <- Wrong path, flushed
-  target:               IF   ID   EX ...   <- Correct path starts
-
-Branch penalty = 2 cycles (for branch resolved in EX)
-
-If branch resolved in ID (some implementations):
-  Penalty = 1 cycle
-
-If branch resolved in MEM (deeply pipelined):
-  Penalty = 3 cycles
+cycle:   1    2    3    4    5    6    7    8
+I1:     IF   ID   EX   MEM  WB
+I2:          IF   ID   EX   MEM  WB
+I3:               IF   ID   EX   MEM  WB
+I4:                    IF   ID   EX   MEM  WB
+                          └── steady state: one WB per cycle ──┘
 ```
 
-The penalty numbers above are also a design knob, not a fixed cost. Moving branch
-resolution earlier (EX → ID) removes a squash cycle on every misprediction, but it
-drags the register comparison and its operand forwarding into the ID stage,
-lengthening that stage's critical path. In a frequency-limited design the added ID
-delay can cost more cycle time than the one squash cycle it saves — which is why
-deeply pipelined, high-frequency cores resolve branches *later* and attack the
-penalty with accurate prediction (§4) rather than with earlier resolution.
+The trade is explicit: per-instruction **latency** is unchanged (slightly worse, because of register overhead), but **throughput** rises by up to $N\times$. This is the whole game — latency for throughput — and it is why the *iron law* separates cleanly into three independent knobs:
 
-### 2.4 WAR and WAW (Out-of-Order Only)
+$$
+T_{\text{CPU}} \;=\; IC \times \text{CPI} \times t_{\text{clk}}
+$$
 
-```text
-WAR (Write After Read) - anti-dependency:
-  I1: ADD  $1, $2, $3       # Reads $2 in cycle 2
-  I2: SUB  $2, $4, $5       # Writes $2 in cycle 6
+where $IC$ = dynamic instruction count (set by ISA + compiler), $\text{CPI}$ = cycles per instruction (set by the microarchitecture's stalls), $t_{\text{clk}}$ = clock period (set by the slowest stage). Pipelining attacks $t_{\text{clk}}$; its **ideal CPI is 1** (one completion per cycle). Every mechanism in §2–§5 exists to keep the *actual* CPI near that ideal without giving back the $t_{\text{clk}}$ that pipelining won.
 
-In-order pipeline: No hazard (I1 reads $2 before I2 writes it).
-Out-of-order: I2 might execute before I1 if I2's operands are ready first.
-  If I2 writes $2 before I1 reads it -> I1 gets wrong value.
-Solution: Register renaming. I2 writes to physical reg P47 (renamed),
-  I1 still reads from P12 (old mapping of $2). No conflict.
+### 1.2 Overlap forces exactly two things to be built
 
-WAW (Write After Write):
-  I1: ADD  $1, $2, $3       # Writes $1
-  I2: SUB  $1, $4, $5       # Also writes $1
+Because up to $N$ instructions now coexist, two obligations follow directly and nothing else in the scalar core is fundamental:
 
-In-order: No hazard (I1 writes before I2, final value is from I2).
-Out-of-order: I1 might write after I2, leaving $1 with I1's value (wrong!).
-Solution: Register renaming. I1 writes P47, I2 writes P63 (different physical regs).
-  Architectural register $1 maps to P63 after I2. P47 is freed later.
-```
+1. **State per in-flight instruction.** Each stage must latch everything later stages will need — decoded controls, operands, the destination register, the PC. That is the *entire* reason pipeline registers exist; they hold the context that used to live implicitly in a single instruction's lifetime.
+2. **Hazards.** With five instructions in flight, a later one can reach a stage needing a result an earlier one has not produced (data), the fetch stage must pick a next PC before an in-flight branch resolves (control), or two instructions want one resource in one cycle (structural). §2 derives all three from overlap and prices them.
+
+### 1.3 How deep should the pipe be? The frequency-versus-depth trade-off
+
+Deeper pipes clock faster — but not without limit, and not for free in CPI. Model the clock period as the per-stage logic plus a fixed overhead:
+
+$$
+t_{\text{clk}}(N) \;=\; \frac{t_{\text{logic}}}{N} \;+\; t_{\text{ovh}}
+$$
+
+where $t_{\text{logic}}$ = total combinational delay of the unpipelined datapath (FO4), $t_{\text{ovh}}$ = per-stage overhead (flop setup + clk-to-Q + skew + jitter), roughly constant per stage. As $N\to\infty$ the useful logic term vanishes and frequency saturates at $1/t_{\text{ovh}}$ — **the overhead wall**: past some depth, added stages are almost pure latch delay.
+
+Meanwhile CPI *rises* with depth, because the branch-misprediction penalty is the number of stages between fetch and branch resolution, which grows with $N$. Writing the added mispredict CPI as $\beta N$:
+
+$$
+\text{CPI}(N) \;=\; 1 + \beta N, \qquad \beta \equiv b \cdot p_{\text{mp}} \cdot c
+$$
+
+where $b$ = branches per instruction ($\approx 0.2$), $p_{\text{mp}}$ = per-branch mispredict rate, $c$ = fraction of the added stages sitting between fetch and resolve. Per-instruction time is the product, and minimizing it gives the optimal depth:
+
+$$
+\tau(N) = (1+\beta N)\!\left(\frac{t_{\text{logic}}}{N}+t_{\text{ovh}}\right)
+\;\;\Longrightarrow\;\;
+\boxed{\,N^{*} = \sqrt{\dfrac{t_{\text{logic}}}{\beta\,t_{\text{ovh}}}}\,}
+$$
+
+The two effects — frequency gain $\propto 1/N$ shrinking, penalty cost $\propto N$ growing — cross at $N^{*}$; beyond it, every added stage costs more mispredict CPI than it recovers in frequency. This is *why* deeper is not always better, expressed as a knee rather than a slogan.
+
+Two lessons drop out of $N^{*}$. First, the optimum tracks $\sqrt{1/\beta}$: a **better branch predictor (smaller $p_{\text{mp}}$) justifies a deeper pipe**, which is exactly why prediction accuracy and pipeline depth advanced together historically. Second, the pure-performance $N^{*}$ comes out *deep* — often tens of stages — which is why the early-2000s frequency race pushed pipelines to 20–31 stages. What pulls the real knee back to **14–20 stages** is not $N^{*}$ itself but two limits it ignores: the **overhead wall** — below roughly **6–8 FO4 of logic per stage** (Hrishikesh et al., 2002), $t_{\text{ovh}}$ consumes too large a share of each cycle for useful frequency to keep rising — and **power**, which grows with frequency and makes the performance-per-watt optimum shallower still. The Pentium 4 (~31 stages, ~20-cycle mispredict penalty) sat past that knee and paid in CPI on branchy code and in watts; modern high-performance cores settle at 14–20 stages, and in-order embedded cores at 5–8.
+
+*(The complementary bound — how much of a program is even pipelineable/parallelizable — is Amdahl's law, $\text{Speedup}=1/((1-f)+f/S)$; it governs multicore scaling and is developed in [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md).)*
+
 ---
 
-## 3. Forwarding (Bypassing) -- Complete MUX Diagrams
+## 2. Hazards: the three ways overlap breaks, and what each costs
 
-Forwarding rests on a single observation: a result is *physically available* at the
-end of the stage that computes it (latched into EX/MEM at the end of EX), but the
-register-file copy a consumer would read is not written until WB, a few cycles
-later. The stall-only pipeline pretends the value does not exist until WB;
-forwarding instead *reads it from where it already sits* — the pipeline latch — and
-muxes it into the ALU input. So the machinery in this section is forced by that
-timing gap, and it must do exactly two things: (1) detect, for each source operand
-of the instruction in EX, whether a later-stage pipeline register holds a
-not-yet-committed write to that same register (the comparators in §3.2), and
-(2) select the *freshest* matching value when more than one matches — which is why
-an EX/MEM forward takes priority over a MEM/WB forward, the former being the more
-recent write.
+A hazard is any situation where naively advancing every instruction one stage per cycle would compute the wrong answer or contend for a resource. Overlap creates exactly three root causes. Naming the *cost* of each up front is the point — the rest of the chapter is about paying those costs cheaply.
 
-The load-use case (§2.2, §3.3) is the exception that proves the rule: forwarding
-can route a value to an *earlier stage*, but it cannot route it *earlier in time
-than it is produced*. A load's datum does not exist until the end of MEM, one cycle
-after the dependent ALU op needs it, so no bypass path can conjure it — the
-hazard-detection unit must inject one real stall cycle and only then forward. That
-is why detection (§3.3) is a separate unit from the forwarding muxes (§3.2): one
-decides *when to wait*, the other decides *where to read*.
+**Data hazards (RAW — read-after-write).** A consumer reaches the stage where it needs an operand before the producer has written it back. The register file is written in WB but read in ID, so a naive machine would read a stale value.
+- *Cost if handled by waiting:* 1–3 stall cycles per dependent pair, equal to the distance between where the value is produced and where it is consumed.
+- *How it is paid:* forwarding (§3) reclaims almost all of it. The one case forwarding *cannot* fix — the load-use hazard, where the datum does not physically exist early enough — costs an unavoidable **1-cycle bubble**.
 
-### 3.1 Forwarding Paths
+**Control hazards.** The branch's direction and target are unknown when the *next* fetch must launch. Every cycle between fetch and branch resolution is a cycle of instructions fetched on an unverified path.
+- *Cost:* the penalty equals the number of stages from fetch to resolution, charged on every taken/mispredicted branch. As a CPI adder:
+
+$$
+\Delta\text{CPI}_{\text{ctrl}} \;=\; b \times p_{\text{mp}} \times \text{penalty}
+$$
+
+  where $b$ = branch frequency, $p_{\text{mp}}$ = mispredict rate, penalty = resolve-distance in cycles.
+- *How it is paid:* branch prediction (§4) moves the cost from *every* branch to only the mispredicted ones — the single most valuable idea in the front end, and the reason $\beta$ in §1.3 is small enough to justify deep pipes.
+
+**Structural hazards.** Two instructions need the same hardware in the same cycle (one memory port for both fetch and load; one write port for two results).
+- *Cost:* one instruction stalls.
+- *How it is paid:* duplicate the resource (split I/D caches, multiple ALUs) or pipeline the shared unit so it accepts a new request each cycle. In a scalar pipe structural hazards are largely designed away; they return as a first-order concern in wide superscalar and shared-port designs.
+
+Data and control hazards are the expensive ones in a scalar pipeline; §3 and §4 exist to drive their cost toward zero without serializing execution.
+
+### 2.1 WAR and WAW are not real hazards — they are name collisions
+
+Two more "dependences" appear the moment instructions can *complete* out of program order (which a scalar in-order pipe does not do, but its OoO successor will): **WAR** (write-after-read) and **WAW** (write-after-write). Neither carries a value from the earlier instruction to the later one; both are artifacts of two independent computations reusing the same architectural register *name*. Because the ISA exposes only ~32 names but a core keeps hundreds of results live, name reuse is constant and every reuse looks like a dependence the hardware must honour.
+
+The fix is therefore not stalling or forwarding but **renaming**: give every new destination a fresh physical register and the collisions vanish, leaving only true RAW. This is why WAR/WAW belong to the out-of-order story, not the scalar one — the mechanism that removes them (register renaming) is derived in full in [OoO_Execution](05_OoO_Execution.md) §2, and previewed in §5 here.
+
+---
+
+## 3. Forwarding: closing one timing gap
+
+Forwarding rests on a single observation. A result is **physically available at the end of the stage that computes it** — an ALU result is latched into the EX/MEM register at the end of EX — but the *register-file copy* a consumer would read is not written until WB, a couple of cycles later. A stall-only pipeline pretends the value does not exist until WB and waits. Forwarding instead **reads the value from where it already sits** — the pipeline latch — and muxes it straight into the ALU input.
+
+So the entire forwarding network is forced by, and only by, that produce-at-EX-end / consume-at-EX-start gap. It must do exactly two things:
+
+1. **Detect**, for each source operand of the instruction in EX, whether a later-stage pipeline register holds a not-yet-committed write to that same architectural register.
+2. **Select the freshest** match when more than one later stage holds a write to that register — an EX/MEM forward (the more recent write) takes priority over a MEM/WB forward.
+
+That is the whole idea. The signal-level realization (one comparator per source per forwarding stage, a small mux tree on each ALU input) is mechanical bookkeeping that follows from those two requirements; it is not worth memorizing and is not reproduced here.
+
+**The load-use exception proves the rule.** Forwarding can route a value to an *earlier stage*, but it cannot route it *earlier in time than it is produced*. A load's datum does not exist until the end of MEM — one cycle after a dependent ALU op in the next slot needs it — so no bypass path can conjure it. A separate hazard-detection check must inject exactly one stall cycle, after which the value forwards normally. This is why detection (decide *when to wait*) is a distinct function from forwarding (decide *where to read*): the first handles the one gap the second cannot close. Compilers hide this bubble by scheduling an independent instruction into the load-delay slot.
+
+**Why this machinery does not survive into wide out-of-order cores.** The explicit bypass network is an all-to-all set of paths from every producing stage to every consuming input. Its cost scales as roughly $O(\text{depth} \times W^{2})$ in a $W$-wide machine — every one of $W$ consumers this cycle may need a value from any of the in-flight producers — so wires, muxes, and the timing pressure on the ALU input all explode with width and depth. Beyond a few stages and a couple of lanes it stops being tractable as fixed wiring. The out-of-order core's answer is to replace *all* explicit bypass paths with **one broadcast**: a completing instruction drives its result tag onto a common data bus that every waiting consumer snoops, waking dependents regardless of pipeline distance. That single move — turning a wiring problem into a broadcast — is developed in [OoO_Execution](05_OoO_Execution.md) §4.
+
+---
+
+## 4. Control hazards and branch prediction — the concept
+
+A branch stalls the front end for as many cycles as it takes to resolve. Prediction exists to change *when* that cost is paid: instead of stalling on every branch, the core **guesses** direction and target at fetch, speculatively fetches down the predicted path, and pays the penalty *only when the guess is wrong*. The CPI model of §2 makes the value obvious — with $b=0.2$ and a 2-cycle penalty, moving from 50 %-accurate static prediction to 97 %-accurate dynamic prediction cuts the branch tax from ~20 % to ~1 %, and (via $N^{*}$ in §1.3) unlocks the deeper pipe.
+
+Two ideas carry the concept; their elaborate realizations belong to [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md).
+
+- **Hysteresis (the 2-bit counter).** A 1-bit predictor mispredicts *twice* per loop — once entering, once exiting — because a single anomalous outcome flips it. A 2-bit saturating counter requires *two* consecutive misses to change its prediction, so a loop's single not-taken exit does not unlearn the taken pattern; it mispredicts only once per loop. The lesson generalizes: predictors add a confidence dimension so that a lone counter-example does not erase a strong history.
+- **Correlation (global history).** A branch's outcome often depends on *other recent branches*, not just its own history (`if (x) … if (!x) …`). Indexing a table by the recent global-outcome pattern (hashed with the PC, as in gshare) captures that correlation. Modern predictors (TAGE, perceptron) generalize this to many history lengths at once.
+
+The separation of concerns is worth stating because it recurs everywhere in the front end: a **direction** predictor answers *whether* a branch is taken, while a **target** buffer (BTB) answers *where* it goes if taken; both are needed because the next fetch address requires both facts before the branch executes.
+
+**Vendor accuracy** (why the branch horizon of §1.3 is where it is):
+
+| Predictor | Accuracy (SPEC INT) | Shipped in |
+|---|---|---|
+| Static (always-taken / BTFNT) | 60–75 % | simple embedded |
+| 2-bit BHT | 85–90 % | early RISC |
+| gshare (global history) | 93–95 % | AMD K6 |
+| Tournament (local+global) | 95–97 % | Alpha 21264 |
+| TAGE-SC-L | 97–99 % | Intel Haswell+ |
+| Perceptron + TAGE | 97–99 % | AMD Zen |
+
+At 97–99 % accuracy a mispredict every ~200–300 instructions, not buffer area, is what caps the useful speculation window — the branch horizon that bounds ROB size in [OoO_Execution](05_OoO_Execution.md) §3.
+
+---
+
+## 5. Beyond in-order: the scalar ceiling and the four ideas that break it
+
+The in-order scalar pipe has a hard performance floor. Its CPI cannot drop below 1 (one issue per cycle), a single long-latency instruction (a cache-missing load, a divide) stalls *every* instruction behind it even when independent work exists, and name reuse fabricates WAR/WAW stalls that carry no real data. Lifting each limit is a named idea, developed fully in [OoO_Execution](05_OoO_Execution.md); the concepts, and *why each must exist*, are these:
+
+- **Register renaming** removes the WAR/WAW name collisions of §2.1 by mapping ~32 architectural names onto a large physical pool, so only true RAW can make an instruction wait. It is *exact*: it removes precisely the false dependences and nothing else.
+- **Dynamic scheduling (Tomasulo's algorithm)** lets an instruction issue the moment its operands are *ready* rather than when its neighbours are, by having each waiting instruction watch a common data bus for the result tags it needs. Historically it introduced tag-based wakeup and the register-renaming-via-reservation-stations idea that every modern scheduler descends from. This is what lets independent work proceed *underneath* a stalled load — the source of CPI below 1.
+- **The reorder buffer (ROB)** reconciles the contradiction the first two ideas create: instructions now *complete* in any order, yet software, interrupts, and exceptions must see architectural state change *in program order*. The ROB is the program-order queue that funnels out-of-order results back into in-order **commit**, which is the single point where speculation becomes architectural fact (precise state).
+- **Superscalar width** raises the issue rate above one per cycle by widening fetch/decode/issue to $W$. Its cost is the $O(W^{2})$ dependency-check and rename-port growth (every one of $W$ instructions may depend on the others in its group), which — together with the port-cost walls in [OoO_Execution](05_OoO_Execution.md) §2–§4 — is why real cores rarely exceed 6–8-wide.
+
+**Micro-op fusion** is the cheap complement to width: the decoder fuses an adjacent compare-and-branch (or a load-and-op) into a single internal op that occupies one ROB slot, one issue slot, and one scheduler entry, splitting only at the execution ports. It raises *effective* ROB capacity and issue width at no window-storage cost — Golden Cove fuses ~5–7 % of dynamic instructions for an ~8–10 % effective-ROB gain, and Apple's very wide cores lean on aggressive fusion to feed their back ends. It is an ISA-efficiency lever (x86's memory-operand instructions create more fusion opportunities), not a new structure.
+
+Everything from here on is the *system* the core runs inside.
+
+---
+
+## 6. The memory hierarchy the pipeline must hide
+
+The pipeline of §1 assumes a one-cycle memory. Real DRAM is 100–300 cycles away, so the entire memory system exists to make the common case look close while the rare case is amortized, not eliminated. The governing equation is **average memory access time**, applied recursively down the levels:
+
+$$
+\text{AMAT} = t_{\text{hit}} + m \cdot P_{\text{miss}}, \qquad
+P_{\text{miss}} = t_{\text{hit}}^{(L2)} + m^{(L2)}\big(t_{\text{hit}}^{(L3)} + m^{(L3)}\,t_{\text{mem}}\big)
+$$
+
+where $t_{\text{hit}}$ = hit time of a level, $m$ = its miss rate, $P_{\text{miss}}$ = penalty (the AMAT of the next level down). The recursion is why hierarchy works: a small fast L1 catches most accesses, and each deeper level only pays for the traffic the level above missed. A typical modern stack — L1 4 cyc, L2 ~14 cyc, L3 ~40 cyc, DRAM ~200 cyc at L1/L2/L3 miss rates of ~10 %/2 %/20 % of the level above — yields an AMAT of ~5–6 cycles, versus ~24 cycles for L1-then-DRAM: a $\sim 4\times$ swing bought entirely by the middle levels. Cache internals (geometry, replacement, write policy, the three-Cs miss taxonomy) are the subject of [Cache_Microarchitecture](07_Cache_Microarchitecture.md); here only the latency they expose matters.
+
+### 6.1 Memory-level parallelism: overlap, applied to misses
+
+AMAT quietly assumes misses are *serial*. The escape is the same idea as pipelining — overlap. If the core can keep $N$ independent misses outstanding at once, their latencies overlap and the *effective* per-miss cost falls toward $t_{\text{miss}}/N$. This is **memory-level parallelism (MLP)**, and by Little's law the outstanding count the machine needs is the bandwidth–delay product $N = t_{\text{miss}} \times (\text{miss rate})$. MLP is a distinct axis from instruction-level parallelism: a dependency-bound loop has low ILP but a strided access pattern can still expose high MLP.
+
+MLP is capped by hardware that tracks outstanding misses — **MSHRs** (miss-status holding registers), typically 8–16 at L1 — and generated by three mechanisms: out-of-order execution (issue independent loads past a miss), the hardware **prefetcher** (the dominant source in practice — a stride detector fires requests ahead of demand, converting would-be serial misses into parallel hits), and a deep enough window to expose the independent loads (the ROB-sizing argument of [OoO_Execution](05_OoO_Execution.md) §3). Pointer-chasing workloads (graph traversal, sparse linear algebra) defeat all three — their addresses are data-dependent, so neither prefetcher nor OoO can find parallelism the program does not contain.
+
+This overlap-memory-with-compute principle is general: it is also what GPU warp scheduling (run one warp while another waits on memory) and tiled kernels like FlashAttention (load the next tile while computing the current one) exploit. A CPU reaches it dynamically through OoO + prefetch rather than by explicit software staging.
+
+### 6.2 The store buffer, and store-to-load forwarding
+
+Stores need a buffer between the pipeline and the L1 for three independent reasons, each a small invariant:
+
+1. **Speculation** — a store on a mispredicted path must never reach the cache, so its write is held until the store is known non-speculative (commit). This is the memory-side mirror of deferring the register-map update to commit (precise state).
+2. **Decoupling** — a store should not stall the pipeline waiting for a busy cache write port (e.g. behind a line fill); the buffer absorbs it.
+3. **Out-of-order data readiness** — a store's address and data can be produced before older instructions retire; the buffer holds the result until in-order commit.
+
+A buffered store is invisible to memory but *must* be visible to a younger load from the same address in the same thread — otherwise the thread would not see its own writes. So a load checks the store buffer and, on an address match, takes the data directly (**store-to-load forwarding**) instead of reading a stale cache. The hard cases are timing (the store address may resolve after the load) and *partial overlap* (a load spanning bytes from several stores plus the cache), which forces a per-byte merge or a stall until the stores commit — a documented 5–10 % of cycles on store-forwarding-heavy integer code. Store-buffer capacity is a real limiter for write-heavy code (memcpy/memset): **~32 (Cortex-X2), ~40 (Apple M1), ~48 (Zen 4), ~60 (Raptor Lake)**. The dynamic disambiguation of loads against older unknown-address stores — the store-set predictor and violation recovery — is the LSQ's job, in [OoO_Execution](05_OoO_Execution.md) §5.
+
+---
+
+## 7. Virtual memory and the TLB — the concept
+
+Every load and store issues a *virtual* address that must be translated to a physical one before it can touch a cache tag or memory. The page table that holds the mapping is itself in memory and, on x86-64, is a four-level tree — so a naive translation costs four dependent memory accesses *before* the one the program wanted. That is intolerable on the pipeline's critical path, so the mapping is cached: the **TLB** is a small, fast associative memory holding recently used page translations, turning the common case into a one-cycle lookup.
+
+Three ideas carry the topic; the microarchitecture (multi-level TLBs, page-walk caches, ASIDs, the Sv39/48 formats) is [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md).
+
+- **The TLB is a cache of translations,** so it has the same hit/miss/AMAT structure as §6. A hit is ~1 cycle; a miss triggers a page-table walk of ~10–60 cycles (walk entries usually themselves cached), or hundreds if the walk itself misses to DRAM, or millions on a true page fault (disk).
+- **VIPT hides the TLB in the shadow of the cache.** If the cache is *indexed by virtual bits that lie within the page offset* (which translation never changes) and *tagged by the physical address* (from the TLB), then the TLB lookup and the cache-set access proceed **in parallel** — one cycle total instead of two serialized. The constraint is that index+offset bits must fit within the page-offset width; exceeding it (a too-large cache) reintroduces aliasing, resolved by higher associativity or page colouring. This is the standard L1 organization precisely because it removes translation from the load-use critical path.
+- **Huge pages trade fragmentation for reach.** A 4 KB page maps 4 KB per TLB entry; a 2 MB page maps 512× more, so a fixed 64-entry TLB covers 128 MB instead of 256 KB and skips a walk level. The cost is internal fragmentation and allocation difficulty — the usual capacity-versus-granularity tension.
+
+---
+
+## 8. Cache coherence: the single-writer invariant
+
+*This page owns the protocol-level view of coherence; the in-cache implementation (controller pipeline, MSHR interaction, inclusion) is [Cache_Microarchitecture](07_Cache_Microarchitecture.md) §9, and the on-chip-interconnect realization is [ACE_and_CHI](12_ACE_and_CHI.md).*
+
+Private per-core caches create a correctness problem the single-core machine never had: the same memory line can sit in several caches at once, and one core's write must not leave another core reading a stale copy. Coherence is the protocol that preserves, across all those private copies, the illusion of **one shared memory**. Precisely, it maintains two invariants:
+
+- **Single-Writer / Multiple-Reader (SWMR):** for any line, at any instant, either *one* cache may write it (and no other holds it) *or* any number may read it (and none writes). Writer and readers are mutually exclusive in time.
+- **Data-Value:** a read returns the value of the *last* write to that line in the coherence order — no copy lags behind a completed write.
+
+Every state and transition in MESI is the *minimal bookkeeping* needed to enforce those two invariants, and reading the states as answers to two yes/no questions is more useful than memorizing a transition table:
+
+| State | "Am I the only cached copy?" | "Is memory stale (am I dirty)?" | What it buys |
+|---|---|---|---|
+| **Modified** | yes | yes | write freely, no bus traffic; must write back |
+| **Exclusive** | yes | no | can write *silently* (E→M) with no bus transaction |
+| **Shared** | no | no | read freely; must announce before writing |
+| **Invalid** | — | — | not present; must fetch |
+
+The four states are exactly the two bits those two questions need. **Why Exclusive exists** is the subtle part: without it, the extremely common read-then-modify pattern (load a line, then store to it) would need a bus invalidation on the store even when no other cache holds the line. E records "I am the only copy *and* clean," so the subsequent write upgrades E→M **silently** — a bus transaction saved on the most common private-data access pattern. That single optimization is why MESI is the baseline over the older MSI.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    R1["ID/EX.rs1_data"] --> MA["MUX A"]
-    EM1["EX/MEM.ALU_result"] --> MA
-    MW1["MEM/WB.result"] --> MA
-    FA["Forward_A ctrl"] --> MA
-    MA --> AA["ALU Input A"]
-    R2["ID/EX.rs2_data"] --> MB["MUX B"]
-    EM2["EX/MEM.ALU_result"] --> MB
-    MW2["MEM/WB.result"] --> MB
-    FB["Forward_B ctrl"] --> MB
-    MB --> AB["ALU Input B"]
-    classDef mux fill:#fde68a,stroke:#b45309,color:#000
-    classDef src fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef out fill:#dcfce7,stroke:#15803d,color:#000
-    class MA,MB mux
-    class R1,R2,EM1,EM2,MW1,MW2,FA,FB src
-    class AA,AB out
-```
-
-Each MUX selects one of three inputs: `00` normal (register file via ID/EX); `01` forward from EX/MEM (1-cycle forward, ALU→ALU); `10` forward from MEM/WB (2-cycle forward, ALU→ALU or MEM→ALU). Load-to-use forwards from MEM/WB to EX after one stall cycle.
-
-### 3.2 Forwarding Control Logic
-
-```verilog
-// Forward A (ALU input 1)
-always @(*) begin
-    if (EX_MEM_RegWrite && (EX_MEM_Rd != 0) && (EX_MEM_Rd == ID_EX_Rs1))
-        ForwardA = 2'b01;  // Forward from EX/MEM
-    else if (MEM_WB_RegWrite && (MEM_WB_Rd != 0) && (MEM_WB_Rd == ID_EX_Rs1))
-        ForwardA = 2'b10;  // Forward from MEM/WB
-    else
-        ForwardA = 2'b00;  // No forwarding
-end
-
-// Forward B (ALU input 2) -- same logic with Rs2
-always @(*) begin
-    if (EX_MEM_RegWrite && (EX_MEM_Rd != 0) && (EX_MEM_Rd == ID_EX_Rs2))
-        ForwardB = 2'b01;
-    else if (MEM_WB_RegWrite && (MEM_WB_Rd != 0) && (MEM_WB_Rd == ID_EX_Rs2))
-        ForwardB = 2'b10;
-    else
-        ForwardB = 2'b00;
-end
-
-// Priority: EX/MEM forward takes priority over MEM/WB forward
-// (EX/MEM has the most recent value)
-```
-### 3.3 Hazard Detection Unit (for Load-Use Stall)
-
-```text
-// Detect load-use hazard: current ID stage reads what EX stage is loading
-wire load_use_hazard = ID_EX_MemRead &&
-                       ((ID_EX_Rd == IF_ID_Rs1) || (ID_EX_Rd == IF_ID_Rs2));
-
-// When hazard detected:
-//   1. Insert NOP into ID/EX register (bubble)
-//   2. Stall IF and ID stages (don't advance PC, don't update IF/ID register)
-//   3. After 1 cycle, the load result is available for forwarding from MEM/WB
-```
----
-
-### 3.4 Detailed Forwarding Network (N-wide Superscalar)
-
-**Bypass paths in a 5-stage pipeline:**
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    EM["EX/MEM pipeline reg<br/>ALU_result"] --> MA["MUX · Forward_A=01"]
-    MW["MEM/WB pipeline reg<br/>result (ALU or MEM data)"] --> MA2["MUX · Forward_A=10"]
-    MA --> AA["ALU Input A"]
-    MA2 --> AA
-    EM --> MB["MUX · Forward_B=01"]
-    MW --> MB2["MUX · Forward_B=10"]
-    MB --> AB["ALU Input B"]
-    MB2 --> AB
-    R1["ID/EX.rs1_data"] --> AA
-    R2["ID/EX.rs2_data"] --> AB
-    classDef reg fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef mux fill:#fde68a,stroke:#b45309,color:#000
-    classDef out fill:#dcfce7,stroke:#15803d,color:#000
-    class EM,MW,R1,R2 reg
-    class MA,MA2,MB,MB2 mux
-    class AA,AB out
-```
-
-Bypass paths: **EX→EX** (Forward=01) — result available after EX, forwarded to the next instruction's EX; **MEM→EX** (Forward=10) — result available after MEM, forwarded to an instruction two cycles later; **WB→EX** — not needed in a classic 5-stage pipeline with a write-first register file (WB writes in the first half of the cycle, ID reads in the second, so the value is available same-cycle).
-
-In pipelines deeper than 5 stages a WB→EX (late-stage-to-early-stage) bypass *is* needed — e.g., a 7-stage pipeline with WB in stage 6 and a dependent EX in stage 4 must forward back two stages. In an out-of-order core the Common Data Bus (CDB) handles this: on write-back, the result tag is broadcast to the issue queue's CAM (content-addressable memory), waking dependent instructions regardless of pipeline distance — replacing all explicit bypass paths with one broadcast.
-
-**Which forwarding is needed to avoid stalls:**
-
-| Dependency Distance | Source Stage | Consumer Stage | Forward Path | Stall? |
-|---|---|---|---|---|
-| 1 cycle apart (back-to-back ALU) | EX/MEM | EX | EX->EX (Forward=01) | No stall |
-| 2 cycles apart (ALU, NOP, ALU) | MEM/WB | EX | MEM->EX (Forward=10) | No stall |
-| Same cycle (WB->ID) | WB | ID | Write-first RF | No stall |
-| Load -> ALU (1 cycle apart) | MEM/WB | EX | MEM->EX after 1 stall | **1 stall cycle** |
-| 3+ cycles apart (deeper pipeline) | WB (or later) | EX | WB->EX bypass (deeper pipelines) or CDB broadcast (OoO) | No stall |
-
-**Worked pipeline timing diagram showing data hazard resolution:**
-
-```verilog
-Instruction sequence:
-  I1: ADD  $1, $2, $3     (writes $1)
-  I2: SUB  $4, $1, $5     (reads $1 -- RAW hazard, distance 1)
-  I3: AND  $6, $1, $7     (reads $1 -- RAW hazard, distance 2)
-  I4: OR   $8, $1, $9     (reads $1 -- RAW hazard, distance 3)
-
-Without forwarding:
-  Cycle:  1    2    3    4    5    6    7    8    9   10   11
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  stall stall EX  MEM  WB
-  I3:              IF  stall stall ID   EX  MEM  WB
-  I4:                  stall stall IF   ID   EX  MEM  WB
-  Total: 11 cycles, 4 stall cycles
-
-With forwarding:
-  Cycle:  1    2    3    4    5    6    7    8
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID   EX  MEM  WB       <- EX->EX forward (EX/MEM.ALU_result -> I2's EX)
-  I3:              IF   ID   EX  MEM  WB  <- MEM->EX forward (MEM/WB.result -> I3's EX)
-  I4:                   IF   ID   EX  MEM WB  <- No forward needed (WB writes, ID reads same cycle)
-  Total: 8 cycles, 0 stall cycles
-
-Forwarding detail for each cycle:
-
-  Cycle 3: I1 in EX, I2 in ID
-    I1's ALU computes $1 = $2 + $3
-    Result available at end of cycle 3 (written to EX/MEM register)
-
-  Cycle 4: I1 in MEM, I2 in EX, I3 in ID
-    Forward A for I2: EX/MEM.Rd=$1 matches I2.Rs1=$1 -> ForwardA=01
-    I2's ALU input A = EX/MEM.ALU_result (forwarded from I1)
-    I2 computes $4 = $1(forwarded) - $5
-
-  Cycle 5: I1 in WB, I2 in MEM, I3 in EX, I4 in ID
-    Forward A for I3: MEM/WB.Rd=$1 matches I3.Rs1=$1 -> ForwardA=10
-    I3's ALU input A = MEM/WB.ALU_result (forwarded from I1)
-    I3 computes $6 = $1(forwarded) & $7
-    I4 reads $1 from register file (I1 wrote $1 in WB first half of cycle 5,
-    I4 reads in ID second half of cycle 5 -- write-first register file)
-
-Load-use hazard (1 stall, unavoidable):
-  I1: LW   $1, 0($2)
-  I2: ADD  $4, $1, $5
-
-  Cycle:  1    2    3    4    5    6    7
-  I1:    IF   ID   EX  MEM  WB
-  I2:         IF   ID  stall EX  MEM  WB        <- 1 stall cycle
-  I3:              IF  stall ID   EX  MEM  WB
-
-  Why 1 stall: I1's data available at end of MEM (cycle 4).
-  I2 needs data at start of EX (cycle 4 originally).
-  After 1 stall, I2's EX is in cycle 5, I1's MEM data is available via MEM->EX forward.
-
-  Forward in cycle 5: MEM/WB.mem_data forwarded to I2's ALU input A.
-```
-
----
-
-## 4. Branch Prediction -- Deep Dive
-
-### 4.1 CPI Impact of Branches
-
-```text
-CPI = CPI_base + Branch_Frequency * Misprediction_Rate * Penalty
-
-Example:
-  CPI_base          = 1 (ideal pipeline)
-  Branch_Frequency  = 20% (1 in 5 instructions is a branch)
-  Penalty           = 2 cycles (branch resolved in EX)
-
-  With always-not-taken prediction (50% accuracy for conditional branches):
-    CPI = 1 + 0.2 * 0.5 * 2 = 1.2  (20% performance loss)
-
-  With 2-bit predictor (90% accuracy):
-    CPI = 1 + 0.2 * 0.1 * 2 = 1.04  (4% loss)
-
-  With tournament predictor (97% accuracy):
-    CPI = 1 + 0.2 * 0.03 * 2 = 1.012  (1.2% loss)
-
-  With deep pipeline (20 stages, penalty  = 15 cycles):
-    At 97% accuracy: CPI                  = 1 + 0.2 * 0.03 * 15 = 1.09  (9% loss!)
-    Even excellent prediction hurts with deep pipelines.
-```
-
-### 4.2 Two-Bit Saturating Counter -- FSM with Transitions
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 stateDiagram-v2
     direction LR
-    ST: Strongly Taken (11) · predict T
-    WT: Weakly Taken (10) · predict T
-    WNT: Weakly Not-Taken (01) · predict NT
-    SNT: Strongly Not-Taken (00) · predict NT
-    ST --> ST: Taken
-    ST --> WT: Not Taken
-    WT --> ST: Taken
-    WT --> WNT: Not Taken
-    WNT --> WT: Taken
-    WNT --> SNT: Not Taken
-    SNT --> WNT: Taken
-    SNT --> SNT: Not Taken
+    I: Invalid
+    S: Shared
+    E: Exclusive
+    M: Modified
+    I --> E: read, no other copy
+    I --> S: read, others share
+    I --> M: write (invalidate others)
+    E --> M: write (silent!)
+    E --> S: another core reads
+    S --> M: write (invalidate others)
+    S --> I: another core writes
+    E --> I: another core writes
+    M --> S: another core reads (write back)
+    M --> I: another core writes (write back)
 ```
 
-Prediction rule: MSB (most significant bit) = 1 → predict Taken; MSB = 0 → predict Not Taken. For a loop that runs 100×, a 1-bit predictor makes 2 mispredictions (first entry NT, last exit T); a 2-bit predictor makes only 1 (at exit — the weakly-taken state absorbs the first exit and stays taken for re-entry).
+### 8.1 The two protocol trade-offs
 
-### 4.3 Branch History Table (BHT) Organization
+**M→S wastes bandwidth; MOESI fixes it.** When a Modified line is read by another core, MESI forces a write-back to memory before sharing — even though a direct cache-to-cache transfer would suffice. **MOESI** adds an **Owned** state: the writer keeps the dirty line as Owner, supplies it directly to the requester (who gets Shared), and defers the memory write-back until eviction. This turns a memory round-trip into a cache-to-cache transfer on every producer→consumer sharing event — which is why **AMD uses MOESI** (MOESI-F, with a Forward state to pick one supplier among sharers) on its bandwidth-sensitive multi-die parts.
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    PC["PC"] --> LB["Lower bits · PC[11:2]"]
-    LB --> BHT["BHT array<br/>Entry 0 … Entry N-1<br/>(each a 2-bit counter)"]
-    BHT --> PR["Prediction<br/>(Taken / Not Taken)"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class PC,LB,BHT,PR s
-```
-
-BHT size is typically 1K–16K entries; the index is `PC[11:2]` for 1K entries (ignore the byte offset, align to instructions). The main problem is **aliasing** — different branches map to the same entry, with a collision rate that depends on table size and branch frequency.
-
-### 4.4 BTB (Branch Target Buffer) Structure
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    PC["PC"] --> TAG["BTB Tag RAM"]
-    TAG --> Q{"Tag match?"}
-    Q -->|Yes| DATA["BTB Data RAM"] --> TGT["Target address<br/>(next PC if taken)"]
-    Q -->|No| NT["Predict Not Taken<br/>(or use BHT separately)"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef d fill:#fde68a,stroke:#b45309,color:#000
-    class PC,TAG,DATA,TGT,NT s
-    class Q d
-```
-
-Each BTB entry holds `{tag (upper PC bits), target_address, valid, branch_type}`; typical size 256–4K entries, 2–4-way set-associative. The BTB answers *where* to fetch if taken; the BHT answers *whether* to take (target vs PC+4). Both are needed for full prediction.
-
-### 4.5 Gshare Predictor
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    PC["PC"] --> X(("XOR"))
-    GHR["GHR — global<br/>history register"] --> X
-    X --> IDX["Index"] --> PHT["PHT — pattern history table<br/>(2-bit counters)"]
-    PHT --> P["Prediction"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class PC,GHR,IDX,PHT,P s
-```
-
-The GHR is an N-bit shift register of the last N branch outcomes (Taken→1, Not Taken→0). `Index = PC[N-1:0] XOR GHR[N-1:0]`; the XOR gives a unique index per (PC, history) pair, capturing correlations such as "if the last two branches were taken, this one is usually not taken." Typical accuracy 93–95% on SPEC; GHR width 10–18 bits; PHT 2¹⁰–2¹⁸ entries.
-
-### 4.6 Tournament Predictor
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    PC["PC"] --> CH["Chooser / meta<br/>2-bit counter per entry"]
-    CH --> L["Local predictor<br/>per-branch history"]
-    CH --> G["Global predictor<br/>gshare-style shared history"]
-    L --> Fr["Final prediction"]
-    G --> Fr
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef c fill:#fde68a,stroke:#b45309,color:#000
-    class PC,L,G,Fr s
-    class CH c
-```
-
-The chooser selects local or global. On each outcome: if local was right and global wrong, bias the chooser toward local (and vice-versa); if both agree, no change. Local history suits branches whose pattern is tied to their own history (loops); global history suits correlated branches (if-else chains). Tournament accuracy is 95–97% on SPEC (the Alpha 21264 used this).
-
-### 4.7 Prediction Accuracy Comparison
-
-```text
-| Predictor           | Accuracy (SPEC) | Hardware Cost   | Used In           |
-|---------------------|-----------------|-----------------|-------------------|
-| Always Not Taken    | 30-40%          | None            | -                 |
-| Always Taken        | 60-70%          | None            | -                 |
-| BTFNT               | 65-75%          | Minimal         | Simple embedded   |
-| 1-bit BHT (1K)      | 80-85%          | 1KB             | -                 |
-| 2-bit BHT (4K)      | 85-90%          | 8KB             | Early RISC        |
-| Gshare (14-bit)     | 93-95%          | 32KB            | AMD K6            |
-| Tournament          | 95-97%          | 64KB            | Alpha 21264       |
-| TAGE                | 97-99%          | 64-256KB        | Intel Haswell+    |
-| Perceptron          | 95-97%          | 64KB            | AMD Zen           |
-```
+**Snooping does not scale; directories do.** The mechanism that answers "who else holds this line?" is the real scalability limiter:
+- **Snooping** broadcasts every coherence request to *all* caches, which filter by address. Bandwidth grows as $O(N)$ per transaction with $N$ cores, and the shared bus saturates beyond ~8–16 cores. Simple and low-latency at small scale.
+- **Directories** keep, per line, a record of which caches share it, and send **point-to-point** messages only to the caches that actually hold the line. This removes the broadcast, scaling to 100+ cores, at the cost of a directory lookup in the latency path and storage for the sharer vectors. Every large server fabric (AMD EPYC, Intel Xeon SP, ARM CMN) is directory-based; the choice is a pure bandwidth-scaling-versus-latency/area trade.
 
 ---
 
-## 5. Tomasulo's Algorithm -- Step-by-Step Execution
+## 9. Memory consistency: the ordering contract
 
-### 5.1 Architecture Recap
+Coherence (§8) governs a *single* address across caches. **Consistency** governs the visible order of accesses to *different* addresses, across threads. It is a contract: the hardware promises never to expose a reordering the model forbids, and software promises to insert synchronization when it needs ordering the model does not guarantee by default. The models form a spectrum from strong-and-slow to weak-and-fast:
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    IQ["Instruction queue"] --> ISS["Issue (in-order)"]
-    ISS --> RSA["Reservation stations<br/>Add1 / Add2 / Add3"]
-    ISS --> RSM["Reservation stations<br/>Mul1 / Mul2 / Mul3"]
-    RSA --> ADD["Adder"]
-    RSM --> MUL["Multiplier"]
-    ADD --> CDB["Common Data Bus (CDB)"]
-    MUL --> CDB
-    CDB --> RF["Register file + ROB"]
-    classDef q fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef rs fill:#fde68a,stroke:#b45309,color:#000
-    classDef fu fill:#dcfce7,stroke:#15803d,color:#000
-    class IQ,ISS,RF q
-    class RSA,RSM rs
-    class ADD,MUL,CDB fu
-```
+- **Sequential consistency (SC):** all operations appear in one global order that respects each thread's program order — no reordering is ever visible. Easiest to reason about, but every load must wait for all prior stores to become globally visible, so it forfeits the store buffer's latency hiding. No mainstream general-purpose CPU ships SC as its default.
+- **Total store order (TSO — x86):** relaxes exactly *one* pair — a load may pass an older store to a *different* address (store→load reordering). This is precisely what the store buffer of §6.2 does naturally: a store sits in the buffer while younger loads to other addresses proceed, and same-address loads are covered by store-to-load forwarding. TSO is "the store buffer, made architectural."
+- **Weak ordering (ARM, RISC-V default):** permits all four reorderings by default; software inserts **fences** or uses **acquire/release** annotations where ordering matters. A store-release orders all prior accesses before it (lock release); a load-acquire orders all subsequent accesses after it (lock acquire) — together they build a critical section without a full fence, which is cheaper because the LSQ enforces per-instruction ordering bits locally instead of draining the whole pipeline.
 
-### 5.2 Step-by-Step Example
-
-**Code sequence:**
-
-```text
-I1: LD    F6, 34(R2)       # Load F6 from memory[R2+34]
-I2: LD    F2, 45(R3)       # Load F2 from memory[R3+45]
-I3: MULTD F0, F2, F4       # F0   = F2 * F4 (depends on I2)
-I4: SUBD  F8, F6, F2       # F8   = F6 - F2 (depends on I1, I2)
-I5: DIVD  F10, F0, F6      # F10  = F0 / F6 (depends on I3, I1)
-I6: ADDD  F6, F8, F2       # F6   = F8 + F2 (depends on I4, I2)
-```
-
-**Execution trace (cycle by cycle):**
-
-```text
-Cycle 1: Issue I1 (LD F6, 34(R2))
-  Load1 RS: Op=LD, Addr=R2+34, Dest=F6
-  Register status: F6 -> Load1
-
-Cycle 2: Issue I2 (LD F2, 45(R3))
-  Load2 RS: Op=LD, Addr=R3+45, Dest=F2
-  Register status: F2 -> Load2
-
-Cycle 3: Issue I3 (MULTD F0, F2, F4)
-  Mul1 RS: Op=MULT, Vj=?, Qj=Load2 (F2 not ready), Vk=F4 value, Qk=0
-  Register status: F0 -> Mul1
-  I1 executes (LD completes, CDB broadcasts: Load1 -> F6 value)
-  Load1 result written to F6 in register file
-
-Cycle 4: Issue I4 (SUBD F8, F6, F2)
-  Add1 RS: Op = SUB, Vj=F6 value (now available from I1), Qj=0,
-           Vk = ?, Qk=Load2 (F2 still loading)
-  Register status: F8 -> Add1
-  I2 may execute this cycle
-
-Cycle 5: Issue I5 (DIVD F10, F0, F6)
-  Mul2 RS: Op=DIV, Vj=?, Qj=Mul1 (F0 not ready), Vk=F6 value, Qk=0
-  Register status: F10 -> Mul2
-  I2 completes (CDB broadcasts: Load2 -> F2 value)
-  Mul1 captures F2 value (Qj = Load2 matches, now Vj=F2 value, Qj=0)
-  Add1 captures F2 value (Qk = Load2 matches, now Vk=F2 value, Qk=0)
-
-Cycle 6: Issue I6 (ADDD F6, F8, F2)
-  Add2 RS: Op=ADD, Vj=?, Qj=Add1 (F8 not ready), Vk=F2 value, Qk=0
-  Register status: F6 -> Add2  (overwrite! WAW with I1 resolved by renaming)
-  I3 begins execution (Mul1 has both operands)
-  I4 begins execution (Add1 has both operands)
-
-Cycle 7:
-  I4 completes (Add1 result on CDB: F8  = F6 - F2)
-  Add2 captures (Qj                     = Add1 matches, now Vj=F8 value)
-
-Cycle 8:
-  I6 begins execution (Add2 has both operands)
-
-Cycle 9:
-  I6 completes (Add2 result on CDB: F6 = F8 + F2)
-
-Cycle 10 (or later, multiplier takes multiple cycles):
-  I3 completes (Mul1 result on CDB: F0  = F2 * F4)
-  Mul2 captures (Qj                     = Mul1 matches, now Vj=F0 value)
-
-Cycle 11+:
-  I5 begins execution (Mul2 has both operands, division is slow)
-
-Cycle 40+ (division takes ~30 cycles):
-  I5 completes (Mul2 result on CDB: F10 = F0 / F6)
-```
-
-### 5.3 How RAW, WAR, WAW Are Handled
-
-**RAW (I3 depends on I2 for F2):**
-   - I3 issues with Qj=Load2 (tag, not value). When I2 completes and broadcasts
-   - on CDB, Mul1 snoops and captures the value. True data flow respected.
-
-**WAR (I6 writes F6, which I5 reads):**
-   - At issue time of I5, F6's value is already captured into Mul2's Vk.
-   - When I6 later writes F6 (updating the register file), Mul2 already has
-   - the old value. No conflict.
-
-**WAW (I1 writes F6, I6 also writes F6):**
-   - At I6's issue time, register status for F6 is updated from "Load1" to "Add2".
-   - I1's result was already consumed. I6's result becomes the final F6 value.
-   - Even if I1 completed after I6 (impossible in this example, but in general
-   - with ROB), the ROB ensures in-order commit.
+The design lesson is the direct trade: **stronger models cost performance** (less reordering freedom, more stalling) but **ease software reasoning**; weaker models expose more parallelism but push the ordering burden onto programmers and compilers. The LSQ machinery that actually enforces these constraints — speculating loads past unresolved stores and replaying on a violation — is in [OoO_Execution](05_OoO_Execution.md) §5; the fence encodings (`fence rw,rw`, `fence.i`, `sfence.vma`, `.aq`/`.rl`) are in [RISC_V_ISA](04_RISC_V_ISA.md).
 
 ---
 
-## 6. Superscalar and Register Renaming
+## 10. Simultaneous multithreading: replicate state, share the engine
 
-### 6.1 Superscalar Pipeline
+A single thread rarely sustains a wide core's peak IPC — it stalls on misses, mispredicts, and dependency chains, leaving execution ports idle. **SMT fills those idle slots** by running $t$ threads over one out-of-order datapath, so that when one thread stalls another's ready instructions use the ports. The organizing principle is one line: **replicate the architectural state that gives each thread its identity; share the throughput engine that SMT exists to keep busy.** The invariant preserved is that each thread's architectural state evolves exactly as if it ran alone — thread-ID tags on every shared entry keep the threads from aliasing.
 
-```text
-2-wide superscalar: Issue up to 2 instructions per cycle
-
-  Fetch:  [I0, I1]  [I2, I3]  [I4, I5]  ...  (fetch 2 per cycle)
-  Decode: [I0, I1]  [I2, I3]  [I4, I5]  ...  (decode 2 per cycle)
-  Rename: [I0->P5, I1->P6]  [I2->P7, I3->P8]  ... (rename 2 per cycle)
-  Issue:  Check dependencies, issue to reservation stations
-  Execute: Multiple FUs (2 ALUs, 1 FPU, 1 Load, 1 Store)
-  Commit: ROB retires 2 per cycle (in program order)
-
-Challenges:
-  - Dependency checking: O(W^2) comparisons for W-wide issue
-  - Register renaming: need W rename ports per cycle
-  - Multiple FUs: 2+ ALUs, 1+ FPU, 1+ load/store unit
-  - Branch prediction accuracy must be very high (deep speculation)
-```
-
-### 6.2 Register Renaming with Physical Register File
-
-```text
-Architectural registers: R0-R31 (ISA visible, 32 registers)
-Physical registers: P0-P127 (128 physical registers, not ISA visible)
-
-Register Alias Table (RAT):
-  R0 -> P0 (R0 is always 0, hardwired)
-  R1 -> P15
-  R2 -> P42
-  R3 -> P7
-  ...
-
-Free list: {P48, P51, P63, P72, ...}  (available physical registers)
-
-Instruction: ADD R1, R2, R3
-
-Rename process:
-  1. Read source mappings: R2 -> P42, R3 -> P7 (from RAT)
-  2. Allocate destination: R1 gets P48 (from free list)
-  3. Update RAT: R1 -> P48 (old mapping P15 saved in ROB)
-  4. Issue: ADD P48, P42, P7 (no architectural registers, all physical)
-
-On commit:
-  Free the OLD physical register (P15, the previous mapping of R1)
-  P15 returns to the free list
-
-On flush (misprediction):
-  Restore RAT to committed state (from ROB snapshots)
-  Free all speculative physical registers
-```
-
-### 6.3 Reorder Buffer (ROB) Management
-
-The ROB exists to resolve a contradiction the previous two sections created:
-renaming and out-of-order issue let instructions *complete* in any order, yet
-software, interrupts, and exceptions must see architectural state change *in
-program order*. The ROB is what reconciles the two — the program-order queue
-through which every out-of-order result is funnelled back into in-order *commit*.
-That one job dictates its shape and its columns: it must be a FIFO (program order);
-each entry needs a `Done?` bit (the head cannot retire until the oldest instruction
-has actually completed), an `Exception` field (a fault is *recorded* at completion
-but *acted on* only when it reaches the head, which is what makes state precise),
-and the destination and old-mapping bookkeeping used to free registers and to undo
-speculation on a flush. The table below is that minimal column set; the full
-field-by-field derivation from these jobs, plus the commit and flush hardware, is
-the subject of [OoO_Execution](05_OoO_Execution.md) §3.
-
-ROB is a circular buffer — **Head** points to the oldest instruction (next to commit), **Tail** to the newest (most recently issued).
-
-| # | Instr | Dest | Value | Done? | Exception | Notes |
-|---|---|---|---|---|---|---|
-| 0 | ADD | P48 | 42 | Yes | No | ← Head (ready to commit) |
-| 1 | LW | P51 | 100 | Yes | No | |
-| 2 | BEQ | – | – | Yes | No | ← branch: check prediction |
-| 3 | MUL | P63 | – | No | – | ← not done yet |
-| 4 | ADD | P72 | – | No | – | ← Tail |
-
-Commit rules: (1) check the head entry; (2) if Done and no exception, commit — write to arch state and free the old physical reg; (3) if Done with exception, flush all entries from this one to the tail; (4) if not Done, wait — later entries cannot commit out of order; (5) advance head. Commit width is typically 2–8 per cycle (matching issue width).
-
----
-
-## 7. Memory Hierarchy -- AMAT and Cache Design
-
-### 7.1 AMAT (Average Memory Access Time)
-
-```verilog
-AMAT = Hit_Time + Miss_Rate * Miss_Penalty
-
-For multi-level cache:
-AMAT = L1_Hit_Time + L1_Miss_Rate * (L2_Hit_Time + L2_Miss_Rate * (L3_Hit_Time + L3_Miss_Rate * Mem_Latency))
-
-Typical modern values:
-  L1 I-Cache: 32-64 KB, 4-way, 1-4 cycles hit, ~5% miss rate
-  L1 D-Cache: 32-64 KB, 8-way, 1-4 cycles hit, ~10% miss rate
-  L2 Cache:   256KB-1MB, 8-way, 10-20 cycles hit, ~2% miss rate (of L1 misses)
-  L3 Cache:   4-32 MB, 16-way, 30-50 cycles hit, ~20% miss rate (of L2 misses)
-  Main Memory (DDR4): 100-300 cycles
-
-Numerical AMAT example:
-  AMAT = 4 + 0.10 * (15 + 0.02 * (40 + 0.20 * 200))
-       = 4 + 0.10 * (15 + 0.02 * (40 + 40))
-       = 4 + 0.10 * (15 + 0.02 * 80)
-       = 4 + 0.10 * (15 + 1.6)
-       = 4 + 0.10 * 16.6
-       = 4 + 1.66
-       = 5.66 cycles
-
-  Without L2/L3:
-  AMAT = 4 + 0.10 * 200 = 24 cycles  (4.2x worse!)
-```
-
-### 7.2 Cache Organization
-
-```verilog
-Cache parameters:
-  Cache size:    S = 32 KB
-  Block size:    B = 64 bytes (cache line size)
-  Associativity: A = 8-way set-associative
-  Number of sets: N = S / (B * A) = 32768 / (64 * 8) = 64 sets
-
-Address breakdown (32-bit address, 64B block, 64 sets):
-  [Tag (20 bits) | Set Index (6 bits) | Block Offset (6 bits)]
-
-  Block Offset: log2(64) = 6 bits (byte within cache line)
-  Set Index:    log2(64) = 6 bits (which set)
-  Tag:          32 - 6 - 6 = 20 bits (unique identifier)
-```
-
-### 7.3 Cache Line Size Trade-offs
-
-```verilog
-Larger cache lines (e.g., 128B vs 64B):
-  Pros:
-    - Better spatial locality (more nearby data prefetched)
-    - Fewer tag bits per byte (less overhead)
-    - Higher bandwidth utilization per DDR burst
-  Cons:
-    - Higher miss penalty (more bytes to transfer per miss)
-    - More wasted bandwidth on partial-line usage
-    - Fewer total cache lines for same cache size (worse temporal locality)
-    - False sharing in multi-core (larger granularity of coherence)
-
-Typical cache line sizes:
-  L1: 64 bytes (most common in x86, ARM)
-  L2/L3: 64-128 bytes
-  Memory bus: optimized for 64B bursts (matches L1 line size)
-```
-
-### 7.4 Write Policies
-
-```verilog
-Write-Through:
-  Every write updates BOTH cache AND main memory
-  Simple, memory always consistent
-  High memory traffic (every store goes to memory)
-  Often used with write buffer to reduce stalls
-
-Write-Back:
-  Writes only update cache, mark line "dirty"
-  Dirty lines written to memory only on eviction
-  Lower memory traffic (most writes stay in cache)
-  More complex (dirty bit, write-back on eviction)
-  Used in all modern high-performance caches
-
-Write-Allocate (fetch on write miss):
-  On write miss: fetch the block, then write into it
-  Usually paired with write-back
-
-No-Write-Allocate (write-around):
-  On write miss: write directly to memory, don't fetch block
-  Usually paired with write-through
-```
-
-### 7.5 Miss Types (3 C's)
-
-```verilog
-Compulsory (Cold): First access to a block. Unavoidable (except with prefetching).
-Capacity: Cache is too small to hold all needed blocks. Reduce by increasing cache size.
-Conflict: Two blocks map to the same set. Reduce by increasing associativity.
-
-+ Coherence misses (4th C): Invalidation by another core in multi-core.
-
-Reducing each:
-  Compulsory: Prefetching (hardware or software)
-  Capacity:   Larger cache, better replacement policy
-  Conflict:   Higher associativity, victim cache
-  Coherence:  Better data placement, private vs shared data separation
-```
-
-### 7.6 Store Buffer and Store-to-Load Forwarding
-
-The store buffer sits between the execution units and the L1 data cache. When a
-store instruction executes, its address and data are written to the store buffer,
-not directly to the cache. The store commits (writes to the D-cache) only when it
-is the oldest completed instruction at the head of the ROB -- this is in-order
-retirement.
-
-**Why stores are buffered:**
-
-1. **Speculation** -- stores from a mispredicted branch must never reach the
-   cache. Buffering lets the core discard them on a pipeline flush.
-2. **Out-of-order execution** -- stores can execute as soon as the address and
-   data are ready, without waiting for older instructions to retire.
-3. **Port decoupling** -- the D-cache write port may be busy (e.g., a line fill
-   from an earlier miss). The store buffer absorbs the write and drains to the
-   cache when the port is free.
-
-**Store-to-load forwarding (SLF):** When a subsequent load executes and its
-address matches a pending store in the store buffer, the load can obtain the data
-directly from the buffer instead of waiting for the store to commit to cache.
-
-Store buffer (circular FIFO):
-
-| Entry | Addr | Data |
+| Resource | Policy | Why |
 |---|---|---|
-| 0 (oldest) | 0x1000 | 42 |
-| 1 | 0x1008 | 7 |
-| 2 | 0x2000 | 99 |
-| 3 (tail) | empty | — |
+| PC, RAT, commit map, RAS | **replicated** | this *is* each thread's architectural identity |
+| ROB, IQ, LSQ capacity | **partitioned** (dynamic, per-thread floor) | bound one thread's footprint so a stalled thread cannot monopolize the window |
+| PRF, execution units, caches, predictors | **shared** | the throughput resources SMT is built to fill; tags already distinguish threads |
 
-On `Load(addr=0x1008)`, a CAM search matches entry 1 and returns Data = 7 immediately — no D-cache access needed. This is store-to-load forwarding.
-
-**Forwarding conditions:**
-
-1. **Exact address match** -- the load's byte range must fall entirely within a
-   single store's byte range. A 4-byte load at 0x1000 matches a store of 4
-   bytes at 0x1000 exactly.
-2. **Data ready** -- the store must have its data value available (the store
-   address may be known before the data in some microarchitectures).
-3. **Partial / overlapping matches** -- if the load spans bytes from multiple
-   pending stores, the hardware must merge bytes from each store (and possibly
-   the cache). Not all designs support this; some require a full stall until the
-   stores commit.
-
-**Store-forwarding hazard (SFX):** When a load depends on a recent store to the
-same address but the forwarding check fails -- the store address is not yet
-computed, or the overlap is partial -- the load must wait. This is a major
-performance limiter. Intel's optimization manual reports SFX stalls account for
-5-10% of cycles in typical integer workloads.
-
-**Typical SFX pattern:**
-   - STORE [rax], rcx          ; address = rax, data = rcx
-   - LOAD  rdx, [rax]          ; same address -> must forward
-
-Best case (address known, data ready): 1 extra cycle (forwarded)
-Worst case (address unknown):         4-5 cycle stall on Intel
-Partial overlap (load wider than store): ~15 cycle penalty (store must commit first)
-
-**Store buffer sizing:** Modern CPUs typically have 30-60 entries.
-
-| Microarchitecture | Store Buffer Entries |
-|-------------------|----------------------|
-| Apple M1          | ~40                  |
-| Intel Raptor Lake | ~60                  |
-| AMD Zen 4         | ~48                  |
-| ARM Cortex-X2     | ~32                  |
-
-When the store buffer is full, the processor cannot execute more stores and must
-stall, which can become a bottleneck in write-heavy code (e.g., memcpy, memset).
-
-
-### 7.7 LSQ, ROB, and Renaming — Summary (deep dives live in OoO_Execution)
-
-The three big OoO bookkeeping structures deserve full pages of detail; this page keeps only the survey view (§5–§6 cover the concepts):
-
-- **Load-Store Queue** — split LQ/SQ (load queue / store queue), CAM on address; enforces memory ordering, catches store→load ordering violations at store commit, and provides store-to-load forwarding (§7.6). Typical sizing: LQ 32–64 / SQ 24–56 entries. Full entry fields, CAM search, and violation recovery: [OoO_Execution](05_OoO_Execution.md) §5.
-- **Reorder Buffer** — circular SRAM (static random-access memory) buffer (head = oldest uncommitted, tail = next free) that re-serializes out-of-order completion into in-order commit: precise exceptions, register reclamation, misprediction cleanup. Entry layout, commit logic, and pointer-arithmetic worked examples: [OoO_Execution](05_OoO_Execution.md) §3.
-- **Register renaming** — RAT (register alias table) maps 32 architectural onto 100–200+ physical registers, eliminating WAR/WAW; RAM-based active table + checkpoints for recovery; free-list allocation and reclamation rules. Full implementation and worked rename trace: [OoO_Execution](05_OoO_Execution.md) §2.
-
-Exception handling in an OoO pipeline (stage-by-stage detection, precise-exception walkthrough) is summarized in §14 and detailed in [OoO_Execution](05_OoO_Execution.md) §9.
-
-### 7.8 Memory-Level Parallelism (MLP)
-
-MLP measures how many outstanding cache misses a processor can tolerate
-simultaneously. A processor with MLP $= N$ can have $N$ cache misses in flight
-without stalling the core's independent execution.
-
-**Relationship to AMAT.** With perfect overlap of $N$ independent cache misses,
-each of latency $t_{\text{miss}}$:
+Speedup is the ratio of aggregate to single-thread throughput, and its ceiling is the reason SMT is a modest multiplier, not a doubling:
 
 $$
-\text{AMAT}_{\text{effective}} = \frac{\text{Total latency}}{\text{Number of misses}} = \frac{t_{\text{miss}}}{N}
+\text{Speedup}_{\text{SMT}} = \frac{\sum_i \text{IPC}_i}{\text{IPC}_{\text{single}}} \approx 1 + \alpha(t-1), \quad \alpha \approx 0.2\text{–}0.4
 $$
 
-Without overlap the same $N$ misses take $N \cdot t_{\text{miss}}$ cycles. MLP
-converts serial latency into parallel throughput.
+where $\alpha$ = per-thread resource-overlap factor. As threads are added they contend for the *same* ports, cache capacity, and memory bandwidth, so a second thread converts idle slots to work only until those shared resources saturate — after which it mostly adds cache pressure. SMT therefore helps memory-bound and branchy code most (many idle slots to reclaim) and compute-bound SIMD least (few idle slots, more contention).
 
-**Hardware support for MLP:**
-
-1. **Non-blocking caches with MSHRs** -- a Miss Status Holding Register tracks
-   each outstanding miss. The number of MSHR entries sets the maximum MLP.
-   Typical sizes: 8-16 entries for L1, 32-64 for L2. Each entry records the
-   missed address, the cache line state, and which load instructions are waiting.
-2. **Out-of-order execution** -- the core continues past a cache miss, issuing
-   independent loads that may also miss, naturally generating parallel misses.
-3. **Hardware prefetcher** -- the dominant source of MLP in practice. A stride
-   detector observes consecutive load addresses and generates prefetch requests
-   ahead of the program, converting what would be serial compulsory misses into
-   parallel prefetch hits.
-
-**MLP vs ILP.** MLP is independent of instruction-level parallelism. A processor
-can have low ILP (sequential dependency chain) but high MLP (strided access
-pattern recognized by the prefetcher). The prefetcher detects a constant stride
-$\Delta$ between successive load addresses and issues prefetches for addresses
-$A + \Delta, A + 2\Delta, \ldots$ before the loads execute.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TB
-    subgraph serial["No prefetcher — serial misses"]
-        direction LR
-        s1["Miss 0x1000<br/>200 cyc"] --> s2["Miss 0x1040<br/>200 cyc"] --> s3["Miss 0x1080<br/>200 cyc"] --> st["Total ≈ 600 cyc"]
-    end
-    subgraph par["Stride prefetcher — MLP ≈ 3"]
-        direction LR
-        p0["Miss 0x1000"] --> pt["Total ≈ 200 cyc<br/>≈ 67 cyc effective per miss"]
-        p1["Prefetch 0x1040"] --> pt
-        p2["Prefetch 0x1080"] --> pt
-    end
-    classDef bad fill:#fee2e2,stroke:#b91c1c,color:#000
-    classDef good fill:#dcfce7,stroke:#15803d,color:#000
-    class s1,s2,s3,st bad
-    class p0,p1,p2,pt good
-```
-
-**MSHR sizing trade-off.** More MSHRs enable higher MLP but increase area and
-power (each entry needs address comparators and state tracking). An L1 with 16
-MSHRs can track 16 concurrent misses -- enough for most prefetch streams but a
-bottleneck for pointer-chasing workloads (graph traversal, sparse matrix) where
-addresses are data-dependent and the prefetcher cannot help.
-
-### 7.9 Decoupled Access/Execute Architecture
-
-A decoupled architecture splits the processor into two semi-independent engines
-connected by an address/data queue:
-
-1. **Access (memory) engine** -- executes address-generation instructions (loads,
-   stores, address arithmetic) and runs ahead of the main instruction stream,
-   prefetching data into the cache.
-2. **Execute (compute) engine** -- consumes data from the queue and performs
-   arithmetic, logic, and control-flow operations.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    IS["Instruction stream"] --> AE["Access engine<br/>(runs ahead, prefetches)"]
-    IS --> EE["Execute engine<br/>(consumes prefetched data)"]
-    AE --> L1["L1 D-cache"] --> DQ["Data queue"] --> EE
-    EE -.->|compute results| AE
-    classDef a fill:#fde68a,stroke:#b45309,color:#000
-    classDef e fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class AE,L1,DQ a
-    class IS,EE e
-```
-
-The access engine uses address-generation instructions whose inputs are
-independent of the compute engine's results, so it can run arbitrarily far ahead.
-The execute engine then sees a cache hit on nearly every load because the access
-engine has already fetched the data.
-
-**Why it is not mainstream.** General-purpose CPUs (x86, ARM) achieve a similar
-effect through out-of-order execution with a large load/store queue and hardware
-prefetcher. The explicit split adds complexity and restrictive programming
-constraints without a clear advantage over the OoO approach for irregular code.
-
-**Where it is used.** Some DSPs (digital signal processors) and embedded processors (e.g., ADSP-2100,
-TMS320C6000) employ decoupled access/execute pipelines where deterministic
-memory timing is more valuable than general-purpose flexibility.
-
-**Interview significance.** The access/execute split illustrates the fundamental
-principle that memory latency and compute can be overlapped -- the same principle
-behind GPU warp scheduling (one warp computes while another waits on memory) and
-FlashAttention's tiled computation (load next tile while computing the current
-tile).
-
-## 8. Cache Coherence -- MESI with All Transitions
-
-*Scope: the protocol view — states, transitions, snooping/directory tradeoffs. The implementation view (coherence controllers inside a cache, MSHR interaction, inclusive/exclusive effects): [Cache_Microarchitecture](07_Cache_Microarchitecture.md) §9.*
-
-### 8.1 MESI States
-
-| State     | Valid | Dirty | Exclusive | Meaning                                    |
-|-----------|-------|-------|-----------|--------------------------------------------|
-| Modified  | Yes   | Yes   | Yes       | Only copy, modified. Must write back.      |
-| Exclusive | Yes   | No    | Yes       | Only copy, clean. Can modify silently.     |
-| Shared    | Yes   | No    | No        | May be in other caches. Read-only.         |
-| Invalid   | No    | -     | -         | Not valid. Must fetch on access.           |
-
-### 8.2 All State Transitions (Processor Events and Bus Events)
-
-**Processor Events (local CPU actions):**
-   - PrRd:  Processor read
-   - PrWr:  Processor write
-
-**Bus Events (snooped from other CPUs):**
-   - BusRd:    Another CPU reads this address (bus read)
-   - BusRdX:   Another CPU writes this address (bus read exclusive / invalidate)
-   - BusUpgr:  Another CPU upgrades from Shared to Modified (bus upgrade)
-
-**Transitions from INVALID (I):**
-   - PrRd  -> fetch from memory
-   - If no other cache has it: I -> E (Exclusive)
-   - If another cache has it:  I -> S (Shared)
-   - PrWr  -> fetch from memory with invalidation
-   - I -> M (Modified), invalidate all other copies
-   - Bus transaction: BusRdX
-
-**Transitions from EXCLUSIVE (E):**
-   - PrRd  -> E -> E (hit, no bus transaction)
-   - PrWr  -> E -> M (silent upgrade, no bus transaction! This is the E state advantage)
-   - BusRd -> E -> S (another CPU reads, must share; supply data)
-   - BusRdX-> E -> I (another CPU writes, must invalidate; supply data)
-
-**Transitions from SHARED (S):**
-   - PrRd  -> S -> S (hit, no bus transaction)
-   - PrWr  -> S -> M (must invalidate other copies)
-   - Bus transaction: BusUpgr (invalidation, no data transfer needed)
-   - BusRd -> S -> S (another CPU reads, still shared)
-   - BusRdX-> S -> I (another CPU writes, must invalidate our copy)
-   - BusUpgr-> S -> I (another CPU upgrading, must invalidate)
-
-**Transitions from MODIFIED (M):**
-   - PrRd  -> M -> M (hit, no bus transaction)
-   - PrWr  -> M -> M (hit, no bus transaction)
-   - BusRd -> M -> S (another CPU reads; must write back to memory, then share)
-   - This is the expensive transition: writeback + state change
-   - BusRdX-> M -> I (another CPU writes; must write back, then invalidate)
-
-### 8.3 Snooping Example with 4 Cores
-
-```verilog
-Initial: Address X is not in any cache.
-
-Step 1: Core 0 reads X
-  Cache 0: I -> E (exclusive, fetched from memory)
-  Bus: BusRd, memory responds, no other cache has it
-
-Step 2: Core 1 reads X
-  Core 1: I -> S
-  Core 0: E -> S (snoops BusRd, supplies data or memory does)
-  Bus: BusRd, Core 0 snoops and transitions
-
-Step 3: Core 2 reads X
-  Core 2: I -> S
-  Cores 0,1: S -> S (no change needed)
-  Bus: BusRd
-
-Step 4: Core 0 writes X
-  Core 0: S -> M
-  Cores 1,2: S -> I (invalidated by BusUpgr)
-  Bus: BusUpgr (no data transfer, just invalidation)
-
-Step 5: Core 3 reads X
-  Core 3: I -> S (needs data)
-  Core 0: M -> S (must write back dirty data first!)
-  Bus: BusRd from Core 3, Core 0 snoops, intervenes:
-    Core 0 writes back X to memory
-    Core 0: M -> S
-    Core 3 gets data: I -> S
-
-Step 6: Core 1 writes X
-  Core 1: I -> M (was invalidated in Step 4, must fetch)
-  Cores 0,3: S -> I
-  Bus: BusRdX (fetch for write + invalidate)
-```
-
-### 8.4 Scalability Problem and Directory-Based Coherence
-
-```verilog
-Snooping problem: Every bus transaction is broadcast to ALL caches.
-  With N cores: bus bandwidth = O(N * traffic_per_core)
-  Beyond 8-16 cores: bus becomes the bottleneck
-
-Directory-based protocol:
-  A directory (in memory controller or distributed) tracks which caches
-  hold each cache line.
-
-  Directory entry for address X:
-    State: {Uncached, Shared, Exclusive/Modified}
-    Sharers: bit vector [Core0, Core1, Core2, ..., CoreN]
-
-  On a read miss:
-    Core sends request to directory
-    Directory checks sharers list
-    If exclusive in another core: forward request to owner, owner supplies data
-    If shared: memory supplies data
-    Directory updates sharers list
-
-  No broadcast! Point-to-point messages.
-  Scales to 100+ cores (AMD EPYC, ARM CMN-700, Intel Xeon SP)
-
-  Trade-off: Higher latency per request (directory lookup + forwarding)
-             vs scalable bandwidth
-```
-
-### 8.5 MOESI Protocol Extension
-
-**Adds the Owned (O) state:**
-
-O = line is dirty (modified from memory), but other caches have Shared copies.
-Owner is responsible for supplying data on snoop requests.
-
-**MESI problem:**
-   - When M transitions to S (on BusRd), it must write back to memory.
-   - This consumes memory bandwidth even though only a cache-to-cache transfer is needed.
-
-**MOESI solution:**
-   - M + BusRd -> O (Owner), requester gets S
-   - Data goes directly from owner to requester (cache-to-cache transfer)
-   - NO memory write-back! Saves memory bandwidth.
-   - Memory is "stale" -- owner will write back on eviction.
-
-AMD Zen uses MOESI (modified version called MOESI-F with F=Forward state).
+**Vendor positions map directly onto that ceiling.** Intel and AMD ship SMT-2 (Golden Cove **1.25–1.35×**, Zen 4 **1.20–1.30×**); IBM POWER10 pushes SMT-8 (**1.6–2.2×**) for throughput-oriented server workloads with abundant idle slots. **Apple ships no SMT at all** — its very wide single-thread cores (8-wide decode, ~600-entry ROB) already extract most of the available ILP, and two independent non-SMT cores in the same area give more predictable performance while avoiding the shared-state side-channels of §11. The choice is thus workload- and security-driven, not merely a transistor count.
 
 ---
 
-## 9. Virtual Memory and TLB
+## 11. Speculative-execution security: the invariant speculation breaks
 
-### 9.1 Four-Level Page Table Walk (x86-64, 48-bit VA)
+Speculation (branch prediction, out-of-order loads) rests on an assumption the whole machine is built around: **wrong-path work is invisible once squashed.** Architecturally that is true — a mispredicted path's register and memory writes are rolled back at commit. The Spectre/Meltdown class of attacks (2018) proved the assumption false at the *microarchitectural* level: speculation leaves footprints — cache lines filled, TLB entries installed, predictor state updated — that rollback does **not** undo. Those footprints are readable through timing, so a covert channel (usually cache-hit-versus-miss latency) can exfiltrate a secret that was touched only during the transient, "never-committed" window.
 
-```verilog
-48-bit Virtual Address:
-  [PML4 (9)] [PDPT (9)] [PD (9)] [PT (9)] [Offset (12)]
-  bits 47:39  bits 38:30  bits 29:21  bits 20:12  bits 11:0
+Two families exploit two different holes:
 
-CR3 register holds physical address of PML4 table
+- **Meltdown (rogue data-cache load)** exploited a *deferred permission check*: on affected cores a user load from a kernel page returned its data to dependent instructions *before* the fault was raised at retirement, so the secret was transiently usable to index an attacker array and leave a cache footprint. The invariant broken: a permission fault must gate the *value*, not just the architectural result. The clean fix is architectural — check permissions **before** forwarding speculative data — and post-2018 silicon (AMD, ARM Cortex-A76+, Intel's later cores) does exactly that in hardware.
+- **Spectre (bounds-check bypass / branch-target injection)** exploited *predictor training*: the attacker mistrains a shared direction or target predictor so the victim speculatively runs a gadget of the attacker's choosing (an out-of-bounds array read, or an indirect jump to a chosen address), again leaving a measurable cache footprint. The invariant broken: predictor state is a *shared, trainable* resource across security domains. Spectre is far harder to eliminate than Meltdown because speculation past a bound is not itself a fault — the machine is doing exactly what it was designed to do.
 
-Walk:
-  Step 1: PML4_entry = Memory[CR3 + VA[47:39] * 8]
-  Step 2: PDPT_entry = Memory[PML4_entry.addr + VA[38:30] * 8]
-  Step 3: PD_entry   = Memory[PDPT_entry.addr + VA[29:21] * 8]
-  Step 4: PT_entry   = Memory[PD_entry.addr + VA[20:12] * 8]
-  Step 5: PA = PT_entry.PFN || VA[11:0]
+The mitigations are best read as attacks on one of three things — *close the window, isolate the predictor, or check before forwarding* — with the cost of each shown, because these are the numbers that appear in real deployment decisions:
 
-  Each step is a memory access -> 4 memory accesses per translation!
-  Without TLB: every load/store takes 5 memory accesses (4 walk + 1 data)
-  With TLB: 1 cycle (TLB hit) + 1 data access = 2 cycles
+| Mitigation | Principle | Typical cost |
+|---|---|---|
+| `lfence` / speculation barriers | close the window (serialize) | high where inserted |
+| Retpoline | avoid the poisoned indirect predictor (use the RAS) | 5–15 % (indirect-heavy) |
+| IBRS / STIBP | isolate predictor state across privilege / SMT sibling | 1–10 % |
+| SSBD | disable speculative store-bypass | 0–3 % |
+| KPTI (software) | unmap the kernel to hide it from user speculation | 5–10 % (syscall-heavy) |
+| Full stack | all combined | 10–30 % worst case |
 
-Page Table Entry (PTE) format (simplified):
-  [PFN (physical frame number)] [Flags]
-  Flags: Present, Read/Write, User/Supervisor, Accessed, Dirty, PAT, Global
-```
-
-### 9.2 TLB Design
-
-```verilog
-Typical TLB hierarchy:
-  L1 ITLB: 64 entries, fully associative, 1-cycle lookup
-  L1 DTLB: 64 entries, fully associative, 1-cycle lookup
-  L2 STLB: 512-2048 entries, 8-12 way, 6-8 cycle lookup
-
-TLB entry:
-  {VPN (virtual page number), ASID, PFN, permissions, valid}
-
-Fully associative: Compare incoming VPN against ALL entries simultaneously.
-  Cost: parallel comparators for all entries.
-  Benefit: No conflict misses, best hit rate.
-
-Set-associative: L2 TLB often 8-way for larger capacity.
-```
-
-### 9.3 TLB Miss Penalty
-
-```verilog
-TLB miss -> page table walk:
-  Best case (page walk cache hits): 10-30 cycles
-  Typical: 30-60 cycles (page walk entries in L2/L3 cache)
-  Worst case (page walk entries in memory): 200-400 cycles
-  Page fault (page not in physical memory): 1-10 MILLION cycles (disk I/O)
-
-TLB miss rate depends heavily on working set size:
-  Working set < TLB coverage: ~0% miss rate
-  Working set > TLB coverage: miss rate increases
-  
-  TLB coverage = entries * page_size
-  L1 DTLB: 64 * 4KB = 256 KB (small!)
-  L2 STLB: 2048 * 4KB = 8 MB
-  With 2MB huge pages: 64 * 2MB = 128 MB (L1 DTLB alone)
-```
-
-### 9.4 Huge Pages
-
-```verilog
-4KB pages: 12-bit offset, 9 bits per level -> 4-level walk
-2MB pages: 21-bit offset, skip PT level -> 3-level walk
-1GB pages: 30-bit offset, skip PT and PD -> 2-level walk
-
-Benefits of huge pages:
-  1. Larger TLB coverage (64 entries * 2MB = 128MB vs 256KB)
-  2. Fewer page table walk steps (3 vs 4)
-  3. Fewer TLB misses for large working sets
-  4. Less page table memory (fewer PTE entries)
-
-Drawbacks:
-  1. Internal fragmentation (allocating 2MB for a 4KB need)
-  2. Memory allocation difficulty (need contiguous 2MB physical pages)
-  3. Longer page fault handling (must zero 2MB, not 4KB)
-```
-
-### 9.5 VIPT (Virtually Indexed, Physically Tagged) Cache
-
-**The problem:**
-   - Cache lookup needs the physical address (tag comparison).
-   - TLB (translation lookaside buffer) provides physical address, but takes 1 cycle.
-   - If cache uses physical index too, we need PA before indexing.
-   - Total: 1 cycle (TLB) + 1 cycle (cache) = 2 cycles minimum.
-
-**VIPT solution:**
-   - INDEX the cache with virtual address bits (available immediately)
-   - TAG the cache with physical address bits (from TLB)
-   - TLB lookup and cache index happen IN PARALLEL -> 1 cycle total!
-
-**Constraint:**
-   - The virtual index bits must equal the physical index bits.
-   - For a 32KB, 8-way cache with 64B lines:
-   - Sets = 32768 / (8 * 64) = 64 sets
-   - Index = 6 bits (log2(64)) = bits [11:6]
-   - Offset = 6 bits = bits [5:0]
-   - Total bits used for index+offset = 12 bits
-
-For 4KB pages: page offset = 12 bits [11:0]
-Index bits [11:6] are WITHIN the page offset -> same in VA and PA!
-VIPT works without aliasing! (as long as index+offset <= page_offset_bits)
-
-If cache is too large: index bits extend beyond page offset → VIPT becomes problematic (aliasing) → Solutions: page coloring, or increase associativity
+The enduring lesson for an architect: **a speculative optimization is only safe if it is truly invisible.** Because microarchitectural state is observable through timing, "we roll it back" is not the same as "it never happened" — and any future speculation feature must be evaluated against that standard, not just against correctness of the committed state.
 
 ---
 
-## 10. Performance Analysis
+## 12. Numbers to memorize
 
-### 10.1 Performance Equations
+| Parameter | Typical | Range | Why this value (section) |
+|---|---|---|---|
+| Ideal pipeline CPI | 1 | — | one completion per cycle (§1.1) |
+| Logic per stage (optimum) | ~6–8 FO4 | 5–12 | overhead wall vs mispredict penalty (§1.3) |
+| Pipeline depth | 14–20 | 5–31 | $N^{*}=\sqrt{t_{\text{logic}}/(\beta t_{\text{ovh}})}$ (§1.3) |
+| Load-use penalty | 1 cyc | — | datum not produced until end of MEM (§3) |
+| Branch mispredict penalty | 12 cyc | 8–20 | resolve distance ≈ depth (§1.3, §4) |
+| Branch-frequency $b$ | 0.2 | 0.15–0.25 | 1 in 5 instructions (§2, §4) |
+| Predictor accuracy | 97 % | 60–99.5 % | sets branch tax and $N^{*}$ (§4) |
+| L1 / L2 / L3 / DRAM latency | 4 / 14 / 40 / 200 cyc | — | the AMAT recursion (§6) |
+| L1 MSHRs (MLP cap) | 8–16 | 4–32 | outstanding misses = MLP ceiling (§6.1) |
+| Store buffer | ~48 | 32–60 | speculation + decouple + OoO data (§6.2) |
+| TLB hit / miss | 1 / 10–60 cyc | — | cache of translations (§7) |
+| MESI states | 4 | — | 2 questions × 2 bits (§8) |
+| Snoop scaling limit | ~8–16 cores | — | $O(N)$ broadcast bandwidth (§8.1) |
+| SMT-2 speedup | 1.2–1.35× | 1.1–1.4× | $1+\alpha(t{-}1)$, shared-resource ceiling (§10) |
+| Full mitigation cost | 10–30 % | — | close window / isolate / check (§11) |
 
-```verilog
-CPU Time = Instruction_Count * CPI * Clock_Period
-
-CPI = CPI_ideal + Stall_cycles_per_instruction
-
-Stall_cycles = Memory_stalls + Branch_stalls + Structural_stalls
-
-Memory_stalls = Memory_accesses_per_instr * Miss_rate * Miss_penalty
-
-Branch_stalls = Branch_frequency * Misprediction_rate * Penalty
-
-IPC = 1 / CPI (Instructions Per Cycle)
-
-Throughput = IPC * Frequency
-```
-
-### 10.2 Amdahl's Law
-
-- **Speedup** = `1 / ((1 - f) + f/S)`
-
-where:
-f = fraction of execution time that is improved
-S = speedup of the improved portion
-
-**Example:**
-   - If 80% of execution is parallelizable and you have 8 cores:
-   - Speedup = 1 / ((1-0.8) + 0.8/8) = 1 / (0.2 + 0.1) = 1 / 0.3 = 3.33x
-
-Maximum speedup with infinite cores:
-Speedup_max = 1 / (1 - 0.8) = 5x
-
-Even with infinite parallelism, the serial 20% limits you to 5x!
-
-### 10.3 Numerical Performance Example
-
-```verilog
-Processor A: 2 GHz, CPI = 1.5
-Processor B: 3 GHz, CPI = 2.5
-
-For a program with 10 billion instructions:
-  Time_A = 10e9 * 1.5 / 2e9 = 7.5 seconds
-  Time_B = 10e9 * 2.5 / 3e9 = 8.33 seconds
-
-Processor A is faster despite lower frequency!
-  IPC_A = 1/1.5 = 0.67
-  IPC_B = 1/2.5 = 0.40
-  Throughput_A = 0.67 * 2G = 1.33 GIPS
-  Throughput_B = 0.40 * 3G = 1.20 GIPS
-```
+**The iron law** — $T_{\text{CPU}} = IC \times \text{CPI} \times t_{\text{clk}}$ — is the frame for all of it: frequency is not performance (a 2 GHz, CPI-1.5 core beats a 3 GHz, CPI-2.5 core), because throughput is $\text{IPC}\times f$, not $f$.
 
 ---
 
-## 11. Fetch Unit Microarchitecture — Summary
+## 13. Worked problems
 
-A modern fetch unit is a pipeline of its own: the branch predictor writes predicted fetch targets into a **Fetch Target Queue (FTQ)** that decouples prediction from I-cache latency; fetch stages read the FTQ, access I-cache + ITLB (instruction TLB), handle misses without blocking prediction, and **pre-decode** returned bytes (finding instruction boundaries and branches early). Fetch bandwidth — taken-branch breaks, cache-line straddling, alignment — commonly limits effective width more than execution resources do.
+**1 — Optimal pipeline depth, and why it is deeper than real cores.** A datapath has total logic $t_{\text{logic}}=140$ FO4 and per-stage overhead $t_{\text{ovh}}=2$ FO4; aggregate depth-sensitive hazards add $\beta=0.02$ CPI per stage (branch mispredicts dominate). The performance-only optimum is $N^{*}=\sqrt{t_{\text{logic}}/(\beta\,t_{\text{ovh}})}=\sqrt{140/0.04}\approx 59$ stages — only ~2.4 FO4 of logic per stage. That is *deeper* than any real core, and deliberately illustrative: it is why the frequency-race designs (Pentium 4, ~31 stages) went as far as they did. Two limits pull the real knee back to **14–20 stages**: the overhead wall (below ~6–8 FO4/stage, $t_{\text{ovh}}$ eats too large a fraction of each cycle for useful frequency to keep rising) and dynamic power ($\propto f$), which makes the performance-per-watt optimum shallower still. Better prediction (smaller $\beta$) raises $N^{*}$ as $1/\sqrt{\beta}$ — the quantitative form of "accurate prediction justifies a deeper pipe" (§1.3).
 
-Full detail (FTQ entry fields, fetch pipeline stages, I-cache miss handling, bandwidth math, pre-decode): [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md) §8 *Fetch Unit Architecture*.
+**2 — Branch tax and why prediction beats width.** Ideal CPI 1, $b=0.2$, penalty 15. Static 50 %-accurate prediction: $\Delta\text{CPI}=0.2\times0.5\times15=1.5$ (CPI 2.5). A 97 % predictor: $\Delta\text{CPI}=0.2\times0.03\times15=0.09$ (CPI 1.09) — a 2.3× throughput swing from prediction alone, before touching issue width. This is why the front end's first lever is accuracy, not width (§4).
 
-## 12. RISC-V Instruction Examples
+**3 — AMAT and the value of the middle levels.** L1 hit 4, miss rate 10 %; L2 hit 14, miss 2 %; L3 hit 40, miss 20 %; DRAM 200. $\text{AMAT}=4+0.10(14+0.02(40+0.20\times200))=4+0.10(14+0.02\times80)=4+0.10\times15.6=5.56$ cyc. Delete L2/L3: $4+0.10\times200=24$ cyc — the hierarchy buys a $4.3\times$ reduction (§6).
 
-### 13.1 RV64I Base Instruction Formats
-
-RISC-V (Reduced Instruction Set Computer, fifth generation) uses six base encoding formats, all fixed at 32 bits. The opcode always
-occupies bits [6:0], which makes early decode straightforward.
-
-| Format | Fields (bit ranges) |
-|--------|---------------------|
-| R-type | funct7[31:25] rs2[24:20] rs1[19:15] funct3[14:12] rd[11:7] opcode[6:0] |
-| I-type | imm[31:20] rs1[19:15] funct3[14:12] rd[11:7] opcode[6:0] |
-| S-type | imm[31:25] rs2[24:20] rs1[19:15] funct3[14:12] imm[4:0][11:7] opcode[6:0] |
-| B-type | imm[12\|10:5] rs2[24:20] rs1[19:15] funct3[14:12] imm[4:1\|11][11:7] opcode[6:0] |
-| U-type | imm[31:12] rd[11:7] opcode[6:0] |
-| J-type | imm[20\|10:1\|11\|19:12] rd[11:7] opcode[6:0] |
-
-### 13.2 R-Type Example: ADD x5, x6, x7
-
-```verilog
-ADD x5, x6, x7
-  funct7 = 0000000
-  rs2    = 00111   (x7)
-  rs1    = 00110   (x6)
-  funct3 = 000
-  rd     = 00101   (x5)
-  opcode = 0110011 (OP)
-
-Machine code: 0000000_00111_00110_000_00101_0110011
-Hex: 0x007302B3
-```
-
-### 13.3 I-Type Example: ADDI x5, x6, -1
-
-```verilog
-ADDI x5, x6, -1
-  imm    = 111111111111  (-1, sign-extended 12-bit = 0xFFF)
-  rs1    = 00110   (x6)
-  funct3 = 000
-  rd     = 00101   (x5)
-  opcode = 0010011 (OP-IMM)
-
-Machine code: 111111111111_00110_000_00101_0010011
-Hex: 0xFFF30293
-```
-
-### 13.4 Load Example: LD x5, 8(x6)
-
-```verilog
-LD x5, 8(x6)
-  imm    = 000000001000  (8)
-  rs1    = 00110   (x6)
-  funct3 = 011     (doubleword = 64-bit load)
-  rd     = 00101   (x5)
-  opcode = 0000011 (LOAD)
-
-Machine code: 000000001000_00110_011_00101_0000011
-Hex: 0x00831283
-```
-
-### 13.5 Store Example: SD x5, 8(x6)
-
-```verilog
-SD x5, 8(x6)
-  imm[11:5] = 0000000   (upper immediate bits)
-  rs2       = 00101     (x5, data to store)
-  rs1       = 00110     (x6, base address)
-  funct3    = 011       (doubleword = 64-bit store)
-  imm[4:0]  = 01000     (lower immediate bits = 8)
-  opcode    = 0100011   (STORE)
-
-Machine code: 0000000_00101_00110_011_01000_0100011
-Hex: 0x00531423
-```
-
-### 13.6 Branch Example: BEQ x5, x6, offset
-
-The B-type immediate is the most complex encoding in RISC-V. For a branch
-offset of +4 (i.e., skip one instruction forward), the immediate is 4:
-
-```verilog
-offset = +4 decimal = 0x004 = 0000000000100 binary (13-bit signed)
-
-B-type immediate layout (scattered):
-  imm[12]    = bit 31    = 0
-  imm[10:5]  = bits 30:25 = 000000
-  imm[4:1]   = bits 11:8  = 0010
-  imm[11]    = bit 7      = 0
-
-BEQ x5, x6, +4
-  imm[12|10:5] = 0_000000
-  rs2          = 00101  (x5)
-  rs1          = 00110  (x6)
-  funct3       = 000    (BEQ)
-  imm[4:1|11]  = 0010_0
-  opcode       = 1100011 (BRANCH)
-
-Machine code: 0_000000_00101_00110_000_0010_0_1100011
-Hex: 0x00531463
-```
-
-The scattered immediate was an intentional design choice: it keeps the
-rs1/rs2/opcode fields in the same bit positions as other formats, simplifying
-decode hardware. The reassembly logic is:
-
-$$
-\text{offset} = \text{sign-ext}\!\left(\text{imm}[12] \,\|\, \text{imm}[11] \,\|\, \text{imm}[10{:}5] \,\|\, \text{imm}[4{:}1] \,\|\, 0\right)
-$$
-
-### 13.7 MIPS vs. RISC-V Quick Comparison
-
-| Feature | MIPS (MIPS32/64) | RISC-V (RV64I) |
-|---------|-------------------|-----------------|
-| Register naming | $0--$31 (dollar prefix) | x0--x31 (or abi names: zero, ra, sp, ...) |
-| x0 / $0 | Always zero | Always zero |
-| Instruction count (base ISA) | ~150 (MIPS32r5) | ~40 (RV64I) |
-| Encoding length | Fixed 32-bit | Fixed 32-bit (base); RVC extension adds 16-bit |
-| Immediate encoding | Contiguous bit field | Scattered in B/J-types (for decode regularity) |
-| Branch delay slot | Yes (1 slot, mandatory) | No (speculative execution preferred) |
-| Conditional move | MOVZ/MOVN (separate) | Not in base ISA; added via Zicond or Zicsr |
-| Multiply / divide | Optional DSP or MSA | M extension (standardized) |
-| Privilege levels | Kernel / User (2) | M / S / U (3 levels, matches modern OS needs) |
-| Page table format | Fixed 2-level | Sv39 / Sv48 / Sv57 (configurable) |
-| CSR access | CP0 registers (coproc 0) | Dedicated CSR instructions (CSRRW, CSRRS, CSRRC) |
-| Atomic operations | LL/SC (load-linked / store-conditional) | LR/SC + AMO (load-reserved / store-conditional + atomic memory ops) |
-| Endianness | Big-endian (original) / bi-endian | Little-endian (base), bi-endian extension available |
-| Commercial license | Proprietary (was MIPS Technologies) | Open (no license fee, governed by RISC-V International) |
-
-Key design philosophy difference: MIPS accumulated instructions over decades
-(backward-compatible additions), while RISC-V was designed with a small
-frozen base ISA (instruction set architecture) and modular extensions (M, A, F, D, C, V, ...) to keep
-hardware minimal.
+**4 — MLP turns latency into throughput.** A loop misses to DRAM ($t_{\text{miss}}=200$) every ~50 instructions at IPC 3. Serial, each miss stalls ~200 cyc. With MSHRs and OoO exposing MLP $=4$ independent misses, effective per-miss cost falls to $200/4=50$ cyc — the same overlap idea as pipelining, applied to memory (§6.1).
 
 ---
 
-## 13. SMT Resource Partitioning
+## Cross-references
 
-### 14.1 Simultaneous Multithreading Overview
-
-Simultaneous Multithreading (SMT), commercially known as Intel Hyper-Threading,
-allows two (or more) hardware threads to share a single out-of-order core.
-Each thread has its own architectural state but competes for the same physical
-resources. The goal is to improve utilization: when one thread stalls on a
-long-latency event (cache miss, branch misprediction), the other thread can
-consume the otherwise-idle execution units.
-
-SMT throughput is typically:
-
-$$
-\text{SMT}_{\text{speedup}} = 1 + \alpha \cdot (n - 1)
-$$
-
-where $n$ is the number of threads and $\alpha$ is the per-thread resource
-overlap factor ($\alpha \approx 0.2$--$0.4$ in practice). A 2-thread SMT core
-delivers 1.2--1.4x the throughput of a single-threaded core, not 2x.
-
-### 14.2 Resource Partitioning Table
-
-The table below classifies every major microarchitectural structure by its
-sharing policy in a typical 2-thread SMT design:
-
-| Structure | Policy | Rationale |
-|-----------|--------|-----------|
-| L1 I-Cache | Fully shared | Code often shares libraries; capacity benefits both threads |
-| L1 D-Cache | Fully shared | Data working sets overlap less, but L1 is fast enough to interleave |
-| L2 Cache | Fully shared | Large enough for two working sets; partitioning would waste capacity |
-| ROB | Dynamically partitioned | Each thread gets a guaranteed minimum (e.g., 50/50 split of 224 entries) but can borrow unused slots |
-| Issue Queue (IQ) | Dynamically partitioned | Thread ID tagged on each entry; partitions rebalance each cycle |
-| Physical Register File (PRF) | Dynamically partitioned | Free-list reserves floor per thread; excess distributed on demand |
-| Load/Store Queue (LSQ) | Dynamically partitioned | Each thread's addresses are independent; partition prevents one thread from monopolizing entries |
-| Common Data Bus (CDB) | Fully shared, arbitrated | Both threads' results multiplex onto the bus; priority alternates to ensure fairness |
-| Front-end (fetch unit) | Time-multiplexed | Fetch alternates between threads each cycle (round-robin) or fetches from the thread with fewer in-flight instructions |
-| Register Alias Table (RAT) | Replicated (one per thread) | Each thread has its own mapping of arch regs to physical regs |
-| Program Counter (PC) | Replicated | Independent fetch PCs |
-| Return Address Stack (RAS) | Replicated | Call/return prediction is per-thread |
-| Branch Predictor (BHT / BTB) | Shared or partitioned BHT | BTB is shared (tag includes thread ID); BHT may be statically partitioned to reduce cross-thread interference |
-| Next-Page Predictor / ITLB | Shared | ASID tagging distinguishes threads |
-| Reorder Buffer commit port | Shared, round-robin | Alternate which thread's head entry commits each cycle |
-
-### 14.3 Partitioning Policies in Detail
-
-**Statically partitioned** (fixed split):
-- Each thread is guaranteed a fixed number of entries (e.g., 112 ROB entries
-  each in a 224-entry ROB).
-- Advantage: predictable per-thread performance; no starvation.
-- Disadvantage: if one thread is stalled, its unused entries cannot be
-  reallocated to the other thread, leaving resources idle.
-
-**Dynamically shared** (competitive):
-- Both threads draw from a common pool up to a per-thread cap.
-- Example: ROB has 224 entries, each thread can use up to 180, but combined
-  cannot exceed 224. When Thread A has only 44 entries in use, Thread B can
-  consume the remaining 180.
-- Advantage: higher aggregate throughput when one thread is bottleneck-bound.
-- Disadvantage: one aggressive thread can starve the other; requires fairness
-  counters.
-
-**Flush-and-reallocate policy**:
-- On a long-latency event (L2 miss, TLB miss) detected for Thread A, the core
-  reduces Thread A's resource cap to its minimum and grants the excess to
-  Thread B. When Thread A's miss returns, the caps are rebalanced.
-- This is analogous to a "resource loan" and is used in Intel's microarchitectures
-  since Skylake.
-
-### 14.4 SMT Interaction with the Memory Hierarchy
-
-When both threads generate cache misses simultaneously:
-
-1. **L1 D-cache contention** -- each thread competes for MSHRs (Miss Status
-   Holding Registers). A typical core has 10--16 MSHRs; with two threads the
-   effective per-thread miss bandwidth is halved.
-
-2. **L2 / L3 bandwidth** -- the prefetcher may service both threads' streams,
-   potentially interfering. Some designs implement per-thread prefetcher state.
-
-3. **Memory-level parallelism (MLP)** -- SMT can actually *improve* MLP because
-   two threads' misses are naturally independent and can be serviced concurrently
-   by the memory controller's open-page policy.
-
-4. **Store forwarding** -- each thread's stores only forward to its own loads
-   (checked via thread ID tag on the store queue), so no cross-thread
-   forwarding hazards exist.
+- **Down the stack (what this machine is built from):** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and $t_{\text{ovh}}$ behind §1.3), [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md) (the EX-stage ALU whose delay sets $t_{\text{logic}}$).
+- **Up the stack (what builds on it):** [OoO_Execution](05_OoO_Execution.md) (the renaming, dynamic scheduling, ROB, and LSQ of §5 in full — the machine this in-order pipe becomes), [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md) (the TAGE/perceptron/BTB/RAS realization of §4), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (the cache internals of §6 and the in-cache coherence controller of §8), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md) (the translation microarchitecture of §7), [ACE_and_CHI](12_ACE_and_CHI.md) (the interconnect that carries the coherence protocol of §8), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (a complete open core composing all of this).
+- **Adjacent:** [RISC_V_ISA](04_RISC_V_ISA.md) (the instruction set, trap model, and fence encodings referenced in §5/§9), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (Amdahl's law and the CPI stack that frame §1's iron law).
 
 ---
 
-## 14. Exception Pipeline in Out-of-Order Execution — Summary
-
-**Precise exceptions**: when the handler runs, architectural state reflects exactly "everything older than the faulting instruction committed; nothing younger did." The ROB provides this for free: exceptions detected anywhere in the pipeline are *recorded* in the instruction's ROB entry, not acted upon; only when the faulting instruction reaches the ROB **head** does the core flush, redirect to the handler, and update CSRs (control and status registers — `mepc`, `mcause`, `mtval`). Interrupts are simply injected at the commit point. Detection is distributed (fetch: instruction page/access faults; decode: illegal instruction; execute: misaligned/arith; memory: data page faults) — commit is centralized.
-
-Stage-by-stage detection tables, the full OoO exception walkthrough, sync vs async classes, priority/delegation: [OoO_Execution](05_OoO_Execution.md) §9.
-
-## 15. Memory Ordering and Consistency Models
-
-### 16.1 Why Memory Ordering Matters
-
-In a single-threaded in-order pipeline, memory operations appear to execute in
-program order. Out-of-order execution and compiler optimizations break this
-assumption: a load may execute before an older store to a *different* address,
-and stores may be reordered in the store buffer. A **memory consistency model**
-defines which reorderings are architecturally visible to software. It is a
-contract between hardware and software -- the hardware promises not to violate
-the model, and software must insert explicit synchronization when it needs
-ordering stronger than the default.
-
-### 16.2 Sequential Consistency (SC)
-
-All memory operations from every thread appear to execute in a single global
-order that respects each thread's program order. No reordering of any kind is
-visible. Simplest model to reason about, worst performance: every load must wait
-for all prior stores to become globally visible, and the store buffer cannot
-hide store latency across threads.
-
-No mainstream general-purpose CPU implements SC as its default model.
-
-### 16.3 Total Store Order (TSO / x86)
-
-TSO relaxes exactly one ordering: a load may be reordered before an older store
-to a **different** address (store-load relaxation). All other program-order
-pairs are preserved:
-
-```ascii-graph
-Allowed reorderings under TSO:
-  Store X --> Load Y  (X != Y):  YES  (store-load relaxation)
-  All other pairs:               NO
-
-Prohibited:
-  Load  --> Load     (load-load)
-  Store --> Store    (store-store)
-  Load  --> Store    (load-store)
-```
-
-The store buffer provides this relaxation naturally: when a store is buffered,
-subsequent loads to different addresses can bypass it. Loads to the *same*
-address are satisfied by store-to-load forwarding (Section 7.6).
-
-**Practical consequence:** on x86, `X=1; print(Y)` can observe Y before X=1 is
-visible to other cores. This is not a bug -- it is TSO. Software that needs X=1
-to be visible before reading Y must use `MFENCE`, `LOCK XCHG`, or an atomic
-instruction with implicit full barrier semantics.
-
-### 16.4 Weak Ordering (ARM, RISC-V Default)
-
-Loads and stores can be reordered freely except where constrained by explicit
-fences or acquire/release annotations:
-
-```ascii-graph
-Allowed reorderings under weak ordering:
-  Load  --> Load:   YES
-  Load  --> Store:  YES
-  Store --> Store:  YES
-  Store --> Load:   YES
-```
-
-All reorderings are permitted because the hardware does not enforce any
-ordering by default. Software must insert fences or use annotated operations
-when ordering is required (e.g., between releasing a lock and subsequent
-accesses to protected data).
-
-**RISC-V fencing primitives:**
-
-| Instruction | Semantics |
-|-------------|-----------|
-| `fence r,rw` | Order all loads before subsequent loads and stores (load-load + load-store fence) |
-| `fence rw,rw` | Full fence: order all prior memory operations before all subsequent memory operations |
-| `fence.i` | Instruction-cache synchronization: modifications to code memory become visible to fetch |
-| `sfence.vma` | TLB synchronization: page-table updates become visible to address translation |
-
-### 16.5 Acquire and Release Semantics
-
-Finer-grained ordering primitives that avoid the cost of a full fence:
-
-- **Acquire** (load-acquire, RISC-V `ld.aq`): prevents all subsequent memory
-  operations from being reordered before this load. Used at the entry of a
-  critical section (acquiring a lock).
-
-- **Release** (store-release, RISC-V `st.rl`): prevents all prior memory
-  operations from being reordered after this store. Used at the exit of a
-  critical section (releasing a lock).
-
-```python
-Thread 0:                        Thread 1:
-  data = 42                        ld.aq flag_val, flag
-  st.rl flag, 1                    if flag_val == 1:
-                                     print(data)  // guaranteed to see 42
-
-Release on Thread 0 orders "data=42" before "flag=1".
-Acquire on Thread 1 orders "load flag" before "load data".
-Together they guarantee Thread 1 sees data=42 after observing flag==1.
-```
-
-### 16.6 Microarchitectural Implications for OoO
-
-The Load/Store Queue (LSQ) enforces memory-ordering constraints in hardware:
-
-- **On TSO (x86):** the store buffer already provides store-load relaxation.
-  The LSQ must only prevent load-load, store-store, and load-store reordering.
-  The store buffer naturally gives TSO compliance with minimal hardware cost.
-
-- **On weak ordering (ARM/RISC-V):** the LSQ must track fence instructions as
-  ordering barriers. When a `fence` is encountered, the LSQ stalls issue of
-  subsequent memory operations until all prior ones have completed. `ld.aq` and
-  `st.rl` are cheaper: they carry per-instruction ordering bits that the LSQ
-  checks locally without stalling the entire pipeline.
-
-- **Speculation:** both models allow the LSQ to speculate past unresolved
-  stores. On TSO, a load may execute before confirming that no older store to
-  the same address is pending (address match). On weak ordering, loads may
-  speculate past anything unless a fence blocks them. Misprediction recovery
-  requires replaying the load from the ROB.
-
----
-
-## 16. Micro-op Fusion
-
-### 17.1 Macro-Fusion
-
-Macro-fusion merges two adjacent instructions in the decode stage into a single
-internal micro-operation (uop). The fused pair occupies one ROB entry, consumes
-one issue slot, and traverses the pipeline as a single operation.
-
-**Common fused patterns:**
-
-```ascii-graph
-CMP reg1, reg2    }                          TEST reg1, reg2    }
-JE  target        } --> fused-cmp-branch      JZ  target        } --> fused-test-branch
-
-ADD reg1, 1       }                          SUB reg1, 1       }
-JO  target        } --> fused-add-overflow    JS  target        } --> fused-sub-sign
-```
-
-The decoder recognizes these patterns by checking whether the first instruction
-is a flag-producing ALU operation and the second is a conditional branch that
-tests exactly those flags. If the condition code does not match the produced
-flags (e.g., `ADD` then `JNE` which checks ZF (the zero flag) set by a different operation),
-fusion does not occur.
-
-**Benefit:** the fused uop counts as one entry in the ROB, issue queue, and
-reorder logic. This effectively increases ROB capacity and issue width at no
-additional hardware cost. For a 4-wide machine that fuses 5% of dynamic
-instructions, the effective ROB capacity increases by approximately 5%.
-
-### 17.2 Micro-Fusion
-
-Micro-fusion combines the micro-ops produced by decomposing a single complex
-instruction so that they travel through most of the pipeline as one entry.
-
-**Common pattern -- memory operands:**
-
-```verilog
-ADD rax, [rbx]      -- complex instruction with memory operand
-```
-
-This decomposes into two micro-ops: (1) a load uop that reads from [rbx], and
-(2) an ALU uop that adds the loaded value to rax. With micro-fusion, these two
-uops share a single ROB entry and issue-queue entry, splitting only at the
-execution units (load port for uop 1, ALU port for uop 2).
-
-**Other micro-fused patterns:**
-
-| Instruction | Decomposed uops | Fused through |
-|-------------|-----------------|---------------|
-| `ADD rax, [rbx]` | load + add | ROB, issue queue |
-| `CMP rax, [rbx]` | load + compare | ROB, issue queue |
-| `MOV [rbx], rax` | store-addr + store-data | ROB, issue queue |
-
-### 17.3 Quantitative Impact
-
-- **Intel Golden Cove (Alder Lake P-core):** macro-fusion handles ~5--7% of
-  dynamic instructions. Combined with micro-fusion, effective ROB capacity
-  increases by ~8--10% beyond the nominal 512 entries.
-
-- **Apple M1:** extensive macro-fusion (compare+branch, test+branch, and
-  additional patterns) contributes to the M1's very high IPC (instructions per cycle) despite a
-  comparatively moderate ROB size (~600 entries reported).
-
-- **Limitation:** fusion only applies to adjacent instructions in program order.
-  Compiler scheduling can increase fusion opportunities by placing flag-setting
-  instructions immediately before dependent branches, but this is constrained by
-  register pressure and other dependencies.
-
-### 17.4 Interview Significance
-
-Micro-op fusion is relevant in interviews because it explains why a processor's
-effective issue width and ROB capacity can exceed their nominal values. When
-analyzing pipeline throughput, counting fused uops separately would
-underestimate the machine's capability. It also illustrates the interplay
-between ISA complexity (x86's memory-operand instructions generate more
-micro-fusion opportunities) and microarchitectural efficiency.
-
----
-
-## 17. Modern SMT Implementations
-
-### 18.1 Intel Hyper-Threading (SMT-2)
-
-Intel has shipped 2-thread SMT on most client and server cores since the
-Pentium 4 Northwood (2002). Key implementation details from Golden Cove
-(Alder Lake P-core, 2021):
-
-| Structure | Sharing Model | Details |
-|-----------|--------------|---------|
-| ROB | Dynamically shared | 512 total entries, each thread capped at 384 |
-| IQ (unified) | Dynamically shared | ~128 entries, thread-ID tagged |
-| Physical Register File | Dynamically shared | ~280 INT, ~224 FP entries |
-| L1 D-Cache | Fully shared | 48 KB, 12-way |
-| L2 Cache | Fully shared | 1.25 MB (Golden Cove), 2 MB (Raptor Cove) |
-| Rename width | Time-multiplexed | 6 uops/cycle total, alternating fetch groups |
-| Execution units | Fully shared | 6 INT ALUs, 2 FP FMA units, 3 load AGUs |
-
-Typical SMT-2 speedup on Golden Cove: 1.25--1.35x on server workloads
-(SPEC CPU2017 multi-copy), diminishing to 1.10x on workloads with heavy L2
-cache contention.
-
-### 18.2 AMD Zen 4 SMT-2
-
-AMD Zen 4 (2022) implements 2-thread SMT with a different resource partitioning
-philosophy:
-
-| Structure | Details |
-|-----------|---------|
-| ROB | 320 entries, per-thread floor of 160 |
-| IQ | Distributed: 64 INT + 44 FP + 48 AGU/load + 24 store entries |
-| PRF | 224 INT + 192 FP physical registers, shared with per-thread floor |
-| Load/Store Queue | 128 combined entries, dynamically partitioned |
-| L1 D-Cache | 32 KB, 8-way, fully shared |
-| L2 Cache | 1 MB per core, private, fully shared by both threads |
-| Execution units | 4 INT ALU + 2 AGU + 2 FPU (shared) |
-
-Zen 4 SMT-2 speedup: 1.20--1.30x. AMD publishes per-thread IPC guarantees
-for real-time use cases.
-
-### 18.3 IBM POWER10 SMT-4 / SMT-8
-
-IBM POWER10 supports up to 8 hardware threads per core (SMT-8), the widest
-commercial SMT implementation:
-
-- 8 threads share a 512-entry ROB and 8 execution slices.
-- Each thread gets its own architected register file and program counter.
-- SMT-4 mode: 4 threads, each with ~128 ROB entries guaranteed.
-- SMT-8 mode: 8 threads, ~64 ROB entries per thread.
-- SMT-8 throughput: 1.6--2.2x over single-thread, depending on memory
-  intensity.
-
-### 18.4 Apple: No SMT
-
-Apple's M-series cores (Firestorm, Avalanche, Everest) do not implement SMT.
-Instead, Apple uses very wide single-thread cores (8-wide decode, 600+ entry
-ROB) and relies on chip-area efficiency: two non-SMT cores in the same area as
-one SMT-2 core provide more predictable performance and avoid security
-vulnerabilities inherent in shared microarchitectural state.
-
-### 18.5 SMT Design Tradeoffs Summary
-
-| Vendor | Core | SMT Width | ROB | Decode Width | SMT Speedup |
-|--------|------|-----------|-----|-------------|-------------|
-| Intel | Golden Cove | 2 | 512 | 6 | 1.25--1.35x |
-| AMD | Zen 4 | 2 | 320 | 4 (6 uop) | 1.20--1.30x |
-| IBM | POWER10 | 8 | 512 | 8 | 1.6--2.2x |
-| Apple | Avalanche | 1 | ~630 | 8 | N/A |
-| ARM | Cortex-X4 | 1 | ~320 | 5 | N/A |
-
----
-
-## 18. Pipeline Security: Spectre, Meltdown, and Mitigations
-
-### 19.1 The Attack Class
-
-The Spectre (2018) and Meltdown (2018) attacks exploit the microarchitectural
-side-effects of speculative execution. The core vulnerability: when the
-processor speculatively executes instructions on a wrong path (or with wrong
-privilege), the changes to microarchitectural state (cache contents, TLB
-entries, branch predictor state) are not rolled back even though the
-architectural state is restored. An attacker can use a **covert channel**
-(typically the data cache) to exfiltrate secret data that was loaded during
-the speculative window.
-
-**Spectre Variant 1 (Bounds Check Bypass):**
-```verilog
-if (index < array_size)            // Trains branch predictor to "taken"
-    temp = array2[array1[index]];  // Speculative access: index may be out-of-bounds
-```
-The attacker mistrains the branch predictor, causes speculative execution with
-a malicious index, and observes which cache line was loaded via a timing
-side-channel on array2.
-
-**Spectre Variant 2 (Branch Target Injection):**
-The attacker poisons the indirect branch predictor (BTB) so that an indirect
-branch in the victim speculatively jumps to a gadget chosen by the attacker.
-
-**Meltdown (Rogue Data Cache Load):**
-On affected Intel processors (pre-2018), a user-mode load from a
-supervisor-only page faults, but the data reaches the cache before the fault
-is processed. The attacker reads the cached data via a covert channel.
-
-### 19.2 Hardware Mitigations
-
-#### Retpoline (Return Trampoline)
-
-A software+hardware mitigation for Spectre Variant 2. Instead of executing an
-indirect branch (which may be poisoned in the BTB), the compiler replaces it
-with a `call` + `ret` sequence:
-
-```verilog
-; Original: jmp *%rax
-; Retpoline:
-  call retpoline_target
-retpoline_target:
-  lfence          ; stop speculation
-  jmp retpoline_target  ; infinite loop -- never reaches here speculatively
-```
-
-The `call` pushes a return address onto the RAS; the `ret` pops it. Because the
-RAS is not poisoned by the BTB attack, the speculative path is safe. The
-performance cost is ~5--15% on indirect-heavy workloads.
-
-#### IBRS (Indirect Branch Restricted Speculation)
-
-An x86 MSR (Model-Specific Register) that, when set, prevents indirect branch
-predictions from using branch predictor state that was populated at a lower
-privilege level. This creates a "predictor fence" on privilege transitions.
-Intel introduced IBRS in microcode updates (2018). Performance cost: 1--5%
-on system-call-heavy workloads.
-
-#### STIBP (Single Thread Indirect Branch Predictor)
-
-Prevents one SMT thread from influencing the other thread's indirect branch
-predictions. When enabled, each SMT thread has its own branch predictor state
-(partitioned BTB). Performance cost on SMT-2: 1--10% depending on workload.
-
-#### Microarchitectural Buffer Flushing
-
-On return from a higher-privilege exception handler, the processor flushes
-internal buffers that could leak data:
-
-| Buffer | Mitigation |
-|--------|-----------|
-| Load port buffers | Cleared on VM exit / privilege change |
-| Store buffer | Drained and verified before returning to less-privileged mode |
-| Line fill buffer | Invalidated on context switch |
-| L1 D-Cache | May require flush on core sibling entry (L1D flush on VM entry, some Intel) |
-
-#### Speculative Store Bypass Disable (SSBD)
-
-Controls whether speculative loads may bypass older stores to the same address
-(before the store address is resolved). Disabling store bypass prevents a
-variant where speculative loads read stale data. Performance cost: 0--3%.
-
-### 19.3 RISC-V Security Considerations
-
-RISC-V cores are not immune to speculative side-channels. Mitigations in
-RISC-V designs include:
-
-1. **Speculation barriers:** `FENCE` with appropriate predecessors/successors
-   can act as a speculation barrier. The `Zicom` extension adds conditional
-   select instructions that avoid branches entirely (eliminating BTB attack
-   surface).
-
-2. **Data-independent timing (Zkt):** The Zkt extension mandates that
-   certain instructions (MUL, DIV, AES round) execute in data-independent time,
-   preventing timing side-channels on secret-dependent values.
-
-3. **PMP/PMA access checks before speculation:** In properly designed RISC-V
-   cores, the Physical Memory Protection (PMP) and Physical Memory Attributes
-   (PMA) checks are performed before speculative data is returned to the cache
-   fill buffer, preventing Meltdown-class attacks by design.
-
-4. **Platform-level security (TEE):** The RISC-V Trusted Execution
-   Environment (TEE) proposal uses PMP to isolate a secure monitor from the
-   rich OS, preventing the OS from accessing secure-memory regions even via
-   speculative execution.
-
-### 19.4 Performance Impact Summary
-
-| Mitigation | Mechanism | Typical Cost |
-|-----------|-----------|-------------|
-| Retpoline | Software (compiler) | 5--15% (indirect-heavy code) |
-| IBRS | MSR (microcode) | 1--5% (syscall-heavy) |
-| STIBP | MSR (partition BTB) | 1--10% (SMT workloads) |
-| SSBD | MSR (block store bypass) | 0--3% |
-| L1D flush on VM entry | Microcode | 1--3% per VM entry |
-| KPTI (Kernel Page Table Isolation) | Software (OS) | 5--10% (syscall-heavy) |
-| Full mitigation stack | All combined | 10--30% worst case |
-
-KPTI is a software mitigation for Meltdown: the kernel runs with a separate
-page table that maps only a small trampoline, forcing a TLB flush on every
-syscall entry/exit. This is not needed on processors with hardware Meltdown
-mitigations (AMD Zen, ARM Cortex-A76+, post-2018 Intel).
+## References
+
+1. Hennessy, J.L. and Patterson, D.A., *Computer Architecture: A Quantitative Approach*, 6th ed., Morgan Kaufmann, 2017. Appendix C (pipelining, hazards, forwarding) and Ch. 2/5 (memory hierarchy, coherence, consistency).
+2. Hrishikesh, M.S. et al., "The Optimal Logic Depth Per Pipeline Stage is 6 to 8 FO4," *ISCA*, 2002. The empirical basis for §1.3.
+3. Hartstein, A. and Puzak, T.R., "The Optimum Pipeline Depth for a Microprocessor," *ISCA*, 2002. The $\sqrt{}$ depth-optimum derivation.
+4. Sorin, D.J., Hill, M.D., and Wood, D.A., *A Primer on Memory Consistency and Cache Coherence*, 2nd ed., Morgan & Claypool, 2020. SWMR/data-value invariants of §8 and the consistency models of §9.
+5. Tomasulo, R.M., "An Efficient Algorithm for Exploiting Multiple Arithmetic Units," *IBM J. R&D*, 11(1), 1967. The dynamic scheduling of §5.
+6. Tullsen, D.M., Eggers, S.J., and Levy, H.M., "Simultaneous Multithreading: Maximizing On-Chip Parallelism," *ISCA*, 1995. The SMT model of §10.
+7. Kocher, P. et al., "Spectre Attacks: Exploiting Speculative Execution," *IEEE S&P*, 2019; Lipp, M. et al., "Meltdown: Reading Kernel Memory from User Space," *USENIX Security*, 2018. The attacks of §11.

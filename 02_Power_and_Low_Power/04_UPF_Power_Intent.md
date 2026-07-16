@@ -1,1258 +1,221 @@
-# UPF (Unified Power Format) Power Intent Specification
+# UPF and Power Intent — Specifying Everything the RTL Leaves Unsaid
 
-## 1. Why UPF Exists
-
-RTL (Verilog/VHDL) describes **functional behavior** only. It says nothing about:
-- Which blocks can be powered off
-- What voltage each block runs at
-- What happens to outputs when a block is off
-- Which registers retain state across power-down
-- How power supplies are switched and sequenced
-
-Without a separate power intent specification, every tool in the flow (synthesis, P&R (place and route),
-simulation, verification, signoff) would need ad-hoc, inconsistent mechanisms to handle
-low-power design. UPF (IEEE 1801) provides a **single, standardized specification** that
-is consumed by ALL tools, ensuring consistent power-aware implementation and verification.
-
-**Key principle:** The SAME RTL can be synthesized with DIFFERENT power strategies by
-changing only the UPF file. This decouples functional design from power architecture.
-
-### 1.1 UPF vs CPF
-
-| Feature          | UPF (IEEE 1801)            | CPF (Si2/Cadence)            |
-|------------------|----------------------------|------------------------------|
-| Standard body    | IEEE                       | Si2 (industry consortium)    |
-| Primary backer   | Synopsys (originally)      | Cadence (originally)         |
-| Current status   | Industry standard          | Largely superseded by UPF    |
-| Tool support     | All major EDA tools        | Cadence tools primarily      |
-| Language         | TCL-based                  | TCL-based                    |
-| Key difference   | Supply sets, successive refinement | Explicit net connections |
-
-**Bottom line:** Use UPF for all new designs. CPF (Common Power Format) knowledge is useful for legacy projects.
-
-### 1.2 UPF Versions
-
-| Version | Standard / Year | Key Additions |
-|---------|-----------------|----------------|
-| UPF 1.0 | Accellera, 2007 | Core: domains, switches, isolation, retention |
-| UPF 2.0 | IEEE 1801-2009 | Supply sets, successive refinement, power states, PST |
-| UPF 2.1 | IEEE 1801-2013 | Cleanups, repeater (buffer) strategy, liberty alignment |
-| UPF 3.0 | IEEE 1801-2015 | Component-level power modeling, information model/HDL APIs |
-| UPF 3.1 | IEEE 1801-2018 | Consolidation, bias supplies refinement, tool interoperability |
-| UPF 4.0 | IEEE 1801-2024 (published 2025) | Value Conversion Methods (VCM) + tunneling for UPF-to-HDL type interconnect, virtual supply nets, refinable macros, UPF libraries, reworked analog/digital (AMS) interfacing, advanced retention modeling |
-
-**UPF 4.0 (IEEE 1801-2024) in one interview answer:** the 2024 revision (published
-March 2025, available fee-free via the IEEE GET program) focuses on making power intent
-compose better across mixed abstraction levels: VCMs let UPF supplies connect to
-arbitrary HDL (hardware description language) types (key for AMS and macro models), refinable macros and UPF libraries
-make IP-level power intent reusable and refinable at SoC (system on chip) level, and retention modeling
-is generalized. Tool adoption is incremental -- production flows in 2025-2026 are
-mostly UPF 2.x/3.x constructs with 4.0 features arriving feature-by-feature; citing
-that nuance signals real flow experience.
-
-### 1.3 UPF in the Design Flow
-
-```text
-RTL Design (Verilog/VHDL)
-    |
-    +---- UPF Power Intent ----------------------+
-    |                                            |
-    v                                            v
-Synthesis (DC/Genus)                     Power-Aware Simulation
-    | (inserts ISO, RET,                 (VCS/Xcelium with UPF)
-    |  level shifters,                   - Verifies power sequences
-    |  power switches)                   - Outputs X for powered-off blocks
-    v                                    - Catches cross-domain errors
-Place & Route (ICC2/Innovus)
-    | (places special cells,
-    |  routes power grid,
-    |  switch insertion)
-    v
-Power Analysis (PrimeTime PX / Voltus)
-    | (per-domain power,
-    |  IR drop per domain)
-    v
-Signoff
-```
+> **Prerequisites:** [Power_Fundamentals](01_Power_Fundamentals.md) (the three powers, and why leakage is the term power-gating exists to kill), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (the *mechanisms* — power switches, retention flops, isolation and clock-gating cells — that this page only specifies the *intent* for), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (why an unpowered node has no logic value, and why a sub-threshold "1" cannot switch a higher-rail gate).
+> **Hands off to:** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (measuring per-domain power and closing the intent at signoff).
 
 ---
 
-## 2. Core UPF Concepts
+## 0. Why this page exists
 
-### 2.0A Isolation Cell Types -- Complete Reference
+RTL describes **function** and nothing else. `assign y = a & b;` says what `y` computes; it is completely silent on which supply drives that gate, whether the block can be switched off, what voltage it runs at, or what the wire means when the block on the other end is dark. Yet those are the questions that decide whether the chip meets its power budget — and none of them can be read off the netlist, because they are not properties of the *computation* at all. They are properties of the **physical power architecture** wrapped around it.
 
-```ascii-graph
-When a power domain is powered off, its outputs become undefined (X/float).
-Isolation cells clamp these outputs to safe, known values.
+Power intent is the separate, formal answer to those questions. It is a specification — IEEE 1801 (UPF) — that names the power regions, the supplies, and, above all, **what must happen at the boundary between a region that is on and one that is off or at a different voltage.** The design decision that makes the whole methodology work is that this specification is kept *orthogonal to function*: it lives in its own file, it references the RTL by hierarchical name without touching it, and it is consumed identically by synthesis, place-and-route, simulation, and signoff. That orthogonality is not a convenience — it is what lets one RTL be retargeted to many power strategies, lets an IP block carry its power intent to any SoC, and makes power a **formally checkable property** rather than a pile of ad-hoc scripts.
 
-Type 1: AND-type isolation (clamp to 0) -- MOST COMMON
-  Implementation: output = data_in & ~isolate_enable
-  When isolated (isolate_enable = 1): output = 0 regardless of data_in
-  When active (isolate_enable = 0): output = data_in (pass-through)
-  
-  Use when:
-    - Data buses (idle state is all-zeros)
-    - Active-HIGH control signals (0 = deasserted)
-    - Address buses (idle = 0x0)
-    - General-purpose outputs where 0 is the safe default
-  
-  Schematic:
-    data_in ──┐
-              AND ── output
-    iso_en ───┘ (inverted: AND gate with iso_n = !iso_en)
-    
-  Liberty function: Z = A & !ISO
-
-Type 2: OR-type isolation (clamp to 1)
-  Implementation: output = data_in | isolate_enable
-  When isolated (isolate_enable = 1): output = 1 regardless of data_in
-  When active (isolate_enable = 0): output = data_in (pass-through)
-  
-  Use when:
-    - Active-LOW control signals (reset_n, enable_n)
-      Clamping to 1 means "deasserted" -> safe state
-    - Interrupt lines that should not false-trigger when domain is off
-    - Chip select_n signals that must be HIGH (deselected) when domain is off
-  
-  Schematic:
-    data_in ──┐
-              OR ── output
-    iso_en ───┘
-    
-  Liberty function: Z = A | ISO
-
-Type 3: Latch-type isolation (hold last value)
-  Implementation: transparent latch that captures data when not isolated
-  When isolated: output holds the last valid value before domain went off
-  When active: output follows data_in (latch is transparent)
-  
-  Use when:
-    - Status registers that downstream logic depends on
-    - Configuration outputs that should remain at last valid setting
-    - Feedback paths where 0 or 1 would cause incorrect behavior
-    - Debug outputs that must show last known good state
-  
-  Schematic:
-    data_in ──[TG]── Latch ── output
-               ↑
-              !iso_en (transparent when not isolated)
-    
-  Larger than AND/OR type: ~1.5-2x area
-
-Type 4: Combined isolation + level shifter
-  Single cell that both isolates AND level-shifts
-  Use when: crossing both power state AND voltage domains simultaneously
-  Saves area vs separate ISO + LS cells
-
-Selection decision tree:
-  Is the signal active-low (name ends in _n)?
-    YES -> OR-type (clamp to 1 = deasserted)
-  Does downstream need last valid value?
-    YES -> Latch-type
-  Default -> AND-type (clamp to 0)
-```
-
-### 2.0B Level Shifter Types -- Complete Reference
-
-```ascii-graph
-Level shifters convert signals between voltage domains.
-
-Type 1: Step-up level shifter (Low -> High)
-  Input: 0 to VDDL (e.g., 0.5V)
-  Output: 0 to VDDH (e.g., 0.9V)
-  
-  A 0.5V logic-HIGH is below the switching threshold of 0.9V logic.
-  The level shifter amplifies the voltage:
-    VDDL-HIGH (0.5V) -> VDDH-HIGH (0.9V)
-    VDDL-LOW (0.0V) -> VDDH-LOW (0.0V)
-  
-  Implementation: cross-coupled PMOS pair (differential sense amplifier)
-    VDDH ──┬── [PMOS1] ──┬── output
-            |              |
-            └── [PMOS2] ──┘
-                ↑ cross-coupled (regenerative feedback)
-    Input drives NMOS that pulls one side down, feedback pulls other high
-  
-  Delay: 100-300 ps
-  Use: signals going FROM low-voltage domain TO high-voltage domain
-  Example: CPU (0.75V) -> always-on bus (0.9V)
-
-Type 2: Step-down level shifter (High -> Low)
-  Input: 0 to VDDH (e.g., 0.9V)
-  Output: 0 to VDDL (e.g., 0.5V)
-  
-  A 0.9V signal overdrives a 0.5V gate's input, potentially causing
-  gate oxide stress or excessive current. The level shifter attenuates:
-    VDDH-HIGH (0.9V) -> VDDL-HIGH (0.5V)
-    VDDH-LOW (0.0V) -> VDDL-LOW (0.0V)
-  
-  Implementation: simple buffer powered by VDDL
-    The input (0.9V) easily switches the buffer (threshold ~0.25V)
-    Output swings 0 to VDDL
-    
-  Delay: 50-150 ps (simpler than step-up)
-  Use: signals going FROM high-voltage domain TO low-voltage domain
-
-Type 3: Bidirectional (both directions)
-  Can handle either step-up or step-down
-  Use when: DVFS domains where either domain can be at higher voltage
-  Example: CPU at turbo (0.95V) vs bus at nominal (0.9V)
-    Sometimes CPU is higher (step-down needed)
-    Sometimes CPU is lower (step-up needed)
-  
-  Implementation: combination of both types, or a dedicated symmetric design
-  Area: larger than single-direction (~1.5-2x)
-
-Where level shifters are needed:
-  EVERY signal crossing power domains with different voltages needs one.
-  
-  Domain A (0.9V) ----[LS]---- Domain B (0.75V)
-  
-  Direction A->B: step-down (0.9V logic output -> 0.75V logic input)
-  Direction B->A: step-up   (0.75V logic output -> 0.9V logic input)
-  
-  For a 32-bit bus crossing domains: 32 level shifters per direction
-  Area cost: 32 * 2 * ~5 um^2 = ~320 um^2 (non-trivial for many crossings)
-  Timing cost: 100-300 ps per crossing (must be included in STA)
-
-Common mistake: forgetting level shifters on signals that are "only one
-direction" -- during DVFS transitions, either domain can temporarily
-be at higher voltage.
-```
-
-### 2.1 Power Domain
-
-A **power domain** is a group of logic instances that share the same power supply behavior.
-All cells in a power domain are:
-- Powered by the same supply set
-- Turned on/off together
-- In the same voltage/power state at any given time
-
-Every cell in the design belongs to **exactly one** power domain. The default domain is
-the top-level domain (always-on unless explicitly gated).
-
-### 2.2 Supply Network
-
-UPF models power supplies abstractly using:
-- **Supply ports:** entry/exit points for power at hierarchy boundaries
-- **Supply nets:** wires carrying power within a hierarchy level
-- **Supply sets:** abstract bundles of {power, ground} that are assigned to domains
-
-### 2.3 Power States
-
-Each power domain can be in one of several states:
-- **ON:** fully powered, normal operation
-- **OFF:** power removed, all state lost, outputs undefined
-- **RETENTION:** power removed from main logic, but retention supply keeps shadow latches alive
-
-### 2.4 Special Cells
-
-UPF triggers insertion of special cells at domain boundaries and within gated domains:
-- **Isolation cells:** clamp outputs of off domains to safe values
-- **Level shifters:** convert signal voltage between different-voltage domains
-- **Retention registers:** preserve state across power cycling
-- **Power switches:** PMOS/NMOS (p-channel and n-channel metal-oxide-semiconductor) header/footer transistors to gate supply
-- **Always-on buffers:** buffers powered by the always-on supply within a gated domain
-  (needed to buffer always-on signals that must reach deep into the gated domain)
+This page derives the UPF constructs — power domains, supply sets, isolation, level shifters, retention, and the power state table — **from the boundary problem each one solves**, not as a command reference. For each we ask: what goes wrong in silicon if it is absent, what is the cheapest correct fix, where is the trade-off knee, and why real SoCs land where they do. By the end you should be able to reason about a power architecture — size a domain partition, choose a clamp value, decide what to retain — rather than recite `set_isolation` flags.
 
 ---
 
-## 3. Complete UPF Tutorial: 3-Domain SoC
+## 1. The core idea: function and power intent as orthogonal specifications
 
-### 3.1 Design Architecture
+A power-managed chip is described by two specifications that must not be tangled:
 
-```ascii-graph
-  +================================================================+
-  |  PD_TOP (Always-On)                                            |
-  |  - Bus fabric, interrupt controller, power management unit     |
-  |  - Supply: VDD / VSS (always on)                               |
-  |                                                                |
-  |  +========================+  +============================+   |
-  |  |  PD_CPU                |  |  PD_PERI                    |   |
-  |  |  - CPU core            |  |  - UART, SPI, GPIO          |   |
-  |  |  - Power-gatable       |  |  - Power-gatable            |   |
-  |  |  - WITH retention      |  |  - WITHOUT retention        |   |
-  |  |  - Supply: VDD_CPU/VSS |  |  - Supply: VDD_PERI/VSS     |   |
-  |  +========================+  +============================+   |
-  +================================================================+
-```
+- **The RTL** fixes the *logic* — the values every net computes, assuming every gate is powered and every level is valid.
+- **The power intent** fixes the *physical power structure* — which cells share a supply, which supplies can be switched off or moved in voltage, and what protects the interfaces between them.
 
-### 3.2 Complete UPF File with Detailed Explanations
+The RTL's silence is total and load-bearing: it *assumes* a world where every node always has a valid logic value. Power management breaks exactly that assumption — an off block's outputs have no value, a low-voltage "1" is not a "1" to high-voltage logic — so everything interesting in UPF happens at the **boundary** where a powered region meets one that is off or at another voltage. Four boundary facts the RTL never states, and the four constructs that repair each:
 
-```tcl
-#================================================================
-# UPF Power Intent for 3-Domain SoC
-# File: soc_top.upf
-#================================================================
-
-# Set the UPF scope to the top-level design
-set_scope soc_top
-
-#----------------------------------------------------------------
-# STEP 1: Create Power Domains
-#----------------------------------------------------------------
-
-# Top-level domain: always-on, contains bus fabric and control logic
-# -elements {} means "everything not assigned to another domain"
-create_power_domain PD_TOP \
-    -elements {.}
-# The "." means the current scope (soc_top) and all its direct logic.
-# Child domains will carve out their own elements.
-
-# CPU domain: power-gatable with retention
-create_power_domain PD_CPU \
-    -elements {cpu_core}
-# All instances under soc_top/cpu_core belong to PD_CPU
-
-# Peripheral domain: power-gatable without retention
-create_power_domain PD_PERI \
-    -elements {uart_block spi_block gpio_block}
-# Multiple hierarchical instances can belong to one domain
-
-#----------------------------------------------------------------
-# STEP 2: Create Supply Ports (chip-level pins)
-#----------------------------------------------------------------
-
-# Top-level supply ports (these represent physical package pins)
-create_supply_port VDD   -domain PD_TOP -direction in
-create_supply_port VSS   -domain PD_TOP -direction in
-
-# Note: VDD_CPU and VDD_PERI are NOT separate package pins in this design.
-# They are derived from VDD through power switches.
-# If they were separate PMIC rails, they would also be supply ports.
-
-#----------------------------------------------------------------
-# STEP 3: Create Supply Nets
-#----------------------------------------------------------------
-
-# Always-on supply nets
-create_supply_net VDD    -domain PD_TOP
-create_supply_net VSS    -domain PD_TOP
-
-# Switched supply nets for gated domains
-create_supply_net VDD_CPU  -domain PD_CPU
-create_supply_net VDD_PERI -domain PD_PERI
-
-# Ground nets (shared, always-on)
-# CPU and PERI share the same ground (header switch design)
-create_supply_net VSS    -domain PD_CPU  -reuse
-create_supply_net VSS    -domain PD_PERI -reuse
-# -reuse: same physical net VSS is shared across domains
-
-# Always-on net within CPU domain (for retention FFs and ISO cells)
-create_supply_net VDD_AO_CPU -domain PD_CPU
-
-#----------------------------------------------------------------
-# STEP 4: Connect Supply Ports to Supply Nets
-#----------------------------------------------------------------
-
-connect_supply_net VDD -ports {VDD}
-connect_supply_net VSS -ports {VSS}
-
-#----------------------------------------------------------------
-# STEP 5: Create Supply Sets
-#----------------------------------------------------------------
-
-# Supply set for the always-on domain
-create_supply_set SS_TOP \
-    -function {power VDD} \
-    -function {ground VSS}
-
-# Supply set for CPU domain (switched power)
-create_supply_set SS_CPU \
-    -function {power VDD_CPU} \
-    -function {ground VSS}
-
-# Supply set for peripheral domain (switched power)
-create_supply_set SS_PERI \
-    -function {power VDD_PERI} \
-    -function {ground VSS}
-
-# Always-on supply set within CPU (for retention/isolation cells)
-create_supply_set SS_CPU_AO \
-    -function {power VDD} \
-    -function {ground VSS}
-
-#----------------------------------------------------------------
-# STEP 6: Associate Supply Sets with Domains
-#----------------------------------------------------------------
-
-# Each domain gets a primary supply set
-associate_supply_set SS_TOP  -handle PD_TOP.primary
-associate_supply_set SS_CPU  -handle PD_CPU.primary
-associate_supply_set SS_PERI -handle PD_PERI.primary
-
-# CPU domain also needs an always-on supply set (for retention)
-associate_supply_set SS_CPU_AO -handle PD_CPU.retention
-
-#----------------------------------------------------------------
-# STEP 7: Create Power Switches
-#----------------------------------------------------------------
-
-# CPU power switch (header: VDD -> VDD_CPU)
-create_power_switch CPU_PSW \
-    -domain PD_CPU \
-    -input_supply_port  {vin  VDD} \
-    -output_supply_port {vout VDD_CPU} \
-    -control_port       {sleep_n cpu_sleep_n} \
-    -on_state           {on_state  vin {!sleep_n}} \
-    -off_state          {off_state {sleep_n}}
-# When cpu_sleep_n = 0: switch is ON, VDD_CPU = VDD
-# When cpu_sleep_n = 1: switch is OFF, VDD_CPU = floating/0
-
-# Peripheral power switch (header: VDD -> VDD_PERI)
-create_power_switch PERI_PSW \
-    -domain PD_PERI \
-    -input_supply_port  {vin  VDD} \
-    -output_supply_port {vout VDD_PERI} \
-    -control_port       {sleep_n peri_sleep_n} \
-    -on_state           {on_state  vin {!sleep_n}} \
-    -off_state          {off_state {sleep_n}}
-
-#----------------------------------------------------------------
-# STEP 8: Set Isolation Strategy
-#----------------------------------------------------------------
-
-# Isolate CPU domain outputs (when CPU is powered off)
-set_isolation CPU_ISO \
-    -domain PD_CPU \
-    -applies_to outputs \
-    -clamp_value 0 \
-    -isolation_power_net VDD \
-    -isolation_ground_net VSS \
-    -name CPU_ISO_STRATEGY
-
-# Isolation control signal for CPU
-set_isolation_control CPU_ISO \
-    -domain PD_CPU \
-    -isolation_signal cpu_iso_en \
-    -isolation_sense high \
-    -name CPU_ISO_CTRL
-# When cpu_iso_en = 1: outputs are clamped to 0
-# When cpu_iso_en = 0: outputs pass through normally
-
-# Isolate peripheral domain outputs
-set_isolation PERI_ISO \
-    -domain PD_PERI \
-    -applies_to outputs \
-    -clamp_value 0 \
-    -isolation_power_net VDD \
-    -isolation_ground_net VSS \
-    -name PERI_ISO_STRATEGY
-
-set_isolation_control PERI_ISO \
-    -domain PD_PERI \
-    -isolation_signal peri_iso_en \
-    -isolation_sense high \
-    -name PERI_ISO_CTRL
-
-#----------------------------------------------------------------
-# STEP 9: Set Retention Strategy (CPU domain only)
-#----------------------------------------------------------------
-
-# Define which registers in CPU domain retain state
-set_retention CPU_RET \
-    -domain PD_CPU \
-    -retention_power_net VDD \
-    -retention_ground_net VSS \
-    -name CPU_RET_STRATEGY
-# -elements can be used to specify selective retention:
-# -elements {cpu_core/reg_file cpu_core/pc cpu_core/csr}
-# If -elements is omitted, ALL FFs in the domain get retention
-
-# Retention control signals
-set_retention_control CPU_RET \
-    -domain PD_CPU \
-    -save_signal    {cpu_save high} \
-    -restore_signal {cpu_restore high} \
-    -name CPU_RET_CTRL
-# Save: pulse high before power-down to copy state to shadow latches
-# Restore: pulse high after power-up to copy state back from shadow latches
-
-#----------------------------------------------------------------
-# STEP 10: Set Level Shifters (for cross-voltage signals)
-#----------------------------------------------------------------
-
-# In this design, all domains share the same nominal voltage (VDD).
-# Level shifters are still needed if domains can be at different
-# voltages due to DVFS or IR drop considerations.
-
-# If CPU runs at a different voltage than TOP:
-set_level_shifter CPU_TO_TOP_LS \
-    -domain PD_CPU \
-    -applies_to outputs \
-    -rule both \
-    -location self \
-    -name CPU_LS
-# -rule both: insert for both low-to-high and high-to-low crossings
-# -location self: place level shifter in the source domain
-# -location parent: place in the receiving domain (alternative)
-
-# Level shifters for signals going INTO CPU from TOP
-set_level_shifter TOP_TO_CPU_LS \
-    -domain PD_CPU \
-    -applies_to inputs \
-    -rule both \
-    -location self \
-    -name CPU_INPUT_LS
-
-# Similarly for peripheral domain
-set_level_shifter PERI_TO_TOP_LS \
-    -domain PD_PERI \
-    -applies_to outputs \
-    -rule both \
-    -location self \
-    -name PERI_LS
-
-#----------------------------------------------------------------
-# STEP 11: Define Power States
-#----------------------------------------------------------------
-
-# Power states for each supply set
-add_power_state SS_TOP \
-    -state {TOP_ON  -supply_expr {power == `{FULL_ON, 0.90}}} \
-    -state {TOP_OFF -supply_expr {power == `{OFF}}}
-
-add_power_state SS_CPU \
-    -state {CPU_ON  -supply_expr {power == `{FULL_ON, 0.90}}} \
-    -state {CPU_RET -supply_expr {power == `{OFF}} -simstate RETENTION} \
-    -state {CPU_OFF -supply_expr {power == `{OFF}} -simstate CORRUPT}
-
-add_power_state SS_PERI \
-    -state {PERI_ON  -supply_expr {power == `{FULL_ON, 0.90}}} \
-    -state {PERI_OFF -supply_expr {power == `{OFF}} -simstate CORRUPT}
-
-#----------------------------------------------------------------
-# STEP 12: Power State Table (PST)
-#----------------------------------------------------------------
-
-# The PST defines LEGAL combinations of domain power states.
-# Illegal combinations (e.g., CPU ON but TOP OFF) are flagged as errors.
-
-create_pst SoC_PST \
-    -supplies {SS_TOP SS_CPU SS_PERI}
-
-# State: Full Active (all domains on)
-add_pst_state FULL_ACTIVE \
-    -pst SoC_PST \
-    -state {TOP_ON CPU_ON PERI_ON}
-
-# State: CPU Retention (CPU in retention, peripherals on)
-add_pst_state CPU_SLEEP \
-    -pst SoC_PST \
-    -state {TOP_ON CPU_RET PERI_ON}
-
-# State: Peripherals Off (CPU on, peripherals off)
-add_pst_state PERI_OFF \
-    -pst SoC_PST \
-    -state {TOP_ON CPU_ON PERI_OFF}
-
-# State: Deep Sleep (only TOP is on)
-add_pst_state DEEP_SLEEP \
-    -pst SoC_PST \
-    -state {TOP_ON CPU_OFF PERI_OFF}
-
-# State: CPU Retention + Peripherals Off
-add_pst_state CPU_RET_PERI_OFF \
-    -pst SoC_PST \
-    -state {TOP_ON CPU_RET PERI_OFF}
-
-# NOTE: TOP_OFF is never a valid state (always-on domain).
-# Any PST entry with TOP_OFF would be illegal.
-```
-
----
-
-## 4. UPF Supply Set Handles -- The Abstract Supply Model
-
-### 4.1 What Are Supply Set Handles?
-
-UPF 2.0 introduced **supply set handles** as an abstraction layer between power domains
-and physical supply nets. Instead of directly connecting nets to cells, you assign
-abstract "handles" to domains, and the handles resolve to physical nets.
-
-```text
-Power Domain
-    |
-    |-- has a primary supply set handle (PD.primary)
-    |-- has optional retention supply set handle (PD.retention)
-    |-- has optional isolation supply set handle (PD.isolation)
-    |
-    v
-Supply Set (abstract bundle)
-    |
-    |-- contains: power function -> maps to a supply net
-    |-- contains: ground function -> maps to a supply net
-    |
-    v
-Supply Net (physical net)
-```
-
-### 4.2 Successive Refinement
-
-UPF supports writing power intent at multiple levels of abstraction and refining it
-at each design stage:
-
-```text
-RTL Level (UPF 1):
-  - Define power domains and their elements
-  - Specify isolation and retention strategies
-  - Use abstract supply set handles (no physical net names)
-
-Synthesis Level (UPF 2 - refines UPF 1):
-  - Map supply set handles to specific supply nets
-  - Specify cell types for isolation, retention, level shifters
-  - Add implementation constraints
-
-Physical Design Level (UPF 3 - refines UPF 2):
-  - Define physical power switch implementation (daisy chain, ring)
-  - Specify power grid design rules per domain
-  - Add placement constraints for special cells
-```
-
-This allows IP (intellectual property) blocks to be delivered with their own "local" UPF that is refined
-at the SoC integration level.
-
-### 4.3 Supply Set Handle Resolution Example
-
-```tcl
-# IP-level UPF (delivered with IP block)
-create_power_domain PD_IP
-# The IP uses PD_IP.primary.power and PD_IP.primary.ground
-# but does NOT specify what physical nets they map to
-
-# SoC-level UPF (integrator writes this)
-create_supply_net VDD_IP_ACTUAL
-connect_supply_net VDD_IP_ACTUAL -handle PD_IP.primary.power
-connect_supply_net VSS           -handle PD_IP.primary.ground
-# Now the abstract handle resolves to a concrete net
-```
-
----
-
-## 5. UPF Scope Rules
-
-### 5.1 How Scope Works
-
-UPF commands apply to the **current scope** set by `set_scope`. Elements within
-`create_power_domain -elements` are relative to this scope.
-
-```tcl
-set_scope soc_top
-create_power_domain PD_CPU -elements {cpu_core}
-# Creates domain containing soc_top/cpu_core
-
-set_scope soc_top/cpu_core
-create_power_domain PD_CACHE -elements {l1_cache}
-# Creates domain containing soc_top/cpu_core/l1_cache
-# PD_CACHE is a child of PD_CPU (nested power domain)
-```
-
-### 5.2 Hierarchical UPF
-
-For large SoCs, UPF is often written hierarchically:
-
-```tcl
-# Top-level UPF
-set_scope soc_top
-load_upf cpu_core.upf     -scope cpu_core
-load_upf periph_block.upf -scope periph_block
-# Each sub-UPF defines its own domains, which become children of PD_TOP
-```
-
-### 5.3 Scope and Isolation
-
-Isolation is applied at domain boundaries. The `-applies_to` flag controls direction:
-
-```tcl
-set_isolation MY_ISO -domain PD_A -applies_to outputs
-# Isolates signals going OUT of PD_A to other domains
-
-set_isolation MY_ISO -domain PD_A -applies_to inputs
-# Isolates signals coming IN to PD_A from other domains (less common)
-
-set_isolation MY_ISO -domain PD_A -applies_to both
-# Isolates both directions
-```
-
-**Practical note:** Almost always use `-applies_to outputs`. The receiving domain
-is always-on and can handle any input; the sending domain is the one going off and
-needs its outputs clamped.
-
----
-
-## 6. Liberty Extensions for Power-Aware Cells
-
-The `.lib` (Liberty) file must describe special cell attributes so that tools can
-correctly use them during synthesis and P&R:
-
-### 6.1 Power Switch Cell
-
-```text
-cell(HEADER_SWITCH_1X) {
-    switch_cell_type : coarse_grain;
-    pg_pin(VDD) {
-        voltage_name : VDD;
-        pg_type : primary_power;
-    }
-    pg_pin(VVDD) {
-        voltage_name : VVDD;
-        pg_type : internal_power;
-        switch_function : "SLEEP_N";
-        /* VVDD = VDD when SLEEP_N=1, floating when SLEEP_N=0 */
-    }
-    pg_pin(VSS) {
-        voltage_name : VSS;
-        pg_type : primary_ground;
-    }
-    pin(SLEEP_N) {
-        direction : input;
-    }
-}
-```
-
-### 6.2 Isolation Cell
-
-```text
-cell(ISO_AND_1X) {
-    is_isolation_cell : true;
-    dont_use : false;
-    pg_pin(VDD) {
-        voltage_name : VDD;
-        pg_type : primary_power;
-    }
-    pg_pin(VSS) {
-        voltage_name : VSS;
-        pg_type : primary_ground;
-    }
-    pin(A) {
-        direction : input;
-        isolation_cell_data_pin : true;
-    }
-    pin(ISO) {
-        direction : input;
-        isolation_cell_enable_pin : true;
-    }
-    pin(Z) {
-        direction : output;
-        function : "A & !ISO";
-        power_down_function : "!VDD + VSS";
-        /* When VDD is off: Z is undetermined
-           When ISO=1: Z = 0 (clamped low) */
-    }
-}
-```
-
-### 6.3 Retention Register
-
-```text
-cell(DFFR_RET_1X) {
-    retention_cell : "ret_pair";
-    dont_use : false;
-    pg_pin(VDD) {
-        voltage_name : VDD;
-        pg_type : primary_power;
-    }
-    pg_pin(VDDAO) {
-        voltage_name : VDDAO;
-        pg_type : backup_power;
-        /* This pin is connected to the always-on supply */
-    }
-    pg_pin(VSS) {
-        voltage_name : VSS;
-        pg_type : primary_ground;
-    }
-    pin(CLK) { ... }
-    pin(D)   { ... }
-    pin(Q)   { ... }
-    pin(SAVE) {
-        direction : input;
-        retention_pin (save_restore, "1");
-        /* SAVE=1: copy master/slave to shadow latch */
-    }
-    pin(RESTORE) {
-        direction : input;
-        retention_pin (restore, "1");
-        /* RESTORE=1: copy shadow latch back to master/slave */
-    }
-}
-```
-
-### 6.4 Level Shifter Cell
-
-```text
-cell(LS_LH_1X) {
-    is_level_shifter : true;
-    level_shifter_type : LH;
-    /* LH = low-to-high, HL = high-to-low */
-    input_voltage_range(0.5, 0.9);
-    output_voltage_range(0.7, 1.1);
-    pg_pin(VDDL) {
-        voltage_name : VDDL;
-        pg_type : primary_power;
-    }
-    pg_pin(VDDH) {
-        voltage_name : VDDH;
-        pg_type : primary_power;
-    }
-    pg_pin(VSS) {
-        voltage_name : VSS;
-        pg_type : primary_ground;
-    }
-    pin(A) { direction : input; }
-    pin(Z) { direction : output; function : "A"; }
-}
-```
-
-### 6.5 Always-On Buffer
-
-```text
-cell(AO_BUF_1X) {
-    always_on : true;
-    /* This cell is powered by the always-on supply even in a gated domain */
-    pg_pin(VDD) {
-        voltage_name : VDD;
-        pg_type : primary_power;
-    }
-    pg_pin(VSS) {
-        voltage_name : VSS;
-        pg_type : primary_ground;
-    }
-    pin(A) { direction : input;  }
-    pin(Z) { direction : output; function : "A"; }
-}
-```
-
----
-
-## 7. UPF Verification Flow
-
-### 7.1 Static UPF Checks
-
-Static checks verify UPF structural correctness WITHOUT simulation:
-
-```verilog
-Checks performed:
-  1. Every output of a gated domain has an isolation cell
-     - Missing isolation -> outputs float when domain is off -> corruption
-  
-  2. Every cross-voltage signal has a level shifter
-     - Missing level shifter -> voltage mismatch -> potential functional failure
-  
-  3. Every power switch has proper control connectivity
-     - Dangling control -> switch never turns on/off
-  
-  4. Retention control signals are connected and properly sequenced
-     - Missing save/restore -> retention FFs don't save/restore
-  
-  5. No combinational paths from off domain to on domain without isolation
-     - Even through intermediate logic
-  
-  6. Supply connectivity: all domains have valid supply sets
-  
-  7. PST legality: all defined states are consistent
-```
-
-**Tool commands:**
-```tcl
-# Synopsys VC LP (Verification Compiler Low Power)
-check_lp -upf soc_top.upf -design soc_top
-# Reports: missing isolation, missing level shifters, etc.
-
-# Cadence Conformal LP
-read_upf soc_top.upf
-check_power_intent
-# Similar checks plus equivalence checking with power intent
-```
-
-### 7.2 Dynamic UPF Simulation (Power-Aware Simulation)
-
-Power-aware simulation is the most important verification step for low-power designs.
-It verifies that:
-1. Outputs of powered-off domains become X (unknown)
-2. Isolation cells properly clamp outputs before power-off
-3. Retention registers correctly save and restore state
-4. Power sequencing is correct (no reads from off domains)
-5. No functional failures during power transitions
-
-**How it works:**
-```text
-Regular RTL simulation:
-  - All signals have defined values (0 or 1) at all times
-  - Cannot detect "reading from a powered-off domain" because everything looks functional
-
-Power-aware simulation:
-  - When a domain is powered off:
-    * All flip-flops in that domain are forced to X
-    * All combinational outputs of that domain become X
-    * Isolation cells clamp outputs to their specified value (0 or 1)
-  - When a domain is powered on:
-    * Retention registers restore their saved value (not X)
-    * Non-retention registers remain X until reset/initialized
-  - Any X propagation to an always-on domain is a BUG
-    (means isolation is missing or incorrect)
-```
-
-**Tool setup:**
-```tcl
-# Synopsys VCS with UPF
-vcs -upf soc_top.upf -power_top soc_top \
-    -f filelist.f -debug_access+all
-
-# Cadence Xcelium with UPF
-xrun -upf soc_top.upf -powertop soc_top \
-    -f filelist.f -access +rwc
-
-# Mentor Questa with UPF
-vlog -f filelist.f
-vsim -upf soc_top.upf soc_top
-```
-
-### 7.3 Bugs That Power-Aware Simulation Catches
-
-**Bug 1: Missing isolation on a qualified output**
-```verilog
-// RTL (inside CPU domain):
-assign bus_valid = internal_valid & bus_grant;
-
-// If bus_valid is not isolated:
-// When CPU is off: bus_valid = X
-// This X propagates to the bus arbiter (always-on) -> functional failure
-
-// Fix: ensure UPF covers all outputs, including qualified (AND-gated) ones
-```
-
-**Bug 2: Reading from off domain through combinational logic**
-```verilog
-// In always-on domain:
-assign result = cpu_data + peri_data;  // Both from gated domains
-
-// If CPU is off: cpu_data = X (isolated to 0), but adder still propagates
-// If isolation value of 0 is not the expected "idle" value -> wrong result
-```
-
-**Bug 3: Incorrect restore timing**
-```text
-// Testbench power-up sequence:
-#10 peri_sleep_n = 1;    // Turn on power
-#5  cpu_restore = 1;      // Restore retention -- TOO EARLY!
-// Power might not be stable yet
-// Retention restore requires stable voltage to correctly transfer data
-```
-
-**Bug 4: Wrong clamp value causing logic inversion**
-```verilog
-// RTL: reset_n is active-low reset (0 = reset asserted)
-// UPF clamps to 0 on isolation -> reset is asserted when CPU is off
-// This is CORRECT for reset_n (safe state)
-
-// But if you accidentally clamp an active-HIGH enable to 0:
-// enable = 0 when CPU is off -> downstream logic is disabled (maybe correct)
-// enable = 0 when CPU wakes up but before isolation deasserted -> extra cycle of disable
-// Need to verify the timing of isolation deassertion
-```
-
----
-
-## 8. UPF 2.0/3.0 Enhancements
-
-### 8.1 Supply Expressions (UPF 2.0)
-
-Supply expressions allow defining power states based on supply voltage values:
-
-```tcl
-add_power_state SS_CPU \
-    -state {TURBO   -supply_expr {power == `{FULL_ON, 1.05}}} \
-    -state {NOMINAL -supply_expr {power == `{FULL_ON, 0.90}}} \
-    -state {LOW_PWR -supply_expr {power == `{FULL_ON, 0.75}}} \
-    -state {RET     -supply_expr {power == `{PARTIAL_ON, 0.50}}} \
-    -state {OFF     -supply_expr {power == `{OFF}}}
-```
-
-### 8.2 Repeater Strategies (UPF 2.1)
-
-For signals that traverse long distances within a gated domain (e.g., always-on clock
-signal buffered through a gated domain), UPF can specify that repeater buffers must
-be always-on:
-
-```tcl
-set_repeater CPU_AO_REPEATER \
-    -domain PD_CPU \
-    -applies_to {clk reset_n} \
-    -lib_cells {AO_BUF_1X AO_BUF_2X} \
-    -name CPU_AO_BUF
-```
-
-### 8.3 Abstract Power Model for IP Delivery (UPF 3.0)
-
-IP vendors can deliver an abstract UPF model that specifies:
-- What power domains the IP has
-- What supplies it needs
-- What isolation/retention it requires
-- WITHOUT exposing internal implementation details
-
-```tcl
-# Abstract UPF for a licensable IP block
-create_power_domain PD_IP_TOP -supply {primary}
-create_power_domain PD_IP_CORE \
-    -supply {primary} \
-    -supply {retention}
-
-# The integrator connects these abstract supplies to real nets
-# without needing to know the internal structure
-```
-
-### 8.4 Incremental UPF (UPF 3.0)
-
-Allows applying UPF modifications without rewriting the entire file:
-
-```tcl
-# Base UPF defines the structure
-# Incremental UPF adds or overrides specific aspects
-
-# Example: add an extra power state that wasn't in the original
-begin_power_model_update
-  add_power_state SS_CPU \
-      -state {ULTRA_LOW -supply_expr {power == `{FULL_ON, 0.55}}}
-end_power_model_update
-```
-
----
-
-## 9. Common UPF Mistakes (Interview Gold)
-
-### Mistake 1: Missing Isolation on ALL Outputs
-
-```text
-Problem:     Designer isolates data_out but forgets about data_valid, interrupt,
-             error_flag, and other control signals.
-
-Consequence: When domain powers off, these control signals float to X,
-             potentially triggering false interrupts or bus errors.
-
-Fix:         Use -applies_to outputs to catch ALL outputs. If some outputs need
-             different clamp values, use multiple set_isolation commands with
-             -elements to target specific signals.
-```
-
-### Mistake 2: Wrong Clamp Value
-
-```text
-Problem: Active-low signal clamped to 0 (asserted) instead of 1 (deasserted).
-
-Example: chip_select_n clamped to 0 -> external memory thinks it's selected
-         when CPU is powered off -> bus contention.
-
-Fix:     Use -clamp_value 1 for active-low signals, 0 for active-high.
-         Or use OR-type isolation for active-low signals.
-```
-
-### Mistake 3: Missing Level Shifter on Cross-Voltage Signals
-
-```verilog
-Problem:     CPU runs at 0.75V, IO runs at 1.8V. Data bus between them has
-             no level shifter. 0.75V signal doesn't reach the logic-1 threshold
-             of 1.8V logic.
-
-Consequence: Functional failure -- the 1.8V receiver sees the 0.75V signal
-             as indeterminate or logic-0.
-
-Fix:         Ensure set_level_shifter covers ALL cross-voltage signals.
-             Use -rule both to catch signals in both directions.
-```
-
-### Mistake 4: Retention Restore Before Power Stable
-
-```text
-Problem:     Power-up sequence asserts RESTORE before VDD_CPU has fully ramped up.
-             Shadow latch tries to transfer data at low voltage -> corrupted bits.
-
-Consequence: CPU wakes up with wrong register values -> silent data corruption
-             (worst kind of bug -- may not crash immediately but produce wrong results).
-
-Fix:         Insert sufficient delay or use a voltage detector to ensure supply is
-             within 90-95% of nominal before asserting RESTORE.
-```
-
-### Mistake 5: Isolation Asserted Too Late
-
-```text
-Problem:     Power switch turns off BEFORE isolation is asserted.
-             During the brief window: outputs are undefined AND not isolated.
-
-Consequence: Glitches/X values propagate to always-on domain for a few ns.
-             Can cause spurious writes, false interrupts, bus errors.
-
-Fix:         Assert isolation FIRST, wait for it to take effect (1-2 clock cycles),
-             THEN turn off power switch. UPF specifies the intent; the control
-             sequencing must be designed correctly in the power management FSM.
-```
-
-### Mistake 6: Forgetting Always-On Buffers
-
-```text
-Problem:     Clock signal enters a gated domain, gets buffered by standard cells
-             (which are powered by the gated supply), then reaches retention FFs.
-
-Consequence: When domain is off, clock buffer is dead, clock cannot reach
-             retention FFs for save/restore operations.
-
-Fix:         Use always-on buffers for clock, save, restore, and isolation signals
-             within a gated domain. UPF set_repeater or manual instantiation.
-```
-
-### Mistake 7: Feedback Paths Across Domains
-
-```verilog
-Problem:     Signal goes from PD_A to PD_B and back to PD_A. When PD_B is off:
-             - PD_A -> PD_B: isolated (correctly clamped)
-             - PD_B -> PD_A: isolated (correctly clamped)
-             - But the clamped feedback value may not be what PD_A expects
-
-Consequence: PD_A's logic receives a static clamped value instead of the
-             dynamic feedback -> functional hang or incorrect behavior.
-
-Fix:         Carefully analyze all cross-domain feedback paths. May need latch
-             isolation (to hold last valid value) instead of clamp isolation.
-```
-
----
-
-## 10. UPF for Multi-Voltage Design (DVFS Domains)
-
-When domains operate at different voltages (not just on/off):
-
-```tcl
-# Domain running at variable voltage via DVFS
-create_power_domain PD_CPU_DVFS \
-    -elements {cpu_core}
-
-# Multiple supply nets at different voltages
-create_supply_net VDD_CPU_HIGH  -domain PD_CPU_DVFS  ;# 1.05V
-create_supply_net VDD_CPU_NOM   -domain PD_CPU_DVFS  ;# 0.90V
-create_supply_net VDD_CPU_LOW   -domain PD_CPU_DVFS  ;# 0.75V
-
-# In practice, DVFS uses a single net whose voltage changes dynamically.
-# UPF models this with power states:
-add_power_state SS_CPU_DVFS \
-    -state {TURBO   -supply_expr {power == `{FULL_ON, 1.05}}} \
-    -state {NOMINAL -supply_expr {power == `{FULL_ON, 0.90}}} \
-    -state {SVS     -supply_expr {power == `{FULL_ON, 0.75}}} \
-    -state {OFF     -supply_expr {power == `{OFF}}}
-
-# Level shifters needed at boundary to always-on domain (which stays at 0.9V)
-set_level_shifter CPU_LS \
-    -domain PD_CPU_DVFS \
-    -applies_to both \
-    -rule both \
-    -name CPU_DVFS_LS
-# "rule both" means: insert level shifter whether CPU voltage is higher OR lower
-# than the receiving domain. At TURBO (1.05V), CPU is higher; at SVS (0.75V), lower.
-```
-
----
-
-## 11. UPF Simulation Testbench Patterns
-
-### 11.1 Power Control Sequence in Testbench
-
-```verilog
-// Testbench power control using UPF supply control tasks
-// These are simulator-specific tasks that control power state
-
-// Synopsys VCS:
-initial begin
-    // Start with all domains ON
-    $supply_on("soc_top/VDD", 0.9);
-    $supply_on("soc_top/VDD_CPU", 0.9);
-    $supply_on("soc_top/VDD_PERI", 0.9);
-    
-    // Run some functional cycles
-    #1000;
-    
-    // Power down CPU domain
-    $display("Powering down CPU...");
-    cpu_iso_en = 1;           // Assert isolation
-    #10;
-    cpu_save = 1;             // Save retention state
-    #5;
-    cpu_save = 0;
-    #5;
-    $supply_off("soc_top/VDD_CPU");  // Turn off supply
-    
-    // Verify: all CPU outputs should be clamped (not X)
-    #100;
-    
-    // Power up CPU domain
-    $display("Powering up CPU...");
-    $supply_on("soc_top/VDD_CPU", 0.9);  // Turn on supply
-    #50;  // Wait for voltage stable
-    cpu_restore = 1;          // Restore retention state
-    #5;
-    cpu_restore = 0;
-    #5;
-    cpu_iso_en = 0;           // Deassert isolation
-    
-    // CPU should now have its pre-power-down register values
-end
-```
-
-### 11.2 Power-Aware Assertions
-
-```verilog
-// Assert that no X values reach always-on domain during power transitions
-property no_x_on_aon_bus;
-    @(posedge clk) disable iff (!reset_n)
-    !$isunknown(aon_bus_data);
-endproperty
-assert property (no_x_on_aon_bus) else
-    $error("X detected on always-on bus! Check isolation.");
-
-// Assert correct power sequence
-property iso_before_power_off;
-    @(posedge clk)
-    $fell(cpu_sleep_n) |-> cpu_iso_en;
-    // When power switch goes off, isolation must already be asserted
-endproperty
-assert property (iso_before_power_off) else
-    $error("Power off without isolation! Sequence error.");
-
-// Assert retention restore only when power is stable
-property restore_after_power;
-    @(posedge clk)
-    $rose(cpu_restore) |-> (cpu_sleep_n == 1'b0);
-    // Restore only when power switch is ON (sleep_n is active-low here)
-endproperty
-```
-
----
-
-## 12. Commands, Cells & Numbers to Memorize
-
-UPF is command- and cell-oriented, so the "memorize" set is the command vocabulary, the four power-management cell types, and the few quantitative facts.
-
-| UPF command | What it declares |
-|---|---|
-| `create_power_domain` | a group of instances sharing one supply/power state |
-| `create_supply_port / _net / _set` | the rails; a **supply set** is an abstract `{power, ground, nwell, pwell}` handle |
-| `create_power_switch` (+ `map_power_switch`) | the header/footer switch that gates a domain |
-| `set_isolation` / `set_isolation_control` | clamp cells on outputs crossing from a gateable domain |
-| `set_level_shifter` | level-shifter cells on signals crossing a voltage boundary |
-| `set_retention` | shadow-latch retention on selected FFs (always-on supply) |
-| `create_pst` + `add_pst_state` | the **Power State Table** — the legal supply-voltage combinations |
-| `connect_supply_net` / `set_domain_supply_net` | bind rails to ports/domains |
-
-| Cell / fact | Value / role | Why it matters |
+| Boundary fact the RTL never states | Why it corrupts silicon | UPF construct that repairs it |
 |---|---|---|
-| Isolation cell | AND-type → clamp **0**, OR-type → clamp **1** | prevents X/float from an off domain corrupting always-on logic |
-| Level shifter | LH (low→high) and HL (high→low) variants | functional correctness across voltage domains |
-| Retention FF | shadow latch on always-on rail, **~30–50%** area overhead | fast wake-up vs re-init |
-| Selective retention | retain ~10%, **save ~90%** of retention area/leakage | the standard area/wake-up trade |
-| Power switch | header (PMOS) or footer (NMOS), daisy-chained | limits in-rush at wake-up |
-| Isolation/retention ordering | isolate **before** power-down; restore **after** power-up | the #1 UPF sequencing bug |
+| An off domain's outputs have **no logic value** (they float / read as X) | the X is captured by powered-on logic downstream and spreads | **isolation cells** (§3) |
+| A logic "1" at 0.5 V is **not a "1"** to 0.9 V logic | the receiver can't resolve the level; its input stage can sit in crossover drawing crowbar current | **level shifters** (§4) |
+| Switching a domain off **erases every flop** in it | state you cannot cheaply recompute (config, PC, mode) is gone at wake | **retention registers** (§5) |
+| Of the $k^D$ domain-state combinations, **almost none are legal** | verifying the full cross-product is intractable | **power state table** (§6) |
+
+Underneath all four sits the grouping construct — the **power domain** and its **supply set** (§2) — because you cannot say "these outputs must be isolated when this region goes off" without first having a name for "this region."
+
+The organizing principle is that this file is the **single golden source of power truth**, and every tool reads the same one:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    RTL["RTL\n(function only)"]
+    UPF["UPF power intent\n(domains, supplies,\nISO / LS / RET, PST)"]
+    SYN["Synthesis\ninserts ISO, LS,\nRET, switch cells"]
+    PNR["Place & Route\nplaces special cells,\nbuilds power grid"]
+    SIM["Power-aware sim\ncorrupts off domains,\nmodels ISO / RET"]
+    SGN["Signoff\nper-domain power,\nper-domain IR drop"]
+    RTL --> SYN & SIM
+    UPF --> SYN & PNR & SIM & SGN
+    SYN --> PNR --> SGN
+```
+
+Note what the tools *do* with it: synthesis and P&R **insert** the physical cells UPF names — the designer writes intent, not gates. Change the UPF and the same RTL is re-implemented with a different power architecture; change the RTL and the same intent still applies. The flavor of the language is deliberately thin — you declare a region and hand it a supply:
+
+```tcl
+create_power_domain PD_CPU -elements {cpu_core}     ;# "this subtree is one power region"
+associate_supply_set SS_CPU -handle PD_CPU.primary  ;# "...driven by this abstract supply"
+```
+
+Everything else in UPF is a variation on naming a region, naming a supply, or naming what happens where two regions meet.
 
 ---
 
-*This document targets senior-engineer / staff-level ASIC (application-specific integrated circuit) power interview preparation.
-Cross-reference with Power_Fundamentals.md, Power_Reduction_Techniques.md, and
-Power_Analysis_and_Signoff.md.*
+## 2. Power domains and supply sets: naming what shares a power fate
+
+**Why the construct must exist.** Power is switched and scaled at the granularity of *regions*, never individual gates — you gate a CPU cluster or a modem, not one flop, because a switch, its control, and its boundary protection have fixed overhead that only amortizes over a large block. So the first thing power intent needs is a name for "these instances live and die together, on the same rail, in the same power state." That name is the **power domain**. The rules follow directly from the definition: every cell belongs to *exactly one* domain (a cell cannot be simultaneously on and off), and a default top domain owns everything not carved out (nothing may be left with an undefined power fate).
+
+**Supplies as an abstraction, derived from portability.** A domain needs a supply, but binding it to a physical net name too early destroys reuse. UPF therefore interposes the **supply set** — an abstract bundle of functions `{power, ground, nwell, pwell}` reached through a *handle* on the domain (`PD_CPU.primary`, `PD_CPU.retention`, `PD_CPU.isolation`). The handle is a promise ("this domain has a primary supply"); the physical net that fulfils it is bound later, and can be bound *differently* in different SoCs. This is what enables **successive refinement**: the same golden intent is written once at RTL (abstract handles, isolation/retention strategies), then *refined* — never rewritten — as synthesis maps handles to nets and P&R fixes the switch topology. An IP block ships its power intent in terms of its own handles; the integrator connects them to real rails without seeing inside. The abstraction *is* the portability.
+
+**The real trade-off: coarse vs fine partitioning.** How many gateable domains should a chip have? Gating a region reclaims its leakage while it sleeps, but every domain boundary costs isolation cells, possibly level shifters, always-on buffering for control signals, a switch network, and — crucially — more states to verify (§6). The net benefit of making region $R$ its own gateable domain is
+
+$$
+\Delta P_{net}(R) \;\approx\; \underbrace{P_{leak}(R)\,\rho_{idle}(R)}_{\text{leakage reclaimed while off}} \;-\; \underbrace{P_{AO}(R)}_{\text{always-on boundary + switch-leakage overhead}}
+$$
+
+where $P_{leak}(R)$ = R's leakage when on, $\rho_{idle}(R)$ = fraction of time R is powered off, $P_{AO}(R)$ = standing cost of R's boundary (isolation/level-shift/always-on buffers + switch leakage). Leakage reclaimed scales with R's *area*; boundary cost scales with its *interface signal count*. Subdivide too finely and interface count stops falling as fast as area does, so the marginal reclaim per new boundary collapses — pure diminishing returns, on top of the verification-state blow-up. This is why designs gate at **coarse, architecturally meaningful cuts** — a CPU cluster, a GPU, a modem, a peripheral group — chosen for three properties together: large idle leakage, long idle residency ($\rho_{idle}$ high), and *few* interface signals. Mobile SoCs (Apple, Snapdragon-class) still end up with dozens of such domains because they have dozens of blocks that are genuinely idle for long stretches; a datacenter CPU has far fewer, because almost everything is busy almost all the time and the boundary cost buys little.
+
+---
+
+## 3. Isolation: clamping an output that has stopped meaning anything
+
+**Why isolation must exist — the failure is physical, not stylistic.** When a domain's supply is removed, its output nets are driven by nothing. Electrically they float; to the powered-on logic reading them they resolve to **X** (unknown). That X is not inert: the always-on receiver latches it, propagates it through its own logic, and one dead block silently corrupts a live one — a false interrupt, a spurious bus grant, a wrong arbiter decision. An unpowered node *has no logic value*, so the only fix is to stop reading the dead net and instead **clamp** the boundary to a defined, safe value while the source is off. That clamp cell is the isolation cell, and it is the memory-corruption barrier of the power domain: nothing X may escape a gated region into an on one.
+
+**The real trade-off: what is a "safe" value?** The clamp value is not free choice — it is dictated by what the signal *means* to its receiver, and getting it wrong substitutes a clean functional bug for the X:
+
+- **Clamp-0 (AND-type isolation)** — hold the output low. Correct for request/valid strobes, active-high enables, data and address buses whose idle state is all-zeros. The default, because "0 = nothing happening" is the common convention.
+- **Clamp-1 (OR-type isolation)** — hold the output high. Correct for **active-low** control (`reset_n`, `chip_select_n`, `enable_n`), where the *deasserted* (safe) state *is* logic 1. Clamp such a signal to 0 and you assert reset or select a memory while the domain is off — bus contention or a stuck reset, a bug with no X to flag it.
+- **Hold-last (latch/feedthrough isolation)** — freeze the last valid value instead of forcing a constant. Needed when the receiver requires a *coherent* last value — a status word, a configuration output, a cross-domain feedback path where any fixed constant (0 or 1) drives the live logic into a wrong state or a hang. Costs ~1.5–2× a simple clamp because it is a transparent latch, so it is used only where a constant genuinely cannot serve.
+
+Choosing the clamp is a per-signal semantic decision, which is why isolation is specified as a *strategy* over a domain's outputs, with exceptions for the signals whose safe value differs.
+
+**Correctness as a formally checkable property.** Two properties fully capture isolation correctness, and both are machine-checkable:
+
+- **Structural (static, no simulation):** *every* net crossing from a gateable domain to an on domain passes through an isolation cell, powered by an always-on supply (it must work while the source is dark — hence `PD.isolation` maps to an always-on set), driven by a real control signal. A checker proves this over the netlist; the classic bug it catches is the *forgotten* output — the designer isolates the data bus and forgets `data_valid`, `error`, `irq`, and those float. `-applies_to outputs` over the whole domain exists precisely so the safe default is "clamp them all."
+- **Sequential (dynamic, power-aware sim):** isolation is **asserted before** the switch opens and **deasserted after** the supply is stable. Reverse either and there is a window where the output is both unpowered and unclamped — X leaks for a few nanoseconds and can cause a spurious write. UPF states the intent (which signal, which sense); the power-management FSM must produce the ordering, and the assertion `$fell(sleep) |-> iso_en` is what proves it.
+
+Isolation is the memory-side twin of every "hold it until it is safe to release" mechanism in hardware: the boundary is defended by a barrier that only lowers when both sides agree the value is real.
+
+---
+
+## 4. Level shifting: a logic level is valid only relative to a rail
+
+**Why the construct must exist.** A logic level is not an absolute voltage — it is defined *relative to the rail of the gate that reads it*. A domain running at $V_{DDL}=0.5$ V drives a clean "1" at 0.5 V; a domain at $V_{DDH}=0.9$ V expects a "1" near 0.9 V. Feed the 0.5 V "1" into the 0.9 V receiver and it may fall below that receiver's input-high threshold $V_{IH,H}$: the input is *unresolved*, and — worse than a wrong bit — the receiver's first inverter can sit with both transistors partly on, drawing continuous **crowbar (short-circuit) current**. A crossing needs a level shifter exactly when
+
+$$
+V_{OH}^{\text{src}} \;<\; V_{IH}^{\text{sink}} \quad\Longleftrightarrow\quad \text{the source's ``1'' is not a ``1'' to the sink}
+$$
+
+where $V_{OH}^{\text{src}}$ = source's output-high ($\approx V_{DDL}$), $V_{IH}^{\text{sink}}$ = sink's input-high threshold ($\approx V_{DDH}/2$ plus margin). This is a *checkable voltage condition per crossing*, which is why level-shifter insertion can be verified structurally: enumerate every net whose source and sink supplies differ, and require a shifter on it.
+
+**Two directions, very different cost.** Stepping **up** (low→high) is the hard case — a weak low-rail signal must fully switch a high-rail gate, so the cell is a regenerative, cross-coupled pair (a small sense amplifier) with ~100–300 ps delay. Stepping **down** (high→low) is nearly free — the over-tall input easily switches a low-rail buffer, ~50–150 ps. The direction is not always static: under DVFS a domain can be *above or below* its neighbour at different operating points (turbo vs low-power), so many crossings must shift **both** ways, and forgetting this — "it only ever goes one direction" — is a classic escape, because during a DVFS transition either side can momentarily be higher.
+
+**Trade-off and placement.** Each crossing costs a cell in area, delay (which must be carried in static timing), and a receiver that now needs both rails present. A 32-bit bus crossing a voltage boundary is 32 shifters *per direction* — non-trivial, and a reason to minimize the number of distinct voltage boundaries a bus crosses. Level shifting is **orthogonal to isolation**: a boundary can be cross-voltage but never gated (always both on, at different DVFS points → shifter, no clamp) or gated but same-voltage (→ clamp, no shifter). When a boundary is *both*, a **combined isolation-plus-level-shift cell** does both jobs in one cell, saving area over two in series — the only place the two concerns share hardware.
+
+---
+
+## 5. Retention: keeping only the state you cannot afford to rebuild
+
+**Why the construct must exist.** Power-gating is the strongest leakage lever there is — it removes the supply, so the gated logic leaks essentially nothing (the mechanism, switch sizing, and rush-current staging live in [Power_Reduction_Techniques §4](03_Power_Reduction_Techniques.md)). But it is indiscriminate: it **erases every flop** in the domain. For state you can regenerate cheaply — pipeline registers, anything reloadable from memory — that is fine; you re-initialize on wake. For state that is *expensive or impossible to recompute* — the program counter, control/status registers, configuration, mode bits — erasure means the block cannot resume, only restart. Retention resolves the conflict: a **shadow latch on an always-on rail**, attached to selected flops, that *saves* their value before the domain goes off and *restores* it after it comes back, so the block wakes exactly where it slept.
+
+**The central trade-off: retention granularity.** How many flops get a shadow latch? This is the real design knob, and it is a genuine optimization, not a default:
+
+- **Retain-all** — every flop retains. Wake is instant and trivially correct ($E_{reinit}\to 0$), but every flop pays the shadow-latch area (**~30–50%** over a plain flop) *and* the always-on leakage of that latch during the entire sleep. Retaining everything partly defeats the purpose of gating — you are still leaking through all the shadow cells.
+- **Retain-minimal** — retain only the architectural must-haves (~10% of flops is typical), and *re-derive* the rest on wake. Area and standing retention leakage drop by roughly the same fraction, but the wake sequence is longer and more complex (you must recompute or reload the dropped state).
+
+The choice follows from an energy comparison. Retention beats "full off, then re-initialize" when
+
+$$
+\underbrace{E_{reinit} + \lambda\,T_{wake}}_{\text{cost of NOT retaining}} \;>\; \underbrace{E_{save} + E_{restore} + P_{ret}\,t_{sleep}}_{\text{cost of retaining}}
+$$
+
+where $E_{reinit}$ = energy to rebuild the dropped state on wake, $T_{wake}$ = added wake latency valued at $\lambda$ (energy per unit time), $E_{save},E_{restore}$ = one-time transfer energies, $P_{ret}$ = always-on leakage of the shadow latches, $t_{sleep}$ = sleep duration. Read off the design guidance directly: retain exactly the state whose $E_{reinit}$ is large or infinite (you *cannot* recompute a config register), drop the state whose $E_{reinit}$ is near zero (caches reload from DRAM anyway). That is why real cores retain ~10% and re-init the rest — it minimizes the standing $P_{ret}\,t_{sleep}$ term while keeping $E_{reinit}$ bounded. Note the $P_{ret}\,t_{sleep}$ term also sets a *ceiling* on useful sleep: for very long idle periods even the shadow leakage adds up, so ultra-low-power modes sometimes abandon retention entirely (full off, reload state from flash/DRAM on wake), while short idles skip gating and just clock-gate.
+
+**The hidden cost — always-on plumbing.** Retention only works if the save, restore, clock, and isolation-control signals actually *reach* the retention flops while the domain around them is dark. Ordinary buffers in the gated domain are dead when it is off, so those signals must be carried by **always-on buffers/repeaters** threaded through the gated region on the always-on rail. This is a real, easily forgotten cost of the scheme (a whole class of "the clock never reached the retention flop" bugs), and it is why UPF has an explicit repeater strategy — the always-on network is part of the intent, not an afterthought.
+
+**Sequencing.** Retention adds an ordering rule to the isolation rule of §3: **save before power-down, restore only after the supply is stable.** Restoring into an unstable, still-ramping rail transfers data at low voltage and silently corrupts it — the worst kind of bug, since the block wakes with wrong register values and produces wrong results without crashing. Real flows gate the restore on a voltage detector reaching ~90–95% of nominal.
+
+---
+
+## 6. The power state table: collapsing the state explosion into a verification contract
+
+**Why the construct must exist.** With $D$ independently controllable supplies, each admitting $k$ states (on, off, retention, a few DVFS voltages), there are $\prod_i k_i \approx k^D$ *syntactic* combinations of power state. The number that are **physically legal and reachable** is tiny: a child domain cannot be on while its parent supply is off; some domains are mutually exclusive; most combinations are simply never entered from reset. Left implicit, that gap is a verification catastrophe — you would have to prove isolation, level-shifting, and retention correct across an exponential set of states, most of them impossible. The **power state table (PST)** is the fix: it *enumerates the legal combinations explicitly*, turning "is this power configuration allowed?" from an open question into a table lookup, and turning verification from exponential into linear.
+
+**The theory: why enumeration is what makes verification tractable.** Let $\mathcal{L}$ be the set of legal power states (the PST rows) and $\mathcal{T}$ the legal transitions between them. Every power-correctness property — isolation present and clamped correctly on each active boundary, level shifter present on each active cross-voltage boundary, retention saved/restored in order — is discharged *per legal state* and *per legal transition*:
+
+$$
+\text{verification cost} \;=\; O\big(|\mathcal{L}| + |\mathcal{T}|\big) \;\ll\; O\big(k^{D}\big), \qquad |\mathcal{L}| \sim \text{a handful}
+$$
+
+The PST is, in other words, the **reachable-state manifold** of the power architecture, hand-declared. It is the contract at which power-management-FSM correctness meets physical-implementation correctness: the FSM designer promises the hardware only ever visits $\mathcal{L}$, and the implementation tools guarantee every state in $\mathcal{L}$ is protected. Nothing outside the table need be — or should be — checked, and any state the FSM can actually reach that is *missing* from the table is itself the bug. The flavor is just an enumeration of named combinations:
+
+```tcl
+create_pst SoC_PST -supplies {SS_TOP SS_CPU SS_PERI}
+add_pst_state ALL_ON     -pst SoC_PST -state {TOP_ON CPU_ON  PERI_ON }
+add_pst_state CPU_SLEEP  -pst SoC_PST -state {TOP_ON CPU_RET PERI_ON }
+add_pst_state DEEP_SLEEP -pst SoC_PST -state {TOP_ON CPU_OFF PERI_OFF}
+;# no row contains TOP_OFF: the always-on domain off is, by construction, illegal
+```
+
+**Trade-off: expressiveness vs verification cost.** A rich PST (many DVFS points, many independent sleep combinations) exposes more low-power operating modes — more chances to save energy — but every added row is a state to implement and verify, and every added *edge* is a transition sequence to design and prove. A coarse PST is cheap to verify but leaves energy on the table. Designs therefore keep exactly the states with a real duty-cycle justification (an idle mode the workload actually spends time in) and no more — the same "gate only where residency justifies the overhead" logic as §2, now applied to states instead of regions. The PST is where the abstract claim "UPF exists to make power verification tractable" becomes concrete: it is the artifact that bounds the problem.
+
+---
+
+## 7. Why the intent must stay orthogonal, and how the tools consume it
+
+Everything above depends on power intent being a *separate, standardized* specification. The reasons are worth making explicit, because they are the reason UPF exists rather than power directives living in the RTL:
+
+- **Separation of concerns / re-verification cost.** Function is verified once, against the logic. If power were baked into the RTL, every change of power strategy would perturb the functional description and force a full functional re-verification — and you could not hand the *same* verified IP to two SoCs with different power budgets. Keeping intent orthogonal means the logic proof and the power proof compose independently.
+- **One golden source, many consumers.** The same UPF file drives synthesis (which *inserts* isolation, level-shifter, retention, and switch cells), P&R (which places those special cells and builds the multi-rail power grid), power-aware simulation (which corrupts off domains to X, models clamp values, and exercises save/restore), and signoff (per-domain power and IR-drop). Because it is *one* IEEE-1801 specification with defined semantics, all tools agree on what "off" and "isolated" mean. Before UPF, each tool had its own ad-hoc, mutually inconsistent mechanism — the source of a generation of power bugs.
+- **Refinement, not rewrite.** Successive refinement (§2) lets the abstract RTL-level intent be sharpened at each stage — handles bound to nets, cell types chosen, switch topology fixed — without ever rewriting the golden description. IP-level UPF refines up into SoC-level UPF the same way.
+- **Power correctness becomes a *static* property.** The biggest payoff of a formal intent: the central correctness claims are checkable *without simulation*. Static low-power checks prove that every gated output is isolated, every cross-voltage net is shifted, every domain has a legal supply, and the PST is self-consistent — a structural proof over the netlist. Dynamic power-aware simulation then covers only what is inherently temporal: X-propagation and save/restore/isolate *sequencing*. The static/dynamic split is exactly the split between "is the boundary hardware present and correct" (structural) and "is it operated in the right order" (behavioral), and having a formal intent is what moves the first, larger half off the simulator.
+
+The special cells the tools insert are characterized in the Liberty (`.lib`) models — an isolation cell advertises `is_isolation_cell` and a `power_down_function`, a retention flop a `retention_cell` group and a backup supply pin, a level shifter its input/output voltage ranges, a switch its `switch_function`. UPF names the *intent* ("isolate these outputs, clamp 0"); Liberty describes the *cells* that realize it; the tool matches one to the other. That division — intent in UPF, implementation in Liberty, logic in RTL — is the whole methodology in one sentence.
+
+*(Standards note: UPF is IEEE 1801. The competing CPF format (Si2/Cadence) covered the same ground with explicit net connections instead of supply-set abstraction; it has been largely superseded — use UPF for new designs, keep CPF only for legacy flows.)*
+
+---
+
+## 8. Worked example: is a domain worth gating, and should it retain?
+
+A peripheral cluster leaks $P_{leak}=8$ mW when on and is idle $\rho_{idle}=70\%$ of the time. Its boundary (isolation on ~40 outputs, always-on control buffers, switch leakage) costs $P_{AO}=0.6$ mW standing.
+
+**Gate it?** Net saving $\Delta P_{net}=P_{leak}\,\rho_{idle}-P_{AO}=8\times0.70-0.6=5.0$ mW — clearly worth a domain. Had the block been idle only 10% of the time, $\Delta P_{net}=8\times0.10-0.6=0.2$ mW, barely covering the boundary cost: gate only blocks with *both* high leakage and high idle residency (§2).
+
+**Retain it?** The cluster has ~5,000 flops but only ~400 hold state that cannot be reloaded (config, a small FSM); the rest re-initialize from the bus in a few microseconds. Retain-all costs ~5,000 shadow latches of always-on leakage during every sleep; retain-minimal costs ~400 — an ~12× smaller standing retention-leakage term $P_{ret}\,t_{sleep}$ — while adding only a few µs of wake latency to reload the rest. With sleeps lasting milliseconds, the reload latency is negligible against the leakage saved, so **retain ~8% (the 400), re-init the rest** (§5). This is the standard shape: retention is spent only on state whose $E_{reinit}$ is large, never as a blanket policy.
+
+Both answers come straight from the §2 and §5 models — which is the point of having them.
+
+---
+
+## Numbers to memorize
+
+| Fact | Value / rule | Why it matters (section) |
+|---|---|---|
+| UPF standard | **IEEE 1801**; UPF 2.0 = **1801-2009** (added supply sets, power states, PST, successive refinement) | the constructs on this page mostly arrived at 2.0 (§2, §6) |
+| UPF lineage | 3.0 = 1801-2015 (abstract IP models); **4.0 = 1801-2024**, pub. 2025 (VCM/tunnelling to arbitrary HDL types, virtual supply nets, refinable macros) | production flows in 2025–26 are mostly 2.x/3.x with 4.0 arriving feature-by-feature |
+| Isolation clamp | AND-type → clamp **0** (active-high / data / valid); OR-type → clamp **1** (active-low `_n`); latch → **hold last** | wrong clamp turns an X-bug into a silent functional bug (§3) |
+| Isolation supply | must be **always-on** (`PD.isolation`) | the clamp has to work while the source is dark (§3) |
+| Level-shift condition | needed when $V_{OH}^{src} < V_{IH}^{sink}$; step-up **100–300 ps**, step-down **50–150 ps** | a checkable per-crossing property; DVFS ⇒ shift **both** ways (§4) |
+| Retention flop overhead | **~30–50%** area over a plain flop; always-on shadow leaks during sleep | why retain-all is costly (§5) |
+| Selective retention | retain ~**10%** of flops → save ~**90%** of retention area/leakage | the standard granularity knee (§5) |
+| Power switch | **header** (PMOS, gates VDD) or **footer** (NMOS, gates VSS), daisy-chained to limit in-rush | mechanism in [03 §4](03_Power_Reduction_Techniques.md); UPF only names it |
+| Sequencing rules | **isolate before** power-down; **restore after** supply stable (~90–95% $V_{nom}$) | the #1 and #2 power-sequencing bugs (§3, §5) |
+| Isolation direction | almost always `-applies_to outputs` | the receiver is on and copes; the sender goes dark (§3) |
+| PST | enumerates the **legal** state combinations, $|\mathcal{L}|\ll k^D$ | collapses verification from exponential to linear (§6) |
+
+---
+
+## Cross-references
+
+- **Down the stack (what realizes this intent):** [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) — the actual circuits UPF only *names*: power-switch sizing and rush-current staging (§4), retention/balloon flops (§4.7), isolation-cell construction (§4.6), clock gating, and the power-down/up sequence and break-even that make gating pay. [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) — why an unpowered node has no logic value (the isolation motive), why a sub-threshold "1" cannot switch a higher-rail gate (the level-shift motive), and the leakage physics power-gating attacks.
+- **Up the stack (what consumes this intent):** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) — per-domain power and IR-drop signoff, and where UPF-driven static and power-aware checks close. [Power_Fundamentals](01_Power_Fundamentals.md) — the three-way power budget and the leakage term whose reclamation justifies the whole gating/retention apparatus.
+- **Adjacent:** [Block_Activity_and_Power](02_Block_Activity_and_Power.md) — the per-block, per-mode activity/power estimates that tell you *which* blocks have the idle-leakage-×-residency product worth turning into a power domain (§2, §8).
+
+---
+
+## References
+
+1. IEEE, *IEEE Standard for Design and Verification of Low-Power, Energy-Aware Electronic Systems*, IEEE 1801-2024 (UPF 4.0), 2024 (published 2025; available fee-free via the IEEE GET program). The current standard; supersedes 1801-2018/2015/2013/2009.
+2. IEEE, *IEEE 1801-2009* (UPF 2.0), 2009. Introduced supply sets, supply-set handles, power states, the PST, and successive refinement — the abstraction model of §2 and §6.
+3. Keating, M., Flynn, D., Aitken, R., Gibbons, A., Shi, K., *Low Power Methodology Manual for System-on-Chip Design*, Springer, 2007. The canonical treatment of isolation, level shifting, retention, and power-gating methodology behind §3–§5.
+4. Bhasker, J. and Chadha, R., *Static Timing Analysis for Nanometer Designs*, Springer, 2009. Level-shifter and multi-voltage timing (the STA cost of §4).

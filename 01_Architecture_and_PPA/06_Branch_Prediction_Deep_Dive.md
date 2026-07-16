@@ -1,1803 +1,350 @@
-# Branch Prediction -- Deep Dive for CPU Designers
+# Branch Prediction — the Speculative Front End
 
-> **Prerequisites**: [CPU_Architecture.md](03_CPU_Architecture.md) (pipeline basics, hazards),
-> [OoO_Execution.md](05_OoO_Execution.md) (speculative execution, reorder buffer)
->
-> **Hands-off to**: [Memory.md](09_Memory.md) (I-cache design, TLB),
-> [Front_End_Design.md](03_CPU_Architecture.md) (fetch-directed prefetch, decode bandwidth)
+> **Prerequisites:** [CPU_Architecture](03_CPU_Architecture.md) (the pipeline and its fetch stage, hazards), [OoO_Execution](05_OoO_Execution.md) (speculative execution and the misprediction-recovery flush path, its §2.5 and §6).
+> **Hands off to:** [Cache_Microarchitecture](07_Cache_Microarchitecture.md) & [Memory](09_Memory.md) (the I-cache the front end drives), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md) (the iTLB in the fetch path), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (a complete open core built around TAGE-SC-L + ITTAGE).
 
 ---
 
-## Section 0 -- Why This Page Exists
+## 0. Why this page exists
 
-Branch instructions appear every 4--7 instructions in typical integer code. A
-15-stage pipeline that resolves branches in stage 10 would squash 9
-instructions on every misprediction -- at best a 15-cycle bubble, at worst a
-full pipeline flush. The difference between a 95% accurate predictor and a
-99% accurate predictor is the difference between wasting 5% versus 1% of all
-cycles, which translates directly into 4--8% overall performance on SPEC (Standard Performance Evaluation Corporation)
-int2006.
+A pipelined machine has to choose the address it fetches **next** before it can possibly know the outcome of the instruction it is fetching **now**. A branch's direction and target are not settled until it executes — many stages downstream of fetch — yet fetch must hand the front end a next-PC *every cycle*. That gap is not an implementation wart; it is structural, and it leaves exactly three options:
 
-Interview candidates at Apple, AMD, ARM, Google, Meta, NVIDIA, and RISC-V
-startups are regularly asked to:
+1. **Stall until the branch resolves.** Deterministic, and ruinous. With a resolution depth of $s_r$ stages and branch density $b$, every branch injects an $s_r$-cycle bubble, adding $b\cdot s_r$ to CPI. At $b=0.2$ (a branch every five instructions) and $s_r=12$, that is $+2.4$ CPI — the machine spends most of its cycles idle.
+2. **Guess statically** (e.g. predict-not-taken). Free, but a fixed guess is wrong on ~40–50 % of dynamic branches, so it pays most of the stall anyway.
+3. **Guess dynamically** — a trained predictor that is wrong only a few percent of the time, and pays the bubble *only on mispredicts*.
 
-- Explain the BTB (Branch Target Buffer) / BHT (Branch History Table) split and why they are separate structures.
-- Walk through gshare indexing and compute a prediction by hand.
-- Describe TAGE (TAgged GEometric history length) lookup, provider selection, and allocation policy.
-- Design a speculative Return Address Stack with misprediction repair.
-- Compute mispredict penalty given pipeline depth and resolution stage.
+Option 3 is the only viable one, which is the whole point: **speculation across branches is mandatory, not optional.** Branch prediction is the discipline of making that mandatory guess wrong as rarely as physically possible, because every wrong guess discards all the work fetched behind it. This page derives each front-end structure from the fact it must produce early, makes **TAGE** the theoretical centrepiece (why *tagged geometric history lengths* are the accuracy/storage sweet spot), and quantifies why a deep, wide core lives or dies by its predictor.
 
-This page covers all of the above at the depth expected in a CPU design
-interview, with worked problems that mirror actual interview questions.
+### 0.1 The cost model, and why deeper *and* wider makes it dominant
 
----
+A branch resolves in execute; a mispredict is detected there and the front end is redirected and refilled. The cost of one mispredict is the **penalty** $P$ — cycles from the branch entering the pipe to correct-path instructions reaching the same point — which is essentially the fetch-to-resolve depth. Averaged over the stream, this is the same formula the OoO page uses for the misprediction limiter ([OoO_Execution](05_OoO_Execution.md) §6):
 
-## 1. Branch Target Buffer (BTB)
+$$
+\text{CPI} \;=\; \text{CPI}_{ideal} \;+\; \underbrace{\frac{\text{MPKI}}{1000}}_{b\,\cdot\,m}\times P
+$$
 
-### 1.1 Purpose
+where MPKI = mispredicts per 1000 instructions $=1000\,b\,m$, $b$ = branches per instruction ($\approx 0.2$), $m$ = per-branch mispredict rate, $P$ = penalty in cycles. The added CPI is a **fixed tax**: a fixed number of cycles per thousand instructions, set by the predictor ($m$) and the pipeline depth ($P$), independent of how wide the machine is.
 
-The BTB answers one question: **given a branch PC (program counter), what is the target PC?**
-Without a BTB, the fetch unit cannot know where to redirect until the branch
-is decoded and its offset computed -- a delay of 1--3 stages.
+That fixed tax is exactly what makes misprediction *dominant* on aggressive cores. Express the realized throughput as a fraction of peak $W$ (issue width, $\text{CPI}_{ideal}=1/W$):
 
-The deeper reason the BTB *must* exist is a **timing** one, and that constraint
-dictates what each entry has to hold. The fetch engine picks the next PC in the
-same cycle it launches the I-cache access -- several stages before decode can even
-confirm that the fetched bytes are a branch. So the BTB has to reconstruct, from
-the PC alone, everything the fetch engine would otherwise have to wait for decode
-to learn. That forces three obligations onto every entry, and the fields in
-Section 1.2 are exactly those three:
+$$
+\frac{\text{IPC}_{eff}}{W} \;=\; \frac{1}{1 + W\cdot\dfrac{\text{MPKI}}{1000}\cdot P}
+$$
 
-- a **tag** (upper PC bits), because the index is only a hash: the tag confirms
-  that *this* PC really is the cached branch and not an aliasing neighbor, so a
-  bogus redirect is never issued;
-- a **target PC**, the answer to "where," latched in time to steer the next fetch;
-- a **branch-type** field, because *what kind* of transfer it is changes who acts
-  next cycle -- a RETURN must pop the RAS, a CALL must push it, an indirect jump
-  must not blindly trust a single stored target. A structure that stored only "one
-  target per PC" would mispredict every return and every polymorphic indirect
-  branch.
+The denominator carries the **product $W\times P$**. Depth raises $P$ directly; width shrinks $\text{CPI}_{ideal}=1/W$ so the same fixed tax eats a larger share of it. A machine built to be both deep and wide surrenders a fraction of its peak that grows with the product of the two things it spent all its area on:
 
-Read Section 1.2 as the encoding of those three obligations, not as an arbitrary
-record layout.
+- **W = 4, P = 14, MPKI = 8** → tax $0.112$, realized $= 1/(1+4\cdot0.112)=69\%$ of peak.
+- **W = 8**, same P and MPKI → realized $= 1/(1+8\cdot0.112)=53\%$ of peak.
 
-### 1.2 Set-Associative Structure
-
-```wavedrom
-{"reg":[
-  {"bits":1,"name":"Valid"},
-  {"bits":3,"name":"BrType"},
-  {"bits":32,"name":"Target PC"},
-  {"bits":18,"name":"Tag"}
-]}
-```
-
-BTB entry (typical 28–36 bits). `BrType` encoding: `000` conditional branch, `001` unconditional jump, `010` CALL (push to RAS (Return Address Stack)), `011` RETURN (pop from RAS), `100` indirect jump (target may vary).
-
-**Indexing**: `PC[11:2]` provides a 10-bit index into 1024 sets. The tag is
-`PC[31:12]` (upper 20 bits). A hit requires both tag match and valid bit set.
-
-**Lookup timing**: BTB access completes in the same cycle as I-cache fetch
-(F1 stage). The predicted target is available for the next fetch (F2 stage),
-introducing zero extra latency when the prediction is correct.
-
-### 1.3 Multi-Level BTB
-
-Modern cores use a two-level BTB hierarchy, analogous to L1/L2 caches:
-
-| Level | Entries | Latency | Coverage |
-|-------|---------|---------|----------|
-| L1 BTB | 64--128 | 1 cycle (fetch stage) | hot branches only |
-| L2 BTB | 2K--8K | 2--3 cycles (pre-decode) | cold branches, large code |
-
-**L1 BTB**: Accessed every cycle in parallel with the I-cache. Small enough to
-stay fast; holds only the most recently used branches.
-
-**L2 BTB**: Accessed in parallel but arrives 1--2 cycles later. On an L1 miss,
-the fetch unit continues sequentially. If the L2 hits, a redirect is issued at
-that point, costing a 1--2 cycle bubble instead of waiting for decode.
-
-**BTB miss penalty**: If both levels miss, the branch is not recognized until
-decode (stage 3--5). The pipeline must then flush the instructions fetched after
-the branch and redirect to the computed target. Typical penalty: 3--5 cycles
-for a BTB miss that is caught at decode.
-
-**Why two levels at all** is the same knee as an L1/L2 data-cache hierarchy: a
-single BTB large enough to cover a big code footprint cannot also be fast enough
-to redirect within the fetch cycle, because access time grows with capacity. The
-design therefore splits *capacity* from *latency* -- a small L1 BTB sized to hit in
-one cycle on the hot branch working set, backed by a large L2 BTB whose 1--2-cycle
-redirect is still far cheaper than the 3--5-cycle decode-time recovery a total miss
-costs. The 3--5-cycle miss penalty above is precisely the cost the L2 BTB exists to
-avoid on all but the coldest branches.
-
-### 1.4 BTB Update Policy
-
-When a branch is resolved (execute stage):
-
-1. If the branch was not in the BTB, allocate a new entry (LRU (least recently used) replacement).
-2. If the target changed (indirect branch), update the stored target.
-3. If the branch is no longer taken after N consecutive not-takens, some
-   designs evict the BTB entry to save space for active branches.
+Doubling width from 4→8 raised realized IPC only $2.76\to4.22$ (1.53×, not 2×) and *lost* 16 points of peak utilisation — because the branch tax was unchanged while the thing it is measured against halved. This is the Amdahl-flavoured reason a 6-wide, 12–18-stage core cannot be built without a near-perfect predictor: the front end is the tax collector on all of that width and depth, and the only knobs are **cut $P$** (resolve earlier) or **cut $m$** (predict better). Everything below is about cutting $m$.
 
 ---
 
-## 2. Branch History Table (BHT) and gshare
-
-A BTB answers *where* a taken branch goes; it says nothing about *whether* a
-conditional branch is taken this time -- and a perfect target is worthless if you
-step onto it on a branch that should have fallen through. Direction is a separate
-question, so it gets a separate structure, and the minimum that structure must
-remember is a compressed summary of how each branch has recently behaved. The
-insight that lifts accuracy past the ~85% that per-branch bias alone reaches is
-that a branch's outcome is often *correlated with the outcomes of the last few
-branches* (an `if` that fires only when an earlier `if` did). So the direction
-predictor must actually remember two things -- a per-context *bias* and a slice of
-recent *global history* -- and the three subsections below are the progression that
-adds them: the 2-bit saturating counter is the bias with hysteresis (Section 2.1),
-the GHR is the history (Section 2.2), and gshare is how you index a single small
-table by *both* at once without paying for one table per history pattern
-(Section 2.3).
-
-### 2.1 Two-Bit Saturating Counter
-
-The simplest dynamic predictor: each branch maps to a 2-bit saturating counter
-that tracks recent behavior.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-stateDiagram-v2
-    direction LR
-    ST: Strongly Taken (11) · predict T
-    WT: Weakly Taken (10) · predict T
-    WNT: Weakly Not-Taken (01) · predict NT
-    SNT: Strongly Not-Taken (00) · predict NT
-    ST --> ST: Taken
-    ST --> WT: Not Taken
-    WT --> ST: Taken
-    WT --> WNT: Not Taken
-    WNT --> WT: Taken
-    WNT --> SNT: Not Taken
-    SNT --> WNT: Taken
-    SNT --> SNT: Not Taken
-```
-
-Prediction rule: counter ≥ 2 (10 or 11) → predict **Taken**; counter ≤ 1 (00 or 01) → predict **Not Taken**.
-
-The 2-bit counter requires two consecutive mispredictions before changing the
-prediction direction. This provides hysteresis against noisy branches (e.g.,
-loop branches that are taken $N-1$ times and not-taken once).
-
-### 2.2 Global History Register (GHR)
-
-The GHR is an $N$-bit shift register recording the outcomes of the most recent
-$N$ branches. Convention: bit 0 is the most recent outcome; 1 = taken, 0 =
-not-taken.
-
-```verilog
-GHR (8-bit example):
-  GHR[7:0] = 1 0 1 1 0 1 0 0
-              |             |
-              oldest      newest
-
-On each branch resolution:
-  GHR = { GHR[N-2:0], actual_outcome }   (shift left, insert at LSB)
-```
-
-Typical GHR sizes: 8--16 bits for gshare; up to 500+ bits for TAGE components.
-
-### 2.3 gshare Predictor
-
-gshare XORs the GHR with the PC to produce the BHT index. This combines global
-history with the branch address to reduce aliasing.
-
-```verilog
-Index computation:
-  index = PC[11:2] XOR GHR[9:0]     (for a 10-bit index, 1024-entry BHT)
-
-  Example: PC = 0x0040_1A3C, GHR = 0x2A5
-    PC[11:2]  = 0b10_1000_1111    = 0x28F
-    GHR[9:0]  = 0b10_1010_0101    = 0x2A5
-    XOR       = 0b00_0010_1010    = 0x02A  (index into BHT)
-```
-
-**Why XOR helps**: A plain PC-indexed BHT maps different branches to fixed
-counters. Two branches with different PCs but the same PC[11:2] alias. A plain
-GHR-indexed BHT maps different history patterns to fixed counters. Two branches
-with the same GHR alias. XOR decorrelates: two branches with the same index
-but different GHR values hash to different entries, reducing destructive
-aliasing by roughly 30% over pure PC-indexing on SPEC.
-
-### 2.4 BHT Sizing
-
-| Parameter | Typical Value | Storage |
-|-----------|--------------|---------|
-| Entries | 4096 | -- |
-| Counter width | 2 bits | 8192 bits = 1 KB |
-| Tag (if tagged) | 0 (untagged) | 0 |
-| Total | 4096 x 2b | 1 KB (untagged) |
-
-In practice, the BHT is often untagged (pure gshare). Aliasing is tolerated
-because the 2-bit counters self-correct. Tagged variants (e.g., tagged
-components in TAGE) add per-entry tags at higher storage cost.
-
----
-
-## 3. TAGE (TAgged GEometric) Predictor -- State of the Art
-
-TAGE is the dominant predictor in academic and industrial designs since 2014.
-It won the CBP (Championship Branch Prediction) competitions and is used in
-chips ranging from the SiFive P870 to the Xiangshan Nanhu (open-source RISC-V).
-
-**The trade-off TAGE resolves.** Every history-based predictor must choose *how
-much* history to fold into its index, and there is no single right answer. Short
-history trains fast and nails loop-local behavior but is blind to long-range
-correlation. Long history captures deep correlation but (a) trains slowly -- each
-long pattern has to be seen many times -- and (b) *dilutes* branches that need only
-a few bits of context, because every distinct long pattern claims its own entry and
-short-correlated branches thrash. A single-length predictor like gshare is
-therefore forced to compromise on one global history length, and loses accuracy at
-both ends of that spectrum.
-
-TAGE's move is to refuse the compromise: keep *several* tables at geometrically
-spaced history lengths ($0, 4, 16, 64, 256, \ldots$ -- geometric so a handful of
-tables spans loop-local to very-long-range) and, for each branch, use *the longest
-table that actually has a trained entry for this exact history*. Two design
-obligations fall straight out of that one sentence, and they are precisely what the
-Section 3.1 entry format encodes:
-
-- **Tags.** If you intend to trust the longest matching table, you must be *sure*
-  it matches -- a false hit on a 256-bit-history entry is a confident wrong
-  prediction. So each entry carries a partial tag and is treated as the "provider"
-  only on a tag match. This is the single biggest departure from gshare, which is
-  untagged and simply tolerates aliasing.
-- **A usefulness counter plus a fallback.** A freshly allocated long-history entry
-  is not yet trained, so TAGE keeps the shorter matching entry as an *alternate*
-  and trusts the long provider only once its `Useful` counter shows it has earned
-  it. Allocation, `u`-bit decay, and provider/alternate selection (Section 3.2,
-  Section 3.6) are all machinery answering one question: *which history length
-  should I believe for this branch right now?*
-
-So TAGE is best understood not as "gshare with more tables" but as **a predictor
-that lets each branch pick its own history length dynamically**, paying for that
-flexibility in tag storage and a multi-table lookup. The accuracy in Section 3.7
-(~3 MPKI, against gshare's 8--11 in Section 9.1) is what that flexibility is worth;
-the tag bits and the parallel lookup are what it costs.
-
-### 3.1 Structure
-
-TAGE consists of one **base predictor** (bimodal) and $M$ **tagged components**
-with geometrically increasing history lengths.
-
-```verilog
-Component layout (M = 4 example):
-
-  Base (bimodal):  history length = 0,    1024 entries, no tag
-  T1:              history length = 4,     128  entries, 8-bit tag
-  T2:              history length = 16,    128  entries, 8-bit tag
-  T3:              history length = 64,    128  entries, 8-bit tag
-  T4:              history length = 256,   128  entries, 8-bit tag
-
-History length geometric ratio: alpha = 2  (each is ~2x the previous)
-```
-
-Each tagged component entry stores:
-
-```wavedrom
-{"reg":[
-  {"bits":1,"name":"Pred"},
-  {"bits":2,"name":"Useful"},
-  {"bits":3,"name":"Counter"},
-  {"bits":8,"name":"Tag"}
-]}
-```
-
-`Tag` — partial tag for matching (not the full PC). `Counter` — 3-bit saturating counter for prediction direction. `Useful` — 2-bit confidence counter (how often this entry gave a correct prediction). `Pred` — stored prediction (redundant with the counter sign; some implementations omit it).
-
-### 3.2 Detailed Algorithm Walkthrough
-
-**How multiple base predictors are indexed:**
-
-Each component $T_i$ uses a different geometric history length $L_i$. The index
-for component $T_i$ is computed by folding the branch history to the table width
-and XORing with the PC:
-
-**Index computation for component T_i:**
-   1. Take the global history register (GHR), which is a shift register of
-recent branch outcomes (1 = taken, 0 = not-taken)
-2. For component T_i with history length L_i, use only the most recent L_i bits
-of the GHR
-3. Fold the L_i-bit history to the table index width (log2(N_entries) bits):
-folded_hash = 0
-for j = 0 to L_i-1:
-if GHR[j] == 1:
-folded_hash ^= (PC ^ j) >> (log2(N_entries) * (j / log2(N_entries)))
-Simplified: hash_i = fold(GHR[L_i-1:0], log2(N_entries)) XOR PC[index_bits-1:0]
-
-4. Tag computation:
-tag_i = fold(GHR[L_i-1:0], tag_width) XOR PC[tag_bits+index_bits-1:index_bits]
-
-The "folding" is a series of XOR operations that compress a long history into
-a short index/tag. For example, folding a 256-bit history into a 7-bit index:
-index = GHR[6:0] XOR GHR[13:7] XOR GHR[20:14] XOR ... XOR GHR[255:249]
-
-**How the "useful" counter works (periodic decay):**
-
-The 2-bit useful counter ($u$) per entry tracks whether the entry is providing
-value. Its semantics:
-
-```text
-  u = 0: entry is newly allocated or has not been useful recently
-  u = 1: entry has been useful at least once
-  u = 2: entry has been useful multiple times recently
-  u = 3: entry is highly useful (most recently, it was the provider and correct)
-
-Update rules (only when provider's prediction differs from alternate):
-  - On correct prediction where this component was the provider AND
-    the provider's prediction differed from the alternate's:
-      u = min(u + 1, 3)
-  - On misprediction where this component was the provider AND
-    the provider's prediction differed from the alternate's:
-      u = max(u - 1, 0)
-  - If provider and alternate agreed (same prediction):
-      u is unchanged (the provider did not add unique value)
-
-Periodic decay (every 2^18 predictions, ~256K):
-  For all entries in all tagged components:
-    u = u >> 1   (right-shift by 1)
-  This halves all useful counters: 3->1, 2->1, 1->0, 0->0
-
-  Purpose: prevents "sticky" entries that were useful long ago but are now stale.
-  Without decay, a useful=3 entry would never be evicted even if the branch
-  pattern changed completely. The periodic half-life ensures eventual eviction.
-
-  Why 2^18? Tuned empirically. Too frequent (2^12) -> thrashes good entries.
-  Too infrequent (2^24) -> stale entries persist too long, reducing accuracy.
-```
-
-**Provider selection (longest matching history):**
-
-```python
-Given: M tagged components T_1..T_M with history lengths L_1 < L_2 < ... < L_M
-
-Lookup result for each component:
-  T_i "hits" if its tag matches and valid=1
-
-Provider = the hitting component with the LARGEST L_i (longest history)
-  If no component hits: provider = base bimodal
-
-Alternate (alt) = the hitting component with the second-largest L_i
-  If only one component hits: alt = base bimodal
-  If no component hits: alt = base bimodal (same as provider)
-
-Final prediction:
-  if provider.useful > 0:
-    return provider.prediction
-  else:
-    return alt.prediction   // fall back to less specific but more trusted
-
-Why "longest matching history"? Longer histories capture more context.
-A component with L=256 can distinguish 2^256 different branch contexts,
-while L=4 can only distinguish 16. The longest matching history provides
-the most specific prediction -- but only if it has been trained enough
-(useful > 0 checks this).
-```
-
-**Allocation on misprediction (which entries to replace):**
-
-When a misprediction occurs and the provider is not the base:
-
-```text
-Allocation policy:
-  1. Identify the components that did NOT hit (no tag match): set Miss = {T_i : tag miss}
-  2. From Miss, select up to 3 components for allocation (random selection or
-     round-robin across a "allocation pointer" that cycles through components)
-  3. For each selected component T_i:
-     a. Find an entry to replace in T_i:
-        - First choice: entry with u == 0 (not useful, safe to evict)
-        - If all entries have u > 0: decrement u of 3 "victim" entries
-          (selected by a separate pseudo-random pointer), then pick one
-          with u == 0 on the next attempt. This is "u-bit demotion."
-     b. Write the new entry:
-        tag = partial_tag(PC, GHR_folded)
-        counter = weakly_taken (4) if alt predicted taken, or weakly_not-taken
-                  (3) if alt predicted not-taken
-                  (initialize to WEAKLY AGREE with the alternate's prediction)
-        useful = 0  (no confidence yet)
-
-  Why initialize counter to agree with alt? The new entry's useful counter
-  is 0, so TAGE will fall back to alt regardless of the counter value.
-  Initializing to agree with alt ensures that if the entry's useful counter
-  is later incremented (proving its value), the counter direction is neutral
-  rather than biased against the known-good alternate prediction. The entry
-  will be trained by subsequent branch outcomes to converge on the correct
-  prediction for its specific history context.
-```
-
-### 3.3 TAGE-SC (Statistical Corrector)
-
-The Xiangshan Nanhu processor extends TAGE with a Statistical Corrector (SC):
-
-- A perceptron-like component that takes the predictions and partial tags from
-  all TAGE components as input features.
-- Trained on every branch outcome: weight updates push SC's output toward
-  correcting TAGE when TAGE was wrong, and toward zero when TAGE was right.
-- Overrides the TAGE prediction when SC's confidence exceeds a threshold.
-- Improves accuracy by ~0.2--0.4 percentage points on SPEC CPU2006.
-
-**TAGE-SC mechanism in detail:**
-
-```verilog
-SC input features (one set per TAGE component):
-  - Provider prediction (1 bit: taken/not-taken)
-  - Provider useful counter value (2 bits)
-  - Partial tag of provider (hash of GHR, ~4 bits)
-  - Provider counter value (3 bits, sign indicates direction)
-
-SC computes:
-  y = SUM(weights[feature_j]) + bias
-
-  If |y| > threshold AND sign(y) != TAGE_prediction:
-    Override: output = sign(y)
-  Else:
-    Keep TAGE prediction
-
-Threshold tuning: starts at ~20 and adapts based on override accuracy.
-If SC overrides are correct > 90% of the time: threshold decreases (more aggressive)
-If SC overrides are correct < 60% of the time: threshold increases (more conservative)
-
-Why it works: TAGE occasionally mispredicts branches where the counter values
-across components show a pattern (e.g., 3 components say "taken" with low
-confidence, 1 says "not-taken" with high confidence, TAGE picks "taken" but
-the correct answer is "not-taken"). SC learns these multi-component patterns
-that a single provider/alt selection cannot capture.
-```
-
-### 3.4 TAGE Index Computation -- Worked Example
-
-**Setup:** TAGE with base bimodal (1024 entries, 10-bit index) + 3 tagged components:
-- T1: 128 entries, history length $L_1 = 4$
-- T2: 128 entries, history length $L_2 = 16$
-- T3: 128 entries, history length $L_3 = 64$
-
-Each tagged component has 128 entries, requiring 7 index bits and 8 tag bits.
-
-```text
-Branch PC = 0x0040_2000
-GHR (64 bits) = 0xB59A_3F0C_7D12_E481 (binary shown LSB-first for history):
-  bit 0 (newest) = 1, bit 1 = 0, bit 2 = 0, bit 3 = 0, ...
-  In compact form: GHR[3:0] = 0001, GHR[15:0] = 0xC3F0, etc.
-
-Step 1: Base bimodal index
-  index_base = PC[11:2] = 0x0040_2000 >> 2 = 0x0010_0800, low 10 bits = 0x000
-  (Since 128-entry tables use 7 bits, and base uses 10 bits)
-
-Step 2: T1 index (history length 4)
-  Fold GHR[3:0] = 0001 into 7 bits (table index width):
-    folded_1 = GHR[3:0] = 0b0001 (already fits in 7 bits, no folding needed)
-  index_T1 = folded_1 XOR PC[8:2] = 0b0000001 XOR 0b0000000 = 0b0000001
-  tag_T1 = fold(GHR[3:0], 8) XOR PC[16:9] = 0b00000001 XOR ...
-
-Step 3: T2 index (history length 16)
-  Fold GHR[15:0] into 7 bits:
-    GHR[15:0] = 16 bits, fold: GHR[6:0] XOR GHR[13:7] = 7-bit result
-    Example: if GHR[6:0] = 0b1110000 and GHR[13:7] = 0b0101010
-    folded_2 = 0b1110000 XOR 0b0101010 = 0b1011010
-  index_T2 = folded_2 XOR PC[8:2]
-
-Step 4: T3 index (history length 64)
-  Fold GHR[63:0] into 7 bits (requires 9 XOR operations):
-    folded_3 = GHR[6:0] XOR GHR[13:7] XOR GHR[20:14] XOR GHR[27:21]
-             XOR GHR[34:28] XOR GHR[41:35] XOR GHR[48:42]
-             XOR GHR[55:49] XOR GHR[62:56]
-    (9 chunks of 7 bits, XOR-reduced to 7 bits)
-  index_T3 = folded_3 XOR PC[8:2]
-
-Step 5: Tag computation for each component
-  tag_Ti uses a DIFFERENT folding of the GHR than the index, plus
-  additional PC bits that are NOT used in the index:
-    tag_Ti = fold(GHR[Li-1:0], tag_width) XOR PC[tag_bits+index_bits-1 : index_bits]
-
-Hardware implementation of the folding:
-  The folded hash is computed by a tree of XOR gates.
-  For T3 (64-bit history -> 7-bit index):
-    9 chunks of 7 bits -> 8 XOR gates in a tree (3 levels deep)
-    Delay: ~2-3 FO4 total (each XOR gate is ~0.5 FO4 in dynamic logic)
-  This folding happens in the same cycle as the table lookup (combinational
-  path before the SRAM address decoder).
-```
-
-### 3.5 Lookup
+## 1. What must be predicted, and why one structure cannot do it
+
+To advance, fetch needs one thing: the **next-PC**. Producing it from the current PC *before decode* means answering a chain of questions the pipeline would otherwise only settle much later:
+
+| Question the next-PC needs | Settled for certain at | Speculative structure that answers it early |
+|---|---|---|
+| Is this fetch block even a branch? | decode | **BTB** (presence) — §2 |
+| Where does it go (direct target)? | decode | **BTB** (target) — §2 |
+| Is a conditional branch taken this time? | execute | **direction predictor** (TAGE) — §3–4 |
+| Where does a *return* go? | execute | **RAS** — §6 |
+| Where does an *indirect* branch go this time? | execute | **ITTAGE / indirect target cache** — §5.1 |
+
+The organizing idea of the whole front end is one sentence: **every predictor is a speculative cache of a fact the pipeline will only confirm later, pulled forward to the one cycle fetch can use it.** They are separate structures because the facts have different *natures*, and that nature dictates what each must remember:
+
+- "Is this PC a branch, and (for a direct branch) where does it statically go" is a property of the **PC** — cache it by PC. → BTB.
+- "Is it taken this time" is a property of **dynamic bias and recent history**, not of the PC alone. → direction predictor.
+- "Where does this return go" is a property of **call context**, and is *not* a function of the branch PC at all. → RAS.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    A[PC arrives at predictor] --> B[Base predictor: index by PC]
-    A --> C[T1: index by folded_hist_4 XOR PC]
-    A --> D[T2: index by folded_hist_16 XOR PC]
-    A --> E[T3: index by folded_hist_64 XOR PC]
-    A --> F[T4: index by folded_hist_256 XOR PC]
-    B --> G{Tag match?}
-    C --> H{Tag match?}
-    D --> I{Tag match?}
-    E --> J{Tag match?}
-    F --> K{Tag match?}
-    G -->|No| L[Base prediction b_pred]
-    G -->|Yes| L
-    H -->|No| M[No hit]
-    H -->|Yes| N[T1 hits: pred1, u1]
-    I -->|No| M
-    I -->|Yes| O[T2 hits: pred2, u2]
-    J -->|No| M
-    J -->|Yes| P[T3 hits: pred3, u3]
-    K -->|No| M
-    K -->|Yes| Q[T4 hits: pred4, u4]
-    N --> R[Select provider: longest history<br/>with tag hit]
-    O --> R
-    P --> R
-    Q --> R
-    L --> S{Provider useful > 0?}
-    R --> S
-    S -->|Yes| T[Use provider prediction]
-    S -->|No| U[Use alternate prediction]
-    T --> V[Output: taken or not-taken]
-    U --> V
+    PC["Fetch PC"]
+    subgraph BPU["Branch Prediction Unit — all from PC, in parallel, one cycle"]
+        BTB["BTB\n(branch? type? direct target?)"]
+        DIR["Direction predictor\n(TAGE: taken?)"]
+        RAS["RAS\n(return target)"]
+        ITT["ITTAGE\n(indirect target?)"]
+    end
+    NPC["next-PC select"]
+    FTQ["FTQ\n(decouples predict from fetch)"]
+    IC["I-cache"]
+    DEC["Decode / rename"]
+    EXE["Execute\n(branch resolves)"]
+
+    PC --> BTB
+    PC --> DIR
+    PC --> RAS
+    PC --> ITT
+    BTB --> NPC
+    DIR --> NPC
+    RAS --> NPC
+    ITT --> NPC
+    NPC -->|predicted next-PC| PC
+    NPC --> FTQ
+    FTQ --> IC
+    IC --> DEC
+    DEC --> EXE
+    EXE -->|mispredict: redirect + flush| PC
 ```
 
-**Provider**: The tagged component with the longest history length that has a
-tag hit. If no tagged component hits, the base bimodal predictor provides the
-prediction.
-
-**Alternate (alt)**: The second-longest matching tagged component, or the base
-predictor if only one tagged component hits.
-
-**Confidence gating**: If the provider's useful counter is zero (low
-confidence), the predictor falls back to the alternate. This prevents a newly
-allocated but poorly trained entry from degrading accuracy.
-
-### 3.6 Update Policy
-
-After a branch resolves with actual outcome:
-
-1. **Update the provider counter**: increment if taken, decrement if not-taken
-   (3-bit saturating).
-2. **Update useful counter**: The useful counter tracks whether the provider's
-   contribution actually mattered (i.e., the provider and alternate disagreed):
-   - If provider != base AND provider's prediction differed from alternate's:
-     - If provider was correct: `u = min(u + 1, 3)`
-     - If provider was wrong (misprediction): `u = max(u - 1, 0)`
-   - If provider and alternate agreed: no useful update (the provider's entry
-     was not the deciding factor, so its usefulness is unchanged).
-3. **If mispredicted**: **Allocate** a new entry in 1--3 tagged components that
-   did not match (chosen randomly or by longest-empty). The new entry gets the
-   tag, a fresh counter initialized to weakly-taken or weakly-not-taken (the
-   opposite of the alternate's prediction), and a useful counter of zero.
-4. **Periodic useful decay**: Every $2^{18}$ predictions, halve all useful
-   counters to allow eviction of stale entries.
-
-### 3.7 Accuracy
-
-| Benchmark Suite | TAGE (8 components) | TAGE-SC-L (Xiangshan) |
-|-----------------|---------------------|------------------------|
-| SPEC INT 2006 | 3.0 MPKI (mispredicts per 1000 instructions) | 2.4 MPKI |
-| SPEC INT 2017 | 4.2 MPKI | 3.5 MPKI |
-| Accuracy (INT 2006) | ~99.0% | ~99.2% |
+The loop `PC → predict → next-PC → PC` closes every cycle; the FTQ (§7) lets it run ahead of the I-cache; and the one back-edge from execute is the mispredict recovery that §0's tax pays for. Hold that picture and the rest is filling in each box.
 
 ---
 
-## 4. Perceptron Predictor
+## 2. The BTB: "is this a branch, and where?" from the PC alone
 
-### 4.1 Mechanism
+### 2.1 Why it must exist — a timing argument that dictates its contents
 
-The perceptron predictor treats branch prediction as a binary classification
-problem. For each branch (indexed by PC), a set of $N$ weights is maintained,
-where $N$ equals the GHR length.
+The fetch engine picks the next PC in the *same cycle* it launches the I-cache access — several stages before decode can even confirm the fetched bytes are a branch. If it waited for decode, every taken branch would cost a decode-to-fetch bubble (3–5 cycles). So the BTB must reconstruct, from the PC alone, everything decode would otherwise have to tell it. That job — and nothing more — fixes what every entry holds:
 
-```verilog
-Prediction:
-  GHR = {b_1, b_2, ..., b_N}  where b_i in {-1, +1}
-  W_j = {w_1, w_2, ..., w_N}  weights for branch j
+| The entry must remember… | …because the next-PC needs to know |
+|---|---|
+| a **tag** (upper PC bits) | that *this* PC is really the cached branch, not an aliasing neighbour — a bogus redirect is worse than none |
+| a **target PC** | *where* to steer next fetch, for a direct branch whose offset decode hasn't computed yet |
+| a **branch type** (cond / call / return / indirect) | *who acts next cycle* — a return must pop the RAS, a call push it, an indirect not blindly trust one stored target |
 
-  y_out = w_0 + SUM(i=1..N) w_i * b_i
+That is the whole entry. A structure that stored only "one target per PC" would mispredict every return and every polymorphic indirect branch — which is exactly why the type field, not the target, is the subtle part. There is no bit-field layout worth memorising here; those three obligations *are* the state.
 
-  Predict TAKEN     if y_out >= 0
-  Predict NOT-TAKEN if y_out <  0
+### 2.2 The capacity–latency knee: why the BTB is a cache hierarchy
 
-Training (on mispredict or low confidence):
-  t = +1 if actual was Taken, -1 if Not-Taken
-  if sign(y_out) != sign(t):
-    for i = 0 to N:
-      w_i = w_i + t * b_i      (perceptron learning rule, clamped to [-256, 255])
-```
+The BTB has a cache's central conflict: it wants to be **large** (cover a big code footprint so few branches miss) and **fast** (redirect within the single fetch cycle). SRAM access time grows with capacity (roughly $\sqrt{\text{capacity}}$ for the array plus decode), so one structure cannot be both. The resolution is the same split L1/L2 data caches make — separate *capacity* from *latency*:
 
-**Bias weight** ($w_0$): Always has $b_0 = +1$. Captures the branch's base
-direction (taken-biased or not-taken-biased).
+| Level | Entries | Latency | Role |
+|---|---|---|---|
+| L1 BTB | 64–128 | 1 cycle (in the fetch cycle) | hot branch working set, zero-bubble redirect |
+| L2 BTB | 2K–8K | 2–3 cycles | cold/large-footprint branches, cheap 1–2-cycle redirect |
+| (miss both) | — | 3–5 cycles | branch only recognised at decode |
 
-### 4.2 Properties
+The 3–5-cycle decode-time recovery is precisely the cost the L2 BTB exists to avoid on all but the coldest branches, and its 1–2-cycle redirect is the price of admission. This is a **coverage-vs-latency** trade with a cache-miss cost model: BTB miss rate rises as the dynamic branch working set approaches capacity, and each miss on a taken branch costs the decode redirect. That is why large-footprint server and interpreter workloads — thousands of active branch sites — are frequently *front-end-bound* and drive the enormous BTBs (and even decoupled, run-ahead fetch, §7) of Golden Cove, Apple, and Neoverse, while an embedded core with a tiny code footprint ships a single small BTB. Match the structure to the residual miss rate: the whole design lever is coverage of the branch working set, not raw capacity.
 
-- **Captures long correlations**: A perceptron with $N = 32$ can learn
-  correlations spanning 32 branches back. Linearly separable patterns are
-  learned perfectly.
-- **Cannot learn XOR**: A single-layer perceptron cannot represent non-linearly
-  separable functions (e.g., XOR of two history bits). This limits accuracy on
-  pathological patterns.
-- **Storage**: 4096 branches x 33 weights x 8 bits = 132 KB -- much larger
-  than gshare's 1 KB. This is the primary reason perceptrons are not used in
-  L1 predictors in commercial silicon.
-- **Accuracy**: ~97% on SPEC INT (2-bit saturating counter) to ~97.5% with
-  8-bit weights.
+---
 
-### 4.3 Perceptron Worked Example -- Full Weight Matrix and Computation
+## 3. Direction prediction: bias first, then correlation
 
-**Setup:**
+A BTB says *where* a taken branch goes; it says nothing about *whether* a conditional is taken — and a perfect target is worthless if you step onto it on a branch that should have fallen through. Direction is a separate question, so it earns a separate structure, and what that structure must remember is derived in two layers.
 
-Consider a perceptron predictor with $N = 4$ history bits (for clarity; real
-designs use $N = 16$--$64$). Weights are 8-bit signed integers ($-128$ to $+127$).
-A branch at PC = `0x4000` has the following weight vector (trained over many
-iterations):
+### 3.1 Layer one — bias with hysteresis
 
-```verilog
-Weight table for branch at PC=0x4000:
-  w_0 (bias) = +18
-  w_1        = -30
-  w_2        = +45
-  w_3        = -12
-  w_4        = +25
+Most branches are heavily skewed: a loop back-edge is taken $N{-}1$ of $N$ times, an error check almost never fires. The minimum state that captures skew is a small saturating counter per branch. The classic **2-bit** counter (states strongly/weakly not-taken → weakly/strongly taken; predict taken when in the top half) is chosen not because 2 bits store more skew than 1, but for **hysteresis**: it takes *two* consecutive surprises to flip the prediction, so a loop that is taken 99 times then falls through once loses only *one* prediction at the exit instead of two (one at the exit, one on re-entry). One bit would double the error on every loop boundary. That is the entire reason 2-bit is the floor and 1-bit is not used.
 
-GHR (4 bits): b1 b2 b3 b4 = +1  -1  +1  +1
-  (Recent history: T, NT, T, T)
-```
+Bias alone tops out around **85–90 %** accuracy. It cannot predict a branch whose outcome depends on *context* — `if (x) …` followed by `if (x && y) …`, where the second branch's behaviour is decided by the first. For those, per-branch bias is structurally blind.
 
-**Dot product computation:**
+### 3.2 Layer two — global history and the correlation it captures
+
+The leap past the bias ceiling is the observation that a branch's outcome often *correlates with the recent outcomes of other branches*. Remember a slice of that history and you can tell the contexts apart. The **global history register (GHR)** is an $N$-bit shift register of the last $N$ branch outcomes (1 = taken); indexing the prediction by GHR as well as PC lets one static branch predict differently under different histories. This is the single idea behind every predictor from two-level adaptive through TAGE.
+
+**gshare** is the cheapest way to use both. Rather than one table per history pattern (exponential), it hashes bias and history into *one* small table by XOR:
 
 $$
-y_{out} = w_0 \cdot (+1) + \sum_{i=1}^{4} w_i \cdot b_i
+\text{index} \;=\; \text{PC}[k{-}1{:}0] \;\oplus\; \text{GHR}[k{-}1{:}0]
 $$
 
-```verilog
-  y_out = w_0 * (+1) + w_1 * b_1 + w_2 * b_2 + w_3 * b_3 + w_4 * b_4
-        = (+18)*(+1) + (-30)*(+1) + (+45)*(-1) + (-12)*(+1) + (+25)*(+1)
-        =    18       +   (-30)     +   (-45)     +   (-12)     +   25
-        = 18 - 30 - 45 - 12 + 25
-        = -44
-```
+into a $2^{k}$-entry array of 2-bit counters. The XOR **decorrelates aliasing**: two branches sharing a PC-index but differing in history land on different counters, and vice versa, cutting destructive interference ~30 % versus pure PC-indexing. gshare is untagged and simply *tolerates* the collisions that remain, because the counters self-correct — which is both its cheapness (~2 KB, ~89–92 %) and its ceiling.
 
-**Threshold comparison:**
+### 3.3 The two problems a single-length predictor cannot escape
+
+Two theoretical facts about gshare-style predictors set up everything TAGE does:
+
+**Aliasing.** A single shared table of $2^k$ counters is a hash table with no tags. When the working set of distinct $(\text{PC}, \text{history})$ contexts approaches $2^k$, unrelated contexts with *opposite* bias collide and corrupt each other. Untagged predictors can only fight this by growing the table (linear in area) — there is no way to *know* a collision happened, so a collision is a silent wrong prediction.
+
+**The wrong history length, for every branch at once.** A branch whose outcome truly depends on the last $h$ prior branches needs history length $\ge h$. But index it with $L \gg h$ bits and the extra $L-h$ bits are effectively random *for this branch*, splitting its training examples across up to $2^{L-h}$ redundant entries — training slows by that factor and table pressure (and aliasing) explodes. Conversely, too-short history is simply blind to deep correlation. Since real code mixes branches whose true correlation depth $h$ ranges from 1 to hundreds, **no single history length is right**, and a fixed-$L$ predictor loses accuracy at both ends of the spectrum. The ideal $L$ is *per-branch* and unknown a priori.
+
+TAGE resolves both at once. That is the next section, and it is the heart of the page.
+
+---
+
+## 4. TAGE: letting each branch pick its own history length
+
+TAGE (TAgged GEometric history length, Seznec & Michaud 2006) has been the dominant direction predictor in academia and industry since it swept the Championship Branch Prediction contests, and it ships — as TAGE-SC-L — in Intel P-cores, SiFive P870, and the open-source Xiangshan Nanhu. It is best understood not as "gshare with more tables" but as the direct answer to §3.3's two problems.
+
+### 4.1 The move, and the two obligations it forces
+
+Keep **several** tables at **geometrically spaced** history lengths ($0, 4, 16, 64, 256, \dots$), and for each branch use *the longest table that has a tag-matching, trained entry for this exact history*. That one sentence forces exactly two design features — and they are precisely the "TA" and the usefulness machinery TAGE adds over gshare:
+
+- **Tags (the "TA").** If you intend to *trust the longest matching table*, you must be sure it matches: a false hit on a 256-bit-history entry is a *confident* wrong prediction, the most expensive kind. So each tagged entry carries a partial tag and is believed only on a tag match. Tags convert aliasing from "silent misprediction" (gshare's disease) into "tag miss → fall back to a shorter, safer table." **This is what lets TAGE use very long histories without paying the aliasing tax those histories would otherwise impose** — a mis-hit degrades gracefully instead of mispredicting confidently.
+- **A usefulness counter + an alternate.** A freshly allocated long-history entry is unproven. So TAGE keeps the second-longest match as an **alternate** and trusts the long **provider** only once a small per-entry usefulness counter shows it has earned it; on a mispredict it *allocates* a new entry in a longer, currently-missing table, so the next encounter has a more specific predictor available. The allocation/decay bookkeeping is all in service of one online question: *which history length should I believe for this branch, right now?* — i.e. discovering each branch's true correlation depth $h$ empirically.
+
+The essential per-entry state, derived from that job (not a bit-field dump): a **prediction counter** (3-bit saturating direction), a **partial tag** (8–10 bits, the "am I really the right entry" check), and a **usefulness counter** (2-bit, "have I earned trust over the alternate"). The base component is untagged (it always hits, as the fallback of last resort).
+
+### 4.2 Why *geometric* spacing — reach that is exponential in table count
+
+Geometric lengths are not a tuning nicety; they are the optimal covering of a target that lives on a log scale. To span history lengths from $L_{min}$ to $L_{max}$ with $M$ tables at ratio $\alpha$ (each $L_i = L_{min}\,\alpha^{\,i}$):
 
 $$
-\text{threshold} = \lfloor 1.93 \cdot N + 14 \rfloor = \lfloor 1.93 \cdot 4 + 14 \rfloor = 21
+L_{max} = L_{min}\,\alpha^{\,M-1} \;\;\Longrightarrow\;\; M \;=\; 1 + \log_{\alpha}\!\frac{L_{max}}{L_{min}}
 $$
 
-```verilog
-  y_out = -44
-  |y_out| = 44 > threshold = 21  -> high confidence prediction
-  y_out < 0 -> predict NOT TAKEN
-```
+so the maximum history **reach grows exponentially in the number of tables** — a handful of components spans loop-local to very-long-range. With $\alpha=2$, reaching $L_{max}=256$ needs $M\approx 8$ tables; production TAGE reaches **500+ bit** histories with ~8–12 components. The deeper reason geometric beats linear: what matters for matching a branch correlated at distance $d$ is a table whose length is *within a bounded ratio* of $d$, not a bounded difference. Covering a multiplicative range $[L_{min},L_{max}]$ with bounded ratio-gaps requires geometrically spaced points; linear spacing would cluster tables uselessly at short lengths and leave order-of-magnitude gaps at long ones. Geometric spacing is the minimum-table covering of a log-scale need — that is *why* the "G" is in the name.
 
-**Actual outcome: Suppose the branch is actually TAKEN (misprediction).**
+A representative 4-component layout (base + geometric tagged tables):
 
-**Weight update rule (perceptron learning):**
+| Component | History length | Entries | Tag |
+|---|---|---|---|
+| Base (bimodal) | 0 | 1–4 K | none |
+| T1 | 4 | 128–256 | 8–10 bit |
+| T2 | 16 | 128–256 | 8–10 bit |
+| T3 | 64 | 128–256 | 8–10 bit |
+| T4 (typical high-end +4 more) | 256 (…up to 500+) | 128–256 | 8–10 bit |
+
+### 4.3 The accuracy-per-byte argument: what the tags buy
+
+Tags cost storage — a tagged entry is ~13 bits (3-bit counter + 2-bit useful + 8-bit tag) against gshare's 2 — roughly 6× per entry. TAGE wins anyway because it needs *far fewer* entries (it is not fighting aliasing by brute capacity) and only the tagged components pay the tag. The empirical accuracy/storage curve on SPEC INT 2006:
+
+| Predictor | Storage | MPKI | Accuracy |
+|---|---|---|---|
+| bimodal (2-bit) | 1 KB | 12–15 | 85–88 % |
+| gshare (12-bit GHR) | 2 KB | 8–11 | 89–92 % |
+| TAGE, 4 components | 8 KB | 3–4 | 96–97 % |
+| TAGE, 8 components | 16 KB | 2.5–3.5 | 97–99 % |
+| TAGE-SC-L | 32–64 KB | 2–2.4 | ~99–99.2 % |
+
+MPKI roughly **halves per ~4× storage** through the TAGE regime, then flattens near the entropy of the branch stream. Cash that out in §0's model — a 6-wide, $P=14$ core:
+
+- gshare, MPKI $\approx 10$: peak realized $= 1/(1+6\cdot0.010\cdot14)=54\%$.
+- TAGE, MPKI $\approx 3$: peak realized $= 1/(1+6\cdot0.003\cdot14)=80\%$.
+
+Moving gshare → TAGE recovers **~26 points of peak IPC** — about $1.5\times$ on branchy integer code — for ~14 KB of extra tables. *That* is what the tag bits and the multi-table lookup are worth, and why every high-performance core pays for them. The cost side is real and bounded: $M$ parallel tagged lookups plus the geometric history folds each cycle (a shallow XOR tree, ~2–3 FO4), which is why TAGE lives behind the FTQ (§7) where its latency is off the per-cycle fetch critical path rather than on it.
+
+### 4.4 SC and L: correcting the residue
+
+**TAGE-SC** adds a **Statistical Corrector**. TAGE commits to *one* provider; sometimes the *ensemble* of component counters carries a signal that the single-provider choice throws away (several low-confidence components agreeing against one high-confidence provider). A perceptron-like corrector reads all component outputs as features and flips TAGE's answer only when it is *confidently* opposed — a gated override that cannot drop below the TAGE baseline. Worth ~0.2–0.4 accuracy points.
+
+**TAGE-SC-L** adds a tiny **Loop predictor**. Long regular loops are TAGE's blind spot: a 100-iteration loop needs ~100 bits of history to see its single exit, and even geometric tables train slowly on it. A dedicated loop predictor learns the trip count and predicts the exit exactly — ~1 KB, disproportionately effective on counted loops. The pattern is the recurring one: **spend structure only on the residual difficulty the main predictor leaves.** TAGE-SC-L is the current production state of the art (~2–2.4 MPKI, ~99 %).
+
+---
+
+## 5. Indirect branches and the perceptron alternative
+
+### 5.1 Indirect targets: ITTAGE
+
+Indirect branches (virtual dispatch, switch tables, function pointers) have a target that *varies at runtime*, so a BTB storing one target per PC mispredicts them whenever a site has multiple targets (~75–85 % accuracy). But the target is usually *history-selected*, not random — the same call site tends to reach the same target under the same recent history. **ITTAGE** (Seznec 2014) reuses TAGE's exact tagged-geometric structure but stores a **target PC** per entry instead of a direction bit: the longest matching history selects the target. It lifts indirect accuracy to **~95 %** on SPEC INT and ships in Xiangshan Nanhu (4 tagged components). It is the cleanest evidence that TAGE is a *general* mechanism for "predict a fact from the longest reliable history," not a direction-only trick.
+
+### 5.2 Perceptron: the other great branch, and why it mostly lost — but not entirely
+
+The perceptron predictor (Jiménez & Lin 2001) is the main alternative hypothesis, and contrasting it sharpens *why* TAGE is shaped as it is. It treats prediction as **linear classification**: keep a weight per history bit, predict taken when the dot-product of weights with the (±1) history vector clears a threshold, and nudge weights toward the outcome on each mispredict.
+
+Its trade-offs are the mirror image of TAGE's:
+
+- **Strength — cheap long history.** Correlation with any of $N$ history bits costs $O(N)$ weights, not $O(2^N)$ table entries. Perceptrons scale to long histories in *storage* gracefully, and the bias weight cleanly separates per-branch skew from correlation.
+- **Weakness 1 — linear separability.** A single-layer perceptron cannot represent XOR of history bits: patterns that are not linearly separable are a hard accuracy ceiling TAGE's per-context tables do not have.
+- **Weakness 2 — latency.** A prediction is a wide dot-product-and-threshold (an adder tree over $N$ weights), harder to land in one cycle than a table lookup; and it reads many weights per prediction. A table read is simply faster.
+
+So the dichotomy is **table-and-tags (TAGE) vs linear-model-arithmetic (perceptron)**: TAGE selects a history length and reads a counter; perceptron sums a learned model. TAGE-family predictors dominate on accuracy-per-latency (Intel, SiFive, Xiangshan); AMD's Zen line uses **hashed-perceptron**-family predictors, and the two hybridise cleanly — the Statistical Corrector in TAGE-SC *is* a perceptron bolted onto TAGE, taking perceptron's ensemble strength exactly where TAGE's single-provider choice is weakest. Representative numbers: perceptron $N{=}32$ reaches ~5–7 MPKI but at large storage (~100+ KB), against TAGE-8's ~3 MPKI at 16 KB — which is why pure perceptron is rare as the primary predictor and common as a corrector. (The 1990s **tournament** predictor — Alpha 21264, a per-branch selector choosing among bimodal/global/local, ~4 KB, ~96–97 %, 6–9 MPKI — is the historical ancestor of this "combine predictors" idea, superseded by TAGE after 2006 but still the reference design in every course.)
+
+---
+
+## 6. The RAS: returns are context-determined, not PC-determined
+
+A return's target is the one control-transfer target that is **not a function of the branch PC**: the same `ret` returns to a different caller on every dynamic invocation, so a PC-indexed BTB mispredicts it the instant a function has more than one call site. Yet the target is not *unpredictable* — it is exactly the address after whichever CALL is currently outstanding, and calls and returns **nest perfectly**. That nesting *is* the structure it demands: "last call made is first to return" is precisely LIFO discipline, so the predictor is a **stack** of return addresses whose only extra state is a top pointer — push on CALL, pop on RETURN. Everything else follows: an entry is one return address wide, and depth is sized to typical call nesting.
+
+**Sizing.** Call depth is 5–25 levels across C/C++, managed runtimes, and kernels; a **16-entry** RAS covers >95 % of SPEC call depths, **32** covers >99.9 %, and deeper only adds SRAM latency for no accuracy. Returns are ~15 % of branches, and a 32-entry RAS mispredicts <0.05 % of them, so its contribution to overall MPKI is negligible. The RAS is therefore a *solved* problem — which is exactly why it gets a tiny, cheap structure while direction and indirect prediction get TAGE.
+
+**Speculative repair (the one subtlety).** Because fetch pushes and pops the RAS *speculatively*, a mispredict must restore the top pointer to its value before the wrong path. The cheap, standard fix is to checkpoint the 5-bit top pointer per in-flight branch — the same per-branch checkpoint machinery the OoO core uses for the rename map ([OoO_Execution](05_OoO_Execution.md) §2.5), so the incremental cost is trivial (~5 bits × in-flight branches). Pointer-only repair can leave *stale data* in popped entries ("RAS corruption") in deep speculation; cores that care (Apple, ARM Cortex-X) keep a full shadow-RAS per checkpoint (~4 KB for 16 checkpoints vs ~140 bytes pointer-only), buying corruption-freedom for area. Most cores take the cheap side because the residual corruption rate is already below the RAS's negligible MPKI floor.
+
+---
+
+## 7. The decoupled front end: FTQ, and the fetch-width wall
+
+### 7.1 Why prediction and fetch are decoupled
+
+The branch predictor and the I-cache have different natural latencies and stall for different reasons, so coupling them makes each stall the other. A **Fetch Target Queue (FTQ)** — a small FIFO of predicted fetch addresses — sits between them and lets the **predictor run ahead** of fetch. Two payoffs, and they are the whole reason the modern front end is "decoupled":
+
+1. **Latency hiding.** The predictor's multi-cycle work (a TAGE lookup, §4.3) is not on the per-cycle fetch critical path; the FTQ absorbs bursts and bubbles.
+2. **Prefetch for free.** The run-ahead addresses in the FTQ *are* an I-cache prefetch stream — target lines can be fetched before the pipe reaches them, hiding I-cache miss latency on predicted-taken branches.
+
+This is the front-end analogue of the OoO window: decouple a producer (prediction) from a consumer (fetch/decode) with a queue, exactly as the ROB decouples execution from commit. It is why large-footprint, front-end-bound workloads (§2.2) benefit from a *deep* FTQ and a predictor that can sprint ahead of the cache.
+
+### 7.2 The taken-branch bubble and the real fetch-width ceiling
+
+Two effects cap *effective* fetch bandwidth below the nominal width, and both are branch-driven:
+
+- Even a **correctly predicted taken** branch can cost a bubble if the redirected target is not ready in time — the fundamental "taken penalty," which the FTQ + prefetch exist to hide.
+- A wide fetch block holds **multiple branches**, and the first taken one **truncates** the block: everything fetched past it is discarded. So the useful instructions per fetch are bounded by the run to the first taken branch:
 
 $$
-w_i \leftarrow w_i + t \cdot b_i \quad \text{(clamped to [-128, 127])}
+\mathbb{E}[\text{useful insns per fetch}] \;\approx\; \frac{1}{b\cdot t}
 $$
 
-where $t = +1$ if actual was taken, $t = -1$ if not-taken. Note: update only
-when mispredicted OR when $|y_{out}| \leq \text{threshold}$ (low confidence).
+where $b$ = branch density ($\approx0.2$), $t$ = taken fraction ($\approx0.6$). That is $\approx 8$ instructions — so a fetch engine wider than ~8 buys nothing on integer code *unless* it can predict past multiple taken branches per cycle (multi-ported BTB, multi-branch direction lookup), which is exactly what Apple's and Golden Cove's front ends do. This is the concrete reason 8-wide fetch does not yield 8 IPC on branchy code, and why fetch width and branch-prediction throughput must scale together.
 
-```verilog
-  t = +1  (actual was taken)
-
-  w_0 = 18  + (+1)*(+1) = 19
-  w_1 = -30 + (+1)*(+1) = -29
-  w_2 = 45  + (+1)*(-1) = 44
-  w_3 = -12 + (+1)*(+1) = -11
-  w_4 = 25  + (+1)*(+1) = 26
-
-  Updated weights: [19, -29, 44, -11, 26]
-```
-
-**Next occurrence of the same branch, same GHR pattern:**
-
-```verilog
-  y_out = 19*(+1) + (-29)*(+1) + 44*(-1) + (-11)*(+1) + 26*(+1)
-        = 19 - 29 - 44 - 11 + 26
-        = -39
-
-  |y_out| = 39 > 21  -> still predicts NOT TAKEN
-  Still wrong! The weights need more updates to flip the sign.
-```
-
-**After several more corrections (same GHR pattern, actual always TAKEN):**
-
-```verilog
-  After 5 updates total for this pattern:
-
-  Weights converge toward positive y_out:
-  w_0 = 23,  w_1 = -25,  w_2 = 39,  w_3 = -7,  w_4 = 30
-
-  y_out = 23 - 25 - 39 - 7 + 30 = -18
-
-  After 10 total updates:
-  w_0 = 28,  w_1 = -20,  w_2 = 34,  w_3 = -2,  w_4 = 35
-
-  y_out = 28 - 20 - 34 - 2 + 35 = +7
-
-  y_out > 0 -> predict TAKEN  (now correct!)
-  |y_out| = 7 < threshold = 21  -> low confidence, still eligible for updates
-```
-
-**Key observations from this worked example:**
-
-1. The perceptron is essentially a weighted vote of each history bit. Positive
-   weights mean "this history bit being taken supports taken," negative weights
-   mean the opposite.
-2. The bias weight $w_0$ captures the branch's overall bias (taken vs not-taken
-   regardless of history).
-3. Convergence requires multiple mispredictions for the same pattern -- this is
-   the perceptron's weakness compared to TAGE, which allocates a correct entry
-   on the first misprediction.
-4. The threshold mechanism prevents over-training: high-confidence predictions
-   are not updated, even if wrong occasionally.
-
-### 4.4 Perceptron Worked Example -- Multi-Branch Correlated Prediction
-
-This example shows how the perceptron captures **cross-branch correlations** through
-the shared GHR. Two branches at different PCs have different weight vectors but read
-from the same history.
-
-**Setup:** N = 3 history bits, 8-bit signed weights, threshold = 21.
-
-```verilog
-Initial state (all weights zero):
-  Branch A (PC=0x1000): w0=0, w1=0, w2=0, w3=0
-  Branch B (PC=0x2000): w0=0, w1=0, w2=0, w3=0
-  GHR = [0, 0, 0] (cold start)
-```
-
-**Execution sequence (showing correlation learning):**
-
-```ascii-graph
-Step 1: Branch A at PC=0x1000, GHR = [0, 0, 0]
-  y_A = 0*1 + 0*(-1) + 0*(-1) + 0*(-1) = 0
-  |y_A| = 0 <= threshold -> low confidence, eligible for update
-  Predict: y_A >= 0 -> TAKEN (tie-break)
-  Actual: NOT-TAKEN (mispredict, t = -1)
-
-  Update Branch A weights:
-    w0 = 0 + (-1)*(+1) = -1
-    w1 = 0 + (-1)*(-1) = +1   (GHR bit b1 = 0 -> b1_in{-1,+1} = -1)
-    w2 = 0 + (-1)*(-1) = +1
-    w3 = 0 + (-1)*(-1) = +1
-  GHR = [0, 0, 0] -> shift in actual=0 -> GHR = [0, 0, 0] (unchanged for this example)
-
-Step 2: Branch B at PC=0x2000, GHR = [0, 0, 0]
-  y_B = 0*1 + 0*(-1) + 0*(-1) + 0*(-1) = 0
-  Predict: TAKEN (tie-break)
-  Actual: TAKEN (correct!)
-  GHR = [0, 0, 1] (shift in actual=1)
-
-Step 3: Branch A at PC=0x1000, GHR = [0, 0, 1]  -> b = [-1, -1, +1]
-  y_A = (-1)*(+1) + (+1)*(-1) + (+1)*(-1) + (+1)*(+1)
-      = -1 + (-1) + (-1) + 1 = -2
-  |y_A| = 2 <= 21 -> low confidence
-  Predict: y_A < 0 -> NOT-TAKEN
-  Actual: NOT-TAKEN (correct!)
-  No weight update (correct prediction, low confidence -> still update)
-  GHR = [0, 1, 0] (shift in actual=0)
-
-Step 4: Branch B at PC=0x2000, GHR = [0, 1, 0]  -> b = [-1, +1, -1]
-  y_B = 0*(+1) + 0*(-1) + 0*(+1) + 0*(-1) = 0
-  Predict: TAKEN (tie-break)
-  Actual: NOT-TAKEN (mispredict, t = -1)
-
-  Update Branch B weights:
-    w0 = 0 + (-1)*(+1) = -1
-    w1 = 0 + (-1)*(-1) = +1
-    w2 = 0 + (-1)*(+1) = -1
-    w3 = 0 + (-1)*(-1) = +1
-  GHR = [1, 0, 0] (shift in actual=0)
-
-Step 5: Branch A at PC=0x1000, GHR = [1, 0, 0]  -> b = [+1, -1, -1]
-  y_A = (-1)*(+1) + (+1)*(+1) + (+1)*(-1) + (+1)*(-1)
-      = -1 + 1 + (-1) + (-1) = -2
-  |y_A| = 2 <= 21 -> low confidence
-  Predict: NOT-TAKEN
-  Actual: NOT-TAKEN (correct!)
-  GHR = [0, 0, 0] (shift in actual=0)
-
-... (after many more iterations, weights converge)
-
-After 50 encounters:
-  Branch A weights: w0=-8, w1=+12, w2=-5, w3=+3
-    Meaning: Branch A tends to be NOT-TAKEN (negative bias w0=-8)
-    but is TAKEN when the 2nd-most-recent branch was TAKEN (w1=+12)
-
-  Branch B weights: w0=+6, w1=-3, w2=+10, w3=-2
-    Meaning: Branch B tends to be TAKEN (positive bias w0=+6)
-    and is especially TAKEN when the 3rd-most-recent branch was TAKEN (w2=+10)
-```
-
-The perceptron learns the *joint correlation* between branches A and B through
-the shared GHR: Branch A's outcome depends on what Branch B did recently (and
-vice versa), encoded in the per-PC weight vectors. A bimodal predictor or
-2-bit counter cannot capture this cross-branch correlation at all -- it would
-track each branch independently.
-
-### 4.5 Piecewise Linear / Multiperceptron
-
-An extension that maintains separate weight tables per partial history pattern,
-achieving ~98.5% accuracy. Used in some CBP competition entries but considered
-too expensive for production hardware.
+(The I-cache mechanics the FTQ drives — critical-word-first fill, line-fill buffers, next-line prefetch, the iTLB — belong to [Cache_Microarchitecture](07_Cache_Microarchitecture.md), [Memory](09_Memory.md), and [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md); the front end's job is to feed them a correct, run-ahead address stream.)
 
 ---
 
-## 5. Tournament Predictor
+## 8. Real cores: where the trade-offs land
 
-### 5.1 Architecture
+The mainstream high-performance cores make the same bet — a near-perfect predictor is the price of deep, wide execution (§0.1) — and differ mainly in predictor family and front-end depth. This parallels the OoO page's Golden Cove vs Zen 4 comparison, from the front-end side.
 
-The tournament predictor (Alpha 21264, 1996) maintains three sub-predictors and
-a per-branch selector that chooses which predictor to trust.
+| Feature | Intel Golden Cove (2021) | AMD Zen 4 (2022) | Xiangshan Nanhu (open) |
+|---|---|---|---|
+| Direction predictor | TAGE-SC-L family | hashed-perceptron + TAGE | TAGE-SC-L |
+| Direction accuracy | ~99 % | ~98.5 % | ~99 % |
+| Indirect | dedicated indirect + BTB | dedicated indirect | ITTAGE (4 comp.) |
+| BTB | large, multi-level (~L1 + few-K L2) | multi-level (L0/L1/L2, ~8–10 K) | multi-level + FTQ |
+| RAS | shadow / checkpointed | checkpointed | checkpointed |
+| Front end | decoupled, deep FTQ, multi-branch fetch | decoupled, op-cache fed | decoupled BPU + FTQ |
+| Mispredict penalty | ~17 cycles (deep) | ~13 cycles | ~11–13 cycles |
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A[PC + GHR] --> B[Bimodal Predictor]
-    A --> C[Global Predictor -- gshare]
-    A --> D[Local Predictor -- 2-level adaptive]
-    A --> E[Selector Table]
-    B --> F[Pred_bimodal]
-    C --> G[Pred_global]
-    D --> H[Pred_local]
-    E --> I{Selector counter >= 2?}
-    I -->|Yes| J[Choose global or local based on<br/>counter value]
-    I -->|No| K[Choose bimodal]
-    J --> L[MUX: final prediction]
-    K --> L
-    F --> L
-    G --> L
-    H --> L
-    L --> M[Output prediction]
-```
-
-**Sub-predictors**:
-
-1. **Bimodal**: PC-indexed 2-bit counter table (1024 entries). Good for
-   strongly biased branches.
-2. **Global (gshare)**: GHR XOR PC index into 2-bit counter table (4096
-   entries). Good for correlated branches.
-3. **Local (2-level adaptive)**: First level: PC-indexed into a 10-bit local
-   history register (LHR) per branch. Second level: LHR indexes a 2-bit
-   counter table (1024 entries). Good for repeating patterns like
-   T,T,T,NT.
-
-**Selector**: A 2-bit saturating counter per branch (PC-indexed, 4096 entries).
-Encoding:
-- 00, 01: choose bimodal
-- 10: choose global
-- 11: choose local
-
-### 5.2 Alpha 21264 Parameters
-
-| Component | Entries | Bits/Entry | Total Storage |
-|-----------|---------|------------|---------------|
-| Bimodal | 1024 | 2 | 256 B |
-| Global counter table | 4096 | 2 | 1 KB |
-| GHR | 1 | 12 | 12 bits |
-| Local history table | 1024 | 10 | 1.25 KB |
-| Local counter table | 1024 | 2 | 256 B |
-| Selector | 4096 | 2 | 1 KB |
-| **Total** | -- | -- | **~4 KB** |
-
-### 5.3 Accuracy
-
-~96.5% on SPEC INT95, ~97% on SPEC INT2000. Surpassed by TAGE after 2006 but
-remains a reference design taught in every architecture course.
+Every row is §0–§7 in silicon: the TAGE/perceptron split of §5.2 (Intel/SiFive/Xiangshan lean TAGE, AMD leans perceptron-family), the multi-level BTB of §2.2, the checkpointed/shadow RAS of §6, and the decoupled FTQ front end of §7. Golden Cove's deeper pipe raises $P$, so it invests proportionally more in $m$ (accuracy) to keep §0.1's $W\times P$ tax bounded; Xiangshan is the one you can read end-to-end, composing TAGE-SC-L + ITTAGE + RAS behind an FTQ ([Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md)).
 
 ---
 
-## 6. Return Address Stack (RAS)
+## 9. Numbers to memorize
 
-### 6.1 Purpose
+| Parameter | Typical | Range | Why this value (section) |
+|---|---|---|---|
+| Branch frequency (INT) | 1 per 5 insns | 1 per 4–7 | $b\approx0.2$; sets the MPKI scale (§0.1) |
+| Branch frequency (FP) | 1 per 15–25 | — | long loops, few branches |
+| Per-branch mispredict rate | ~2 % | 1–5 % | $m$ at ~98 % accuracy (§0.1) |
+| MPKI, gshare | 8–11 | — | untagged aliasing ceiling (§3.3) |
+| MPKI, TAGE-SC-L | 2–2.4 | 2–4 | tagged geometric history (§4.3) |
+| L1 BTB entries | 64–128 | — | 1-cycle hot working set (§2.2) |
+| L2 BTB entries | 2K–8K | 2K–16K | coverage vs 2–3-cycle latency (§2.2) |
+| BTB decode-miss penalty | 3–5 cyc | — | recognised only at decode (§2.2) |
+| Direction predictor storage | 16–64 KB | 8–64 KB | accuracy-per-byte knee (§4.3) |
+| GHR length (gshare) | 8–16 bits | — | single compromise length (§3.2) |
+| GHR reach (TAGE longest) | 256–500+ bits | — | geometric, $M\approx\log_\alpha L_{max}$ (§4.2) |
+| TAGE components | 4–8 | 4–12 | geometric spacing (§4.2) |
+| TAGE tag width | 8–10 bits | — | false-hit protection (§4.1) |
+| RAS depth | 16–32 | 16–64 | covers 95–99.9 % call nesting (§6) |
+| Indirect accuracy (BTB / ITTAGE) | 85 % / 95 % | — | one vs history-selected target (§5.1) |
+| Mispredict penalty | 12 cyc | 8–18 | fetch-to-resolve depth $P$ (§0.1) |
+| Effective useful fetch/block | ~8 insns | — | first-taken truncation $1/(bt)$ (§7.2) |
 
-CALL instructions push the return address; RETURN instructions pop it. Without
-a RAS, the BTB must predict the target of every return, but returns have a
-different target each time (the instruction after the corresponding CALL). The
-RAS provides a single-cycle, cycle-accurate prediction for returns.
-
-Why a *stack* -- and not simply a bigger BTB -- is the whole point. A return's
-target is the one control-transfer target that is *not* a function of the branch
-PC: the same `ret` returns to a different caller on every dynamic invocation, so a
-PC-indexed BTB mispredicts it the moment a function has more than one call site.
-Yet the target is not unpredictable, only *context-dependent* -- it is exactly the
-address after whichever CALL is currently outstanding, and CALLs and RETURNs nest
-perfectly. That nesting *is* the structure: it forces a LIFO whose entries are
-return addresses and whose only extra state is a top pointer (push on CALL, pop on
-RETURN), because "last call made is first to return" is precisely stack discipline.
-Everything downstream follows -- the entry is one return address wide
-(Section 6.2), the depth is sized to cover typical call nesting (Section 6.2), and
-because fetch pushes and pops *speculatively*, correctness reduces to keeping that
-top pointer balanced across mispredicts, which is the entire subject of
-Sections 6.3--6.5.
-
-### 6.2 Circular Buffer Implementation
-
-```ascii-graph
-RAS: circular buffer of 16--32 entries (most common: 16 for mobile, 32 for
-     desktop/server). Top pointer (4--5 bits).
-
-Data structure (32-entry example):
-  ┌──────────┬──────────┬──────────┬──────────┐
-  │ RAS[0]   │ RAS[1]   │  ...     │ RAS[31]  │
-  │ addr[63] │ addr[63] │          │ addr[63] │
-  └──────────┴──────────┴──────────┴──────────┘
-                    ^
-                    |
-                   Top (5-bit pointer)
-
-  Each entry: 64-bit return address (RV64) or 32-bit (RV32)
-
-On CALL (decoded or predicted):
-  RAS[Top] = PC + 4 (or PC + 2 for compressed ISAs like RVC)
-  Top = (Top + 1) mod 32
-
-On RETURN (decoded or predicted):
-  Top = (Top - 1) mod 32
-  predicted_target = RAS[Top]
-
-Hardware:
-  - SRAM array: 32 entries x 64 bits = 256 bytes
-  - 1 write port (push) and 1 read port (pop) -- single-ported SRAM sufficient
-  - Top pointer: 5-bit register with increment/decrement logic
-  - Total timing: 1 cycle for push/pop + target read
-```
-
-**Why 16-32 entries?**
-
-Typical call depth in software:
-- C/C++: 5-15 levels deep (main -> function -> helper -> utility -> leaf)
-- JavaScript/Python: 8-20 levels (interpreter dispatch + recursive calls)
-- OS kernel: 10-25 levels (syscall -> VFS (virtual file system) -> filesystem -> block driver)
-
-A 16-entry RAS covers >95% of call depths in SPEC benchmarks. A 32-entry RAS
-covers >99.9%. Going beyond 32 has diminishing returns and increases access
-latency (larger SRAM (static random-access memory)).
-
-### 6.3 Speculative RAS with Misprediction Repair
-
-The fetch unit pushes and pops the RAS speculatively before branches are
-resolved. On a misprediction, the RAS state must be restored.
-
-**Checkpoint approach**: On every branch that modifies the RAS (CALL/RETURN),
-save the current Top pointer in the reorder buffer (ROB) entry. On a pipeline
-flush, walk the ROB or use the checkpoint from the mispredicted branch to
-restore Top.
-
-```ascii-graph
-Example: 32-entry RAS, speculative depth = 3
-
-Initial state:  Top = 4, RAS = {_, _, _, _, 0x8000, ...}
-
-CALL foo      --> push 0x4008, Top = 5
-  Checkpoint: save Top=4 in ROB entry
-CALL bar      --> push 0x5004, Top = 6
-  Checkpoint: save Top=5 in ROB entry
-RET           --> pop, Top = 5, predict target = 0x5004
-  Checkpoint: save Top=6 in ROB entry
-
-Misprediction detected at the second CALL (bar):
-  Restore Top from ROB checkpoint = 5
-  RAS state: {_, _, _, _, 0x8000, 0x4008, ...}
-  The incorrect push of 0x5004 is effectively discarded.
-```
-
-**Full speculative RAS design:**
-
-There are two approaches to making the RAS speculative:
-
-```verilog
-Approach 1: Top-pointer checkpoint only (most common, used in ARM and RISC-V cores)
-
-  - Save only the Top pointer in the ROB on each CALL/RETURN
-  - On misprediction: restore Top from checkpoint
-  - Data in RAS entries is NOT restored (stale data left in popped entries)
-  - Correct because: stale entries are beyond Top and will be overwritten
-
-  Storage: 5 bits per ROB entry (for 32-entry RAS) = negligible
-  Latency: 1 cycle to restore (just load Top register)
-
-  Limitation: if a mispredicted path pushes N values and then pops them,
-  the stale pushed values remain in the RAS. If the correct path pushes
-  new values, they overwrite the stale ones. But if the stale entries
-  happen to be between valid entries, a future pop on the correct path
-  might read a stale value. This is called "RAS corruption."
-
-  Mitigation: also save the RAS data for each CALL (not just Top) in a
-  checkpoint buffer. On restore, write back the saved data. More expensive
-  but eliminates corruption.
-
-Approach 2: Free checkpoint RAS (used in Intel P-cores)
-
-  - Maintain a separate "shadow RAS" for speculative state
-  - On branch prediction: save the entire RAS + Top into a checkpoint buffer
-  - Number of checkpoints: 4-8 (one per outstanding branch prediction)
-  - On misprediction: restore entire RAS from checkpoint (all 32 entries)
-  - Eliminates RAS corruption completely
-
-  Storage: 4-8 checkpoints x (32 entries x 64 bits + 5-bit Top) = ~8 KB
-  Latency: 1 cycle to restore (mux the checkpoint into the active RAS)
-```
-
-### 6.4 RAS Overflow and Underflow
-
-- **Overflow**: When Top wraps around and overwrites an old entry. The oldest
-  return address is lost. Mitigation: increase RAS depth (32--64 is typical),
-  or add a secondary overflow buffer in L2.
-
-```verilog
-Overflow detection and handling:
-
-  On push: Top_new = (Top + 1) mod DEPTH
-    if Top_new == Bottom:  // RAS is full, oldest entry will be overwritten
-      Bottom = (Bottom + 1) mod DEPTH  // advance bottom, lose oldest entry
-    RAS[Top] = return_addr
-    Top = Top_new
-
-  Some designs track an "overflow count" and use it to restore on pop:
-    if overflow_count > 0:
-      // we lost some entries, the next pop might be wrong
-      // fall back to BTB prediction instead of RAS
-      overflow_count -= 1
-
-  Intel's implementation: RAS overflow sets a "poison" flag. All subsequent
-  RAS predictions are treated as low-confidence. The flag clears when enough
-  returns have been processed to drain the overflowed entries.
-```
-
-- **Underflow**: When a RETURN is encountered with Top = 0. The RAS is empty;
-  fall back to BTB prediction. Rare in practice (indicates unbalanced CALL/RET).
-
-```verilog
-Underflow handling:
-
-  On pop: Top_new = (Top - 1) mod DEPTH
-    if Top == Bottom:  // RAS is empty
-      predicted_target = BTB_target  // fall back
-      // Do NOT decrement Top (would wrap to 31, reading garbage)
-    else:
-      Top = Top_new
-      predicted_target = RAS[Top]
-
-  Underflow typically indicates:
-    - Exception handler return without matching call
-    - Longjmp / setjmp (non-local goto)
-    - Corrupted RAS from speculative execution bug
-
-  On underflow: some designs increment a counter and suppress further pops
-  until a matching push arrives (CALL).
-```
-
-**RAS misprediction rate:**
-
-| RAS Size | Overflow Rate (SPEC INT) | Misprediction Rate |
-|----------|--------------------------|-------------------|
-| 8 entries | 2-5% | 1-3% of all returns |
-| 16 entries | 0.1-1% | 0.1-0.5% |
-| 32 entries | <0.01% | <0.05% |
-| 64 entries | ~0% | ~0% |
-
-Returns account for ~15% of all branches, so RAS mispredictions contribute
-<0.1% to overall branch misprediction rate with a 32-entry RAS.
-
-### 6.5 RAS Interaction with Branch Predictor Checkpoints
-
-In a deeply speculative processor with 16+ outstanding branch predictions, the
-RAS must be rolled back on any misprediction among the 16. The interaction between
-RAS checkpointing and the branch predictor's checkpoint mechanism is as follows:
-
-```verilog
-Checkpoint structure (per branch prediction):
-  branch_checkpoint[k] = {
-    RAT_snapshot,           // register alias table
-    freelist_head,          // free list pointer
-    RAS_top,                // RAS Top pointer (5 bits)
-    RAS_top_entry,          // RAS[Top] data (64 bits, for CALL repair)
-    FTQ_tail,               // fetch target queue pointer
-    GHR_snapshot            // global history register
-  }
-
-On CALL prediction:
-  1. Save RAS_top and RAS[RAS_top] into the current branch checkpoint
-  2. RAS[RAS_top] = PC + 4 (return address)
-  3. RAS_top = (RAS_top + 1) % DEPTH
-
-On RETURN prediction:
-  1. Save RAS_top into the current branch checkpoint
-  2. RAS_top = (RAS_top - 1) % DEPTH
-  3. Predicted target = RAS[RAS_top]
-
-On misprediction recovery (branch checkpoint k is invalid):
-  1. Restore RAS_top from checkpoint[k].RAS_top
-  2. Restore RAS[RAS_top] from checkpoint[k].RAS_top_entry
-     (only needed if a CALL in the wrong path wrote to this entry)
-  3. Invalidate all checkpoints younger than k
-  4. All RAS entries at indices >= restored RAS_top are stale (ignored)
-
-Storage cost per checkpoint:
-  RAS_top: 5 bits
-  RAS_top_entry: 64 bits
-  Total RAS-related: 69 bits per checkpoint
-  For 16 checkpoints: 16 * 69 = 1104 bits = ~140 bytes (negligible)
-
-Why save RAS_top_entry:
-  Without saving the data, a mispredicted CALL that pushed a wrong return
-  address would leave stale data in the RAS. On restore, the Top pointer
-  points to the entry that was overwritten. Restoring the data ensures
-  the entry contains the correct return address from before the misprediction.
-  Without this, a subsequent RETURN on the correct path would pop the
-  wrong address -> RAS misprediction -> pipeline flush -> performance loss.
-  This is the "RAS corruption" problem mentioned in Approach 1 above.
-```
-
-**Alternative: unified shadow RAS with checkpoint index stacking:**
-
-Some designs (notably ARM Cortex-X series) use a "shadow RAS" approach where
-each checkpoint stores a complete copy of the RAS rather than just the Top
-pointer. This eliminates corruption entirely but costs:
-
-```verilog
-16 checkpoints x (32 entries x 64 bits + 5-bit Top) = ~4 KB
-vs. pointer-only: 16 x 69 bits = ~140 bytes
-```
-
-The 28x area increase is justified only in cores with very deep speculation
-(20+ outstanding branches) where RAS corruption from pointer-only repair would
-cause measurable performance loss. For most designs, pointer-only repair with
-data save at the checkpoint entry achieves the same accuracy at far lower cost.
+**Penalty vs pipeline depth** (the $P$ that drives §0.1): 10-stage pipe → 5–8 cyc · 15-stage → 8–12 cyc · 20-stage → 12–18 cyc. **Accuracy vs predictor** (SPEC INT 2006 MPKI): static 20–25 · bimodal 12–15 · gshare 8–11 · tournament 6–9 · TAGE-4 3–4 · TAGE-8 2.5–3.5 · TAGE-SC-L 2–2.4. **Hardest workloads**: data-dependent indirect (`mcf`), virtual dispatch (`gcc`), interpreter switches (`perlbench`) — 3–5 MPKI even under TAGE; FP loops are ~0.3.
 
 ---
 
-## 7. Indirect Branch Prediction
+## 10. Worked problems
 
-### 7.1 The Problem
+**1 — Why depth × width makes the predictor the limiter.** A 6-wide core, 15-stage pipe, resolves branches at stage ~13 so $P\approx14$; predictor MPKI $=8$. Fraction of peak realized $=1/(1+W\cdot\frac{\text{MPKI}}{1000}\cdot P)=1/(1+6\cdot0.008\cdot14)=1/1.672=60\%$. Now *widen* to 8-wide (same P, MPKI): $1/(1+8\cdot0.008\cdot14)=53\%$ — wider hardware, *smaller* fraction of it realized, because the fixed branch tax is unchanged. The only recovery is a better predictor: at MPKI $=3$ (TAGE), the 8-wide core reaches $1/(1+8\cdot0.003\cdot14)=75\%$. Prediction, not width, is the first lever — the same conclusion the OoO page reaches from the back end.
 
-Indirect branches (jump to register, virtual function dispatch, switch
-statements compiled to jump tables) have targets that vary at runtime. The BTB
-stores only one target per PC, so it frequently mispredicts indirect branches
-that have multiple targets.
+**2 — What TAGE's tags buy, in CPI.** Same 6-wide, $P=14$ core. gshare (MPKI 10): added CPI $=\frac{10}{1000}\cdot14=0.14$. TAGE-SC-L (MPKI 2.4): added CPI $=\frac{2.4}{1000}\cdot14=0.034$. The predictor swap removes $0.106$ CPI; against an ideal CPI of $1/6=0.167$, that is the difference between $\text{IPC}_{eff}=3.3$ and $4.97$ — a $1.5\times$ swing on branchy code, bought with ~14–30 KB of tag-carrying tables. This is the §4.3 accuracy/storage argument as a wall-clock number.
 
-### 7.2 Indirect Target Cache
+**3 — Geometric history reach.** How many tagged components reach a 512-bit history from a 4-bit shortest tagged length at ratio $\alpha=2$? $M=1+\log_2(512/4)=1+\log_2 128=1+7=8$ components. Linear spacing at step 4 would need $512/4=128$ tables for the same reach — geometric turns a 128-table problem into an 8-table one. *That* is the "G" earning its place.
 
-A small fully-associative or set-associative cache that stores multiple
-targets per branch PC. Indexed by PC + partial history.
-
-```wavedrom
-{"reg":[
-  {"bits":1,"name":"Valid"},
-  {"bits":32,"name":"Target PC"},
-  {"bits":4,"name":"Hist"},
-  {"bits":16,"name":"Tag"}
-]}
-```
-
-Indirect-target cache entry. Lookup matches on `(Tag == PC[31:16])` AND `(Hist == recent_target_history)`.
-
-A 2-bit history of recent targets (which of 4 possible targets was used last)
-helps disambiguate. Accuracy for indirect branches: ~85--92% with this scheme.
-
-### 7.3 ITTAGE
-
-ITTAGE (Indirect Target TAGE) extends TAGE from direction prediction to target prediction. The same
-tagged-geometric structure is used, but each entry stores a target PC instead
-of a direction counter.
-
-- **Used in Xiangshan Nanhu**: ITTAGE with 4 tagged components.
-- **Accuracy**: ~95% for indirect branches on SPEC INT, up from ~85% with a
-  simple BTB.
-- **Cost**: Each entry stores a 32-bit target + tag + useful bits = ~50 bits
-  per entry. 4 components x 256 entries = ~6.4 KB.
+**4 — Why the RAS is left small.** Returns are ~15 % of branches; a 32-entry RAS mispredicts <0.05 % of returns. Contribution to MPKI $\approx 1000\cdot b\cdot(0.15)\cdot(0.0005)$; with $b=0.2$ that is $\approx0.000015\times1000\cdot0.2\approx$ well under $0.01$ MPKI — negligible beside TAGE's ~2.4. Correctly, no core spends TAGE-scale area on returns; the LIFO already solved it (§6).
 
 ---
 
-## 8. Fetch Unit Architecture
+## Cross-references
 
-### 8.1 How BTB, Direction Predictor, RAS, and Target Buffer Interact Per Cycle
-
-The fetch unit is a pipeline of prediction structures that must all produce
-results in a single cycle (or be carefully pipelined). Here is the per-cycle
-interaction:
-
-```verilog
-Fetch cycle timing:
-
-  Clock edge: PC register updated
-
-  Phase 1 (combinational, ~200ps):
-    - PC sent to:  BTB (L1), Direction predictor (BHT/TAGE), RAS, I-cache
-    - All lookups happen in PARALLEL (same cycle)
-
-  Phase 2 (BTB result available, ~400ps):
-    - BTB returns: {hit, target, branch_type}
-    - If BTB hit AND branch_type == RETURN:
-        RAS pop -> predicted_target = RAS[Top]
-        RAS speculatively updates: Top = Top - 1
-    - If BTB hit AND branch_type == CALL:
-        RAS push: RAS[Top] = PC+4; Top = Top + 1
-
-  Phase 3 (direction predictor result available, ~600ps):
-    - TAGE/BHT returns: {taken/not-taken, confidence}
-    - Combine with BTB:
-        if BTB.hit AND direction == taken:
-          next_PC = BTB.target (or RAS target for returns)
-        elif BTB.hit AND direction == not-taken:
-          next_PC = PC + fetch_width
-        elif !BTB.hit:
-          next_PC = PC + fetch_width  (sequential, no branch here)
-
-  Phase 4 (I-cache result available, ~800ps):
-    - I-cache returns instruction bytes for current PC
-    - Pre-decoder scans for branches within the fetch block
-    - If a branch is found that was NOT predicted by the BTB (BTB miss):
-        - Compute target from immediate field
-        - This is a "late" redirect: 1-2 cycle bubble
-
-  End of cycle:
-    - PC register loaded with next_PC
-    - RAS speculatively updated for any CALL/RETURN in this fetch block
-    - FTQ entry pushed with prediction metadata
-```
-
-**Sequential fetch vs taken-path redirect:**
-
-```verilog
-Sequential fetch (no branch or not-taken prediction):
-  Cycle 0: PC=0x1000, fetch 4 instructions, next_PC=0x1010
-  Cycle 1: PC=0x1010, fetch 4 instructions, next_PC=0x1020
-  Cycle 2: PC=0x1020, fetch 4 instructions, next_PC=0x1030
-  Throughput: 4 instructions/cycle (full bandwidth)
-
-Taken-path redirect (branch predicted taken):
-  Cycle 0: PC=0x1000, BTB hit: branch at 0x1004 targets 0x2000
-           Fetch instructions at 0x1000..0x1003 (before branch)
-           Direction predictor says TAKEN
-           next_PC = 0x2000 (redirect)
-  Cycle 1: PC=0x2000, fetch 4 instructions from new target
-  Throughput: 4 instructions at 0x1000-1003, then 4 at 0x2000-2003
-              Only the instructions BEFORE the branch in the fetch block are useful
-              (e.g., 1 instruction if branch is at offset +4)
-
-Taken-path redirect with RAS (CALL instruction):
-  Cycle 0: PC=0x1000, BTB hit: CALL at 0x1000 targets 0x3000
-           RAS push: RAS[Top] = 0x1004 (return address)
-           next_PC = 0x3000
-  Cycle 1: PC=0x3000, fetch from callee
-  ...
-  Later: RETURN at 0x3050
-           BTB hit: RETURN type
-           RAS pop: predicted_target = 0x1004
-           next_PC = 0x1004 (back to caller)
-```
-
-### 8.2 Fetch Bandwidth and Multiple Branches Per Fetch Block
-
-**Fetch bandwidth:** Modern OoO (out-of-order execution) cores fetch 4-8 instructions per cycle (16-32
-bytes for fixed-length ISAs (instruction set architectures), variable for x86). The fetch block may contain
-multiple branches.
-
-**Handling multiple branches per fetch block:**
-
-When a 32-byte fetch block (8 instructions) contains 2 or more branches, the
-fetch unit must resolve them in priority order:
-
-```verilog
-Fetch block at PC=0x1000 (8 instructions):
-
-  0x1000: ADD  ...       (not a branch)
-  0x1004: BEQ  x1,x2,A  (branch 1, target 0x2000)
-  0x1008: LW   ...       (not a branch)
-  0x100C: JAL  x1,B      (branch 2, target 0x3000, unconditional)
-  0x1010: SUB  ...
-  0x1014: BNE  x3,x4,C  (branch 3, target 0x4000)
-  0x1018: ADD  ...
-  0x101C: ADD  ...
-
-Rules:
-  1. BTB reports all branch hits in the fetch block (up to 2-3 per cycle)
-  2. Direction predictor provides taken/not-taken for each
-  3. First taken branch (lowest address) truncates the fetch block:
-     - Branch 1 at 0x1004 is predicted TAKEN
-     - Only instructions 0x1000-0x1004 are valid (2 instructions)
-     - Branch 2 at 0x100C is NOT reached this cycle
-     - next_PC = 0x2000
-
-  4. If branch 1 is predicted NOT-TAKEN:
-     - Branch 2 at 0x100C is unconditional (always taken)
-     - Instructions 0x1000-0x100C are valid (4 instructions)
-     - next_PC = 0x3000
-
-  5. If neither branch is taken:
-     - Branch 3 at 0x1014 predicted NOT-TAKEN
-     - All 8 instructions are valid
-     - next_PC = 0x1020 (sequential)
-```
-
-**Hardware support for multi-branch fetch:**
-
-| Design | Branches Per Fetch Block | Mechanism |
-|--------|--------------------------|-----------|
-| Simple (1 branch/cycle) | 1 | BTB returns only the lowest-address branch; others deferred to next cycle |
-| Moderate (2 branches/cycle) | 2 | BTB has 2 read ports or returns top-2 hits; predictor evaluates both |
-| Advanced (unlimited) | All | Pre-decoder identifies all branches; predictor evaluates in priority order. Used in Apple M-series and Intel Golden Cove |
-
-The "1 branch per cycle" design is simplest but wastes fetch bandwidth when the
-first branch in the block is not-taken (the second branch's taken redirect is
-only discovered in the next cycle, costing a 1-cycle bubble).
-
-**Multiple branches per cycle and RAS interaction:**
-
-When a fetch block contains both a CALL and a RETURN (or multiple CALLs), the
-RAS must be updated multiple times in a single cycle. This creates a sequencing
-problem: the CALL pushes a return address, and a subsequent RETURN pops it, but
-both happen in the same fetch cycle.
-
-```verilog
-Fetch block (8 instructions):
-  0x1000: CALL foo   <- push 0x1004
-  0x1004: CALL bar   <- push 0x1008
-  0x1008: ...        <- first instruction of bar
-
-Processing:
-  1. BTB reports two CALL instructions at offsets 0x1000 and 0x1004
-  2. Both are unconditional (always taken)
-  3. First taken branch (0x1000) truncates the fetch block
-  4. Only the CALL at 0x1000 is processed this cycle
-  5. RAS push: RAS[Top] = 0x1004, Top++
-  6. next_PC = foo's target (from BTB)
-
-  The CALL at 0x1004 is NOT reached this cycle (it is after the first taken
-  branch in the fetch block). It will be fetched in a subsequent cycle when
-  execution reaches 0x1004 (if it ever does -- in this example it does not,
-  because the first CALL redirects to foo).
-
-Corner case: CALL immediately followed by RETURN in the same fetch block:
-  0x1000: CALL foo   <- push 0x1004
-  0x1004: RET        <- pop 0x1004
-
-  If the CALL is predicted taken: next_PC = foo. RET is not processed.
-  If the CALL is predicted not-taken (unusual): RET at 0x1004 is processed.
-    RAS push (CALL) then RAS pop (RET) -> net effect: RAS unchanged.
-    Hardware must apply these operations in program order within the cycle.
-
-Advanced design (Apple M-series, 2 branches per cycle):
-  The BTB has 2 read ports, returning the 2 lowest-address branch hits.
-  The direction predictor evaluates both. If the first is not-taken, the
-  second is evaluated. RAS updates are serialized:
-    1. Process branch 1 (push/pop RAS if CALL/RET)
-    2. Process branch 2 using updated RAS state from step 1
-  This requires the RAS to support 2 operations per cycle with read-after-
-  write forwarding within the same cycle (the second operation sees the
-  result of the first). Implementation: the RAS uses a register file with
-  2 write ports and combinational bypass from write port 1 to read port 2.
-```
-
-### 8.3 Fetch-Directed Prefetch
-
-The branch predictor provides the next-PC *before* the I-cache is accessed.
-This allows the fetch unit to prefetch the target cache line in parallel with
-the current fetch.
-
-```verilog
-Cycle 0: Fetch PC=0x1000.  BTB hit: target=0x2000.
-          I-cache access for 0x1000.
-          Issue prefetch for I-cache line containing 0x2000.
-
-Cycle 1: Fetch PC=0x1004.  I-cache returns line for 0x1000.
-          Prefetch for 0x2000 arrives in line-fill buffer.
-
-Cycle 2: Branch taken confirmed. Fetch PC=0x2000.
-          I-cache hit (prefetched). Zero bubble on taken branch.
-```
-
-### 8.4 Dual Fetch Path
-
-High-performance cores fetch from two addresses per cycle:
-
-1. **Sequential path**: PC + 16 (next sequential cache line).
-2. **Predicted target path**: BTB target.
-
-Both accesses issue to the I-cache in parallel (dual-ported or banked I-cache).
-If the branch is predicted taken, the target-path result is selected. If
-not-taken, the sequential-path result is selected. This hides the I-cache
-latency for correctly predicted branches.
-
-### 8.5 I-Cache Miss Handling
-
-On an I-cache miss:
-
-1. The line-fill buffer allocates an entry and issues a request to L2.
-2. **Critical-word-first**: The cache line sector containing the requested PC
-   is returned first and forwarded to the fetch unit immediately.
-3. The remaining sectors of the cache line arrive in subsequent cycles.
-4. Typical L1 I-cache miss penalty: 8--15 cycles (L2 hit), 40--100 cycles
-   (L2 miss, DRAM (dynamic random-access memory) access).
-
-**Worked detail (pipeline view):**
-
-When the I-cache misses the fetch unit must wait for the line to arrive from
-the next cache level. The key mechanisms are:
-
-1. **Line-fill buffer** -- holds the incoming cache line while it is being
-   written into the I-cache data array. One or two fill buffers allow
-   overlapping misses (one being filled while another waits for L2).
-
-2. **Critical-word-first** -- the first 16--32 bytes that contain the
-   requested PC are forwarded to the pre-decoder immediately; the rest of the
-   line arrives over subsequent bus beats. This reduces the visible stall by
-   roughly $\lceil B/w \rceil - 1$ cycles, where $B$ is the cache-line size
-   and $w$ is the bus width per beat.
-
-3. **Fetch stall + FTQ (fetch target queue) drain** -- the FTQ continues to drain entries that hit
-   in the I-cache, but no new FTQ entries are pushed until the miss resolves.
-   In practice the BPU (branch prediction unit) also stalls to avoid polluting the FTQ with
-   predictions for addresses that cannot yet be fetched.
-
-4. **Streaming / prefetch** -- some designs (e.g., Apple M-series) employ a
-   next-line prefetcher that initiates an L2 request for the sequential line
-   in parallel with the current I-cache access, hiding most of the miss
-   penalty for straight-line code.
-
-### 8.6 Fetch Bandwidth
-
-| Design | Fetch Width | Instructions/Cycle | Alignment |
-|--------|------------|-------------------|-----------|
-| In-order single-issue | 4 bytes | 1 | N/A |
-| 4-wide superscalar | 16 bytes | 4 | Align from I-cache line boundary |
-| 6--8 wide OoO | 32 bytes | 6--8 | Multi-line fetch, branch prediction boundary |
-
-The fetch unit must handle branches that fall mid-cache-line. On a predicted
-taken branch at byte offset +8, the fetch unit extracts only the 2 instructions
-before the branch and redirects to the target for the next cycle.
+- **Down the stack (what this is built from):** [CPU_Architecture](03_CPU_Architecture.md) (the pipeline and fetch stage whose bubble this eliminates; the resolution depth that sets $P$), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and SRAM access-time scaling behind §2.2's capacity–latency knee and §4.3's fold delay).
+- **Up / adjacent (what builds on it):** [OoO_Execution](05_OoO_Execution.md) (the speculative back end this front end feeds; its §6 misprediction limiter and §2.5 checkpoint recovery are the other half of every model here), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) & [Memory](09_Memory.md) (the I-cache the FTQ drives and prefetches), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md) (the iTLB in the fetch path), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (a complete open core: TAGE-SC-L + ITTAGE + RAS behind an FTQ), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (where the CPI/penalty models here feed design-space exploration).
 
 ---
 
-**Fetch bandwidth constraints — worked numbers (pipeline view):**
-
-Fetch bandwidth is measured in instructions per cycle (IPC$_{\text{fetch}}$):
-
-$$
-\text{IPC}_{\text{fetch}} = \min\!\left(\frac{\text{I-cache line size}}{\text{avg instruction width}},\;\text{decode width}\right)
-$$
-
-For a fixed-length ISA (RISC-V, ARM):
-- I-cache line = 64 bytes, instruction = 4 bytes $\Rightarrow$ up to 16
-  instructions per line.
-- Practical fetch width limited to 4--8 instructions per cycle by the
-  pre-decoder and branch-prediction check within the fetch group.
-
-For a variable-length ISA (x86):
-- Instructions range from 1--15 bytes.
-- Pre-decode must find instruction boundaries, so 4--6 instructions per cycle
-  is typical; Intel calls this the "MOP cache" problem and uses a decoded
-  instruction cache (DSB / MOP cache) to bypass the pre-decoder.
-
-Alignment penalty: if the fetch PC is not aligned to the start of a cache line,
-only the remaining bytes in the line are usable. The fetch unit issues a second
-I-cache access in the next cycle for the remainder, costing one cycle.
-
-### 8.7 Fetch Target Queue (FTQ)
-
-The FTQ is a small FIFO (first-in, first-out) structure sitting between the branch predictor and the
-I-cache. It decouples prediction throughput from cache latency so the predictor
-can run ahead of the cache without stalling.
-
-```verilog
-FTQ entry fields:
-  { predicted_PC,          -- next fetch address (from BPU)
-    fall_through_PC,       -- PC + fetch_width (sequential fallback)
-    btb_hit,               -- was there a BTB hit for this prediction?
-    bht_direction,         -- taken / not-taken from the 2-bit counter
-    cond_branch_mask,      -- which instruction positions contain branches
-    pred_target            -- predicted branch target address
-  }
-```
-
-Each cycle the BPU pushes one FTQ entry; the I-cache pops entries at its own
-rate. On a misprediction the FTQ is flushed and refilled from the corrected PC.
-
-### 8.8 Fetch Pipeline Stages
-
-The fetch pipeline typically spans 3--5 stages in a modern out-of-order core.
-The key dataflow is:
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A[BPU predicts next PC] --> B[FTQ Entry Allocated]
-    B --> C[I-Cache Tag + Data Lookup]
-    C -->|Hit| D[Instruction Bytes Returned]
-    C -->|Miss| E[Line-Fill Buffer Allocated]
-    E --> F[Critical-Word-First Fill from L2]
-    F --> D
-    D --> G[Pre-Decoder: scan for branches]
-    G --> H[Decode Queue -- feeds rename/decode]
-    H --> I[Rename Stage]
-```
-
-Stage-by-stage breakdown:
-
-| Stage | Latency | Action |
-|-------|---------|--------|
-| BPU + FTQ | 1 cycle | Generate predicted PC, enqueue in FTQ |
-| I-cache lookup | 1--4 cycles | Tag compare + data RAM read in parallel |
-| I-cache miss | 10--20 cycles | Line-fill from L2, stall fetch pipe |
-| Pre-decode | 1 cycle | Identify branches, compute targets |
-| Decode queue | buffer | Decouple fetch from rename bandwidth |
-
-### 8.9 Pre-Decode
-
-The pre-decoder scans raw instruction bytes for lightweight hints that are
-used by later pipeline stages:
-
-- **Branch detection** -- identify conditional and unconditional branch opcodes
-  so the BTB and BHT can be updated early.
-- **Branch target computation** -- for direct branches the target is encoded
-  in the immediate field; the pre-decoder extracts it in parallel with decode.
-- **Instruction length** -- for variable-length ISAs the pre-decoder marks byte
-  boundaries, enabling the decoder to slice the fetch group into individual
-  instructions.
-- **Call/return identification** -- mark CALL and RET instructions so the
-  Return Address Stack (RAS) can be updated speculatively at fetch time.
-
-Pre-decode results are stored alongside each instruction in the decode queue
-and forwarded to the BPU update path on commit, completing the prediction
-feedback loop.
-
----
-
-## 9. Prediction Accuracy Comparison
-
-### 9.1 Across Predictor Types
-
-| Predictor | Storage | SPEC INT 2006 MPKI | Accuracy (%) | Complexity |
-|-----------|---------|---------------------|--------------|------------|
-| Static (always not-taken) | 0 | 20--25 | 75--80 | None |
-| Bimodal (2-bit) | 1 KB | 12--15 | 85--88 | Trivial |
-| gshare (12-bit GHR) | 2 KB | 8--11 | 89--92 | Low |
-| Perceptron (N=32) | 132 KB | 5--7 | 93--95 | Medium |
-| Tournament (Alpha 21264) | 4 KB | 6--9 | 91--94 | Medium |
-| TAGE (4 components) | 8 KB | 3--4 | 96--97 | Medium-High |
-| TAGE (8 components) | 16 KB | 2.5--3.5 | 97--99 | High |
-| TAGE-SC-L | 32 KB | 2--3 | 98.5--99.2 | Very High |
-
-### 9.2 Across Benchmark Categories
-
-| Category | Branch Frequency | TAGE MPKI | Hardest Branch Type |
-|----------|-----------------|-----------|---------------------|
-| SPEC INT 2006 (mcf) | 1 per 4 inst | 5.2 | Data-dependent indirect |
-| SPEC INT 2006 (gcc) | 1 per 5 inst | 3.8 | Virtual dispatch |
-| SPEC INT 2006 (perlbench) | 1 per 6 inst | 2.9 | Interpreter switch |
-| SPEC FP 2006 | 1 per 20 inst | 0.3 | Loop exit branches |
-| Server (web) | 1 per 7 inst | 4.1 | Function pointers |
-| Mobile (UI) | 1 per 6 inst | 3.5 | Event dispatch |
-
----
-
-## 10. Numbers to Memorize
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Branch frequency (INT) | 1 per 4--7 instructions | 15--25% of all instructions |
-| Branch frequency (FP) | 1 per 15--25 instructions | Much lower |
-| L1 BTB entries | 64--128 | 1-cycle latency |
-| L2 BTB entries | 2K--8K | 2--3 cycle latency |
-| BHT entries (gshare) | 4K | 1 KB (untagged) |
-| 2-bit counter range | 0--3 | Threshold = 2 |
-| GHR length (gshare) | 8--16 bits | gshare typical |
-| GHR length (TAGE max) | 500+ bits | Longest component |
-| TAGE components | 4--8 | Geometric history lengths |
-| TAGE tagged entries per component | 128--256 | Partial tag (8--10 bits) |
-| RAS depth | 32--64 entries | Checkpointed on speculation |
-| Mispredict penalty (10-stage pipe) | 5--8 cycles | Resolve in stage 7--8 |
-| Mispredict penalty (15-stage pipe) | 8--12 cycles | Resolve in stage 9--11 |
-| Mispredict penalty (20-stage pipe) | 12--18 cycles | Resolve in stage 14--16 |
-| gshare accuracy | 89--92% | SPEC INT 2006 |
-| Tournament accuracy | 91--94% | SPEC INT 2006 |
-| Perceptron accuracy | 93--97% | SPEC INT, large storage |
-| TAGE accuracy | 97--99% | SPEC INT 2006 |
-| TAGE-SC accuracy | 98.5--99.2% | SPEC INT 2006 |
-| BTB miss penalty | 3--5 cycles | Caught at decode |
-| Indirect branch accuracy (BTB only) | 75--85% | Single target per PC |
-| Indirect branch accuracy (ITTAGE) | 92--95% | Multi-target |
-| Fetch bandwidth (modern OoO) | 4--8 inst/cycle | 16--32 bytes/cycle |
-
----
-
-## 11. TAGE-SC-L: The Full Championship Predictor
-
-### 12.1 Statistical Corrector (SC) -- Deep Dive
-
-The SC is a perceptron-like auxiliary predictor that corrects TAGE's remaining
-mispredictions. It operates as follows:
-
-**Input features (per branch):**
-- TAGE's prediction (taken / not-taken)
-- The base bimodal prediction
-- Partial tags and useful bits from each tagged component (geometric features)
-- A hash of the PC and recent global history
-
-**Mechanism:**
-Each SC entry stores a vector of 8-bit signed weights. The SC output is:
-
-$$
-y_{SC} = \sum_{i=0}^{N-1} w_i \cdot x_i
-$$
-
-where $x_i$ are the binary features and $w_i$ are the weights. The sign of
-$y_{SC}$ determines the corrected prediction.
-
-**Override rule:** The SC prediction overrides TAGE only when:
-1. $|y_{SC}| > \theta$ (confidence threshold, typically $\theta = 2 \times N$), AND
-2. TAGE's prediction differs from SC's prediction.
-
-This gating is critical: the SC only overrides when it is highly confident, so
-a poorly trained SC cannot degrade accuracy below the TAGE baseline.
-
-**Training:** The SC is trained only on TAGE mispredictions (not on every
-branch). This focuses learning capacity on the hard cases. The weight update
-follows the perceptron learning rule:
-
-$$
-w_i \leftarrow \text{clamp}(w_i + t \cdot x_i,\; -128,\; 127)
-$$
-
-where $t = +1$ if actual was Taken, $t = -1$ if Not-Taken.
-
-### 12.2 SC Accuracy Improvement
-
-| Component | SPEC INT 2006 MPKI | SPEC INT 2017 MPKI |
-|-----------|---------------------|---------------------|
-| TAGE (8 components, 16 KB) | 3.0 | 4.2 |
-| TAGE-SC (with corrector) | 2.6 | 3.7 |
-| TAGE-SC-L (with loop predictor) | 2.4 | 3.5 |
-
-### 12.3 The Loop Predictor (L in TAGE-SC-L)
-
-The "L" component is a small loop predictor that detects regular loop-exit
-patterns that TAGE struggles with. It tracks:
-
-- A loop iteration counter (how many times this branch was taken consecutively)
-- A predicted trip count (learned from past iterations)
-- A confidence counter
-
-When the loop predictor has high confidence and the iteration count matches
-the predicted trip count, it overrides TAGE's prediction to "not-taken" (loop
-exit). This is especially effective for tight counting loops where the loop
-count is a constant known at run time (e.g., `for (i = 0; i < 16; i++)`).
-
-**Hardware cost:** ~256 entries x ~30 bits = ~1 KB. Very small relative to the
-TAGE tables.
-
----
-
-## 12. Neural and Perceptron Branch Prediction -- Research Landscape
-
-### 13.1 Perceptron Predictor (Jimenez and Lin, 2001)
-
-The perceptron predictor (covered in Section 4) treats branch prediction as
-binary classification. Key properties for interview discussions:
-
-- **Fast training:** Single-pass weight update, no gradient descent needed.
-- **Long correlation:** Can capture patterns spanning 32--64 branches back.
-- **XOR limitation:** Cannot learn non-linearly separable patterns (e.g., XOR
-  of two history bits). This is the theoretical accuracy ceiling.
-
-### 13.2 Piecewise Linear / Multiperceptron (Jimenez, 2005)
-
-Extends the single perceptron by maintaining separate weight tables indexed by
-partial history patterns (similar to TAGE's geometric history lengths):
-
-- Multiple weight tables with different history lengths.
-- Final prediction is a weighted sum of outputs from each table.
-- Achieves ~98.5% accuracy on SPEC INT (vs. ~97% for single perceptron).
-- Too expensive for production: storage grows as $O(\text{tables} \times N \times
-  \text{entries})$, easily exceeding 100 KB.
-
-### 13.3 Hashed Perceptron (CBP-5, 2016)
-
-A practical compromise: each weight is stored in a small SRAM table indexed by
-a hash of (PC, history bits). Multiple hash functions reduce aliasing. Used in
-the AMD Zen branch predictor (perceptron-based with multiple tables).
-
-### 13.4 ML-Based Branch Prediction (Recent Academic Work)
-
-Recent research (2020--2025) has explored applying deep learning to branch
-prediction, achieving new state-of-the-art results:
-
-#### Multiperspective Perceptron (Daniel A. Jimenez, 2020--2024)
-
-- Uses multiple "perspectives" (hash functions) that each produce a weight.
-- Final prediction is the sum of weights from all perspectives.
-- Won CBP-5 (2020) and remained competitive through CBP-6.
-- Key insight: by using many simple hash-indexed weight tables (each small),
-  the predictor avoids both the XOR limitation and the storage explosion.
-- Accuracy: ~99.3% on SPEC INT 2017 (vs. ~99.0% for TAGE-SC-L).
-
-#### Neural Network Approaches
-
-- **LSTM-based predictors:** Research prototypes using recurrent neural
-  networks (LSTM/GRU) to model branch history as a sequence. Accuracy
-  exceeds TAGE by 0.5--1.0 percentage points but requires 100 KB--1 MB of
-  weights and is not feasible for 1-cycle latency at 5 GHz.
-- **Expert-based predictors:** An ensemble of simple predictors (analogous to
-  boosting) where each expert specializes in a subset of branch behaviors.
-  A meta-learner selects the expert. Achieves high accuracy but with
-  unpredictable worst-case latency.
-
-#### Practical Limitations for Silicon
-
-| Challenge | Issue |
-|-----------|-------|
-| Latency | TAGE lookup must complete in <1 cycle (pipelined). Any predictor requiring sequential computation (like an LSTM forward pass) cannot meet this. |
-| Power | Full NN inference (even a small MLP) costs 10--100x the energy of a TAGE CAM lookup. |
-| Area | Competitive TAGE-SC-L fits in 32--64 KB. Most NN predictors require 100 KB--1 MB. |
-| Worst-case timing | Silicon predictors must have bounded worst-case latency for every branch. ML models can have variable-latency inference. |
-
-**Interview takeaway:** ML-based branch prediction is an active research area
-but TAGE-SC-L remains the practical choice for production silicon. If asked
-"what comes after TAGE," the answer is: the Multiperspective Perceptron
-family, which uses perceptron-like weights with multiple hashing perspectives,
-achieving higher accuracy at comparable hardware cost.
-
----
-
-## 13. References
-
-1. Seznec, A. and Michaud, P. (2006). "A Case for (Partially) Tagged Geometric
-   History Length Branch Prediction." *Journal of Instruction-Level Parallelism*.
-   -- The original TAGE paper.
-
-2. Jimenez, D.A. and Lin, C. (2001). "Dynamic Branch Prediction with
-   Perceptrons." *HPCA-7*. -- The perceptron predictor.
-
-3. McFarling, S. (1993). "Combining Branch Predictors." *DEC WRL Technical
-   Note TN-36*. -- Tournament predictor.
-
-4. Kessler, R.E., McLellan, E.J., and Webb, D.A. (1998). "The Alpha 21264
-   Microprocessor." *IEEE Micro*. -- Alpha 21264 tournament predictor details.
-
-5. Xiangshan Team (2022). "Xiangshan Nanhu Microarchitecture Manual."
-   -- TAGE-SC-L and ITTAGE implementation in open-source RISC-V.
-
-6. Juan, T., Sanz, I., and Navarro, J. (1998). "Dynamic Branch Prediction
-   with Global and Local History." -- 2-level adaptive predictor.
-
-7. Sprangle, E., Chrysos, G., and Carmean, D. (2002). "The Intel Pentium 4
-   Processor -- 90nm Technology." -- BTB design in Pentium 4.
-
-8. Lee, C.-C., Chen, I.-C.K., and Mudge, T.N. (1997). "The Bi-Mode Branch
-   Predictor." *MICRO-30*. -- Bi-mode predictor (related to tournament).
-
-9. Seznec, A. (2011). "TAGE-SC-L Branch Predictors." *CBP-4 Championship
-   Branch Prediction*. -- The TAGE-SC-L design that won the championship.
-
-10. Jimenez, D.A. (2020). "Multiperspective Perceptron Predictor." *CBP-5*.
-    -- Multiperspective perceptron, state-of-the-art accuracy.
-
-11. Seznec, A. (2014). "ITTAGE: Indirect Target TAGE." *CBP-3*. -- ITTAGE
-    for indirect branch target prediction.
-
----
-
-## Navigation
-
-- **Previous**: [CPU_Architecture.md](03_CPU_Architecture.md) -- Pipeline basics,
-  forwarding, hazards
-- **Next**: [OoO_Execution.md](05_OoO_Execution.md) -- Speculative execution,
-  reorder buffer, memory disambiguation
-- **See also**: [Memory.md](09_Memory.md) -- I-cache design, cache hierarchy
-- **See also**: [Front_End_Design.md](03_CPU_Architecture.md) -- Fetch unit
-  integration, decode bandwidth, micro-op cache
-
----
-
-*Last updated: 2026-05-06. Feedback and corrections welcome.*
+## References
+
+1. Seznec, A. and Michaud, P., "A Case for (Partially) Tagged Geometric History Length Branch Prediction," *Journal of Instruction-Level Parallelism*, 2006. The original TAGE — §4.
+2. Seznec, A., "TAGE-SC-L Branch Predictors," *CBP-4*, 2011 (and CBP-5, 2016). The production state of the art — §4.4.
+3. Seznec, A., "A 64-Kbytes ITTAGE Indirect Branch Predictor," *CBP-3*, 2011. Tagged-geometric target prediction — §5.1.
+4. Jiménez, D.A. and Lin, C., "Dynamic Branch Prediction with Perceptrons," *HPCA-7*, 2001. The perceptron predictor and its linear-separability ceiling — §5.2.
+5. Jiménez, D.A., "Multiperspective Perceptron Predictor," *CBP-5*, 2020. State-of-the-art perceptron-family accuracy — §5.2.
+6. McFarling, S., "Combining Branch Predictors," *DEC WRL TN-36*, 1993. gshare and the tournament idea — §3.2, §5.2.
+7. Kessler, R.E., "The Alpha 21264 Microprocessor," *IEEE Micro*, 19(2), 1999. Tournament predictor and speculative RAS repair — §5.2, §6.
+8. Yeh, T.-Y. and Patt, Y.N., "Two-Level Adaptive Branch Prediction," *MICRO-24*, 1991. The GHR and correlation — §3.2.
+9. Xiangshan Team, "Xiangshan Nanhu Microarchitecture Manual," 2022. TAGE-SC-L + ITTAGE + decoupled FTQ front end in open-source RISC-V — §8.

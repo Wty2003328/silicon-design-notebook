@@ -1,953 +1,247 @@
-# Xiangshan (香山) — Open-Source RISC-V OoO Processor Case Study
+# Xiangshan (香山) — Reading an Open OoO Core as a Sequence of Design Decisions
 
-| Field | Value |
-|---|---|
-| **Prerequisites** | [RISC-V ISA](04_RISC_V_ISA.md), [OoO Execution](05_OoO_Execution.md), [Cache Microarchitecture](07_Cache_Microarchitecture.md), [Branch Prediction](06_Branch_Prediction_Deep_Dive.md) |
-| **Hands-off-to** | [TileLink and SoC Interconnect](11_AHB_AXI_APB.md), [Chisel HDL Methodology](../Index.md) |
-| **Difficulty** | Advanced |
-| **Scope** | Full microarchitecture deep-dive of an open-source superscalar OoO RISC-V core |
+> **Prerequisites:** [OoO_Execution](05_OoO_Execution.md) (the window structures and their sizing knees), [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md) (TAGE, the FTQ, the mispredict tax), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (AMAT, MSHR/MLP, inclusion), [RISC_V_ISA](04_RISC_V_ISA.md).
+> **Hands off to:** [ACE_and_CHI](12_ACE_and_CHI.md) (the coherence fabric Kunminghu moves to), [AHB_AXI_APB](11_AHB_AXI_APB.md) (TileLink/SoC integration), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (the design-space walk each generation performs).
 
 ---
 
-## 0 — Why This Page Exists
+## 0. Why this page exists
 
-Modern out-of-order processor design has long been the province of proprietary,
-closely-guarded RTL (register-transfer level). Xiangshan (香山) breaks that mold: it is a **fully
-open-source, server-class RISC-V 64-bit processor** written in Chisel, developed
-at the Institute of Computing Technology (ICT) / University of Chinese Academy of
-Sciences (UCAS). Studying Xiangshan provides a rare, complete view of how a
-contemporary superscalar core is actually built -- from frontend branch prediction
-through backend commit, from cache hierarchy to SoC integration.
+The [OoO](05_OoO_Execution.md), [Branch](06_Branch_Prediction_Deep_Dive.md), and [Cache](07_Cache_Microarchitecture.md) pages give you the *models* — Little's law for the ROB, the wakeup–select recurrence for the scheduler, the $W\times P$ tax for the front end, the MSHR/MLP ceiling for the memory system. What they cannot give you is the sight of a real team **resolving those models into numbers** under a fixed target and a real area/timing budget, because that resolution normally happens inside proprietary RTL no one outside the design house ever reads.
 
-This page dissects Xiangshan as a **case study of modern OoO CPU design**. Every
-major subsystem is covered with enough detail to reason about microarchitectural
-trade-offs, sizing calculations, and interview-style design problems.
+Xiangshan (香山) removes that wall. It is a **fully open-source, server-class RV64 out-of-order core** written in Chisel at ICT/UCAS and BOSC, targeting ARM Cortex-A76/A78-class performance. Because the RTL, the parameters, and four generations of history are all public, Xiangshan is the one core where you can watch every trade-off on the sibling pages get *decided* — and, uniquely, **re-decided three times** as the team climbs toward its target.
+
+So this page is not a block-diagram tour. It reads Xiangshan as a **sequence of design decisions** — pipeline depth, fetch/decode width, the decoupled front end, the branch predictor, the ROB/IQ/PRF window, the load-store unit, the memory hierarchy — asking of each: *what did they pick, which theory curve does that point sit on, why there and not elsewhere, and how did the pick move from Nanhu to Kunminghu?* The generational deltas are the most valuable thing an open core offers: a controlled experiment in **what to spend the next transistor budget on**, and the answer is never "make it wider."
 
 ---
 
-## 1 — Project Overview
+## 1. The design as a set of constraints
 
-### 1.1 Origin and Goals
+A microarchitecture is not chosen in a vacuum; it is the fixed point of a few hard constraints. Xiangshan's four constraints predict almost every number that follows:
 
-| Attribute | Detail |
-|---|---|
-| **Institution** | Institute of Computing Technology, Chinese Academy of Sciences (ICT, CAS); Beijing Institute of Open Source Chip (BOSC) |
-| **License** | Mulan PSL v2 (permissive, BSD-like) |
-| **ISA** | RV64GCBK (64-bit RISC-V with G extension, compressed, bit-manipulation, V vector) |
-| **HDL** | Chisel 3.x (Scala-based hardware construction language) |
-| **Target performance** | ARM Cortex-A76 / A78 class |
-| **Target frequency** | 1.0--1.5 GHz (TSMC 28nm), 2.0+ GHz on advanced nodes |
-| **Repository** | [github.com/OpenXiangShan/XiangShan](https://github.com/OpenXiangShan/XiangShan) |
+- **A performance target — A76/A78 class.** This fixes the *IPC* the window must deliver (~3), which via Little's law fixes the ROB, PRF, IQ, and LSQ sizes. It is a mainstream-mobile target, not a hyperscale-server one, which is why the window lands far below Golden Cove's.
+- **A modest frequency target on a maturing node — 1.0–1.5 GHz on TSMC 28 nm, 2 GHz+ on advanced nodes.** This fixes the *pipeline depth* and, through the wakeup–select recurrence, caps how large the scheduler may be. Frequency, not IPC, turns out to be Xiangshan's whole gap to A76 (§1.1).
+- **Open + agile, in Chisel.** Every window size is a Scala parameter, so the design can be re-instantiated cheaply. This is *why the numbers move between generations* at all — the cost of trying a bigger ROB is a recompile plus a [DiffTest](https://github.com/OpenXiangShan/difftest) co-simulation run against the NEMU reference model, not a multi-year respin.
+- **Correctness first, then performance.** A first generation that boots Linux and passes co-simulation is worth more than a fast one that does not, which is why the earliest generation deliberately leaves performance on the table (§8).
 
-### 1.2 Generations
+### 1.1 Where the gap to A76 actually lives — and why it dictates the whole strategy
 
-| Codename | Chinese | Branch | Key Features |
-|---|---|---|---|
-| **Yanqihu** | 雁栖湖 | `yanqihu` | First stable microarchitecture (2020). 6-wide, 6-stage pipeline, baseline OoO. |
-| **Nanhu** | 南湖 | `nanhu` | Second generation. Refined frontend (TAGE-SC BPU), improved LSU, 192-entry ROB. |
-| **Kunminghu** | 昆明湖 | `master` / `kunminghu-v3` | Current generation. 256-entry ROB, vector extension (V), CHI-based L2, enhanced prefetch, wider dispatch. |
-| **Kunminghu v2** | 昆明湖v2 | `kunminghu-v2` | Refined Kunminghu with CHI Issue B/C support, improved OoO pipeline tuning, enhanced vector unit throughput. |
-
-Each generation is a **clean microarchitectural iteration**: the ISA (Instruction Set Architecture) stays the
-same but pipeline depth, queue sizes, predictor structures, and cache parameters
-evolve. Unless stated otherwise, quantitative figures in this page refer to
-**Nanhu** with Kunminghu deltas noted where relevant.
-
-### 1.3 Design Philosophy
-
-1. **Agile development**: Chisel enables rapid RTL iteration; the team targets
-   month-scale design--verify--tapeout cycles.
-2. **Parameterized RTL**: Issue width, ROB (reorder buffer) size, cache capacity, and predictor
-   sizes are configurable Scala parameters.
-3. **Toolchain co-design**: Xiangshan ships with custom verification
-   (DiffTest co-simulation), performance validation, and debugging frameworks.
-
----
-
-## 2 — Microarchitecture Overview
-
-### 2.1 Pipeline Stages
-
-The Xiangshan pipeline is a **6-wide superscalar out-of-order design** organized
-into a conceptual flow of:
+Performance is the product of two independent factors, and confusing them is the classic mistake:
 
 $$
-\text{Fetch} \;\to\; \text{Decode} \;\to\; \text{Rename} \;\to\; \text{Dispatch} \;\to\; \text{Issue} \;\to\; \text{Execute} \;\to\; \text{Writeback} \;\to\; \text{Commit}
+\text{Perf} \;=\; \text{IPC}\times f_{clk}, \qquad
+\frac{\text{Perf}_{\text{XS}}}{\text{Perf}_{\text{A76}}} \;=\; \underbrace{\frac{\text{IPC}_{\text{XS}}}{\text{IPC}_{\text{A76}}}}_{\text{microarchitecture}}\times\underbrace{\frac{f_{\text{XS}}}{f_{\text{A76}}}}_{\text{mostly process node}}
 $$
 
-Physical pipeline stages (simplified):
-
-| Stage | Name | Latency | Function |
-|---|---|---|---|
-| S0--S1 | IF0 / IF1 | 2 cycles | I-Cache access, fetch 8 instructions |
-| S2 | IBuf | 1 cycle | Instruction buffer, pre-decode |
-| S3 | Decode | 1 cycle | RVC expansion, instruction fusion, full decode |
-| S4 | Rename | 1 cycle | RAT lookup, physical register allocation |
-| S5 | Dispatch | 1 cycle | Route uops to issue queues |
-| S6+ | Issue (wakeup+select) | 0--N cycles | Wait in issue queue until operands ready |
-| S7 | Execute | 1--N cycles | ALU, FPU, AGU, BRU, multiply, divide |
-| S8 | Writeback | 1 cycle | Broadcast result on CDB |
-| S9 | Commit | 1 cycle | ROB commit, in-order graduation |
-
-### 2.2 Block Diagram
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    subgraph Frontend
-        BPU[BPU: TAGE-SC + ITTAGE + RAS]
-        FTQ[FTQ: Fetch Target Queue]
-        IC["I-Cache: 64KB 8-way"]
-        IBuf[Instruction Buffer]
-    end
-
-    subgraph Decode_and_Rename
-        DEC["Decode (6-wide)"]
-        REN["Rename (RAT + Free List)"]
-        DISP["Dispatch"]
-    end
-
-    subgraph Issue_Queues
-        IQ_INT["Int IQ (32 entries)"]
-        IQ_FP["FP IQ (16 entries)"]
-        IQ_MEM["Mem IQ (16 entries)"]
-        IQ_AGU["AGU IQ (16 entries)"]
-    end
-
-    subgraph Execution
-        ALU0["ALU 0"]
-        ALU1["ALU 1"]
-        ALU2["ALU 2"]
-        ALU3["ALU 3"]
-        MUL0["MUL 0"]
-        MUL1["MUL 1"]
-        DIV["Divider"]
-        FPU0["FPU 0"]
-        FPU1["FPU 1"]
-        AGU0["AGU 0"]
-        AGU1["AGU 1"]
-        BRU["BRU"]
-    end
-
-    subgraph Load_Store_Unit
-        LQ["Load Queue (64 entries)"]
-        SQ["Store Queue (48 entries)"]
-        DC["D-Cache: 64KB 8-way"]
-    end
-
-    subgraph Commit_Path
-        ROB["ROB (192 / 256 entries)"]
-        CPRAT["Checkpoint RAT"]
-    end
-
-    subgraph Cache_Hierarchy
-        L2["L2: 1MB shared, inclusive"]
-        L3["L3: 4--16MB (optional)"]
-    end
-
-    BPU --> FTQ
-    FTQ --> IC
-    IC --> IBuf
-    IBuf --> DEC
-    DEC --> REN
-    REN --> DISP
-    DISP --> IQ_INT
-    DISP --> IQ_FP
-    DISP --> IQ_MEM
-    DISP --> IQ_AGU
-
-    IQ_INT --> ALU0 & ALU1 & ALU2 & ALU3 & MUL0 & MUL1 & DIV
-    IQ_FP --> FPU0 & FPU1
-    IQ_MEM --> LQ
-    IQ_AGU --> AGU0 & AGU1
-
-    AGU0 & AGU1 --> SQ
-    LQ --> DC
-    SQ --> DC
-    DC --> L2
-    L2 --> L3
-
-    ALU0 & ALU1 & ALU2 & ALU3 --> ROB
-    FPU0 & FPU1 --> ROB
-    LQ & SQ --> ROB
-    ROB --> CPRAT
-
-    style BPU fill:#e8d5b7,stroke:#333
-    style ROB fill:#b7cfe8,stroke:#333
-    style DC fill:#cfe8b7,stroke:#333
-    style L2 fill:#cfe8b7,stroke:#333
-```
-
-### 2.3 Data Flow Summary
-
-1. **Frontend** predicts and fetches up to 8 instructions/cycle into the
-   instruction buffer.
-2. **Decode** expands RVC, fuses instruction pairs, and produces 6 uops/cycle.
-3. **Rename** maps architectural registers to physical registers, checkpoints
-   the RAT on branches.
-4. **Dispatch** routes uops to distributed issue queues.
-5. **Issue queues** perform wakeup (tag broadcast) and selection (age-based
-   arbitration).
-6. **Execution units** produce results broadcast on the Common Data Bus (CDB).
-7. **LSU (load-store unit)** handles memory operations with store forwarding and memory
-   disambiguation.
-8. **ROB** commits uops in-order, writing back stores to D-cache at commit.
-
----
-
-## 3 — Frontend
-
-### 3.1 Fetch Target Queue (FTQ)
-
-The FTQ decouples the branch predictor from the instruction cache. Each FTQ
-entry contains:
-
-- Predicted fetch PC (start address of the fetch block)
-- Predicted fall-through address
-- Branch prediction metadata (TAGE provider indices, RAS pointer)
-- Starting instruction offset within the fetch block
-
-The FTQ holds typically **32--64 entries** and feeds the I-Cache with one fetch
-request per cycle. When the backend detects a mispredict, the FTQ is flushed
-and repopulated from the corrected PC.
-
-### 3.2 Branch Prediction Unit (BPU)
-
-Xiangshan employs a **multi-component hybrid predictor** organized in two
-stages: a fast preliminary predictor and a more accurate main predictor.
-
-| Component | Target | Structure | Accuracy |
-|---|---|---|---|
-| **FTB** (Fetch Target Buffer) | Next fetch target | Tagged table of fall-through and target addresses | -- |
-| **TAGE** (TAgged GEometric) | Conditional branches | Multiple tag tables with geometric history lengths (4--16 tables) | ~97% |
-| **SC** (Statistical Corrector) | Override TAGE on low-confidence | Per-branch saturating counters | +0.5% over TAGE alone |
-| **ITTAGE** | Indirect jumps/calls | Same structure as TAGE but predicts target address | ~95% |
-| **RAS** (Return Address Stack) | Function returns | 16--32 entry stack | ~99% |
-
-**Prediction flow:**
-
-1. FTB provides a preliminary next-PC prediction within the same cycle.
-2. TAGE-SC provides a refined conditional-direction prediction in the next
-   cycle, overriding FTB if necessary.
-3. ITTAGE predicts indirect branch targets.
-4. RAS predicts return addresses (pop on `ret`).
-
-Total BPU latency: **1--2 cycles** from PC to confirmed prediction, pipelined
-so that a new prediction starts every cycle.
-
-### 3.3 Instruction Cache (I-Cache)
-
-| Parameter | Value |
-|---|---|
-| **Capacity** | 64 KB |
-| **Associativity** | 8-way set-associative |
-| **Line size** | 64 B |
-| **Indexing** | VIPT (Virtually Indexed, Physically Tagged) |
-| **Hit latency** | 2 cycles (pipelined) |
-| **MSHRs** | 32 |
-| **Prefetcher** | Stream prefetcher (next-line + stride) |
-| **Refill policy** | Critical-word-first, forward to fetch immediately |
-| **Replacement** | PLRU (Pseudo-LRU) |
-
-**VIPT sizing note:** With 64 B lines and 8 ways, the number of sets is:
+Plug in Nanhu (IPC $\approx 2.8$, 1.2 GHz on 28 nm) against A76 (IPC $\approx 3.5$, 2.8 GHz on 7 nm):
 
 $$
-\text{sets} = \frac{64\,\text{KB}}{8 \times 64\,\text{B}} = 128\,\text{sets}
+\frac{2.8}{3.5}\times\frac{1.2}{2.8} \;=\; 0.80 \times 0.43 \;\approx\; 0.34
 $$
 
-Index bits: $\lceil \log_2 128 \rceil = 7$ bits. Offset bits: $\lceil \log_2 64 \rceil = 6$.
-Total: $7 + 6 = 13$ bits. With 4 KB pages ($\text{offset} = 12$ bits), the
-index extends 1 bit into the page number -- this is handled by the tag comparison
-after TLB (translation lookaside buffer) translation.
+The lesson is in the *split*, not the product. Nanhu's **IPC is already ~80 % of A76** — the microarchitecture is competitive. The gap is almost entirely the **0.43 frequency factor**, which is a 28 nm-vs-7 nm process story, not an architecture story. This single decomposition explains the entire evolution to come: since the IPC deficit is small, later generations rationally spend their budget on **frequency** (advanced nodes, and a scheduler kept small enough to clock high, §5.3) and on the *last few points* of IPC (memory-level parallelism and branch accuracy, §5–§7), and **not** on more width — which would attack the factor that is already near parity.
 
-**Fetch bandwidth:** Up to 8 instructions (32 bytes, matching a half-cache-line)
-per cycle on a hit.
+### 1.2 The generations we will track
 
-### 3.4 Pre-Decoder
-
-Between the I-Cache and the instruction buffer, a **pre-decoder** identifies:
-- Branch instructions (for early mispredict detection)
-- RVC (compressed) instruction boundaries
-- Instruction length (16-bit or 32-bit)
-
-This enables the frontend to deliver aligned instruction streams to the decode
-stage without waiting for full decode.
-
----
-
-## 4 — Decode and Rename
-
-### 4.1 Decode (6-Wide)
-
-The decode stage processes up to 6 instructions per cycle:
-
-1. **RVC expansion**: Compressed 16-bit instructions are expanded to their
-   32-bit equivalents.
-2. **Instruction fusion**: Common instruction pairs are merged into single uops:
-   - `auipc + addi` $\to$ single immediate-offset uop
-   - `shift-left + add` $\to$ scaled-address uop
-   - `xori + sltiu` $\to$ range-check uop
-3. **Uop generation**: Each decoded instruction produces 1--2 uops (complex
-   instructions like `lr/d`, atomics, or vector ops may produce more).
-4. **Instruction classification**: Uop is tagged with its target issue queue
-   (integer, float, memory, or address generation).
-
-### 4.2 Rename
-
-The rename stage maps **architectural registers** (x0--x31, f0--f31) to
-**physical registers** from a unified pool.
-
-| Parameter | Integer | Floating-Point |
-|---|---|---|
-| **Architectural registers** | 32 (x0--x31) | 32 (f0--f31) |
-| **Physical registers** | 128 | 96 |
-| **Free list initial size** | $128 - 32 = 96$ | $96 - 32 = 64$ |
-
-**Rename table (RAT) structure:**
-
-$$
-\text{RAT}[i] = p_j \quad \text{where } p_j \in \{0, \ldots, 127\}
-$$
-
-Each entry stores a $\lceil \log_2 128 \rceil = 7$-bit physical register index.
-
-**Checkpoint-based recovery:**
-
-On every branch, the current RAT state is **snapshot** (checkpointed). The
-checkpoint stores the 32 architectural-to-physical mappings for the integer
-register file (and separately for FP). On a mispredict:
-
-1. The ROB identifies the mispredicted branch.
-2. The checkpoint corresponding to that branch is restored.
-3. All younger uops in the ROB and issue queues are flushed.
-4. Physical registers freed by the flush are returned to the free list.
-
-Checkpoint count: typically **32--48** entries, covering the expected number of
-in-flight branches.
-
-### 4.3 Free List Management
-
-The free list is implemented as a **bitmap** of available physical registers:
-
-$$
-\text{FreeList}[p] = \begin{cases} 1 & \text{if physical register } p \text{ is unallocated} \\ 0 & \text{otherwise} \end{cases}
-$$
-
-Allocation: scan the bitmap for the next free register (priority encoder).
-Deallocation: set the bit when an old physical register is released at ROB commit
-(after the committing instruction's destination is no longer needed by any
-in-flight reader).
-
----
-
-## 5 — Issue (Dispatch and Wakeup-Select)
-
-### 5.1 Dispatch
-
-After rename, uops are dispatched to one of four distributed issue queues:
-
-| Queue | Entries | Target Units |
-|---|---|---|
-| **Integer IQ** | 32 | ALU, MUL, DIV, BRU |
-| **Float IQ** | 16 | FPU (FADD, FMUL, FDIV, FMA) |
-| **Memory IQ** | 16 | Load/Store pipeline |
-| **Address Generation IQ** | 16 | AGU (address computation) |
-
-Dispatch width: **6 uops/cycle** total across all queues (subject to queue
-availability and back-pressure).
-
-### 5.2 Wakeup
-
-When an execution unit produces a result, the physical register tag is broadcast
-on the **Common Data Bus (CDB)**. Each issue queue entry compares its pending
-source operand tags against the broadcast tag using a **content-addressable
-memory (CAM)** match:
-
-$$
-\text{ready}_i = \bigwedge_{k \in \{src1, src2\}} \left( \text{srcTag}_{i,k} \in \{\text{CDB tags}\} \right)
-$$
-
-Once both sources are ready, the uop becomes **eligible for selection**.
-
-### 5.3 Select (Age-Based Arbitration)
-
-Among ready uops, the **oldest** instruction wins issue. Age tracking uses a
-matrix or timestamp scheme:
-
-- Each entry maintains an age counter or age matrix bit.
-- Select logic performs a **priority-encoded arbitration** favoring the oldest
-  ready entry.
-- This minimizes head-of-line blocking and improves instruction throughput.
-
-Issue width: up to **6 uops/cycle** total, distributed across execution units
-(subject to port conflicts).
-
-### 5.4 Issue Queue Flow
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    DISP[Dispatch: 6 uops/cycle] --> ENQ[Enqueue into IQ]
-    ENQ --> IQ["Issue Queue Entries"]
-    CDB["CDB Tag Broadcast"] --> CAM["CAM Match on src tags"]
-    CAM --> READY["Mark uop ready"]
-    READY --> SELECT["Age-based select: oldest wins"]
-    SELECT --> ISSUE["Issue to Execution Unit"]
-    ISSUE --> EXEC["Execute (1--N cycles)"]
-    EXEC --> WB["Writeback to CDB"]
-    WB --> CDB
-    WB --> WAKE["Wakeup dependent uops"]
-    WAKE --> READY
-
-    style CDB fill:#f0d0a0,stroke:#333
-    style SELECT fill:#a0d0f0,stroke:#333
-```
-
----
-
-## 6 — Execution Units
-
-### 6.1 Integer Execution
-
-| Unit | Count | Latency | Pipelined | Function |
+| Codename | Gen | ROB | Interconnect | The bet this generation makes |
 |---|---|---|---|---|
-| ALU | 4 | 1 cycle | Yes | Add, sub, logic, shift, compare |
-| Multiplier | 2 | 3 cycles | Yes | Booth-encoded radix-4, Wallace tree, 64-bit product |
-| Divider | 1 | 8--64 cycles | No (iterative) | Non-restoring or SRT division |
-| Branch unit | (in ALU) | 1 cycle | Yes | Compare and resolve |
+| **Yanqihu** 雁栖湖 | 1 (2020) | ~128 | TileLink | Get a 6-wide OoO pipeline correct and co-simulating. |
+| **Nanhu** 南湖 | 2 (2022) | **192** | TileLink | Buy IPC: TAGE-SC front end, deeper window, refined LSU. |
+| **Kunminghu** 昆明湖 | 3 (2023) | **256** | **CHI** | Buy MLP and scale: bigger window, vector, coherent server fabric. |
+| **Kunminghu v2** | 3.5 (2024) | 256 | CHI-B/C | Buy the *last* MLP + accuracy: wider IQ/LSQ, 6-table TAGE, stash coherence. |
 
-**Multiplier detail:** Booth radix-4 encoding produces partial products in one
-cycle, a Wallace tree compresses them in the second cycle, and the final CPA
-(carry-propagate adder) produces the result in the third cycle.
+Each is a clean iteration — same ISA (RV64GCB, +V from Kunminghu), same 6-wide shape, but the window, predictor, and memory system move. Unless noted, figures below are **Nanhu with Kunminghu deltas called out**, because the deltas *are* the lesson.
 
-### 6.2 Floating-Point Execution
+---
 
-| Unit | Count | Operations | Latency |
+## 2. Pipeline depth and width: the first two bets
+
+Depth and width are the two most expensive, least reversible decisions a core makes, and Xiangshan's choices only make sense against its constraints.
+
+**Depth — why Xiangshan is short (~11 stages) when commercial cores are 15–19.** Pipeline depth trades frequency against the branch penalty ([CPU_Architecture §1.3](03_CPU_Architecture.md)): more stages shrink the per-stage logic so $f_{clk}$ rises, but they lengthen the fetch-to-resolve distance, which *is* the mispredict penalty $P$. The [$W\times P$ tax](06_Branch_Prediction_Deep_Dive.md) makes that penalty compound with width:
+
+$$
+\frac{\text{IPC}_{eff}}{W} \;=\; \frac{1}{1 + W\cdot\dfrac{\text{MPKI}}{1000}\cdot P}
+$$
+
+where $W$ = issue width, $P$ = mispredict penalty in cycles, MPKI = mispredicts per 1000 instructions. A 5 GHz core *must* run 15–19 stages to make timing, and then pays a $P\approx 14$–17 penalty it can only afford because it has driven $m$ (per-branch mispredict rate) down for years. Xiangshan targets only 1–2 GHz, so a **short ~11-stage pipe already makes timing** — and a short pipe buys a small $P\approx 6$–8, which is doubly valuable early: it keeps the tax bounded *even while the predictor is still maturing* (Nanhu's $m$ is not yet best-in-class). A first-gen open core is right to stay shallow; frequency is nearly free at a modest target, and a short pipe forgives an immature predictor and an immature verification flow.
+
+**Width — why 6-wide, and why it never grows.** Width trades IPC against the quadratic port cost of the PRF and scheduler ([OoO §2.3](05_OoO_Execution.md), [§4.3](05_OoO_Execution.md)). Xiangshan picks **6-wide decode/rename/dispatch/commit**, matching its A76-class target. It does *not* go wider, and the reason is the **fetch-width wall** ([Branch §7.2](06_Branch_Prediction_Deep_Dive.md)): the first taken branch truncates a fetch block, so useful instructions per fetch are bounded by
+
+$$
+\mathbb{E}[\text{useful insns per fetch}] \;\approx\; \frac{1}{b\cdot t} \;\approx\; \frac{1}{0.2\times 0.6}\;\approx\; 8
+$$
+
+where $b$ = branch density, $t$ = taken fraction. On integer code a machine wider than ~8 buys almost nothing unless it can predict past multiple taken branches per cycle. So 6-wide sits just below that knee, and **width is the one knob that stays frozen across all four generations** — because it is past the point of return, and every transistor spent widening would be better spent on the frequency factor (§1.1) that is actually behind.
+
+The teaching point: the two irreversible macro-decisions were made *once*, correctly, against the target — and the entire subsequent evolution happens in the *sizes* of structures, never in depth or width. That is what a mature design-space walk looks like ([Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md)): freeze the expensive axes early, iterate on the cheap ones.
+
+---
+
+## 3. The decoupled front end: the FTQ as the front-end analogue of the ROB
+
+Fetch must produce a next-PC every cycle, but the predictor's best answer takes two cycles to compute and the I-cache stalls on its own misses. Couple them and each stalls the other. The fix is a queue between them — the **Fetch Target Queue (FTQ)** — and the concept is exactly the OoO window's, moved to the front ([Branch §7.1](06_Branch_Prediction_Deep_Dive.md)): **decouple a producer (prediction) from a consumer (fetch) with a buffer so the producer can run ahead.** Xiangshan's BPU sprints ahead into a ~48-entry FTQ; two payoffs follow, and they are why every modern front end is decoupled:
+
+1. **Latency hiding.** The multi-cycle TAGE lookup leaves the per-cycle fetch critical path; the FTQ absorbs the bubbles.
+2. **Prefetch for free.** The run-ahead addresses sitting in the FTQ *are* an I-cache prefetch stream, so target lines arrive before fetch reaches them — decisive on the large-footprint, front-end-bound code a server-class core must run.
+
+**What an FTQ entry must remember — derived, not dumped.** An FTQ entry is not a signal list; it holds exactly what its two jobs demand. Job one, *drive fetch*: the block's start PC and fall-through address. Job two — the subtle one — *train and recover the predictor when this block finally resolves*: the entry therefore carries the prediction metadata (which TAGE table provided, the RAS top-of-stack pointer). Read that metadata not as fields but as **the predictor's undo-and-train log**: when the branch resolves correct it updates the providers named here; when it resolves wrong, the redirect and the RAS restoration both read from here. Everything in an FTQ entry is one of those two jobs.
+
+**Fetch is wider than decode, and that is deliberate.** Xiangshan fetches up to **8 instructions (32 B, a half cache line) per cycle** but decodes only 6. Fetching wider than you decode looks wasteful until you recall the fetch-width wall: taken branches truncate blocks *below* the nominal width, so over-fetching keeps the 6-wide decoder fed on the cycles a block runs short. The 8-vs-6 asymmetry is the §2 fetch-width math made concrete in silicon.
+
+---
+
+## 4. Branch prediction: an accuracy machine that buys down the tax
+
+The front end exists to make the mandatory guess wrong as rarely as possible, because on a 6-wide core the mispredict tax dominates and its only two knobs are *cut $P$* (done, via the short pipe of §2) or *cut $m$* ([Branch §0.1](06_Branch_Prediction_Deep_Dive.md)). Xiangshan's entire BPU is an $m$-reduction machine, and it is the clearest place on the page to watch a team pay for accuracy by the half-percent.
+
+**Why a hybrid of specialized predictors, not one big table.** The next-PC needs several different facts answered early, and each fact has a different *nature*, so each needs its own structure ([Branch §1](06_Branch_Prediction_Deep_Dive.md)). Xiangshan composes the standard set:
+
+- **TAGE-SC** for conditional direction — the theoretical centerpiece. Keeping several tagged tables at *geometrically* spaced history lengths is the minimum-table covering of a correlation need that lives on a log scale, and the tags let very long histories be trusted without paying the aliasing tax those histories would otherwise impose ([Branch §4](06_Branch_Prediction_Deep_Dive.md)). The statistical corrector (SC) overrides TAGE on low-confidence cases for a further ~0.5 %.
+- **ITTAGE** for indirect targets — the same geometric-history idea applied to predicting an *address* rather than a bit ([Branch §5.1](06_Branch_Prediction_Deep_Dive.md)).
+- **RAS** for returns, because a return's target is a property of **call context**, not of the branch PC, so it cannot be a PC-indexed table at all ([Branch §6](06_Branch_Prediction_Deep_Dive.md)).
+
+This is the same TAGE-SC-L + ITTAGE family that ships in Intel P-cores and SiFive's P870 — Xiangshan is simply the one you can read end to end.
+
+**The evolution is the lesson: half a percent is worth a generation's effort.** Nanhu runs ~4 tagged TAGE tables at ~97 % accuracy; Kunminghu v2 grows to **6 tables and ~97.5 %**. That sounds trivial until you price it through the tax. Accuracy enters $m$ linearly, and on a 6-wide core the tax multiplies by $W$; a drop from 3.0 % to ~2.5 % mispredicts, at $P\approx 7$, is worth more realized IPC than most of the window growth elsewhere on this page — which is *why* geometric reach (grows in the table *count*, [Branch §4.2](06_Branch_Prediction_Deep_Dive.md)) is the lever the team keeps pulling, despite each new table costing storage and lookup power. It echoes the [OoO worked problem](05_OoO_Execution.md) that "prediction, not width, is the first lever," and here you can see a real team spend accordingly.
+
+---
+
+## 5. The out-of-order window: three structures, three different theory curves
+
+The window — ROB, PRF, issue queues, and (in §6) the LSQ — is one coordinated bet on how far ahead the machine may run. Its aggregate size is a bandwidth–delay product ([OoO §3.2](05_OoO_Execution.md)): to sustain IPC while each instruction lives $\bar{T}_{res}$ cycles in flight, the window must hold $N \gtrsim \text{IPC}\times\bar{T}_{res}$. But the three structures sit on *different* curves and are provisioned against *different* demands — the single most instructive thing about reading real numbers.
+
+### 5.1 ROB: 192 → 256, sized between the miss shadow and the branch horizon
+
+The ROB is the program-order ledger, and its size is squeezed between one force pushing up and two pushing down ([OoO §3.2](05_OoO_Execution.md)):
+
+$$
+\underbrace{\text{IPC}\times\frac{L_{miss}}{\text{MLP}}}_{\text{miss shadow (push up)}} \;\lesssim\; N_{ROB} \;\lesssim\; \underbrace{\frac{1000}{\text{MPKI}}}_{\text{branch horizon (push down)}}
+$$
+
+where $L_{miss}$ = miss latency, MLP = independent misses overlapped, MPKI = mispredicts per 1000 instructions. The **branch horizon** is the ceiling: past it, the far end of the ROB holds instructions that will on average be squashed before they commit. Nanhu's ~3 % mispredict rate gives MPKI $\approx 0.2\times 30 \approx 6$, so $N_{useful}\approx 1000/6 \approx 170$ — and **192 sits right at that horizon**, exactly where theory says growth stops paying for this predictor. The **miss shadow** sets the floor: with an A76-class memory system (L2 at 10–15 cycles, not a 100 ns server DRAM window), $L_{miss}$ and the useful MLP are modest, so the floor sits below the horizon and the two meet in the ~200 range — which is precisely why Xiangshan lands at 192–256 and **not** at Golden Cove's 512. That 512 is the *server* answer to the same equation (huge $L_{miss}$, high MLP demand); Xiangshan's target simply puts the knee somewhere else.
+
+The **Nanhu→Kunminghu bump, 192→256**, is then legible: it is the team spending window on **MLP** as the improved predictor (§4) pushed the branch horizon out far enough to justify a deeper speculative window. You buy ROB depth *after* you buy predictor accuracy, never before — the horizon has to move first.
+
+### 5.2 PRF: 128 INT / 96 FP — the under-provisioning gamble, taken aggressively
+
+The physical register file has a hard floor: to guarantee rename never stalls for a tag, $N_{phys} \ge N_{arch} + N_{ROB}$ ([OoO §2.3](05_OoO_Execution.md)). For Nanhu that floor is $32 + 192 = 224$. **Xiangshan ships 128** — far below the floor. This is not a bug; it is the standard under-provisioning bet ([OoO worked problem 3](05_OoO_Execution.md)) taken hard, and the reconciliation is a genuinely deep point about *why the ROB and PRF are sized against different demands*:
+
+- The **ROB is provisioned for the tail** — the rare, deep miss shadow where 192 instructions really are in flight — because a too-small ROB *caps the MLP window* and throws away the whole point of speculation.
+- The **PRF is provisioned for the body** — steady-state occupancy, which is far below 192, scaled by the register-write fraction $f\approx 0.6$–0.7 (stores, branches, and compares write no register). A too-small PRF costs only an occasional *dispatch bubble* when the free list drains — recoverable, not catastrophic.
+
+So 128 is matched to typical occupancy $\times f$, while 192 is matched to the peak. Xiangshan takes this bet **aggressively** (128 is below even the expected-demand estimate $32 + f\cdot N_{ROB}$ for a full 192-ROB) because the PRF is a heavily multiported RAM whose area *and* access time grow quadratically with port count, and that access time sits on the load-use critical path — the exact thing a 28 nm core chasing frequency cannot afford to lengthen ([OoO §2.3](05_OoO_Execution.md)). The core consciously accepts occasional rename stalls to keep the PRF small and fast. Recovery uses **RAT checkpoints** snapshotted at each branch (one-cycle restore, [OoO §2.5](05_OoO_Execution.md)) rather than a slow ROB-walk — the high-performance choice, paid for with ~32–48 checkpoints for in-flight branches.
+
+### 5.3 Issue queues: distributed and small, because the scheduler sets the clock
+
+The scheduler is the one structure whose latency *is* a lower bound on the cycle time: the wakeup→select→issue loop for back-to-back dependent instructions is a **single-cycle recurrence that cannot be pipelined away**, and its cost grows roughly as $N\times S\times N_{cdb}$ — the "$N^2$" scheduler wall ([OoO §4.3](05_OoO_Execution.md)). For a frequency-sensitive core this dictates the two defining choices:
+
+- **Distributed, not unified.** Xiangshan splits the scheduler into small per-class queues — **Int 32, FP 16, Mem 16, AGU 16**. This is the Zen-4 side of the [OoO §4.5](05_OoO_Execution.md) trade: smaller $N$ per queue and physically shorter wakeup wires stretch the single-cycle loop less, buying frequency and power, at the cost of *fragmentation* (a burst of integer-ready ops cannot borrow an idle FP slot). For a core whose whole deficit is frequency (§1.1), the fragmentation loss is small and the timing win is exactly what it needs — the opposite of Golden Cove's unified 128-entry scheduler, which takes the utilization win and pays it back in wakeup power.
+- **Small, and tag-only.** The queues hold *tags, not values* — readiness, not data — so entries stay a handful of bits and the queue can be both fast and only as deep as the recurrence allows.
+
+The **Kunminghu v2 delta — Int IQ 32→40, FP 16→24** — is the team cautiously enlarging the scheduling window once the advanced-node timing headroom made a slightly larger $N$ affordable, buying a wider view of ready instructions without breaking the loop. Note it grows the queues by ~25 %, not 2×: the recurrence punishes large $N$ hard, so even a confident team steps this knob gently.
+
+---
+
+## 6. The load-store unit: the late-binding name space in practice
+
+Registers can be renamed because their names are known at decode; memory cannot, because whether a load aliases an older store depends on *addresses* that are not known until execute. Memory is a second, **late-binding name space**, and the LSQ is the engine that *discovers* its dependences dynamically ([OoO §5](05_OoO_Execution.md)). Xiangshan's LSU is the worked example of every choice on that page.
+
+**Speculate by default, predict the exceptions.** A load with unresolved older stores ahead of it can wait (safe, slow) or assume no alias and issue now (fast, but a genuine alias costs a ~10–15-cycle replay flush). Because violations are rare and stalls are frequent, the expected cost favors speculation, and a **store-set predictor** ([OoO §5.1](05_OoO_Execution.md)) closes the gap by stalling *only* the specific loads that history says alias — driving the per-load cost toward $\min(\bar{C}_{stall}, p_{viol}C_{flush})$. Xiangshan implements exactly this, plus store-to-load forwarding from the SQ and commit-time store writes to the D-cache ([OoO §5.2–5.3](05_OoO_Execution.md)), so a speculative store leaves no architectural trace until it retires.
+
+**Why LQ 64 / SQ 48, and why they scale with the window.** Memory ops are ~35–40 % of instructions, so the memory queues must cover the in-flight memory ops the ROB exposes, with headroom for clustering:
+
+$$
+N_{LQ}+N_{SQ} \;\approx\; f_{mem}\times N_{ROB}\times(\text{clustering headroom})
+$$
+
+Nanhu's $64+48 = 112$ against a 192-ROB is a ratio of ~0.58 — comfortably above the ~0.4 memory fraction, so memory ops rarely block dispatch even when they bunch. The revealing fact is that **Kunminghu v2 grows LQ 64→80 and SQ 48→64 while the 256-ROB holds** — preserving that ~0.56 ratio. The whole window scales *coherently*; you do not deepen the ROB without widening the memory queues that feed it, or the narrowest stage silently caps the MLP you paid for.
+
+**The clearest "buy MLP" move on the page.** Kunminghu v2 grows LQ, SQ, **and** L2 MSHRs 16→24 *together*. That is not three tweaks; it is one decision, because memory-level parallelism is a chain — LQ slot → SQ slot → D-cache MSHR → L2 MSHR — and the MSHR count *is* the level's MLP ceiling ([Cache §3.2](07_Cache_Microarchitecture.md)). On a memory-bound SPEC target, overlapping more independent misses is where the last IPC lives, so the team widens the *entire* chain in lockstep. Widening any one stage alone would have bought nothing.
+
+---
+
+## 7. The memory hierarchy and interconnect: from private cache to coherent fabric
+
+The cache hierarchy exists to make the ROB's miss shadow shallow enough that the window can hide it ([Cache §6](07_Cache_Microarchitecture.md)) — every level is another chance to catch a miss before it reaches the ~200-cycle DRAM latency that drives §5.1's floor. Xiangshan's L1s are conventional (**64 KB, 8-way, 64 B lines**, 2-cycle I / 3-cycle D), and their one non-obvious constraint is worth keeping because it is a real design lesson: with 8 ways and 64 B lines the index spans
+
+$$
+\text{index+offset} \;=\; \log_2\!\frac{64\,\text{KB}}{8\times 64\,\text{B}} + \log_2 64 \;=\; 7 + 6 \;=\; 13\text{ bits},
+$$
+
+one bit past the 12-bit page offset. That single overhang is why a **VIPT** cache this size must either resolve the aliasing bit or accept the tag-after-TLB check — the concrete reason L1 capacity, associativity, and page size are not independent knobs.
+
+**L2 is inclusive — a deliberate coherence choice.** Xiangshan's 1 MB (Nanhu) → 1–2 MB (Kunminghu) L2 is **inclusive** of the L1s and directory-tracked (MESI). Inclusion duplicates L1 capacity inside L2, which looks wasteful, but it buys a cheap coherence filter: the L2 directory alone can answer whether any L1 holds a line, so external probes never disturb the core ([Cache §6.2](07_Cache_Microarchitecture.md)). For a core built to scale to multicore, paying capacity for probe-filtering is the right side of that curve.
+
+**The biggest architectural decision on the page: Nanhu TileLink → Kunminghu CHI.** This is Xiangshan declaring server intent, and it is a textbook instance of the coherence trade-off ([ACE_and_CHI §9](12_ACE_and_CHI.md)). TileLink is a simple, open, tree-friendly protocol — perfect for a few cores below the broadcast knee. CHI is a **directory/mesh** protocol built for the $O(N^2)$ snoop wall that broadcast hits past ~8–16 cores ([ACE_and_CHI §3](12_ACE_and_CHI.md)). Moving to CHI is the team choosing the point on that curve set by *many* cores, accepting directory storage and home-hop latency in exchange for coherence traffic that scales as $O(N\bar{K})$ instead of $O(N^2)$. Kunminghu v2's **CHI Issue B/C** then adds an enhanced snoop filter and **stash** hints (a core proactively pushes shared-dirty lines toward the home node) — the multicore analogue of prefetching, cutting *coherence* latency the way a prefetcher cuts *miss* latency.
+
+**Prefetching: the other way to shrink the miss shadow.** Prefetching converts misses to hits before they stall ([Cache §7](07_Cache_Microarchitecture.md)) — the same MLP goal as a bigger ROB, attacked from the memory side, which makes window growth and prefetching **substitutes for one objective**. Xiangshan buys both, and escalates the prefetcher each generation: Nanhu stream+stride → Kunminghu adds **BOP** (Best-Offset Prefetching, which learns the offset that maximizes L2 hit rate) → v2 adds a per-page stride detector. A team that already spent on the window still spends on prefetch, because they hit the same MLP ceiling from two directions.
+
+---
+
+## 8. Reading the evolution as a trade-off trajectory
+
+The payoff of an open core is that you can lay its generations side by side and see *which curve each one climbed* — and the pattern is a clean diminishing-returns walk.
+
+| Generation | The knob that moved | The theory curve it was climbing |
+|---|---|---|
+| **Yanqihu** | Get 6-wide OoO correct + co-simulating | none — correctness, the precondition for optimization |
+| **Nanhu** | TAGE-SC front end; ROB 128→192; refined LSU | branch tax ($m$, [Branch §0.1](06_Branch_Prediction_Deep_Dive.md)) + window ([OoO §3.2](05_OoO_Execution.md)) |
+| **Kunminghu** | ROB 192→256; TileLink→CHI; +vector; +BOP | MLP/window ([OoO §3.2](05_OoO_Execution.md)) + coherence scaling ([ACE §3](12_ACE_and_CHI.md)) |
+| **Kunminghu v2** | IQ/LQ/SQ/MSHR up; 4→6 TAGE tables; CHI-B/C | the *last* MLP ([Cache §3.2](07_Cache_Microarchitecture.md)) + accuracy ([Branch §4](06_Branch_Prediction_Deep_Dive.md)) |
+
+Two meta-lessons fall out, and they are the reason to study the trajectory rather than any single snapshot:
+
+1. **Width and depth never move; every generation spends on MLP and prediction.** Those are the levers with slope left — the miss shadow and the branch horizon still have room, while width is past the fetch-width knee (§2) and depth is fixed by the frequency target. This is the concrete shape of a design-space walk: freeze the axes that are past their knee, and pour the budget into the ones that still return ([Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md)).
+2. **The strategy is exactly what §1.1's decomposition predicted.** Because the IPC gap to A76 was already small (~0.8) and the gap was *frequency*, the team chases frequency through process nodes and a scheduler kept deliberately small to clock high (§5.3), and closes the residual IPC through MLP and accuracy — never through the width that would attack the factor already near parity. Reading the numbers, you are watching a rational response to where the gap actually lives.
+
+That is the whole value of an open core: not the block diagram, but the chance to see a real team resolve the sibling pages' models into numbers, discover the diminishing returns, and re-spend accordingly — three times, in public.
+
+---
+
+## 9. Numbers to memorize
+
+| Parameter | Nanhu | Kunminghu (Δ) | Why this value (section) |
 |---|---|---|---|
-| FPU 0 | 1 | FADD, FSUB, FMIN, FMAX | 3 cycles |
-| FPU 1 | 1 | FMUL, FMA (fused multiply-add) | 4 cycles (FMA: 5 cycles) |
-| Shared | -- | FDIV, FSQRT | 12--24 cycles (iterative) |
+| Decode / rename / commit width | 6 | 6 | A76-class target, below the fetch-width wall (§2) |
+| Fetch width | 8 insns (32 B) | 8 | over-fetch past taken-branch truncation (§3) |
+| Pipeline depth | ~11 stages | ~11 | short pipe → small $P$, forgives immature predictor (§2) |
+| ROB entries | **192** | **256** | between miss shadow and branch horizon (§5.1) |
+| Physical regs (INT / FP) | **128 / 96** | 128 / 96 | under-provisioned below the $N_{arch}+N_{ROB}$ floor (§5.2) |
+| Checkpoints (RAT) | 32–48 | 48–64 | one-cycle branch recovery, in-flight branch count (§5.2) |
+| Issue queues (Int/FP/Mem/AGU) | 32 / 16 / 16 / 16 | v2: 40 / 24 / … | wakeup–select recurrence, distributed for frequency (§5.3) |
+| Load queue / Store queue | 64 / 48 | v2: 80 / 64 | memory fraction of the window, scaled coherently (§6) |
+| L1 I / D cache | 64 KB 8-way, 2 / 3 cyc | same | VIPT sizing constraint (§7) |
+| L1 D / L2 MSHRs | 16 / 16 | v2 L2: 24 | the MLP ceiling of each level (§6) |
+| L2 | 1 MB, 8-way, inclusive, 10–15 cyc | 1–2 MB | probe-filtering via inclusion (§7) |
+| Branch predictor | TAGE-SC + ITTAGE + RAS | 4→6 TAGE tables | geometric-history accuracy machine (§4) |
+| Branch accuracy / mispredict penalty | ~97 % / 6–8 cyc | ~97.5 % | cuts the $W\times P$ tax (§2, §4) |
+| Interconnect | TileLink | **CHI / CHI-B/C** | directory scaling past the snoop wall (§7) |
+| Frequency | 1.0–1.5 GHz (28 nm) | 1.8–2.0+ GHz (adv. node) | the real gap to A76 (§1.1) |
+| SPEC CPU2006 IPC | 2.5–3.0 (~80 % of A76) | 3.5+ (target) | window + prediction + MLP (§5–§7) |
 
-Both FPUs (floating-point units) share a common writeback port. FMA operations use a single uop in
-Xiangshan (the fusion is native, not decomposed).
-
-### 6.3 Address Generation and Branch Resolution
-
-- **2 AGUs**: Compute effective addresses for loads and stores using
-  $\text{addr} = \text{base} + \text{offset}$.
-- **Branch resolution**: Performed within integer ALUs (arithmetic logic units). The branch condition is
-  evaluated and compared against the prediction. A mispredict triggers:
-
-$$
-\text{Mispredict penalty} \approx 6\text{--}8 \text{ cycles (frontend flush + redirect)}
-$$
-
-The penalty includes:
-1. Detecting the mispredict in the execute stage (1 cycle).
-2. Communicating the correct target to the BPU and FTQ (1--2 cycles).
-3. Flushing the pipeline and refilling from the correct PC (4--5 cycles).
+**Memory latencies that set the knees:** L1 3–4 cyc · L2 10–15 · DRAM 100–300 — the $L_{miss}$ that drives the §5.1 ROB floor and the §6 MSHR count.
 
 ---
 
-## 7 — Load-Store Unit
+## 10. Cross-references
 
-### 7.1 Structure
-
-The LSU is one of the most complex subsystems in Xiangshan. It must support:
-
-- Out-of-order load execution (loads can bypass older stores).
-- Precise memory ordering (detect and recover from ordering violations).
-- Store forwarding (loads can read data from pending stores).
-- Atomic and memory-ordering instruction support.
-
-### 7.2 Load Queue and Store Queue
-
-| Structure | Entries | Allocation | Execution | Commit |
-|---|---|---|---|---|
-| **Load Queue (LQ)** | 64 | In-order at dispatch | Out-of-order | In-order at ROB commit |
-| **Store Queue (SQ)** | 48 | In-order at dispatch | Address + data out-of-order | Data written to D-cache at ROB commit |
-
-Loads are allocated an LQ entry at dispatch. The load address is computed by
-the AGU, then the D-cache is accessed. If the address matches a pending
-(younger or uncommitted) store, data is forwarded from the SQ.
-
-Stores are allocated an SQ entry at dispatch. The store address is computed by
-the AGU, and store data is written to the SQ. The actual write to the D-cache
-happens only when the store reaches the head of the ROB and commits.
-
-### 7.3 Store Forwarding
-
-When a load executes, it searches the SQ for matching addresses:
-
-```ascii-graph
-Load at LQ[8], addr = 0x1000
-  Check SQ entries newer than LQ[8]:
-    SQ[5]: addr = 0x1000  --> MATCH (same address)
-    SQ[6]: addr = 0x1004  --> NO MATCH (different address)
-  Forward data from SQ[5] to LQ[8]
-```
-
-The search walks SQ entries from the load's position backward (in program order)
-and forwards data from the **most recent matching store**. This ensures the load
-observes the correct memory value.
-
-### 7.4 Memory Disambiguation
-
-Loads are allowed to execute **before older stores have resolved their
-addresses**. This is critical for performance but introduces a correctness risk:
-if an older store later resolves to the same address as an already-executed
-load, the load read stale data.
-
-**Store-set predictor:** Xiangshan uses a store-set based predictor that tracks
-which loads and stores have historically conflicted. If a load is predicted to
-be independent of all pending stores, it is allowed to execute speculatively.
-If the prediction is wrong:
-
-1. A **memory ordering violation** is detected when the store resolves.
-2. The load (and all younger instructions) are **replayed** from the ROB.
-3. The store-set predictor is updated.
-
-Replay penalty: approximately **10--15 cycles** (flush and re-execute).
-
-### 7.5 LSU Pipeline
-
-The LSU pipeline for a load instruction:
-
-| Stage | Action | Latency |
-|---|---|---|
-| AGU | Compute virtual address | 1 cycle |
-| DTLB | Translate virtual to physical | 1 cycle (hit) |
-| SQ search | Check for store forwarding match | 1 cycle (parallel with DTLB) |
-| D-Cache access | Read data from L1 D$ | 2--3 cycles |
-| Forward mux | Select forwarded or cache data | 1 cycle |
-| **Total (L1 hit)** | | **3 cycles (fast path)** |
+- **Down the stack (the models this page instantiates):** [OoO_Execution](05_OoO_Execution.md) (the ROB/IQ/PRF/LSQ derivations and sizing knees §5–§6 make concrete), [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md) (the TAGE, FTQ, and $W\times P$-tax theory behind §2–§4), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (AMAT, MSHR/MLP, and inclusion behind §6–§7).
+- **Up / adjacent (what this core plugs into):** [ACE_and_CHI](12_ACE_and_CHI.md) (the coherence trade-off behind the TileLink→CHI move, §7), [AHB_AXI_APB](11_AHB_AXI_APB.md) (TileLink and SoC integration), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md) (the iTLB/dTLB in the fetch and load paths), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (the design-space walk §8 reads as a trajectory).
+- **Prerequisite:** [RISC_V_ISA](04_RISC_V_ISA.md) (the RV64GCB(V) namespace being renamed and the trap model at commit), [CPU_Architecture](03_CPU_Architecture.md) (the pipeline-depth/frequency trade of §2).
 
 ---
 
-## 8 — ROB and Commit
-
-### 8.1 Reorder Buffer
-
-| Parameter | Nanhu | Kunminghu |
-|---|---|---|
-| **ROB entries** | 192 | 256 |
-| **Commit width** | 6 uops/cycle | 6 uops/cycle |
-| **Checkpoint RAT entries** | 32--48 | 48--64 |
-
-Each ROB entry stores:
-- Architectural destination register number
-- Physical destination register (old and new)
-- Exception code
-- Completed flag
-- Branch prediction checkpoint index (for branches)
-
-### 8.2 Commit Operation
-
-Commit proceeds in-order from the head of the ROB:
-
-1. Check if the next 6 entries at the ROB head are all **completed** (no
-   exceptions, no pending memory ordering violations).
-2. For each committing instruction:
-   - If it is a **register write**: release the old physical register to the
-     free list.
-   - If it is a **store**: signal the SQ to write the store data to the D-cache.
-   - If it is a **branch**: no additional action (already resolved).
-   - If it has an **exception**: truncate commit, raise exception to the trap
-     handler.
-3. Advance the ROB head pointer.
-
-### 8.3 Branch Recovery
-
-On a branch mispredict detected in the execute stage:
-
-1. Identify the mispredicted branch's ROB entry.
-2. Restore the RAT from the checkpoint taken when that branch was renamed.
-3. Flush all ROB entries younger than the mispredicted branch.
-4. Flush all issue queue entries younger than the branch.
-5. Flush the LQ and SQ entries younger than the branch.
-6. Redirect the frontend to the correct target PC.
-7. Release physical registers allocated by the flushed instructions back to the
-   free list.
-
-Total recovery time: **6--8 cycles** from mispredict detection to the first
-correct instruction entering decode.
-
----
-
-## 9 — Cache Hierarchy
-
-### 9.1 L1 Instruction Cache
-
-| Parameter | Value |
-|---|---|
-| Capacity | 64 KB |
-| Associativity | 8-way |
-| Line size | 64 B |
-| Hit latency | 2 cycles |
-| MSHRs | 32 |
-| Replacement | PLRU |
-| Prefetcher | Stream + next-line |
-| TLB | 32-entry I-TLB (fully associative) |
-
-### 9.2 L1 Data Cache
-
-| Parameter | Value |
-|---|---|
-| Capacity | 64 KB |
-| Associativity | 8-way |
-| Line size | 64 B |
-| Hit latency | 3 cycles |
-| Write policy | Write-back, write-allocate |
-| MSHRs | 16 |
-| Replacement | PLRU |
-| TLB | 32-entry D-TLB (fully associative) |
-| Amo/Atomic support | LR/SC, AMO instructions |
-
-**D-Cache access pipeline:**
-
-$$
-\text{VA} \xrightarrow{\text{DTLB}} \text{PA} \xrightarrow{\text{tag check + data read}} \text{data}
-$$
-
-Tag store and data store are accessed in parallel (virtually indexed). Tag
-comparison happens in parallel with data SRAM read to minimize latency.
-
-### 9.3 L2 Cache
-
-| Parameter | Nanhu | Kunminghu |
-|---|---|---|
-| **Capacity** | 1 MB | 1--2 MB |
-| **Associativity** | 8-way | 8-way |
-| **Line size** | 64 B | 64 B |
-| **Inclusion** | Inclusive of L1 | Inclusive of L1 |
-| **Hit latency** | 10--15 cycles | 10--15 cycles |
-| **Coherence** | MESI directory | MESI directory |
-| **Interconnect** | TileLink | CHI Issue B/C (Coherent Hub Interface) |
-
-The L2 is a **non-blocking cache** with multiple MSHRs (Miss Status Handling Registers) supporting concurrent
-miss handling. It maintains inclusion over the private L1 caches using a
-**directory-based MESI protocol**:
-
-- Each L2 line tracks which L1 caches hold a copy (sharers vector).
-- On a write, the L2 sends invalidation messages to all sharers.
-- On a read miss, the L2 allocates the line and responds with data.
-
-### 9.4 L3 Cache (Optional)
-
-| Parameter | Value |
-|---|---|
-| Capacity | 4--16 MB (configurable) |
-| Associativity | 16-way |
-| Line size | 64 B |
-| Shared | Yes (multi-core) |
-
-The L3 is optional and not present in all Xiangshan configurations. When present,
-it serves as a shared last-level cache (LLC) connected via the SoC interconnect.
-
-### 9.5 Cache Prefetching
-
-Xiangshan employs multiple prefetcher types:
-
-| Level | Prefetcher | Strategy |
-|---|---|---|
-| I-Cache | Stream prefetcher | Fetch next sequential cache line |
-| D-Cache L1 | Stride prefetcher | Detect constant-stride access patterns |
-| L2 | Stream + Stride + BOP | Best-Offset Prefetching: dynamically select optimal prefetch offset |
-
-**BOP (Best-Offset Prefetching):** A recent advance that tracks the prefetch
-offset (how many lines ahead to prefetch) that maximizes L2 hit rate. It
-periodically evaluates multiple offsets and selects the one producing the most
-useful prefetches.
-
----
-
-## 10 — Uncore and SoC Integration
-
-### 10.1 SoC Interconnect
-
-Xiangshan uses a **TileLink-based** interconnect (Nanhu) or **CHI-based**
-(Kunminghu) to connect cores, caches, and peripherals.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    CORE0["Core 0 (Xiangshan)"]
-    CORE1["Core 1 (Xiangshan)"]
-    L2_BANK0["L2 Bank 0"]
-    L2_BANK1["L2 Bank 1"]
-    L3_CACHE["L3 Cache (optional)"]
-    CLINT["CLINT: Timer + SW IRQ"]
-    PLIC["PLIC: External IRQ Router"]
-    UART["UART"]
-    SPI["SPI"]
-    GPIO["GPIO"]
-    DDR["DDR Controller"]
-
-    CORE0 --> XBAR["SoC Interconnect (TileLink / CHI)"]
-    CORE1 --> XBAR
-    XBAR --> L2_BANK0
-    XBAR --> L2_BANK1
-    L2_BANK0 --> L3_CACHE
-    L2_BANK1 --> L3_CACHE
-    L3_CACHE --> DDR
-    XBAR --> CLINT
-    XBAR --> PLIC
-    XBAR --> UART
-    XBAR --> SPI
-    XBAR --> GPIO
-
-    style XBAR fill:#d5c8e8,stroke:#333
-    style L3_CACHE fill:#cfe8b7,stroke:#333
-```
-
-### 10.2 RISC-V Standard Peripherals
-
-| Peripheral | Function | Interface |
-|---|---|---|
-| **CLINT** (Core Local Interruptor) | Per-hart timer interrupts (`mtimer`), software interrupts (`msip`) | TileLink MMIO |
-| **PLIC** (Platform-Level Interrupt Controller) | External interrupt routing, priority, threshold, claim/complete | TileLink MMIO |
-| **UART** | Serial console I/O | TileLink MMIO |
-| **SPI** | SPI flash / peripheral controller | TileLink MMIO |
-| **GPIO** | General-purpose I/O pins | TileLink MMIO |
-
-### 10.3 Memory Map (Typical)
-
-| Address Range | Device |
-|---|---|
-| `0x8000_0000` -- `0xFFFF_FFFF` | DRAM |
-| `0x3800_0000` -- `0x3800_FFFF` | CLINT |
-| `0x3C00_0000` -- `0x3FFF_FFFF` | PLIC |
-| `0x4000_0000` -- `0x4000_FFFF` | UART, SPI, GPIO |
-
----
-
-## 11 — Performance
-
-### 11.1 SPEC CPU2006 Results (Estimated)
-
-| Configuration | IPC (avg) | Frequency | Node |
-|---|---|---|---|
-| **Nanhu** | 2.5--3.0 | 1.0--1.5 GHz | TSMC 28nm |
-| **Kunminghu (target)** | 3.5+ | 2.0+ GHz | Advanced node |
-| ARM Cortex-A76 (reference) | ~3.5 | 2.8+ GHz | TSMC 7nm |
-| ARM Cortex-A78 (reference) | ~3.8 | 3.0+ GHz | TSMC 5nm |
-
-### 11.2 Performance Gap Analysis
-
-The performance gap between Xiangshan Nanhu and ARM Cortex-A76 has two
-components:
-
-$$
-\text{Perf}_{\text{relative}} = \frac{\text{IPC} \times \text{Freq}}{\text{IPC}_{\text{ref}} \times \text{Freq}_{\text{ref}}}
-$$
-
-(IPC = instructions per cycle, Freq = clock frequency; the ref subscript denotes the reference core.)
-
-For Nanhu vs. A76:
-
-$$
-\frac{2.8 \times 1.2}{3.5 \times 2.8} = \frac{3.36}{9.8} \approx 0.34
-$$
-
-This means Nanhu achieves roughly 34% of the A76 performance at the IPC level,
-with the remainder of the gap attributable to frequency (process node) and
-microarchitectural tuning. The Kunminghu generation targets closing this gap
-through:
-
-- Wider issue (improved wakeup-select logic)
-- Larger ROB (256 entries) for more in-flight instructions
-- Better branch prediction (larger TAGE tables)
-- Enhanced prefetching
-- Advanced process node for higher frequency
-
-### 11.3 Key Microbenchmarks
-
-| Benchmark | Nanhu IPC | Notes |
-|---|---|---|
-| CoreMark | ~3.5 | Small working set, fits in L1 |
-| SPEC INT 2006 (avg) | ~2.5 | Branch-heavy, irregular access |
-| SPEC FP 2006 (avg) | ~2.8 | More regular, better predictability |
-| Stream (triad) | Limited by L2 bandwidth | ~10 GB/s at 1.2 GHz |
-
----
-
-## 12 — RTL Structure and Design Methodology
-
-### 12.1 Chisel Code Organization
-
-```verilog
-XiangShan/
-  src/main/scala/xiangshan/
-    frontend/           # BPU, FTQ, ICache, IBuf
-    backend/
-      decode/           # Decode stage
-      rename/           # Rename, RAT, FreeList
-      dispatch/         # Dispatch to issue queues
-      issue/            # Issue queues (Scheduler, IQ entries)
-      exu/              # Execution units (ALU, FPU, MDU, AGU, BRU)
-      rob/              # ROB, commit logic
-    memblock/
-      lsu/              # Load/Store unit, LQ, SQ
-      dcache/           # L1 D-Cache
-    uncore/
-      huancun/          # L2 Cache (separate submodule)
-      soc/              # SoC interconnect, peripherals
-```
-
-### 12.2 Parameterization
-
-Xiangshan's key parameters are exposed as Chisel `Config` values:
-
-```scala
-// Simplified example of parameterization
-new Config((site, here, up) => {
-  case DecodeWidth          => 6
-  case RenameWidth          => 6
-  case CommitWidth          => 6
-  case RobSize              => 192  // or 256 for Kunminghu
-  case IntPregSize          => 128
-  case FpPregSize           => 96
-  case IntIQSize            => 32
-  case FpIQSize             => 16
-  case MemIQSize            => 16
-  case L2Size               => 1024 // KB
-})
-```
-
-This allows instantiating different configurations (minimal, default, aggressive)
-from the same RTL source.
-
-### 12.3 Verification Framework
-
-Xiangshan uses **DiffTest**: a co-simulation framework that runs the Xiangshan
-RTL alongside a reference ISA simulator (NEMU) in lockstep. Every committed
-instruction is compared against the reference:
-
-- Architectural register state
-- Memory writes
-- PC progression
-
-Any discrepancy triggers an immediate error with a full trace, enabling rapid
-debug.
-
----
-
-## 13 — Numbers to Memorize
-
-| Parameter | Value | Notes |
-|---|---|---|
-| Pipeline stages (frontend) | 2 (IF0, IF1) | I-Cache pipelined access |
-| Pipeline stages (backend) | 4--6 (decode through commit) | Issue is variable-latency |
-| Dispatch / Decode width | 6 uops/cycle | |
-| Commit width | 6 uops/cycle | |
-| ROB entries (Nanhu) | 192 | 256 in Kunminghu |
-| ROB entries (Kunminghu) | 256 | |
-| Integer physical registers | 128 | |
-| FP physical registers | 96 | |
-| Int IQ entries | 32 | |
-| FP IQ entries | 16 | |
-| Mem IQ entries | 16 | |
-| AGU IQ entries | 16 | |
-| LQ entries | 64 | |
-| SQ entries | 48 | |
-| L1 I$ size | 64 KB, 8-way, 64B line | 2-cycle hit |
-| L1 D$ size | 64 KB, 8-way, 64B line | 3-cycle hit |
-| L1 I$ MSHRs | 32 | |
-| L1 D$ MSHRs | 16 | |
-| L2 size | 1 MB, 8-way, inclusive | 10--15 cycle hit |
-| BPU type | TAGE-SC + ITTAGE + RAS | |
-| Mispredict penalty | 6--8 cycles | |
-| Branch mispredict rate | ~3% (TAGE-SC) | On SPEC INT |
-| Target frequency | 1.0--1.5 GHz (28nm) | 2.0+ GHz on advanced node |
-| SPEC CPU2006 IPC (Nanhu) | 2.5--3.0 | |
-
----
-
-## 14 — References
-
-1. **Xiangshan GitHub Repository.** OpenXiangShan/XiangShan.
-   [github.com/OpenXiangShan/XiangShan](https://github.com/OpenXiangShan/XiangShan)
-
-2. **Xiangshan Design Documentation.**
-   [docs.xiangshan.cc/projects/design](https://docs.xiangshan.cc/projects/design/)
-
-3. X. Ge et al., "Towards Developing High Performance RISC-V Processors Using
-   Agile Methodology," *MICRO 2022*. Awarded all three artifact evaluation badges.
-
-4. A. Seznec, "TAGE-SC-L Branch Predictors," *JILP Branch Prediction
-   Championship*, 2014.
-
-5. A. Seznec, "The Inner Most Iteration of the ITTAGE Indirect Branch
-   Predictor," *JILP*, 2011.
-
-6. M. Maynard et al., "Best-Offset Hardware Prefetching," *HPCA 2015*.
-
-7. D. A. Patterson and J. L. Hennessy, *Computer Architecture: A Quantitative
-   Approach*, 6th ed., Morgan Kaufmann, 2017.
-
-8. K. Asanovic et al., *The RISC-V Instruction Set Manual, Volume I: User-Level
-   ISA, Document Version 20191213*, RISC-V Foundation, 2019.
-
-9. RISC-V Privileged Architecture Specification, Version 1.12-draft.
-
-10. TileLink Specification, Version 1.8. SiFive.
-
----
-
-## 15 — Kunminghu v2 and Recent Developments
-
-### 16.1 CHI Issue B/C Support
-
-Kunminghu v2 migrated the L2-cache interconnect from CHI Issue A to **CHI Issue B/C**, bringing several protocol-level improvements:
-
-| Feature | CHI Issue A | CHI Issue B/C |
-|---|---|---|
-| **Snoop filter** | Optional | Enhanced snoop filter with reduced false-positive invalidates |
-| **Stash requests** | Not supported | RN can push dirty data to HN proactively (reduces snoop latency) |
-| **Directory encoding** | Basic sharer vector | Compact encoding + Partial cache-line state tracking |
-| **Retry mechanism** | Simple PCrdGrant | Improved credit-based retry with explicit credit return |
-| **Endianness** | Little-endian only | Bi-endian data handling on DAT channel |
-| **Data poisoning** | Not supported | Poison bit per 64B chunk marks corrupted data (RAS) |
-
-The CHI Issue B/C migration required changes in the Huancun L2 submodule: new REQ opcodes (StashOnceSepData, StashOnceShared), updated SNP response handling, and a revised directory format. The benefit is reduced coherence latency on multi-core workloads: stash hints allow a core to proactively push shared-dirty lines toward the home node, cutting the critical path on subsequent ReadUnique requests by 2-3 hops.
-
-### 16.2 Improved Out-of-Order Pipeline (Kunminghu v2)
-
-Kunminghu v2 refines several microarchitectural parameters over the initial Kunminghu:
-
-| Parameter | Kunminghu v1 | Kunminghu v2 |
-|---|---|---|
-| **ROB entries** | 256 | 256 (unchanged) |
-| **Integer IQ** | 32 | 40 (wider scheduling window) |
-| **FP IQ** | 16 | 24 |
-| **Load queue** | 64 | 80 (more in-flight loads) |
-| **Store queue** | 48 | 64 |
-| **L2 MSHRs** | 16 | 24 (more concurrent misses) |
-| **Prefetch depth** | Stream + BOP | Stream + BOP + STRIDE (per-page stride detector) |
-| **TAGE tables** | 4-tagged tables | 6-tagged tables (improved conditional prediction) |
-| **Vector unit** | Basic V-extension | Pipelined VFPU with 4-element SIMD per cycle |
-
-The larger issue queues and LQ/SQ improve IPC on memory-intensive SPEC benchmarks by an estimated 8-12%. The expanded TAGE tables push branch prediction accuracy from ~97.0% to ~97.5% on SPEC INT 2006, reducing the mispredict penalty from 6-8 cycles amortized over ~33 instructions (3% mispredict rate) to ~50 instructions.
-
-### 16.3 Tapeout Status
-
-| Generation | Node | Tapeout | Frequency Achieved | Notes |
-|---|---|---|---|---|
-| Yanqihu | TSMC 28nm | 2021 | ~1.0 GHz | First silicon, validated on FPGA co-sim |
-| Nanhu | TSMC 28nm | 2022 | ~1.2 GHz | Stable silicon, SPEC CPU2006 running |
-| Kunminghu | TSMC 7nm-equivalent | 2023 | ~1.8 GHz | Advanced node tapeout, V extension |
-| Kunminghu v2 | Advanced node | 2024 | ~2.0+ GHz (target) | Refined pipeline, CHI B/C |
-
-Xiangshan has been fabricated on both 28nm and more advanced process nodes through multi-project wafer (MPW) runs and dedicated tapeouts. The project maintains an agile cadence of roughly one major tapeout per year.
-
-### 16.4 Xiangshan in Research and Education
-
-Xiangshan has become a foundational platform for computer architecture research and education in China:
-
-- **University courses:** ICT/UCAS uses Xiangshan as the primary teaching platform for graduate-level processor design courses. Tsinghua University, Peking University, Zhejiang University, and University of Science and Technology of China (USTC) have adopted Xiangshan RTL in advanced computer architecture curricula.
-- **Chip design competitions:** Xiangshan serves as the baseline platform for the "China Computer Society (CCF) Chip Design Competition," where student teams propose and implement microarchitectural improvements (e.g., new prefetchers, better branch predictors, custom accelerators) and validate them on the DiffTest co-simulation framework.
-- **Research vehicle:** Academic papers have used Xiangshan as an open-source evaluation platform for novel prefetching algorithms, cache coherence extensions (CHI protocol enhancements), and security features (pointer authentication, PMP (Physical Memory Protection) enhancements). The open RTL eliminates the need for proprietary cycle-accurate simulators.
-- **BOSC ecosystem:** The Beijing Institute of Open Source Chip (BOSC) provides documentation, tutorial labs, and cloud-based FPGA (field-programmable gate array) emulation environments for Xiangshan, lowering the barrier for students without local FPGA boards.
+## 11. References
+
+1. X. Ge et al., "Towards Developing High Performance RISC-V Processors Using Agile Methodology," *MICRO 2022*. The Xiangshan methodology paper (all three artifact-evaluation badges).
+2. **OpenXiangShan/XiangShan** repository and design docs: [github.com/OpenXiangShan/XiangShan](https://github.com/OpenXiangShan/XiangShan), [docs.xiangshan.cc](https://docs.xiangshan.cc/projects/design/).
+3. A. Seznec and P. Michaud, "A case for (partially) TAgged GEometric history length branch prediction," *JILP*, 2006; A. Seznec, "TAGE-SC-L Branch Predictors," *JILP-CBP*, 2014. The direction predictor of §4.
+4. A. Seznec, "A 64-Kbytes ITTAGE Indirect Branch Predictor," *JILP*, 2011. The indirect predictor of §4.
+5. G. Chrysos and J. Emer, "Memory Dependence Prediction Using Store Sets," *ISCA*, 1998. The store-set policy of §6.
+6. P. Michaud, "Best-Offset Hardware Prefetching," *HPCA 2016*. The BOP prefetcher of §7.
+7. Arm Ltd., *AMBA CHI Architecture Specification* (Issue B/C). The coherence fabric of §7.
+8. J. L. Hennessy and D. A. Patterson, *Computer Architecture: A Quantitative Approach*, 6th ed., Morgan Kaufmann, 2017. Ch. 3 for the window and ILP-limit models §5 builds on.
 
 ---
 
@@ -956,6 +250,6 @@ Xiangshan has become a foundational platform for computer architecture research 
 | Direction | Link |
 |---|---|
 | **Previous** | [Branch Prediction Deep Dive](06_Branch_Prediction_Deep_Dive.md) |
-| **Next** | [TileLink and SoC Interconnect](11_AHB_AXI_APB.md) |
+| **Next** | [ACE and CHI](12_ACE_and_CHI.md) |
 | **Up** | [CPU Architecture](03_CPU_Architecture.md) |
-| **Related** | [RISC-V ISA](04_RISC_V_ISA.md) | [OoO Execution](05_OoO_Execution.md) | [Cache Microarchitecture](07_Cache_Microarchitecture.md) |
+| **Related** | [OoO Execution](05_OoO_Execution.md) · [Cache Microarchitecture](07_Cache_Microarchitecture.md) · [Performance Modeling and DSE](01_Performance_Modeling_and_DSE.md) |

@@ -1,117 +1,77 @@
-# Full-Chip Power + Performance Modeling
+# Full-Chip Power and Performance Modeling
 
-> **Stage:** 01 · Architecture & PPA (Performance, Power, Area) — the *systematic, hierarchical* model that composes leaf blocks into a **full chip** and answers SoC-level power+performance questions **before RTL (register-transfer level)**.
-> **Prerequisites:** [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (fidelity ladder, CPI (cycles per instruction) stack, roofline), [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (per-block $P=\alpha C V^2 f + P_{leak}$, mode/power matrix, McPAT/CACTI bottom-up), [CPU_Architecture](03_CPU_Architecture.md), [Memory](09_Memory.md).
-> **Hands off to:** later §§ on GPU/NPU chips, package/thermal budgeting, and shared-TDP turbo governance.
-
----
-
-## Table of Contents
-
-- [0. Why a full-chip model (not one-block-at-a-time)](#0-why-a-full-chip-model-not-one-block-at-a-time)
-- [1. Composition methodology](#1-composition-methodology)
-  - [1.1 The hierarchy and the roll-up](#11-the-hierarchy-and-the-roll-up)
-  - [1.2 Bottom-up vs top-down](#12-bottom-up-vs-top-down)
-  - [1.3 The calibration chain](#13-the-calibration-chain)
-  - [1.4 Validation: per-block vs full-chip error](#14-validation-per-block-vs-full-chip-error)
-  - [1.5 Example: McPAT composes one core](#15-example-mcpat-composes-one-core)
-  - [1.6 The two cross-cutting layers](#16-the-two-cross-cutting-layers)
-- [2. CPU: single core → cluster → SoC(+DDR)](#2-cpu-single-core--cluster--socddr)
-  - [2.1 Single core](#21-single-core-per-unit-poweru-from-the-cpi-stack)
-  - [2.2 Cluster (multicore)](#22-cluster-multicore-contention-coherence-noc)
-  - [2.3 SoC with DDR](#23-soc-with-ddr-uncore--memory-system)
-  - [2.4 Full CPU-chip roll-up](#24-full-cpu-chip-roll-up)
-- [3. GPU: CUDA core/SM → GPC → full GPU](#3-gpu-cuda-coresm--gpc--full-gpu)
-  - [3.1 SM: warps, cores, occupancy → activity → power](#31-sm-warps-cores-occupancy--activity--power)
-  - [3.2 GPC (SM cluster)](#32-gpc-sm-cluster)
-  - [3.3 Full GPU: L2, shared HBM, NVLink, power cap](#33-full-gpu-l2-shared-hbm-nvlink-power-cap)
-- [4. NPU: PE/MAC → systolic array → core → chip → pod](#4-npu-pemac--systolic-array--core--chip--pod)
-  - [4.1 PE/MAC → array](#41-pemac--array)
-  - [4.2 NPU core: SA + vector unit + SRAM + DMA (double-buffering)](#42-npu-core-sa--vector-unit--sram--dma-double-buffering)
-  - [4.3 Chip: multi-core + HBM + ICI](#43-chip-multi-core--hbm--ici)
-  - [4.4 Pod: multi-chip torus + collectives](#44-pod-multi-chip-torus--collectives)
-- [5. Component interaction & coupling — the layer that makes it a chip model](#5-component-interaction--coupling--the-layer-that-makes-it-a-chip-model)
-  - [5.1 Shared-resource contention (memory BW / LLC / NoC)](#51-shared-resource-contention-memory-bw--llc--noc)
-  - [5.2 Compute / memory / comm overlap](#52-compute--memory--comm-overlap)
-  - [5.3 Power budgeting & DVFS coupling](#53-power-budgeting--dvfs-coupling)
-  - [5.4 Thermal coupling & throttling](#54-thermal-coupling--throttling)
-  - [5.5 Why perf and power must be CO-modeled](#55-why-perf-and-power-must-be-co-modeled)
-- [6. Numbers to remember + tool map](#6-numbers-to-remember--tool-map)
-  - [6.1 Numbers to remember](#61-numbers-to-remember)
-  - [6.2 Tool map: modeling layer × perf / power / thermal](#62-tool-map-modeling-layer--perf--power--thermal)
+> **Stage:** 01 · Architecture & PPA (Performance, Power, Area) — the *systematic, hierarchical* model that composes leaf blocks into a **full chip** and answers SoC-level power+performance questions **before RTL (register-transfer level) exists**.
+> **Prerequisites:** [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (fidelity ladder, CPI (cycles per instruction) stack, roofline), [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (per-block $P=\alpha C V^2 f + P_{leak}$, McPAT/CACTI bottom-up, DPM), [CPU_Architecture](03_CPU_Architecture.md), [Memory](09_Memory.md).
+> **Hands off to:** [GPU_Architecture](15_GPU_Architecture.md) and [NPU_Accelerators](16_NPU_Accelerators.md) (the µarch behind §4), [06_Simulators](06_Simulators/00_Index.md) (how every tool named here actually models compute, memory, and time), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (the budgeting/governor mechanics at silicon).
 
 ---
 
-## 0. Why a full-chip model (not one-block-at-a-time)
+## 0. Why this page exists
 
-The shallow instinct is: model the CPU core, model the cache, model the DRAM (dynamic random-access memory) — then declare the chip understood. That is wrong, and an auditor will catch it, because **a chip is a system, not a bag of blocks**. Three things emerge only at the full-chip level and are invisible in any single leaf model:
+The shallow instinct is: model the CPU core, model the cache, model the DRAM (dynamic random-access memory), add the Watts, and declare the chip understood. That is wrong, and an auditor will catch it in one question, because **a chip is a system, not a bag of blocks.** The number a leaf model gives you is real; what it cannot give you is what happens when you *put the leaves together and run them at once*.
 
-1. **Contention / sharing.** The LLC (last-level cache), the NoC (network-on-chip), and the DRAM channels are *shared*. A core's memory-CPI is not a property of the core — it depends on how many *other* cores are hammering the same LLC and channel. Sum eight cores' standalone numbers and you overstate throughput and understate memory stalls, often by 1.5–2×.
-2. **Power/thermal budgeting.** Peak power of every block summed exceeds what the package can dissipate ($\sum P_{block,max} \gg \text{TDP}$). The chip runs under a *shared* budget: turbo, DVFS (dynamic voltage and frequency scaling), and throttling continuously re-allocate a fixed watt budget. Standalone models never see the cap.
-3. **Perf–power coupling.** They are not two separate models. Frequency sets both IPC-limited throughput *and* $V^2 f$ dynamic power; a thermal cap lowers $f$, which lowers achieved BW, which changes activity, which changes power. You must **co-model** perf and power in one loop — solve for the operating point where power ≤ budget *and* the resulting $f$ produces the assumed activity.
+Write the honest full-chip model as a first term plus a correction:
 
-So a full-chip model has three parts, not one:
+$$
+X_{chip} \;=\; \underbrace{\bigoplus_i X_{\text{leaf},i}}_{\text{what a leaf model gives you}} \;+\; \underbrace{X_{\text{coupling}}}_{\text{the whole art of this page}}
+$$
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    P["Power / thermal budget layer (§2.4)<br/>shared TDP cap, DVFS, throttle —<br/>solves for the operating point"]
-    C["Contention / sharing layer (§2.2, §2.3)<br/>LLC, NoC, DRAM channels, coherence —<br/>couples the leaves"]
-    L["Leaf models (§1.5, §2.1)<br/>per-unit energy × activity —<br/>McPAT / CACTI, DRAMPower, DSENT"]
-    P --> C --> L
-    classDef top fill:#fee2e2,stroke:#b91c1c,color:#000
-    classDef mid fill:#fde68a,stroke:#b45309,color:#000
-    classDef leaf fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class P top
-    class C mid
-    class L leaf
-```
+The first term is cheap and the sibling pages already produce it — per-block energy and per-block latency from characterized cells and CACTI-fit arrays. The second term is everything this page is about, and it is *not* a small correction. It routinely moves throughput by $1.5\text{–}2\times$ and turns a benchmark's first second into a different machine from its tenth. A model that keeps only the first term does not under-report the chip by a few percent; it answers a different question than the one asked.
 
-**A full-chip model is defined by the questions it must answer** — none of which a leaf model can: *What is SoC (system-on-chip) power at TDP (thermal design power)? What sustained clock survives the thermal cap? What memory bandwidth is actually achieved once N cores contend?* If your model cannot answer these, it is a pile of leaf models, not a chip model. The rest of this page builds the two upper layers on top of the leaf models the sibling pages already gave you.
+Two things go wrong when you keep only $\bigoplus X_{\text{leaf}}$:
+
+1. **The composition operator is wrong for performance.** Power is *extensive* — Watts genuinely sum. Performance is not: throughput is set by the **slowest shared resource** and latencies compose through **overlap and queueing**, never by addition. Summing per-block latencies is a category error, not an approximation.
+2. **The operating point is wrong for every block.** Each leaf's energy and delay are functions of $(V, f, T, \text{activity})$. On a real chip those are *not* datasheet constants: a shared power budget sets $f$, a thermal cap sets the sustainable $f$, and contention sets the true activity. A standalone leaf is evaluated at an operating point the assembled chip never actually runs at.
+
+So the full-chip model has three parts, not one — the leaf models, a **contention/overlap layer** that fixes the composition and the contended activity, and a **power/thermal budget layer** that fixes the operating point — and the two upper layers are solved *together* in a control loop (§3). The rest of this page builds those two layers on top of the leaves the sibling pages give you.
+
+**A full-chip model is defined by the questions it must answer** — none of which a leaf model can:
+
+- What is SoC (system-on-chip) power at TDP (thermal design power), delivery losses included?
+- What *sustained* clock survives the thermal cap, as opposed to the burst clock the datasheet quotes?
+- What memory bandwidth is *actually achieved* once $N$ cores contend for one channel?
+
+If your model cannot answer these, it is a pile of leaf models, not a chip model. That gap — between $\bigoplus X_{\text{leaf}}$ and the truth — is the coupling layer, and closing it is the job.
 
 ---
 
-## 1. Composition methodology
+## 1. Composition: push the physics down, keep the composition cheap
 
-### 1.1 The hierarchy and the roll-up
+Before the coupling, the scaffolding it hangs on: *how* leaves become a chip when nothing is contending yet. The discipline has one governing idea — **compute the physics once, at the bottom, and never again above it.** A per-access SRAM energy or a per-op ALU energy is expensive to derive (it is a circuit-simulation question) but cheap to *reuse*; the architectural model earns its speed by composing pre-computed energies against activity counts, not by re-deriving physics at every level.
 
-You compose strictly bottom-up through named levels, and the roll-up rule at each level is *sum of children + the glue that only exists at this level*:
+### 1.1 The hierarchy and the roll-up rule
 
-| Level | Contents | New cost that appears here |
+You compose strictly bottom-up through named levels, and the rule at every level is the same: **sum of children, plus the glue that only exists at this level.**
+
+| Level | Contents | New cost that first appears here |
 |---|---|---|
 | **Leaf** | one array/unit (SRAM bank, ALU, FPU, register file, router) | energy/access × access rate; leakage |
-| **Block** | a core, a cache slice, one MC | pipeline glue, local clock tree |
-| **Cluster** | N cores + shared LLC + local NoC | coherence + interconnect + LLC sharing |
+| **Block** | a core, a cache slice, one memory controller | pipeline glue, local clock tree |
+| **Cluster** | $N$ cores + shared LLC (last-level cache) + local NoC (network-on-chip) | coherence, interconnect, LLC sharing |
 | **Chip** | clusters + full uncore (NoC, MC, PHY, PCIe, PMU) | global clock/NoC, uncore floor |
-| **Package** | chip + VRM + PDN + board | VRM loss, PDN/IR loss, on-package DRAM/HBM |
+| **Package** | chip + VRM + PDN + board | VRM loss, PDN/IR drop, on-package DRAM/HBM |
 
-The chip-level identity every roll-up must satisfy:
+The identity every roll-up must satisfy at chip level:
 
-$$P_{chip} = \sum_i P_{block,i} + P_{uncore} + P_{PDN/VRM}$$
+$$
+P_{chip} \;=\; \sum_i P_{block,i} \;+\; P_{uncore} \;+\; P_{PDN/VRM}
+$$
 
-where $P_{uncore}$ (NoC + MC + PHY (physical-layer interface) + PMU (power management unit) + I/O) is *not* an idle floor you can neglect — on server parts it is 20–40% of socket power (basis: measured uncore/package RAPL (Running Average Power Limit) split on Intel Xeon / AMD EPYC class parts), and $P_{PDN/VRM}$ is the delivery loss: $P_{VRM,loss}=P_{load}(1/\eta-1)$ at efficiency $\eta\approx0.85$–$0.92$, plus PDN (power delivery network) $I^2R$ (link [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md)).
+where $P_{uncore}$ (NoC + MC (memory controller) + PHY (physical-layer interface) + PMU (power-management unit) + I/O) is **not an idle floor you may neglect** — on server parts it is 20–40% of socket power and it *scales with activity* (the PHY and MC burn more under high bandwidth), and $P_{PDN/VRM}$ is the delivery loss $P_{VRM,loss}=P_{load}(1/\eta-1)$ at regulator efficiency $\eta\approx0.85\text{–}0.92$, plus PDN (power-delivery network) $I^2R$ drop ([Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md)). These sit *outside* the die-power sum and are exactly what shallow models forget.
 
-**Timing/perf rolls up differently from power.** Power is additive (Watts sum); performance is *bottleneck-limited* (the slowest shared resource caps throughput, per roofline). Never sum latencies — compose them through the contention layer (§2.2–2.3).
+The one rule you cannot violate: **power rolls up additively; performance does not.** Watts sum because dissipation is extensive. Latency and bandwidth compose through the bottleneck — the slowest shared resource caps throughput (roofline), and delays overlap or queue rather than add. Never sum latencies across blocks; route them through the coupling layer of §2.
 
-### 1.2 Bottom-up vs top-down
+Concretely, the leaf→block step is what an architectural power model like **McPAT** does: it maps the µarch onto a few primitive circuit structures (arrays, wires, logic, clocking), pulls each array's per-access energy from an internal CACTI (its cache/array energy model), and composes
 
-Two composition directions, used at opposite ends of the project:
+$$
+P_{core} \;=\; \sum_{u\in\text{units}} E_u\,A_u\,f \;+\; P_{clock} \;+\; \sum_u P_{leak,u}
+$$
 
-| | **Bottom-up** (pre-silicon) | **Top-down** (post-silicon) |
-|---|---|---|
-| Direction | leaf energy × activity → chip | measured chip power → decomposed to blocks |
-| Tools | McPAT, Accelergy/Timeloop, CACTI | RAPL/on-die telemetry + **power proxies** (fitted activity-counter models) |
-| Data | architectural event counts | real silicon current + performance counters |
-| Accuracy | ±20–30% (calibrated McPAT) | ~3–5% per block (fitted proxy) |
-| Use | DSE, budgeting before RTL | attribution, DVFS governors on real chip |
+where $E_u$ = per-event energy (from CACTI-fit arrays / characterized cells), $A_u$ = events per cycle (from the [CPI stack](01_Performance_Modeling_and_DSE.md) counters), $f$ = clock. There is **no new physics at the core level** — the clock tree ($P_{clock}$, typically 30–40% of core dynamic) and leakage ($V\cdot I_{leak}$, scaled by area and temperature) are added, and the array/op energies are *looked up, not recomputed*. That is the whole game restated: push the physics down, keep the composition cheap.
 
-Bottom-up **composes energy × activity** analytically (this page's focus). Top-down **decomposes a measured number** via power proxies — a regression of block power onto activity counters, then attributed back (see [Block_Activity_and_Power §10](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)). Mature flows run both and reconcile: the proxy is *trained* against the bottom-up model and *validated* against silicon.
+### 1.2 Where the numbers come from: the calibration chain
 
----
-
-### 1.3 The calibration chain
-
-Every architectural number is only trustworthy because it is anchored, level by level, to a lower-fidelity-but-more-accurate reference. The chain runs from transistor SPICE up to the architectural model, each level calibrating the one above:
+The architectural model is fast enough to sweep hundreds of design points *because* it does not re-derive physics — but that only makes it trustworthy if its inherited per-event energies are anchored to something golden. They are, through a calibration chain in which each level calibrates the one above it:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -135,449 +95,166 @@ flowchart TD
 | RTL | PowerArtist / Joules (SAIF/FSDB) | ~10–20% | medium |
 | Architectural | McPAT / Accelergy | ~20–30% *calibrated* (≫ un-cal) | instant |
 
-The architectural model is fast enough for DSE (design-space exploration) precisely *because* it inherits its per-event energies from CACTI-fit arrays and characterized cells — it does not re-derive physics, it composes pre-computed energies against activity. This is the whole game: **push the physics down, keep the composition up.** (Accuracy figures corroborated by [Block_Activity_and_Power §2.2 ladder](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md).)
+The ladder is used in **two directions** at opposite ends of a project. **Bottom-up** (pre-silicon) composes energy × activity analytically — this page's mode — for design-space exploration and budgeting before RTL exists. **Top-down** (post-silicon) does the inverse: it takes a *measured* chip power number from RAPL (Running Average Power Limit) / on-die telemetry and decomposes it to blocks via **power proxies** — regressions of block power onto activity counters, fitted to silicon (accuracy ~3–5% per block, far better than bottom-up because it is trained on the real thing). Mature flows run both and reconcile: the proxy is *trained* against the bottom-up model and *validated* against silicon. The mechanics of each tool live in [06_Simulators](06_Simulators/00_Index.md); here they are just rungs on the ladder.
 
-### 1.4 Validation: per-block vs full-chip error
+### 1.3 What survives summation: the validation theory
 
-Auditors fixate on this because it decides whether the roll-up is trustworthy. Two error classes behave oppositely:
+Whether a roll-up can be trusted turns on how per-block error behaves under summation, and two error classes behave *oppositely*:
 
-- **Random (uncorrelated) per-block error** partially *cancels* on summation. If N blocks each carry independent error $\sigma$, the chip-total relative error scales as $\sim\sigma/\sqrt{N}$ — a fleet of ±25% blocks can roll up to a ±8–10% chip total.
-- **Systematic (correlated) error** *accumulates*. A consistent 15% activity-overestimate in every block (e.g. from continuous-testbench SAIF (Switching Activity Interchange Format), per [Block_Activity_and_Power §2.2](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)) stays 15% at the chip. These are the dangerous ones — they do not wash out.
+- **Random (uncorrelated) error cancels.** If $N$ blocks each carry independent relative error $\sigma$, the chip-total relative error scales as $\sim\sigma/\sqrt{N}$ — a fleet of $\pm25\%$ blocks can roll up to a $\pm8\text{–}10\%$ chip total. Summation is a variance-averaging operation.
+- **Systematic (correlated) error accumulates.** A consistent 15% activity-overestimate in *every* block (e.g. from a continuously-toggling testbench SAIF (Switching Activity Interchange Format)) stays 15% at the chip — it does not wash out. These are the dangerous ones.
+
+The practical corollary is the single most useful fact about trusting a model: **it is most accurate for *relative* comparisons and least accurate for *absolute* Watts.** Comparing design A to design B in the same model, the systematic error is common-mode and cancels almost entirely; quoting an absolute socket-power number exposes the full systematic bias. So:
 
 | Validation target | Typical acceptance band |
 |---|---|
 | Per-block, calibrated | ±10–20% |
 | Full-chip total, calibrated | ±10–15% |
 | Full-chip *un*-calibrated | ±30% or worse |
-| Relative (design A vs B, same model) | tightest — errors are common-mode |
+| Relative (A vs B, same model) | tightest — errors are common-mode |
 
-**Rule:** trust the model most for *relative* comparisons (common-mode error cancels), least for *absolute* watts. Validate absolute totals against at least one silicon or gate-level anchor before quoting a number to a thermal team.
-
----
-
-### 1.5 Example: McPAT composes one core
-
-Concretely, how does McPAT turn a config + activity counts into core Watts? It maps the µarch onto four primitive circuit structures — **arrays, hierarchical wires, complex logic, clocking** — then composes.
-
-**Step 1 — leaf energies (arrays via CACTI).** For each SRAM-like structure (L1-D, RF = register file, ROB = reorder buffer, issue queue, BTB = branch target buffer), McPAT's internal CACTI module returns a per-access energy from the array's organization (rows × cols, banking, tech node), e.g. an L1-D read $\approx$ tens of fJ/bit → ~10–20 pJ per 64B access at 7nm (basis: CACTI-class array estimates; order-of-magnitude). Logic units (ALU/FPU = arithmetic logic unit / floating-point unit) get energies from analytical/empirical per-op models.
-
-**Step 2 — activity from the CPI stack.** The performance model supplies event counts: instructions, L1 accesses, RF reads/writes, issue-queue insertions, FPU ops, branch lookups. These come straight from the [CPI stack](01_Performance_Modeling_and_DSE.md) counters.
-
-**Step 3 — compose:**
-
-$$P_{core} = \sum_{u \in \text{units}} \big(E_u \cdot A_u \cdot f\big) + P_{clock} + \sum_u P_{leak,u}$$
-
-where $E_u$ = per-event energy (Step 1), $A_u$ = events/cycle (Step 2), $f$ = clock. The clock tree ($P_{clock}$) is often 30–40% of core dynamic power (per [Block_Activity_and_Power §14](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)). Leakage is $V\cdot I_{leak}$ scaled by area and temperature.
-
-The point: **no new physics at the core level** — McPAT sums CACTI array energies and per-unit op energies weighted by activity, then adds clocking and leakage. That is exactly the leaf→block roll-up of §1.1, made concrete.
-
-### 1.6 The two cross-cutting layers
-
-Two concerns are threaded through *every* architecture on this page (CPU here; GPU/NPU later), so name them once:
-
-- **Contention/sharing layer** — converts standalone leaf behavior into shared behavior: effective LLC MPKI (misses per kilo-instruction) under co-runners, NoC latency-under-load, DRAM channel queueing. It is *the* reason full-chip ≠ Σ leaves for performance. Threaded through §2.2 (LLC/NoC/coherence) and §2.3 (DRAM channel).
-- **Power/thermal budget layer** — imposes the shared TDP cap and solves for the operating point (which $f$/$V$ per domain keeps $P\le\text{TDP}$). Threaded through §2.4 and expanded in the later budgeting §.
-
-Keep both in view at each sub-level below: *theory → worked example → component-interaction* is the fixed template, and the "interaction" step is always one of these two layers biting.
+**Rule:** use the model freely to *rank* design points; validate any absolute total against at least one silicon or gate-level anchor before quoting it to a thermal team.
 
 ---
 
-## 2. CPU: single core → cluster → SoC(+DDR)
+## 2. Why a chip is not the sum of its blocks: five coupling terms
 
-The flagship worked chip. We climb the hierarchy of §1.1, and at each sub-level apply the fixed template: **theory → worked example → component-interaction** (the interaction being a §1.6 layer biting).
+This is the heart of the page — the $X_{\text{coupling}}$ term of §0 made explicit. Five phenomena make the assembled chip deviate from $\bigoplus X_{\text{leaf}}$, each in a specific direction, each with its own theory, and each with an **auditor's red flag** — the tell-tale wrong number a model that omits it will report. Two of the five (contention, queueing) fix the *performance composition operator*; one (overlap) decides whether it is $\max$ or $\Sigma$; two (DVFS, thermal) fix the *operating point* every leaf is evaluated at. The governor of §3 makes them mutually consistent.
 
-### 2.1 Single core: per-unit power/perf from the CPI stack
+### 2.1 Contention — the throughput face of a shared resource
 
-**Theory.** A core is a small full-chip: sum per-unit energy × activity (§1.5). The units and their activity drivers:
+Every shared resource — a DRAM/HBM channel, an LLC, a NoC link, an inter-chip link — has a finite **capacity** $R$ and serves $N$ clients each with **demand** $d_i$. There is one saturation knee, at $\sum_i d_i = R$, and achieved throughput is
 
-| Unit | Activity driver | Notes |
-|---|---|---|
-| Fetch / I-cache | insts fetched, I-miss rate | fetch runs ahead → high duty |
-| Decode | insts decoded | width-limited |
-| Rename / RAT | insts renamed | CAM/RAM writes |
-| Issue queue / scheduler | insts issued, wakeup CAM | superlinear in window size |
-| ALU / branch | integer op mix | cheap per-op |
-| FPU / SIMD | FP/vector op mix | large E/op; often dominant in HPC |
-| LSU / L1-D | loads+stores, L1 accesses | array energy (§1.5) |
+$$
+\text{achieved} \;=\; \min\!\Big(\textstyle\sum_i d_i,\; R\Big)
+$$
 
-Activity comes from the [CPI stack](01_Performance_Modeling_and_DSE.md): the same counters that build memory-CPI and branch-CPI also drive the energy sum.
+- **Below the knee** ($\sum d_i < R$): every client gets its full demand; the resource is not the bottleneck.
+- **Above the knee** ($\sum d_i > R$): aggregate throughput clamps at $R$, and each client's share collapses toward $R/N$ under fair arbitration. A core that measured 20 GB/s standalone sees 5 GB/s under an 8-way contended channel — the *same* leaf, a quarter of the bandwidth, purely from company.
 
-**Example — attribute a core's Watts to units.** Take a 3 GHz OoO (out-of-order execution) core at ~4 W core dynamic (illustrative, 7nm-class). A representative attribution for an integer-heavy phase:
+*Arbitration decides who loses.* Round-robin / age-based arbiters split near-equally ($R/N$); priority or QoS (quality-of-service) arbiters protect one client at others' expense. The arbitration policy is therefore *part of the contention model* — the same saturated resource yields very different per-client outcomes under round-robin versus strict priority, which is why an MC that favours a latency-critical core, or a NoC with virtual-channel priorities, must be modeled as such and not as a fair split.
 
-| Unit group | Share | Basis |
-|---|---|---|
-| Clock tree | ~30% | [Block_Activity §14](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) |
-| Fetch+I$ / branch | ~15% | high fetch duty |
-| Rename+IQ+ROB (OoO glue) | ~20% | CAM/wakeup-heavy |
-| ALU/AGU | ~10% | cheap ops |
-| LSU + L1-D | ~15% | array accesses |
-| FPU/SIMD | ~10% (≫ in FP phase) | large E/op, idle-gated when unused |
+Because a leaf measured alone always runs below its own private knee, **standalone leaf numbers overstate throughput the moment they are composed** — this is the mechanical reason full-chip $\ne \Sigma$ leaves for performance. The contended demand $\sum d_i$ must be evaluated with *every* client present; a per-core number measured in isolation is the wrong input.
 
-The lesson mirrors [Performance_Modeling §2.1](01_Performance_Modeling_and_DSE.md): spend area/power where the *stack* says the work is. In an FP phase the FPU can dominate; in a memory-bound phase the front-end idles and LSU/L1 rise.
+> **Auditor's red flag:** a cluster model that reports $N\times$ throughput and feeds each core its *standalone* memory-CPI has no contention layer and is wrong by the queueing gap of §2.2.
 
-**Interaction — unit clock/power gating.** Because activity is *phasic*, unused units are clock-gated (kill $\alpha C V^2 f$ dynamic) or power-gated (kill leakage too, at a wake-latency cost). The FPU during integer code, the vector unit during scalar code: gating turns the "~10% FPU" line above into ~0 dynamic. This couples perf and power — the governor decides gating from activity counters ([Block_Activity §9, DPM](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)), and a mis-predicted wake costs both energy and latency.
+### 2.2 Queueing — the latency face of the same resource
 
----
+The $\min()$ of §2.1 captures throughput and *hides* the latency penalty, which is where naive models lie most. Model the shared resource as a queue with utilization $\rho = \sum_i d_i / R$. Even for the simplest (M/M/1-like) server, mean latency diverges as
 
-### 2.2 Cluster (multicore): contention, coherence, NoC
+$$
+L \;\approx\; \frac{L_{\text{service}}}{1-\rho}, \qquad \rho \to 1 \Rightarrow L \to \infty
+$$
 
-**Theory.** N cores + a shared LLC on a NoC. Three system effects appear that no single-core model has:
+where $L_{\text{service}}$ = unloaded service time. Latency blows up **super-linearly well before throughput flatlines**: a channel at $\rho = 0.9$ already carries roughly $10\times$ its unloaded queueing delay while still delivering "90% of peak bandwidth." So "achieved BW = 90% of peak" and "latency is fine" are not the same statement — the last 10% of bandwidth is bought with a latency cliff, and for a latency-sensitive core (one whose ROB cannot cover the stall) that cliff is the real cost. This is why contention and queueing are two faces of one resource: §2.1 is what the resource delivers, §2.2 is what it charges to deliver it, and both are governed by the same $\rho$.
 
-1. **Shared-LLC contention.** Co-runners evict each other's lines, so *effective* LLC miss rate rises with the number of active cores. Effective per-core MPKI grows, and via the CPI stack memory-CPI grows: $\text{CPI}_{mem}=m_{mem}\cdot p_{mem}$ with $m_{mem}$ (misses/inst) climbing as capacity is split N ways. Cross-link [Cache_Microarchitecture](07_Cache_Microarchitecture.md).
-2. **Coherence traffic energy.** Keeping caches coherent costs messages: snoops, invalidates, writebacks. Under MESI/MOESI (cache-coherence protocols; states Modified/Exclusive/Shared/Invalid, plus Owned in MOESI) a store to a Shared line triggers invalidations to sharers; a miss to a Modified line elsewhere triggers a writeback/forward. Each transaction is NoC flits + tag/directory lookups → energy. Directory protocols (CHI, [ACE_and_CHI](12_ACE_and_CHI.md)) send point-to-point messages to known sharers; snoop/broadcast protocols flood — directory wins on energy at high core counts, snoop wins on latency/simplicity at low counts.
-3. **NoC latency-under-load.** Router latency is not fixed: queueing delay rises sharply as injection approaches saturation. A ring has $O(N)$ average hops; a mesh $O(\sqrt N)$. Energy per transfer:
+The M/M/1 form is illustrative — real memory controllers are FR-FCFS (first-ready, first-come-first-served) with finite queues — but the $1/(1-\rho)$ blow-up is qualitatively universal, and it is the reason the memory-CPI in a cluster model must be driven by the *contended* channel at its true $\rho$, never the standalone one.
 
-$$E_{NoC} = \text{flits} \times \text{hops} \times E_{flit\text{-}hop}$$
+> **Auditor's red flag:** a model that reports achieved bandwidth near peak and unloaded latency in the same breath has priced the throughput but not the queue.
 
-where $E_{flit\text{-}hop}$ (router buffer-write + crossbar + link) comes from **Orion/DSENT** and is roughly traffic-pattern-independent for a given router (order ~a few pJ/flit-hop at advanced nodes; use DSENT for the node-specific value). Latency, by contrast, is load-dependent.
+### 2.3 Overlap — max, not sum
 
-**Example — 8-core ring, memory-heavy phase.** All 8 cores stream (low reuse). Standalone, each shows (say) memory-CPI 0.8. Shared:
-- LLC effective capacity per core drops ~8×; effective MPKI roughly doubles for streaming workloads → memory-CPI climbs toward ~1.5 (illustrative; measure with gem5-Ruby).
-- Coherence: mostly cold misses here, so writeback/fill traffic dominates over invalidations; still, every fill crosses the ring.
-- NoC energy: ring average ~$N/4=2$ hops; 8 cores × high miss rate × (flits/miss) × 2 hops × $E_{flit\text{-}hop}$ — NoC energy rises with the *product* of miss rate and hop count, so a memory-heavy phase is also a NoC-energy-heavy phase.
+A chip does compute, memory movement, and (at pod scale) communication *concurrently* when the hardware and the schedule allow it. The step time is then the **max**, not the sum, of the phase times:
 
-**Interaction — sub-linear scaling.** Two forces suppress N× speedup: **Amdahl** (serial fraction, [Performance_Modeling §2.2](01_Performance_Modeling_and_DSE.md)) *and* **contention** (LLC + NoC + DRAM). Combined:
+$$
+t_{step} = \max\big(t_{comp},\, t_{mem},\, t_{comm}\big)\ \text{(overlapped)} \qquad\text{vs}\qquad t_{step} = t_{comp}+t_{mem}+t_{comm}\ \text{(serial)}
+$$
 
-$$\text{Speedup}(N) = \frac{1}{(1-p) + p/N + C(N)}$$
+Overlap is what makes the *bottleneck resource — and only it —* set performance: if $t_{mem}$ is hidden under $t_{comp}$ you are compute-bound and memory is free; if the overlap fails, the times add and everything is slower. Real designs live between these bounds, and the **degree of overlap is a first-class model parameter, not a given.**
 
-where $C(N)$ is the contention term that *grows* with N (queueing, shared-capacity loss). This is why an 8-core cluster on a memory-heavy phase might deliver ~4–5× not 8×, while a cache-fitting compute phase approaches Amdahl's ceiling. **Tools:** gem5-Ruby (coherence + NoC timing) + Orion/DSENT (NoC energy); the Ruby model *is* the contention layer of §1.6 made executable.
+Overlap is *conditional* — the $\max()$ holds only when movement is decoupled from consumption:
 
-The auditor's checkpoint: a cluster model that reports 8× throughput and per-core standalone memory-CPI has *no contention layer* and is wrong.
+- **Double-buffering** (NPU §4.4): DMA fills buffer B while the array computes on A. Needs SRAM for *two* tiles; with one, DMA and compute serialize back to the sum and throughput halves.
+- **Async DMA / prefetch** (CPU, GPU): loads issued far enough ahead hide memory latency behind compute — *provided* the prefetch distance covers the latency and the MSHRs (miss-status handling registers) do not fill.
+- **Comm/compute overlap** (pod §4.4): AllReduce layer $L$ while computing layer $L{-}1$; needs an interleaved schedule and spare link bandwidth.
 
----
+When a precondition fails, $t_{step}$ slides from $\max$ toward $\Sigma$. So the model must ask two questions, not one: *is it overlapped?* and *is the hidden term still smaller after §2.1–2.2 inflate it?*
 
-### 2.3 SoC with DDR: uncore + memory system
+**Little's law is the unifying principle.** How much concurrency does hiding latency require? To keep a resource of latency $L$ and bandwidth $B$ busy you need
 
-**Theory — the uncore is not an idle floor.** Wrap the cluster in the uncore: LLC, global NoC, memory controller (MC), DRAM PHY, PCIe (Peripheral Component Interconnect Express), PMU. On server parts this is 20–40% of socket power (§1.1) and *scales with activity* — the PHY and MC burn more under high BW, not a constant.
+$$
+\text{in-flight work} \;=\; B \times L \quad\text{(the bandwidth–delay product)}
+$$
 
-**The MC + DDR/LPDDR model** (DDR = double data rate; LPDDR = low-power DDR) is the centerpiece. Performance and power are modeled by *different* tools (a key auditor distinction):
+Too few outstanding requests — too few MSHRs, too little prefetch distance, too low GPU occupancy — and the pipe runs dry: you are latency-bound *even below the §2.1 knee*. CPU memory-level parallelism, GPU thread-level parallelism, and NPU double-buffer depth are three names for one mechanism — hold enough in-flight work to keep the bottleneck saturated and thus keep the $\max()$ in force. This also sets up a tension with §2.1–2.2: more in-flight work raises the offered load $\sum d_i$, pushing $\rho \to 1$ where $L$ itself grows and *demands even more* in-flight work. The sweet spot is enough concurrency to hide latency but not so much that the queue explodes.
 
-- **Performance** (latency, achieved BW, scheduling): **Ramulator / DRAMSim3** — cycle-level, model banks/ranks, timing, FR-FCFS (first-ready, first-come, first-served).
-- **Energy**: **DRAMPower** — integrates time spent in each state × the datasheet **IDD** current.
+> **Auditor's red flag:** a model that assumes free overlap (always $\max$) overstates scaling; one that always sums understates it. The overlap fraction is the parameter, and it degrades under contention.
 
-*Bandwidth roofline.* Peak channel BW = bus width × data rate; *achieved* BW is capped by bank/rank parallelism, row-buffer locality, and refresh. **Bank/rank parallelism**: while one bank does its $t_{RCD}/t_{RP}$ latency, others serve — enough independent banks hide latency and approach peak. **Row-buffer** outcomes drive both latency and BW:
+### 2.4 DVFS and turbo — frequency is allocated, not fixed
 
-| Access outcome | Latency | Cost |
-|---|---|---|
-| Row-buffer **hit** (open row) | $t_{CAS}$ only | cheapest |
-| **Miss** (bank idle, closed) | $t_{RCD}+t_{CAS}$ | activate first |
-| **Conflict** (wrong row open) | $t_{RP}+t_{RCD}+t_{CAS}$ | precharge + activate |
+The sum of every block at its peak $(V,f)$ *exceeds* what the package can dissipate: $\sum P_{block,max} \gg \text{TDP}$. Therefore the per-domain operating point $(V,f)$ is **not a datasheet constant — it is continuously allocated** by a power manager so that $\sum P \le \text{budget}$. Frequency is an *output* of the budget solve, not an input, and this is what §0 meant by "the operating point is wrong for every block": a leaf evaluated at nominal $f$ is evaluated at a frequency the chip may never sustain.
 
-**FR-FCFS** scheduling reorders to prioritize row-hits (first-ready), maximizing row-buffer hit rate and BW. Key timings: $t_{RCD}$ (activate→CAS), $t_{RP}$ (precharge), $t_{RAS}$ (activate→precharge min), $t_{RC}=t_{RAS}+t_{RP}$, $t_{CAS}/\text{CL}$. **Refresh:** a REF every $t_{REFI}$ (≈7.8 µs DDR4; ≈3.9 µs DDR5) blocks the rank for $t_{RFC}$ (~350 ns DDR4; ~295–410 ns DDR5, density-dependent). Refresh BW loss $\approx t_{RFC}/t_{REFI}$: **~4–5% on DDR4** (~350 ns / 7.8 µs) but **~8–10% on DDR5** (~295–410 ns / 3.9 µs — tREFI halved while tRFC held), and it worsens further at high density.
+Why the allocation matters so much is the shape of the cost curve. Dynamic power is $P_{dyn} = \alpha C V^2 f$, and along the voltage–frequency curve a higher $f$ needs a higher $V$ (roughly $V \propto f$ in the usable range), so
 
-*Read/write turnaround:* switching bus direction costs $t_{WTR}/t_{RTW}$ bubbles, so mixed R/W streams lose BW vs. batched same-direction bursts.
+$$
+P_{dyn} \;\propto\; V^2 f \;\propto\; f^3
+$$
 
-*DRAM power from IDD states* (DRAMPower method): total energy = Σ (time in state × IDD × $V_{DD}$), by state:
+Dynamic power grows **cubically** with frequency. A small $f$ cut buys a large power cut, and conversely raising the budget buys only a *cube-root* frequency gain — which is exactly why turbo hands the budget to *few* cores (a large $f$ on one core costs what a modest $f$ costs on three) and why sustained all-core clock sits well below single-core burst.
 
-| IDD | State | When |
-|---|---|---|
-| **IDD0** | active-precharge cycle (ACT+PRE over $t_{RC}$) | activation energy |
-| **IDD2N** | precharge standby (no row open) | idle banks |
-| **IDD3N** | active standby (row open) | open banks |
-| **IDD4R / IDD4W** | burst read / write | data movement |
-| **IDD5 (IDD5B)** | refresh (continuous @ $t_{RFC}$) | refresh floor |
-
-DRAMPower subtracts background (IDD2N/IDD3N) from IDD0 to isolate ACT/PRE energy, then adds read/write burst energy and refresh — exactly the "time × current per state" integral.
-
-**Example — a DDR5/LPDDR5 channel.** Sweep bank-conflict / row-buffer-hit rate:
-- High row-buffer-hit (e.g. 80%, streaming, good FR-FCFS + address interleave): achieved BW → ~80–90% of peak.
-- Low hit / conflict-heavy (random access): activates dominate, achieved BW can fall to ~40–50% of peak — the *same* channel, half the BW, purely from access pattern.
-- Refresh overhead: ~8–10% off the top on DDR5 (tREFI 3.9 µs), regardless of access pattern.
-- Channel power: dominated by IDD4R/W under load; IDD3N + IDD5 set the floor when idle. A busy DDR5 channel is a real fraction of SoC power (order ~watts), not negligible.
-
-**Tools:** Ramulator/DRAMSim3 (achieved BW, latency) + DRAMPower (IDD energy). See [DDR_Controller](10_DDR_Controller.md) and [Memory](09_Memory.md) for the controller/device detail.
-
-**Interaction — BW is a shared resource → per-core collapse.** The channel is shared across *all* cores. As cores contend, the MC queue saturates; per FR-FCFS the aggregate stays near peak but *per-core* BW divides and *per-request latency* balloons (queueing). So a core that saw 20 GB/s standalone may see 5 GB/s under 8-core load — the DRAM analogue of the LLC/NoC contention in §2.2, and the reason memory-CPI in the cluster model *must* be driven by the contended channel, not the standalone one.
-
----
-
-### 2.4 Full CPU-chip roll-up
-
-Now close the identity of §1.1 for the whole CPU chip:
-
-$$P_{chip} = \underbrace{\sum_i P_{core,i}}_{\S 2.1\text{-}2.2} + \underbrace{P_{uncore}}_{\S 2.3\text{ (LLC,NoC,MC,PHY,PCIe,PMU)}} + \underbrace{P_{PDN/VRM}}_{\text{delivery}}$$
-
-- **Cores**: per-unit sums (§2.1) at each core's operating point, contention-corrected (§2.2).
-- **Uncore**: activity-scaled, not a floor (§2.3).
-- **Package/rail power**: VRM (voltage regulator module) loss $P_{VRM,loss}=P_{load}(1/\eta-1)$, $\eta\approx0.85$–$0.92$ (so ~9–18% of delivered power is lost in the regulator); PDN $I^2R$/IR-drop (link [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md)). These sit *outside* the die-power sum and are routinely forgotten by shallow models.
-
-**Mode-power matrix** (the deliverable, like [Block_Activity §2.1](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)):
-
-|  | Idle | Active (all-core, base f) | Turbo (few-core, high f) |
-|---|---|---|---|
-| Cores | low | Σ per-unit @ base V,f | fewer cores @ high V,f |
-| Uncore | floor | activity-scaled | high (BW-bound) |
-| VRM+PDN loss | ~η | ~η | ~η (higher abs. loss) |
-| TOTAL | <TDP | ≈ TDP (sustained) | ≈ TDP, redistributed |
-
-**Shared-TDP turbo interaction (flagged, handed off).** Turbo is the §1.6 budget layer biting: the package has a *fixed* watt/thermal budget, so raising a few cores' $f$/$V$ (cubic-ish power cost) is only possible by keeping others idle/gated — the chip *redistributes* a fixed budget rather than adding to it. Sustained all-core clock is the frequency at which $\sum P = \text{TDP}$; burst turbo exploits thermal capacitance above TDP for milliseconds (link [Block_Activity §Pmax vs TDP](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)). The *solving-for-operating-point* mechanics (DVFS control loop, per-domain allocation, thermal RC) are the subject of the dedicated **power-budgeting §** in a later pass — here we only flag that the roll-up total is not a free sum but a **budget-constrained** one.
-
----
-
-## 3. GPU: CUDA core/SM → GPC → full GPU
-
-The GPU re-runs the §1.1 hierarchy with a *throughput* rather than latency philosophy: thousands of threads, wide SIMT (single-instruction, multiple-thread) lanes, and memory bandwidth as the first-class shared resource. The levels map cleanly — **SM ≈ core**, **GPC ≈ cluster**, **full GPU ≈ SoC** — and the same §1.6 layers bite: contention (L2, HBM — high-bandwidth memory) and the budget layer (power cap → clock throttle). We keep the fixed template **theory → worked example → component-interaction** at each level, and cross-link µarch detail to *GPU architecture (companion AI-infra notebook)*, the occupancy/roofline model to [Performance_Modeling_and_DSE §9](01_Performance_Modeling_and_DSE.md), and per-arch power to [Block_Activity_and_Power §11](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md).
-
-### 3.1 SM: warps, cores, occupancy → activity → power
-
-**Theory.** The Streaming Multiprocessor (SM) is the GPU's compute block: warp schedulers (typically 4 sub-partitions), CUDA cores (FP32/INT lanes), tensor cores (MMA units — matrix multiply-accumulate), a large register file (256 KB/SM class), and a shared-memory/L1 pool (~128–228 KB/SM class). Unlike a CPU core that hides latency with OoO speculation, an SM hides it with **thread-level parallelism**: many resident warps, and on a stall the scheduler switches to a ready warp for free (zero-cycle context — the RF holds all warps' state at once).
-
-**Occupancy** is the ratio of resident (active) warps to the hardware maximum (e.g. 48–64 warps/SM). It is *capped by whichever resource runs out first* — registers/thread, shared-mem/block, or the warp-slot limit — and it quantifies available TLP (basis: *GPU architecture (companion AI-infra notebook)*; occupancy definition per NVIDIA/Accel-Sim literature). The occupancy → activity → power chain:
-
-$$P_{SM} = \underbrace{E_{op}\cdot \text{IPC}_{eff}\cdot f}_{\text{compute dynamic}} + \underbrace{E_{RF}\cdot A_{RF}\cdot f + E_{L1/smem}\cdot A_{mem}\cdot f}_{\text{data movement}} + P_{clock} + P_{leak}$$
-
-where the effective issue rate $\text{IPC}_{eff}$ — and thus activity $A$ — is set by how well occupancy hides latency. Occupancy is a *ceiling on activity, not activity itself*: high occupancy enables high issue rate only if warps are actually eligible (not all blocked on the same long-latency miss).
-
-**Example — per-SM Watts from active-warp fraction.** Take an SM budgeted at ~15–20 W dynamic at full tilt (illustrative, datacenter-GPU class, ~1.4 GHz; basis: [Block_Activity_and_Power §11](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) per-arch power + total-board-power/SM-count sanity check). Two phases at the *same* occupancy:
-
-| Phase | Eligible-warp fraction | $\text{IPC}_{eff}$ | Dominant energy | Per-SM dynamic |
-|---|---|---|---|---|
-| Compute-bound (tensor-core GEMM) | high (warps keep issuing) | near-peak | MMA + RF reads | high (~full budget) |
-| Memory-bound (streaming, low reuse) | low (warps stall on HBM) | fraction of peak | L1/smem + LSU + idle stall | lower dynamic, but *no faster* |
-
-Same occupancy, very different activity and power: occupancy is necessary but not sufficient. A kernel can be 100% occupant and still issue-starved because every warp is blocked on the *same* saturated memory system (§3.3).
-
-**Interaction — warp scheduling hides latency, not power.** The seductive error is "TLP hides the stall, so it's free." Latency hiding is free in *time* (a switch fills the bubble) but **not in energy**: the RF that holds all resident warps' contexts is large and burns leakage + access energy proportional to occupancy, and every issued instruction from a switched-in warp costs its full $E_{op}$. Worse, high occupancy raises *simultaneous* activity across lanes → higher peak current → the power-cap layer (§3.3) responds by lowering clock. So chasing occupancy for latency hiding can *raise* per-SM power to the point the whole GPU throttles — a perf/power coupling identical in spirit to CPU turbo (§2.4). **Tools:** GPGPU-Sim/Accel-Sim (SIMT timing, occupancy, memory) + GPUWattch/AccelWattch (activity → Watts), the GPU analogue of gem5+McPAT.
-
----
-
-### 3.2 GPC (SM cluster)
-
-**Theory.** The Graphics Processing Cluster groups several SMs (e.g. ~12–18 SMs/GPC, ~7–8 GPCs per large die) with shared fixed-function and cache glue: a raster engine (graphics path), an L1.5/L2-slice access point, and — critically for modeling — a **per-GPC clock/rail region** that lets the chip clock or gate GPCs semi-independently. It is the direct analogue of the CPU cluster (§2.2): the aggregation level where per-SM sums acquire *shared glue* and the first sharing effects appear.
-
-**Example — GPC roll-up.** Sum the SMs of §3.1 at their operating point, then add the GPC glue:
-
-$$P_{GPC} = \sum_{i \in \text{SMs}} P_{SM,i} + P_{raster} + P_{L1.5/xbar} + P_{GPC\text{-}clock}$$
-
-For a compute (non-graphics) workload the raster path is idle-gated → near-zero, and the GPC line is dominated by its SMs plus the crossbar carrying their L2 traffic. The GPC clock domain means a partially-populated GPC (some SMs gated after a work-imbalanced launch) can drop its regional clock, saving the clock-tree share (~30–40% of dynamic, per §1.5 / [Block_Activity §14](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)).
-
-**Interaction — intra-GPC crossbar + clock-domain sharing.** The SMs in a GPC share the path to L2; if several stream simultaneously, the crossbar/L1.5 queues and per-SM effective L2 latency rises — a miniature of the L2 contention that dominates at full-GPU scale (§3.3). And because the GPC is one clock domain, one hot SM can force the whole GPC's clock down (thermal/power locality), coupling neighbors' performance. This is the §1.6 budget layer acting at cluster granularity, before the chip-wide cap of §3.3.
-
----
-
-### 3.3 Full GPU: L2, shared HBM, NVLink, power cap
-
-**Theory — the whole die is bandwidth-shared.** Wrap the GPCs in the uncore: a large **shared L2** (banked, sliced across the die), the **HBM stack(s)** behind the memory controllers, NVLink/NVSwitch (NVIDIA's inter-GPU links) for multi-GPU, and the chip-wide power/clock management. Two shared resources dominate the model, exactly as DRAM did for the CPU (§2.3):
-
-1. **L2 contention.** L2 is shared by *all* SMs across *all* GPCs. Its effective per-SM hit rate falls as more SMs contend for capacity and bank ports — the GPU analogue of LLC contention (§2.2). Misses spill to HBM.
-2. **HBM bandwidth shared across all SMs.** This is the crux. HBM peak $B_{HBM}$ (e.g. ~2–3.35 TB/s HBM2e/HBM3 class; basis: published stack BW) is a *single shared pool*. Achieved bandwidth is
-
-$$B_{achieved} = \min\!\Big(\textstyle\sum_i \text{demand}_i,\; B_{HBM}\Big)$$
-
-Below the knee, every SM gets its demand; above it, the pool is capped and **per-SM effective BW collapses to $B_{HBM}/N_{active}$** while latency balloons via MC queueing. This is the roofline *knee* ([Performance_Modeling_and_DSE §9](01_Performance_Modeling_and_DSE.md)): kernels left of the knee are compute-bound, right of it memory-bound, and *adding SMs past the knee adds no throughput* — it only adds contention and power.
-
-The chip-power identity mirrors §2.4:
-
-$$P_{GPU} = \sum_j P_{GPC,j} + \underbrace{P_{L2} + P_{MC/HBM\text{-}PHY} + P_{NVLink} + P_{PMU}}_{\text{uncore}} + P_{PDN/VRM}$$
-
-**HBM and NVLink energy/byte** are real uncore lines, not floors. Data-movement energy (order of magnitude, published-basis): **HBM3 ≈ 0.29 pJ/bit** at the interface; **NVLink ≈ 1.3 pJ/bit** (~5× more efficient than PCIe Gen5, ≈ 6–7 pJ/bit) — so a multi-GPU AllReduce moving terabytes over NVLink is a quantifiable, non-trivial energy term, and on-package HBM traffic, while cheaper per bit, is enormous in volume. (Basis: NVIDIA/WikiChip figures; treat as order-of-magnitude.)
-
-**Example — N SMs oversubscribe HBM.** A large GEMM (general matrix multiply) streaming operand tiles: suppose per-SM demand is 30 GB/s and $B_{HBM}=3$ TB/s. The knee is at $N^\star = 3000/30 = 100$ active SMs. On a ~130-SM die, all-SM streaming pushes $\sum \text{demand} = 3.9$ TB/s $> B_{HBM}$: achieved saturates at 3 TB/s, per-SM effective BW collapses from 30 → ~23 GB/s, and every SM's memory-CPI rises together. The kernel is now **memory-bound**: more occupancy (§3.1) buys nothing because all warps stall on the same capped pool — the GPU version of the §2.3 per-core BW collapse, scaled to hundreds of consumers.
-
-**Interaction — BW sharing × power-cap clock throttle (two layers at once).** The full GPU is where *both* §1.6 layers bite simultaneously:
-
-- *Contention layer:* HBM/L2 sharing collapses per-SM BW (above).
-- *Budget layer:* the board runs under a **power cap** (`nvidia-smi -pl <watts>`) and a thermal limit. GPU Boost continuously chooses the highest clock such that $P \le \text{cap}$ *and* $T \le T_{limit}$; when a compute-heavy phase raises current, Boost *lowers* the clock to stay under the cap. Lowering $f$ lowers both throughput and (cubically-ish) power — the operating-point solve of §2.4, now on the GPU.
-
-These *interact*: a memory-bound phase (SMs stalling on capped HBM) draws *less* core power, so Boost may *raise* the clock — which does not help, because the bottleneck is HBM, not compute. Conversely a compute-bound tensor-core phase hits the power cap and throttles clock, lowering the very compute rate that defined it. A correct full-GPU model must co-solve BW-sharing *and* the power-capped clock in one loop; reporting peak TFLOPs × peak clock × all SMs is the auditor's red flag (it ignores both layers). **Tools:** GPGPU-Sim/Accel-Sim (SM/L2/HBM timing, contention) + GPUWattch/AccelWattch (activity → power), driving a power-cap/DVFS loop; roofline knee per [Performance_Modeling_and_DSE §9](01_Performance_Modeling_and_DSE.md), per-arch power per [Block_Activity_and_Power §11](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md), DPM/clock-gating per [Block_Activity_and_Power §9](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md).
-
----
-
-## 4. NPU: PE/MAC → systolic array → core → chip → pod
-
-The NPU (neural processing unit; TPU-class dataflow accelerator — TPU = tensor processing unit) climbs one level higher than CPU/GPU because AI systems are *multi-chip*: **PE/MAC → systolic array → NPU core → chip → pod**. The philosophy inverts the GPU's: instead of many latency-hiding threads, a **deterministic dataflow** streams operands through a fixed array, and the whole game is *overlap* — keep the array fed. The §1.6 layers still bite (HBM/ICI contention; power gating as the budget layer), and the fixed template holds. Cross-link the systolic model to [Performance_Modeling_and_DSE §10](01_Performance_Modeling_and_DSE.md), the dataflow taxonomy to *systolic arrays and dataflow*, the chip to *the Google TPU page*, and HBM detail to *HBM deep dive* — all in the companion AI-infra notebook.
-
-### 4.1 PE/MAC → array
-
-**Theory.** The leaf is a **MAC** (multiply-accumulate): a multiplier + adder + a few registers, often INT8/BF16/FP8. Its energy $E_{MAC}$ is a per-op leaf energy exactly like a CPU FPU op (§2.1) — order tens of fJ for INT8 MACs at advanced nodes, rising with precision (basis: Accelergy/CACTI-class op energies; order-of-magnitude). A **systolic array** tiles $R\times C$ PEs (processing elements); operands flow rhythmically, and each PE does one MAC/cycle at steady state. The array's *timing* (fill/drain, utilization vs mapping) is derived in [Performance_Modeling_and_DSE §10](01_Performance_Modeling_and_DSE.md) — **we reference it rather than re-derive**: an $R\times C$ array on an $M\times K\times N$ GEMM has fill+drain overhead $\sim(R+C)$ cycles amortized over the tile, so utilization $\to 1$ only when the matrix is large relative to the array.
-
-**Example — array power from utilization.** For an $R\times C$ array at clock $f$ and utilization $\eta$ (fraction of PEs doing useful MACs, from the §10 fill/drain model):
-
-$$P_{array} = \underbrace{R\,C\,\eta\,E_{MAC}\,f}_{\text{useful compute}} + \underbrace{R\,C\,(E_{reg}+E_{fwd})\,f}_{\text{operand forwarding, paid even when idle-ish}} + P_{clock} + P_{leak}$$
-
-A 128×128 INT8 array (16,384 PEs) at ~1 GHz and $\eta=0.8$ delivers $\approx 16384\times0.8\times2\times10^9 \approx 26$ TOPS (2 ops/MAC), the compute term scaling with $\eta$ while the forwarding/clock/leak terms are paid regardless — so a *poorly mapped* GEMM ($\eta$ low) wastes the fixed terms and tanks TOPS/W.
-
-**Interaction — PE/tile power gating as fine-grained DPM (dynamic power management; ReGate).** The leakage/fixed terms are the target of fine-grained DPM. Studies find **30–72% of NPU energy is static** (leakage) due to weak power management (basis: ReGate, MICRO 2025, arXiv:2508.02536). **ReGate** exploits the array's *deterministic* dataflow to power-gate PEs *cycle-accurately* following the wavefront — a PE gates the moment its useful work passes — and idle-detects ICI/HBM controllers. This is the §1.6 budget layer at PE granularity: because the schedule is known ahead of time (unlike a CPU's data-dependent stalls), gating can be predicted with near-zero mis-wake cost, unlike the speculative CPU gating of §2.1.
-
----
-
-### 4.2 NPU core: SA + vector unit + SRAM + DMA (double-buffering)
-
-**Theory — the core is an overlap machine.** An NPU core wraps the systolic array with: a **vector/scalar unit** (VU — for activations, softmax, normalization, elementwise; the SA does only GEMM/conv), a large **on-chip SRAM (static random-access memory) / unified buffer** (staging operands and results, ~10s of MB class), and **DMA (direct memory access) engines** moving data HBM↔SRAM. The core's throughput is *not* the sum of its parts' times — it is set by **double-buffering / async-DMA overlap**. With SRAM split into two buffers, the DMA fills buffer B (next tile's weights/activations) *while* the SA computes on buffer A:
-
-$$t_{tile} = \max\big(t_{compute},\ t_{DMA}\big)\quad\text{(overlapped)}\qquad\text{NOT}\qquad t_{tile}=t_{compute}+t_{DMA}\ \text{(serial)}$$
-
-This is the single most important NPU-modeling fact. Which term dominates classifies the tile:
-
-| Regime | Dominant term | Bottleneck |
-|---|---|---|
-| **SA-bound** (compute-bound) | $t_{compute}$ (MAC-limited) | array too small / precision high |
-| **VU-bound** | vector-unit time | too much elementwise vs GEMM |
-| **HBM-bound** (DMA-bound) | $t_{DMA}=\text{bytes}/B_{HBM}$ | low arithmetic intensity |
-
-(Basis: SCALE-Sim double-buffered SRAM model; ONNXim double-buffered tile scheduling — all buffers double-buffered to overlap movement with compute.)
-
-**Example — a transformer FFN (feed-forward network) tile.** An FFN projects $d\to 4d$: a GEMM tile of, say, $128\times128$ output using a $128\times128$ INT8 array. Compute: the tile's MACs at $\eta\!\approx\!1$ take $t_{compute}\approx (K + \text{fill})$ cycles. Weight-DMA: the weight sub-tile is $128\times128$ bytes (INT8) $=16$ KB; at $B_{HBM}=1.2$ TB/s that streams in $t_{DMA}\approx 16\text{KB}/1.2\text{TB/s}\approx 13$ ns. If $t_{compute}$ (say ~90 ns for $K$=128 @ ~1.4 GHz) $> t_{DMA}$, the tile is **SA-bound** and DMA is fully hidden → the array never starves. But for a *memory-thin* op (e.g. a skinny GEMM or the attention $QK^\top$ with low reuse), weights/activations reload per tile: $t_{DMA}$ grows past $t_{compute}$ and the tile flips **HBM-bound** — the array sits idle waiting for buffer B, and $t_{tile}=t_{DMA}$. Arithmetic intensity (FLOPs/byte) decides the flip, exactly the roofline of [Performance_Modeling_and_DSE §9-10](01_Performance_Modeling_and_DSE.md).
-
-**Interaction — overlap hides memory *only if* double-buffered *and* BW suffices.** The $\max()$ is conditional on two things: (1) SRAM must be **double-buffered** (enough capacity for two tiles — if the unified buffer holds only one tile, DMA and compute serialize back to the *sum*, and throughput halves); (2) HBM BW must be high enough that $t_{DMA}\le t_{compute}$. If either fails, overlap collapses and the core is HBM-bound. So the VU, SA, SRAM sizing, and DMA BW are *co-designed*: an array too fast for its SRAM/DMA is starved silicon. **Tools:** SCALE-Sim (cycle-accurate SA + double-buffered SRAM + DRAM BW), ONNXim/NeuSim (multi-core tile scheduling).
-
----
-
-### 4.3 Chip: multi-core + HBM + ICI
-
-**Theory.** A modern NPU chip packs multiple cores/tiles (e.g. 2 TensorCores/chip on TPU-class parts, more on tiled designs), the shared **HBM** stacks, an on-chip interconnect linking cores to HBM and to each other, and the **ICI** (Inter-Chip Interconnect) ports for pod-scale scaling. The composition mirrors the CPU SoC (§2.3) and GPU (§3.3): sum the cores, add the shared memory/interconnect uncore.
-
-**Example — chip roll-up and HBM sharing.**
-
-$$P_{chip} = \sum_c P_{core,c} + P_{on\text{-}chip\text{-}interconnect} + P_{HBM\text{-}PHY} + P_{ICI\text{-}PHY} + P_{PDN/VRM}$$
-
-The performance coupling is **HBM BW shared across cores**, identical to the CPU DRAM channel (§2.3) and GPU HBM (§3.3): with $C$ cores each demanding DMA bandwidth, achieved $=\min(\sum_c \text{demand}_c, B_{HBM})$. Two cores that were each HBM-bound standalone (§4.2) do *not* both get full BW — they split it, so *both* slow down and the per-core $t_{DMA}$ in the §4.2 $\max()$ grows, flipping tiles that were SA-bound into HBM-bound.
-
-**Interaction — contention re-writes the per-core regime.** The §4.2 SA/VU/HBM classification is *not* a per-core constant: it depends on how many sibling cores contend for HBM *right now*. A core mapped as compute-bound in isolation becomes memory-bound under a co-running neighbor that saturates HBM — the NPU version of the CPU's contended-vs-standalone memory-CPI (§2.3). The on-chip interconnect adds its own queueing (like the GPU L2 crossbar, §3.2). A chip model that classifies tiles from standalone BW has no contention layer and overstates throughput. **Tools:** NeuSim / ONNXim (multi-core NPU, shared HBM + interconnect timing).
-
----
-
-### 4.4 Pod: multi-chip torus + collectives
-
-**Theory — the pod is a network, and the network is the bottleneck.** A pod wires hundreds–thousands of chips into a **torus** via ICI links: 2D torus (each chip to 4 neighbors — TPU v2/v3/v5e class) or **3D torus** (6 neighbors, e.g. 4×4×4 = 64-chip cubes on TPU v4+; basis: Google Cloud TPU docs). The torus is chosen because it has bounded degree and short diameter, and it maps naturally onto **collectives** — chiefly **AllReduce** for gradient/activation synchronization in distributed training and tensor-parallel inference. Ring-AllReduce runtime (bandwidth-optimal, Patarasuk 2009):
-
-$$t_{AllReduce} \approx \underbrace{\frac{2(N-1)}{N}\cdot\frac{S}{B_{link}}}_{\text{bandwidth term}} + \underbrace{2(N-1)\,\ell}_{\text{latency term}}$$
-
-where $N$ = chips in the ring, $S$ = payload bytes (e.g. model/gradient shard), $B_{link}$ = per-link ICI bandwidth, $\ell$ = per-hop latency. The $\frac{2(N-1)}{N}$ factor comes from the two phases (scatter-reduce + all-gather), each $N-1$ steps moving $S/N$ per step; as $N\to\infty$ the bandwidth term $\to 2S/B_{link}$ — **independent of $N$** (the point of ring-AllReduce). The latency term, however, grows linearly in $N$ — so at large $N$ or small $S$, latency dominates and the ring is inefficient (motivating tree/hierarchical collectives). (Basis: Patarasuk & Yuan 2009; standard DDP (distributed data-parallel) derivation.)
-
-**Example — 256-chip pod, AllReduce vs per-step compute.** Take $N=256$, a gradient shard $S=256$ MB (bf16, large-model class), and $B_{link}=1.2$ TB/s bidirectional ICI (TPU-v4 class; basis: Google Cloud figures). Bandwidth term: $\frac{2\cdot255}{256}\cdot\frac{256\text{ MB}}{1.2\text{ TB/s}} \approx 1.99\times 213\,\mu s \approx 425\,\mu s$. If the per-step compute (forward+backward of the microbatch) is, say, ~5 ms, then AllReduce (~0.43 ms) is easily hidden — **compute-bound**, good scaling. But shrink the compute (smaller batch, or a larger $N$ inflating the latency term $2(N-1)\ell$) and AllReduce time approaches or exceeds compute → **comm-bound**, and scaling efficiency falls. The crossover is the pod-scale roofline: $t_{compute}$ vs $t_{comm}$.
-
-**Interaction — overlap comm with compute; ICI contention.** The saving grace is **communication/computation overlap**: gradients of layer $L$ can AllReduce *while* layer $L{-}1$ still computes (backward pass), so the effective step time is $\max(t_{compute}, t_{comm})$ — the *same overlap principle* as the on-chip double-buffering of §4.2, now at pod scale. Overlap works only if (1) the schedule interleaves independent comm and compute, and (2) ICI links aren't already saturated by *other* traffic (tensor/pipeline-parallel messages contending with the AllReduce on the shared torus links — the pod-scale contention layer). ICI link contention and torus bisection bandwidth cap how much comm can truly overlap; a naive model assuming free overlap overstates scaling. This is the on-chip end of the datacenter collectives/parallelism story (companion AI-infra notebook). **Tools:** NeuSim (multi-chip), SCALE-Sim (per-chip feeding the pod model); topology/BW per *the Google TPU page (companion AI-infra notebook)*.
-
----
-
-## 5. Component interaction & coupling — the layer that makes it a chip model
-
-§§2–4 climbed three hierarchies (CPU, GPU, NPU) and repeatedly hit the *same* two forces — contention and the power/thermal budget (§1.6). This section extracts them into their **architecture-independent form**: the coupling layer that turns a bag of calibrated leaf models into a chip model. Everything below is the machinery §1.6 promised, and it is what the notebook was missing.
-
-The one-line thesis: **full-chip ≠ Σ leaves**, and the gap is exactly this layer. Power sums; performance bottlenecks; both are re-shaped by a shared budget solved in a control loop.
-
-### 5.1 Shared-resource contention (memory BW / LLC / NoC)
-
-**The general model.** Every shared resource — a DRAM/HBM channel, an LLC/L2, a NoC link, an ICI port — has a finite **capacity** $R$ and serves $N$ contending clients each with **demand** $d_i$. Two regimes, split at the saturation knee $\sum_i d_i = R$:
-
-$$\text{achieved throughput} = \min\!\Big(\textstyle\sum_i d_i,\ R\Big)$$
-
-- **Below the knee** ($\sum d_i < R$): every client gets its demand; the resource is *not* the bottleneck; latency $\approx$ unloaded service time.
-- **Above the knee** ($\sum d_i > R$): aggregate throughput saturates at $R$, per-client share collapses toward $R/N$ (under fair arbitration), and — critically — **latency does not stay flat, it balloons.**
-
-**Queueing degradation past saturation.** The $\min()$ captures *throughput* but hides the *latency* penalty, which is where naive models lie. Treat the resource as a queue with utilization $\rho = \sum d_i / R$. For an M/M/1-like server the mean latency diverges as
-
-$$L \approx \frac{L_{service}}{1-\rho}\qquad(\rho \to 1 \Rightarrow L \to \infty)$$
-
-So as offered load approaches capacity, latency blows up *super-linearly* well before throughput flatlines — a channel at $\rho=0.9$ already carries ~10× the unloaded queueing delay. This is why "achieved BW = 90% of peak" and "latency is fine" are not the same statement: the last 10% of BW is bought with a latency cliff. (Basis: standard queueing theory; the M/M/1 form is illustrative — real MCs are FR-FCFS with finite queues, but the $1/(1-\rho)$ blow-up is qualitatively universal.)
-
-**Fair-share / arbitration** decides *who* loses BW past the knee. Round-robin/age-based arbiters split near-equally ($R/N$); priority or QoS (quality of service) arbiters (e.g. an MC that favors latency-critical cores, or a NoC with VC (virtual channel) priorities) protect one client at others' expense. The arbitration policy is therefore part of the contention model — the same saturated resource yields very different per-client outcomes under RR vs strict-priority.
-
-**This ties together every earlier example.** The three architectures were the same equation with different labels:
-
-| Where | Resource $R$ | Clients $N$ | Section |
-|---|---|---|---|
-| CPU cluster | shared LLC capacity + ports | co-running cores | §2.2 (LLC eviction, MPKI↑) |
-| CPU SoC | DDR channel BW | cores via MC queue | §2.3 (per-core 20→5 GB/s) |
-| CPU/GPU | NoC / L2 crossbar link | cores / SMs | §2.2, §3.2 (latency-under-load) |
-| GPU chip | HBM BW pool | active SMs | §3.3 ($B_{HBM}/N_{active}$ collapse) |
-| NPU chip / pod | HBM BW / ICI link | cores / chips | §4.3, §4.4 (tile regime flip; comm-bound) |
-
-In each, standalone leaf numbers ($d_i$ measured alone) overstate throughput and understate latency once composed, because they miss $\rho\to 1$. **A model with no contention layer reports $\sum d_i$ and is wrong by the queueing gap** — the auditor's first probe at every level. Contention is *the* reason performance does not roll up additively (§1.1), and it must be evaluated at the *contended* operating point, never the standalone one.
-
-**Tools:** the contention layer is what a cycle-level shared-resource simulator *is* — gem5-Ruby (coherence + NoC + MC queueing), Ramulator/DRAMSim3 (channel/bank contention), GPGPU-Sim/Accel-Sim (L2/HBM sharing), NeuSim/ONNXim (multi-core HBM + interconnect). See DSENT/Orion for the NoC energy per contended flit.
-
-### 5.2 Compute / memory / comm overlap
-
-**The general model.** A chip does compute, memory movement, and (at pod scale) communication *concurrently* when the hardware and schedule allow it. The step time is then the **max**, not the sum, of the phase times:
-
-$$t_{step} = \max\big(t_{compute},\ t_{mem},\ t_{comm}\big)\qquad\text{(fully overlapped)}$$
-
-$$t_{step} = t_{compute} + t_{mem} + t_{comm}\qquad\text{(fully serial — the degraded case)}$$
-
-Real designs live between these bounds; the *degree* of overlap is a first-class model parameter, not a given. Overlap is what makes the bottleneck resource — and only it — set performance (the roofline made dynamic): if $t_{mem}$ dominates and is hidden under $t_{compute}$, you are compute-bound and memory is free; if not, the times add and everything is slower.
-
-**Overlap is conditional.** The $\max()$ holds *only when* the movement is decoupled from the consumption:
-
-- **Double-buffering** (NPU §4.2): DMA fills buffer B while the array computes on A. Requires SRAM for *two* tiles; with one tile, DMA and compute serialize → the sum, and throughput halves.
-- **Async DMA / prefetch** (CPU, GPU): loads issued far ahead of use hide memory latency behind compute — provided the prefetch distance covers the latency and the MSHRs/queues (MSHR = miss-status handling register) don't fill.
-- **Comm/compute overlap** (pod §4.4): AllReduce layer $L$ while computing layer $L{-}1$; requires an interleaved schedule and spare ICI BW.
-
-**Degradation toward the sum.** When a precondition fails, $t_{step}$ slides from $\max$ toward $\Sigma$: single-buffered SRAM, insufficient prefetch distance, MSHR/queue exhaustion, or a saturated shared resource (§5.1 — if $t_{mem}$ itself grows because BW collapsed, even perfect overlap can't hide it). The model must therefore ask *both* "is it overlapped?" *and* "is the hidden term still smaller after contention?"
-
-**Little's Law — latency hiding quantified.** How much concurrency is needed to hide latency and keep the bottleneck resource busy? Little's Law gives the required in-flight work:
-
-$$\text{concurrency needed} = \text{throughput} \times \text{latency}$$
-
-To saturate a memory system of latency $L$ delivering bandwidth $B$ (bytes/s), you need $B\times L$ **bytes in flight** (the bandwidth-delay product). Too few outstanding requests (too few MSHRs, too little prefetch, too low GPU occupancy — §3.1) and the pipe runs dry: you're latency-bound, not bandwidth-bound, even below the §5.1 knee. This is *the* unifying principle behind CPU MLP/MSHRs (MLP = memory-level parallelism), GPU occupancy/TLP, and NPU double-buffer depth — all three are mechanisms to hold enough in-flight work ($B{\cdot}L$) to keep the bottleneck resource saturated and thus keep the $\max()$ (not the sum) in force.
-
-**Interaction with §5.1.** Overlap and contention pull against each other: more outstanding requests (to satisfy Little's Law) raise the offered load $\sum d_i$, pushing the shared resource toward $\rho\to1$ where per-request latency $L$ itself grows — which then *demands even more* in-flight work. The sweet spot is enough concurrency to hide latency but not so much that queueing latency explodes. **Tools:** any cycle-level timing sim (gem5, Accel-Sim, SCALE-Sim, NeuSim) resolves the overlap by construction; the roofline knee ([Performance_Modeling_and_DSE §9](01_Performance_Modeling_and_DSE.md)) is its static shadow.
-
-### 5.3 Power budgeting & DVFS coupling
-
-**A shared TDP means V/f is *allocated*, not fixed.** The package can dissipate a fixed budget (TDP / a RAPL PL1). The sum of every block at its peak V/f *exceeds* that budget ($\sum P_{block,max}\gg\text{TDP}$, §0). Therefore the per-core / per-domain operating point $(V,f)$ is not a datasheet constant — it is **continuously allocated** by a power manager so that $\sum P \le \text{budget}$. Frequency is an *output* of the budget solve, not an input.
-
-**The mechanisms (all the same idea):**
+Every vendor mechanism is the same idea — measure power, compare to a cap, actuate $(V,f)$ — under different names:
 
 | Mechanism | Vendor | What it does |
 |---|---|---|
-| **Turbo Boost** | Intel | raises few-core $f$ above base while others idle, until $\sum P=$ budget |
-| **Precision Boost / PBO** | AMD | opportunistic $f$ up to power/thermal/current limits |
-| **GPU Boost** | NVIDIA | highest clock s.t. $P\le$ cap *and* $T\le T_{limit}$ (`nvidia-smi -pl`) |
-| **RAPL** | Intel | HW enforces PL1 (sustained, $\tau\sim$ tens of s) & PL2 (burst, $\tau\sim$ ms); throttles $f$ if the running-average power exceeds the limit |
-| **per-domain DVFS backoff** | all | each voltage/clock domain drops V/f independently when its slice of the budget is exceeded |
+| Turbo Boost | Intel | raises few-core $f$ above base while others idle, until $\sum P =$ budget |
+| Precision Boost / PBO | AMD | opportunistic $f$ up to power/thermal/current limits |
+| GPU Boost | NVIDIA | highest clock s.t. $P\le$ cap *and* $T\le T_{limit}$ (`nvidia-smi -pl`) |
+| RAPL | Intel | HW enforces PL1 (sustained, $\tau\sim$ tens of s) and PL2 (burst, $\tau\sim$ ms); throttles $f$ when the running-average power exceeds the limit |
 
-(Basis: Intel RAPL PL1/PL2 + $\tau$ time-window model; NVIDIA GPU Boost power/thermal cap; AMD PBO — vendor docs / public descriptions.)
+The two-timescale RAPL model (PL2 above PL1 for a window $\tau$) is not an implementation quirk — it is the chip *spending thermal capacitance* (§2.5), and it is why burst clock exceeds sustained clock.
 
-**Perf ⇄ power coupling.** Because $P_{dyn}\propto V^2 f$ and, on the voltage/frequency curve, higher $f$ needs higher $V$, dynamic power grows roughly **cubically** with frequency ($P\sim f^3$ over the DVFS range). So a small $f$ cut buys a large power cut — and conversely, the *achievable performance is a function of the power budget*: raise the budget, the manager raises $f$, throughput rises until some other limit (contention §5.1, or thermal §5.4) binds. Perf and power are not two models; they are one operating-point solve (§5.5).
+A second consequence is the classic **race-to-idle vs pace-to-deadline** split, two opposite ways to spend a budget:
 
-**The control loop.** The manager runs a closed loop at ms granularity: *measure* power (RAPL counters / on-die current sense) and temperature → *compare* to budget/limit → *actuate* V/f (and gating) → repeat. PL2 lets the running average exceed PL1 for a window $\tau$ (exploiting thermal capacitance, §5.4) before falling back to PL1 — the reason burst clock > sustained clock. This is a governor, and it *is* the budget layer of §1.6 made executable.
+- **Race-to-idle:** run at max $f$, finish fast, drop to a deep idle state. Wins when idle (leakage-dominated) power is very low and there is a long idle tail to amortize — you pay the high active power only briefly.
+- **Pace-to-deadline:** run at the *lowest* $f$ that still meets the deadline, exploiting $P\sim f^3$ so that stretching the work cuts energy super-linearly. Wins when there is a hard deadline and idle power is *not* negligible (leakage would burn during the idle tail anyway).
 
-**Race-to-idle vs pace-to-deadline** — two opposite budget strategies:
+Which wins is the dynamic-power-management break-even of [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md): race-to-idle pays only when $E_{\text{saved by idling}} > E_{\text{extra to run fast}} + E_{\text{transition}}$. On leaky advanced nodes (high static power) race-to-idle is increasingly favored; on low-leakage or deadline-bound work, pace-to-deadline.
 
-- **Race-to-idle:** run at max $f$, finish the work fast, then drop to a deep low-power/idle state. Wins when idle (leakage-dominated) power is very low and there is a long idle tail to amortize the wake — the higher active power is paid briefly. This is the break-even calculus of dynamic power management ([Block_Activity_and_Power §9](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md)): race-to-idle pays off only when $E_{saved by idling} > E_{extra to run fast} + E_{transition}$.
-- **Pace-to-deadline:** run at the *lowest* $f$ that still meets the deadline, exploiting $P\sim f^3$ so that stretching the work to fill the time cuts energy super-linearly. Wins when there is a hard deadline and idle power is *not* negligible (leakage would burn during the idle tail anyway).
+> **Auditor's red flag:** quoting throughput at peak $f$ across all cores at once ignores that the budget cannot fund it — the all-core sustained $f$ is the frequency at which $\sum P = \text{TDP}$, always lower.
 
-Which wins depends on the leakage fraction and the transition cost — exactly the DPM break-even of [Block_Activity_and_Power §9](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md). On leaky advanced nodes (high static power) race-to-idle is increasingly favored; on low-leakage or deadline-bound workloads, pace-to-deadline.
+### 2.5 Thermal — power is temperature, and temperature is throttle
 
-### 5.4 Thermal coupling & throttling
+The steady-state thermal model is Ohm's law for heat — power is the "current," temperature rise the "voltage," thermal resistance the "resistance":
 
-**The steady-state thermal model** is Ohm's law for heat: power is the "current," temperature rise the "voltage," thermal resistance the "resistance":
+$$
+T_j \;=\; T_{amb} + P\cdot R_{\theta ja}
+$$
 
-$$T_j = T_{amb} + P\cdot R_{\theta ja}$$
+where $T_j$ = junction temperature, $T_{amb}$ = ambient, $P$ = dissipated power, $R_{\theta ja}$ = junction-to-ambient thermal resistance (°C/W), the *series* sum of die→case, the TIM (thermal interface material), and heatsink→air. $R_{\theta ja}$ ranges from ~0.1–0.5 °C/W for a big server part under a large heatsink to >10 °C/W for a small package with poor cooling — and note it is the *cooling solution's* number, not the die's. This single equation says: at fixed cooling, $T_j$ rises *linearly* with power, so **power is temperature.**
 
-where $T_j$ = junction temperature, $T_{amb}$ = ambient, $P$ = dissipated power, $R_{\theta ja}$ = junction-to-ambient thermal resistance (°C/W), the *series* sum of die→case ($R_{\theta jc}$), TIM (thermal interface material), and heatsink→air ($R_{\theta ca}$). Package $R_{\theta ja}$ ranges roughly from **~0.1–0.5 °C/W** for a big server part under a large heatsink to **>10–50 °C/W** for a small package with poor cooling (basis: package/thermal datasheets; order-of-magnitude — the exact value is the cooling solution's, not the die's). This single equation says: at fixed cooling, $T_j$ rises *linearly* with power, so power *is* temperature.
+The transient model adds thermal capacitance $C_\theta$ (the mass that must be heated), giving a first-order RC approach to steady state:
 
-**The transient model** adds thermal capacitance $C_\theta$ (the mass that must be heated). A first-order RC gives the exponential approach to steady state:
+$$
+T_j(t) = T_\infty + (T_0 - T_\infty)\,e^{-t/\tau_\theta}, \qquad \tau_\theta = R_\theta C_\theta
+$$
 
-$$T_j(t) = T_{\infty} + (T_0 - T_{\infty})\,e^{-t/\tau_\theta},\qquad \tau_\theta = R_\theta C_\theta$$
+The **thermal time constant** $\tau_\theta$ spans orders of magnitude within one package: the tiny die heats in **~ms** (small $C_\theta$), while the heatsink/package has $\tau_\theta$ of **~seconds to tens of seconds** (large $C_\theta$). That span *is* why burst beats sustained: for a few ms the die can dissipate above steady-state TDP because the heatsink has not warmed yet — precisely the headroom RAPL PL2 and Turbo (§2.4) exploit. When $T_j$ reaches $T_{j,max}$ (commonly ~95–105 °C for logic), the governor cuts $(V,f)$ to force $P$ down, so the **sustained clock is the frequency at which $T_j$ settles *at* $T_{j,max}$** — necessarily below the burst clock the die hits before the package warms.
 
-The **thermal time constant** $\tau_\theta = R_\theta C_\theta$ sets how fast temperature responds: the tiny **die** heats in **~ms** (small $C_\theta$), while the **heatsink/package** has $\tau_\theta$ of **~seconds to tens of seconds** (large $C_\theta$). This span is *why* burst > sustained performance: for a few ms the die can dissipate above steady-state TDP because the heatsink hasn't warmed yet — exactly the thermal headroom RAPL PL2 / Turbo exploit (§5.3). The package $\tau_\theta$ dominates the trajectory to steady state.
+The deepest coupling is a positive feedback. Subthreshold leakage rises *exponentially* with temperature — roughly **doubling every ~10 °C** — closing a loop:
 
-**Throttling: sustained clock < peak clock.** When $T_j$ reaches $T_{j,max}$ (commonly ~95–105 °C for logic; the throttle/$T_{limit}$ trip point), the governor (§5.3) cuts $f$/$V$ to force $P$ down until $T_j\le T_{j,max}$. So the **sustained** clock is the frequency at which $T_j$ settles *at* $T_{j,max}$ — necessarily $\le$ the peak/burst clock that the die can hit before the package warms up. A workload's clock therefore traces: high burst clock (ms, riding die $C_\theta$) → decay as the heatsink warms ($\tau_\theta$ seconds) → steady sustained clock at the thermal cap. **Reporting peak clock as if sustained is the auditor's red flag** — the same error as ignoring the power budget (§5.3), because thermal *is* a budget expressed in °C.
+$$
+T_j\uparrow \;\Rightarrow\; P_{leak}\uparrow \;\Rightarrow\; P_{total}\uparrow \;\Rightarrow\; T_j\uparrow
+$$
 
-**Leakage–temperature positive feedback.** Subthreshold leakage current rises *exponentially* with temperature, so leakage power climbs steeply as the die heats — roughly **doubling every ~10 °C** in the relevant range (basis: subthreshold-leakage temperature-dependence literature; order-of-magnitude). This closes a positive-feedback loop:
+Usually the loop gain is below 1 — cooling removes heat faster than leakage adds it — so it merely inflates steady-state $T_j$ and leakage, which is already reason enough that **leakage must be modeled at the operating temperature, not at 25 °C.** But if the gain exceeds 1 (weak cooling, high $R_\theta$, a leaky node, high $V$) it becomes **thermal runaway**: $T$ and leakage diverge until the part hard-throttles or trips protection. This makes the thermal and leakage models *mutually coupled* — you cannot solve one without the other — and it is the deepest reason perf, power, and thermal are a single co-model (§3).
 
-$$T_j\uparrow \;\Rightarrow\; P_{leak}\uparrow \;\Rightarrow\; P_{total}\uparrow \;\Rightarrow\; T_j\uparrow$$
+> **Auditor's red flag:** reporting peak/burst clock as if it were sustained — the same error as ignoring the power budget (§2.4), because thermal *is* a budget, expressed in °C over $\tau_\theta$.
 
-Usually the loop is *stable* (cooling removes heat faster than leakage adds it) and just inflates steady-state $T_j$ and leakage — which is why leakage must be modeled at the *operating* temperature, not 25 °C. But if the loop gain exceeds 1 (weak cooling, high $R_\theta$, leaky node, high $V$), it becomes **thermal runaway**: temperature and leakage diverge until the part hits $T_{j,max}$ and hard-throttles or trips protection (basis: FinFET (fin field-effect transistor) thermal-runaway analyses, e.g. leakage-driven runaway at high leakage + typical package $R_\theta$). This makes the thermal and leakage models *mutually coupled* — you cannot solve one without the other, and it is the deepest reason perf/power/thermal are one co-model (§5.5).
+---
 
-**Interaction — sustained vs burst is the whole story.** Contention (§5.1) caps *bandwidth*, the power budget (§5.3) caps *watts*, and thermal caps *sustained watts over $\tau_\theta$*. All three re-shape the operating point; thermal is the one that makes a benchmark's first second look great and its tenth second look ordinary. **Tools:** **HotSpot** — the standard compact/RC thermal model (grid + package RC network, static + transient); coupled to a performance simulator it becomes thermal-aware (e.g. HotSpot+Sniper = HotSniper; CoMeT for 2.5D/3D). HotSpot consumes a per-block power map (from McPAT/GPUWattch/etc.) and a floorplan → per-block $T_j(t)$.
+## 3. The system loop: one fixed point, not two models
 
-### 5.5 Why perf and power must be CO-modeled
+The five terms of §2 do not act in sequence; they close a loop. Trace the dependencies: a performance number depends on the clock $f$; $f$ is set by the power budget (§2.4) and the thermal cap (§2.5); the power drawn depends on activity, which depends on the *achieved* performance after contention (§2.1–2.2) and overlap (§2.3); and leakage — a power term — depends on temperature, which depends on power (§2.5). **Every arrow points at every other.** There is no "compute performance first, then estimate power" — it is one **fixed-point solve** for a self-consistent operating point.
 
-Pull §5.1–§5.4 together. A performance number depends on the clock $f$; $f$ is set by the power budget (§5.3) and the thermal cap (§5.4); the power drawn depends on the activity, which depends on the *achieved* performance after contention (§5.1) and overlap (§5.2); and leakage — a power term — depends on temperature, which depends on power (§5.4). Every arrow points at every other. **There is no "compute performance first, then estimate power" — it is one fixed-point solve.**
-
-The full-chip model is therefore four parts wired in a loop, not one:
+The full-chip model is therefore four parts wired in a loop:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    GOV["Control loop / governor (§5.3)<br/>DVFS + throttle: pick V,f per domain,<br/>gate idle blocks (RAPL / Boost)"]
-    PWR["Power / thermal budget layer (§5.4)<br/>Tj = Tamb + P·Rθ (+ transient Cθ)<br/>P ≤ TDP/RAPL cap; leakage(T) loop"]
-    CON["Contention / overlap layer (§5.1, §5.2)<br/>achieved = min(Σd, R); t = max(·), not Σ"]
-    LEAF["Leaf models<br/>CACTI / McPAT / DRAMPower / DSENT"]
+    GOV["Governor / control loop (§2.4)<br/>DVFS + throttle: pick V,f per domain,<br/>gate idle blocks (RAPL / Boost)"]
+    PWR["Power / thermal layer (§2.5)<br/>Tj = Tamb + P·Rθ (+ transient Cθ)<br/>P ≤ TDP/RAPL cap; leakage(T) loop"]
+    CON["Contention / overlap layer (§2.1–2.3)<br/>achieved = min(Σd, R); t = max(·), not Σ"]
+    LEAF["Leaf models (§1)<br/>CACTI / McPAT / DRAMPower / DSENT"]
     GOV -->|"sets V, f"| PWR
     PWR -->|config| CON
     CON -->|config| LEAF
@@ -594,55 +271,148 @@ flowchart TD
     class LEAF l
 ```
 
-Perf and power must be co-modelled because they form a loop: the governor sets `(V,f)`, the power/thermal layer turns activity into `P` and `Tj`, and the contention layer turns leaf energies into achieved throughput and activity. Control flows down; computed quantities flow back up.
+Control flows *down* (the governor sets $(V,f)$ and gating); computed quantities flow *back up* (leaf energies become achieved throughput and true activity, which become $P$ and $T_j$). The solve iterates: pick $(V,f)$ → leaves emit activity → contention/overlap turn activity into achieved performance *and* the true (contended) activity counts → those give $P$ → $P$ gives $T_j$ (with the leakage–$T$ loop) → the governor checks $P\le\text{budget}$ and $T_j\le T_{j,max}$, adjusts $(V,f)$, and repeats until nothing moves. Only at that self-consistent point is a perf *or* power number meaningful — quoting either before the loop closes is quoting a transient the chip passes through, not a state it sits in.
 
-The solve: pick $(V,f)$ → leaves emit activity → contention/overlap turn activity into achieved performance *and* the true activity counts → those give $P$ → $P$ gives $T_j$ (with the leakage-$T$ loop) → the governor checks $P\le$ budget and $T_j\le T_{j,max}$, adjusts $(V,f)$, and iterates to a **self-consistent operating point**. Only then is a perf *or* power number meaningful.
-
-This is why a leaf-only model (§0) is not a chip model: it has the bottom box and none of the three above it. **Cross-links:** the governor's gate/wake decisions and the race-to-idle break-even are the DPM of [Block_Activity_and_Power §9](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md); the per-block power maps feeding the thermal layer are [Block_Activity_and_Power §11–14](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md); the achieved-performance side is the roofline/DSE of [Performance_Modeling_and_DSE §9–11](01_Performance_Modeling_and_DSE.md).
+On real silicon this loop *is* the governor, running in hardware/firmware at millisecond granularity: measure (RAPL counters, on-die current and thermal sensors) → compare to budget/limit → actuate $(V,f)$ and gating → repeat. In a model it is a solver iterating the four boxes to convergence. Either way, **this loop is the precise reason a leaf-only model is not a chip model** — it has the bottom box and none of the three above it.
 
 ---
 
-## 6. Numbers to remember + tool map
+## 4. One equation, three architectures
 
-### 6.1 Numbers to remember
+Everything above is architecture-independent, which is the point: CPU, GPU, and NPU are the *same* composition and the *same* five coupling terms with different labels. This section is deliberately compact — it carries the load-bearing numbers and vendor data, not a re-derivation. For the microarchitecture behind each, see [GPU_Architecture](15_GPU_Architecture.md) and [NPU_Accelerators](16_NPU_Accelerators.md); for how each is *simulated*, [06_Simulators](06_Simulators/00_Index.md).
+
+### 4.1 The hierarchies line up
+
+| CPU | GPU | NPU | Shared glue that appears at this level |
+|---|---|---|---|
+| core | SM (streaming multiprocessor) | systolic array + vector unit | pipeline/warp/dataflow control, local clock |
+| cluster (N cores + LLC) | GPC (SM cluster) | NPU core (array + SRAM + DMA) | intra-cluster crossbar, regional clock domain |
+| SoC (+ DDR) | full GPU (+ L2, HBM) | chip (multi-core + HBM + ICI) | shared memory pool, uncore, chip-wide power cap |
+| — | — | pod (multi-chip torus) | inter-chip network, collectives |
+
+The roll-up rule (§1.1), the calibration chain (§1.2), and the loop (§3) are identical at every row. What differs is *which* coupling term dominates: the CPU foregrounds contention on one DRAM channel, the GPU foregrounds the HBM-bandwidth knee under a power cap, and the NPU foregrounds overlap — on-chip (double-buffering) and across the pod (collectives).
+
+### 4.2 CPU: the DRAM channel is the textbook contention instance
+
+Climb core → cluster → SoC and the coupling appears exactly on schedule. At the **cluster**, a shared LLC means co-runners evict each other's lines, so *effective* per-core miss rate (MPKI, misses per kilo-instruction) rises as capacity splits $N$ ways, and coherence traffic (snoops, invalidations, writebacks under MESI/MOESI, or point-to-point messages under a directory protocol like CHI, [ACE_and_CHI](12_ACE_and_CHI.md)) adds NoC energy that scales with the miss rate. Sub-linear scaling follows directly — Amdahl *and* contention:
+
+$$
+\text{Speedup}(N) \;=\; \frac{1}{(1-p) + p/N + C(N)}
+$$
+
+where $C(N)$ is the contention term that *grows* with $N$ (LLC eviction, NoC and channel queueing, §2.1–2.2). This is why 8 memory-heavy cores deliver ~4–5× rather than 8×, while a cache-fitting compute phase approaches Amdahl's ceiling.
+
+At the **SoC**, the DRAM channel is the canonical shared resource. Its *performance* and its *energy* are modeled by different tools — a distinction an auditor watches for: performance (achieved BW, latency, scheduling) from a cycle-level channel model (Ramulator / DRAMSim3), energy from a state-integrator (DRAMPower), which computes $\sum_{\text{states}}(\text{time in state}\times \text{IDD}\times V_{DD})$. Two device facts survive from the parameter detail (which lives in [DDR_Controller](10_DDR_Controller.md) and [Memory](09_Memory.md)):
+
+- **Achieved BW is access-pattern-bound, not just peak.** A row-buffer **hit** costs only $t_{CAS}$; a **miss** adds an activate; a **conflict** adds a precharge *and* an activate. FR-FCFS scheduling reorders to favour row-hits, so a streaming, well-interleaved stream reaches ~80–90% of peak while a conflict-heavy random stream falls to ~40–50% — the *same* channel, half the bandwidth, from access pattern alone.
+- **Refresh is an unavoidable off-the-top tax:** $\approx t_{RFC}/t_{REFI}$, so **~4–5% on DDR4** (~350 ns / 7.8 µs) but **~8–10% on DDR5** ($t_{REFI}$ halved to ~3.9 µs while $t_{RFC}$ held), worsening at higher density.
+
+The **interaction** is §2.1–2.2 in the flesh: the channel is shared across all cores, so as they contend the MC queue saturates, aggregate BW stays near peak (FR-FCFS) but *per-core* BW divides toward $R/N$ and *per-request latency* balloons via queueing. A core that saw 20 GB/s standalone may see 5 GB/s under 8-core load — which is why the cluster model's memory-CPI *must* be driven by the contended channel, never the standalone one.
+
+### 4.3 GPU: the HBM roofline knee, under a power cap
+
+The GPU re-runs the hierarchy with a *throughput* philosophy — thousands of threads, wide SIMT (single-instruction, multiple-thread) lanes, memory bandwidth as the first-class shared resource — and hides latency not with OoO speculation but with **thread-level parallelism**: many resident warps, and on a stall the scheduler switches to a ready warp for free. **Occupancy** (resident warps ÷ hardware max) quantifies the available TLP, but it is a *ceiling on activity, not activity itself* — a 100%-occupant kernel can still be issue-starved if every warp is blocked on the same saturated memory system. That is Little's law (§2.3): occupancy only helps if enough warps are *eligible* to keep $B\times L$ bytes in flight.
+
+The dominant coupling is HBM (high-bandwidth memory) bandwidth shared across all SMs — the §2.1 knee, at GPU scale:
+
+$$
+B_{achieved} = \min\!\Big(\textstyle\sum_i \text{demand}_i,\; B_{HBM}\Big), \qquad N^\star = \frac{B_{HBM}}{\text{demand per SM}}
+$$
+
+At per-SM demand 30 GB/s and $B_{HBM}=3$ TB/s the knee is $N^\star = 100$ active SMs; on a ~130-SM die, all-SM streaming pushes $\sum\text{demand}=3.9$ TB/s past $B_{HBM}$, so achieved saturates at 3 TB/s and per-SM effective BW collapses from 30 → ~23 GB/s while every SM's memory-CPI rises together. Past the knee, *adding SMs adds no throughput* — only contention and power. Data-movement energy is a real uncore line, not a floor: **HBM3 ≈ 0.29 pJ/bit** at the interface, **NVLink ≈ 1.3 pJ/bit** (~5× more efficient than **PCIe Gen5 ≈ 6–7 pJ/bit**), so a multi-GPU AllReduce over NVLink is a quantifiable energy term.
+
+The GPU is where **both** coupling families bite at once: the *contention* layer collapses per-SM BW (above), and the *budget* layer (§2.4–2.5) runs GPU Boost — the highest clock with $P\le\text{cap}$ and $T\le T_{limit}$. These interact perversely: a memory-bound phase draws *less* core power, so Boost may *raise* the clock — which buys nothing, because the bottleneck is HBM, not compute; conversely a compute-bound tensor-core phase hits the power cap and throttles the very compute rate that defined it. A correct model co-solves BW-sharing and the power-capped clock in one loop (§3).
+
+> **Auditor's red flag:** reporting peak TFLOPs × peak clock × all SMs ignores *both* layers — the HBM knee and the power cap.
+
+### 4.4 NPU: overlap on-chip, collectives across the pod
+
+The NPU (neural processing unit; TPU-class dataflow accelerator) climbs one level higher — PE/MAC → systolic array → core → chip → **pod** — because AI systems are multi-chip, and its philosophy inverts the GPU's: instead of many latency-hiding threads, a **deterministic dataflow** streams operands through a fixed array, and the whole game is *overlap* — keep the array fed.
+
+**On-chip, overlap is §2.3 as the single most important modeling fact.** An NPU core wraps the array with a large on-chip SRAM (static RAM) and DMA (direct-memory-access) engines; with the SRAM double-buffered, DMA fills buffer B while the array computes on A, so
+
+$$
+t_{tile} = \max\big(t_{compute},\ t_{DMA}\big)\ \text{(overlapped)} \qquad\text{NOT}\qquad t_{compute}+t_{DMA}\ \text{(serial)}
+$$
+
+Which term dominates classifies the tile — SA-bound (compute-limited), VU-bound (too much elementwise vs GEMM), or HBM-bound (DMA-limited, low arithmetic intensity) — and *arithmetic intensity decides the flip*, exactly the roofline. A concrete tile: a $128\times128$ INT8 weight sub-tile is 16 KB, streaming in $t_{DMA}\approx 16\text{ KB}/1.2\text{ TB/s}\approx 13$ ns; if $t_{compute}\approx 90$ ns ($K{=}128$ at ~1.4 GHz) then DMA is fully hidden and the tile is SA-bound. But the overlap is *conditional* (§2.3): the buffer must hold *two* tiles (single-buffered, DMA and compute serialize back to the sum and throughput halves) *and* HBM BW must satisfy $t_{DMA}\le t_{compute}$. When sibling cores contend for HBM (§2.1), the per-core $t_{DMA}$ grows and tiles that were SA-bound standalone flip HBM-bound — the NPU's contended-vs-standalone regime change. A leakage note peculiar to this class: because the dataflow schedule is *known ahead of time*, fine-grained gating can follow the compute wavefront with near-zero mis-wake cost (unlike speculative CPU gating), which matters because **30–72% of NPU energy is static** on weakly-managed designs (ReGate, MICRO 2025).
+
+**Across the pod, overlap becomes collectives, and the network is the bottleneck.** Hundreds–thousands of chips wire into a torus (2D = 4 neighbours, TPU v2/v3-class; 3D = 6 neighbours, e.g. $4\times4\times4$ cubes on TPU v4+), and the dominant operation is **AllReduce** for gradient/activation sync. Ring-AllReduce runtime (bandwidth-optimal, Patarasuk & Yuan 2009):
+
+$$
+t_{AllReduce} \approx \underbrace{\frac{2(N-1)}{N}\cdot\frac{S}{B_{link}}}_{\text{bandwidth term}} + \underbrace{2(N-1)\,\ell}_{\text{latency term}}
+$$
+
+where $N$ = chips in the ring, $S$ = payload bytes, $B_{link}$ = per-link ICI (inter-chip interconnect) bandwidth, $\ell$ = per-hop latency. As $N\to\infty$ the bandwidth term $\to 2S/B_{link}$ — *independent of $N$*, the whole point of ring-AllReduce — while the latency term grows linearly, so at large $N$ or small $S$ latency dominates and hierarchical/tree collectives win. Worked: $N=256$, $S=256$ MB (bf16 shard), $B_{link}=1.2$ TB/s gives $t_{AllReduce}\approx 425\ \mu s$; against a ~5 ms per-step compute this is easily hidden — *compute-bound*, good scaling. The saving grace is again §2.3 overlap: AllReduce layer $L$ while the backward pass still computes layer $L{-}1$, so the effective step is $\max(t_{compute}, t_{comm})$ — but *only if* the schedule interleaves independent comm and compute *and* the ICI links are not already saturated by other tensor/pipeline-parallel traffic (the pod-scale contention layer). A model assuming free overlap overstates scaling.
+
+> **Auditor's red flag:** classifying a tile's regime (or a pod's scaling) from *standalone* bandwidth — the regime is set by how many siblings contend *right now*, and by whether the overlap preconditions actually hold.
+
+---
+
+## 5. Numbers to remember
 
 Order-of-magnitude anchors for back-of-envelope full-chip sanity checks. **State the basis; these are public-literature ballparks, not any specific silicon — use vendor/tool numbers for a real quote.**
 
 | Quantity | Value | Basis / note |
 |---|---|---|
-| Uncore share of socket power | **~20–40%** | server RAPL package/uncore split; scales with BW, not a floor (§1.1, §2.3) |
-| VRM efficiency $\eta$ | **~0.85–0.92** | delivery loss $P(1/\eta-1)$ ⇒ ~9–18% lost in regulator (§2.4) |
-| DRAM refresh BW loss | **~4–5% DDR4, ~8–10% DDR5** | $t_{RFC}/t_{REFI}$ (~350 ns / 7.8 µs DDR4; ~295–410 ns / 3.9 µs DDR5); worse at high density (§2.3) |
-| Clock-tree share of core dynamic | **~30–40%** | McPAT / [Block_Activity §14](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (§1.5) |
-| HBM3 interface energy | **~0.29 pJ/bit** | NVIDIA/WikiChip class figure; order-of-mag (§3.3) |
-| NVLink energy | **~1.3 pJ/bit** | ~5× more efficient than PCIe Gen5 (§3.3) |
-| PCIe Gen5 energy | **~6–7 pJ/bit** | published; the multi-GPU comm baseline (§3.3) |
-| NoC energy | **~a few pJ/flit-hop** | DSENT/Orion, node-dependent (§2.2) |
-| NPU static (leakage) fraction | **~30–72%** | ReGate, MICRO 2025 (arXiv:2508.02536) (§4.1) |
-| Junction-to-ambient $R_{\theta ja}$ | **~0.1–0.5 °C/W** (server+heatsink) to **>10 °C/W** (small pkg) | package/cooling datasheets; it's the cooling's number (§5.4) |
-| Leakage vs temperature | **~2× per +10 °C** | subthreshold-leakage $T$-dependence; drives runaway loop (§5.4) |
-| Die vs package thermal time constant | **~ms (die) vs ~s (heatsink)** | $\tau_\theta=R_\theta C_\theta$; enables burst > sustained (§5.4) |
+| Uncore share of socket power | **~20–40%** | server RAPL package/uncore split; scales with BW, not a floor (§1.1, §4.2) |
+| VRM efficiency $\eta$ | **~0.85–0.92** | delivery loss $P(1/\eta-1)$ ⇒ ~9–18% lost in regulator (§1.1) |
+| DRAM refresh BW loss | **~4–5% DDR4, ~8–10% DDR5** | $t_{RFC}/t_{REFI}$ (~350 ns / 7.8 µs; ~295–410 ns / 3.9 µs); worse at high density (§4.2) |
+| Clock-tree share of core dynamic | **~30–40%** | McPAT / [Block_Activity](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (§1.1) |
+| Calibrated arch-model accuracy | **±20–30%** abs, tighter relative | inherits CACTI/cell energies; relative error is common-mode (§1.2–1.3) |
+| Random vs systematic block error | **$\sigma/\sqrt{N}$ cancels; systematic stays** | why relative $\gg$ absolute trust (§1.3) |
+| HBM3 interface energy | **~0.29 pJ/bit** | NVIDIA/WikiChip class; order-of-mag (§4.3) |
+| NVLink / PCIe Gen5 energy | **~1.3 / ~6–7 pJ/bit** | NVLink ~5× more efficient; comm baseline (§4.3) |
+| NoC energy | **~a few pJ/flit-hop** | DSENT/Orion, node-dependent (§4.2) |
+| NPU static (leakage) fraction | **~30–72%** | ReGate, MICRO 2025 (arXiv:2508.02536) (§4.4) |
+| Dynamic power vs frequency | **$P\sim f^3$** over the DVFS range | $V\propto f$ ⇒ small $f$ cut, large power cut (§2.4) |
+| RAPL windows | **PL1 $\tau\sim$ tens of s, PL2 $\tau\sim$ ms** | burst > sustained via thermal $C_\theta$ (§2.4–2.5) |
+| Junction-to-ambient $R_{\theta ja}$ | **~0.1–0.5 °C/W** (server+heatsink) to **>10 °C/W** (small pkg) | it's the cooling's number, not the die's (§2.5) |
+| Leakage vs temperature | **~2× per +10 °C** | subthreshold $T$-dependence; drives runaway loop (§2.5) |
+| Die vs package thermal time constant | **~ms (die) vs ~s (heatsink)** | $\tau_\theta=R_\theta C_\theta$; enables burst > sustained (§2.5) |
+| $T_{j,max}$ (logic throttle point) | **~95–105 °C** | sustained clock settles here (§2.5) |
+| Queueing blow-up at $\rho=0.9$ | **~10× unloaded latency** | $L\approx L_{svc}/(1-\rho)$ (§2.2) |
 | Ring-AllReduce bandwidth factor | **$2(N-1)/N \to 2$** | Patarasuk 2009; per-link cost $\to 2S/B_{link}$ (§4.4) |
-| Multicore speedup (mem-heavy) | **~4–5× on 8 cores** | Amdahl + contention $C(N)$, not 8× (§2.2) |
-
-### 6.2 Tool map: modeling layer × perf / power / thermal
-
-The full-chip model is a *pipeline of tools*: a performance/timing tool emits activity, a power tool turns activity into a per-block power map, and a thermal tool turns the power map + floorplan into temperatures — which feed back to the governor (§5.5). Read a row as "at this layer, use these three."
-
-| Modeling layer | Performance / timing | Power / energy | Thermal |
-|---|---|---|---|
-| **Leaf (arrays, cells)** | — (analytical) | **CACTI** (SRAM/array E), Accelergy | (feeds up) |
-| **Block / core (CPU)** | **gem5** (cycle/CPI), Sniper | **McPAT** (energy × activity) | HotSpot (per-block map) |
-| **DRAM channel** | **Ramulator**, DRAMSim3 (BW, latency) | **DRAMPower** (IDD × time) | HotSpot (DRAM layer) |
-| **NoC / interconnect** | gem5-Ruby (latency-under-load) | **DSENT**, Orion (pJ/flit-hop) | HotSpot |
-| **GPU (SM→chip)** | **GPGPU-Sim / Accel-Sim** (SIMT, L2, HBM) | **GPUWattch / AccelWattch** | HotSpot |
-| **NPU (PE→chip)** | **SCALE-Sim** (SA + double-buffer), ONNXim | Accelergy/Timeloop, NeuSim power | HotSpot |
-| **NPU pod (multi-chip)** | **NeuSim** (multi-chip, ICI, collectives) | NeuSim / composed per-chip | system-level |
-| **Thermal (all)** | (consumes power map) | (consumes power map) | **HotSpot** (RC grid, static+transient); HotSniper, CoMeT (2.5D/3D) |
-| **DSE / orchestration** | roofline + fidelity ladder ([Perf_Modeling §9–11](01_Performance_Modeling_and_DSE.md)) | budget solve (§5.3) | budget solve (§5.4) |
-
-The columns are *different tools on purpose* (§2.3's auditor distinction): Ramulator gives BW, DRAMPower gives energy — never conflate a timing tool with a power tool. The rightmost thermal column is the layer §5.4 adds; HotSpot is the standard, consuming the power column's output plus a floorplan. For a full co-modeled DSE loop, an orchestration layer (e.g. Ray-driven NeuSim sweeps) drives the perf→power→thermal→governor fixed point of §5.5 across a design space.
+| Multicore speedup (mem-heavy) | **~4–5× on 8 cores** | Amdahl + contention $C(N)$, not 8× (§4.2) |
 
 ---
 
-> **Where this connects.** This page is the *composition + coupling* spine: leaf energies come from [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (bottom-up McPAT/CACTI, per-arch power, DPM/§9), achieved performance from [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (roofline, CPI stack, systolic/occupancy models), and the contention/budget/thermal layers here are what make them one chip model instead of a bag of blocks. The governor closes the loop (§5.5).
+## 6. The tool map
+
+A full-chip model is a *pipeline of tools*: a performance/timing tool emits activity, a power tool turns activity into a per-block power map, and a thermal tool turns the power map + floorplan into temperatures — which feed the governor (§3). Read a row as "at this layer, use these three." The **mechanics of each tool** — how it models compute, memory, and time, and where its error comes from — live in [06_Simulators](06_Simulators/00_Index.md); this table is only the *which-tool-where* index.
+
+| Modeling layer | Performance / timing | Power / energy | Thermal |
+|---|---|---|---|
+| **Leaf (arrays, cells)** | — (analytical) | **CACTI** (array E), Accelergy | (feeds up) |
+| **Block / core (CPU)** | **gem5** (cycle/CPI), Sniper | **McPAT** (energy × activity) | HotSpot (per-block map) |
+| **DRAM channel** | **Ramulator**, DRAMSim3 | **DRAMPower** (IDD × time) | HotSpot (DRAM layer) |
+| **NoC / interconnect** | gem5-Ruby (latency-under-load) | **DSENT**, Orion (pJ/flit-hop) | HotSpot |
+| **GPU (SM→chip)** | **GPGPU-Sim / Accel-Sim** | **GPUWattch / AccelWattch** | HotSpot |
+| **NPU (PE→chip)** | **SCALE-Sim**, ONNXim | Accelergy/Timeloop, NeuSim | HotSpot |
+| **NPU pod (multi-chip)** | **NeuSim** (ICI, collectives) | NeuSim / composed per-chip | system-level |
+| **Thermal (all)** | (consumes power map) | (consumes power map) | **HotSpot** (RC grid); HotSniper, CoMeT (2.5D/3D) |
+| **DSE / orchestration** | roofline + fidelity ladder ([Perf_Modeling](01_Performance_Modeling_and_DSE.md)) | budget solve (§2.4) | budget solve (§2.5) |
+
+The columns are *different tools on purpose* — the auditor's distinction of §4.2: Ramulator gives bandwidth, DRAMPower gives energy; never conflate a timing tool with a power tool. The thermal column is what §2.5 adds; HotSpot is the standard, consuming the power column's output plus a floorplan → per-block $T_j(t)$. For a full co-modeled DSE loop, an orchestration layer drives the perf→power→thermal→governor fixed point of §3 across a design space.
+
+---
+
+## Cross-references
+
+- **Down the stack (what this composes):** [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the leaf energies, McPAT/CACTI bottom-up, DPM/gating, clock-tree share), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (the CPI stack and roofline that supply activity and the bottleneck), [06_Simulators](06_Simulators/00_Index.md) (how every tool in §6 actually models time, memory, and energy — [Analytical_Models](06_Simulators/07_Analytical_Models.md) for the queueing/Little/roofline duals of §2), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the PDN/IR-drop delivery loss of §1.1).
+- **Up the stack (what builds on this):** [GPU_Architecture](15_GPU_Architecture.md) and [NPU_Accelerators](16_NPU_Accelerators.md) (the µarch behind §4's power/perf roll-ups), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) and [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (the budgeting/DVFS/gating mechanics at silicon).
+- **Adjacent / device detail:** [Memory](09_Memory.md) & [DDR_Controller](10_DDR_Controller.md) (the DRAM timing/IDD parameters §4.2 abstracts), [Network_on_Chip](13_Network_on_Chip.md) & [ACE_and_CHI](12_ACE_and_CHI.md) (the NoC/coherence fabric of §4.2), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (the LLC whose sharing drives cluster contention).
+
+---
+
+## References
+
+1. Li, S. et al., "McPAT: An Integrated Power, Area, and Timing Modeling Framework for Multicore and Manycore Architectures," *MICRO*, 2009. The architectural energy×activity roll-up of §1.1.
+2. Muralimanohar, N., Balasubramonian, R., and Jouppi, N.P., "CACTI 6.0: A Tool to Model Large Caches," HP Labs, 2009. The array energies §1 pushes down.
+3. Williams, S., Waterman, A., and Patterson, D., "Roofline: An Insightful Visual Performance Model for Multicore Architectures," *CACM*, 52(4), 2009. The bottleneck/overlap model of §2.3.
+4. Gunther, N.J., *Guerrilla Capacity Planning*, Springer, 2007. The Universal Scalability Law — Amdahl plus the contention term $C(N)$ of §4.2.
+5. Chandrasekar, K. et al., "DRAMPower: Open-Source DRAM Power & Energy Estimation Tool," 2012. The IDD × time-in-state integral of §4.2.
+6. Skadron, K. et al., "Temperature-Aware Microarchitecture" (HotSpot), *ISCA*, 2003. The RC thermal model of §2.5.
+7. Patarasuk, P. and Yuan, X., "Bandwidth Optimal All-reduce Algorithms for Clusters of Workstations," *JPDC*, 69(2), 2009. The ring-AllReduce runtime of §4.4.
+8. Zhang, Y. et al., "ReGate: Fine-Grained Power Gating for NPUs," *MICRO*, 2025 (arXiv:2508.02536). The 30–72% static-energy finding of §4.4.
+9. Intel, *Running Average Power Limit (RAPL)* and *Turbo Boost* documentation; NVIDIA GPU Boost / `nvidia-smi` power-cap docs; AMD Precision Boost. The governor mechanisms of §2.4.

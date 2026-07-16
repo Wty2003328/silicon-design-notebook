@@ -1,1470 +1,319 @@
-# TLB and Virtual Memory -- Hardware Microarchitecture
+# TLB and Virtual Memory — Address Translation on the Critical Path
 
-> **Prerequisites:**
-> - [CPU_Architecture.md](03_CPU_Architecture.md) -- pipeline fundamentals, memory hierarchy
-> - [Memory.md](09_Memory.md) -- SRAM cell design, cache organization
-> - RISC-V ISA reference -- Sv39 page table format, satp CSR, SFENCE.VMA
-> - Cache_Microarchitecture.md -- set-associative indexing, tag comparison, VIPT concept
->
-> **Hands-off to:**
-> - [AHB_AXI_APB.md](11_AHB_AXI_APB.md) -- bus transactions that carry physical addresses
-> - Operating Systems texts -- page replacement algorithms, swap management
+> **Prerequisites:** [CPU_Architecture](03_CPU_Architecture.md) (pipeline, memory hierarchy), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (set-associative indexing, tag compare), [RISC_V_ISA](04_RISC_V_ISA.md) (Sv39, `satp`, `SFENCE.VMA`).
+> **Hands off to:** [Memory](09_Memory.md) (the DRAM the walk reads), [AHB_AXI_APB](11_AHB_AXI_APB.md) (buses carrying physical addresses), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (a complete MMU in an open core).
 
 ---
 
-## Section 0 -- Why This Page Exists
+## 0. Why this page exists
 
-Every memory instruction a core issues uses a virtual address. The translation to a
-physical address must complete before the cache tag comparison can succeed, and it must
-complete fast -- ideally in the same cycle as the cache access. The Translation Lookaside
-Buffer (TLB) is the small, fast structure that makes this possible. When the TLB misses,
-a hardware page-table walker must traverse a multi-level radix tree in main memory,
-stall the pipeline for tens of cycles, and refill the TLB before execution can resume.
+Virtual memory rests on one uncomfortable fact: **every address a program computes must be translated before the hardware can touch memory — and the dictionary for that translation is itself in memory.** A load does not reference a DRAM location; it references a *virtual* location that the operating system has mapped, through a tree of page tables living in DRAM, onto some physical frame. So "translate this address" expands to "walk a data structure in memory," and that walk must happen *before every single memory reference the program makes*. Address translation is therefore recursive — a memory access interposed ahead of every memory access — and if paid in full it would multiply the machine's memory traffic several-fold and drop a chain of dependent DRAM reads onto the critical path of every load.
 
-Understanding TLB microarchitecture is essential for:
+The **Translation Lookaside Buffer (TLB)** is the structure that makes translation affordable. It is a small, fast cache of recently used translations that answers the common case — "I have seen this page before" — in about a cycle, so the full walk is paid only on a miss. Everything else on this page is a consequence of two properties of that cache. It sits **on the load-use critical path** — nothing can address the data cache until translation resolves — which forces it to be tiny, associative, and *overlapped* with the cache rather than merely being another level of memory. And the thing it caches is **produced by a serial pointer-chase through a highly redundant tree**, which shapes the page-table walker, the page-walk cache, and the entire cost model of a miss.
 
-- **Processor design interviews:** TLB sizing, set-associative organization, VIPT (virtually-indexed, physically-tagged)
-  constraints, and page-walk state machines are standard questions.
-- **Performance analysis:** TLB miss rates dominate the effective memory latency for
-  workloads with large working sets (databases, ML training, graph processing).
-- **OS-hardware co-design:** page-table format, ASIDs (address-space identifiers), shootdown mechanisms, and
-  superpage support all require tight coupling between hardware and software.
-
-This page covers the complete path from a 64-bit virtual address to a physical address:
-TLB entry formats, multi-level TLB hierarchies, hardware page-table walking for RISC-V
-Sv39, software- versus hardware-managed TLBs, VIPT cache constraints, TLB shootdown
-protocols, and large-page support. Every concept is grounded in numbers you can use in
-an interview.
+We derive each structure from the problem it solves rather than tabulating its fields: what a TLB entry must hold (from its three jobs), why the hierarchy splits into a small fast level and a large slow one, why ASIDs and the global bit exist (a tag that buys out a flush), why the walk needs its own cache, why VIPT is the only way to hide translation latency behind the cache, and why superpages trade reach against fragmentation. By the end you should be able to size a TLB from its reach, prove the VIPT capacity ceiling, and explain why a virtualized page walk can cost 24 memory accesses — not recite bit-field widths.
 
 ---
 
-## 1. TLB Entry Format
+## 1. Translation is a memory access before every memory access
 
-A TLB entry is a *cached translation*, and like any cache line its contents are dictated by what
-the consumer needs the instant it hits. Here the consumer is a memory access that must translate,
-check permission, and continue **in a single cycle** — so before reading the field table, derive
-what one entry must hold from the three jobs it does; every field in §1.1 is a consequence of one
-of these, not an arbitrary copy of the page-table entry:
+### 1.1 The cost of paying translation in full
 
-1. **Translate in one lookup.** The point of a TLB is to replace a multi-level page walk with a
-   single associative match, so an entry must store both halves of the map: the **VPN** as the
-   match tag and the **PPN** as the payload it emits. The cache's physical tag compare cannot
-   proceed until this resolves (§0), which is why the lookup must be small and highly associative
-   rather than just another SRAM read.
-2. **Authorize in the same step.** A translation that is correct but *unpermitted* — a store to a
-   read-only page, a user-mode access to a supervisor page — must fault *before* the access
-   completes, not after the data is fetched. Caching the **R/W/X** and **U** bits beside the PPN
-   lets one lookup both translate and authorize; splitting them would put a second structure on
-   the same critical path.
-3. **Stay valid across context switches and page-table edits.** A bare VPN→PPN pair is meaningful
-   only within one address space and goes stale when the OS rewrites the page table. So each entry
-   carries an **ASID** to tag its owning address space (letting a context switch skip the flush —
-   §1.3), a **G** bit for kernel mappings shared by every space, a **V** bit for invalidation, and
-   hardware-managed **A/D** bits that report "used / written" back to the OS *without* forcing a
-   page walk.
-
-So a TLB entry is best read not as "nine fields" but as **the minimum state that lets one
-associative hit translate, authorize, and stay coherent with the OS** — the table in §1.1 is
-simply that state written out.
-
-### 1.1 Fields in a Single Entry
-
-Read the table below as the consequence of those three jobs, not a bag of bits: VPN and PPN do
-the translating, R/W/X/U do the authorizing, and ASID/G/V/A/D keep the cached translation
-coherent with the OS.
-
-A TLB is a small, associative memory that maps a **Virtual Page Number (VPN)** to a
-**Physical Page Number (PPN)** along with permission metadata. Each entry contains the
-following fields:
-
-| Field              | Width (Sv39) | Description |
-|--------------------|--------------|-------------|
-| VPN (tag)          | 27 bits      | Virtual Page Number -- bits [38:12] of the virtual address |
-| PPN (data)         | 44 bits      | Physical Page Number -- bits [55:12] of the physical address |
-| ASID               | 16 bits      | Address Space ID -- distinguishes address spaces without flush |
-| R, W, X            | 3 bits       | Read / Write / Execute permissions |
-| U                  | 1 bit        | User-mode accessible |
-| G                  | 1 bit        | Global mapping (shared across address spaces, ASID ignored) |
-| A                  | 1 bit        | Accessed -- set by hardware on any access to this page |
-| D                  | 1 bit        | Dirty -- set by hardware on any write to this page |
-| V                  | 1 bit        | Valid entry |
-
-### 1.2 Entry Size Calculation
-
-For RISC-V Sv39:
+Model the page table as a radix tree of depth $K$ (the number of levels). Resolving one virtual address means reading one page-table entry (PTE) per level, and — this is the sting — **each read's address comes from the previous read's result.** The levels cannot be fetched in parallel; they form a strictly dependent chain:
 
 $$
-\text{Entry size} = \underbrace{27}_{\text{VPN}} + \underbrace{44}_{\text{PPN}} + \underbrace{16}_{\text{ASID}} + \underbrace{8}_{\text{R/W/X/U/G/A/D/V}} = 95 \text{ bits}
+t_{walk} \;=\; \sum_{i=1}^{K} t_{mem}^{(i)}
 $$
 
-In practice, entries are padded to 96 or 128 bits for SRAM (static random-access memory) alignment. A 64-entry,
-fully-associative TLB thus requires roughly $64 \times 96 = 6{,}144$ bits (768 bytes)
-of storage, plus the tag comparison logic that makes it associative.
+where $t_{walk}$ = latency of a full walk, $K$ = tree depth (3 for RISC-V Sv39, 4 for Sv48 / x86-64, 5 for Sv57), and $t_{mem}^{(i)}$ = latency of the $i$-th dependent PTE read. If those PTEs are cold in DRAM at ~100 ns each, a single translation costs $3\text{–}5\times100$ ns — *before the actual load even issues.* Paying that on every memory reference is a non-starter; it would make virtual memory cost more than the computation it serves. The dependent chain also means the cost cannot be hidden by memory *bandwidth* — only by removing links from the chain, which is the recurring theme of §5.
 
-### 1.3 ASID -- Avoiding TLB Flushes on Context Switch
+### 1.2 Why a cache works — and why it must be *this* kind of cache
 
-Without an ASID, every context switch requires a full TLB flush because the same VPN
-maps to different PPNs in different processes. Flushing a 64-entry TLB and refilling it
-from scratch costs hundreds of cycles.
+Two facts rescue it. First, **locality**: programs touch few pages relative to their instruction count — a tight loop over a few arrays lives in a handful of 4 KB pages, so the *same* translations are demanded over and over. A cache of translations therefore hits nearly always. Second, a translation result is tiny (a VPN→PPN pair plus a few permission bits), so a few dozen of them cover the entire hot page working set.
 
-The ASID solves this: each process is assigned a 16-bit identifier. The current ASID
-is stored in the `satp` CSR (control and status register). On a TLB lookup, the hardware compares **both** the VPN
-and the ASID against each entry. Only entries whose ASID matches the current ASID (or
-that are marked Global) are considered hits.
+That is exactly a cache, and the TLB is it — but it cannot be organized like an ordinary data cache, because of *where it sits*. A physically-tagged cache cannot compare tags until it has the physical address, and the physical address is precisely what translation produces, so translation is **in series ahead of the cache tag compare, on the load-use path that dominates integer performance** (§6 shows how VIPT partially hides it). Two consequences follow immediately and drive the rest of the page:
+
+- **It must be fast and small.** A structure on the load-use path cannot afford the multi-cycle latency of a large SRAM; the L1 TLB is a few dozen entries answering in a single cycle (§3).
+- **A miss must be cheap in the common case.** Since even a hit is on the critical path, a miss — a full walk — is catastrophic if paid in full, which is why the walk gets its *own* cache (§5) and why the hierarchy grows a second TLB level (§3) before ever falling back to memory.
+
+The effective translation latency across the hierarchy is the standard cache-hierarchy expression:
 
 $$
-\text{TLB hit condition: } (\text{Entry.VPN} = \text{VA.VPN}) \;\wedge\; (\text{Entry.ASID} = \text{satp.ASID} \;\vee\; \text{Entry.G} = 1) \;\wedge\; (\text{Entry.V} = 1)
+t_{xlate} \;=\; t_{L1} \;+\; m_{L1}\big(t_{L2} \;+\; m_{L2}\,t_{walk}\big)
 $$
 
-With 16 ASID bits, up to 65,536 processes can share the TLB simultaneously before the
-OS must recycle an ASID and flush stale entries.
-
-**The trade, made explicit.** An ASID is not free: it widens every TLB entry by its bit-count
-and adds that comparison to the match on *every* lookup (the hit condition above), and it hands
-the OS a name space to manage — ASIDs are finite, so when they run out the OS must recycle one
-and flush its stale entries. What that buys is the elimination of the *unconditional*
-flush-and-refill on every context switch. Without ASIDs, a switch discards a warm TLB hierarchy
-(hundreds to a couple thousand entries across L1 and L2) and then pays hundreds to thousands of
-cycles re-walking those translations back in; with ASIDs the switch is a single `satp` write and
-the two processes' entries simply coexist. The **G** (global) bit is the complementary move for
-the one address space every process shares — the kernel — so kernel mappings match regardless of
-ASID and survive every switch untagged, instead of being duplicated once per ASID. This is the
-canonical "add a tag to avoid an invalidate" pattern, and it returns as ASID-based shootdown
-avoidance in §6.
+where $t_{L1}, t_{L2}$ = L1/L2 TLB hit latencies, $m_{L1}, m_{L2}$ = their miss rates, and $t_{walk}$ = the walk latency of §1.1. The entire microarchitecture below is a campaign to keep every term small: $t_{L1}$ by making L1 tiny and associative, $m_{L1}$ by adding an L2, $m_{L2}$ by growing reach with superpages, and $t_{walk}$ by caching the walk.
 
 ---
 
-## 2. TLB Organization
+## 2. What a TLB entry must hold — derived from three jobs
 
-### 2.1 Fully-Associative (CAM-Based)
+A TLB entry is a *cached translation*, and its contents are fixed by what the consumer needs the instant it hits: a memory access that must **translate, check permission, and continue in a single cycle.** Do not memorize a field list — derive it from the three jobs one entry performs, and every bit follows as a consequence.
 
-In a fully-associative TLB, the incoming VPN is broadcast to every entry simultaneously.
-Each entry contains a comparator, and the matching entry (if any) drives the output PPN
-onto a shared result bus.
+1. **Translate in one lookup.** The whole point is to replace a $K$-level walk with a single associative match, so an entry must store both halves of the map: the **virtual page number (VPN)** as the match key and the **physical page number (PPN)** as the payload it emits. The data-cache tag compare stalls until this resolves (§1), which is why the lookup must be a fast associative match, not another indexed SRAM read.
+2. **Authorize in the same step.** A translation that is *correct but unpermitted* — a store to a read-only page, a user-mode access to a supervisor page — must fault *before* the access completes, not after the data returns. So the entry caches the **permission bits** (read / write / execute, user) beside the PPN: one lookup both translates and authorizes. Splitting them would drop a *second* dependent structure onto the same critical path.
+3. **Stay coherent with an OS that edits the map underneath it.** A bare VPN→PPN pair is meaningful only within one address space and goes stale when the OS rewrites the page table. So the entry also carries the state that keeps a *cached* translation trustworthy: an **address-space identifier (ASID)** so it survives a context switch without a flush (§4), a **global** bit for kernel mappings shared by every space, a **valid** bit for invalidation, and hardware-managed **accessed / dirty** bits that report use back to the OS without forcing a walk.
+
+So a TLB entry is best read not as "nine fields" but as **the minimum state that lets one associative hit translate, authorize, and stay coherent with the OS.** Concretely that is on the order of 100 bits — a ~30-bit key (VPN + ASID), a ~44-bit PPN payload, and a handful of permission and status bits — but the *widths* are incidental; the three jobs are the content. Two corollaries drop out:
+
+- **Permissions live with the translation, not after it.** Any scheme that checked rights in a separate later stage would serialize two lookups on the critical path; caching R/W/X/U in the TLB is what collapses translate-and-authorize into one step.
+- **A/D bits are an optimization for the OS, done in hardware.** Having hardware set "accessed" and "dirty" saves the OS from taking a fault purely to learn a page was touched or written — the page-replacement and copy-on-write machinery upstack reads them directly.
+
+---
+
+## 3. Sizing and organization — the hot structure on the critical path
+
+The TLB faces the same tension as the OoO scheduler ([OoO_Execution](05_OoO_Execution.md), §4): the structure that must be *fast* wants to be *small*, but the structure that must *hit often* wants to be *large*. Virtual memory resolves it the way caches do — with a hierarchy — but the split is driven by the critical path, so it is worth deriving rather than asserting.
+
+### 3.1 Why the L1 TLB is small, fully-associative, and fast
+
+The L1 TLB answers on the load-use path, so its latency is charged to *every* load. A fully-associative organization broadcasts the incoming VPN to every entry and compares in parallel — zero conflict misses, best possible hit rate per entry — but its delay grows with occupancy:
+
+$$
+t_{FA} \;\approx\; t_0 + \kappa\,N_{entries}
+$$
+
+where $t_0$ = fixed lookup overhead and $\kappa$ = the per-entry cost of the match-line discharge and the priority-encode / OR-reduce across $N_{entries}$ hit lines, both of which lengthen with the array. On the critical path that linear term is intolerable past a few dozen entries — which is exactly why real L1 TLBs sit at **16–64 fully-associative entries with a 1-cycle hit** and go no further. It is the TLB analog of why issue queues stay at 32–64 entries: a single-cycle associative structure cannot be both large and fast.
+
+### 3.2 Why the L2 STLB is large, set-associative, and slower
+
+A 64-entry L1 TLB covers only $64\times4\text{ KB}=256\text{ KB}$ of memory — its **reach**:
+
+$$
+R_{TLB} \;=\; N_{entries}\times S_{page}
+$$
+
+Any working set larger than the reach thrashes it. The fix is a second level, and because it is consulted *only on an L1 miss* it is off the load-use path and may trade latency for capacity: the **L2 shared TLB (STLB)** is 256–2048 entries, 4–8-way set-associative, 2–5-cycle hit. Set-associativity is the enabling trade — it caps the comparator count at the way-count instead of $N$, letting the array scale to thousands of entries at the price of occasional conflict misses and a replacement policy (PLRU). This is the same fully-associative-versus-set-associative split as the cache hierarchy, made for the same reason.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    VPN["VPN (27 bits)"] --> E0["Entry 0<br/>VPN == ?"]
-    VPN --> E1["Entry 1<br/>VPN == ?"]
-    VPN --> E2["Entry 2<br/>VPN == ?"]
-    VPN --> EN["Entry N<br/>VPN == ?"]
-    E0 --> PE["Priority encoder<br/>(one-hot select)"]
-    E1 --> PE
-    E2 --> PE
-    EN --> PE
-    PE --> PPN["PPN out (44 bits)"]
-    classDef v fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef e fill:#fde68a,stroke:#b45309,color:#000
-    class E0,E1,E2,EN e
-    class VPN,PE,PPN v
-```
-
-- **Pros:** Zero conflict misses; optimal hit rate for a given capacity.
-- **Cons:** $O(N)$ comparators; power scales linearly with entries; impractical above
-  ~64 entries due to routing and fan-out.
-- **Use case:** L1 ITLB (instruction TLB) and L1 DTLB (data TLB) (16--64 entries, 1-cycle hit).
-
-### 2.2 Set-Associative
-
-For larger TLBs, the VPN is partitioned into a **tag** and an **index**. The index
-selects a set, and only the entries within that set are compared -- reducing the
-comparator count from $N$ to $\text{ways}$.
-
-$$
-\text{Index bits} = \log_2\!\left(\frac{\text{total entries}}{\text{ways}}\right)
-$$
-
-Example: a 256-entry, 4-way TLB has $256 / 4 = 64$ sets, requiring 6 index bits from
-the VPN. Each set holds 4 entries; only 4 comparators fire per lookup.
-
-- **Pros:** Scales to large capacities (512--2048 entries) with bounded comparator count.
-- **Cons:** Conflict misses possible; replacement policy (LRU (least recently used), PLRU (pseudo-LRU)) adds overhead.
-- **Use case:** L2 STLB (shared TLB), 256--1024 entries, 2--5 cycle hit.
-
-### 2.3 Multi-Level TLB Hierarchy
-
-Modern high-performance cores use a two-level TLB hierarchy that mirrors the cache
-hierarchy:
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    VA["Virtual Address from Core"]
-    VA --> ITLB["L1 ITLB<br/>16-64 entries, FA<br/>1-cycle hit"]
-    VA --> DTLB["L1 DTLB<br/>16-64 entries, FA<br/>1-cycle hit"]
-    ITLB -->|miss| STLB["L2 STLB (Shared TLB)<br/>256-1024 entries, 4-8 way<br/>2-5 cycle hit"]
-    DTLB -->|miss| STLB
-    STLB -->|miss| PW["Hardware Page Walker<br/>Sv39: 3-level walk<br/>20-40 cycles"]
-    STLB -->|hit| PA["Physical Address"]
+    VA["Virtual address\n(from AGU)"]
+    VA --> L1I["L1 ITLB\n16-64 entries, FA, 1 cyc"]
+    VA --> L1D["L1 DTLB\n16-64 entries, FA, 1 cyc"]
+    L1I -->|miss| STLB["L2 STLB\n256-2048 entries, 4-8 way, 2-5 cyc"]
+    L1D -->|miss| STLB
+    STLB -->|hit| PA["Physical address"]
+    STLB -->|miss| PW["Page walker + page-walk cache\nSv39: 3 dependent reads"]
     PW -->|fill| STLB
-    PW -->|fault| EXCP["Page Fault Exception<br/>Trap to OS"]
+    PW -->|not present| PF["Page-fault trap to OS"]
 ```
 
-| Level | Entries | Associativity | Hit Latency | Miss Penalty |
-|-------|---------|---------------|-------------|--------------|
-| L1 ITLB | 16--64 | Fully associative | 1 cycle | L2 STLB lookup |
-| L1 DTLB | 16--64 | Fully associative | 1 cycle | L2 STLB lookup |
-| L2 STLB | 256--1024 | 4--8 way | 2--5 cycles | Page walk (20--40 cycles) |
-| Page walk | N/A | N/A | 20--40 cycles | Page fault (millions of cycles) |
-
-The effective access time for address translation:
-
-$$
-t_{\text{eff}} = t_{L1} + \text{MR}_{L1} \times t_{L2} + \text{MR}_{L1} \times \text{MR}_{L2} \times t_{\text{walk}}
-$$
-
-where $\text{MR}$ denotes miss rate and $t$ denotes latency.
+The effective latency across the two levels is the $t_{xlate}$ model of §1.2. The STLB exists to shrink $m_{L1}$; superpages (§7) exist to shrink $m_{L2}$ by multiplying reach. Both are levers on the same expression.
 
 ---
 
-## 3. Hardware Page-Table Walker
+## 4. ASIDs and the global bit — a tag that buys out a flush
 
-### 3.1 Sv39 Page-Table Format
+A translation is valid only inside the address space that created it: the same VPN maps to different frames in different processes. The naive consequence is brutal — **every context switch must flush the entire TLB**, because otherwise the incoming process could hit the outgoing one's stale entry. That flush discards a warm TLB hierarchy (hundreds to a couple thousand entries across L1 and L2) and then forces the incoming process to re-walk all of them back in: hundreds to thousands of cycles of pure overhead, repeated at every switch.
 
-RISC-V Sv39 uses a 3-level radix tree to translate 39-bit virtual addresses into
-56-bit physical addresses. The virtual address is partitioned as:
+The **address-space identifier (ASID)** buys that flush out. Each process gets an identifier (16 bits on RISC-V, held in the `satp` CSR), stamped into every entry it fills; a lookup hits only when both the VPN *and* the ASID match:
 
 $$
-\underbrace{\text{VPN}[2]}_{9 \text{ bits}} \; \underbrace{\text{VPN}[1]}_{9 \text{ bits}} \; \underbrace{\text{VPN}[0]}_{9 \text{ bits}} \; \underbrace{\text{offset}}_{12 \text{ bits}}
+\text{hit} \;\Longleftrightarrow\; \big(\text{VPN}_{entry}=\text{VPN}_{VA}\big)\;\wedge\;\big(\text{ASID}_{entry}=\text{ASID}_{cur}\;\vee\;G_{entry}\big)\;\wedge\;V_{entry}
 $$
 
-Each Page Table Entry (PTE) is 64 bits (8 bytes):
+Now two processes' translations coexist in the TLB, and a context switch is a single `satp` write with nothing flushed. **What it costs** is explicit and small: every entry widens by the ASID field, every lookup performs one extra comparison, and the OS inherits a *finite namespace* to manage — $2^{16}$ ASIDs is generous but not infinite, so when they run out the OS must recycle one and flush *its* stale entries. That recycling flush is the residual cost; the win is eliminating the *unconditional* flush on every one of the far more frequent context switches. This is the canonical "add a tag to avoid an invalidate" trade, and it returns in §8 as the reason ASIDs also cut TLB shootdowns.
 
-```wavedrom
-{"reg":[
-  {"bits":1,"name":"V"},{"bits":1,"name":"R"},{"bits":1,"name":"W"},{"bits":1,"name":"X"},
-  {"bits":1,"name":"U"},{"bits":1,"name":"G"},{"bits":1,"name":"A"},{"bits":1,"name":"D"},
-  {"bits":2,"name":"RSW"},{"bits":44,"name":"PPN"},{"bits":10,"name":"Reserved"}
-]}
-```
+The **global (G) bit** is the complementary move for the one address space *every* process shares — the kernel. A kernel mapping marked global matches regardless of ASID, so it survives every context switch and need not be duplicated once per ASID. Without it, the kernel — mapped into every process — would burn one TLB entry per process per shared page; the G bit collapses those to one.
 
-RISC-V Sv39 PTE (64-bit): `V` valid, `R/W/X` permissions, `U` user, `G` global, `A` accessed, `D` dirty, `RSW` reserved-for-software, `PPN` physical page number.
+---
 
-- **V (bit 0):** Valid. If 0, the PTE is invalid; any access causes a page fault.
-- **R, W, X (bits 1--3):** Permissions. R=0, W=0, X=0 at a non-leaf means "pointer to
-  next level." At a leaf, they encode read/write/execute.
-- **U (bit 4):** User-mode accessible.
-- **G (bit 5):** Global mapping.
-- **A (bit 6):** Accessed bit.
-- **D (bit 7):** Dirty bit.
-- **PPN (bits 53--10):** Physical Page Number of next-level table or of the final page.
+## 5. The page walk and the page-walk cache
 
-The page-table base is stored in the `satp` CSR:
+### 5.1 The walk is serial pointer-chasing
 
-```wavedrom
-{"reg":[
-  {"bits":44,"name":"PPN (root table)"},
-  {"bits":16,"name":"ASID"},
-  {"bits":4,"name":"Mode"}
-]}
-```
+When both TLB levels miss, a hardware **page-table walker** — an FSM in the MMU — traverses the radix tree in memory. Its defining property, from §1.1, is that the traversal is *serial*: level $i$'s PTE holds the physical address of level $i{+}1$'s table, so the reads are strictly dependent and cannot overlap. An Sv39 miss is three dependent memory reads; Sv48 and Sv57 are four and five. This is why a miss costs 20–40 cycles even when the PTEs are warm in the L2/L3 cache, and 100–300 cycles when they are cold in DRAM — the chain cannot be shortened by more bandwidth, only by *removing levels from it*.
 
-RISC-V `satp` register: `Mode` (4 bits, = 8 for Sv39) selects the paging scheme, `ASID` (16 bits) tags the address space, `PPN` (44 bits) points at the root page table.
+### 5.2 The page-walk cache — exploiting upper-level redundancy
 
-### 3.2 Walk State Machine
+The walk's saving grace is that the top of the tree is enormously **redundant across misses**. The radix structure fans out so widely that one upper-level entry governs a vast region of virtual space: in Sv39 a single level-2 PTE covers 2 MB, a single level-1 PTE covers 1 GB. Every translation whose address falls in that region shares the *same* upper-level PTEs — so across many distinct TLB misses the walker re-reads the identical top-of-tree entries again and again, and only the leaf differs.
 
-The hardware page walker is a small FSM (finite state machine) that performs the following sequence:
+A **page-walk cache (PWC)** captures exactly those upper-level, non-leaf PTEs — keyed by the partial VPN that selects them — and pointedly *not* the leaf translations, which are the TLB's job. Its effect is to collapse the dependent chain from the top: a walk that hits the PWC at every upper level skips straight to the final leaf read. The expected number of memory accesses per walk becomes
+
+$$
+N_{acc} \;=\; 1 \;+\; (K-1)(1-h)
+$$
+
+where $K$ = walk depth, $h$ = PWC hit rate on upper-level entries, and the leaf read (the "1") is always taken. Because upper-level reuse is extreme, $h$ is high and hot regions resolve in ~1 access instead of $K$ — which is *why* a small 16–64-entry PWC earns a dedicated structure, and why it is kept separate from the TLB rather than folded into it: the two cache different things (interior pointers versus leaf translations) with different reuse.
+
+### 5.3 Walk depth versus address-space width
+
+Each level added to the tree buys a $512\times$ larger virtual address space (9 more VPN bits) at the cost of exactly **one more access on the dependent chain**. That is the whole scaling law of paging, and it is why the industry ladders VA width in discrete steps rather than adopting one giant flat table — a flat Sv39 table would need $2^{27}$ PTEs = 1 GB *per process*, whereas the radix tree allocates interior nodes only for regions that are actually mapped, so a sparse address space costs almost nothing.
+
+| Scheme | Levels | VA width | VA space | Walk depth |
+|---|---|---|---|---|
+| RISC-V Sv39 | 3 | 39 bits | 512 GB | 3 |
+| RISC-V Sv48 | 4 | 48 bits | 256 TB | 4 |
+| RISC-V Sv57 | 5 | 57 bits | 128 PB | 5 |
+| x86-64 (4-/5-level) | 4–5 | 48 / 57 bits | 256 TB / 128 PB | 4–5 |
+| ARMv8/v9-A | 3–4(+) | 48–52 bits | 256 TB – 4 PB | 3–4 |
+
+The trade is captured entirely by "one access per level, 512× reach per level," and the page-walk cache is what keeps the *added* levels nearly free for hot regions — which is why 5-level paging (Intel since Ice Lake, 2019; AMD since Genoa, 2023) ships with negligible steady-state overhead despite the deeper tree.
+
+### 5.4 Who walks — hardware versus software
+
+A second axis is *who* performs the walk. A **software-managed** TLB (classic MIPS) takes a precise exception on every miss and runs an OS handler that walks whatever page-table format it likes and installs the entry by hand. A **hardware-managed** TLB (RISC-V, ARM, x86) does it in a dedicated FSM with no exception. The trade is flexibility versus speed:
+
+- **Software** wins *flexibility* — the OS may use any page-table structure (hashed, inverted, clustered) and any replacement policy — at the price of a trap, register save/restore, and I-cache pollution *on every miss*, plus the awkwardness of nested misses.
+- **Hardware** wins *speed and overlap* — no trap, and on an OoO core the walker runs in the background while independent instructions keep executing — at the price of a page-table format frozen into the ISA and a walker + PWC to design and verify.
+
+High-performance cores universally chose hardware: on a wide OoO machine, the ability to *overlap* the walk with execution and to avoid a pipeline flush per miss dominates the lost flexibility. Software-managed TLBs survive only where core simplicity matters more than miss latency.
+
+### 5.5 Nested translation — when the walk becomes two-dimensional
+
+Virtualization turns the one-dimensional walk into a two-dimensional one, and it is the sharpest illustration of why the PWC exists. Under a hypervisor a guest's "physical" addresses are themselves virtual (guest-physical), translated by a *second* set of page tables (the host / stage-2 tables). Every guest-physical address the guest walk produces — the table base and each level's pointer — must itself be translated by the host walk before it can be dereferenced:
+
+$$
+N_{nested} \;=\; (D_g+1)(D_h+1) - 1
+$$
+
+where $D_g, D_h$ = guest and host walk depths. For two 4-level trees this is $5\times5-1 = \mathbf{24}$ dependent memory accesses for a single translation — an order of magnitude worse than a native miss. This is why virtualization historically carried a heavy TLB-miss tax, why server cores invest in **nested TLBs and large page-walk caches** to short-circuit the 2-D walk, and why hypervisors lean on superpages (§7) to enlarge reach. The same reasoning covers *remote* page tables: on a NUMA or CXL-attached system the PTEs may live across an interconnect, adding link latency to each dependent read, so the OS co-locates page-table pages with the data they map — again, keep the dependent chain short.
+
+---
+
+## 6. VIPT — overlapping translation with the cache
+
+### 6.1 The conflict
+
+§1 established that translation sits in series ahead of a physically-tagged cache: you need the physical address to compare tags, and translation is what produces it, so naively the load costs TLB *then* cache — two serial latencies on the hottest path in the machine. The only escape is to run the two in *parallel*. But a cache lookup needs address bits to select its set, and translation is precisely the operation that **rewrites the high-order bits** (the page number) while leaving the low-order bits (the page offset) untouched. So the cache wants address bits early, and translation will not release the high ones until it is done. That is the conflict VIPT resolves.
+
+### 6.2 The resolution and its ceiling
+
+The resolution is a single observation: **the page offset is identical in the virtual and physical address** — translation never touches it. So index the cache with *only* offset bits and tag it with the physical bits translation produces. Now the TLB translation and the cache set-index-and-read proceed in parallel, and the physical tag lands just in time to compare against the tags read from the ways. This is **virtually-indexed, physically-tagged (VIPT)**: virtually indexed because the offset bits are available pre-translation, physically tagged because correctness still rests on the physical tag.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    START["TLB Miss Detected<br/>Lock VPN, ASID, access type"]
-    START --> L1["Level 1: Read PTE<br/>addr = satp.PPN + VPN[2] * 8<br/>from memory/cache"]
-    L1 --> CHK1{"V = 0?"}
-    CHK1 -->|yes| PF["PAGE FAULT"]
-    CHK1 -->|no| LEAF1{"R|W|X != 0?"}
-    LEAF1 -->|yes, leaf| CHECK1{"Permissions OK?"}
-    LEAF1 -->|no, pointer| L2["Level 2: Read PTE<br/>addr = L1_PPN + VPN[1] * 8"]
-    CHECK1 -->|yes| FILL["Fill TLB<br/>Return PPN + offset"]
-    CHECK1 -->|no| PF
-    L2 --> CHK2{"V = 0?"}
-    CHK2 -->|yes| PF
-    CHK2 -->|no| LEAF2{"R|W|X != 0?"}
-    LEAF2 -->|yes, leaf| CHECK2{"Permissions OK?"}
-    LEAF2 -->|no, pointer| L3["Level 3: Read PTE<br/>addr = L2_PPN + VPN[0] * 8"]
-    CHECK2 -->|yes| FILL
-    CHECK2 -->|no| PF
-    L3 --> CHK3{"V = 0?"}
-    CHK3 -->|yes| PF
-    CHK3 -->|no| CHECK3{"Permissions OK?"}
-    CHECK3 -->|yes| FILL
-    CHECK3 -->|no| PF
-    FILL --> DONE["Translation complete<br/>Resume pipeline"]
-    PF --> EXCP["Raise page-fault exception<br/>Trap to software handler"]
+    VA["Virtual address"]
+    VA -->|high bits: page number| TLB["TLB translate\n(rewrites high bits)"]
+    VA -->|low bits: page offset| IDX["Index set + read ways\n(offset bits, translation-invariant)"]
+    TLB --> PT["Physical tag"]
+    IDX --> CT["Candidate tags from set"]
+    PT --> CMP{"compare"}
+    CT --> CMP
+    CMP --> HM["Hit / miss"]
 ```
 
-Step-by-step for a 4 KB base page:
+The catch is a hard ceiling on how many index bits exist *below* the page offset. The highest index bit must not reach above the top of the offset:
 
-1. **Level 1:** The root page table is at physical address `satp.PPN << 12`. Index with
-   $\text{VPN}[2]$ (bits 38--30 of the VA (virtual address)): read PTE at
-   $(\text{satp.PPN} \ll 12) + \text{VPN}[2] \times 8$.
-2. **Level 2:** If the L1 PTE is a non-leaf (R=W=X=0), its PPN field points to the
-   next-level table. Index with $\text{VPN}[1]$ (bits 29--21): read PTE at
-   $(\text{PTE}_1.\text{PPN} \ll 12) + \text{VPN}[1] \times 8$.
-3. **Level 3:** If the L2 PTE is also a non-leaf, index with $\text{VPN}[0]$
-   (bits 20--12): read PTE at
-   $(\text{PTE}_2.\text{PPN} \ll 12) + \text{VPN}[0] \times 8$.
-4. **Leaf found:** The L3 PTE must be a leaf (at least one of R, W, X is set). The
-   final physical address is $(\text{PTE}_3.\text{PPN} \ll 12) \;|\; \text{VA}[11:0]$.
+$$
+\underbrace{\lceil\log_2 L\rceil}_{\text{block offset}} + \underbrace{\log_2\!\frac{C}{W L}}_{\text{index bits}} - 1 \;\le\; \log_2 P - 1
+\;\;\Longrightarrow\;\;
+\boxed{\,C \le W\times P\,}
+$$
 
-### 3.3 Page-Fault Conditions
+where $C$ = cache capacity, $W$ = associativity, $L$ = line size, $P$ = page size. The interpretation is the entire design lever: **a VIPT L1 cache can grow only by adding associativity or enlarging the page** — capacity beyond $W\times P$ pushes index bits up into the VPN, which translation changes, breaking the scheme. (The precise test is on bit *positions*, so the bound is met exactly at $C=W\times P$; a 32 KB / 8-way / 64 B cache with 4 KB pages sits right on the line, index bits [11:5].)
 
-A page fault is raised if any of the following is true at any level:
+### 6.3 The synonym problem, and how real cores dodge the ceiling
 
-- PTE has V = 0 (entry not valid).
-- PTE has V = 1 but R = W = X = 0 **and** PPN fields are all zero (reserved encoding).
-- A leaf PTE is found but the access type violates permissions (e.g., a store to a
-  read-only page, or a user-mode access to a supervisor-only page).
-- A non-leaf PTE is found at the last (third) level (malformed page table).
+If the index *does* spill into the VPN, two virtual addresses mapping to the same physical frame can differ in those spilled bits and therefore index **different sets** — the same physical line cached in two places, an **alias/synonym**. A write to one is invisible to the other: silent incoherence. Three fixes exist, and the vendor table shows every core choosing among them explicitly:
 
-### 3.4 Page-Walk Cache
+- **Raise associativity** to keep $C\le W\times P$ — Intel Golden Cove runs a 48 KB L1D at 12-way so its index still fits a 4 KB page.
+- **Enlarge the page** to widen the offset — Apple's 16 KB base page is directly motivated by VIPT: a 128 KB, 8-way L1D needs 8 index bits, which fit a 14-bit (16 KB) offset but not a 12-bit (4 KB) one.
+- **Page coloring** (OS) — where the ceiling is violated (ARM Cortex-A78, 64 KB / 4-way on 4 KB pages), the OS constrains physical-frame allocation so the spilled physical bits always equal the virtual ones, forcing all aliases into the same set at the cost of some allocation freedom.
 
-A TLB miss is costly for a specific reason: the walk is *serial pointer-chasing*. Each level's
-PTE holds the physical address of the next level's table, so an Sv39 walk is three *dependent*
-memory reads (Sv48 and Sv57: four and five), and no two levels can be fetched in parallel. The
-page-walk cache attacks the fact that these reads are enormously **redundant across misses**: the
-top of the radix tree fans out so widely that a whole region of virtual address space — megabytes
-under one level-2 entry, gigabytes under one level-1 entry — shares the *same* upper-level PTEs.
-Caching just those non-leaf entries collapses the dependent chain: a walk that hits every upper
-level skips straight to the final leaf read. That is *what* the structure must hold (non-leaf
-PTEs, keyed by the partial VPN that selects them) and *why* it is kept separate from the TLB,
-which caches the leaf translations.
+| Core | L1D | Assoc. | Page | Index fits offset? | How |
+|---|---|:---:|---|:---:|---|
+| Intel Golden Cove | 48 KB | 12-way | 4 KB | Yes (exact) | high associativity |
+| Apple M1 Firestorm | 128 KB | 8-way | 16 KB | Yes (exact) | large page |
+| RISC-V BOOM v3 | 32 KB | 8-way | 4 KB | Yes (exact) | index [11:5] fits |
+| ARM Cortex-A78 | 64 KB | 4-way | 4 KB | No | OS page coloring |
 
-The upper-level page-table entries (non-leaf PTEs) are accessed far more frequently
-than leaf PTEs because every translation in the same region of virtual address space
-shares the same L1 and L2 PTEs. A **page-walk cache** (sometimes called a PTE cache)
-caches these upper-level entries:
-
-- Caches non-leaf PTEs (level 1 and level 2 entries).
-- Does NOT cache leaf PTEs (those are the TLB's job).
-- A walk that hits in the page-walk cache at every level skips the memory accesses for
-  those levels, reducing a 3-level walk from 3 memory accesses to 1.
-
-Typical sizes: 16--64 entries, organized as a small fully-associative or 4-way
-set-associative structure.
-
-### 3.5 Multi-Level Page Table Structure -- Why Hierarchy Saves Memory
-
-#### Flat Page Table vs. Hierarchical Page Table
-
-A **flat page table** maps every virtual page directly. For a 39-bit virtual address
-with 4 KB pages (27-bit VPN), the flat table has $2^{27} = 128\text{M}$ entries, each
-8 bytes = **1 GB of memory** just for the page table -- clearly impractical.
-
-A **hierarchical (radix tree) page table** exploits the fact that most virtual address
-spaces are sparse: a process typically uses only a tiny fraction of its virtual address
-space. The radix tree allocates page table pages only for regions that are actually
-mapped.
-
-#### Sv39: 3-Level Radix Tree
-
-```wavedrom
-{"reg":[
-  {"bits":12,"name":"offset"},
-  {"bits":9,"name":"VPN[0]"},
-  {"bits":9,"name":"VPN[1]"},
-  {"bits":9,"name":"VPN[2]"}
-]}
-```
-
-Sv39 virtual address (39 bits): `VPN[2]` is the level-1 (root) index, `VPN[1]` level-2, `VPN[0]` level-3 (leaf), and the low 12 bits are the page offset. Each page-table page is 4 KB = 512 × 8-byte PTEs.
-
-#### Sv48: 4-Level Radix Tree (RISC-V)
-
-```wavedrom
-{"reg":[
-  {"bits":12,"name":"offset"},
-  {"bits":9,"name":"VPN[0]"},
-  {"bits":9,"name":"VPN[1]"},
-  {"bits":9,"name":"VPN[2]"},
-  {"bits":9,"name":"VPN[3]"}
-]}
-```
-
-Sv48 virtual address (48 bits) adds one level (256 TB space). Page-walk depth: 4 accesses (3 non-leaf + 1 leaf) for 4 KB pages; 2 MB superpages at level 3 (saves 1 access), 1 GB superpages at level 2 (saves 2).
-
-#### Sv57: 5-Level Radix Tree (RISC-V)
-
-```wavedrom
-{"reg":[
-  {"bits":12,"name":"offset"},
-  {"bits":9,"name":"VPN[0]"},
-  {"bits":9,"name":"VPN[1]"},
-  {"bits":9,"name":"VPN[2]"},
-  {"bits":9,"name":"VPN[3]"},
-  {"bits":9,"name":"VPN[4]"}
-]}
-```
-
-Sv57 virtual address (57 bits) supports 128 PB. Page-walk depth: 5 accesses for 4 KB pages. Used for extremely sparse address spaces (memory-mapped files, sandboxes).
-
-#### Memory Cost Comparison Across VA Widths
-
-| VA Scheme | Levels | VA Width | Max VA Space | Walk Depth | PTE Size | Root Table Size |
-|-----------|--------|----------|-------------|------------|----------|-----------------|
-| Sv39 | 3 | 39 bits | 512 GB | 3 | 8 B | 4 KB |
-| Sv48 | 4 | 48 bits | 256 TB | 4 | 8 B | 4 KB |
-| Sv57 | 5 | 57 bits | 128 PB | 5 | 8 B | 4 KB |
-| x86-64 (4-level) | 4 | 48 bits | 256 TB | 4 | 8 B | 4 KB |
-| x86-64 (5-level) | 5 | 57 bits | 128 PB | 5 | 8 B | 4 KB |
-| ARMv8 (4KB granule) | 3-4 | 48-52 bits | 256 TB-4 PB | 3-4 | 8 B | 4 KB |
-
-**Key insight:** Each additional level adds 1 memory access to the page walk (increasing
-TLB miss penalty by 20-40 cycles) but supports a 512x larger address space. The page
-walk cache mitigates this by caching upper-level PTEs, reducing the average walk depth
-to 1-2 memory accesses for hot regions.
+Every one of these is $C\le W\times P$ made concrete — the constraint is not academic, it sets the associativity of essentially every high-performance L1 data cache in the industry.
 
 ---
 
-## 4. Software vs. Hardware TLB Miss Handler
+## 7. Superpages — buying reach against fragmentation
 
-### 4.1 Software-Managed TLB (MIPS Style)
+TLB reach, $R_{TLB}=N_{entries}\times S_{page}$, has two factors, and §3 showed that entry count is capped by the critical path. The only other lever is **page size** — and it is a linear one. A leaf PTE placed at an *interior* level of the radix tree maps a larger, aligned region: in Sv39 a level-2 leaf is a 2 MB page and a level-1 leaf a 1 GB page. One superpage entry then covers $512\times$ or $512^2\times$ the memory of a base-page entry, multiplying reach without touching the entry count the critical path constrains:
 
-In a software-managed TLB, a TLB miss triggers a precise exception. The pipeline is
-flushed, and control transfers to a software exception handler. The handler manually
-walks the page table in software, constructs a TLB entry, and writes it using a
-dedicated instruction (e.g., `TLBWR` on MIPS).
+| DTLB configuration | Reach |
+|---|---|
+| 64 × 4 KB | 256 KB |
+| 64 × 2 MB | 128 MB |
+| 64 × 1 GB | 64 GB |
 
-```verilog
-  TLB miss
-    -> exception (pipeline flush, ~5 cycle overhead to enter handler)
-    -> software handler reads page table (10-50 cycles depending on cache state)
-    -> writes entry with TLBWR
-    -> return from exception (ERET, ~3 cycle overhead to resume)
-  Total: ~20-60 cycles per miss
-```
+A workload striding through 500 MB thrashes a 4 KB-only DTLB (256 KB reach, a miss on nearly every new page) but sits comfortably inside a 2 MB-page TLB — the miss rate collapses. Superpages also *shorten the walk* (a 2 MB leaf is found one level early, a 1 GB leaf two levels early) and shrink page-table memory (one PTE instead of 512 or $512^2$). So why not map everything huge? Because reach is bought with **fragmentation and rigidity**:
 
-**Advantages:**
-- Complete flexibility: the OS can implement any page-table format (hash tables,
-  inverted page tables, clustered page tables).
-- No dedicated hardware page-walker needed -- smaller core, easier to verify.
-- The handler can implement custom replacement policies or prefetching.
+- **Internal fragmentation** — the allocation granularity is now the page: a 2 MB page backing a 100 KB object wastes ~1.9 MB. Waste is bounded by $S_{page}-\text{used}$, negligible for 4 KB and severe for 1 GB.
+- **Physical contiguity and alignment** — a superpage demands a naturally-aligned, physically-contiguous run of frames; under memory fragmentation the OS may be unable to find one, forcing a fallback to base pages.
+- **Coarser everything else** — protection, dirty-tracking, and copy-on-write now act at superpage granularity, so a single byte written to a 2 MB copy-on-write page copies the whole 2 MB, and page-fault handling (zeroing a 2 MB page ~1 ms vs. ~2 µs for 4 KB) lengthens in proportion.
 
-**Disadvantages:**
-- Slower: every miss pays the exception entry/exit overhead plus the software walk.
-- Pollutes the data cache and register file with page-table data.
-- Difficult to handle L2 TLB misses in software without nested exceptions.
-
-### 4.2 Hardware-Managed TLB (RISC-V, ARM, x86 Style)
-
-A hardware page walker is a dedicated FSM inside the MMU (memory management unit). On a TLB miss, the walker
-automatically reads page-table entries from the cache/memory hierarchy, traverses the
-radix tree, and fills the TLB without software intervention.
-
-```verilog
-  TLB miss
-    -> hardware walker FSM activated (0 cycle software overhead)
-    -> walker issues cache/memory reads for PTEs (20-40 cycles typical)
-    -> walker fills TLB entry
-    -> pipeline resumes
-  Total: ~20-40 cycles per miss
-```
-
-**Advantages:**
-- Faster: no exception overhead, no register save/restore, no I-cache pollution.
-- Walker can overlap with other pipeline activity (out-of-order cores can continue
-  executing independent instructions).
-- Walker can maintain its own small page-walk cache for upper-level PTEs.
-
-**Disadvantages:**
-- Fixed page-table format: the hardware must know the radix-tree structure.
-- Less flexible: custom page-table schemes are impossible without hardware support.
-- Additional hardware complexity: walker FSM, page-walk cache, interaction with
-  cache-coherence protocol.
-
-### 4.3 Comparison Table
-
-| Attribute | Software-Managed | Hardware-Managed |
-|-----------|-----------------|-----------------|
-| Miss latency | 20--60 cycles | 20--40 cycles |
-| Page-table format | Arbitrary (OS chooses) | Fixed by ISA (e.g., Sv39 radix tree) |
-| Hardware cost | Minimal | Walker FSM + page-walk cache |
-| Exception overhead | Full trap/return per miss | None (hardware handles it) |
-| Replacement policy | OS controls via TLBWR | Hardware LRU/PLRU/random |
-| Example ISAs | MIPS, early SPARC | RISC-V, ARMv8-A, x86-64 |
+**Transparent huge pages (THP)** are the OS's attempt to get the reach without the manual trade: a kernel daemon watches for contiguous, fully-populated runs of base pages and *promotes* them to a superpage in the background, demoting on fragmentation or sparse use. It captures most of the reach benefit while keeping 4 KB granularity where sparsity or fine-grained protection demands it — the pragmatic middle of the reach-versus-fragmentation curve.
 
 ---
 
-## 5. VIPT -- Virtually-Indexed, Physically-Tagged Caches
+## 8. TLB shootdown — paying for absent coherence
 
-VIPT resolves a scheduling conflict between two structures that both sit on the load's critical
-path. A *physically* tagged cache cannot confirm a hit until translation produces the physical
-address (§0), which naively serializes TLB-then-cache and doubles load-to-use latency. The only
-way to overlap them is to begin the cache lookup *before* translation finishes — but a lookup
-needs address bits to choose a set, and translation is precisely the operation that *rewrites*
-the high-order page-number bits while leaving the low-order page-offset bits untouched. That one
-asymmetry is the entire idea: **index the cache with bits translation cannot change (the page
-offset), and tag it with the physical bits translation produces.** The index and the TLB then run
-in parallel, and the physical tag lands just in time to compare. Every constraint that follows —
-the index-bit ceiling, the synonym problem, the associativity and page-size choices that buy
-headroom — is a direct consequence of the single rule that *the cache index may use only
-page-offset bits.* §5.1 states the latency problem; §5.2 states the insight; §5.3--§5.5 turn the
-rule into concrete sizing math.
+Caches are kept coherent by hardware; **TLBs are not.** Each core's TLB is a private, hardware-incoherent cache of translations, so when the OS edits a page table — `munmap`, `mprotect`, page migration, copy-on-write demotion — the stale copies sitting in *other* cores' TLBs will not notice. Correctness then falls to software: the editing core must explicitly invalidate the stale entries everywhere they might live, a procedure called **TLB shootdown**. (RISC-V's `SFENCE.VMA` performs the local invalidation, with operands to scope it by VPN and/or ASID; crucially it is *local only*, which is precisely why a multi-core shootdown needs software coordination.)
 
-### 5.1 The Problem VIPT Solves
-
-A physically-tagged cache requires the physical address for tag comparison. But the
-physical address is not available until the TLB completes its translation. If the cache
-index also requires the physical address, the access is serialized:
+Because there is no hardware fan-out, the initiator interrupts every other core (an inter-processor interrupt, IPI), each target invalidates locally and acknowledges, and the initiator waits for all acknowledgments before proceeding. The cost is fundamentally serial in the core count:
 
 $$
-\text{TLB translate (1 cycle)} \;\rightarrow\; \text{Cache access (1 cycle)} = 2 \text{ cycles total}
+T_{shoot}(N) \;\approx\; t_{IPI} + (N-1)\,t_{flush} + t_{sync} \;=\; O(N)
 $$
 
-### 5.2 The VIPT Insight
+where $t_{IPI}$ = IPI send/fan-out latency, $t_{flush}$ = per-core local flush, $t_{sync}$ = barrier cost, $N$ = core count. Since *every* core stalls in its handler for the duration, the wasted work scales as $N\cdot T_{shoot}=O(N^2)$. On a 64-core machine a single shootdown runs into thousands of cycles, and a database doing tens of thousands of `munmap`s per second can lose a few percent of *all* core cycles to shootdowns — which is why shootdown scalability, not raw TLB speed, is the virtual-memory bottleneck on large systems. The mitigations all attack the $O(N)$ fan-out or remove flushes entirely:
 
-The key observation: the **page offset** (bottom 12 bits for 4 KB pages) is identical
-in both the virtual and physical addresses. Translation changes the page number but not
-the offset. Therefore, any cache index that falls entirely within the page offset can be
-computed from the virtual address **before** translation completes.
+- **ASID / global tagging (§4)** removes the largest source of flushes — context switches — outright, so shootdown is needed only for genuine PTE edits, never merely for switching processes.
+- **Directed shootdown** sends the IPI only to cores that might hold the mapping (tracked per page), turning $O(N)$ into $O(K)$ for the $K$ cores actually involved.
+- **Batched / deferred shootdown** collects many invalidations into one IPI round, amortizing the fixed IPI and barrier cost.
+- **Lazy invalidation** leaves stale entries in place and relies on the ASID check or a generation counter to skip them, flushing only a core that would actually *use* a stale translation — which, for the very common switch to a kernel thread with no user mappings, means no flush at all.
 
-$$
-\text{Cache index bits} \subseteq \text{Page offset bits}
-$$
-
-The TLB translation and cache index lookup proceed in parallel. The physical tag arrives
-from the TLB just in time to compare against the tags read from the cache way.
-
-```ascii-graph
-  Virtual Address
-       |
-       +--------+----------+
-       |                   |
-  TLB Translate       Cache Index
-  (1 cycle)           (1 cycle, parallel)
-       |                   |
-  Physical Tag        Cache Data/Tags
-       |                   |
-       +--- Compare -------+
-                |
-         Hit / Miss
-```
-
-### 5.3 VIPT Worked Example — Why the Index Must Come from Page Offset
-
-The VIPT technique relies on a single fact: the page offset (bottom 12 bits for 4 KB
-pages) is identical in both virtual and physical addresses. Translation only changes the
-page number. Therefore, if all bits used for the cache **index** fall within the page
-offset, the index can be computed from the virtual address before the TLB finishes.
-
-**Constraint derivation (formal):**
-
-The cache index selects a set. For a cache with capacity $C$, associativity $W$, and
-line size $L$:
-
-$$
-\text{Number of sets} = \frac{C}{W \times L}
-$$
-
-$$
-\text{Index bits} = \log_2\!\left(\frac{C}{W \times L}\right)
-$$
-
-These index bits occupy address positions $[\lceil\log_2 L\rceil + \text{index\_bits} - 1 \,:\, \lceil\log_2 L\rceil]$.
-
-For VIPT, the highest index bit position must not exceed the highest page offset bit:
-
-$$
-\lceil\log_2 L\rceil + \log_2\!\left(\frac{C}{W \times L}\right) - 1 \;\leq\; \lceil\log_2 P\rceil - 1
-$$
-
-Simplifying (all values are powers of 2):
-
-$$
-\log_2 L + \log_2 C - \log_2 W - \log_2 L \;\leq\; \log_2 P
-$$
-
-$$
-\boxed{\log_2 C - \log_2 W \;\leq\; \log_2 P \quad\iff\quad C \;\leq\; W \times P}
-$$
-
-**Worked example: L1D cache sizing under VIPT.**
-
-Given: page size $P = 4096$ (12-bit offset), line size $L = 64$ (6-bit block offset).
-
-| Target | Associativity | Max sets = $P/L = 64$ | Max capacity = $W \times P$ | Index bits | Highest index bit | VIPT safe? |
-|--------|:---:|---|---|---|---|---|
-| L1D small | 4-way | 64 | 16 KB | 6 | 6+6-1 = 11 | Yes (11 <= 11) |
-| L1D standard | 4-way | 128 | 32 KB | 7 | 6+7-1 = 11 | Yes (11 <= 11) |
-| L1D large | 8-way | 128 | 64 KB | 7 | 6+7-1 = 11 | Yes (11 <= 11) |
-| L1D too big | 2-way | 512 | 64 KB | 9 | 6+9-1 = 14 | No (14 > 11) |
-
-**Why a 32 KB / 4-way cache works with 4 KB pages:**
-
-The 7 index bits occupy positions [11:5], which are entirely within the page offset [11:0].
-The TLB translates bits [31:12] (the tag) in parallel with the cache indexing. The physical
-tag arrives from the TLB just in time for comparison with the tags read from the SRAM ways.
-
-**Why a 64 KB / 2-way cache fails with 4 KB pages:**
-
-The 9 index bits occupy positions [14:6]. Bits [14:12] are VPN bits that change during
-translation. Two virtual addresses mapping to the same physical page could have different
-bits [14:12], causing the same physical line to be looked up in different cache sets --
-the **synonym problem**.
-
-**Production examples:**
-
-| Processor | L1D Size | Associativity | Line Size | Page Size | VIPT safe? |
-|-----------|----------|:---:|---|---|---|
-| ARM Cortex-A78 | 64 KB | 4-way | 64 B | 4 KB | No (needs 16 KB pages or page coloring) |
-| Apple M1 Firestorm | 128 KB | 8-way | 64 B | 16 KB | Yes (16 KB pages give 14-bit offset) |
-| Intel Golden Cove | 48 KB | 12-way | 64 B | 4 KB | Yes (high associativity keeps index in offset) |
-| RISC-V Boom v3 | 32 KB | 8-way | 64 B | 4 KB | Yes (index bits [11:5] fit in offset) |
-
-Apple's choice of 16 KB pages is directly motivated by VIPT: a 128 KB L1D with 8-way
-associativity needs 8 index bits (positions [13:6]), which fits within a 14-bit page
-offset (16 KB pages) but not a 12-bit offset (4 KB pages).
-
-### 5.4 The VIPT Constraint -- Derivation
-
-For a cache with associativity $W$, line size $L$ bytes, total capacity $C$ bytes,
-and page size $P$ bytes:
-
-The address is decomposed as:
-
-$$
-\text{Address} = [\text{Tag} \mid \text{Index} \mid \text{Block Offset}]
-$$
-
-where Block Offset $= \lceil\log_2 L\rceil$ bits and Index $= \lceil\log_2(C / (W \times L))\rceil$ bits.
-
-The cache index is extracted from address bits $[\lceil\log_2 L\rceil + \text{index\_bits} - 1 : \lceil\log_2 L\rceil]$.
-
-For VIPT to work, all index bits must fall within the page offset (bottom $\lceil\log_2 P\rceil$ bits):
-
-$$
-\lceil\log_2 L\rceil + \text{index\_bits} - 1 \leq \lceil\log_2 P\rceil - 1
-$$
-
-$$
-\text{index\_bits} \leq \lceil\log_2 P\rceil - \lceil\log_2 L\rceil
-$$
-
-Substituting:
-
-$$
-\log_2\!\left(\frac{C}{W \times L}\right) \leq \log_2(P) - \log_2(L)
-$$
-
-$$
-\log_2\!\left(\frac{C}{W \times L}\right) \leq \log_2\!\left(\frac{P}{L}\right)
-$$
-
-$$
-\boxed{\frac{C}{W \times L} \leq \frac{P}{L} \implies C \leq W \times P}
-$$
-
-**This is the VIPT constraint: the total cache capacity must not exceed the associativity
-times the page size.** If violated, the index extends into the VPN, which differs between
-virtual and physical addresses, causing the same physical line to be looked up in
-different sets depending on which virtual address is used (the synonym/alias problem).
-
-### 5.4 Worked Examples -- VIPT Constraint Verification
-
-**Example 1: 4-way, 32 KB, 64 B lines, 4 KB pages (typical L1D).**
-
-$$
-\text{Sets} = \frac{32{,}768}{4 \times 64} = 128 \implies 7 \text{ index bits}
-$$
-
-```verilog
-Address decomposition:
-  Block offset = log2(64) = 6 bits  -> bits [5:0]
-  Index        = log2(128) = 7 bits -> bits [11:5]
-  Tag          = 32 - 7 - 6 = 19 bits -> bits [31:12]
-
-Index occupies bits [11:5]. All within page offset [11:0].
-
-Precise check: highest index bit = offset_bits + index_bits - 1
-             = 6 + 7 - 1 = 11
-  Page offset top bit = 11
-  11 <= 11 -- fits exactly.
-```
-
-$$
-\text{VIPT constraint: } \lceil\log_2 L\rceil + \lceil\log_2(\text{Sets})\rceil - 1 \leq \lceil\log_2 P\rceil - 1
-$$
-
-$$
-6 + 7 - 1 = 11 \leq 11 \quad \checkmark
-$$
-
-**This is why real L1D caches at 32KB/4-way/64B/4KB-pages use VIPT successfully.**
-The 7 index bits all fall within the 12-bit page offset. The TLB translates the tag
-bits (which are VPN bits) in parallel with the cache index lookup.
-
-Note the common confusion: $C = 32\text{ KB} > W \times P = 4 \times 4\text{ KB} = 16\text{ KB}$,
-which seems to violate the simplified constraint $C \leq W \times P$. But the simplified
-constraint is sufficient, not necessary. What actually matters is the bit positions of
-the index, and here all 7 index bits fit within [11:0].
-
-**Example 2: 2-way, 64 KB, 64 B lines, 4 KB pages.**
-
-$$
-\text{Sets} = \frac{65{,}536}{2 \times 64} = 512 \implies 9 \text{ index bits}
-$$
-
-```verilog
-Index occupies bits [14:6]. Bits 14, 13, 12 are ABOVE the page offset boundary (bit 11).
-
-Precise check: highest index bit = 6 + 9 - 1 = 14
-  Page offset top bit = 11
-  14 > 11 -- VIOLATED by 3 bits.
-```
-
-**VIPT fails.** The index extends 3 bits into the VPN. These bits may differ between
-virtual and physical addresses, causing synonyms. The OS must use page coloring to
-ensure that bits [14:12] of the physical frame number match the corresponding virtual bits.
-
-**Example 3: 8-way, 64 KB, 64 B lines, 4 KB pages.**
-
-$$
-\text{Sets} = \frac{65{,}536}{8 \times 64} = 128 \implies 7 \text{ index bits}
-$$
-
-$$
-\text{highest index bit} = 6 + 7 - 1 = 12 > 11 \quad \times
-$$
-
-**Still fails by 1 bit!** Even doubling the associativity to 8-way does not save a
-64KB cache with 4KB pages. The fundamental constraint is that 64KB needs at least
-$64\text{KB}/64\text{B} = 1024$ total entries, and the page offset provides only
-$4096/64 = 64$ entries worth of index bits. With 8 ways: $1024/8 = 128$ sets needing
-7 index bits, but the page offset provides only $\log_2(64) = 6$ bits beyond the block
-offset. You need 1 more bit than the page offset can provide.
-
-**Example 4: 4-way, 16 KB, 64 B lines, 4 KB pages.**
-
-$$
-\text{Sets} = \frac{16{,}384}{4 \times 64} = 64 \implies 6 \text{ index bits}
-$$
-
-$$
-\text{highest index bit} = 6 + 6 - 1 = 11 \leq 11 \quad \checkmark
-$$
-
-**Fits exactly.** This is the maximum VIPT-safe L1D with 4-way associativity and
-64 B lines under 4 KB pages.
-
-**Example 5: Maximum VIPT-safe cache size formula.**
-
-Given page size $P$, line size $L$, associativity $W$:
-
-$$
-\text{Max } C = W \times \frac{P}{L} \times L = W \times P
-$$
-
-But this is only correct when index bits exactly fill the page offset beyond the block
-offset. More precisely:
-
-$$
-\text{Max sets} = \frac{P}{L} = 2^{\log_2 P - \log_2 L}
-$$
-
-$$
-\text{Max } C = W \times \text{Max sets} \times L = W \times P
-$$
-
-For 4 KB pages, 64 B lines, 4-way: Max $C = 4 \times 4096 = 16$ KB. But Example 1
-showed that 32 KB also works! The discrepancy is because the formula counts sets
-as $P/L = 64$, but the actual index bits are 7 (for 128 sets), still fitting in the
-page offset. The correct formula: max sets $= 2^{(\log_2 P - \log_2 L)} = 2^6 = 64$
-if we strictly use only page offset bits. But the 32 KB cache has 128 sets, using
-7 bits, and all 7 fit in [11:0] because the block offset is only 6 bits, leaving
-bits [11:6] = 6 bits... plus bit 5? No: bits [11:5] = 7 bits, but [11:5] spans
-from bit 5 to bit 11, which is within [11:0]. The subtlety is that the index starts
-immediately above the block offset: the first index bit is bit $\lceil\log_2 L\rceil$,
-and the last index bit is $\lceil\log_2 L\rceil + \lceil\log_2(\text{Sets})\rceil - 1$.
-This last bit must be $\leq \lceil\log_2 P\rceil - 1$.
-
-**Quick reference table (4 KB pages, 64 B lines):**
-
-| Associativity | Sets | Index bits | Highest index bit | VIPT safe? |
-|:---:|:---:|:---:|:---:|:---:|
-| 1 | 512 (32 KB) | 9 | 14 | No |
-| 2 | 256 (32 KB) | 8 | 13 | No |
-| 4 | 128 (32 KB) | 7 | 11 | **Yes** (exact) |
-| 8 | 64 (32 KB) | 6 | 11 | **Yes** (exact) |
-| 4 | 256 (64 KB) | 8 | 13 | No |
-| 8 | 128 (64 KB) | 7 | 12 | No |
-| 16 | 64 (64 KB) | 6 | 11 | **Yes** |
-| 4 | 64 (16 KB) | 6 | 11 | **Yes** (exact) |
-
-### 5.5 Synonym Problem and Page Coloring
-
-When two different virtual addresses map to the same physical address (shared memory,
-mmap with MAP_SHARED), and the VIPT constraint is violated, the two virtual addresses
-may index into different cache sets. The same physical data resides in two different
-cache locations -- this is a **synonym** (also called an alias).
-
-**The synonym problem:** Core 0 writes to VA1 (maps to PA (physical address), cached in set 5). Core 1
-reads VA2 (also maps to PA, but indexes set 9). Core 1 gets stale data (or misses
-entirely) because the write went to a different cache set.
-
-**Page coloring** is the OS-level solution: restrict physical page frame allocation so
-that the bits of the physical frame number that overlap the cache index are identical to
-the corresponding virtual bits. Effectively, the OS guarantees that all virtual aliases
-map to the same cache set.
-
-- **Number of colors** = `2^(index_bits - page_offset_bits_per_index)`
-For Example 2 (2-way 64KB): colors = 2^(14-12) = 4 colors
-Physical pages are partitioned into 4 color classes:
-Color 0: PFN[13:12] = 00
-Color 1: PFN[13:12] = 01
-Color 2: PFN[13:12] = 10
-Color 3: PFN[13:12] = 11
-
-The OS allocates a physical page whose color matches the virtual page's color bits.
-This wastes some physical pages (can't use all frames for every allocation) but
-guarantees VIPT correctness.
+The through-line is the same as ASIDs: the cheapest invalidate is the one you can prove you never have to send.
 
 ---
 
-## 6. TLB Shootdown
+## 9. Worked problems
 
-### 6.1 The Coherence Problem
+**1 — Size a TLB from its reach.** A workload streams through a 1 GB array at unit stride with negligible reuse. With 4 KB pages, covering it needs $2^{30}/2^{12}=262{,}144$ page translations — no practical TLB reaches that, so translation misses on nearly every new page. Switch to 2 MB pages: now $2^{30}/2^{21}=512$ translations cover the whole array, and a 1024-entry L2 STLB holds them all — the $m_{L2}\,t_{walk}$ term of $t_{xlate}$ effectively vanishes. This is the reach argument (§7) in one line: for streaming footprints, page *size*, not entry count, decides whether translation is free.
 
-TLBs are per-core structures with no hardware coherence. When the OS modifies a
-page-table entry (e.g., changing permissions, migrating a page, or unmapping a region),
-stale entries may reside in the TLBs of other cores. These stale entries must be
-invalidated -- a process called **TLB shootdown**.
+**2 — Prove a cache is VIPT-safe.** A 32 KB, 8-way, 64 B-line L1D with 4 KB pages: sets $=32768/(8\times64)=64$, so 6 index bits atop a 6-bit block offset put the highest index bit at $6+6-1=11$. The page offset top bit is also 11, so the index occupies [11:6] ⊂ [11:0] — VIPT-safe, exactly on the $C\le W\times P$ line ($32\text{ KB}=8\times4\text{ KB}$). Halve associativity to 4-way and sets double to 128: 7 index bits, highest at $6+7-1=12>11$ — the index spills one bit into the VPN and the cache is no longer VIPT-safe without page coloring. This is why L1D associativity and capacity are chosen *together* under the page size (§6).
 
-**When shootdown is needed:**
+**3 — Cost a virtualized page walk.** A guest running Sv39 (3-level) under an Sv39 hypervisor: nested cost $=(3+1)(3+1)-1=15$ dependent accesses per translation, versus 3 native. At ~5 cycles per warm PTE read that is ~75 cycles per miss instead of ~15. A page-walk cache that resolves both trees' upper levels for hot regions drives $N_{acc}$ toward the single leaf pair — which is why nested TLBs and PWCs, not faster memory, are what make virtualization affordable (§5.5).
 
-| Event | Why shootdown is needed |
-|-------|------------------------|
-| `munmap` / `mprotect` | Unmaps or changes permissions; stale TLB entries could allow illegal access |
-| Page migration (NUMA) | Physical page changes; old PPN is wrong |
-| `fork()` (copy-on-write) | Parent's writable entries must be demoted to read-only in child |
-| `madvise(MADV_DONTNEED)` | Pages are discarded; stale entries would point to freed frames |
-| KSM (kernel same-page merging) | Two pages merged into one; one mapping's PPN changes |
-| Process exit | All TLB entries for the process should be flushed (or left to ASID recycle) |
-| Context switch (without ASID) | Entire TLB must be flushed to prevent process A from using process B's translations |
+---
 
-### 6.2 IPI-Based Shootdown -- Detailed Sequence
+## Numbers to memorize
 
-The standard mechanism used in Linux and most OS kernels:
-
-```ascii-graph
-Step-by-step shootdown on a 4-core system:
-
-Initiator (Core 0)                           Targets (Cores 1, 2, 3)
-========================                      ========================
-
-1. Acquire mmap_lock (read or write)
-2. Modify the page table entry in memory
-   (PTE = new value, flush from data cache)
-
-3. Record the virtual address range
-   [start, end) that needs invalidation
-
-4. Set shootdown IPI vector
-   with the range parameters
-
-5. Send IPI to Cores 1, 2, 3               ──IPI──>  6. Each target receives IPI
-                                                       Interrupts current execution
-                                                       (saves user context)
-
-                                              7. Target enters shootdown handler:
-                                                 for (addr = start; addr < end; addr += PAGE_SIZE)
-                                                     SFENCE.VMA addr, asid  (or flush all)
-                                                 // Also flush L1 TLB and L2 STLB
-                                                 // entries matching the range
-
-                                              8. Target sends ACK
-                                                   <──ACK──
-
-9. Wait for all ACKs from Cores 1, 2, 3
-   (spin on a shared atomic counter)
-
-10. All ACKs received
-    Resume the operation that triggered shootdown
-
-11. Release mmap_lock
-```
-
-**Timing breakdown (8-core system):**
-
-| Phase | Cycles | Notes |
+| Parameter | Typical | Why this value (section) |
 |---|---|---|
-| IPI send latency | 50–200 | depends on interconnect |
-| Interrupt entry overhead | 20–50 | pipeline flush, save context |
-| TLB flush (full, 64 entries) | 10–50 | `SFENCE.VMA` execution |
-| Interrupt exit overhead | 10–30 | restore context |
-| ACK send | 20–50 | atomic write to shared memory |
-| Initiator spin-wait | varies | until all N−1 cores respond |
-| **Total per shootdown** | **200–1000** | on an 8-core system |
+| L1 I/D-TLB entries | 16–64, fully-assoc. | on load-use path → small and fast (§3.1) |
+| L2 STLB entries | 256–2048, 4–8-way | off critical path → large, set-assoc. (§3.2) |
+| L1 TLB hit latency | 1 cycle | parallel with L1 index via VIPT (§6) |
+| L2 STLB hit latency | 2–5 cycles | sequential after L1 miss (§3.2) |
+| Page walk, PTEs cached | 20–40 cycles | $K$ dependent L2/L3 reads (§5.1) |
+| Page walk, PTEs in DRAM | 100–300 cycles | ~100 ns per dependent read (§5.1) |
+| Page fault | $10^6$–$10^7$ cycles | disk/SSD I/O + OS (§1) |
+| Page-walk cache | 16–64 entries | caches non-leaf PTEs only (§5.2) |
+| Base / superpage sizes (Sv39) | 4 KB / 2 MB / 1 GB | leaf at level 3 / 2 / 1 (§5.3, §7) |
+| TLB reach (64 × 4 KB) | 256 KB | $N_{entries}\times S_{page}$ (§3.2, §7) |
+| ASID width | 16 bits | 65,536 spaces before recycle (§4) |
+| Nested 2-D walk (4+4 level) | 24 accesses | $(D_g{+}1)(D_h{+}1){-}1$ (§5.5) |
+| VIPT ceiling | $C \le W\times P$ | index must fit the page offset (§6.2) |
+| `SFENCE.VMA` (local flush) | 10–50 cycles | one core; multi-core needs IPIs (§8) |
 
-On a 64-core system the IPI (inter-processor interrupt) fans out to 63 targets, all of which must respond before the initiator resumes — total 2,000–10,000+ cycles, during which every core is stalled in the shootdown handler.
-
-**Scalability problem:** TLB shootdown cost scales linearly (or worse) with core count.
-On large systems (64-128 cores), shootdowns become a major performance bottleneck for
-workloads with frequent mmap/munmap (databases, JVMs with GC, fork-heavy workloads).
-
-#### TLB Shootdown Scalability — Quantitative Analysis
-
-```verilog
-Shootdown cost model:
-  T_shootdown(N_cores) = T_IPI_send + (N-1) * max(T_flush_per_core) + T_sync
-
-Where:
-  T_IPI_send      = latency to send N-1 inter-processor interrupts (~100-500 ns)
-  T_flush_per_core = local TLB flush cost (~10-50 cycles = 5-25 ns at 2 GHz)
-  T_sync          = barrier synchronization cost (~50-200 ns for atomic ops)
-
-Numerical (2 GHz core, ARM-like TLB):
-  4 cores:   T ≈ 200 + 3*25 + 100 =   475 ns   (~950 cycles)
-  16 cores:  T ≈ 500 + 15*25 + 300 =  1,175 ns  (~2,350 cycles)
-  64 cores:  T ≈ 2000 + 63*25 + 800 = 4,375 ns  (~8,750 cycles)
-  128 cores: T ≈ 5000 + 127*25 + 1500 = 9,675 ns (~19,350 cycles)
-
-During the shootdown, ALL cores are stalled in the interrupt handler.
-Total wasted core-cycles = T_shootdown * N_cores:
-  4 cores:    3,800 cycles wasted
-  64 cores:  560,000 cycles wasted
-  128 cores: 1,237,000 cycles wasted
-
-For a database doing 10,000 munmaps/second on a 64-core machine:
-  Cycles wasted/second = 10,000 * 560,000 = 5.6 * 10^9 cycles
-  At 2 GHz total capacity = 128 * 2 * 10^9 = 256 * 10^9 cycles/second
-  Overhead = 5.6/256 = 2.2% of ALL core cycles wasted on TLB shootdowns
-
-This is why large-scale systems need alternatives to broadcast IPI shootdowns.
-```
-
-#### Alternative Shootdown Mechanisms
-
-```text
-1. Directed shootdown (TLB invalidation instruction with target core list):
-   Instead of broadcasting to all N-1 cores, the OS sends invalidate only to
-   cores that might have the stale mapping (tracked by a per-page "likely cached" bit).
-   Cost: O(K) instead of O(N), where K = cores that actually cached the PTE.
-
-2. Deferred shootdown (batch invalidation):
-   Collect a batch of addresses to invalidate, then send a single IPI with the
-   entire batch. The target flushes all of them in one interrupt.
-   Cost: amortized O(1) per address instead of O(N) per address.
-
-3. Hardware-managed TLB (MIPS-style):
-   No shootdown needed -- all TLB entries are tagged with an ASID.
-   When the OS changes a page table, it changes the ASID of the affected process.
-   Old TLB entries with the stale ASID are ignored on lookup.
-   Cost: 0 for shootdown, but ASID space pressure (16-bit ASID = 64K processes max).
-
-4. ASID avoidance (primary Linux optimization):
-   Each process gets a unique ASID. On context switch, the OS writes the new ASID
-   to satp (RISC-V) or TTBR0 (ARM). TLB entries are tagged with the ASID; the
-   hardware only matches entries whose ASID matches the current register.
-   No flush needed on context switch!
-
-   Shootdown is still needed when:
-     - A page table entry changes (munmap, mprotect) for a RUNNING process
-     - The OS must invalidate stale entries on cores that might cache them
-   But context switches are free (just update the ASID register).
-```
-
-#### Lazy TLB Switching for Kernel Threads — Detail
-
-```text
-When switching from User Process A to a Kernel Thread:
-  1. The kernel thread has no userspace mappings (it uses the kernel address space).
-  2. Instead of flushing User A's TLB entries, the OS leaves them in place.
-  3. The kernel thread runs with User A's ASID still in satp/TTBR0.
-  4. Any userspace TLB entries from User A are harmless -- the kernel thread
-     only accesses kernel addresses (which use global TLB entries or a separate
-     kernel page table).
-  5. When switching back to User A (or to User B):
-     If back to User A: TLB entries are still valid (ASID matches), no flush.
-     If to User B: update ASID to B's ASID. User A's entries are ignored.
-
-This optimization eliminates TLB flushes for ALL kernel thread switches.
-On a typical Linux system, context switches to kernel threads (idle, kworker,
-softirq) account for 30-60% of all context switches. Saving the TLB flush
-for each of these is a significant performance win.
-```
-
-### 6.3 Lazy TLB Switching Optimization
-
-When a context switch occurs, the old process's TLB entries are potentially stale.
-Instead of flushing the entire TLB immediately, a lazy approach defers the flush:
-
-**ASID-based avoidance (primary optimization):**
-
-**Without ASID:**
-   - Every context switch: full TLB flush (10-50 cycles) + refill (hundreds of cycles)
-   - Cost for 1000 switches/second: ~50,000-50,000,000 cycles/second
-
-**With ASID:**
-   - Context switch: update satp.ASID to new process's ASID (0 cycles flush)
-   - TLB entries are tagged with ASID; only matching entries are considered
-   - No flush needed for context switch at all!
-   - Only flush when ASID space exhausted (65,536 switches without recycle)
-
-**Lazy shootdown for kernel threads:**
-
-When switching to a kernel thread (which has no userspace mappings), the old process's
-userspace TLB entries are left in place. The kernel thread uses a special "lazy" ASID.
-When switching back to a userspace process, the TLB entries from the previous userspace
-process are still valid (if the ASID matches). This avoids flushing on kernel thread
-switches entirely.
-
-**Generation counter optimization:**
-
-```c
-Shared structure:
-  struct tlb_gen {
-      uint64_t generation;  // monotonically increasing
-      uint64_t reserved;    // reserved ranges
-  } per-mm_struct;
-
-Each core records:
-  uint64_t last_tlb_gen;  // last generation this core has seen
-
-On TLB miss:
-  if (mm->tlb_gen.gen > core->last_tlb_gen)
-      flush_stale_entries();  // only flush what's needed
-  core->last_tlb_gen = mm->tlb_gen.gen;
-
-This avoids IPIs entirely for many cases:
-  - If a core hasn't accessed the stale address since the shootdown,
-    it never needs to flush (the stale entry won't be used).
-  - Only cores that actually hit a stale entry need to do work.
-```
-
-### 6.4 RISC-V SFENCE.VMA
-
-RISC-V provides the `SFENCE.VMA` instruction for TLB maintenance:
-
-- `SFENCE.VMA` -- flush all TLB entries (full shootdown).
-- `SFENCE.VMA rs1, x0` -- flush entries matching VPN = rs1 (selective flush).
-- `SFENCE.VMA x0, rs2` -- flush entries matching ASID = rs2.
-- `SFENCE.VMA rs1, rs2` -- flush entries matching both VPN and ASID.
-
-`SFENCE.VMA` is a local instruction -- it only affects the issuing core's TLB. For
-multi-core shootdown, the OS must issue IPIs and have each core execute its own
-`SFENCE.VMA`.
-
-### 6.5 Shootdown Overhead
-
-| Method | Latency | Core Impact |
-|--------|---------|-------------|
-| Full flush (SFENCE.VMA) | 10--50 cycles | All entries lost, refills needed |
-| Selective flush (VPN+ASID) | 5--20 cycles | Only matching entries removed |
-| IPI shootdown (64 cores) | 500--5000 cycles | All cores stall |
-| Lazy shootdown | 0 immediate cost | Deferred to next miss |
+**Memory hierarchy latencies** (why a miss hurts and reach matters): L1 TLB ~1 cycle · L2 STLB 2–5 · cached page walk 20–40 · **uncached walk 100–300 cycles** — the $t_{walk}$ that dominates $t_{xlate}$ once reach is exceeded.
 
 ---
 
-## 7. Large Pages (Superpages)
+## Cross-references
 
-### 7.1 Sv39 Superpage Support
-
-Sv39 supports three page sizes. A PTE at any level can be a leaf (at least one of R, W,
-X is set), which determines the page size:
-
-| Level | Page Size | VPN Bits Used | Offset Bits |
-|-------|-----------|---------------|-------------|
-| 1 (root) | 1 GB | VPN[2] (9 bits) | 30 bits |
-| 2 | 2 MB | VPN[2:1] (18 bits) | 21 bits |
-| 3 (leaf) | 4 KB | VPN[2:0] (27 bits) | 12 bits |
-
-A 1 GB superpage is found at Level 1: the walker reads the L1 PTE, finds R|W|X != 0,
-and stops. The physical address is:
-
-$$
-\text{PA} = (\text{PTE}.\text{PPN}[2:0] \ll 30) \;|\; \text{VA}[29:0]
-$$
-
-A 2 MB superpage is found at Level 2: the walker reads L1 (non-leaf), then L2 (leaf).
-
-$$
-\text{PA} = (\text{PTE}.\text{PPN}[1:0] \ll 21) \;|\; \text{VA}[20:0]
-$$
-
-For superpages, the PPN bits below the page offset must be zero (alignment requirement).
-
-### 7.2 TLB Coverage with Superpages
-
-$$
-\text{TLB coverage} = \sum_{\text{entries}} \text{page size of each entry}
-$$
-
-| Configuration | L1 DTLB Coverage |
-|---------------|-----------------|
-| 64 entries x 4 KB | 256 KB |
-| 64 entries x 2 MB | 128 MB |
-| 64 entries x 1 GB | 64 GB |
-
-A workload that touches 500 MB of memory would thrash a 4 KB-only DTLB (256 KB
-coverage) but fit comfortably with 2 MB pages.
-
-### 7.3 Benefits and Costs
-
-**Benefits:**
-1. Fewer TLB entries cover more memory -- reduces TLB miss rate for large working sets.
-2. Fewer page-walk levels -- 1 GB superpages need only 1 memory access vs. 3 for 4 KB.
-3. Less page-table memory -- a 1 GB region needs 1 PTE instead of $256\text{K}$ PTEs.
-4. Reduced page-walk cache pressure.
-
-**Costs:**
-1. Internal fragmentation -- allocating 2 MB for a process that needs 100 KB wastes
-   ~1.9 MB.
-2. Physical contiguity -- the OS must find $2\text{ MB}$ or $1\text{ GB}$ of
-   physically contiguous, aligned memory, which becomes difficult under fragmentation.
-3. Longer page-fault handling -- zeroing 2 MB takes ~1 ms vs. ~2 us for 4 KB.
-4. Larger page tables for small allocations -- if 4 KB pages are mixed in, the page
-   table structure is more complex.
-
-### 7.4 Transparent Huge Pages (THP)
-
-Modern OSes (Linux, Windows) support **transparent huge pages**: the OS automatically
-promotes a sequence of contiguous 4 KB pages to a single 2 MB huge page when it detects
-that the pages are contiguous and fully populated. This is done in the background by
-a kernel thread (khugepaged on Linux) without application modification.
-
-THP gives most of the TLB benefit of explicit huge pages while keeping the 4 KB
-allocation granularity for small or sparse mappings.
+- **Down the stack (what this is built from):** [Memory](09_Memory.md) (the SRAM/CAM cells behind the TLB and the DRAM the walk reads), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (set-associative indexing and the physical tag compare VIPT overlaps), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the associative match delay of §3.1).
+- **Up the stack (what builds on it):** [OoO_Execution](05_OoO_Execution.md) (the AGU/LSQ that issue the virtual addresses translated here, and the load-use path VIPT protects), [DDR_Controller](10_DDR_Controller.md) & [AHB_AXI_APB](11_AHB_AXI_APB.md) (carry the physical addresses translation produces), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (a complete MMU + page-walk cache in an open OoO core).
+- **Adjacent / prerequisite:** [CPU_Architecture](03_CPU_Architecture.md) (the pipeline and memory hierarchy this sits in), [RISC_V_ISA](04_RISC_V_ISA.md) (Sv39/48/57, `satp`, `SFENCE.VMA`, and the page-fault trap of §8).
 
 ---
 
-## 8. Numbers to Memorize
-
-| Parameter | Value | Note |
-|-----------|-------|------|
-| L1 ITLB / DTLB entries | 16--64 | Fully associative, 1-cycle hit |
-| L2 STLB entries | 256--1024 | 4--8 way set-associative, 2--5 cycle hit |
-| L1 TLB hit latency | 1 cycle | Parallel with L1 cache index (VIPT) |
-| L2 TLB hit latency | 2--5 cycles | Sequential after L1 miss |
-| Page walk latency (cached PTEs) | 20--40 cycles | 3 memory accesses for Sv39, cached in L2/L3 |
-| Page walk latency (uncached PTEs) | 100--300 cycles | PTEs in DRAM, ~100 ns per access |
-| Page fault latency | $10^6$--$10^7$ cycles | Disk/SSD I/O, context switches |
-| Base page size | 4 KB | 12-bit offset |
-| Superpage sizes (Sv39) | 2 MB, 1 GB | 21-bit, 30-bit offset |
-| PTE size (Sv39) | 8 bytes (64 bits) | 44-bit PPN + permission flags |
-| ASID width | 16 bits (typical) | $2^{16} = 65{,}536$ concurrent address spaces |
-| VPN bits (Sv39) | 27 bits | VA[38:12] |
-| PPN bits (Sv39) | 44 bits | PA[55:12] |
-| Virtual address (Sv39) | 39 bits | Sign-extended to 64 bits |
-| Physical address (Sv39) | 56 bits | Up to 64 PB physical memory |
-| Page-walk cache size | 16--64 entries | Caches non-leaf PTEs only |
-| VIPT constraint | $\text{index bits} \leq \log_2(P)$ | Index must fit in page offset |
-| SFENCE.VMA latency | 10--50 cycles | Local TLB flush |
-
----
-
-## 9. Five-Level Paging
-
-### 10.1 Motivation
-
-4-level paging in x86-64 (PML4 (page-map level 4) -> PDPT (page-directory pointer table) -> PD (page directory) -> PT (page table)) supports 48-bit virtual
-addresses, giving 256 TiB of virtual address space per process. This was
-sufficient until workloads such as in-memory databases, persistent memory
-(DIMM-based NVRAM (non-volatile random-access memory)), and multi-terabyte ML training sets pushed beyond the
-limit. 5-level paging extends the virtual address width to 57 bits (128 PiB).
-
-### 10.2 x86-64 LA57 (5-Level Paging, Intel)
-
-LA57 adds a fifth level (PML5) above PML4:
-
-```verilog
-57-bit Virtual Address:
-  [PML5 (9)] [PML4 (9)] [PDPT (9)] [PD (9)] [PT (9)] [Offset (12)]
-  bits 56:48  bits 47:39  bits 38:30  bits 29:21  bits 20:12  bits 11:0
-
-CR3 register holds physical address of PML5 table (new root).
-
-Walk:
-  Step 0: PML5_entry = Memory[CR3 + VA[56:48] * 8]        (NEW)
-  Step 1: PML4_entry = Memory[PML5_entry.addr + VA[47:39] * 8]
-  Step 2: PDPT_entry = Memory[PML4_entry.addr + VA[38:30] * 8]
-  Step 3: PD_entry   = Memory[PDPT_entry.addr + VA[29:21] * 8]
-  Step 4: PT_entry   = Memory[PD_entry.addr + VA[20:12] * 8]
-  Step 5: PA = PT_entry.PFN || VA[11:0]
-
-Total: 5 memory accesses per translation (without TLB or page-walk cache).
-```
-
-**Support status:**
-- Intel: Supported since Ice Lake (2019). Enabled via CR4.LA57 bit.
-- AMD: Supported since Zen 4 / Genoa (2023).
-- Linux: Supported since kernel 4.14 (2017). Requires CONFIG_X86_5LEVEL=y.
-
-**TLB impact:** LA57 does not change the TLB entry format -- each entry still
-maps one 4 KB page. However, the page-walk latency increases by 1 level.
-With a page-walk cache that caches PML5 and PML4 entries, the effective
-overhead is minimal (most walks still hit in 2--3 cycles).
-
-### 10.3 ARM LPA2 (Large Physical Addressing v2)
-
-ARMv9.2-A introduces LPA2, extending the physical address width from 48 bits
-to 52 bits and the virtual address width from 48 to 52 bits:
-
-| Parameter | ARMv8 (LPA) | ARMv9 (LPA2) |
-|-----------|-------------|---------------|
-| Virtual address width | 48 bits | 52 bits |
-| Physical address width | 48 bits | 52 bits |
-| Page table levels | 4 (TTBR0 + TTBR1) | 4 or 5 |
-| Addressable physical memory | 256 TiB | 4 PiB |
-
-LPA2 reclaims 4 bits from the PTE's "ignored" fields (bits 51:48 and 47:44)
-by using a larger PTE format. The walk is similar to ARMv8 but with wider
-PPN fields in each PTE.
-
-**Why ARM stayed at 4 levels:** ARM uses separate translation tables for user
-(TTBR0) and kernel (TTBR1) address spaces. With a 52-bit VA split (e.g., 49
-bits user / 49 bits kernel), 4 levels suffice because each half of the address
-space uses its own root table. This avoids the extra walk level that x86
-requires.
-
-### 10.4 RISC-V Sv57
-
-RISC-V Sv57 adds a 5th level to Sv48, supporting 57-bit virtual addresses:
-
-$$
-\text{VA}[56:0] \rightarrow \underbrace{\text{VPN}[4]}_{9} \underbrace{\text{VPN}[3]}_{9} \underbrace{\text{VPN}[2]}_{9} \underbrace{\text{VPN}[1]}_{9} \underbrace{\text{VPN}[0]}_{9} \underbrace{\text{offset}}_{12}
-$$
-
-`satp.MODE = 10` selects Sv57. The walk is 5 levels, same format as Sv39/Sv48.
-Superpages: 128 TiB (leaf at L1), 256 GiB (L2), 1 GiB (L3), 2 MiB (L4), 4 KiB (L5).
-
----
-
-## 10. CXL Memory and Virtual Memory: NUMA-Aware Page Tables
-
-### 11.1 Compute Express Link (CXL) Overview
-
-CXL (Compute Express Link) is a cache-coherent interconnect built on PCIe (Peripheral Component Interconnect Express)
-physical layers. It allows a CPU to access memory attached to a different
-device (another CPU, a memory expander, or a smart NIC (network interface card)) as if it were local
-memory -- but with higher latency.
-
-| CXL Version | Bandwidth (x16) | Latency (typical) | Key Feature |
-|-------------|------------------|---------------------|-------------|
-| CXL 1.1 | 32 GT/s (~64 GB/s) | 100--200 ns | Cache-coherent memory access |
-| CXL 2.0 | 32 GT/s (~64 GB/s) | 80--150 ns | Switching, multi-head devices |
-| CXL 3.0 | 64 GT/s (~128 GB/s) | 50--100 ns | Fabric, peer-to-peer |
-
-CXL-attached memory appears in the physical address map as a separate NUMA (non-uniform memory access)
-node with higher latency and lower bandwidth than DDR-attached memory.
-
-### 11.2 NUMA-Aware Page Tables
-
-When a system has both local DDR and remote CXL memory, the OS page table
-must track where each page is physically located. The virtual memory system
-must be NUMA-aware:
-
-1. **Page placement:** The OS allocates pages for latency-sensitive data on
-   the local DDR node and throughput-sensitive (bulk) data on the CXL node.
-   Linux uses `mbind()` and the `numactl` tool for this.
-
-2. **Page migration:** If a page allocated on the CXL node is accessed
-   frequently by the local CPU, the OS may migrate it to the local DDR node.
-   Linux `kpageidle` and `migratepages` support this. Page migration copies
-   the page to the new node, updates the page table PTE atomically, and
-   flushes the old TLB entries (TLB shootdown).
-
-3. **TLB implications:** CXL memory accesses have higher latency, so TLB
-   misses are more expensive when the page-walk cache entries for CXL-backed
-   PTEs are cold. The page-walk itself may need to traverse the CXL link to
-   read page-table entries stored in remote memory, adding 50--100 ns per
-   access.
-
-4. **Page table placement:** The OS should allocate page-table pages on the
-   same NUMA node as the data they describe. If the page table for a process
-   running on CPU 0 is stored in CXL memory attached to CPU 1, every TLB miss
-   crosses the CXL link twice (once for the page walk, once for the data).
-
-### 11.3 Hardware Support for NUMA-Aware VM
-
-- **NUMA-aware page walkers:** Some modern CPUs (Intel Sapphire Rapids, AMD
-  Genoa) allow the page walker to be configured with a NUMA preference, so
-  page-walk cache refills target the nearest memory controller.
-
-- **CXL Type 3 (memory expanders):** A CXL memory expander is a headless
-  device that provides DDR channels accessible via the CXL link. The OS treats
-  it as a separate NUMA node. The page table format is unchanged; only the
-  physical address mapping differs.
-
-- **Tiered memory systems:** Future designs (projected 2025--2027) use CXL
-  memory as a tier between DRAM (dynamic random-access memory) and SSD. The OS's virtual memory system
-  manages three tiers: hot pages in DDR, warm pages in CXL, cold pages on
-  SSD. Page promotion/demotion between tiers is guided by hardware access
-  counters (Intel MAT, ARM MPAM (memory system partitioning and monitoring)).
-
----
-
-## 11. Secure Memory: Encrypted Memory
-
-### 12.1 The Threat Model
-
-In cloud environments, a malicious hypervisor (or a physical attacker with
-access to DRAM DIMMs (dual in-line memory modules)) can:
-1. Read the guest's memory contents (via DMA (direct memory access) or DIMM snooping).
-2. Modify the guest's memory (via DMA or bus interception).
-3. Roll back memory to a previous state (replay attacks).
-
-Encrypted memory protects against these threats by ensuring that all data
-stored in DRAM is encrypted, with the encryption keys managed by hardware that
-the hypervisor cannot access.
-
-### 12.2 AMD SME (Secure Memory Encryption)
-
-AMD SME (introduced in EPYC Naples, 2017) uses a hardware memory encryption
-engine between the memory controller and the DRAM:
-
-```verilog
-CPU Core
-  |
-  MMU (VA -> PA translation)
-  |
-  [Encryption Engine (AES-128/256 XTS)]
-  |
-  DRAM (stores ciphertext)
-
-Encryption key: generated by the AMD Secure Processor (on-die ARM core)
-at boot. The key is never visible to the host OS or hypervisor.
-```
-
-**Page table interaction:**
-- A bit in the page table entry (C-bit in AMD's case, bit 51 of the PTE)
-  indicates whether the page is encrypted.
-- The OS sets the C-bit when allocating encrypted pages. The hardware checks
-  the C-bit on every memory access and routes the request through the
-  encryption engine.
-- Encrypted and unencrypted pages can coexist: the hypervisor runs with
-  unencrypted memory while the guest runs with encrypted memory (in SEV (Secure Encrypted Virtualization) mode).
-
-**Performance impact:** The encryption engine adds ~6--10 cycles of latency to
-every memory access that goes to DRAM (cache hits are not affected because
-data is decrypted before entering the cache). For workloads with high cache
-miss rates, this translates to 5--15% performance overhead.
-
-### 12.3 AMD SEV / SEV-SNP (Secure Encrypted Virtualization)
-
-SEV extends SME to virtual machines:
-
-- **SEV (v1):** Each VM is assigned a unique encryption key by the AMD Secure
-  Processor. The hypervisor cannot read the guest's memory in plaintext.
-  Limitation: the hypervisor can still replay or corrupt guest memory.
-
-- **SEV-ES (Encrypted State, v2):** All CPU register state is encrypted when
-  saved to memory (on VM exit). The hypervisor cannot inspect or modify
-  guest registers.
-
-- **SEV-SNP (Secure Nested Paging, v3):** Adds integrity protection. The
-  hardware maintains a reverse-map table (RMP) that tracks which VM owns
-  each physical page. The hypervisor cannot map a guest page into its own
-  address space or into another guest's address space (prevents aliasing
-  attacks). This also prevents replay attacks because the RMP is checked
-  on every access.
-
-**Page table changes for SEV-SNP:**
-- The guest's page tables are unchanged (the guest runs a standard OS).
-- The hypervisor's nested page tables (Stage-2) are augmented with
-  SEV-SNP metadata in the RMP, not in the page table itself.
-- The hardware walker checks the RMP in parallel with the nested page walk.
-
-### 12.4 Intel TDX (Trust Domain Extensions)
-
-Intel TDX (introduced in Sapphire Rapids, 2023) is Intel's equivalent of
-SEV-SNP:
-
-- Creates **Trust Domains (TDs)** -- isolated VMs whose memory and register
-  state are encrypted and integrity-protected.
-- Uses **MKTME (Multi-Key Total Memory Encryption):** up to 64 encryption
-  keys, one per TD.
-- The **TDX Module** (a secure monitor running at the highest privilege)
-  manages TD lifecycle, key allocation, and entry/exit.
-- Page table integrity: a **Secure EPT (Extended Page Table)** maps guest
-  physical to host physical with integrity checks (Merkle-tree-based MACs
-  on EPT entries).
-
-**Key difference from SEV-SNP:** TDX uses a Merkle tree for integrity
-(trades storage for verification speed), while SEV-SNP uses a flat RMP table
-(simpler but requires more memory for large systems).
-
-### 12.5 ARM CCA (Confidential Compute Architecture)
-
-ARM CCA (introduced in ARMv9.4-A) adds **Realms** -- isolated execution
-environments protected from the hypervisor and the OS:
-
-- **Realm Management Monitor (RMM):** A firmware component at EL2.5 (between
-  the hypervisor and the secure monitor) that manages realm page tables.
-- **Realm page tables:** Separate Stage-2 page tables managed by the RMM. The
-  hypervisor cannot modify realm page tables.
-- **Granule Protection Checks (GPC):** Hardware checks on every memory access
-  that verify the page's protection state (realm vs. normal vs. secure) before
-  allowing the access.
-- Encryption: Realm memory is encrypted by hardware using keys managed by the
-  RMM.
-
-### 12.6 Comparison
-
-| Feature | AMD SEV-SNP | Intel TDX | ARM CCA |
-|---------|-------------|-----------|---------|
-| Encryption | AES-128/256 XTS | AES-256 XTS (MKTME) | Hardware-dependent |
-| Integrity | RMP table | Merkle tree | GPC + RMM |
-| Max keys | 509 (SEV guests) | 64 (MKTME keys) | Per-realm |
-| Page table isolation | Nested paging + RMP | Secure EPT | Realm Stage-2 |
-| Register encryption | Yes (SEV-ES) | Yes (TDX) | Yes (Realm) |
-| Deployed | EPYC Milan+, 2021 | Xeon Sapphire+, 2023 | Neoverse V3, 2025+ |
-
-### 12.7 TLB Impact of Encrypted Memory
-
-Encrypted memory does not change the TLB format or lookup path. The encryption
-engine sits **below** the cache, so the TLB translates virtual to physical
-addresses as usual. However:
-
-1. **C-bit / encryption attribute in TLB:** Some implementations store an
-   encryption attribute in the TLB entry (e.g., AMD's C-bit is stored in the
-   PTE and cached in the TLB). This ensures the encryption engine is engaged
-   on cache misses for encrypted pages.
-
-2. **Page walk through encrypted memory:** In SEV, the guest page tables
-   are encrypted. The hardware page walker must decrypt PTEs during a page
-   walk, adding latency. SEV-SNP mitigates this by caching decrypted PTEs
-   in the page-walk cache.
-
-3. **TLB shootdown for secure VMs:** When the hypervisor modifies the nested
-   page tables (Stage-2) for a TD or SEV guest, it must issue TLB shootdowns
-   via IPI. The secure VM is paused during the shootdown to prevent it from
-   observing stale translations.
-
----
-
-## 12. References
-
-1. **RISC-V Privileged Architecture Specification v1.12** -- Chapter 4.3 (Sv39), Sv48,
-   Sv57 page-table formats, `satp` CSR, `SFENCE.VMA` instruction semantics.
-2. **Hennessy & Patterson, Computer Architecture: A Quantitative Approach, 6th ed.**
-   -- Chapter B.4 (Virtual Memory), B.5 (Protection), TLB hierarchy design.
-3. **Patterson & Hennessy, Computer Organization and Design: RISC-V Edition, 2nd ed.**
-   -- Chapter 5.7 (Virtual Memory), TLB organization, page-table walking.
-4. **Talluri et al., "Tradeoffs in Supporting Two Page Sizes," ISCA 1992** --
-   foundational analysis of superpage TLB tradeoffs.
-5. **Barr et al., "Persisting TLB Entries across Context Switches," ASPLOS 2010** --
-   ASID design and TLB shootdown optimization.
-6. **Pham et al., "A Large-Scale Study of Page Usage in the Linux Kernel," ATC 2020**
-   -- empirical TLB miss rate data for production workloads.
-7. **ARM Architecture Reference Manual (ARMv8-A)** -- Section D5 (Memory Management),
-   TLB maintenance instructions (TLBI), VIPT constraints.
-8. **Intel 64 and IA-32 Architectures Software Developer's Manual, Vol. 3A** --
-   Chapter 4 (Paging), 4-level and 5-level paging, INVLPG, PCID.
-9. **Intel Corp., "5-Level Paging and LA57," Intel 64 and IA-32 Architectures
-   Software Developer's Manual, Vol. 3A, Section 4.5.**
-10. **ARM Architecture Reference Manual (ARMv9-A)** -- LPA2, CCA, Realm
-    Management.
-11. **CXL Consortium, "Compute Express Link Specification, Rev 3.0," 2022.**
-12. **AMD, "SEV-SNP: Strengthening VM Isolation with Integrity and More,"
-    AMD Developer Documentation, 2021.**
-13. **Intel, "TDX Architecture Overview," Intel Developer Manual, 2023.**
-
----
-
-## Navigation
-
-- **Previous:** [Memory.md](09_Memory.md) -- SRAM cells, cache organization
-- **Next:** [AHB_AXI_APB.md](11_AHB_AXI_APB.md) -- Bus protocols carrying physical addresses
-- **Up:** [CPU_Architecture.md](03_CPU_Architecture.md) -- Full processor microarchitecture
-- **Index:** [../README.md](../Index.md)
+## References
+
+1. RISC-V International, *The RISC-V Instruction Set Manual, Vol. II: Privileged Architecture*, 2024. Sv39/48/57 formats, `satp`, `SFENCE.VMA` semantics.
+2. Hennessy, J.L. and Patterson, D.A., *Computer Architecture: A Quantitative Approach*, 6th ed., Morgan Kaufmann, 2017. Appendix B.4–B.5: virtual memory, TLB hierarchy, VIPT and aliasing.
+3. Barr, T.W., Cox, A.L., and Rixner, S., "Translation Caching: Skip, Don't Walk (the Page Table)," *ISCA*, 2010. The page-walk / translation cache of §5.2.
+4. Bhattacharjee, A., "Large-Reach Memory Management Unit Caches," *MICRO*, 2013. MMU-cache reach and organization.
+5. Bhargava, R. et al., "Accelerating Two-Dimensional Page Walks for Virtualized Systems," *ASPLOS*, 2008. The nested-walk cost and nested TLBs of §5.5.
+6. Talluri, M. et al., "Tradeoffs in Supporting Two Page Sizes," *ISCA*, 1992. Foundational superpage reach-versus-fragmentation analysis (§7).
+7. Bhattacharjee, A. and Lustig, D., *Architectural and Operating System Support for Virtual Memory*, Synthesis Lectures on Computer Architecture, Morgan & Claypool, 2017. TLBs, walks, ASIDs, shootdown.
+8. ARM Ltd., *ARM Architecture Reference Manual, ARMv8-A*, Section D5 (VMSA), TLB maintenance (TLBI), VIPT constraints.
+9. Intel Corp., *Intel 64 and IA-32 Architectures Software Developer's Manual, Vol. 3A*, Ch. 4 (Paging), 4-/5-level paging, INVLPG, PCID.

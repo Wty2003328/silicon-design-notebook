@@ -1,1325 +1,488 @@
-# CMOS Fundamentals and Device Physics — Senior Engineer Deep Dive
+# CMOS Fundamentals and Device Physics — Concept-First Deep Dive
 
-## Table of Contents
-1. MOSFET Operation
-2. CMOS Inverter and VTC
-3. Noise Margins
-4. Propagation Delay and Power-Delay Product
-5. CMOS Logic Families & I/O Signaling
-6. Latch-Up
-7. ESD Protection
-8. FinFET and Advanced Nodes
-9. Process Variations and DTCO
-10. Elmore Delay Model
-11. Logical Effort
-12. 6T SRAM Cell
-13. Leakage Current Breakdown
-14. Numbers to Memorize
+> **Prerequisites:** basic semiconductor physics (the pn junction, the MOS capacitor, drift/diffusion). This is the bottom of the notebook — everything else is built on the device and the switching energy derived here.
+> **Hands off to:** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (gates, latches, flip-flops built from these transistors), [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md) (the $\alpha CV^2f$ this page derives, scaled to a whole SoC), [Memory](../01_Architecture_and_PPA/09_Memory.md) (reasons *above* the §12 bitcell), [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (how the FinFET/GAA of §8 is actually built).
 
 ---
 
-## 1. MOSFET Operation
+## 0. Why this page exists
 
-### 1.1 NMOS Transistor — Regions of Operation
+The entire digital abstraction — a world of clean 0s and 1s — rests on one physical trick: **a MOSFET is a voltage-controlled switch with gain, and a *complementary pair* of them dissipates energy essentially only while switching.** Every property the layers above take for granted — that a gate restores a noisy input, that power tracks activity, that a bit holds its value, that timing closes — is a *consequence* of how well, or how badly, a real transistor approximates an ideal switch.
 
-```ascii-graph
-                  Gate (G)
-                   |
-            ───────┤ oxide (SiO2, tox)
-           |       |       |
-    Source (S)    body    Drain (D)
-      n+     p-substrate    n+
-```
+This page derives the digital world from device physics and then quantifies where the abstraction leaks. Each section opens with the *problem* — why must this device, circuit, or margin exist — before any equation. Four leaks organise everything:
 
-**Three operating regions (NMOS, VGS > 0, VDS > 0):**
+- **Delay** — the switch has finite on-current, so charging a capacitor takes time (§1, §4, §10–§11).
+- **Power** — switching costs $\tfrac12 CV^2$, and the switch never fully turns off (§4, §13).
+- **Noise and variation** — real levels are corrupted and every transistor is a slightly different statistical object (§3, §9).
+- **State** — holding a bit means fighting all of the above at once, which is the whole story of the SRAM cell (§12).
 
-```verilog
-Cutoff (VGS < Vth):
-  IDS ≈ 0   (no channel formed)
-  Transistor is OFF (acts as open switch)
-
-Linear/Triode (VGS > Vth, VDS < VGS - Vth):
-  IDS = μn * Cox * (W/L) * [(VGS - Vth) * VDS - VDS²/2]
-  Transistor acts like a voltage-controlled resistor
-  Ron ≈ 1 / [μn * Cox * (W/L) * (VGS - Vth)]
-
-Saturation (VGS > Vth, VDS ≥ VGS - Vth):
-  IDS = (1/2) * μn * Cox * (W/L) * (VGS - Vth)² * (1 + λ*VDS)
-  Channel pinched off at drain end
-  Current approximately constant (controlled by VGS)
-  λ = channel-length modulation parameter (1/VA)
-```
-
-**Key parameters:**
-```text
-μn:    Electron mobility (~400 cm²/V·s for bulk Si at 300K)
-Cox:   Gate oxide capacitance = εox / tox
-W/L:   Width-to-length ratio (designer's knob)
-Vth:   Threshold voltage (~0.3-0.5V for modern processes)
-λ:     Channel-length modulation (~0.05-0.1 V⁻¹)
-```
-
-### 1.2 PMOS Transistor
-
-Same equations but with opposite signs/polarities:
-```ascii-graph
-Cutoff:      VGS > Vth (Vth < 0 for PMOS, so |VGS| < |Vth|)
-Linear:      |VGS| > |Vth|, |VDS| < |VGS| - |Vth|
-Saturation:  |VGS| > |Vth|, |VDS| ≥ |VGS| - |Vth|
-
-Hole mobility μp ≈ 150-200 cm²/V·s (about 2-3x lower than electrons)
-→ PMOS must be 2-3x wider than NMOS for equal drive strength
-```
-
-### 1.3 Threshold Voltage
-
-```text
-Vth = Vth0 + γ * (√(2*φF + VSB) - √(2*φF))
-
-Vth0:  Zero-bias threshold voltage
-γ:     Body-effect coefficient = √(2*q*εsi*NA) / Cox
-φF:    Fermi potential = (kT/q) * ln(NA/ni)
-VSB:   Source-body voltage (body effect)
-```
-
-**Body effect:** When VSB > 0 (source above body potential), Vth increases.
-This is important in stacked transistors (NAND/NOR gates) where the transistor
-closest to VDD/GND has VSB = 0 but upper transistors have VSB > 0.
-
-### 1.4 Short-Channel Effects (Modern Nodes)
-
-```ascii-graph
-DIBL (Drain-Induced Barrier Lowering):
-  Drain voltage reduces source-channel barrier → Vth decreases with VDS
-  Vth(VDS) = Vth(long) - η * VDS
-  η ≈ 50-100 mV/V for 7nm
-
-Velocity Saturation:
-  At high lateral field, carrier velocity saturates at vsat ≈ 10^7 cm/s
-  IDS = W * Cox * vsat * (VGS - Vth - VDSsat)
-  Velocity saturation makes current LINEARLY dependent on (VGS - Vth)
-  instead of quadratic — critical for advanced nodes
-
-Hot Carrier Injection (HCI):
-  High-energy carriers injected into gate oxide → oxide damage → Vth shift
-  Worse at high VDS, affects reliability
-
-Gate Leakage (tunneling):
-  Below ~2nm oxide thickness, electrons tunnel through gate oxide
-  Solution: High-k dielectrics (HfO2, k ≈ 20-25 vs SiO2 k ≈ 3.9)
-  EOT (Equivalent Oxide Thickness) = tphysical * (3.9/k)
-```
+By the end you should be able to *derive* why $V_{DD}$ sits at 0.7 V, why $V_{th}$ cannot scale, why Dennard scaling ended and took frequency scaling with it, why FinFETs replaced planar devices, and why a 6T SRAM cell becomes unwritable-or-unreadable at low voltage — rather than recite parameter values.
 
 ---
 
-## 2. CMOS Inverter — Voltage Transfer Characteristic (VTC)
+## 1. The MOSFET as a switch — and where it fails to be one
 
-### 2.1 Circuit Structure
+Digital logic needs a switch with four properties: it must be **controlled by voltage** (so a gate's output can drive the next gate's input), have **gain** (so a weak input produces a strong output and noise gets squeezed out, §3), pass **near-zero current when off** (so idle logic is nearly free, §13), and present **low resistance when on** (so it charges the next stage fast, §4). The MOSFET approximates all four. Every non-ideality below — subthreshold conduction, velocity saturation, DIBL — is a way it *falls short*, and each shortfall reappears as a constraint one or more layers up.
 
-```ascii-graph
-         VDD
-          |
-       ┌──┤ PMOS (W_p/L_p)
-       │  |
-  IN ──┤  ├── OUT
-       │  |
-       └──┤ NMOS (W_n/L_n)
-          |
-         GND
-```
+### 1.1 The three regions, and the one equation that matters
 
-### 2.2 VTC Analysis — Five Regions
+An n-channel MOSFET forms a conducting channel once the gate pulls the surface into inversion, $V_{GS} > V_{th}$. The current then depends on whether the channel reaches the drain:
 
-```ascii-graph
-Vout
- |
-VDD ─────────────╮
- |                │\
- |                │ \   Region B: NMOS sat, PMOS linear
- |                │  \
- |        Region A│   \  Region C: both in saturation
- |   NMOS off,    │    │  (transition region, high gain)
- |   PMOS linear  │    │
- |                │   /  Region D: NMOS linear, PMOS sat
- |                │  /
- |                │ /
- |                │/
- 0 ───────────────┴─────── Vin
- 0            VM        VDD
+$$
+I_D \approx
+\begin{cases}
+0, & V_{GS} < V_{th} & \text{(cutoff — the OFF switch)}\\[4pt]
+\mu_n C_{ox}\dfrac{W}{L}\left[(V_{GS}-V_{th})V_{DS}-\dfrac{V_{DS}^2}{2}\right], & V_{DS} < V_{GS}-V_{th} & \text{(triode — the ON resistor)}\\[8pt]
+\dfrac{1}{2}\mu_n C_{ox}\dfrac{W}{L}(V_{GS}-V_{th})^2(1+\lambda V_{DS}), & V_{DS}\ge V_{GS}-V_{th} & \text{(saturation — the current source)}
+\end{cases}
+$$
 
- VM = switching threshold (Vin = Vout point)
-```
+where $\mu_n$ = electron mobility ($\approx 400\ \text{cm}^2/\text{V·s}$ effective in the inversion layer), $C_{ox}=\varepsilon_{ox}/t_{ox}$ = gate-oxide capacitance per area, $W/L$ = the designer's only continuous knob, $V_{th}$ = threshold voltage, and $\lambda$ = channel-length modulation ($\approx 0.05$–$0.1\ \text{V}^{-1}$). Two facts do almost all the work later:
 
-**Five operating regions as Vin sweeps 0 → VDD:**
+- **In triode the device is a resistor**, $R_{on}\approx 1/\!\left[\mu_n C_{ox}\frac{W}{L}(V_{GS}-V_{th})\right]$ — this is the $R$ in the delay model of §4.
+- **In saturation the drive current sets how fast it can charge a load** — this is the $I$ in $t_p\propto CV/I$.
 
-```ascii-graph
-Region A (Vin < Vthn):
-  NMOS: cutoff     PMOS: linear
-  Vout = VDD (PMOS pulls up, NMOS is off)
+**Why PMOS is the weaker sibling.** Holes have roughly half the mobility of electrons ($\mu_p\approx 150$–$200\ \text{cm}^2/\text{V·s}$). For equal drive a PMOS must be $\sim2$–$2.5\times$ wider than an NMOS. That single asymmetry propagates into inverter sizing (§2), the NAND-over-NOR preference (§5), and the SRAM pull-up (§12).
 
-Region B (Vthn < Vin < VM, NMOS enters saturation):
-  NMOS: saturation  PMOS: linear
-  Vout starts to drop
+### 1.2 The square law is a lie at short channel: the alpha-power law
 
-Region C (Vin ≈ VM, both in saturation):
-  NMOS: saturation  PMOS: saturation
-  Maximum gain |dVout/dVin| → transition region
-  This is where the inverter "switches"
+The quadratic $(V_{GS}-V_{th})^2$ assumes carriers accelerate freely across the channel. In a modern device the lateral field is so high that carrier velocity **saturates** at $v_{sat}\approx 10^7\ \text{cm/s}$ long before the drain. Drive current then becomes **linear**, not quadratic, in overdrive:
 
-Region D (VM < Vin < VDD + Vthp):
-  NMOS: linear      PMOS: saturation
-  Vout continues dropping
+$$
+I_{Dsat}\approx W C_{ox}\,v_{sat}\,(V_{GS}-V_{th}) \quad\Longrightarrow\quad I_{Dsat}\propto (V_{GS}-V_{th})^{\alpha},\ \ \alpha\!:\ 2\to 1
+$$
 
-Region E (Vin > VDD + Vthp, noting Vthp < 0):
-  NMOS: linear      PMOS: cutoff
-  Vout = 0 (NMOS pulls down, PMOS is off)
-```
+The **alpha-power law** (Sakurai–Newton) captures both limits with one exponent: $\alpha\approx 2$ for a long-channel device, falling to $\alpha\approx 1.1$–$1.4$ for a velocity-saturated modern one. This is not a curiosity — it is *why* raising $V_{DD}$ buys less speed than the textbook square law predicts, and it sets the delay exponent in §4. Note the design consequence: because current is now $\propto W$ (not $W/L$ with an $L$ you can shrink for free), you buy drive with *width*, which is exactly what FinFET fins and GAA sheets provide (§8).
 
-### 2.3 Switching Threshold (VM) Derivation
+### 1.3 The switch will not turn off: subthreshold conduction and the 60 mV/decade wall
 
-At VM, Vin = Vout = VM, and NMOS (n-channel MOSFET — metal-oxide-semiconductor field-effect transistor) current = PMOS (p-channel MOSFET) current (both in saturation):
+Below $V_{th}$ the current is not zero — it falls **exponentially**, because the channel is diffusion-limited (a BJT-like Boltzmann tail), not abruptly cut off:
 
-```text
-(1/2) * kn * (VM - Vthn)² = (1/2) * kp * (VDD - VM - |Vthp|)²
+$$
+I_D = I_0\,\exp\!\left(\frac{V_{GS}-V_{th}}{n\,V_T}\right)\left[1-\exp\!\left(-\frac{V_{DS}}{V_T}\right)\right],\qquad V_T=\frac{kT}{q}\approx 26\ \text{mV at }300\text{ K}
+$$
 
-where kn = μn*Cox*(Wn/Ln), kp = μp*Cox*(Wp/Lp)
+The steepness of turn-off is the **subthreshold slope** $S$ — the gate swing needed to change $I_D$ by $10\times$:
 
-Let r = √(kp/kn):
+$$
+\boxed{\,S=\frac{kT}{q}\ln 10\left(1+\frac{C_{dep}}{C_{ox}}\right)\,}
+$$
 
-VM = (Vthn + r*(VDD - |Vthp|)) / (1 + r)
-```
+where $C_{dep}$ = depletion capacitance under the channel and $n=1+C_{dep}/C_{ox}$ is the body factor. At 300 K the prefactor $\frac{kT}{q}\ln 10 = 60\ \text{mV/decade}$ is a **hard thermodynamic floor** for any device that switches by modulating a Boltzmann barrier — bulk planar devices sit at $S\approx 80$–$100$ (poor gate control, large $C_{dep}/C_{ox}$); FinFETs reach $\approx 65$–$70$ by driving $n\to 1$.
 
-**For symmetric VTC (VM = VDD/2):**
-```ascii-graph
-kp/kn = 1  →  (μp*Wp/Lp) = (μn*Wn/Ln)
-Since μp ≈ μn/2.5:  Wp/Lp ≈ 2.5 * (Wn/Ln)
-```
+This one equation is the master constraint of the whole page. It says: **to keep leakage low you want high $V_{th}$, but to keep speed and noise margin you want low $V_{th}$ — and $S$ sets the exchange rate between them.** With $S=70\ \text{mV/dec}$, dropping $V_{th}$ by 210 mV multiplies off-current by $1000$. That exchange rate is why $V_{th}$ has stopped scaling, why Dennard scaling ended (§4.5), why leakage is now half the power budget (§13), and why sub-60 mV/dec "steep-slope" devices (tunnel FETs, negative-capacitance FETs) are researched at all.
 
-**Numerical example (7nm):**
-```text
-VDD = 0.7V, Vthn = 0.3V, |Vthp| = 0.3V
-r = 1 (symmetric sizing):
-VM = (0.3 + 1*(0.7-0.3)) / (1+1) = 0.7/2 = 0.35V = VDD/2  ✓
-```
+### 1.4 Second-order effects that matter at advanced nodes
+
+The gate is losing its grip on the channel as $L$ shrinks toward the source/drain depletion widths. Four symptoms, each a reason for §8:
+
+- **DIBL (drain-induced barrier lowering):** the drain field lowers the source barrier, so $V_{th}$ *drops* as $V_{DS}$ rises, $V_{th}(V_{DS})\approx V_{th,long}-\eta V_{DS}$ with $\eta\approx 50$–$100\ \text{mV/V}$ at 7 nm. DIBL couples §1.3 leakage to supply voltage and degrades $S$.
+- **Body effect:** $V_{th}=V_{th0}+\gamma\!\left(\sqrt{2\phi_F+V_{SB}}-\sqrt{2\phi_F}\right)$ — a source raised above the body raises $V_{th}$. This is why the *upper* transistor in a series NAND/NOR stack (§5) and the SRAM access device are weaker than a lone device.
+- **Gate tunnelling:** below $\sim2\ \text{nm}$ of $\text{SiO}_2$ electrons tunnel straight through the gate. The fix — **high-$k$ dielectrics** ($\text{HfO}_2$, $k\approx 20$–$25$) — lets the *physical* oxide be thick (low tunnelling) while the *electrical* thickness stays small: $\text{EOT}=t_{phys}\cdot(3.9/k)$.
+- **HCI (hot-carrier injection):** high-energy carriers damage the oxide over time, shifting $V_{th}$ — a reliability/aging limit, not a speed one.
 
 ---
 
-## 3. Noise Margins
+## 2. The CMOS inverter — why complementary static logic won
 
-### 3.1 Definition
+Before CMOS, logic used a driver transistor pulling against a resistive (or always-on) load. That load **burns DC current the entire time the output is low** and can only pull the output to a divider voltage, not a clean rail. The complementary insight fixes both at once: build the pull-up from PMOS and the pull-down from NMOS driven by the *same* input, so that **in either static state exactly one network conducts and the other is a true open switch.** The result: ideally *zero* static current, rail-to-rail output ($V_{OH}=V_{DD}$, $V_{OL}=0$), and high gain in between. That is the entire reason CMOS displaced NMOS, pseudo-NMOS, and everything else — energy is spent almost only when the output *changes* (§4).
 
-VOH: Output high voltage (Vout when Vin = 0) = VDD
-VOL: Output low voltage (Vout when Vin = VDD) = 0
-VIH: Input high voltage (min Vin recognized as logic 1)
-VIL: Input low voltage (max Vin recognized as logic 0)
+### 2.1 The VTC and its five regions
 
-VIH and VIL are defined as the points where |dVout/dVin| = 1
-(unity gain points on the VTC)
+Sweep $V_{in}$ from 0 to $V_{DD}$ and the output traces the voltage-transfer characteristic (VTC), passing through five regions as each transistor moves cutoff → saturation → triode:
 
-- **NMH (Noise Margin High)** = `VOH - VIH`
-- **NML (Noise Margin Low)** = `VIL - VOL`
+| Region | $V_{in}$ | NMOS | PMOS | $V_{out}$ |
+|---|---|---|---|---|
+| A | $< V_{thn}$ | cutoff | triode | $V_{DD}$ (clean high) |
+| B | rising to $V_M$ | saturation | triode | starts to fall |
+| C | $\approx V_M$ | saturation | saturation | steep — **max gain**, the switching edge |
+| D | above $V_M$ | triode | saturation | continues to fall |
+| E | $> V_{DD}-|V_{thp}|$ | triode | cutoff | $0$ (clean low) |
 
-```ascii-graph
-Vout
- |
-VOH ────╮
- |       \
- |        \←── slope = -1 (VIL point)
- |         \
- |          \←── transition region
- |           \
- |            \←── slope = -1 (VIH point)
- |             ╰────
-VOL                    Vin
-        VIL  VM  VIH
-    |←NML→|      |←NMH→|
-    VOL   VIL    VIH   VOH
-```
+Region C is the whole point: **both devices saturate, so a tiny $\Delta V_{in}$ moves $V_{out}$ across the full rail** — the high gain that regenerates logic levels (§3). Regions A and E are where the flat, noise-immune rails live.
 
-### 3.2 Noise Margin Derivation for Symmetric CMOS Inverter
+### 2.2 The switching threshold $V_M$ — the one design equation
 
-For a symmetric CMOS (complementary metal-oxide-semiconductor) inverter (kn = kp, Vthn = |Vthp| = Vt):
+At $V_M$ the input equals the output and both devices are saturated, so their currents balance:
 
-```ascii-graph
-VIL ≈ (2*Vout + Vin - Vt) / (solving dVout/dVin = -1)
+$$
+\tfrac12 k_n (V_M-V_{thn})^2 = \tfrac12 k_p (V_{DD}-V_M-|V_{thp}|)^2,\qquad k_{n,p}=\mu_{n,p}C_{ox}\left(\tfrac{W}{L}\right)_{n,p}
+$$
 
-For symmetric inverter (long-channel approximation, from region-by-region VTC analysis):
-  VIL ≈ (3*VDD + 2*Vt) / 8
-  VIH ≈ (5*VDD - 2*Vt) / 8
+Solving with $r=\sqrt{k_p/k_n}$:
 
-  NMH = VDD - VIH = VDD - (5*VDD - 2*Vt)/8 = (3*VDD + 2*Vt)/8
-  NML = VIL - 0   = (3*VDD + 2*Vt)/8
+$$
+V_M=\frac{V_{thn}+r\,(V_{DD}-|V_{thp}|)}{1+r}
+$$
 
-  NMH = NML → symmetric noise margins
-```
-
-**Numerical example:**
-- **VDD** = `0.7V, Vt = 0.3V:`
-   - NMH = NML = (3*0.7 + 2*0.3)/8 = (2.1 + 0.6)/8 = 0.3375V
-
-NM/VDD = 0.3375/0.7 = 48.2% of VDD
-
-This is high — ideal CMOS has excellent noise margins
-Compare with: NMOS-only logic NM ≈ 20-30% of VDD
-
-### 3.3 Factors That Degrade Noise Margins
-
-```ascii-graph
-1. Vt mismatch (process variation):
-   If Vthn ≠ |Vthp|, VM shifts away from VDD/2
-   NMH and NML become unequal
-
-2. VDD scaling:
-   As VDD decreases, absolute noise margin decreases
-   At VDD = 2*Vt: NM → 0 (circuit doesn't work!)
-   This is why Vt must scale with VDD
-
-3. Unequal sizing (kn ≠ kp):
-   Shifts VM, one noise margin grows while the other shrinks
-
-4. Supply noise (IR drop):
-   Effective VDD decreases → NM decreases
-   10% VDD drop → significant NM degradation at advanced nodes
-
-5. Temperature:
-   Higher T → lower μ, lower Vth → shifts VTC
-```
-
-### 3.4 Regenerative Property
-
-A cascade of CMOS inverters restores logic levels because the gain in the transition
-region is much greater than 1:
-
-|Gain| = |dVout/dVin| at VM
-
-**For long-channel CMOS:**
-   - |Gain| = (kn + kp) * (VDD/2 - Vt) / (λn + λp) * VDD
-
-Typically |Gain| > 10-50
-
-This means: a signal degraded by noise gets "cleaned up" after
-passing through a few inverters → digital logic is noise-tolerant
+A **symmetric** VTC ($V_M=V_{DD}/2$, equal noise margins) needs $k_n=k_p$, i.e. $\mu_p(W/L)_p=\mu_n(W/L)_n$, i.e. $W_p\approx 2$–$2.5\,W_n$. But *real* standard-cell libraries rarely size for a perfectly symmetric $V_M$: velocity saturation flattens the benefit, and a high-density (HD) library will accept a slightly skewed $V_M$ to use a **smaller PMOS** and save area, while a high-performance (HP) library widens the PMOS toward symmetry for balanced edges. On FinFETs the ratio is *quantised* to integer fins (§8), so the "2.5×" ideal collapses to a 1:1 or 2:1 fin count with the asymmetry absorbed by threshold flavour instead — a concrete case of theory meeting a discrete process.
 
 ---
 
-## 4. Propagation Delay and Power-Delay Product
+## 3. Noise margins and the regenerative property
 
-### 4.1 Propagation Delay
+Real interconnect couples neighbours, the supply droops under $IR$ load, and edges reflect — so a "1" arriving at a gate is never a clean $V_{DD}$. Digital logic survives only because **a gate with gain > 1 pushes a degraded level back toward the rail**: pass a noisy signal through a few stages and it is *cleaned up*. Noise margin quantifies how much corruption one stage absorbs before it can no longer restore.
 
-```text
-tpHL: Time for output to fall from VOH to VDD/2 (high-to-low)
-tpLH: Time for output to rise from VOL to VDD/2 (low-to-high)
-tp = (tpHL + tpLH) / 2
+### 3.1 Definition and the unity-gain construction
 
-tpHL ≈ 0.69 * Rn * CL    (NMOS discharging load capacitance)
-tpLH ≈ 0.69 * Rp * CL    (PMOS charging load capacitance)
+The receiver treats anything above $V_{IH}$ as a 1 and below $V_{IL}$ as a 0, where $V_{IH}$ and $V_{IL}$ are the two points on the VTC where the slope is exactly $-1$ (below unity gain the stage is amplifying noise, not rejecting it). The margins are the gaps to the driver's guaranteed levels:
 
-where:
-  Rn = VDD / [kn * (VDD - Vthn)²]  (effective NMOS resistance)
-  Rp = VDD / [kp * (VDD - |Vthp|)²]
-  CL = Cgate(fanout) + Cwire + Cdrain(self)
-```
+$$
+\text{NM}_H = V_{OH}-V_{IH},\qquad \text{NM}_L=V_{IL}-V_{OL}
+$$
 
-**For equal rise/fall (tpHL = tpLH):**
-```ascii-graph
-Rn = Rp → kn(VDD - Vthn)² = kp(VDD - |Vthp|)²
-For Vthn = |Vthp|: kn = kp → Wp ≈ 2.5 * Wn (same as symmetric VM)
-```
+For a symmetric long-channel inverter ($k_n=k_p$, $V_{thn}=|V_{thp}|=V_t$) the region-by-region VTC gives the memorable closed form:
 
-### 4.2 Delay Optimization
+$$
+V_{IL}\approx\frac{3V_{DD}+2V_t}{8},\quad V_{IH}\approx\frac{5V_{DD}-2V_t}{8}\ \Longrightarrow\ \text{NM}_H=\text{NM}_L=\frac{3V_{DD}+2V_t}{8}\approx 0.4\,V_{DD}
+$$
 
-```ascii-graph
-1. Increase W/L: reduces R → faster, but increases C (area + power)
-   Diminishing returns: doubling W doubles both drive and self-load
+Roughly **40% of $V_{DD}$** — far better than the 20–30% of ratioed NMOS logic, and the quantitative reason CMOS is the robust default.
 
-2. Reduce CL: shorter wires, fewer fanout, buffer insertion
-   FO4 delay = delay of inverter driving 4 identical inverters
-   FO4 ≈ 15-30 ps at 7nm → fundamental speed metric
+### 3.2 Why $V_{DD}$ cannot scale to zero
 
-3. Increase VDD: reduces R quadratically → faster
-   But: power ∝ VDD² → power-performance trade-off
+Two effects erode the margin as supply drops, and together they set an absolute floor:
 
-4. Reduce Vt: increases drive current → faster
-   But: leakage ∝ exp(-Vt/nVT) → exponential leakage increase
-   LVT cells: fast but leaky  |  HVT cells: slow but low-leakage
+- **Absolute margin shrinks with $V_{DD}$.** The closed form scales with $V_{DD}$; halve the supply and you roughly halve the millivolts of noise you can tolerate, even as coupling and $IR$ noise do *not* shrink proportionally.
+- **Regeneration itself fails.** Restoration requires peak gain $|A_v|>1$. As $V_{DD}$ falls toward a few $V_T$, the transistors slide into subthreshold, gain collapses, and the VTC flattens. The thermodynamic floor for a functioning inverter is the Swanson–Meindl limit $V_{DD,min}\approx 2\text{–}4\,\tfrac{kT}{q}\ln(\cdots)\sim 50\ \text{mV}$; *practically*, once $\sigma_{V_{th}}$ variation (§9) is included, robust logic needs $V_{DD}\gtrsim 2\text{–}3\,V_{th}\approx 0.3$–$0.5\ \text{V}$.
 
-5. Logical effort: optimize gate sizing for minimum path delay
-   Minimum delay when each stage has equal effort
-```
-
-### 4.3 Power-Delay Product (PDP) and Energy-Delay Product (EDP)
-
-```ascii-graph
-PDP = P_avg × tp
-    = (α * CL * VDD² * f) × (k * CL * VDD / ID)
-    ∝ CL * VDD²    (energy per transition)
-
-EDP = PDP × tp  ∝ CL² * VDD³ / ID
-    → Minimize EDP by finding optimal VDD (below VDD_nominal)
-
-At optimal VDD for minimum EDP:
-  VDD_opt ≈ 3 * n * VT ≈ 0.2-0.3V (near-threshold computing)
-```
+This floor is the villain of the whole low-power story: it caps voltage scaling (§4.5), sets the near-threshold operating point (§4.4), and is *the* reason the 6T SRAM cell loses its margin first and fails before logic does (§12). Anything that skews $V_M$ — $V_{th}$ mismatch between the n- and p-device, unequal sizing, supply droop, temperature — trades one margin for the other and pushes the failure point higher.
 
 ---
 
-## 5. CMOS Logic Families & I/O Signaling
+## 4. Delay, the three powers, and the energy–delay knee
 
-### 5.1 Static CMOS (Complementary)
+A gate is characterised by two numbers the rest of the notebook consumes: **how long it takes to switch** and **how much energy that costs.** Both fall out of the same picture — a transistor (a resistor/current-source, §1) charging a capacitor (the next gate's input plus wire) — so delay and power are not independent knobs but two ends of one trade governed by $V_{DD}$ and $V_{th}$.
 
-```ascii-graph
-Structure: Pull-Up Network (PMOS) + Pull-Down Network (NMOS)
-           PUN and PDN are complementary (dual networks)
+### 4.1 Propagation delay and the alpha-power law
 
-NAND gate (2-input):
-         VDD
-          |
-       ┌──┤ P1 (A)    PMOS in parallel
-       ├──┤ P2 (B)
-       │  ├── OUT
-       └──┤ N1 (A)    NMOS in series
-          ├
-       ───┤ N2 (B)
-          |
-         GND
+Model the switching device as an effective resistance discharging the load:
 
-NOR gate (2-input):
-         VDD
-          |
-       ┌──┤ P1 (A)    PMOS in series
-          ├
-       ├──┤ P2 (B)
-       │  ├── OUT
-       ├──┤ N1 (A)    NMOS in parallel
-       └──┤ N2 (B)
-          |
-         GND
-```
+$$
+t_{pHL}\approx 0.69\,R_n C_L,\qquad t_{pLH}\approx 0.69\,R_p C_L,\qquad C_L=C_{gate}^{fanout}+C_{wire}+C_{drain}^{self}
+$$
 
-**NAND vs NOR performance:**
-```ascii-graph
-NAND: NMOS in series → higher PDN resistance → slower pull-down
-      PMOS in parallel → lower PUN resistance → faster pull-up
-      Net: NAND is preferred over NOR because:
-        - NMOS (series) is faster than PMOS (series)
-        - For N-input: NMOS series W = N*Wmin, PMOS parallel W = Wmin
+Substituting the drive current gives the form that actually predicts scaling behaviour:
 
-NOR:  PMOS in series → much higher PUN resistance (μp is already low)
-      For N-input NOR: PMOS series W = N*2.5*Wmin → huge area
-      NOR gates are generally avoided for high fan-in
-```
+$$
+t_p\ \propto\ \frac{C_L\,V_{DD}}{I_{Dsat}}\ \propto\ \frac{C_L\,V_{DD}}{(V_{DD}-V_{th})^{\alpha}}
+$$
 
-### 5.2 Pseudo-NMOS
+where $\alpha\approx 1.3$ for a modern velocity-saturated device (§1.2). Read it as the master delay law: **speed comes from overdrive $V_{DD}-V_{th}$, and because $\alpha<2$, raising $V_{DD}$ helps sub-quadratically** while costing energy quadratically — the root of every voltage/frequency trade. The process-independent unit is the **FO4 delay** (an inverter driving four copies of itself), $\approx 12$–$15\ \text{ps}$ at N5; the notebook measures pipeline stages, wakeup loops, and cache paths in FO4 precisely because it cancels the process out.
 
-```ascii-graph
-         VDD
-          |
-       ┌──┤ PMOS (always ON, gate tied to GND)
-       │  ├── OUT
-       └──┤ PDN (NMOS network, same as static CMOS)
-          |
-         GND
+### 4.2 Dynamic energy: the $\tfrac12 CV^2$ that pays for computation
 
-Advantages: Fewer transistors (N+1 vs 2N), faster for wide NOR/OR
-Disadvantages:
-  - Static power consumption (when PDN is on, current flows VDD→GND)
-  - VOL ≠ 0 (voltage divider between PMOS and PDN)
-  - Reduced NML
-  - Ratio-ed logic — sizing matters for correct operation
-```
+Charging $C_L$ from 0 to $V_{DD}$ draws $Q V_{DD}=C_L V_{DD}^2$ from the supply; half is stored on the capacitor and **half is dissipated in the PMOS regardless of its resistance.** Discharging dumps the stored half through the NMOS. So each *transition* costs $\tfrac12 C_L V_{DD}^2$ and, aggregated over a clock, the dynamic power is:
 
-### 5.3 Transmission Gate Logic
+$$
+\boxed{\,P_{dyn}=\alpha\,C_L\,V_{DD}^2\,f\,}
+$$
 
-```ascii-graph
-         A ──┤├── B         NMOS
-         A ──┤├── B         PMOS (complementary control)
-              |
-Combined: passes both 0 and 1 without threshold drop
+where $\alpha$ = **activity factor** (average power-consuming transitions per cycle, typically 0.05–0.15 for random logic), $f$ = clock frequency. The quadratic $V_{DD}^2$ is the single most important lever in low-power design and the reason every technique downstream — clock gating, voltage scaling, $V_{DD}$ islands ([Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)) — attacks one of $\alpha$, $C$, $V_{DD}$, or $f$.
 
-Used in: MUXes, XOR, latches
-Advantage: compact, good for pass logic
-Disadvantage: no gain → signal degrades through chain of TGs
-```
+### 4.3 The other two powers: short-circuit and leakage
 
-### 5.4 Dynamic Logic (Domino)
+- **Short-circuit power.** During an input edge both networks conduct briefly, shorting $V_{DD}$ to ground: $P_{sc}\approx \tfrac{\beta}{12}(V_{DD}-2V_{th})^3\,\tfrac{\tau}{T}$, where $\tau$ = input transition time and $T$ = period. It is typically **5–15% of dynamic**, vanishes for fast edges (small $\tau$), and disappears entirely once $V_{DD}<2V_{th}$ — a small but real reason to keep slews sharp.
+- **Leakage (static) power.** The switch never fully opens (§1.3), so $P_{leak}=V_{DD}\,I_{leak}$ with $I_{leak}\propto 10^{-V_{th}/S}$. Once dominated by dynamic, leakage is now **20–50%** of total at advanced nodes and is the entire budget of an idle or always-on block (§13). It is the reason cells ship in $V_{th}$ *flavours*: **LVT** (low $V_{th}$ — fast, leaky), **SVT**, **HVT** (slow, low-leakage), placed cell-by-cell so only timing-critical paths pay the leakage.
 
-```ascii-graph
-Phase 1 (CLK = 0, precharge):
-  PMOS precharges output node to VDD
-  NMOS evaluation network is disconnected (footer off)
+$$
+P_{total}=\underbrace{\alpha C V_{DD}^2 f}_{\text{dynamic}}+\underbrace{P_{sc}}_{\text{short-circuit}}+\underbrace{V_{DD}I_{leak}}_{\text{leakage}}
+$$
 
-Phase 2 (CLK = 1, evaluate):
-  NMOS evaluation network conditionally discharges output
-  If PDN has path to GND → output goes low
-  If no path → output stays high (precharged)
+### 4.4 The energy–delay trade and where $V_{DD}$ should sit
 
-         VDD
-          |
-       ┌──┤ Precharge PMOS (CLK')
-       │  ├── Dynamic node
-       └──┤ PDN (NMOS network)
-          ├
-       ───┤ Footer NMOS (CLK)
-          |
-         GND
+Lowering $V_{DD}$ cuts dynamic energy quadratically but raises delay (§4.1); lowering $V_{th}$ recovers the delay but raises leakage exponentially (§1.3). The **energy–delay product** $\text{EDP}=E\cdot t_p\propto C V_{DD}^2\cdot\frac{V_{DD}}{(V_{DD}-V_{th})^\alpha}$ has a genuine minimum below the nominal supply. Pushed further, into **near-threshold** operation ($V_{DD}\approx 0.4$–$0.6\ \text{V}$, a few $\times V_T$ above $V_{th}$), dynamic energy per op keeps falling but the clock slows so much that *leakage energy per op* (leakage × time) rises again, producing a **minimum-energy point** typically around 0.3–0.4 V. This is why ultra-low-power cores (ARM Cortex-M class, IoT, wake-word engines) run near threshold for $5$–$10\times$ energy savings at $\sim$half the frequency, while the 60 mV/dec floor (§1.3) and SRAM margin collapse (§12) stop them from going lower.
 
-Domino: Add a static inverter after dynamic node
-  → output is non-inverting, can cascade
-  → but only supports non-inverting logic (AND-OR)
-```
+### 4.5 Dennard scaling and why it ended
 
-**Domino issues:**
-```ascii-graph
-1. Charge sharing: internal nodes discharge dynamic node → false evaluation
-   Fix: precharge internal nodes, add keeper PMOS
+For thirty years scaling was nearly free because of **Dennard's constant-field recipe**: shrink every dimension *and* the voltage by the same factor $\kappa>1$, hold the electric field constant, and the numbers fall out beautifully:
 
-2. Clock skew: if evaluate arrives before precharge completes → error
-   Fix: careful clock tree design, sufficient precharge time
+| Quantity | Scales as | | Quantity | Scales as |
+|---|---|---|---|---|
+| Dimensions $L,W,t_{ox}$ | $1/\kappa$ | | Gate delay $t\propto CV/I$ | $1/\kappa$ (faster) |
+| Supply $V_{DD}$, $V_{th}$ | $1/\kappa$ | | Frequency $f$ | $\kappa$ |
+| Capacitance $C$ | $1/\kappa$ | | Power/device $P\propto CV^2f$ | $1/\kappa^2$ |
+| Current $I$ | $1/\kappa$ | | **Power density $P/A$** | **constant** |
 
-3. Noise sensitivity: no restoring property during evaluate
-   Single event → irreversible discharge
-   Fix: keeper (weak PMOS feedback to hold precharged value)
-
-4. Cannot implement inverting functions directly
-   Fix: use NP-CMOS (alternating NMOS and PMOS domino stages)
-```
-
-### 5.5 I/O Signaling Standards (Off-Chip)
-
-§5.1–5.4 are *on-chip* logic styles driving fF-scale gate loads. **I/O cells (pads)** are a different world: they drive pF-scale off-chip loads (package + PCB (printed circuit board) trace + connector + receiver), so they trade speed/area for **drive strength, slew-rate control, defined voltage levels, termination, and ESD (electrostatic discharge)**. The signaling *standard* is the TX (transmitter)↔RX (receiver) contract on the board; pick it from three families.
-
-**(1) Rail-referenced single-ended** — receiver compares to fixed thresholds referenced to its own rails. Cheapest (1 pin/signal), but noise margin is VDDQ-bounded and rate is limited by ground bounce / SSO (simultaneous switching outputs) noise.
-
-| Standard | VDDQ | Thresholds | Typical use |
-|----------|------|-----------|-------------|
-| LVTTL | 3.3 V | VIH 2.0 / VIL 0.8 V (TTL-compatible) | legacy GPIO |
-| LVCMOS | 3.3 / 2.5 / 1.8 / 1.5 / 1.2 V | VIH≈0.7·VDDQ, VIL≈0.3·VDDQ (rail-to-rail) | GPIO, SPI, UART, JTAG, I²C |
-
-**(2) VREF-referenced, terminated single-ended** — for wide, fast parallel buses (DRAM). Receiver compares to an external **VREF ≈ VDDQ/2** and uses **on-die termination (ODT)** to kill reflections, so the swing can be small (fast edges).
-
-| Standard | Reference / termination | Used by |
-|----------|------------------------|---------|
-| SSTL (Stub-Series Terminated Logic) — SSTL_18/15/135 | VTT = VDDQ/2 series-stub termination | DDR2 / DDR3 / DDR3L |
-| HSTL (High-speed Transceiver Logic) | VTT termination | QDR SRAM, older FPGA banks |
-| POD (Pseudo-Open-Drain) — POD12/135 | terminate to **VDDQ** (only a "0" sinks DC) | DDR4 / DDR5, GDDR |
-
-**(3) Differential** — two complementary wires; receiver senses the *difference*, so common-mode noise cancels → small swing, high speed, low EMI (electromagnetic interference), at 2 pins/signal.
-
-| Standard | Swing / Vcm | Termination | Used by |
-|----------|-------------|-------------|---------|
-| LVDS | ~350 mV diff, Vcm ≈ 1.2 V | 100 Ω across the pair | display/sensor links, moderate Gb/s |
-| CML (current-mode logic) | ~400–800 mV | 50 Ω/leg to VDD | SerDes — PCIe / Ethernet / HBM PHY, multi-Gb/s |
-
-(DDR clock/strobe DQS also use *differential* SSTL/HSTL.)
-
-**Tradeoffs (interview):**
-- **Single-ended vs differential:** SE is pin-efficient and cheap, but noise margin and max rate are limited by SSO/ground bounce; differential rejects common-mode, runs Gb/s+, and its small swing cuts dynamic I/O power — at 2× the pins.
-- **Why VREF + ODT for DRAM:** a wide bus at high rate can't tolerate full-swing reflections; centering on VREF with ODT yields clean eyes at low swing.
-- **SSTL → POD (DDR3→DDR4/5):** POD terminates to VDDQ, so a bus that idles high burns termination DC only on "0"s → lower I/O power as data rates climbed.
-- **Drive strength & slew:** a stronger driver gives faster edges but more SSO/overshoot/EMI; I/O cells expose selectable drive strength and slew-rate control to trade SI (signal integrity) for speed.
-- **Open-drain (I²C/SMBus):** wired-AND with an external pull-up — bidirectional on one wire, but slow (RC pull-up).
-
-Related: noise-margin basis (§3 above); reflections/termination + SerDes (serializer/deserializer) equalization → [Signal Integrity](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md); DDR I/O & ODT → [DDR Controller](../01_Architecture_and_PPA/10_DDR_Controller.md); package-level high-speed I/O → [IC Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
+Constant power density is the magic: double the transistors, each smaller and lower-power, and the chip's watts-per-mm² held still. **It ended around 2005 because $V_{th}$ stopped scaling.** To keep the field constant $V_{DD}$ had to drop, which required $V_{th}$ to drop — but the 60 mV/dec floor (§1.3) means every $V_{th}$ reduction multiplies subthreshold leakage, and leakage power was already becoming intolerable. So $V_{DD}$ stalled near $\sim1\ \text{V}$ and then crept only to $\sim0.7\ \text{V}$ over the next fifteen years. With $V$ frozen but transistors still shrinking, $P/A$ began **rising** — the "**power wall**." The consequences reshaped the whole field: single-thread frequency stalled at 3–5 GHz (§4.1 can't be cashed in without melting the die), designers pivoted to **multicore** and specialised accelerators, and "**dark silicon**" (fractions of the chip that must stay off to stay in the thermal budget) became a first-class constraint. Moore's Law (density) continued; Dennard scaling (free performance) did not — and that single split is why the notebook's upper layers are about extracting parallelism and managing power, not chasing clock.
 
 ---
 
-## 6. Latch-Up
+## 5. Logic families: static CMOS and its situational rivals
 
-### 6.1 The Parasitic PNPN Structure
+Static complementary CMOS (§2) is the default *because* of its zero-static-current, full-swing, high-gain properties. Every alternative below trades one of those away to win area, speed, or pin count in a specific situation — so the family choice is really "which robustness am I willing to spend here?"
 
-In a CMOS inverter, the n-well (for PMOS) and p-substrate (for NMOS) create a parasitic
-thyristor (SCR = Silicon Controlled Rectifier):
+### 5.1 Static CMOS, and why NAND beats NOR
 
-```ascii-graph
-Cross-section:
+A static gate is a PMOS pull-up network (PUN) dual to an NMOS pull-down network (PDN). The load-bearing trade-off is **NAND vs NOR for the same function**: a NAND puts NMOS in series (fast — high mobility) and PMOS in parallel; a NOR puts the weak PMOS in series. For an $N$-input gate the series stack must widen $N\times$ to keep drive, so a NOR's series-PMOS width balloons as $N\times 2.5\,W_{min}$ — huge and slow. Synthesis therefore **prefers NAND/inverter forms and avoids high-fan-in NOR**, a direct consequence of the $\mu_n/\mu_p$ asymmetry of §1.1.
 
-  VDD (to PMOS source)         GND (to NMOS source)
-      |                             |
-   ┌──┴──┐                       ┌──┴──┐
-   │ p+  │    ┌───────────┐      │ n+  │
-   │source│   │  n-well   │      │source│
-   └──┬──┘   │           │      └──┬──┘
-      │      │  ┌─────┐  │         │
-      │      │  │ p+  │  │         │
-      │      │  │drain│  │         │
-      │      └──┴─────┴──┘         │
-      │         p-substrate        │
-      │                            │
-      └────────────────────────────┘
-                  GND (substrate contact)
+### 5.2 Ratioed and pass-transistor logic
 
-Parasitic BJTs formed:
-  Q1 (PNP): Emitter = PMOS source (p+), Base = n-well, Collector = p-substrate
-  Q2 (NPN): Emitter = NMOS source (n+), Base = p-substrate, Collector = n-well
+- **Pseudo-NMOS / ratioed logic:** replace the PUN with a single always-on PMOS. Fewer transistors ($N{+}1$ vs $2N$) and fast for wide NOR/OR — but it **burns static current** whenever the PDN conducts and only reaches a divider $V_{OL}\ne 0$, eroding $\text{NM}_L$. A niche choice (wide address decoders) traded away exactly the two properties §2 prized.
+- **Transmission-gate (pass) logic:** a parallel NMOS+PMOS passes *both* rails without a threshold drop, giving compact MUXes, XORs, and — importantly for [Logic_Building_Blocks](02_Logic_Building_Blocks.md) — **latches** (a TG in feedback around two inverters is the canonical static latch, the seed of every flip-flop). The cost: pass logic has **no gain**, so a chain of TGs degrades the level and must be periodically restored by a real inverter.
 
-  Rwell: resistance of n-well (base of PNP)
-  Rsub:  resistance of p-substrate (base of NPN)
-```
+### 5.3 Dynamic (domino) logic
 
-```ascii-graph
-Equivalent circuit:
-                VDD
-                 |
-             Q1 (PNP)
-            E   C
-            |   |
-            |   ├─── Rsub ──── GND
-            |   |
-            ├── Rwell
-            |   |
-            |   C
-            E   |
-             Q2 (NPN)
-                 |
-                GND
-```
+Precharge the output high on one clock phase, then let an NMOS-only evaluation network conditionally discharge it. This removes the slow PUN entirely — fast and compact for wide functions — but pays with **charge sharing, clock-skew sensitivity, no restoring noise immunity during evaluate (a single glitch is latched), and a monotonicity restriction** (needs keepers and static-inverter "domino" stages to cascade). Once common in high-frequency datapaths, it is largely displaced in modern low-power design because its noise and power-integrity cost is unattractive when leakage already dominates.
 
-### 6.2 Latch-Up Triggering
+### 5.4 I/O signalling: the same physics at pF scale
 
-```ascii-graph
-Normal operation: Both BJTs are OFF (no base current)
+On-chip gates drive fF loads; **I/O cells drive pF** off-chip loads (package + PCB trace + receiver), so they trade speed and area for drive strength, controlled slew, defined levels, termination, and ESD (§7). The standard is a transmitter↔receiver *contract*, and the whole zoo reduces to three families along one axis — **noise immunity vs pins/power**:
 
-Trigger conditions:
-1. Current injection into substrate or well
-   - ESD event (external voltage spike)
-   - Output pin driven beyond VDD or below GND
-   - Power supply transient (VDD bounce)
-   - Radiation (single-event latch-up in space applications)
+| Family | Idea | Cost / benefit | Examples |
+|---|---|---|---|
+| Rail-referenced single-ended | RX compares to its own rails | 1 pin, cheap; margin bounded by $V_{DDQ}$ and ground bounce | LVCMOS, LVTTL |
+| $V_{REF}$-referenced + on-die termination | RX compares to $V_{REF}\approx V_{DDQ}/2$, ODT kills reflections → small swing, fast | wide fast buses; needs a reference and termination power | SSTL (DDR3), POD (DDR4/5, GDDR) |
+| Differential | RX senses the *difference* → common-mode noise cancels | 2 pins/signal; smallest swing, highest rate, lowest EMI | LVDS, CML (PCIe/Ethernet/HBM SerDes) |
 
-2. Positive feedback loop:
-   - Current flows through Rsub → VBE of Q2 rises above ~0.7V
-   - Q2 turns ON → collector current flows into n-well
-   - Current through Rwell → VEB of Q1 rises above ~0.7V
-   - Q1 turns ON → collector current flows into p-substrate
-   - This feeds back into Q2's base → REGENERATIVE feedback
-
-3. Latch-up sustained when:
-   β_pnp × β_npn × (Rwell × Rsub product term) > 1
-   (Barkhausen criterion for positive feedback)
-
-4. Result: Low-impedance path from VDD to GND
-   Current can be > 100 mA → thermal destruction
-```
-
-### 6.3 Latch-Up Prevention
-
-```ascii-graph
-1. Guard Rings:
-   - P+ guard ring around NMOS (tied to GND): collects minority carriers
-     from substrate, reduces Rsub
-   - N+ guard ring around PMOS (tied to VDD): collects minority carriers
-     from n-well, reduces Rwell
-   - Reduces β of parasitic BJTs and lowers well/substrate resistance
-
-2. Increase spacing (NMOS-to-PMOS):
-   - Larger separation → weaker parasitic BJT coupling
-   - DRC rule: minimum N-well to P+ diffusion spacing
-
-3. Retrograde well:
-   - Higher doping deeper in well → lower Rwell
-   - Reduces BJT gain
-
-4. Epitaxial substrate:
-   - Thin lightly-doped epi layer on heavily-doped substrate
-   - Heavy doping reduces Rsub dramatically
-   - Most effective single prevention technique
-
-5. Trench isolation (STI/DTI):
-   - Shallow Trench Isolation between devices
-   - Deep Trench Isolation (DTI) for complete well isolation
-   - Physically breaks parasitic BJT current paths
-
-6. SOI (Silicon-On-Insulator):
-   - Buried oxide completely isolates devices
-   - Eliminates latch-up entirely
-   - Used in high-reliability and some high-performance processes
-
-7. Layout rules:
-   - Every well must have a well tap (contact to VDD/GND)
-   - Maximum distance from any transistor to nearest well tap
-   - Typical rule: well tap every 10-20 μm
-```
-
-### 6.4 Latch-Up Testing
-
-JEDEC JESD78 standard:
-- Positive and negative current injection test (±100 mA)
-- Positive and negative voltage overstress (VDD + 1.5V)
-- At elevated temperature (typically 125°C)
-
-1. Pass criteria:
-- No latch-up (current returns to normal after trigger removed)
-- Supply current < specified limit during test
-- Device functional after test
+The evolution tells the story: DDR moved SSTL → POD (terminate to $V_{DDQ}$ so an idle-high bus only burns termination DC on 0s) as rates climbed, and everything multi-Gb/s went differential because a small swing across a terminated pair is the only way to get clean eyes at speed. Deeper treatment lives in [Signal_Integrity](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md), DDR I/O in [DDR_Controller](../01_Architecture_and_PPA/10_DDR_Controller.md), and package-level high-speed links in [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 
 ---
 
-## 7. ESD Protection
+## 6. Latch-up: the parasitic thyristor hiding in every well
 
-### 7.1 ESD Events
+Placing an NMOS in a p-substrate next to a PMOS in an n-well unavoidably creates a parasitic **PNPN thyristor** (a cross-coupled lateral PNP and vertical NPN). Normally both BJTs are off. But inject enough current — an ESD strike, an I/O driven beyond the rails, a supply transient — and the pair can latch into **positive feedback**: each transistor's collector feeds the other's base. The sustaining condition is essentially Barkhausen,
 
-```text
-Human Body Model (HBM):
-  - Models discharge from human finger
-  - 100 pF charged to 2-4 kV, discharged through 1.5 kΩ
-  - Peak current: ~1.3 A, duration: ~150 ns
-  - Industry target: survive ±2 kV HBM
+$$
+\beta_{pnp}\cdot\beta_{npn}\ \gtrsim\ 1\quad\text{(with the well/substrate resistances }R_{well},R_{sub}\text{ providing the base drive)}
+$$
 
-Charged Device Model (CDM):
-  - IC itself becomes charged, then discharges through one pin
-  - Very fast (< 1 ns), high peak current (> 10 A)
-  - More damaging to thin gate oxides than HBM
-  - Industry target: survive ±500 V CDM
-
-Machine Model (MM):
-  - Models discharge from automated equipment
-  - 200 pF, 0 Ω (no series resistance)
-  - Largely replaced by CDM in modern standards
-```
-
-### 7.2 ESD Protection Circuits
-
-```ascii-graph
-Basic I/O pad ESD protection:
-
-         VDD ─────────────────────────
-                    |
-                 ┌──┤ D1 (diode to VDD)
-                 │  |
-  PAD ───────────┤  ├── Internal circuit
-                 │  |
-                 └──┤ D2 (diode to GND)
-                    |
-         GND ─────────────────────────
-
-  Positive ESD on PAD: current flows through D1 to VDD
-  Negative ESD on PAD: current flows through D2 from GND
-
-Additional elements:
-  - Power clamp between VDD and GND (RC-triggered NMOS)
-  - Secondary protection (series resistor + smaller clamp closer to gate)
-```
-
-```ascii-graph
-Grounded-Gate NMOS (ggNMOS) clamp:
-  - Large NMOS with gate/source/body tied to GND
-  - Triggers via snapback: drain voltage exceeds BV → avalanche
-    → substrate current → parasitic NPN turns on → low-impedance path
-  - Holding voltage ~3-5V, can clamp large currents
-
-  Trigger voltage (Vt1) > VDD (so it doesn't activate during normal operation)
-  Holding voltage (Vh) > VDD (to avoid latch-up after ESD event)
-```
-
-### 7.3 ESD Design Rules
-
-1. All I/O pads must have primary ESD protection
-2. All power domains need power clamps
-3. No gate oxide directly connected to I/O pad without protection
-4. CDM protection for all cross-domain signals
-5. Antenna rules: long metal connected to gate during fabrication can accumulate charge → gate oxide damage (same mechanism as ESD)
+Once latched, a **low-impedance $V_{DD}\!\to\!\text{GND}$ short** forms, current runs to >100 mA, and the chip cooks. Prevention is all about starving the feedback — **lower $\beta$ and lower $R_{well}/R_{sub}$**: guard rings around the devices, frequent well/substrate taps (a tap every 10–20 µm), a heavily-doped epitaxial substrate (the single most effective measure), generous n-to-p spacing, and — decisively — **SOI**, whose buried oxide isolates the devices and eliminates the thyristor outright, which is why radiation-hard and some high-reliability parts use it. Qualification is JEDEC JESD78 ($\pm100\ \text{mA}$ injection, over-voltage, at 125 °C).
 
 ---
 
-## 8. FinFET and Advanced Nodes
+## 7. ESD protection: surviving kilovolts at a thin-oxide gate
 
-### 8.1 Why FinFET?
+A pin can see a multi-kilovolt transient from a human touch or from the charged package itself, and the gate oxide it reaches is only $\sim1\ \text{nm}$ thick — it punctures at a few volts. So **every pad needs a deliberate low-impedance path to shunt the strike away from the gate** before the oxide fails. Two models bound the design:
 
-```text
-Planar MOSFET below 22nm:
-  - Gate loses control of channel (short-channel effects dominate)
-  - Subthreshold slope >> 60 mV/dec ideal
-  - DIBL > 100 mV/V
-  - Leakage current unacceptably high
+- **HBM (Human Body Model):** 100 pF through 1.5 kΩ, $\sim$150 ns, $\sim$1.3 A peak; target $\pm2\ \text{kV}$.
+- **CDM (Charged Device Model):** the IC self-discharges through one pin, $<1\ \text{ns}$, $>10\ \text{A}$; more damaging to thin oxides; target $\pm500\ \text{V}$.
 
-FinFET solution:
-  - Wrap gate around 3 sides of a thin "fin" of silicon
-  - Much better electrostatic control
-  - Subthreshold slope ≈ 65-70 mV/dec (near ideal)
-  - DIBL < 50 mV/V
-  - Dramatically reduced leakage
-```
-
-### 8.2 FinFET Structure
-
-```ascii-graph
-  Top view:                    Cross-section (perpendicular to fin):
-
-                                       Gate
-  ←── Fin direction ──→                 |
-                                   ┌────┤────┐
-  S ═══════════════════ D          │    │    │  Gate wraps
-       │  │  │  │  │               │  ┌─┴─┐ │  3 sides
-       Gate contacts               │  │Fin│ │
-       (perpendicular              │  │   │ │
-        to fin)                    │  └───┘ │
-                                   └────────┘
-                                     BOX/Substrate
-
-  Weff = 2*Hfin + Wfin   (effective width = 2 sides + top)
-  Typical 7nm: Hfin ≈ 50nm, Wfin ≈ 7nm → Weff ≈ 107nm per fin
-```
-
-### 8.3 Fin Quantization
-
-```text
-CRITICAL DIFFERENCE from planar MOSFET:
-
-Planar: W is continuous — designer can choose any W (e.g., 120nm, 135nm)
-FinFET: W is QUANTIZED — width = N_fins × Weff_per_fin
-
-  Example (7nm):
-    1 fin:  Weff = 107nm
-    2 fins: Weff = 214nm
-    3 fins: Weff = 321nm
-    ...
-    No intermediate values possible!
-
-Impact on design:
-  - Cannot fine-tune sizing like in planar (must use integer fins)
-  - Minimum sizing = 1 fin (vs minimum W in planar)
-  - Drive strength ratios are coarser (1:2:3:4... vs continuous)
-  - Library cells: INV_X1 = 1 fin, INV_X2 = 2 fins, etc.
-  - Makes analog design harder (less precision in current mirrors)
-```
-
-### 8.4 GAAFET (Gate-All-Around) — Beyond FinFET
-
-```ascii-graph
-3nm and below: GAA / Nanosheet FET
-  - Gate wraps ALL 4 sides of the channel
-  - Better electrostatic control than FinFET
-  - Channel = stacked nanosheets (multiple horizontal sheets)
-  - Width tunable by nanosheet width (more flexibility than FinFET)
-
-  Samsung 3nm GAA (MBCFET): 2022 (first production GAAFET)
-    - Multi-Bridge Channel FET — nanosheets connected in parallel
-    - Production since July 2022, used in Samsung Exynos and Qualcomm
-  TSMC N2: GAA nanosheet, production 2025-2026
-    - ~15% speed improvement or ~30% power reduction over N3
-    - First TSMC node to use GAA, replacing FinFET after N3/N3E
-  Intel 18A (1.8nm): RibbonFET + PowerVia, production 2025
-    - Intel cancelled 20A node and moved directly to 18A
-    - RibbonFET = Intel's name for GAA nanosheet
-    - Combined with PowerVia backside power delivery (see Section 9.3)
-
-     Gate          Gate
-    ┌────┐        ┌────┐
-    │Sheet│        │Sheet│   Multiple stacked nanosheets
-    └────┘        └────┘
-    ┌────┐        ┌────┐
-    │Sheet│        │Sheet│
-    └────┘        └────┘
-     S              D
-```
-
-### 8.5 Back-End-of-Line (BEOL) Scaling
-
-As transistors shrink, metal interconnects become the bottleneck:
-
-Wire resistance: R = ρ * L / (W * H)
-At 7nm: Cu resistivity increases due to grain boundary and
-surface scattering (ρeff >> ρbulk when wire width ≈ electron mean free path)
-
-Wire capacitance: C = ε * L * H / S  (parallel plate between adjacent wires)
-Spacing S shrinks → C increases → crosstalk worsens
-
-RC delay of interconnect:
-τ = R × C ∝ ρ * ε * L² / (W * H * S)
-Doubling wire length → 4× delay (quadratic!)
-
-**Solutions:**
-   - Low-k dielectrics: reduce ε (k < 3.0, air gaps for ultra-low-k)
-   - Alternative metals: Co, Ru for narrow lines (better than Cu at < 20nm pitch)
-   - Repeater insertion: break long wires with buffers
-   - Metal layer count: 12-15+ layers at advanced nodes
+The circuit is a shunt network: **diodes** from pad to $V_{DD}$ and to ground steer the strike into the rails, an **RC-triggered power clamp** (a big NMOS) opens a $V_{DD}$-to-GND path during the event, and a **ggNMOS** (grounded-gate NMOS) uses parasitic-BJT **snapback** to clamp large currents. The design tension is that the protection must trigger *above* $V_{DD}$ (invisible in normal operation) yet hold *above* $V_{DD}$ after firing (so it does not itself induce latch-up, §6) — and every added device loads the pad, trading I/O speed for robustness. Antenna rules address the same failure from the fab side: long metal connected to a gate during processing accumulates plasma charge that can rupture the oxide.
 
 ---
 
-## 9. Process Variations and DTCO
+## 8. FinFET, GAA, and why geometry replaced material
 
-### 9.1 Types of Variation
+The short-channel effects of §1.4 all say the same thing: **as $L$ shrinks toward the source/drain depletion depth, the drain steals control of the channel from the gate.** The gate's reach is a screening length $\lambda\propto\sqrt{t_{ox}\,t_{body}/\varepsilon}$, and good electrostatics need $L\gtrsim 5$–$6\lambda$. You can shrink $\lambda$ by thinning the oxide (§1.4 hit the tunnelling wall) — or by **thinning the body and wrapping the gate around it.** That geometric move, not any new material, is the story of the last decade.
 
-**Systematic variation:**
-   - Predictable, depends on layout context
-   - Lithography: line-end shortening, corner rounding
-   - CMP (Chemical Mechanical Polishing): metal thickness varies with density
-   - Well proximity effect: Vth varies near well boundary
+### 8.1 Planar → FinFET → GAA nanosheet
 
-**Random variation:**
-   - Unpredictable, follows statistical distributions
-   - Random Dopant Fluctuation (RDF): discrete dopant atoms cause Vth variation
-   - σ(Vth) ∝ 1/√(W*L)  → worse for smaller transistors
-   - Line Edge Roughness (LER): random variation in gate length
-   - Oxide thickness variation (Tox)
+- **Planar** loses control below $\sim22\ \text{nm}$: $S\gg 60$, DIBL $>100\ \text{mV/V}$, leakage intolerable.
+- **FinFET** stands the channel up as a thin fin and wraps the gate on **3 sides**. The thin body ($W_{fin}\approx 7\ \text{nm}$) shrinks $\lambda$ dramatically: $S\approx 65$–$70\ \text{mV/dec}$, DIBL $<50\ \text{mV/V}$. Effective width $W_{eff}\approx 2H_{fin}+W_{fin}$ (Intel 22 nm in 2011 through TSMC N7/N5).
+- **GAA nanosheet / MBCFET / RibbonFET** wraps the gate on **all 4 sides** of stacked horizontal sheets — the best electrostatics, and the mainstream device at 2 nm.
 
-**Within-die (WID) vs Die-to-die (D2D):**
-   - WID: transistors on the same chip differ from each other
-   - D2D: average parameters differ between chips
-   - Both must be accounted for in timing analysis (OCV, AOCV, POCV — on-chip variation, and its advanced and parametric variants)
+### 8.2 The fin-quantisation trade-off, and how GAA relaxes it
 
-### 9.2 Process Corners
+A FinFET's width is **quantised**: $W=N_{fins}\times W_{eff}$, integer fins only (1 fin ≈ 107 nm, 2 ≈ 214 nm, no in-between). So sizing is coarse — `INV_X1` = 1 fin, `INV_X2` = 2 fins — and analog matching and PMOS/NMOS balancing (§2.2) lose the continuous $W$ knob. **GAA restores a finer knob:** sheet width is continuously tunable ($\sim15$–$50\ \text{nm}$), so drive strength can be dialled in without hopping by whole fins — better standard-cell granularity and better analog matching, at the cost of more gate capacitance for wider sheets. This is a real DTCO (§9) lever: the process gives back a design degree of freedom that FinFET took away.
 
-```ascii-graph
-Traditional corners:
-  TT: Typical NMOS, Typical PMOS (nominal)
-  FF: Fast NMOS, Fast PMOS (low Vth, high μ)
-  SS: Slow NMOS, Slow PMOS (high Vth, low μ)
-  FS: Fast NMOS, Slow PMOS (skewed)
-  SF: Slow NMOS, Fast PMOS (skewed)
+### 8.3 Real nodes, and the two library corners
 
-Combined with voltage and temperature:
-  Best-case speed: FF, high VDD, low temperature (0°C or -40°C)
-  Worst-case speed: SS, low VDD, high temperature (125°C)
+| Node / vendor | Device | Notable |
+|---|---|---|
+| TSMC N5 / N3E | FinFET | mainstream 2020–2024; N3E backs off N3's density for yield |
+| TSMC N2 (2025–26) | GAA nanosheet | first TSMC GAA; ~15% speed *or* ~30% power over N3 |
+| Intel 18A (2025) | RibbonFET (GAA) + **PowerVia** | backside power delivery — Intel skipped 20A to reach it |
+| Samsung SF3 / SF2 | MBCFET (GAA) | first production GAA (2022), 2 nm with BSPDN |
 
-  EXCEPTION at advanced nodes — temperature inversion:
-    Below ~0.8V, lower temperature → SLOWER (Vth increases more than μ improves)
-    This reverses the traditional hot=slow assumption!
-```
+Within any node the library splits into **HD (high-density)** cells — shorter track height, fewer fins, packed for area and leakage (mobile, GPU) — and **HP (high-performance)** cells — taller, more fins, more drive for frequency (server, desktop). Choosing the mix per block is one of the highest-leverage PPA decisions and the front line of DTCO.
 
-### 9.3 DTCO (Design-Technology Co-Optimization)
+### 8.4 Wires become the bottleneck (BEOL)
 
-```ascii-graph
-DTCO: Simultaneously optimizing the process technology and the design methodology
-to achieve the best PPA (Power, Performance, Area).
+Transistors got faster; the wires between them did not. Wire resistance $R=\rho L/(WH)$ **rises super-linearly** at narrow pitch as copper suffers grain-boundary and surface scattering ($\rho_{eff}\gg\rho_{bulk}$ once width approaches the electron mean free path), while capacitance to ever-closer neighbours grows. The killer is the quadratic:
 
-Examples:
-  - Standard cell height reduction:
-    7.5T → 6.5T → 6T → 5T track height
-    Fewer metal tracks → smaller cells → higher density
-    But: fewer routing tracks → higher congestion
+$$
+\tau_{wire}=R\,C\ \propto\ \frac{\rho\,\varepsilon\,L^2}{WH\,S}\quad\Longrightarrow\quad \text{doubling length} \to 4\times\text{ delay}
+$$
 
-  - Fin depopulation:
-    Selectively remove fins in non-critical cells → save power
-    Requires tight collaboration between design and process teams
-
-  - CPODE (Continuous Poly on Diffusion Edge):
-    Cut the poly on the diffusion edge to isolate transistors
-    Reduces cell-to-cell spacing → higher density
-
-  - Buried Power Rail (BPR):
-    Move VDD/VSS rails below the transistor layer
-    Frees up M1 routing tracks → more signal routing
-    Planned for 2nm and beyond
-
-  - Backside Power Delivery Network (BSPDN):
-    Power delivered from the backside of the wafer
-    Completely separates power and signal routing
-    Intel PowerVia (first in Intel 18A, 2025):
-      - VDD/VSS delivered through backside vias (TSV-like)
-      - Eliminates IR drop on frontside metal (up to 50% reduction)
-      - Frees M0/M1 for signal routing → higher cell density
-      - Requires wafer thinning to expose backside
-    TSMC N2P (2026): Super Power Rail (SPR) backside delivery
-    Samsung SF2 (2025): BSPDN on 2nm node
-```
-
-### 9.4 GAA Nanosheet Channel Width Modulation
-
-Key advantage of GAA over FinFET (fin field-effect transistor): continuous width control
-
-FinFET width: W = N_fins * (2*H + W_fin), quantized in units of one fin
-GAA nanosheet: W = N_sheets * W_sheet, where W_sheet is continuously tunable
-
-Example: 3 stacked nanosheets, each 30nm wide
-Weff = 4 * 3 * 30nm = 360nm (gate wraps all 4 sides of each sheet)
-Can also make W_sheet = 25nm for Weff = 300nm
-Or W_sheet = 20nm for Weff = 240nm → continuous adjustment!
-
-Sheet width range: ~15nm to ~50nm per sheet (technology-dependent)
-Number of sheets: typically 3-5 stacked vertically
-
-**Implications for standard cell design:**
-   - Can tune drive strength more precisely than FinFET
-   - Library cells can have optimized widths, not just integer multiples
-   - Analog/mixed-signal benefits: better current mirror matching
-   - But: wider sheets → more gate capacitance (trade-off)
-
-### 9.5 Near-Threshold Computing
-
-```verilog
-Operating transistors near Vth (VDD ≈ 0.4-0.6V) for extreme energy efficiency:
-
-  Energy per operation ∝ VDD² (dominated by dynamic power)
-  At VDD ≈ 3*n*VT ≈ 0.3-0.4V: optimal energy-delay product
-
-  Benefits:
-    - 5-10x energy reduction vs. nominal VDD
-    - Still reasonable performance (50-70% of max frequency)
-
-  Challenges:
-    - Exponential leakage sensitivity to Vth variation
-    - Subthreshold slope limits on/off ratio at low VDD
-    - SRAM stability worst at low VDD (read/write margin collapse)
-    - Performance variability increases dramatically
-
-  Applications:
-    - IoT sensors (energy-harvested devices)
-    - Always-on edge AI (wake-word detection)
-    - Ultra-low-power microcontrollers (ARM Cortex-M0+ at 0.5V)
-
-  Design techniques for near-threshold:
-    - Separate VDD domains: logic at VDD_low, SRAM at VDD_nominal
-    - Adaptive body bias to compensate Vth variation
-    - Replica circuits for dynamic VDD/frequency adjustment
-```
+Hence low-$k$ dielectrics (and air gaps), alternative metals (Co, Ru at the tightest pitches), 12–15+ metal layers, and aggressive **repeater insertion** to break long wires into linear segments (§10). Backside power delivery (§9.3) is partly a wire fix too — it evacuates the power grid off the signal layers.
 
 ---
 
-## 10. Elmore Delay Model
+## 9. Process variation and DTCO: the transistor as a statistical object
 
-### 11.1 RC Tree Delay
+At these dimensions a transistor's channel holds only a *handful* of dopant atoms, so two "identical" devices differ measurably. Timing and SRAM margins must be signed off against the **spread**, not the nominal — which is why variation is a first-class design input, not an afterthought.
 
-For a series of $N$ inverters each driving a wire segment with resistance $R_w$ and
-capacitance $C_w$, plus gate capacitance $C_g$, the Elmore delay through the chain is:
+### 9.1 Systematic vs random, and the Pelgrom law
 
-$$t_{\text{Elmore}} = \sum_{i=1}^{N} R_i \cdot C_{\text{downstream},i}$$
+- **Systematic** variation is layout-dependent and correctable: lithographic line-end shortening, CMP dishing with metal density, well-proximity $V_{th}$ shift.
+- **Random** variation is statistical, dominated by **random dopant fluctuation**, and follows the **Pelgrom law**:
 
-where $C_{\text{downstream},i}$ is the total capacitance seen from node $i$ to ground
-through all downstream paths. The Elmore model treats each wire segment as a lumped RC
-element and sums the product of each resistance with all capacitance it drives — a
-first-order upper bound on the 50% step-response delay.
+$$
+\sigma_{V_{th}}\ \propto\ \frac{1}{\sqrt{W L}}
+$$
 
-### 11.2 Single Inverter with Wire Load
+The sting: the *smallest* transistors have the *worst* $V_{th}$ spread — precisely the minimum-size devices in an SRAM bitcell, which is why SRAM (§12) fails on variation before logic does, and why SRAM cells are the yield-limiting structure at every node. Variation is split into within-die (WID) and die-to-die (D2D), both carried through static timing as OCV/AOCV/POCV derates.
 
-For an inverter with on-resistance $R_p$ driving a wire of length $L$ (per-unit-length
-$r$ and $c$) into a load capacitance $C_L$:
+### 9.2 Corners and temperature inversion
 
-$$t_{\text{Elmore}} = 0.38 \cdot R_p \cdot C_{\text{wire}} + 0.5 \cdot R_{\text{wire}} \cdot C_{\text{wire}} + R_{\text{wire}} \cdot C_L + R_p \cdot C_L$$
+Timing signoff runs the process/voltage/temperature box: **FF/SS/TT** plus skewed **FS/SF**, crossed with min/max $V_{DD}$ and temperature. Classic worst-case speed is SS, low $V_{DD}$, hot. But at advanced nodes below $\sim0.8\ \text{V}$ there is **temperature inversion**: *lower* temperature is *slower*, because at low overdrive the $V_{th}$ increase with cold outweighs the mobility gain — reversing the old "hot = slow" rule and forcing signoff at *both* temperature extremes.
 
-where $R_{\text{wire}} = r \cdot L$, $C_{\text{wire}} = c \cdot L$. The 0.38 and 0.5
-coefficients come from the distributed RC nature of the wire (pi-model approximation).
-The four terms capture: gate driving wire capacitance, wire driving its own capacitance,
-wire driving load, and gate driving load.
+### 9.3 DTCO — co-designing process and design
 
-### 11.3 Worked Example
+**Design-Technology Co-Optimization** tunes the process and the design rules together for PPA that neither could reach alone. The high-leverage moves:
 
-A 7nm inverter ($R_p = 10\,\text{k}\Omega$) drives a 1mm metal-4 wire
-($r = 0.2\,\Omega/\mu\text{m} = 200\,\Omega/\text{mm}$, $c = 0.2\,\text{fF}/\mu\text{m}$)
-into a fanout of 4 ($C_L = 4 \times 0.5\,\text{fF} = 2\,\text{fF}$).
+- **Standard-cell track height** ($7.5\text{T}\to6\text{T}\to5\text{T}$): fewer routing tracks → denser cells but more routing congestion.
+- **Buried power rail (BPR)** and **backside power delivery (BSPDN)** — move $V_{DD}/V_{SS}$ *below* or *behind* the transistors, freeing M0/M1 for signal routing and slashing $IR$ drop. **Intel PowerVia** (18A, 2025) reports up to ~30–50% $IR$ reduction and higher density; TSMC (Super Power Rail) and Samsung follow at 2 nm.
+- **Fin depopulation, CPODE (poly-on-diffusion-edge cuts)** — squeeze area out of non-critical cells.
 
-```text
-Rwire = 0.2 Ω/μm × 1000 μm = 200 Ω
-Cwire = 0.2 fF/μm × 1000 μm = 200 fF = 0.2 pF
-
-t = 0.38 × 10k × 0.2pF + 0.5 × 200 × 0.2pF + 200 × 2fF + 10k × 2fF
-  = 0.76ps + 20fs + 0.4fs + 20fs
-  ≈ 0.80 ps
-```
-
-The gate resistance dominates; the wire contribution is negligible at 1mm but grows
-quadratically with length ($RC \propto L^2$), making wire delay dominant beyond ~5mm.
+DTCO is where §8's device choices, §9.1's variation, and library design meet the floorplan — the reason two products on the "same node" can differ 2× in density and power.
 
 ---
 
-## 11. Logical Effort
+## 10. Wire delay: the Elmore model
 
-### 12.1 Methodology
+Gate delay (§4) is only half the timing story — a signal also has to *travel*, and a long wire's distributed RC can dwarf the gate driving it. The **Elmore delay** is the first-order handle: for any RC tree, the 50%-response delay at a node is the sum over every upstream resistor of that resistor times *all* the capacitance downstream of it:
 
-Logical effort provides a quick delay estimation without full SPICE (Simulation Program with Integrated Circuit Emphasis) simulation. Define:
+$$
+t_{Elmore}=\sum_i R_i\,C_{\text{downstream},i}
+$$
 
-- $g$ (logical effort): how much worse a gate's input capacitance is vs an inverter for
-  the same output current. $g_{\text{inv}} = 1$.
-- $h = C_{\text{out}} / C_{\text{in}}$ (electrical effort or fanout)
-- $p$ (parasitic delay): delay due to the gate's own parasitic capacitance
-- $d = g \cdot h + p$ (normalized delay in units of $\tau$, the delay of a
-  fanout-of-1 inverter)
+For a driver ($R_p$) pushing a wire (per-length $r,c$, length $L$) into a load $C_L$, lumping the wire as a $\pi$-section gives:
 
-### 12.2 Logical Effort Values for Common Gates
+$$
+t\approx \underbrace{0.69\,R_p C_L}_{\text{gate}\to\text{load}}+\underbrace{R_p C_{wire}}_{\text{gate}\to\text{wire}}+\underbrace{0.5\,R_{wire}C_{wire}}_{\text{wire self}}+\underbrace{R_{wire}C_L}_{\text{wire}\to\text{load}}
+$$
 
-| Gate | $g$ (rising) | $g$ (falling) | $g$ (average) | $p$ |
-|------|------|------|------|------|
-| Inverter | 1 | 1 | 1 | 1 |
-| 2-input NAND | 4/3 | 4/3 | 4/3 | 2 |
-| 3-input NAND | 5/3 | 5/3 | 5/3 | 3 |
-| 2-input NOR | 5/3 | 5/3 | 5/3 | 2 |
-| 3-input NOR | 7/3 | 7/3 | 7/3 | 3 |
-| 2-input XOR | 4 | 4 | 4 | 4 |
-| MUX (2:1) | 2 | 2 | 2 | 2 |
-
-Derivation for NAND2: the series PMOS stack needs 2× width to match the inverter's
-pull-up current, giving input cap = 2 (P) + 2 (N) = 4 vs inverter's 2 (P) + 1 (N) = 3.
-$g = 4/3$.
-
-### 12.3 Path Delay Optimization
-
-For a path of $N$ stages:
-
-$$D = \sum_{i=1}^{N} (g_i \cdot h_i + p_i) = G \cdot H \cdot \prod h_i^{g_i} + P$$
-
-where $G = \prod g_i$, $H = C_{\text{load}} / C_{\text{in}}$ (path electrical effort),
-$P = \sum p_i$.
-
-Optimal stage effort: $f^* = (G \cdot H)^{1/N}$, giving minimum delay
-$D^* = N \cdot f^* + P$.
-
-The key insight: minimum delay occurs when every stage bears equal effort $f^*$,
-regardless of gate type. This determines optimal gate sizes via
-$C_{\text{in},i} = g_i \cdot C_{\text{out},i} / f^*$.
-
-### 12.4 Worked Example
-
-Design a path from a flip-flop output through a NAND2 and an inverter to drive a load
-of 20 unit inverters. Input capacitance budget: 1 unit inverter.
-
-```text
-G = g_NAND2 × g_inv = (4/3) × 1 = 4/3
-H = 20 / 1 = 20  (no branching)
-N = 2,  P = 2 + 1 = 3
-
-Optimal per-stage effort:
-  f* = √(G × H) = √(4/3 × 20) = √26.67 ≈ 5.16
-
-Minimum path delay:
-  D* = 2 × 5.16 + 3 = 13.32τ
-
-Gate sizing:
-  C_in,NAND2 = 1  (given, fixed by FF output drive strength)
-  C_in,inv = g_NAND2 × C_in,NAND2 / f* = (4/3 × 1) / 5.16 ≈ 0.259 unit caps
-
-Verification:
-  h_NAND2 = C_in,inv / C_in,NAND2 = 0.259 / 1 = 0.259
-  h_inv   = C_load / C_in,inv = 20 / 0.259 ≈ 77.2
-
-Per-stage delays:
-  d_NAND2 = g_NAND2 × h_NAND2 + p_NAND2 = (4/3)(0.259) + 2 = 2.35τ
-  d_inv   = g_inv × h_inv + p_inv = (1)(77.2) + 1 = 78.2τ
-  D_total = 2.35 + 78.2 = 80.5τ
-
-This is far above D* = 13.32τ because H = 20 is too large for only 2 stages.
-The problem needs more stages. Adding 2 more inverters (N = 4):
-
-  G = (4/3) × 1 × 1 × 1 = 4/3
-  H = 20
-  f* = (G × H)^(1/4) = (4/3 × 20)^(0.25) = (26.67)^0.25 ≈ 2.27
-  P = 2 + 1 + 1 + 1 = 5
-  D* = 4 × 2.27 + 5 = 14.08τ
-
-Gate sizes (working backwards from load):
-  C_in,inv3 = g_inv × C_load / f* = 1 × 20 / 2.27 = 8.81
-  C_in,inv2 = g_inv × C_in,inv3 / f* = 1 × 8.81 / 2.27 = 3.88
-  C_in,inv1 = g_inv × C_in,inv2 / f* = 1 × 3.88 / 2.27 = 1.71
-  C_in,NAND2 = g_NAND2 × C_in,inv1 / f* = (4/3) × 1.71 / 2.27 = 1.01 ≈ 1 ✓
-
-D_total = 4 × (g_i × h_i) + P = 4 × 2.27 + 5 = 14.08τ  (matches D*)
-```
-
-The delay of 13.32τ is the theoretical minimum for this path topology; any other sizing
-(unequal stage efforts) yields higher total delay.
+with $R_{wire}=rL$, $C_{wire}=cL$. The single insight worth keeping: the wire-self term carries the **$0.5\,rc\,L^2$** — delay grows **quadratically** with length, so the fix is not a bigger driver but **breaking the wire with repeaters** so each segment is short and linear (the RC term that made §8's BEOL the bottleneck). At a 1 mm M4 wire the gate resistance still dominates; past $\sim5\ \text{mm}$ the wire wins, which is where repeater insertion becomes mandatory.
 
 ---
 
-## 12. 6T SRAM Cell
+## 11. Logical effort: sizing a path without SPICE
 
-### 13.1 Cell Schematic
+Given a logic path, how do you size each gate for minimum delay *by hand*? **Logical effort** answers it with one normalised delay model, $d=g\cdot h+p$, where $g$ = logical effort (a gate's input-cap penalty vs an inverter of equal drive; $g_{inv}=1$, $g_{NAND2}=4/3$, $g_{NOR2}=5/3$ — the NOR is worse for exactly the series-PMOS reason of §5.1), $h=C_{out}/C_{in}$ = electrical effort (fanout), and $p$ = intrinsic parasitic delay.
 
-The 6-transistor SRAM (static random-access memory) cell is the fundamental building block of on-chip SRAM arrays.
+For an $N$-stage path, total delay $D=\sum(g_i h_i+p_i)$ is minimised when **every stage carries equal effort**:
 
-```ascii-graph
-          VDD                VDD
-           |                  |
-        ┌──┤ M1 (PMOS)    ┌──┤ M3 (PMOS)
-        │  ├─┐            │  ├─┐
-        │  │ Q  ──────────│──│ Qb   Cross-coupled inverters
-        │  └─┘            │  └─┘     (M1/M2 and M3/M4)
-        └──┤ M2 (NMOS)    └──┤ M4 (NMOS)
-           │                  │
-        ┌──┤ M5 (access)   ┌──┤ M6 (access)
-        │  │                │  │
-        BL                  BLB
-           WL (wordline, gates of M5 and M6)
-```
+$$
+f^{*}=(G\cdot H)^{1/N},\qquad D^{*}=N f^{*}+P
+$$
 
-- M1/M2: first inverter (Q drives Qb)
-- M3/M4: second inverter (Qb drives Q)
-- M5/M6: access transistors gated by wordline WL, connecting storage nodes Q/Qb to
-  bitlines BL/BLB
-
-### 13.2 Read Operation
-
-1. Precharge: BL and BLB are charged to VDD (precharge transistors ON)
-2. Assert WL: M5 and M6 turn on
-3. One bitline discharges through the access transistor and the "0" side:
-   - If Q = 0, Qb = 1: BL discharges through M5 (access) and M2 (pull-down) BLB stays high (M6 connects to Qb = 1 = VDD)
-   - Differential voltage ΔV = V(BL) - V(BLB) develops
-4. Sense amplifier detects ΔV and amplifies to full-rail output
-   - Sense amp offset ≈ 10-30 mV (determines minimum detectable ΔV)
-5. WL deasserted, bitlines precharged for next access
-
-- **Read time** — t_read ≈ C_BL × ΔV / I_cell
-where C_BL ≈ 1-5 pF (for 256-row array), I_cell = read current through M5+M2
-
-### 13.3 Write Operation
-
-1. Drive bitlines: set BL and BLB to opposite values
-   - To write Q = 0: BL → 0, BLB → VDD
-   - To write Q = 1: BL → VDD, BLB → 0
-2. Assert WL: M5 and M6 turn on
-3. Access transistors must overpower the cross-coupled inverters to flip the state
-   - The access transistor connected to the "1" side pulls it toward 0
-   - Once the "1" node drops below the inverter trip point, positive feedback completes the flip
-4. WL deasserted, new state is latched
-
-Write margin: depends on relative strength of access transistors vs pull-up PMOS
-   - Write requires: I(M5 or M6) > I(M1 or M3)
-   - Stronger access transistors improve write margin
-
-### 13.4 Static Noise Margin (SNM)
-
-SNM is the maximum noise voltage tolerated without flipping the cell.
-
-```text
-Graphically: the largest square that fits inside the "butterfly curves"
-  (superimposed VTC of the two cross-coupled inverters, one plotted normally
-   and one with axes swapped)
-
-SNM values (typical):
-  Hold SNM  ≈ 0.4 × VDD   (WL = 0, cell isolated from bitlines)
-  Read SNM  ≈ 0.2 × VDD   (WL = 1, access transistors degrade stability)
-  Write margin ≈ 0.3 × VDD
-
-Read SNM is lower than hold because the access transistor creates a voltage
-divider with the pull-down NMOS, raising the "0" node voltage during read.
-```
-
-### 13.5 Read Stability vs Write Margin Tradeoff
-
-```ascii-graph
-This is the fundamental sizing tension in 6T SRAM:
-
-  Access transistor strength (M5/M6):
-    ↑ stronger → better write margin (can overpower inverters more easily)
-    ↑ stronger → worse read stability (more disturbance of stored "0" during read)
-
-  Pull-down NMOS strength (M2/M4):
-    ↑ stronger → better read stability (holds "0" against access transistor)
-    ↑ stronger → worse write margin (harder to flip)
-
-  Pull-up PMOS strength (M1/M3):
-    ↑ stronger → worse write margin (fights access transistor pulling "1" to "0")
-    ↑ stronger → better hold SNM
-
-Typical sizing ratio (β-ratio):  β = (W/L)_pull-down / (W/L)_access ≈ 1.5-3.0
-  - Higher β → better read stability but harder writes
-  - This ratio is the primary design knob for SRAM cell stability
-```
-
-### 13.6 Key Numbers
-
-```text
-6T cell area:         ≈ 0.04-0.08 μm² at N5
-Bitline capacitance:  ≈ 1-5 pF for 256-row array
-Sense amplifier offset: ≈ 10-30 mV
-Minimum supply (data retention): ≈ 0.3-0.4V (VDD_min for hold)
-Array efficiency:     ≈ 60-70% (cell area / total SRAM area)
-Typical array size:    128-512 rows × 64-256 columns per subarray
-```
+where $G=\prod g_i$ (path logical effort), $H=C_{load}/C_{in}$ (path electrical effort), $P=\sum p_i$. Two results are worth memorising: (1) the optimum drives each stage at a fixed effort $f^*\approx 3.5$–$4$ (near $e$, inflated by parasitics), so a large fanout should be *staged* through several gates rather than one giant one; and (2) the optimal stage count is $N\approx\ln(GH)/\ln f^*$ — too few stages and each is overloaded, too many and the parasitics $P$ dominate. Example: driving $H=20$ through a NAND2 wants $\sim4$ stages ($f^*=(4/3\cdot20)^{1/4}\approx 2.3$), not 2 — the same "insert buffers" conclusion §10 reaches from the wire side.
 
 ---
 
-## 13. Leakage Current Breakdown
+## 12. The 6T SRAM bitcell and static noise margin
 
-### 14.1 Four Leakage Components
+*(This section owns the transistor-level SRAM foundation that [Memory](../01_Architecture_and_PPA/09_Memory.md) reasons above; that page defers its bitcell, butterfly-curve, and margin derivations here.)*
 
-```text
-Total leakage: I_total = I_sub + I_gate + I_junc + I_GIDL
+On-chip memory needs a bit that is **fast, non-destructive to read, and self-restoring** — and the cheapest way to get all three is to reuse the one circuit that already restores levels: the regenerative inverter pair of §2. Cross-couple two inverters and you have a **bistable** element — two stable states ($Q,\bar Q$) = (1,0) or (0,1), separated by a metastable point at $V_M$ — that holds its value by positive feedback with zero standing current. Add two access transistors to tap the internal nodes onto a bitline pair and you have the **6T cell**. Everything hard about SRAM comes from one fact: **those two access transistors serve both read and write, and the two operations want them sized in opposite directions.**
 
-At advanced nodes (N5): total ≈ 10-100 nA/μm per device
-```
-
-### 14.2 Subthreshold Leakage
+### 12.1 Structure derived from three jobs
 
 ```text
-I_sub = I0 × exp[(VGS - Vth) / (n × Vt)] × [1 - exp(-VDS / Vt)]
-
-where:
-  I0 = μ0 × Cox × (W/L) × Vt² × exp(-Vth / (n × Vt))  (off-current prefactor)
-  n  = 1 + Cd/Cox  (subthreshold slope factor, ≈ 1.3-1.6)
-  Vt = kT/q ≈ 26 mV at 300K  (thermal voltage)
-
-Dominant at advanced nodes: ~60-80% of total leakage
-  - Increases exponentially as Vth decreases
-  - Increases with temperature (Vth decreases with T)
-  - DIBL makes it worse: effective Vth drops at high VDS
-
-Mitigation: high-Vth transistors (HVT), power gating (sleep transistors),
-  body biasing (reverse bias increases Vth)
+        VDD              VDD
+         |                |
+      ||-+ M1(P)       ||-+ M3(P)          M1/M2  : inverter 1  (drives Q)
+         |                |                M3/M4  : inverter 2  (drives Qb)
+   Q •---+----+      Qb •--+----+          Q, Qb  : the two storage nodes
+         |    |           |    |           M5, M6 : access transistors
+      ||-+ M2(N)       ||-+ M4(N)          WL     : wordline (gates of M5,M6)
+         |                |                BL/BLB : complementary bitlines
+        GND              GND
+         |                |
+  BL •--||  M5      BLB •--|| M6
+       WL                WL
 ```
 
-### 14.3 Gate Oxide Leakage
+- **Hold** — the cross-coupled pair (M1–M4) latches the bit by feedback; the access devices are off (WL low), so the cell is an isolated bistable.
+- **Read** — precharge BL/BLB high, raise WL; the storage node holding **0** sinks current from its bitline through the access device and pull-down, developing a small $\Delta V$ that a sense amp resolves. The stored value must survive being *tapped* — this is the dangerous operation.
+- **Write** — drive the bitlines to the desired value and raise WL; the access devices must **overpower the feedback** and flip the cell.
 
-```ascii-graph
-I_gate = A × (Vox / t_ox)² × exp(-B × t_ox / Vox)
+### 12.2 The central conflict: two ratios that fight over the access transistor
 
-where:
-  A, B: process-dependent constants (material-dependent)
-  Vox: voltage across oxide
-  t_ox: oxide thickness (or EOT for high-k)
+The read and write requirements pin the access-transistor strength in opposite directions, expressed as two sizing ratios:
 
-Mechanism: quantum mechanical tunneling through thin gate dielectric
-  - Direct tunneling dominant when t_ox < 3 nm
-  - Fowler-Nordheim tunneling at thicker oxides / higher fields
+$$
+CR=\frac{(W/L)_{\text{pull-down}}}{(W/L)_{\text{access}}}\ \ (\text{cell ratio — read stability}),\qquad
+PR=\frac{(W/L)_{\text{access}}}{(W/L)_{\text{pull-up}}}\ \ (\text{pull-up ratio — write-ability})
+$$
 
-High-k dielectrics (HfO2, k ≈ 20-25) reduce I_gate by allowing thicker
-physical thickness for the same EOT:
-  EOT = t_physical × (k_SiO2 / k_highk) = t_physical × (3.9 / 25)
-  Example: 1.5 nm physical HfO2 → EOT = 1.5 × 3.9/25 ≈ 0.23 nm
+The access-transistor width appears in **$CR$ (want it *small*)** and in **$PR$ (want it *large*)** with opposite sign. Read wants weak access devices (don't disturb the stored 0); write wants strong ones (overpower the pull-up). Sizing is the search for a single access width that keeps *both* ratios safely above 1 — typically **$CR, PR\approx 1.2$–$2.0$**. There is no free lunch; you are splitting one strength budget between two enemies.
 
-Now ~5-10% of total leakage (was > 50% before high-k adoption at 45nm)
-```
+**Read disturb, quantitatively.** During read, the 0-node is pulled *up* by its (precharged-high) bitline through the access device, forming a divider against the pull-down. Balancing the access device (saturated) against the pull-down (triode) gives the read-node "bump" $V_{read}$:
 
-### 14.4 Junction (Reverse-Bias Diode) Leakage
+$$
+\tfrac12 k_{ax}\,(V_{DD}-V_{read}-V_{th})^2 \;=\; k_{pd}\!\left[(V_{DD}-V_{th})V_{read}-\tfrac{V_{read}^2}{2}\right]
+$$
 
-```text
-I_junc = Js × A_junction × [exp(qV / kT) - 1]
+Larger $CR=k_{pd}/k_{ax}$ ⇒ smaller $V_{read}$. Read is safe **iff $V_{read}$ stays below the switching threshold $V_M$ of the opposite inverter** — if the bump trips it, the cell flips and the read *destroys* the bit. **Write-ability** is the mirror: the access device (pulling a held-1 node toward the driven-0 bitline) must beat the pull-up PMOS and drag that node below $V_M$; a large $PR$ guarantees it.
 
-where:
-  Js: reverse saturation current density (material and doping dependent)
-  A_junction: junction area (source/drain diffusion area)
+### 12.3 SNM: the butterfly curve
 
-Always present when source or drain junction is reverse-biased relative to body.
-  - In normal operation, at least one junction is always reverse-biased
-  - Band-to-band tunneling (BTBT) adds to junction leakage at high doping
+The combined DC robustness metric is the **static noise margin (SNM)**: superimpose the two inverters' VTCs on the same axes — one plotted normally, one with axes swapped — producing two lobes (the "**butterfly curve**"). Each lobe is an "eye"; **SNM is the side of the largest square that fits inside the smaller eye** — the DC noise a node can absorb before the two stable states merge into one and the bit is lost.
 
-~5-10% of total leakage
-```
+- **Hold SNM** ($\approx 0.4\,V_{DD}$): WL low, cell isolated, the eyes are widest — the same $\sim40\%$-of-$V_{DD}$ margin as a plain inverter (§3).
+- **Read SNM** ($\approx 0.2\,V_{DD}$): WL high, the access-device divider pushes the 0-node up (§12.2), squeezing the eyes — so **read SNM < hold SNM** always, and read is the binding constraint.
+- **Write margin** ($\approx 0.3\,V_{DD}$): measured the *opposite* way — how far the bitlines must swing to *collapse* the eye and force the flip. A cell that is hard to disturb (good read SNM) is hard to write — the §12.2 conflict, seen on the curve.
 
-### 14.5 GIDL (Gate-Induced Drain Leakage)
+### 12.4 Why low $V_{DD}$ is the real enemy
 
-```text
-I_GIDL ∝ exp(-B × Eg / (VDD - Vth))
+Every $I$–$V$ curve compresses as $V_{DD}$ approaches $V_{th}$ (§3.2), so the butterfly eyes shrink with supply — and at the same time Pelgrom variation (§9.1) is *worst* for these minimum-size devices, so $\sigma_{V_{th}}$ eats what margin remains. The result: **the 6T read SNM can go to zero (or negative for a tail cell) at low $V_{DD}$**, and you cannot size your way out, because pushing $CR$ up to rescue read costs you $PR$ and write-ability. This structural collapse at low voltage — not area — is the reason the 6T cell hits a wall, and the entire motivation for the **8T cell** (a separate, isolated read port makes read SNM equal hold SNM) and for **read/write assist circuits** (wordline under-drive, negative bitline, $V_{DD}$ collapse) that widen the margins dynamically. Those alternatives are the architect's problem, developed one level up in [Memory](../01_Architecture_and_PPA/09_Memory.md) §2–§3; the point *here* is that their necessity is dictated by this cell's transistor-level physics.
 
-where:
-  Eg: silicon bandgap (≈ 1.12 eV at 300K)
-  B: process-dependent constant
-
-Mechanism: occurs in the gate-drain overlap region where high vertical field
-  causes band-to-band tunneling. The gate creates a deep depletion region at
-  the drain edge, and if the field is strong enough, valence band electrons
-  tunnel to the conduction band.
-
-Increases at higher VDD (higher field in overlap region).
-~5-10% of total leakage
-
-Mitigation: careful overlap engineering, lower VDD, LDD (lightly-doped drain) structures
-```
+**Cell numbers:** 6T area $\approx 0.02\ \mu\text{m}^2$ at N5 ($\sim120\,F^2$, the densest logic-rule structure); bitline capacitance 1–5 pF for a 256-row column; sense-amp offset 10–30 mV; data-retention $V_{DD,min}\approx 0.3$–$0.4\ \text{V}$; array efficiency 60–70%.
 
 ---
 
-## 14. Numbers to Memorize
+## 13. Leakage current: the switch that never fully opens
 
-| Quantity | Value | Why it matters |
-|----------|-------|----------------|
-| VDD at N5/N3 | 0.65-0.7V | Supply voltage for advanced nodes |
-| Vth (typical) | 0.3-0.5V | Threshold voltage range |
-| Electron mobility (bulk Si) | ~400 cm²/Vs | NMOS drive current reference |
-| Hole mobility (bulk Si) | ~180 cm²/Vs | PMOS ~2.2x weaker |
-| Subthreshold swing (60°C) | ~63 mV/decade | Minimum theoretical at room temp: 60 mV/dec |
-| FO4 delay at N5 | ~12-15 ps | Gate delay normalization unit |
-| EOT at N5 | ~0.8-1.0 nm | Equivalent oxide thickness |
-| Fin pitch (N5) | ~25 nm | FinFET minimum feature |
-| Fin height (N5) | ~50-60 nm | Determines drive current per fin |
-| CMOS inverter gain (mid-region) | -gm × (ron‖rop) | Peak voltage gain |
-| Noise margin (typical) | ~0.4 × VDD | Approximate for symmetrical inverter |
-| 6T SRAM cell area (N5) | 0.04-0.08 μm² | Memory density driver |
-| Subthreshold leakage (N5, per μm) | 10-100 nA/μm | Leakage power budget |
+Because $V_{th}$ cannot scale (§1.3), the OFF transistor keeps conducting, and static power now rivals dynamic (§4.3) — setting standby battery life, always-on-domain budgets, and the thermal floor. Four mechanisms sum to the total, with subthreshold dominant:
+
+$$
+I_{leak}=I_{sub}+I_{gate}+I_{junc}+I_{GIDL}
+$$
+
+- **Subthreshold ($\sim$60–80%)** — the Boltzmann tail of §1.3, $I_{sub}\propto 10^{-V_{th}/S}$. Rises exponentially as $V_{th}$ drops, worsens with temperature (hot ⇒ lower $V_{th}$) and with DIBL (§1.4). Mitigated by HVT cells, power gating (sleep transistors cut the rail), and reverse body bias (raises $V_{th}$).
+- **Gate tunnelling ($\sim$5–10%)** — direct tunnelling through the thin oxide, $I_{gate}\propto(V/t_{ox})^2 e^{-B t_{ox}/V}$. Was >50% before **high-$k$** (§1.4) let the physical oxide thicken at constant EOT — a rare case of a leakage component *solved* by a material change.
+- **Junction / band-to-band ($\sim$5–10%)** — reverse-biased source/drain diode leakage plus BTBT at high doping.
+- **GIDL ($\sim$5–10%)** — band-to-band tunnelling in the gate-drain overlap, worse at high $V_{DD}$.
+
+The takeaway: leakage is governed by the *same* $S$ and $V_{th}$ that govern speed, so it is not a separate problem but the other face of the §1.3 trade — and it is why $V_{th}$ flavours, power gating, and body bias exist at all ([Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)).
+
+---
+
+## 14. Numbers to memorize
+
+| Quantity | Value | Why it matters (section) |
+|---|---|---|
+| $V_{DD}$ at N5/N3 | 0.65–0.75 V | frozen by the $V_{th}$/leakage floor (§1.3, §4.5) |
+| $V_{th}$ (typical) | 0.3–0.5 V | overdrive $V_{DD}-V_{th}$ sets speed (§4.1) |
+| Subthreshold slope floor | **60 mV/decade** @ 300 K | thermodynamic limit; bulk ~80–100, FinFET ~65–70 (§1.3) |
+| Electron / hole mobility (eff.) | ~400 / ~180 cm²/V·s | PMOS ~2–2.5× wider (§1.1, §2.2) |
+| Alpha-power exponent $\alpha$ | ~1.3 | velocity-saturated; delay $\propto(V_{DD}-V_{th})^{-\alpha}$ (§1.2, §4.1) |
+| FO4 delay at N5 | ~12–15 ps | process-independent gate-delay unit (§4.1) |
+| Dynamic energy per transition | $\tfrac12 CV_{DD}^2$ | $P_{dyn}=\alpha CV_{DD}^2 f$ (§4.2) |
+| Leakage share of total | 20–50% | static power now rivals dynamic (§4.3, §13) |
+| Noise margin (symmetric inv.) | ~0.4 $V_{DD}$ | regeneration budget (§3.1) |
+| Inverter switching threshold $V_M$ | $V_{DD}/2$ (symmetric) | sizing $r=\sqrt{k_p/k_n}$ (§2.2) |
+| EOT at N5 | ~0.8–1.0 nm | high-$k$ keeps physical oxide thick (§1.4) |
+| Fin pitch / height (N5) | ~25 nm / ~50–60 nm | drive per fin, quantised sizing (§8) |
+| $\sigma_{V_{th}}$ scaling | $\propto 1/\sqrt{WL}$ | smallest devices vary most → SRAM limits (§9.1) |
+| 6T SRAM cell area (N5) | 0.015–0.03 µm² (~120 $F^2$) | densest logic-rule cell; density driver (§12) |
+| 6T hold / read SNM | ~0.4 / ~0.2 $V_{DD}$ | read is the binding constraint (§12.3) |
+| 6T $CR$, $PR$ | 1.2–2.0 | read-stability vs write-ability split (§12.2) |
+| Data-retention $V_{DD,min}$ | ~0.3–0.4 V | butterfly eye collapse (§12.4) |
+| Subthreshold leakage (N5) | 10–100 nA/µm | leakage-power budget (§13) |
+
+**The scaling one-liner (Dennard, §4.5):** constant-field scaling kept power density flat until $V_{th}$ (hence $V_{DD}$) stopped scaling at the 60 mV/dec wall (~2005) — after which power density rose, frequency stalled at 3–5 GHz, and the field turned to multicore, accelerators, and dark silicon.
+
+---
+
+## Cross-references
+
+- **Down the stack (what this is built on):** semiconductor device physics and the [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (how the FinFET/GAA devices of §8 and the wells of §6 are actually formed). This page is otherwise the floor of the notebook.
+- **Up the stack (what builds on it):** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (gates, the TG latch/flip-flop of §5.2, built from these transistors); [Adders_and_Multipliers](03_Adders_and_Multipliers.md) & [Floating_Point](04_Floating_Point.md) (the carry trees whose delay is measured in the FO4 of §4.1); [CPU_Architecture](../01_Architecture_and_PPA/03_CPU_Architecture.md) & [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) (the FO4 gate-delay budget and dynamic CAM cells that set pipeline and wakeup timing); [Memory](../01_Architecture_and_PPA/09_Memory.md) (reasons *above* the §12 6T cell, §3 noise margins, and §9 variation to derive 8T/DRAM/eDRAM); [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md) & [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (the $\alpha CV^2f$ and leakage of §4/§13 scaled to an SoC).
+- **Adjacent / signoff:** [STA](../06_Signoff/01_STA.md) (the corners and OCV derates of §9.2 in timing signoff); [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (repeater insertion and the wire RC of §10/§8.4); [Signal_Integrity](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the I/O termination and reflections of §5.4); [DDR_Controller](../01_Architecture_and_PPA/10_DDR_Controller.md) & [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (the off-chip I/O families of §5.4).
+
+---
+
+## References
+
+1. Rabaey, J., Chandrakasan, A., and Nikolić, B., *Digital Integrated Circuits: A Design Perspective*, 2nd ed., Prentice Hall, 2003. Device model, VTC/noise margins, and the SRAM SNM of §12.
+2. Weste, N. and Harris, D., *CMOS VLSI Design: A Circuits and Systems Perspective*, 4th ed., Addison-Wesley, 2010. Logic families (§5), logical effort (§11), and I/O.
+3. Sutherland, I., Sproull, R., and Harris, D., *Logical Effort: Designing Fast CMOS Circuits*, Morgan Kaufmann, 1999. The method of §11.
+4. Sakurai, T. and Newton, A.R., "Alpha-Power Law MOSFET Model and its Applications to CMOS Inverter Delay," *IEEE JSSC*, 25(2), 1990. The delay exponent of §1.2/§4.1.
+5. Dennard, R. et al., "Design of Ion-Implanted MOSFETs with Very Small Physical Dimensions," *IEEE JSSC*, 9(5), 1974. The constant-field scaling of §4.5.
+6. Seevinck, E., List, F., and Lohstroh, J., "Static-Noise Margin Analysis of MOS SRAM Cells," *IEEE JSSC*, 22(5), 1987. The butterfly-curve SNM of §12.3.
+7. Pelgrom, M. et al., "Matching Properties of MOS Transistors," *IEEE JSSC*, 24(5), 1989. The $1/\sqrt{WL}$ variation law of §9.1.
+8. Taur, Y. and Ning, T., *Fundamentals of Modern VLSI Devices*, 3rd ed., Cambridge, 2021. Short-channel electrostatics and the screening length of §1.4/§8.

@@ -1,2292 +1,297 @@
-# AMBA Bus Protocols: APB, AHB, and AXI -- The Complete Interview Bible
+# On-Chip Interconnect — AXI, AHB, APB as a Composition Contract
 
-## Table of Contents
-1. AMBA Protocol Overview
-2. APB -- Deep Dive with State Machine and Waveforms
-3. AHB -- Pipelining, Bursts, and Arbitration
-4. AXI4 -- Complete Protocol Specification
-5. AXI Outstanding and Interleaving
-6. AXI4-Lite
-7. AXI4-Stream
-8. Interconnect and Crossbar Design
-9. Bus Bridge Design (AXI-to-APB, AHB-to-AXI)
-10. Performance Analysis and Bandwidth Calculations
-11. Clock Domain Crossing for AXI Bridges
-12. TrustZone Security Attributes
-13. AXI Atomic Operations (ATOP)
+> **Prerequisites:** [CPU_Architecture](03_CPU_Architecture.md) (pipelining, stalls, the handshake discipline), [OoO_Execution](05_OoO_Execution.md) (outstanding transactions, MLP, latency hiding — the same idea applied to a wire).
+> **Hands off to:** [ACE_and_CHI](12_ACE_and_CHI.md) (coherence riding on AXI's channels), [Network_on_Chip](13_Network_on_Chip.md) (the packet fabric that replaces the crossbar at scale), [DDR_Controller](10_DDR_Controller.md) (the memory the widest AXI port feeds), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (the metastability/FIFO physics behind CDC bridges).
 
 ---
 
-## 1. AMBA Protocol Overview
+## 0. Why this page exists
 
-| Protocol    | Version | Channels | Pipelining    | Burst  | Outstanding | OoO | Use Case                |
-|-------------|---------|----------|---------------|--------|-------------|-----|-------------------------|
-| APB         | AMBA 3/4| 1        | None          | No     | No          | No  | Config registers, UART  |
-| AHB         | AMBA 2/3| 1        | Addr-pipeline | Yes    | No          | No  | SRAM, DMA (legacy)      |
-| AHB-Lite    | AMBA 3  | 1        | Addr-pipeline | Yes    | No          | No  | Single-master subsystem |
-| AXI4        | AMBA 4  | 5        | Full          | Yes    | Yes         | Yes | DDR, GPU, high-perf     |
-| AXI4-Lite   | AMBA 4  | 5        | Full          | No     | Optional    | No  | Simple register I/F     |
-| AXI4-Stream | AMBA 4  | 1        | N/A           | N/A    | N/A         | N/A | Video, DSP, networking  |
-| ACE         | AMBA 4  | 5+snoop  | Full          | Yes    | Yes         | Yes | Coherent multi-core     |
-| CHI         | AMBA 5  | Channels | Full          | Yes    | Yes         | Yes | Scalable coherent NoC   |
+A modern SoC is not one design — it is *dozens to hundreds of independently designed IP blocks* (CPU clusters, GPU, NPU, DMA engines, DDR controller, display, USB, UART, GPIO…) that must exchange data without any two teams having read each other's RTL. The single idea that makes this possible is a **standardized on-chip interconnect protocol**: a fixed contract at each block's boundary so that the block can be designed, verified, and reused **without knowing what is on the other side or what fabric sits between**. AMBA (AXI/AHB/APB) is that contract, and everything on this page is a consequence of it.
+
+This is a concept page, not a signal dictionary. Instead of listing `AWADDR`, `AWLEN`, `AWSIZE`… we ask the questions that generate them: *why does a standard interconnect exist at all* (§1); *why is the valid/ready handshake the universal flow-control primitive and not a fixed-timing contract* (§2); *why does high-throughput communication force AXI's five independent channels* (§3); *why do outstanding, ID-tagged, out-of-order transactions hide latency* — the bus analog of pipelining and memory-level parallelism (§4); *why bursts exist* (§5); and *why there is a three-tier family* — AXI, AHB, APB — rather than one protocol (§6, the central bandwidth-vs-complexity-vs-power trade). Topology (§7), bridges and clock-domain crossing (§8), and the policy sidebands (§9) then fall out. Signal tables, burst-encoding arithmetic, waveform cycle-dumps, and exclusive/atomic mechanics are deliberately cut; their *ideas* survive in the concept treatment. By the end you should be able to reason about a fabric quantitatively — size outstanding depth from Little's law, predict burst efficiency, and pick the right tier for a block — rather than recite port names.
 
 ---
 
-## 2. APB (Advanced Peripheral Bus) -- Deep Dive
+## 1. The problem a standard interconnect solves: composing IP
 
-### 2.1 Complete Signal List
+Start from the pain a standard removes. Suppose $N$ blocks must talk and each pair uses a bespoke point-to-point interface. The wiring, the adapters, and the verification all grow as the number of pairs:
 
-| Signal      | Width | Direction       | Description                                |
-|-------------|-------|-----------------|---------------------------------------------|
-| PCLK        | 1     | Clock           | Bus clock                                   |
-| PRESETn     | 1     | Reset           | Active-low reset                             |
-| PADDR       | 32    | Master->Slave   | Address bus                                  |
-| PPROT       | 3     | Master->Slave   | Protection (APB4): [2]=instruction, [1]=nonsecure, [0]=privileged |
-| PSEL        | 1     | Decoder->Slave  | Slave select (one per slave)                 |
-| PENABLE     | 1     | Master->Slave   | Enable (2nd phase indicator)                 |
-| PWRITE      | 1     | Master->Slave   | 1=write, 0=read                              |
-| PWDATA      | 32    | Master->Slave   | Write data                                   |
-| PSTRB       | 4     | Master->Slave   | Write strobes (APB4): byte enables            |
-| PRDATA      | 32    | Slave->Master   | Read data                                    |
-| PREADY      | 1     | Slave->Master   | Ready (can insert wait states when low)       |
-| PSLVERR     | 1     | Slave->Master   | Transfer error                                |
+$$
+\text{bespoke interfaces} \;\sim\; \binom{N}{2} \;=\; O(N^2)
+$$
 
-### 2.2 APB State Machine (Complete)
+Nothing is reusable — a block wired to its neighbours' private conventions cannot be lifted into another SoC — and every new block re-opens the integration of every old one. A **standard interface** collapses this: each block speaks *one* protocol to a shared fabric, so integration cost is $O(N)$ and the fabric absorbs the cross-product. That is the whole value proposition, and it buys three separable things:
+
+- **Reuse / composition.** A block that presents a spec-compliant AXI port drops into any AXI system — across SoCs, across vendors, across process nodes — because its contract is the protocol, not a neighbour.
+- **Separation of concerns (independent verification).** Because the boundary is a published spec, a block is verified against *protocol Verification IP* (VIP), not against the rest of the chip. The same UVM environment and register model check it in isolation ([UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md)).
+- **A swappable fabric.** The transport between blocks — shared bus, crossbar, or NoC — becomes a *separate design problem* (§7). You can replace a crossbar with a mesh without touching a single endpoint, because endpoints only ever saw the protocol.
+
+The abstraction that makes this work is **memory-mapped, master/slave transactions**: every block is reachable at an address, a *master* (initiator: CPU, DMA, GPU) issues read/write transactions, a *slave* (target: memory, register block) responds, and an *address* is the one universal namespace. AXI, AHB, and APB are three points on a trade surface (§6) that all share this abstraction — which is exactly why they bridge cleanly into one another (§8).
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE: IDLE — PSEL=0, PENABLE=0
-    SETUP: SETUP — PSEL=1, PENABLE=0, PADDR/PWRITE/PWDATA valid
-    ACCESS: ACCESS — PSEL=1, PENABLE=1
-    IDLE --> SETUP: transfer requested
-    SETUP --> ACCESS: always (1 cycle)
-    ACCESS --> ACCESS: PREADY=0 (wait state)
-    ACCESS --> IDLE: PREADY=1, no more transfers
-    ACCESS --> SETUP: PREADY=1, another transfer (back-to-back, no IDLE)
-    note right of SETUP: exactly 1 cycle
-```
-
-### 2.3 APB Waveforms
-
-**Write without wait states:**
-
-```wavedrom
-{ "config": { "hscale": 2 },
-  "signal": [
-  { "name": "PCLK",    "wave": "p..." },
-  { "name": "PSEL",    "wave": "0110" },
-  { "name": "PENABLE", "wave": "0010" },
-  { "name": "PADDR",   "wave": "x=.x", "data": ["ADDR"] },
-  { "name": "PWRITE",  "wave": "0110" },
-  { "name": "PWDATA",  "wave": "x=.x", "data": ["DATA"] },
-  { "name": "PREADY",  "wave": "1..." },
-  {},
-  { "name": "State",   "wave": "====", "data": ["IDLE","SETUP","ACCESS","IDLE"] }
-], "head": { "text": "APB write — slave always ready (no wait states)" } }
-```
-
-**Read with 2 wait states:**
-
-```wavedrom
-{ "config": { "hscale": 2 },
-  "signal": [
-  { "name": "PCLK",    "wave": "p....." },
-  { "name": "PSEL",    "wave": "011110" },
-  { "name": "PENABLE", "wave": "001110" },
-  { "name": "PADDR",   "wave": "x=...x", "data": ["ADDR"] },
-  { "name": "PWRITE",  "wave": "0....." },
-  { "name": "PRDATA",  "wave": "x...=x", "data": ["DATA"] },
-  { "name": "PREADY",  "wave": "000010" },
-  {},
-  { "name": "State",   "wave": "===..=", "data": ["IDLE","SETUP","ACCESS","IDLE"] }
-], "head": { "text": "APB read with 2 wait states (PREADY low until slave ready)" } }
-```
-
-### 2.3.1 APB Signal Timing — PSEL/PENABLE/PWRITE/PREADY Relationship
-
-The APB protocol's timing is defined by four key signals. Understanding their exact
-relationship is critical for both bridge design and interview questions.
-
-**Signal rules (strict, from AMBA spec):**
-```text
-1. PSEL:    Asserted by the address decoder when a transfer targets this slave.
-            PSEL must be stable before PENABLE rises (setup in SETUP phase).
-            Deasserted only after the transfer completes (PREADY=1 in ACCESS).
-
-2. PENABLE: Always transitions 0->1 exactly one cycle after PSEL is asserted.
-            The SETUP->ACCESS transition is unconditional and takes exactly 1 cycle.
-            PENABLE stays high during any wait states (PREADY=0 extends ACCESS).
-            PENABLE deasserts only when the transfer completes.
-
-3. PWRITE:  Must be valid during SETUP and ACCESS phases.
-            Indicates direction: 1=write (PWDATA driven), 0=read (PRDATA expected).
-            Must not change during a transfer (stable from SETUP through ACCESS).
-
-4. PREADY:  Driven by the slave. Only sampled when PENABLE=1 (ACCESS phase).
-            PREADY=1: transfer completes this cycle.
-            PREADY=0: slave inserts a wait state; all signals held stable.
-            PREADY may be combinational (depends on PENABLE for timing closure) or
-            registered (adds 1 cycle latency but breaks critical path).
-```
-
-**Timing diagram — all four signals for a write with 1 wait state:**
-
-```wavedrom
-{ "config": { "hscale": 2 },
-  "signal": [
-  { "name": "PCLK",    "wave": "p...." },
-  { "name": "PSEL",    "wave": "01110" },
-  { "name": "PENABLE", "wave": "00110" },
-  { "name": "PWRITE",  "wave": "01110" },
-  { "name": "PADDR",   "wave": "x=..x", "data": ["ADDR"] },
-  { "name": "PWDATA",  "wave": "x=..x", "data": ["DATA"] },
-  { "name": "PREADY",  "wave": "00010" },
-  {},
-  { "name": "State",   "wave": "===.=", "data": ["IDLE","SETUP","ACCESS","IDLE"] }
-], "head": { "text": "APB write with 1 wait state" } }
-```
-
-Key points: `PADDR`/`PWDATA` stay valid from SETUP through ACCESS (held during the wait state); `PENABLE` is high for the whole ACCESS phase; `PREADY` is only sampled when `PENABLE=1`.
-
-**Common interview question: Can PREADY be combinational from PENABLE?**
-```verilog
-Answer: Yes, but with caution.
-
-Legal: PREADY = PENABLE  (slave always ready when in ACCESS phase)
-  This is the simplest slave: no wait states, PREADY tied to PENABLE.
-  Transfer always completes in 2 cycles.
-
-Legal: PREADY = 1  (slave always ready, regardless of PENABLE)
-  Also valid. PREADY is not sampled until PENABLE=1 anyway.
-  Used by simple register files with fixed read/write timing.
-
-NOT legal: PREADY depends on PSEL without PENABLE
-  The spec requires PREADY to be stable and meaningful only during ACCESS.
-  A slave that deasserts PREADY when PSEL=0 and PENABLE=0 (IDLE) is legal
-  (PREADY is a "don't care" in IDLE/SETUP) but the master must not sample it.
-
-Timing hazard: If PREADY is combinational from PENABLE and PREADY feeds back
-  into logic that generates PENABLE, a combinational loop forms. This is why
-  most real slaves register PREADY (adding 1 wait state but breaking the loop).
-```
-
-**Write with PSLVERR:**
-
-`PSLVERR` is sampled on the same rising `PCLK` edge as `PREADY` (when `PENABLE=1` and `PREADY=1`). It flags a failed transfer (e.g. write to a read-only register, access to an undefined address). Both assert on the same cycle; the master decides how to handle it (ignore, retry, interrupt) — APB does not define error recovery.
-
-```wavedrom
-{ "signal": [
-  { "name": "PSLVERR", "wave": "001100" },
-  { "name": "PREADY",  "wave": "001100" }
-], "head": { "text": "PSLVERR asserted together with PREADY on a failed transfer" } }
-```
-
-### 2.4 APB Detailed Handshake Protocol
-
-The APB protocol uses exactly three signals for flow control: `PSEL`, `PENABLE`, and
-`PREADY`. The `PWRITE` signal determines direction. Understanding the exact timing
-relationship is critical for bridge design and interview questions.
-
-**Signal behavior across phases:**
-```text
-Phase      PSEL  PENABLE  PWRITE  PADDR  PWDATA/PRDATA  PREADY
------------------------------------------------------------------------
-IDLE       0     0        X       X      X               X
-SETUP      1     0        valid   valid  valid (if W)    X (not sampled)
-ACCESS     1     1        valid   valid  valid (if W)    sampled
-ACCESS(ws) 1     1        valid   valid  valid (if W)    0 (wait)
-COMPLETE   1     1        valid   valid  valid           1 (transfer done)
-```
-
-**Critical timing rule: PSEL and PENABLE must NEVER be asserted simultaneously
-unless in the ACCESS phase.** The transition from SETUP to ACCESS is always exactly
-one cycle (PENABLE goes high on the clock edge following SETUP). Only PREADY can
-extend the ACCESS phase.
-
-**Data validity rules:**
-- Write data (`PWDATA`) must be stable during SETUP and ACCESS phases.
-- Read data (`PRDATA`) is sampled on the rising clock edge when `PENABLE=1` and `PREADY=1`.
-- `PSLVERR` is sampled alongside `PREADY` -- it is only valid when `PENABLE=1 && PREADY=1`.
-
-**Back-to-back transfers (no IDLE cycle between):**
-
-```wavedrom
-{ "config": { "hscale": 2 },
-  "signal": [
-  { "name": "PCLK",    "wave": "p......" },
-  { "name": "PSEL",    "wave": "0111111" },
-  { "name": "PENABLE", "wave": "0010101" },
-  { "name": "PADDR",   "wave": "x=.=.=.", "data": ["A0","A1","A2"] },
-  { "name": "PWRITE",  "wave": "0111111" },
-  { "name": "PWDATA",  "wave": "x=.=.=.", "data": ["D0","D1","D2"] },
-  { "name": "PREADY",  "wave": "1......" }
-], "head": { "text": "Back-to-back APB — PENABLE staircase, PSEL stays high (PADDR/PWDATA show the 3 transfers)" } }
-```
-
-`PENABLE` pulses high for exactly one cycle per transfer (during ACCESS), then drops for the next SETUP; `PSEL` stays high across the whole back-to-back sequence.
-
-### 2.5 APB Bridge Design (from AXI/AHB)
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    M["AHB / AXI<br/>Master side"] --> BR["APB Bridge<br/>· address decoder<br/>· state machine<br/>· wait-state generation"]
-    BR --> S0["APB Slave 0"]
-    BR --> S1["APB Slave 1"]
-    BR --> S2["APB Slave 2"]
-    classDef m fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef b fill:#fde68a,stroke:#b45309,color:#000
-    classDef s fill:#dcfce7,stroke:#15803d,color:#000
-    class M m
-    class BR b
-    class S0,S1,S2 s
+    CPU["CPU cluster\n(master)"] --> FAB
+    GPU["GPU\n(master)"] --> FAB
+    DMA["DMA\n(master)"] --> FAB
+    FAB["Interconnect fabric\n(bus / crossbar / NoC)\naddress decode + arbitration"]
+    FAB --> DDR["DDR ctrl\n(slave, AXI)"]
+    FAB --> SRAM["on-chip SRAM\n(slave, AXI/AHB)"]
+    FAB --> BR["APB bridge"]
+    BR --> UART["UART"]
+    BR --> GPIO["GPIO"]
+    BR --> TMR["timers / config regs"]
 ```
 
-The bridge: (1) accepts an AHB/AXI transaction (address phase); (2) decodes the address to select the appropriate `PSEL`; (3) drives `PADDR`, `PWRITE`, `PWDATA` in the SETUP phase; (4) asserts `PENABLE` in the ACCESS phase; (5) waits for `PREADY` from the slave; (6) returns `HRDATA`/`RDATA` and `HRESP`/`BRESP` to the master side; (7) if the AXI (Advanced eXtensible Interface) side issues a burst, the bridge generates multiple APB transfers.
+The picture already contains §6's answer: the CPU→DDR path wants maximum bandwidth (AXI), the leaf peripherals want minimum area/power (APB behind one bridge). One chip, three tiers, because the requirements differ per edge.
 
 ---
 
-## 3. AHB (Advanced High-Performance Bus) -- Deep Dive
+## 2. The valid/ready handshake: flow control as *whether*, not *when*
 
-### 3.1 Complete Signal List
+Before any channel structure, one primitive underlies all of AMBA (and most on-chip streaming interfaces): the **VALID/READY handshake**. A transfer happens on a rising clock edge **iff both `VALID` (source has data) and `READY` (sink can accept) are high**. That is the entire mechanism. Its importance is easiest to see by asking what the naive alternative costs.
 
-| Signal       | Width | Direction       | Description                                  |
-|--------------|-------|-----------------|----------------------------------------------|
-| HCLK         | 1     | Clock           | Bus clock                                    |
-| HRESETn      | 1     | Reset           | Active-low reset                              |
-| HADDR        | 32    | Master->Slave   | Address bus                                   |
-| HTRANS       | 2     | Master->Slave   | Transfer type                                 |
-| HWRITE       | 1     | Master->Slave   | 1=write, 0=read                               |
-| HSIZE        | 3     | Master->Slave   | Transfer size (2^HSIZE bytes)                 |
-| HBURST       | 3     | Master->Slave   | Burst type                                    |
-| HPROT        | 4     | Master->Slave   | Protection control                            |
-| HWDATA       | 32    | Master->Slave   | Write data (data phase)                       |
-| HRDATA       | 32    | Slave->Master   | Read data (data phase)                        |
-| HREADY       | 1     | Slave->Master   | Ready (transfers/wait)                        |
-| HRESP        | 2     | Slave->Master   | Response (OKAY/ERROR/RETRY/SPLIT)             |
-| HSELx        | 1     | Decoder->Slave  | Slave select                                  |
-| HMASTLOCK    | 1     | Master->Slave   | Locked access                                 |
-| HMASTER      | 4     | Arbiter->Slave  | Master number                                 |
-| HBUSREQ      | 1     | Master->Arbiter | Bus request                                   |
-| HLOCK        | 1     | Master->Arbiter | Locked transfer request                       |
-| HGRANT       | 1     | Arbiter->Master | Bus grant                                     |
+**Why not a fixed-timing contract?** The obvious protocol is a *timing contract*: "master asserts request in cycle 0; slave guarantees data in cycle $N$." It works for exactly one slave. It fails the moment you have:
 
-### 3.2 HTRANS Encoding -- Detailed
+- **Variable latency.** A cache hit and a DRAM miss differ by 100× ; a fixed $N$ cannot describe both. Real slaves have data-dependent latency.
+- **Heterogeneous speeds.** The same interface must serve a 1-cycle SRAM and an off-chip flash. A single $N$ over-serves one and breaks the other.
+- **Buffering, pipelining, and CDC.** Insert a register stage on a long wire and every $N$ shifts — the contract breaks. You cannot close timing on a fabric, or cross a clock domain, under a fixed-latency promise.
 
-| HTRANS[1:0] | Name   | Description                                                |
-|-------------|--------|------------------------------------------------------------|
-| 00          | IDLE   | No transfer. Master is idle or waiting. Slave ignores.      |
-| 01          | BUSY   | Master is in a burst but cannot continue this cycle. Slave must wait. Address and control are meaningless. Does NOT end the burst. |
-| 10          | NONSEQ | First transfer of a burst, or a single transfer. New address/control. Not related to previous transfer. |
-| 11          | SEQ    | Continuation of a burst. Address = previous + size. Control same as NONSEQ. |
+VALID/READY replaces **when** with **whether**: the data moves on *any* cycle both sides agree, and latency becomes a *runtime* property rather than a *protocol constant*. This single move is what makes the fabric **elastic** — an arbitrary number of buffer/register stages can be inserted transparently, because each stage just re-handshakes. Backpressure and clock-domain crossing (§8) are then free consequences, not bolt-ons.
 
-### 3.3 AHB Pipelining -- Detailed Waveform
-```text
-The key to AHB performance: address phase of transfer N+1 overlaps
-with data phase of transfer N.
+**The one asymmetry rule — and why it prevents deadlock.** The handshake is symmetric except for a single constraint:
 
-Cycle                     :       1       2       3       4       5       6
-HADDR                     :     [A0]    [A1]    [A2]    [A3]
-HTRANS                    :    [NONSEQ][SEQ]   [SEQ]   [SEQ]
-HWDATA                    :            [D0]    [D1]    [D2]    [D3]
-HREADY                    :      1       1       1       1       1
+- **`VALID` must not depend on `READY`.** The source commits — it raises `VALID` when it has data, regardless of the sink.
+- **`READY` *may* depend on `VALID`.** The sink is allowed to look before it leaps.
 
-Transfer 0                : Address in cycle 1, Data in cycle 2
-Transfer 1                : Address in cycle 2, Data in cycle 3
-Transfer 2                : Address in cycle 3, Data in cycle 4
-Transfer 3                : Address in cycle 4, Data in cycle 5
+If *both* sides waited for the other ("I'll assert VALID once I see READY" / "I'll assert READY once I see VALID"), neither ever moves — a circular wait, i.e. deadlock. Breaking the symmetry on one side is the minimal fix, and it is why the spec fixes the *source* as the committing party. The companion rule — once `VALID` is asserted, the source holds it and the payload stable until the handshake completes — is what lets the sink take its time without the data evaporating.
 
-Effective bandwidth       : 1 transfer per clock cycle (after initial 1-cycle latency)
-Without pipelining (APB-style): 2 cycles per transfer -> half the bandwidth
-```
+**Backpressure.** `READY` low is the sink saying *"not yet."* It propagates upstream: a stalled consumer deasserts `READY`, its producer's buffer fills and it deasserts *its* `READY`, and the stall ripples back to the origin with no data lost. This is the same producer/consumer discipline as a pipeline stall ([CPU_Architecture](03_CPU_Architecture.md)) — a bus is just a very long, buffered pipeline.
 
-**With wait states:**
-```text
-Cycle    :       1       2       3       4       5       6       7
-HADDR    :     [A0]    [A1]    [A1]    [A2]    [A3]
-HTRANS   :    [NONSEQ][SEQ]   [SEQ]   [SEQ]   [SEQ]
-HWDATA   :            [D0]    [D0]    [D1]    [D2]    [D3]
-HREADY   :      1       0       1       1       1       1
-
-Cycle 2-3: HREADY                                        = 0, slave inserts wait state.
-  - Master HOLDS address A1, data D0 (must remain stable!)
-  - All pipeline stages stall
-  - Slave completes the slow operation in cycle 3 (HREADY = 1)
-```
-
-### 3.4 Burst Types -- Address Calculation Examples
-
-**HSIZE encoding:**
-
-| HSIZE | Size    | Bytes |
-|-------|---------|-------|
-| 000   | Byte    | 1     |
-| 001   | Halfword| 2     |
-| 010   | Word    | 4     |
-| 011   | Dword   | 8     |
-
-**INCR4 burst (4-beat incrementing) with HSIZE=010 (word), start address 0x1000:**
-```text
-Beat 0: Address = 0x1000  (NONSEQ)
-Beat 1: Address = 0x1004  (SEQ)  (+4 bytes)
-Beat 2: Address = 0x1008  (SEQ)  (+4 bytes)
-Beat 3: Address = 0x100C  (SEQ)  (+4 bytes)
-```
-
-**WRAP4 burst with HSIZE=010 (word), start address 0x1004:**
-
-Wrap boundary: aligned to (burst_length * size) = 4 * 4 = 16 bytes
-- **Wrap boundary** = `0x1000 (start address rounded down to 16-byte boundary)`
-Wrap range: 0x1000 to 0x100F
-
-Beat 0: Address = 0x1004  (NONSEQ) -- start here (critical word first)
-Beat 1: Address = 0x1008  (SEQ)
-Beat 2: Address = 0x100C  (SEQ)
-Beat 3: Address = 0x1000  (SEQ)  -- WRAPS back to boundary start!
-
-Use case: Cache line fill starting from the critical word.
-CPU needs word at 0x1004, but cache line is 16 bytes (0x1000-0x100F).
-WRAP4 fetches 0x1004 first (CPU can proceed immediately),
-then fills the rest of the line (0x1008, 0x100C, 0x1000).
-
-**WRAP8 burst with HSIZE=010 (word), start address 0x1014:**
-```text
-Wrap size     = 8 * 4 = 32 bytes
-Wrap boundary = 0x1000 (aligned to 32-byte boundary)
-Wrap range: 0x1000 to 0x101F
-
-Beat 0    : 0x1014  (NONSEQ)
-Beat 1    : 0x1018  (SEQ)
-Beat 2    : 0x101C  (SEQ)
-Beat 3    : 0x1000  (SEQ) -- WRAP!
-Beat 4    : 0x1004  (SEQ)
-Beat 5    : 0x1008  (SEQ)
-Beat 6    : 0x100C  (SEQ)
-Beat 7    : 0x1010  (SEQ)
-```
-
-### 3.5 Split and Retry -- Why They Exist
-
-**Problem:** A slow slave (e.g., external flash controller) takes 100 cycles to respond. During this time, the bus is blocked -- no other master can use it. This wastes bus bandwidth.
-
-**RETRY response:**
-```text
-Cycle      :    1      2      3      4      5      ...
-HADDR      :   [A0]
-HTRANS     :  [NONSEQ]
-HREADY     :    1      0      1      <- 2-cycle error response
-HRESP      :            [RETRY][RETRY] <- Must be 2 cycles!
-
-After RETRY:
-  - Master must retry the same transfer
-  - Arbiter may re-grant the bus to a different master first
-  - Original master retries when re-granted
-```
-
-**SPLIT response:**
-
-Same as RETRY, but the slave tells the arbiter:
-"I will signal you (via HSPLIT) when I'm ready for this master."
-
-**The arbiter:**
-   1. Records which master was split
-2. Grants bus to other masters
-3. When slave signals HSPLIT for the original master, re-grants to it
-
-Advantage over RETRY: The split master doesn't keep retrying and wasting
-bus cycles. The arbiter only re-grants when the slave is actually ready.
-
-### 3.6 AHB-Lite Simplification
-
-**AHB-Lite removes:**
-   - HBUSREQ, HGRANT, HLOCK (no arbitration, single master)
-   - SPLIT/RETRY (HRESP is 1-bit: 0=OKAY, 1=ERROR)
-   - HMASTER (only one master)
-
-AHB-Lite is the most widely used AHB variant in modern SoCs (systems-on-chip).
-Each subsystem typically has one AHB-Lite master with multiple slaves.
-
-### 3.7 AHB Default Slave
-
-Required by the spec: A default slave responds to accesses directed at
-unmapped address regions. It returns an ERROR response to prevent bus hangs.
-
-**Without a default slave:**
-   - Access to unmapped address -> no slave drives HREADY -> bus hangs forever
-
-**Default slave implementation:**
-   - Selected when no other slave is selected (decoder generates default HSEL)
-   - Always returns HREADY=1 and HRESP=ERROR
-   - Very simple (2-3 gates)
+**The elastic-buffer knee.** A `READY` that is combinational from `VALID` gives zero added latency but threads a timing path straight through the sink; registering `READY` breaks that path at the cost of a cycle. The canonical resolution is the **skid buffer / register slice**: a 2-entry elastic buffer that registers both directions *and* sustains full throughput (it absorbs exactly the one beat in flight when the downstream deasserts). Deasserting `READY` whenever your output is `VALID` is the naive half-throughput alternative — 50% duty under any stall. The register slice is the atom of every AXI pipeline stage and every CDC bridge (§8).
 
 ---
 
-## 4. AXI4 -- Complete Protocol Specification
+## 3. Why AXI is five independent channels
 
-### 4.1 Five Independent Channels with All Signals
+Now derive AXI's shape from what *high-throughput* communication requires. A memory transaction has two natural phases — **address** (where/how much) and **data** (the payload) — and two independent directions — **read** and **write**. If you carry all of that on one shared, arbitrated wire (the AHB model, §6), then address and data contend for the same cycles, and reads and writes serialize behind one another. Every one of those couplings is a throughput ceiling. AXI removes them by giving each concern its **own VALID/READY channel**:
 
-**Write Address Channel (AW):**
+| Channel | Carries | Direction | Exists because |
+|---|---|---|---|
+| **AW** — write address | address + attributes of a write | master → slave | the *where* of a write can be sent before its data |
+| **W** — write data | the write payload (+ byte strobes) | master → slave | data flows independently of its address |
+| **B** — write response | completion / error status | slave → master | the master learns a write finished without blocking data |
+| **AR** — read address | address + attributes of a read | master → slave | reads issue independently of any write |
+| **R** — read data | the read payload (+ status) | slave → master | responses stream back on their own channel |
 
-| Signal    | Width       | Description                                    |
-|-----------|-------------|------------------------------------------------|
-| AWID      | ID_WIDTH    | Write transaction ID                           |
-| AWADDR    | ADDR_WIDTH  | Write start address                            |
-| AWLEN     | 8           | Burst length - 1 (0=1 beat, 255=256 beats)    |
-| AWSIZE    | 3           | Bytes per beat = 2^AWSIZE                      |
-| AWBURST   | 2           | Burst type: FIXED(00), INCR(01), WRAP(10)      |
-| AWLOCK    | 1           | Lock type: normal(0), exclusive(1)              |
-| AWCACHE   | 4           | Cache attributes (bufferable, cacheable, etc.)  |
-| AWPROT    | 3           | Protection: [2]instr, [1]nonsecure, [0]priv     |
-| AWQOS     | 4           | Quality of Service (0=lowest, 15=highest)       |
-| AWREGION  | 4           | Region identifier                               |
-| AWUSER    | USER_WIDTH  | User-defined signals                            |
-| AWVALID   | 1           | Address valid                                   |
-| AWREADY   | 1           | Slave ready to accept address                   |
+Read this as *five concerns that have independent timing, so they get independent flow control*. The consequences are exactly the throughput wins:
 
-**Write Data Channel (W):**
+- **Read/write are full-duplex.** A read and a write can be in flight in the same cycle; there is no bus-turnaround bubble between a read and a write as on a shared tri-state bus.
+- **Address runs ahead of data.** Because AW/AR handshake independently of W/R, the master can pour addresses into the fabric before any data returns — the precondition for outstanding transactions (§4).
+- **Write completion is decoupled.** The separate B channel lets a master fire a write and pick up its acknowledgment later, rather than stalling the data path waiting for a status code.
 
-| Signal    | Width       | Description                                    |
-|-----------|-------------|------------------------------------------------|
-| WDATA     | DATA_WIDTH  | Write data (32, 64, 128, 256, 512, 1024 bits) |
-| WSTRB     | DATA_W/8    | Write byte strobes (1 bit per byte)            |
-| WLAST     | 1           | Last beat of write burst                       |
-| WUSER     | USER_WIDTH  | User-defined signals                           |
-| WVALID    | 1           | Data valid                                     |
-| WREADY    | 1           | Slave ready to accept data                     |
-
-**Write Response Channel (B):**
-
-| Signal    | Width       | Description                                    |
-|-----------|-------------|------------------------------------------------|
-| BID       | ID_WIDTH    | Write response ID (matches AWID)               |
-| BRESP     | 2           | Response: OKAY(00), EXOKAY(01), SLVERR(10), DECERR(11) |
-| BUSER     | USER_WIDTH  | User-defined                                   |
-| BVALID    | 1           | Response valid                                 |
-| BREADY    | 1           | Master ready to accept response                |
-
-**Read Address Channel (AR):**
-
-| Signal    | Width       | Description                                    |
-|-----------|-------------|------------------------------------------------|
-| ARID      | ID_WIDTH    | Read transaction ID                            |
-| ARADDR    | ADDR_WIDTH  | Read start address                             |
-| ARLEN     | 8           | Burst length - 1                               |
-| ARSIZE    | 3           | Bytes per beat = 2^ARSIZE                      |
-| ARBURST   | 2           | Burst type                                     |
-| ARLOCK    | 1           | Lock type                                      |
-| ARCACHE   | 4           | Cache attributes                               |
-| ARPROT    | 3           | Protection                                     |
-| ARQOS     | 4           | QoS                                            |
-| ARREGION  | 4           | Region identifier                              |
-| ARUSER    | USER_WIDTH  | User-defined                                   |
-| ARVALID   | 1           | Address valid                                  |
-| ARREADY   | 1           | Slave ready                                    |
-
-**Read Data Channel (R):**
-
-| Signal    | Width       | Description                                    |
-|-----------|-------------|------------------------------------------------|
-| RID       | ID_WIDTH    | Read data ID (matches ARID)                    |
-| RDATA     | DATA_WIDTH  | Read data                                      |
-| RRESP     | 2           | Response per beat                              |
-| RLAST     | 1           | Last beat of read burst                        |
-| RUSER     | USER_WIDTH  | User-defined                                   |
-| RVALID    | 1           | Data valid                                     |
-| RREADY    | 1           | Master ready to accept data                    |
-
-### 4.2 Handshake Rules -- Critical for Correct Implementation
-
-**Rule 1: VALID must NOT depend on READY.**
-
-```ascii-graph
-The source must assert VALID when it has data/address to send,
-REGARDLESS of whether READY is asserted. VALID cannot wait for READY.
-
-VALID ────────────────>  (asserted independently)
-                         Transfer happens here
-READY ────────────────>  (may or may not be asserted)
-         ^
-         |
-    Both high on rising clock edge = transfer complete
-```
-
-**Why this rule exists:** If VALID waits for READY, and READY waits for VALID, you get a deadlock. The spec breaks the circular dependency by requiring VALID to go first.
-
-**Rule 2: READY MAY depend on VALID.**
-
-**This is allowed:**
-   - Slave sees VALID=1 -> asserts READY=1 on the same cycle
-   - Transfer completes in 1 cycle (zero-wait-state)
-
-But this creates a combinational path from VALID to READY,
-which can be a timing issue. Many slave implementations
-register READY to break this path (at the cost of 1 cycle latency).
-
-**Rule 3: Once VALID is asserted, it must stay asserted until handshake completes.**
-
-```wavedrom
-{ "signal": [
-  { "name": "VALID", "wave": "011110" },
-  { "name": "READY", "wave": "000110" },
-  { "name": "DATA",  "wave": "x=...x", "data": ["data"] }
-], "head": { "text": "AXI handshake — data stable while VALID high; transfer when VALID & READY both high" } }
-```
-
-`VALID` cannot go low before `READY` goes high. Signal values (`AWADDR`, `WDATA`, …) must remain stable while `VALID` is high and `READY` is low.
-
-### 4.3 VALID/READY Timing Diagrams
-
-**Case 1: VALID before READY (most common)**
-
-```wavedrom
-{ "signal": [
-  { "name": "VALID", "wave": "01110" },
-  { "name": "READY", "wave": "00110" },
-  { "name": "DATA",  "wave": "x=..x", "data": ["data"] }
-], "head": { "text": "VALID asserted first; transfer completes when READY also high (cycle 3)" } }
-```
-
-**Case 2: READY before VALID**
-
-```wavedrom
-{ "signal": [
-  { "name": "READY", "wave": "1111" },
-  { "name": "VALID", "wave": "0110" },
-  { "name": "DATA",  "wave": "x=.x", "data": ["D"] }
-], "head": { "text": "Slave always ready — transfer the moment VALID asserts" } }
-```
-
-**Case 3: Simultaneous**
-
-```wavedrom
-{ "signal": [
-  { "name": "VALID", "wave": "010" },
-  { "name": "READY", "wave": "010" },
-  { "name": "DATA",  "wave": "x=x", "data": ["D"] }
-], "head": { "text": "VALID & READY same cycle — single-cycle transfer" } }
-```
-
-### 4.4 Ordering Model
-
-**Write ordering rules:**
-- Write data must follow write addresses in the SAME ORDER (AXI4: no write interleaving).
-- Write responses (B channel) for transactions with the SAME ID must return in order.
-- Write responses with DIFFERENT IDs may return in any order.
-
-**Read ordering rules:**
-- Read data for transactions with the SAME ID must return in order.
-- Read data with DIFFERENT IDs may return in any order (out-of-order).
-- Each read data beat has an RID to identify which transaction it belongs to.
-
-**Read-Write ordering:**
-- There is NO ordering guarantee between reads and writes (even with the same ID).
-- If ordering is needed, the master must wait for the write response before issuing the read (or vice versa).
-- Memory barriers in software (e.g., DMB (Data Memory Barrier) on ARM) enforce this at the system level.
-
-### 4.5 Burst Address Calculation
-
-**INCR burst:**
-```text
-Address_N          = Start_Address + N * Number_Bytes
-
-where Number_Bytes = 2^AXSIZE
-
-Example : ARADDR   = 0x1000, ARSIZE=3 (8 bytes), ARLEN=3 (4 beats)
-  Beat 0: 0x1000
-  Beat 1: 0x1008
-  Beat 2: 0x1010
-  Beat 3: 0x1018
-```
-
-**WRAP burst:**
-```text
-Step 1      : Calculate number of bytes per beat: Number_Bytes = 2^AXSIZE
-Step 2      : Calculate total burst size: Burst_Length         = AXLEN + 1
-Step 3      : Calculate wrap boundary:
-  Wrap_Boundary                                                = (INT(Start_Address / (Number_Bytes * Burst_Length))) * Number_Bytes * Burst_Length
-
-Step 4      : Calculate addresses:
-  If Address_N < Wrap_Boundary + (Number_Bytes * Burst_Length):
-    Address_N                                                  = Start_Address + N * Number_Bytes
-  Else      :
-    Address_N wraps to Wrap_Boundary
-
-Example     : ARADDR                                           = 0x34, ARSIZE=2 (4 bytes), ARLEN=3 (4 beats, WRAP4)
-  Number_Bytes                                                 = 4
-  Burst_Length                                                 = 4
-  Wrap size                                                    = 4 * 4 = 16 bytes
-  Wrap_Boundary                                                = INT(0x34 / 16) * 16 = INT(3.25) * 16 = 3 * 16 = 0x30
-  Wrap range: 0x30 to 0x3F
-
-  Beat 0    : 0x34  (start)
-  Beat 1    : 0x38  (+4)
-  Beat 2    : 0x3C  (+4)
-  Beat 3    : 0x30  (WRAP! back to boundary)
-```
-
-### 4.6 Narrow Transfers and Byte Strobes (WSTRB)
-
-A narrow transfer occurs when AWSIZE < data bus width.
-```text
-Example: 32-bit write on a 64-bit data bus (AWSIZE = 2, bus=64 bits)
-
-WSTRB for 64-bit bus                              = 8 bits (1 per byte lane)
-
-Beat at address 0x1000 (lower 4 bytes of 64-bit lane):
-  WSTRB                                           = 8'b0000_1111  (bytes 0-3 active, bytes 4-7 inactive)
-  WDATA                                           = {32'hXXXX_XXXX, 32'h12345678}
-
-Beat at address 0x1004 (upper 4 bytes):
-  WSTRB                                           = 8'b1111_0000  (bytes 4-7 active, bytes 0-3 inactive)
-  WDATA                                           = {32'hDEADBEEF, 32'hXXXX_XXXX}
-
-The slave uses WSTRB to determine which bytes to write.
-```
-
-#### AXI Narrow Transfer — Cycle-by-Cycle on 128-bit Bus
-
-```verilog
-Scenario: Master writes 32 bits (AWSIZE=2) to a 128-bit (16-byte) slave bus.
-INCR4 burst starting at address 0x1000.
-
-Byte lanes on 128-bit bus:
-  Lane  0: addr[3:0] = 0x0   Lane  4: addr[3:0] = 0x4
-  Lane  1: addr[3:0] = 0x1   Lane  5: addr[3:0] = 0x5
-  Lane  2: addr[3:0] = 0x2   Lane  6: addr[3:0] = 0x6
-  Lane  3: addr[3:0] = 0x3   Lane  7: addr[3:0] = 0x7
-  Lane  8: addr[3:0] = 0x8   Lane 12: addr[3:0] = 0xC
-  Lane  9: addr[3:0] = 0x9   Lane 13: addr[3:0] = 0xD
-  Lane 10: addr[3:0] = 0xA   Lane 14: addr[3:0] = 0xE
-  Lane 11: addr[3:0] = 0xB   Lane 15: addr[3:0] = 0xF
-
-Beat 0: Address = 0x1000 (narrow, 4 bytes at offset 0x0)
-  Only lanes 0-3 carry valid data:
-  WSTRB = 16'h000F (bits [3:0] = 1)
-  WDATA[31:0] = write_data, WDATA[127:32] = don't care
-
-Beat 1: Address = 0x1004 (4 bytes at offset 0x4)
-  Only lanes 4-7 carry valid data:
-  WSTRB = 16'h00F0 (bits [7:4] = 1)
-  WDATA[63:32] = write_data, rest = don't care
-
-Beat 2: Address = 0x1008 (4 bytes at offset 0x8)
-  Only lanes 8-11 carry valid data:
-  WSTRB = 16'h0F00 (bits [11:8] = 1)
-
-Beat 3: Address = 0x100C (4 bytes at offset 0xC)
-  Only lanes 12-15 carry valid data:
-  WSTRB = 16'hF000 (bits [15:12] = 1)
-
-Total: 4 beats x 4 bytes = 16 bytes transferred across 128-bit bus.
-Without narrow transfers, the master would need 4 separate single-beat transactions.
-With INCR4 narrow burst, the single AW channel transaction covers all 4 beats.
-```
-
-#### AXI Unaligned Transfer — Detailed Example
-
-```verilog
-Scenario: Write 16 bytes starting at unaligned address 0x1003 on a 64-bit (8-byte) bus.
-AWSIZE=3 (8 bytes per beat), ARLEN=2 (3 beats), INCR burst.
-
-The AXI spec requires the master to:
-  1. Calculate each beat address as Start + N * 2^AWSIZE (aligned to bus width)
-  2. Use WSTRB to indicate which byte lanes are actually valid
-
-Beat 0: Calculated address = 0x1000 (bus-aligned from 0x1003 rounded down)
-  Start at 0x1003 = byte lane 3 within this 8-byte aligned beat
-  Valid bytes: lanes 3,4,5,6,7 (5 bytes: 0x1003 through 0x1007)
-  WSTRB = 8'hF8 (bits [7:3] = 1, bits [2:0] = 0 for invalid)
-  WDATA = {32'hXXXX_XXXX, 8'hXX, byte@0x1003, byte@0x1004, byte@0x1005,
-            byte@0x1006, byte@0x1007}
-
-Beat 1: Address = 0x1008 (next 8-byte aligned boundary)
-  All 8 bytes valid: WSTRB = 8'hFF
-  WDATA = bytes 0x1008 through 0x100F
-
-Beat 2: Address = 0x1010
-  Remaining 3 bytes: 0x1010, 0x1011, 0x1012
-  WSTRB = 8'h07 (bits [2:0] = 1, rest = 0)
-  WDATA = {byte@0x1010, byte@0x1011, byte@0x1012, 40'hXXXXXX}
-
-Total data: 5 + 8 + 3 = 16 bytes across 3 beats (correct).
-WSTRB ensures only the intended bytes are written; unused lanes are ignored by the slave.
-```
-
-#### Unaligned Address Handling
-
-When the start address is not aligned to AWSIZE, the first beat may have fewer
-valid bytes than AWSIZE would suggest. The spec requires that the address of each
-beat is calculated as if the burst were fully aligned, and WSTRB indicates which
-bytes are valid:
-
-```text
-Example: INCR4 write burst, AWSIZE=3 (8 bytes/beat), 64-bit bus,
-         unaligned start address 0x1004
-
-The data bus is 64 bits (8 bytes), aligned to 8-byte boundaries.
-Address 0x1004 is NOT aligned to 8 bytes (0x1004 % 8 = 4).
-
-Beat 0: Address = 0x1004 (unaligned start)
-  WSTRB = 8'b1111_1000  (bytes 4-7 are at positions 0-3 of this beat?
-  No -- let's recalculate properly)
-
-  For a 64-bit bus, byte lanes are:
-    Lane 0: address bits [2:0] = 000
-    Lane 1: address bits [2:0] = 001
-    ...
-    Lane 7: address bits [2:0] = 111
-
-  Beat 0 covers address range 0x1000-0x1007 (8 bytes aligned to bus width)
-  But the transfer starts at 0x1004, so only bytes at 0x1004-0x1007 are valid:
-    Lane 0 (0x1000): invalid -> WSTRB[0] = 0
-    Lane 1 (0x1001): invalid -> WSTRB[1] = 0
-    Lane 2 (0x1002): invalid -> WSTRB[2] = 0
-    Lane 3 (0x1003): invalid -> WSTRB[3] = 0
-    Lane 4 (0x1004): VALID   -> WSTRB[4] = 1
-    Lane 5 (0x1005): VALID   -> WSTRB[5] = 1
-    Lane 6 (0x1006): VALID   -> WSTRB[6] = 1
-    Lane 7 (0x1007): VALID   -> WSTRB[7] = 1
-  WSTRB = 8'b1111_0000
-
-Beat 1: Address = 0x100C (next aligned address after 0x1004 + 8)
-  All 8 bytes valid: WSTRB = 8'b1111_1111
-
-Beat 2: Address = 0x1014
-  All 8 bytes valid: WSTRB = 8'b1111_1111
-
-Beat 3: Address = 0x101C
-  All 8 bytes valid: WSTRB = 8'b1111_1111
-```
-
-#### WSTRB for WRAP Bursts with Unaligned Start
-
-```verilog
-WRAP4 burst, AWSIZE=3 (8 bytes), ARADDR=0x1004, 64-bit bus:
-  Wrap boundary = 0x1000 (aligned to 4 * 8 = 32 bytes)
-  Wrap range: 0x1000-0x101F
-
-Beat 0: 0x1004, WSTRB = 8'b1111_0000 (first 4 bytes skipped)
-Beat 1: 0x100C, WSTRB = 8'b1111_1111
-Beat 2: 0x1014, WSTRB = 8'b1111_1111
-Beat 3: 0x101C, WSTRB = 8'b1111_1111
-  Note: bytes 0x1000-0x1003 are NOT transferred (outside start-to-end range)
-```
-
-### 4.7 Complete AXI4 Transaction Walkthrough with Timing Diagram
-
-This section shows a full write burst and read burst on a 64-bit AXI4 bus at 200 MHz,
-with all five channels and exact cycle-by-cycle behavior.
-
-#### Write Burst: INCR4, 64-bit data, start address 0x1000
-
-```verilog
-AW Channel:
-  AWADDR=0x1000, AWLEN=3 (4 beats), AWSIZE=3 (8 B/beat),
-  AWBURST=01 (INCR), AWID=0, AWVALID, AWQOS=0x8
-
-W Channel:
-  WDATA[63:0], WSTRB=8'hFF, WLAST (on last beat)
-
-B Channel:
-  BID=0, BRESP=00 (OKAY)
-
-Timing (clock cycles):
-
-CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
-         -------------------------------------------------------------------
-AWVALID: |  1  |  1  |  1  |     |     |     |     |     |     |     |
-AWREADY: |  0  |  0  |  1  |     |     |     |     |     |     |     |
-AWADDR:  |1000 |1000 |1000 |     |     |     |     |     |     |     |
-         |     |     | ^   |     |     |     |     |     |     |     |
-         |     |     | AW  |     |     |     |     |     |     |     |
-         |     |     |hand |shake|     |     |     |     |     |     |
-
-WVALID:  |     |  1  |  1  |  1  |  1  |  1  |     |     |     |     |
-WREADY:  |     |  0  |  1  |  1  |  0  |  1  |     |     |     |     |
-WDATA:   |     | D0  | D0  | D1  | D2  | D2  |     |     |     |     |
-WSTRB:   |     | FF  | FF  | FF  | FF  | FF  |     |     |     |     |
-WLAST:   |     |  0  |  0  |  0  |  0  |  1  |     |     |     |     |
-         |     |     | ^   | ^   |     | ^   |     |     |     |     |
-         |     |     | W0  | W1  |     | W2  |     |     |     |     |
-         |     |     |     |     | wait|     |     |     |     |     |
-
-Note: W2 wait state (WREADY=0 at cycle 4). WVALID stays high (cannot deassert).
-      W2 transfers at cycle 5 when WREADY goes high.
-
-Wait -- let me redo with proper beat tracking:
-
-CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
-         -------------------------------------------------------------------
-AWVALID: |  1  |  1  |     |     |     |     |     |     |     |     |
-AWREADY: |  0  |  1  |     |     |     |     |     |     |     |     |
-AWADDR:  |1000 |1000 |     |     |     |     |     |     |     |     |
-         |     |  ^AW |hske |     |     |     |     |     |     |     |
-
-WVALID:  |     |  1  |  1  |  1  |  1  |     |     |     |     |     |
-WREADY:  |     |  1  |  1  |  0  |  1  |     |     |     |     |     |
-WDATA:   |     | D0  | D1  | D2  | D2  |     |     |     |     |     |
-WSTRB:   |     | FF  | FF  | FF  | FF  |     |     |     |     |     |
-WLAST:   |     |  0  |  0  |  0  |  1  |     |     |     |     |     |
-         |     | ^W0 | ^W1 | wait| ^W3 |     |     |     |     |     |
-         |     |     |     |(W2) |(last|     |     |     |     |     |
-
-Wait: cycle 4 has WREADY=0. WVALID stays high, data stable.
-      W2 transfers at cycle 5.
-
-Actually -- the slave inserted a wait state for beat 2 (cycle 4).
-  W0 transfers at cycle 2 (both VALID and READY high)
-  W1 transfers at cycle 3
-  W2: WVALID=1 but WREADY=0 at cycle 4 -> wait state
-  W2 transfers at cycle 5 (WREADY goes high)
-  W3 (WLAST=1) would need another cycle:
-
-CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
-         -------------------------------------------------------------------
-AWVALID: |  1  |  1  |     |     |     |     |     |     |     |     |
-AWREADY: |  0  |  1  |     |     |     |     |     |     |     |     |
-
-WVALID:  |     |  1  |  1  |  1  |  1  |  1  |     |     |     |     |
-WREADY:  |     |  1  |  1  |  0  |  1  |  1  |     |     |     |     |
-WDATA:   |     | D0  | D1  | D2  | D2  | D3  |     |     |     |     |
-WSTRB:   |     | FF  | FF  | FF  | FF  | FF  |     |     |     |     |
-WLAST:   |     |  0  |  0  |  0  |  0  |  1  |     |     |     |     |
-         |     | ^W0 | ^W1 |stall| ^W2 | ^W3 |     |     |     |     |
-
-BVALID:  |     |     |     |     |     |     |  1  |  1  |     |     |
-BREADY:  |     |     |     |     |     |     |  0  |  1  |     |     |
-BRESP:   |     |     |     |     |     |     | 00  | 00  |     |     |
-         |     |     |     |     |     |     |wait | ^B  |     |     |
-
-Summary:
-  AW handshake: cycle 2 (1 wait state on AW)
-  W0 handshake: cycle 2
-  W1 handshake: cycle 3
-  W2 handshake: cycle 5 (1 wait state on W at cycle 4)
-  W3 handshake: cycle 6 (last beat)
-  B handshake:  cycle 8 (1 wait state on B at cycle 7)
-  Total: 8 cycles for 4-beat write burst (32 bytes) with 3 wait states
-```
-
-#### Read Burst: INCR4, 64-bit data, start address 0x2000
-
-```verilog
-AR Channel:
-  ARADDR=0x2000, ARLEN=3, ARSIZE=3, ARBURST=01, ARID=1
-
-R Channel:
-  RDATA[63:0], RRESP=00, RLAST (on last beat)
-
-CLK:     |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  | 10  |
-         -------------------------------------------------------------------
-ARVALID: |  1  |     |     |     |     |     |     |     |     |     |
-ARREADY: |  1  |     |     |     |     |     |     |     |     |     |
-ARADDR:  |2000 |     |     |     |     |     |     |     |     |     |
-         | ^AR |     |     |     |     |     |     |     |     |     |
-         |hske |     |     |     |     |     |     |     |     |     |
-
-RVALID:  |     |     |  1  |  1  |  1  |  1  |     |     |     |     |
-RREADY:  |     |     |  1  |  1  |  1  |  1  |     |     |     |     |
-RDATA:   |     |     | D0  | D1  | D2  | D3  |     |     |     |     |
-RRESP:   |     |     | 00  | 00  | 00  | 00  |     |     |     |     |
-RLAST:   |     |     |  0  |  0  |  0  |  1  |     |     |     |     |
-RID:     |     |     |  1  |  1  |  1  |  1  |     |     |     |     |
-         |     |     | ^R0 | ^R1 | ^R2 | ^R3 |     |     |     |     |
-
-Summary:
-  AR handshake: cycle 1 (zero wait states)
-  R0-3: cycles 3-6 (2-cycle read latency, zero wait states on R)
-  Total: 6 cycles for 4-beat read burst (32 bytes), no wait states
-
-  Read latency from AR handshake to first R data: 2 cycles (cycles 1 to 3)
-  This represents the slave's internal access time (2 clock cycles at 200 MHz = 10 ns)
-```
-
-### 4.7 Exclusive Access (Atomic Operations)
-
-Exclusive access implements atomic read-modify-write operations (like CAS (compare-and-swap), LL/SC (load-linked/store-conditional)):
-
-```text
-Step 1: Exclusive Read
-  ARLOCK = 1 (exclusive)
-  Master reads address X -> gets value V
-  Slave/monitor records: "Master M has exclusive access to address X"
-
-Step 2: Exclusive Write
-  AWLOCK = 1 (exclusive)
-  Master writes new value to address X
-  Slave checks: "Does Master M still have exclusive access to X?"
-    YES: Write succeeds, BRESP = EXOKAY (01)
-    NO:  Write fails (another master wrote X), BRESP = OKAY (00)
-         Master must retry the entire read-modify-write sequence
-
-This is the hardware mechanism behind:
-  - ARM LDREX/STREX instructions
-  - Atomic compare-and-swap
-  - Spinlock implementation
-```
-
-### 4.8 AXI QoS (Quality of Service)
-
-```verilog
-AxQOS[3:0]: 4-bit priority signal
-  0x0 = Lowest priority
-  0xF = Highest priority
-
-Used by interconnect arbiters:
-  When two masters compete for the same slave, the one with higher QoS wins.
-
-Typical assignments:
-  Display controller: QoS = 0xC (high, must not be starved -> screen tearing)
-  CPU data:           QoS = 0x8 (medium-high)
-  CPU instruction:    QoS = 0x6 (medium)
-  DMA background:     QoS = 0x2 (low)
-  Debug/trace:        QoS = 0x0 (lowest)
-
-Dynamic QoS: Some masters adjust QoS based on buffer fill level:
-  If display FIFO is nearly empty -> raise QoS to 0xF (urgent!)
-  If display FIFO is full -> lower QoS to 0x4 (not urgent)
-```
-
-#### AXI QoS Arbitration — Worked Example
-
-```verilog
-Scenario: 3 masters competing for a shared DDR controller through an AXI interconnect.
-
-Request queue (arrival order):
-  M0: AWADDR=0x1000, AWQOS=0x4 (DMA, background copy)
-  M1: ARADDR=0x2000, ARQOS=0xC (display controller, scanline read)
-  M2: ARADDR=0x3000, ARQOS=0x8 (CPU data cache miss)
-
-Arbiter selects by QoS (highest first):
-  Slot 1: M1 (QoS=0xC) -> display read dispatched to DDR
-  Slot 2: M2 (QoS=0x8) -> CPU read dispatched
-  Slot 3: M0 (QoS=0x4) -> DMA write dispatched last
-
-Dynamic QoS adjustment (display controller):
-  Display has a 4-scanline FIFO. At 1920x1080 @60Hz:
-    Scanline time = 1/60/1080 = 15.4 us
-    Data per scanline = 1920 * 4 bytes (RGBX) = 7680 bytes
-    Bandwidth needed = 7680 / 15.4 us = 499 MB/s
-
-  FIFO fill levels and QoS adjustment:
-    FIFO > 75% full:  ARQOS = 0x4 (plenty of data, yield to others)
-    FIFO 25-75%:      ARQOS = 0x8 (normal)
-    FIFO < 25%:       ARQOS = 0xF (URGENT! About to underflow!)
-    FIFO = 0 (underflow): screen tears -- must NEVER happen
-
-  This dynamic adjustment gives other masters bandwidth when the display
-  doesn't need it, but guarantees display gets priority when it's critical.
-```
-
----
-
-## 5. AXI Outstanding and Interleaving
-
-### 5.1 Outstanding Transactions -- Timing Diagram
-
-```verilog
-Without outstanding (1 at a time):
-Cycle:  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16
-AR:    [A0]                     [A1]                     [A2]
-R:              [D0][D0][D0][D0]        [D1][D1][D1][D1]
-
-Total: 16 cycles for 3 reads (4-beat bursts, 4-cycle latency)
-
-With 3 outstanding:
-Cycle:  1  2  3  4  5  6  7  8  9  10 11 12
-AR:    [A0][A1][A2]
-R:              [D0][D0][D0][D0][D1][D1][D1][D1][D2][D2][D2][D2]
-
-Total: 12 cycles for 3 reads (latency of first hidden by subsequent addresses)
-```
-
-**Throughput improvement:** Outstanding transactions hide the address-to-data latency. The bus stays busy while waiting for slow memory responses. For DDR (double data rate) with 10-cycle latency:
-
-```verilog
-Without outstanding: Efficiency = burst_length / (burst_length + latency)
-  = 4 / (4 + 10) = 28.6%
-
-With 3 outstanding: Efficiency = 3 * burst_length / (3 * burst_length + latency)
-  = 12 / (12 + 10) = 54.5%
-
-With 8 outstanding: Efficiency = 32 / (32 + 10) = 76.2%
-```
-
-### 5.2 Out-of-Order Completion with Different IDs
-
-```verilog
-Master issues (all 1-beat reads for simplicity):
-  Read A0 (ID=0) -> to fast SRAM (2-cycle latency)
-  Read A1 (ID=1) -> to slow DDR (10-cycle latency)
-  Read A2 (ID=0) -> to fast SRAM (2-cycle latency)
-  Read A3 (ID=2) -> to medium flash (5-cycle latency)
-
-Without OoO (strict in-order):
-Cycle:  1    2    3    12   13   15   20
-AR:    [A0] [A1] [A2]                 [A3]
-R:               [D0]          [D1]        [D2] .... [D3]
-  D1 blocks D2 even though D2 is ready!
-
-With OoO:
-Cycle:  1    2    3    4    5    8    12
-AR:    [A0] [A1] [A2] [A3]
-R:               [D0]      [D2][D3]       [D1]
-  D0 (ID=0) returns first (fast SRAM)
-  D2 (ID=0) returns next (same ID, must be after D0 -- and it is)
-  D3 (ID=2) returns (different ID, can be before D1)
-  D1 (ID=1) returns last (slow DDR)
-
-Ordering maintained:
-  ID=0: D0 before D2 (correct)
-  ID=1: D1 alone (correct)
-  ID=2: D3 alone (correct)
-  Cross-ID: no ordering required
-```
-
-### 5.3 Write Interleaving (AXI3 Only, Removed in AXI4)
-
-```verilog
-AXI3 allowed write data from different transactions to interleave on
-the W channel, identified by WID:
-
-Cycle:  1    2    3    4    5    6
-AW:    [A0,ID=0] [A1,ID=1]
-W:     [D0a,WID=0] [D1a,WID=1] [D0b,WID=0] [D1b,WID=1]
-
-D0a and D0b belong to transaction 0 (interleaved with transaction 1)
-
-AXI4 removed this:
-  - WID signal removed
-  - Write data must follow same order as write addresses
-  - Simplifies slave and interconnect significantly
-  - Rarely used in practice (complex, error-prone)
-```
-
----
-
-## 6. AXI4-Lite
-
-### 6.1 Removed Signals (vs AXI4 Full)
-
-| Removed | Reason |
-|---------|--------|
-| AxID    | No transaction IDs (single outstanding implied) |
-| AxLEN   | Always 0 (single beat, no burst) |
-| AxSIZE  | Always full data width |
-| AxBURST | Always INCR (doesn't matter with 1 beat) |
-| AxLOCK  | No exclusive access |
-| AxCACHE | No cache attributes |
-| AxQOS   | No QoS |
-| AxREGION| No region |
-| WID     | Removed (same as AXI4) |
-| WLAST   | Always 1 (single beat) |
-| RLAST   | Always 1 (single beat) |
-
-### 6.2 Retained Signals
-
-- **AW channel** — AWADDR, AWPROT, AWVALID, AWREADY
-- **W  channel** — WDATA, WSTRB, WVALID, WREADY
-- **B  channel** — BRESP, BVALID, BREADY
-- **AR channel** — ARADDR, ARPROT, ARVALID, ARREADY
-- **R  channel** — RDATA, RRESP, RVALID, RREADY
-
-### 6.3 When to Use AXI4-Lite
-
-- Control/status register interfaces (CSR) for IP (intellectual property) blocks
-- Configuration registers (written once or infrequently)
-- Simple peripherals (UART (Universal Asynchronous Receiver/Transmitter), SPI (Serial Peripheral Interface), GPIO (General-Purpose Input/Output), timer)
-- Any interface where burst and outstanding are not needed
-- Reduces gate count of slave by 50-70% vs full AXI4
-
----
-
-## 7. AXI4-Stream
-
-### 7.1 Complete Signal List
-
-| Signal  | Width      | Direction     | Description                                |
-|---------|------------|---------------|--------------------------------------------|
-| TVALID  | 1          | Source->Sink  | Data valid                                 |
-| TREADY  | 1          | Sink->Source  | Sink ready (backpressure)                  |
-| TDATA   | DATA_WIDTH | Source->Sink  | Data payload                               |
-| TSTRB   | DATA_W/8   | Source->Sink  | Byte qualifier (position vs data)          |
-| TKEEP   | DATA_W/8   | Source->Sink  | Byte qualifier (null vs valid)             |
-| TLAST   | 1          | Source->Sink  | End of packet/frame                        |
-| TID     | ID_WIDTH   | Source->Sink  | Stream identifier                          |
-| TDEST   | DEST_WIDTH | Source->Sink  | Destination routing info                   |
-| TUSER   | USER_WIDTH | Source->Sink  | User-defined sideband                      |
-
-### 7.2 TKEEP and TSTRB Semantics
-
-```verilog
-TKEEP[i] | TSTRB[i] | Meaning
----------|----------|--------
-    1    |    1     | Data byte: valid data at this position
-    1    |    0     | Position byte: valid position, but data may be invalid
-    0    |    0     | Null byte: not part of the transfer (padding)
-    0    |    1     | Reserved (not used)
-```
-
-### 7.3 Packet-Based Transfers
-
-```ascii-graph
-Source ──TDATA/TVALID──> Sink
-
-Packet 1:
-  TDATA: [H1][H2][P1][P2][P3][P4]
-  TLAST:   0   0   0   0   0   1      <- TLAST marks end of packet
-  TKEEP: 0xFF for all beats
-
-Packet 2:
-  TDATA: [H1][H2][P1]
-  TLAST:   0   0   1
-  TKEEP:  FF  FF  0F    <- Last beat only has 4 valid bytes (partial beat)
-```
-
-### 7.4 AXI-Stream FIFO (Simple Implementation)
-
-```verilog
-module axis_fifo #(
-    parameter DATA_W = 64,
-    parameter DEPTH  = 16
-)(
-    input  wire                aclk,
-    input  wire                aresetn,
-
-    // Slave interface (input)
-    input  wire [DATA_W-1:0]   s_tdata,
-    input  wire                s_tvalid,
-    output wire                s_tready,
-    input  wire                s_tlast,
-    input  wire [DATA_W/8-1:0] s_tkeep,
-
-    // Master interface (output)
-    output wire [DATA_W-1:0]   m_tdata,
-    output wire                m_tvalid,
-    input  wire                m_tready,
-    output wire                m_tlast,
-    output wire [DATA_W/8-1:0] m_tkeep
-);
-
-    localparam AW = $clog2(DEPTH);
-    localparam TOTAL_W = DATA_W + 1 + DATA_W/8;  // data + last + keep
-
-    reg [TOTAL_W-1:0] mem [0:DEPTH-1];
-    reg [AW:0] wr_ptr, rd_ptr;
-
-    wire [AW:0] count = wr_ptr - rd_ptr;
-    wire full  = (count == DEPTH);
-    wire empty = (count == 0);
-
-    // Write
-    always @(posedge aclk or negedge aresetn) begin
-        if (!aresetn)
-            wr_ptr <= 0;
-        else if (s_tvalid && s_tready) begin
-            mem[wr_ptr[AW-1:0]] <= {s_tkeep, s_tlast, s_tdata};
-            wr_ptr <= wr_ptr + 1;
-        end
-    end
-
-    // Read
-    always @(posedge aclk or negedge aresetn) begin
-        if (!aresetn)
-            rd_ptr <= 0;
-        else if (m_tvalid && m_tready)
-            rd_ptr <= rd_ptr + 1;
-    end
-
-    wire [TOTAL_W-1:0] rd_word = mem[rd_ptr[AW-1:0]];
-
-    assign s_tready = !full;
-    assign m_tvalid = !empty;
-    assign m_tdata  = rd_word[DATA_W-1:0];
-    assign m_tlast  = rd_word[DATA_W];
-    assign m_tkeep  = rd_word[TOTAL_W-1:DATA_W+1];
-
-endmodule
-```
-
----
-
-## 8. Interconnect and Crossbar Design
-
-### 8.1 Topologies Comparison
-
-| Topology    | Concurrent Paths | Latency   | Area         | Scalability | Use Case          |
-|-------------|-----------------|-----------|--------------|-------------|-------------------|
-| Shared bus  | 1               | 1 arb     | O(M+S)       | Poor        | Legacy, simple    |
-| Crossbar    | min(M,S)        | 1 arb     | O(M*S)       | Moderate    | SoC interconnect  |
-| Ring        | Depends         | O(N/2)    | O(N)         | Good        | Network-on-Chip   |
-| Mesh/NoC    | Many            | O(sqrt(N))| O(N)         | Excellent   | Many-core, GPU    |
-
-### 8.2 Crossbar Arbitration Schemes
-
-**Round-Robin:**
-
-```verilog
-Cycle 1: Grant to Master 0
-Cycle 2: Grant to Master 1
-Cycle 3: Grant to Master 2
-Cycle 4: Grant to Master 0 (wrap)
-
-Fair: every master gets equal share
-No starvation
-Simple implementation (rotating priority register)
-May not be optimal for real-time masters (no priority)
-```
-
-**Fixed Priority:**
-
-```verilog
-Master 0 > Master 1 > Master 2 > Master 3
-
-Master 0 always wins if it has a request.
-Simple, lowest latency for high-priority master.
-Can starve low-priority masters!
-Not suitable unless high-priority traffic is bursty (not sustained).
-```
-
-**Weighted Round-Robin:**
-
-```verilog
-Master 0: weight 4 (gets 4 out of 8 slots)
-Master 1: weight 2 (gets 2 out of 8 slots)
-Master 2: weight 1
-Master 3: weight 1
-
-Schedule: M0, M0, M1, M0, M0, M2, M1, M3, repeat
-
-Combines fairness with differentiated service.
-Used in most commercial interconnects.
-```
-
-### 8.3 Address Decoding
-
-```verilog
-Address map example:
-  0x0000_0000 - 0x0FFF_FFFF: DDR Controller (Slave 0)
-  0x1000_0000 - 0x1000_FFFF: SRAM (Slave 1)
-  0x2000_0000 - 0x2000_0FFF: UART (Slave 2, via APB bridge)
-  0x2000_1000 - 0x2000_1FFF: SPI (Slave 3, via APB bridge)
-  0x3000_0000 - 0x3FFF_FFFF: GPU (Slave 4)
-
-Decoder logic:
-  assign sel_ddr  = (ARADDR[31:28] == 4'h0);
-  assign sel_sram = (ARADDR[31:16] == 16'h1000);
-  assign sel_uart = (ARADDR[31:12] == 20'h20000);
-  assign sel_spi  = (ARADDR[31:12] == 20'h20001);
-  assign sel_gpu  = (ARADDR[31:28] == 4'h3);
-  assign sel_default = ~(sel_ddr | sel_sram | sel_uart | sel_spi | sel_gpu);
-```
-
-### 8.4 ID Width Expansion in Interconnect
-
-```text
-Master 0 issues: AWID = 4'b0101
-Master 1 issues: AWID = 4'b0101
-
-If both reach the same slave, the slave sees two transactions with the
-same ID and must return responses in order -> conflict!
-
-Solution: Interconnect prepends master ID bits:
-  Master 0's transaction: AWID at slave = {2'b00, 4'b0101} = 6'b00_0101
-  Master 1's transaction: AWID at slave = {2'b01, 4'b0101} = 6'b01_0101
-
-Now they have different IDs at the slave, so responses can be independent.
-The interconnect strips the prepended bits when routing responses back.
-
-ID width at slave = ID_WIDTH + log2(num_masters)
-```
-
----
-
-## 9. Bus Bridge Design
-
-### 9.1 AXI-to-APB Bridge -- Detailed Design
-
-**Challenge:** AXI supports burst, outstanding, and is high-frequency. APB is 2-cycle per transfer, single-outstanding, and low-frequency.
-
-```verilog
-module axi2apb_bridge #(
-    parameter ADDR_W = 32,
-    parameter DATA_W = 32
-)(
-    // AXI Slave interface
-    input  wire             ACLK,
-    input  wire             ARESETn,
-    // AW channel
-    input  wire [ADDR_W-1:0] AWADDR,
-    input  wire [7:0]       AWLEN,
-    input  wire             AWVALID,
-    output reg              AWREADY,
-    // W channel
-    input  wire [DATA_W-1:0] WDATA,
-    input  wire [DATA_W/8-1:0] WSTRB,
-    input  wire             WLAST,
-    input  wire             WVALID,
-    output reg              WREADY,
-    // B channel
-    output reg  [1:0]       BRESP,
-    output reg              BVALID,
-    input  wire             BREADY,
-    // AR channel
-    input  wire [ADDR_W-1:0] ARADDR,
-    input  wire [7:0]       ARLEN,
-    input  wire             ARVALID,
-    output reg              ARREADY,
-    // R channel
-    output reg  [DATA_W-1:0] RDATA,
-    output reg  [1:0]       RRESP,
-    output reg              RLAST,
-    output reg              RVALID,
-    input  wire             RREADY,
-
-    // APB Master interface
-    output reg  [ADDR_W-1:0] PADDR,
-    output reg              PSEL,
-    output reg              PENABLE,
-    output reg              PWRITE,
-    output reg  [DATA_W-1:0] PWDATA,
-    output reg  [DATA_W/8-1:0] PSTRB,
-    input  wire [DATA_W-1:0] PRDATA,
-    input  wire             PREADY,
-    input  wire             PSLVERR
-);
-
-    // State machine
-    localparam S_IDLE    = 3'd0;
-    localparam S_WR_SETUP = 3'd1;
-    localparam S_WR_ACCESS= 3'd2;
-    localparam S_WR_RESP = 3'd3;
-    localparam S_RD_SETUP = 3'd4;
-    localparam S_RD_ACCESS= 3'd5;
-    localparam S_RD_RESP = 3'd6;
-
-    reg [2:0] state;
-    reg [ADDR_W-1:0] addr_reg;
-    reg [7:0] beat_cnt;
-    reg [7:0] burst_len;
-    reg is_write;
-    reg [1:0] resp_accum;  // Accumulate worst error across burst
-
-    always @(posedge ACLK or negedge ARESETn) begin
-        if (!ARESETn) begin
-            state     <= S_IDLE;
-            AWREADY   <= 1'b0;
-            WREADY    <= 1'b0;
-            BVALID    <= 1'b0;
-            ARREADY   <= 1'b0;
-            RVALID    <= 1'b0;
-            PSEL      <= 1'b0;
-            PENABLE   <= 1'b0;
-            beat_cnt  <= 0;
-            resp_accum<= 2'b00;
-        end else begin
-            // Default deassertions
-            AWREADY <= 1'b0;
-            WREADY  <= 1'b0;
-            ARREADY <= 1'b0;
-
-            case (state)
-                S_IDLE: begin
-                    if (BVALID && BREADY) BVALID <= 1'b0;
-                    if (RVALID && RREADY) RVALID <= 1'b0;
-
-                    if (AWVALID && WVALID) begin
-                        // Write takes priority (or use arbiter)
-                        AWREADY   <= 1'b1;
-                        WREADY    <= 1'b1;
-                        addr_reg  <= AWADDR;
-                        burst_len <= AWLEN;
-                        beat_cnt  <= 0;
-                        is_write  <= 1'b1;
-                        resp_accum<= 2'b00;
-                        // Setup APB write
-                        PADDR     <= AWADDR;
-                        PWDATA    <= WDATA;
-                        PSTRB     <= WSTRB;
-                        PWRITE    <= 1'b1;
-                        PSEL      <= 1'b1;
-                        PENABLE   <= 1'b0;
-                        state     <= S_WR_SETUP;
-                    end else if (ARVALID) begin
-                        ARREADY   <= 1'b1;
-                        addr_reg  <= ARADDR;
-                        burst_len <= ARLEN;
-                        beat_cnt  <= 0;
-                        is_write  <= 1'b0;
-                        resp_accum<= 2'b00;
-                        // Setup APB read
-                        PADDR     <= ARADDR;
-                        PWRITE    <= 1'b0;
-                        PSEL      <= 1'b1;
-                        PENABLE   <= 1'b0;
-                        state     <= S_RD_SETUP;
-                    end
-                end
-
-                S_WR_SETUP: begin
-                    PENABLE <= 1'b1;
-                    state   <= S_WR_ACCESS;
-                end
-
-                S_WR_ACCESS: begin
-                    if (PREADY) begin
-                        if (PSLVERR) resp_accum <= 2'b10;  // SLVERR
-                        PSEL    <= 1'b0;
-                        PENABLE <= 1'b0;
-                        if (beat_cnt == burst_len) begin
-                            // Last beat done, send write response
-                            BRESP  <= resp_accum | (PSLVERR ? 2'b10 : 2'b00);
-                            BVALID <= 1'b1;
-                            state  <= S_IDLE;
-                        end else begin
-                            // More beats: need next WDATA
-                            beat_cnt <= beat_cnt + 1;
-                            addr_reg <= addr_reg + (DATA_W/8);
-                            WREADY   <= 1'b1;
-                            state    <= S_WR_RESP;
-                        end
-                    end
-                end
-
-                S_WR_RESP: begin
-                    if (WVALID) begin
-                        WREADY  <= 1'b0;
-                        PADDR   <= addr_reg;
-                        PWDATA  <= WDATA;
-                        PSTRB   <= WSTRB;
-                        PWRITE  <= 1'b1;
-                        PSEL    <= 1'b1;
-                        PENABLE <= 1'b0;
-                        state   <= S_WR_SETUP;
-                    end
-                end
-
-                S_RD_SETUP: begin
-                    PENABLE <= 1'b1;
-                    state   <= S_RD_ACCESS;
-                end
-
-                S_RD_ACCESS: begin
-                    if (PREADY) begin
-                        RDATA  <= PRDATA;
-                        RRESP  <= PSLVERR ? 2'b10 : 2'b00;
-                        RLAST  <= (beat_cnt == burst_len);
-                        RVALID <= 1'b1;
-                        PSEL   <= 1'b0;
-                        PENABLE<= 1'b0;
-                        state  <= S_RD_RESP;
-                    end
-                end
-
-                S_RD_RESP: begin
-                    if (RVALID && RREADY) begin
-                        RVALID <= 1'b0;
-                        if (beat_cnt == burst_len) begin
-                            state <= S_IDLE;
-                        end else begin
-                            beat_cnt <= beat_cnt + 1;
-                            addr_reg <= addr_reg + (DATA_W/8);
-                            PADDR    <= addr_reg + (DATA_W/8);
-                            PWRITE   <= 1'b0;
-                            PSEL     <= 1'b1;
-                            PENABLE  <= 1'b0;
-                            state    <= S_RD_SETUP;
-                        end
-                    end
-                end
-            endcase
-        end
-    end
-
-endmodule
-```
-
-### 9.2 AHB-to-AXI Bridge Mapping
-
-| AHB Feature          | AXI Mapping                                 |
-|----------------------|---------------------------------------------|
-| HTRANS NONSEQ       | New AXI burst (AW/AR channel transaction)    |
-| HTRANS SEQ          | Subsequent beats in same AXI burst            |
-| HTRANS BUSY         | No AXI equivalent (bridge absorbs the gap)    |
-| HBURST SINGLE       | AXLEN=0, AXBURST=INCR                         |
-| HBURST INCR4        | AXLEN=3, AXBURST=INCR                         |
-| HBURST WRAP4        | AXLEN=3, AXBURST=WRAP                         |
-| HBURST INCR (undef) | Bridge must determine length (buffer or look-ahead) |
-| HSIZE               | Maps directly to AXSIZE                        |
-| HREADY=0 wait       | AXI backpressure via READY deassertion         |
-| HRESP ERROR         | BRESP/RRESP = SLVERR                           |
-| HRESP RETRY/SPLIT   | No AXI equivalent (bridge retries internally)  |
-
-**Key challenge:** AHB INCR bursts have undefined length. The bridge must either:
-1. Buffer the entire burst, then issue a single AXI transaction (high latency).
-2. Use look-ahead: watch HTRANS for the next beat to determine burst continuation.
-3. Break into multiple AXI single-beat transactions (inefficient but safe).
-
----
-
-## 10. Performance Analysis and Bandwidth Calculations
-
-### 10.1 Theoretical Maximum Bandwidth
-
-```verilog
-Bandwidth = Data_Width * Frequency / 8  (bytes/second)
-
-AXI4, 64-bit data, 200 MHz:
-  BW_max = 64 * 200M / 8 = 1.6 GB/s
-
-AXI4, 128-bit data, 500 MHz:
-  BW_max = 128 * 500M / 8 = 8.0 GB/s
-
-AHB, 32-bit data, 100 MHz:
-  BW_max = 32 * 100M / 8 = 400 MB/s (pipelined)
-  BW_max = 32 * 100M / 8 / 2 = 200 MB/s (without pipelining, APB-style)
-
-APB, 32-bit data, 50 MHz:
-  BW_max = 32 * 50M / 8 / 2 = 100 MB/s (2 cycles per transfer)
-```
-
-### 10.2 Effective Bandwidth with Burst
-
-```verilog
-AXI4, 64-bit data, 200 MHz, burst length 16 (INCR16):
-  Per burst: 16 * 8 = 128 bytes
-  Burst time: 16 cycles (data) + 1 cycle (address) = 17 cycles (ideal)
-  Effective BW = 128 bytes / (17 * 5ns) = 128 / 85ns = 1.506 GB/s
-  Efficiency = 1.506 / 1.6 = 94.1%
-
-AXI4, 64-bit data, 200 MHz, burst length 1 (single):
-  Per transfer: 8 bytes
-  Transfer time: 1 cycle (data) + 1 cycle (address) = 2 cycles
-  Effective BW = 8 bytes / (2 * 5ns) = 800 MB/s
-  Efficiency = 800 / 1600 = 50%  (address overhead kills bandwidth!)
-
-Lesson: Use long bursts for high bandwidth.
-```
-
-### 10.3 Bandwidth with Outstanding Transactions (DDR example)
-
-DDR4 controller: 64-bit data, 200 MHz AXI, 40-cycle read latency
-
-**Without outstanding:**
-   - Read: 40 cycles wait + 16 cycles data = 56 cycles per 128-byte burst
-   - BW = 128 / (56 * 5ns) = 457 MB/s  (28.6% of peak)
-
-**With 4 outstanding reads:**
-   - Read pipeline: issue 4 addresses, then data streams back-to-back
-   - Average: ~16 cycles per burst (after pipeline fill)
-   - BW = 128 / (16 * 5ns) = 1.6 GB/s  (~100% of peak, after initial latency)
-
-Outstanding transactions are ESSENTIAL for DDR performance!
-
-### 10.4 Bandwidth for Dual-Channel DDR4-3200
-
-```verilog
-DDR4-3200: 3200 MT/s (megatransfers per second)
-Bus width: 64 bits = 8 bytes per transfer
-Peak bandwidth per channel: 3200M * 8 = 25.6 GB/s
-Dual channel: 51.2 GB/s peak
-
-AXI interconnect to DDR controller:
-  AXI clock: 800 MHz, 256-bit data path
-  AXI peak: 256/8 * 800M = 25.6 GB/s per AXI port
-
-To saturate dual-channel DDR4-3200, need two AXI ports or
-one wider port (512-bit) or higher frequency.
-```
-
----
-
-## 11. Clock Domain Crossing for AXI Bridges
-
-### 12.1 The Problem
-
-In a typical SoC, a 500 MHz CPU core issues AXI transactions that must reach a 200 MHz peripheral subsystem. The master and slave operate in different clock domains. Directly connecting AXI signals across domains causes metastability: a signal sampled near its transition edge may resolve to an unpredictable voltage level, corrupting data or locking up the handshake state machines.
+The essential state to remember is the *set of five channels and what decouples from what* — not the ~40 signals inside them. Each channel is "just" a VALID/READY stream (§2) with a payload; that uniformity is why the whole protocol pipelines, buffers, and bridges with one mechanism.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A[CPU Core<br>500 MHz AXI Master] --> B[Async AXI Bridge<br>CDC Logic]
-    B --> C[Peripheral Subsystem<br>200 MHz AXI Slave]
-    D[CPU Clock Domain<br>clk_cpu = 500 MHz] --> A
-    E[Peripheral Clock Domain<br>clk_periph = 200 MHz] --> C
-    B -.->|Gray-code pointer crossing| F[Async FIFO]
-    D -.-> F
-    E -.-> F
-```
-
-### 12.2 Async FIFO Between Domains
-
-The standard technique for crossing multi-bit data between clock domains is an asynchronous (async) FIFO. Data is written in the source clock domain and read in the destination clock domain.
-
-**Gray code pointer crossing.** The write pointer increments in the source domain. To pass it safely into the destination domain, the pointer is converted to Gray code (only one bit changes per increment). Each Gray-coded pointer bit is synchronized through a two-flop synchronizer in the opposite domain:
-
-$$
-\text{Gray}(n) = n \oplus \lfloor n / 2 \rfloor
-$$
-
-Because only one bit toggles per increment, a synchronizer capturing the pointer mid-transition will resolve to either the current or previous value -- never an invalid intermediate state.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TB
-    subgraph Write Domain
-        direction TB
-        WCLK[wclk] --> WINC[Write Increment]
-        WDATA[wdata] --> FIFO_MEM[FIFO Memory Array]
-        WPTR_BIN[wptr binary] --> W2G[Binary to Gray]
-    end
-    W2G -->|Gray pointer| SYNC_WR_TO_RD[2-Flop Synchronizer]
-    SYNC_WR_TO_RD --> RPTR_G[rdptr gray, synced]
-    RPTR_G --> G2B_RD[Gray to Binary]
-    G2B_RD --> RD_LOGIC[Full/Empty Logic]
-    subgraph Read Domain
-        direction TB
-        RCLK[rclk] --> RINC[Read Increment]
-        FIFO_MEM --> RDATA[rdata]
-        RPTR_BIN[rptr binary] --> R2G[Binary to Gray]
-    end
-    R2G -->|Gray pointer| SYNC_RD_TO_WR[2-Flop Synchronizer]
-    SYNC_RD_TO_WR --> WPTR_G[wrptr gray, synced]
-    WPTR_G --> G2B_WR[Gray to Binary]
-    G2B_WR --> WR_LOGIC[Full/Empty Logic]
-```
-
-### 12.3 Two-Flop Synchronizer and MTBF
-
-Each bit of the Gray-coded pointer passes through a two-flop synchronizer:
-
-```verilog
-clk_dest domain:
-  flop1: sampled from clk_src domain (may be metastable)
-  flop2: resolves metastability with one additional clock cycle
-
-Output of flop2 is stable with very high probability.
-```
-
-The mean time between failures (MTBF) quantifies reliability:
-
-$$
-\text{MTBF} = \frac{e^{t_s / \tau}}{W \cdot f_{\text{src}} \cdot f_{\text{dest}}}
-$$
-
-Where $t_s$ is the available settling time (one destination clock period minus setup/hold), $\tau$ and $W$ are technology-dependent metastability constants, $f_{\text{src}}$ is the source clock frequency, and $f_{\text{dest}}$ is the destination clock frequency.
-
-For a 500 MHz to 200 MHz crossing in a 7 nm process:
-
-$$
-t_s = 5.0\,\text{ns} - 0.05\,\text{ns} \approx 5.0\,\text{ns}
-$$
-
-$$
-\text{MTBF} \approx \frac{e^{5.0 / 0.02}}{10^{-7} \cdot 5 \times 10^8 \cdot 2 \times 10^8} \approx 10^{25}\,\text{years}
-$$
-
-This is why a two-flop synchronizer is sufficient for most SoC clock crossings. A three-flop synchronizer is only needed when $t_s$ is extremely short (very high-frequency domains with tight setup margins).
-
-### 12.4 AXI Register Slice with Handshake Synchronizers
-
-An AXI register slice inserts a pipeline register stage on each channel. When combined with async handshake synchronizers, it becomes a clock domain crossing bridge:
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TB
-    subgraph Source Domain
-        direction TB
-        S_VALID[src_valid] --> SYNC_V[Sync valid<br/>into dest domain]
-        S_PAYLOAD[src payload] --> REG_P[Register Stage]
-    end
-    SYNC_V -->|dest_valid| AND1{AND}
-    REG_P -->|dest_payload| DEST[Destination]
-    DEST -->|dest_ready| SYNC_R[Sync ready<br/>into src domain]
-    SYNC_R -->|src_ready_sync| AND1
-    AND1 -->|Capture into register| REG_P
-```
-
-For a full AXI channel crossing, the pattern repeats for all five channels (AW, W, B, AR, R). Each channel has its own async FIFO or handshake synchronizer. The key insight: VALID and data cross from source to destination domain; READY crosses from destination back to source domain.
-
-### 12.5 AXI Data Width Conversion: Downsizer Bridge
-
-A 128-bit master connected to a 32-bit slave requires a downsizer bridge. A single 128-bit beat produces four 32-bit beats on the narrow side.
-
-```verilog
-Master side (128-bit):       Slave side (32-bit):
-  AWADDR = 0x1000, AWLEN=3    AWADDR = 0x1000, AWLEN=15
-  WDATA[127:0], WSTRB[15:0]   Beat 0: WDATA[31:0],  WSTRB[3:0],  AWADDR=0x1000
-                                Beat 1: WDATA[63:32], WSTRB[7:4],  AWADDR=0x1004
-                                Beat 2: WDATA[95:64], WSTRB[11:8], AWADDR=0x1008
-                                Beat 3: WDATA[127:96],WSTRB[15:12],AWADDR=0x100C
-
-The bridge:
-  - Accepts one 128-bit write beat
-  - Issues 4 sequential 32-bit write beats on the narrow side
-  - Generates incremented addresses
-  - Narrows WSTRB accordingly
-  - Accumulates errors from all sub-beats into a single BRESP
-  - For reads: collects 4 x 32-bit beats and assembles into 128-bit RDATA
-```
-
-### 12.6 Verilog Module: Async AXI Bridge
-
-```verilog
-module axi_async_bridge #(
-    parameter ADDR_W  = 32,
-    parameter DATA_W  = 64,
-    parameter ID_W    = 4,
-    parameter USER_W  = 8,
-    parameter FIFO_DEPTH = 16       // must be power of 2
-)(
-    // Source clock domain (fast side)
-    input  wire                      s_aclk,
-    input  wire                      s_aresetn,
-
-    // Slave interface (source domain)
-    input  wire [ID_W-1:0]           s_awid,
-    input  wire [ADDR_W-1:0]         s_awaddr,
-    input  wire [7:0]                s_awlen,
-    input  wire [2:0]                s_awsize,
-    input  wire [1:0]                s_awburst,
-    input  wire [3:0]                s_awcache,
-    input  wire [2:0]                s_awprot,
-    input  wire [3:0]                s_awqos,
-    input  wire                      s_awvalid,
-    output wire                      s_awready,
-
-    input  wire [DATA_W-1:0]         s_wdata,
-    input  wire [DATA_W/8-1:0]       s_wstrb,
-    input  wire                      s_wlast,
-    input  wire                      s_wvalid,
-    output wire                      s_wready,
-
-    output wire [ID_W-1:0]           s_bid,
-    output wire [1:0]                s_bresp,
-    output wire                      s_bvalid,
-    input  wire                      s_bready,
-
-    input  wire [ID_W-1:0]           s_arid,
-    input  wire [ADDR_W-1:0]         s_araddr,
-    input  wire [7:0]                s_arlen,
-    input  wire [2:0]                s_arsize,
-    input  wire [1:0]                s_arburst,
-    input  wire                      s_arvalid,
-    output wire                      s_arready,
-
-    output wire [ID_W-1:0]           s_rid,
-    output wire [DATA_W-1:0]         s_rdata,
-    output wire [1:0]                s_rresp,
-    output wire                      s_rlast,
-    output wire                      s_rvalid,
-    input  wire                      s_rready,
-
-    // Destination clock domain (slow side)
-    input  wire                      d_aclk,
-    input  wire                      d_aresetn,
-
-    // Master interface (destination domain)
-    output wire [ID_W-1:0]           m_awid,
-    output wire [ADDR_W-1:0]         m_awaddr,
-    output wire [7:0]                m_awlen,
-    output wire [2:0]                m_awsize,
-    output wire [1:0]                m_awburst,
-    output wire                      m_awvalid,
-    input  wire                      m_awready,
-
-    output wire [DATA_W-1:0]         m_wdata,
-    output wire [DATA_W/8-1:0]       m_wstrb,
-    output wire                      m_wlast,
-    output wire                      m_wvalid,
-    input  wire                      m_wready,
-
-    input  wire [ID_W-1:0]           m_bid,
-    input  wire [1:0]                m_bresp,
-    input  wire                      m_bvalid,
-    output wire                      m_bready,
-
-    output wire [ID_W-1:0]           m_arid,
-    output wire [ADDR_W-1:0]         m_araddr,
-    output wire [7:0]                m_arlen,
-    output wire [2:0]                m_arsize,
-    output wire [1:0]                m_arburst,
-    output wire                      m_arvalid,
-    input  wire                      m_arready,
-
-    input  wire [ID_W-1:0]           m_rid,
-    input  wire [DATA_W-1:0]         m_rdata,
-    input  wire [1:0]                m_rresp,
-    input  wire                      m_rlast,
-    input  wire                      m_rvalid,
-    output wire                      m_rready
-);
-
-    // Each channel instantiates an async FIFO:
-    //   AW channel FIFO: carries {awid, awaddr, awlen, awsize, awburst, awcache, awprot, awqos}
-    //   W  channel FIFO: carries {wdata, wstrb, wlast}
-    //   B  channel FIFO: carries {bid, bresp}         (reverse direction: dest -> src)
-    //   AR channel FIFO: carries {arid, araddr, arlen, arsize, arburst}
-    //   R  channel FIFO: carries {rid, rdata, rresp, rlast}  (reverse direction: dest -> src)
-    //
-    // READY signals derive from FIFO full/empty status.
-    // VALID signals derive from FIFO push/pop logic.
-    // FIFO pointers cross domains via Gray code + two-flop synchronizers.
-
-    // Implementation uses parameterized async FIFO IP or hand-written Gray-code FIFOs.
-    // Each FIFO's write side runs in the source clock domain,
-    // read side runs in the destination clock domain.
-
-endmodule
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart LR
+    M["Master\n(initiator)"]
+    S["Slave\n(target)"]
+    M -- "AW: write address" --> S
+    M -- "W: write data" --> S
+    S -- "B: write response" --> M
+    M -- "AR: read address" --> S
+    S -- "R: read data" --> M
 ```
 
 ---
 
-## 12. TrustZone Security Attributes
+## 4. Outstanding, ID-tagged, out-of-order transactions: hiding latency
 
-### 13.1 AxPROT Signal Encoding
+This is the section that makes AXI *fast*, and it is the same idea as everything in [OoO_Execution](05_OoO_Execution.md) — applied to a wire.
 
-ARM TrustZone partitions the system into a Secure world and a Non-secure world. The partitioning is enforced through the AxPROT signal that accompanies every AXI transaction.
+**Why outstanding transactions exist (Little's law).** A slave (DRAM especially) answers with latency $L$. If the master issues one transaction, waits for its data, then issues the next, the channel sits idle for $L$ every time and throughput collapses. To keep a fabric of bandwidth $B$ busy across latency $L$, you must keep
 
-| AxPROT Bit | Name          | 0 (Deasserted)      | 1 (Asserted)        |
-|------------|---------------|----------------------|---------------------|
-| [0]        | Privilege     | Privileged access    | Unprivileged access |
-| [1]        | Security      | Secure access        | Non-secure access   |
-| [2]        | Data/Instr    | Data access          | Instruction access  |
+$$
+N_{\text{inflight}} \;\ge\; B \times L
+$$
 
-**ARPROT** applies to read address transactions. **AWPROT** applies to write address transactions. These are separate signals, so a single master can issue both secure reads and non-secure writes if its security state changes.
+bytes in flight — the **bandwidth–delay product**. Because AW/AR handshake independently of R/W (§3), the master *can* launch many addresses before any data returns; the number it is allowed to have unfinished is its **outstanding depth**. This is precisely the OoO core keeping many loads in flight against DRAM, and precisely a non-blocking cache's MSHRs. The efficiency of a single stream is
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    MASTER[AXI Master] -->|AxPROT[1]=0<br>Secure Transaction| INTERCONNECT[AXI Interconnect]
-    MASTER2[AXI Master] -->|AxPROT[1]=1<br>Non-secure Transaction| INTERCONNECT
-    INTERCONNECT -->|Filter by AxPROT| TZC[TrustZone Controller]
-    TZC -->|Secure region access<br>granted or denied| DRAM[DRAM]
-    INTERCONNECT -->|Non-secure peripheral<br>access granted| PERIPH[Peripheral Slave]
-    INTERCONNECT -->|Secure-only peripheral<br>access denied if NS| SEC_PERIPH[Secure Peripheral]
-```
+$$
+\eta \;=\; \frac{N \cdot B_{\text{beat}}}{N \cdot B_{\text{beat}} + L}, \qquad
+\text{where } N=\text{outstanding transactions},\ B_{\text{beat}}=\text{bytes moved per transaction},\ L=\text{round-trip latency in beats.}
+$$
 
-### 13.2 Secure vs Non-secure Masters
+To reach efficiency $\eta$ you need $N \gtrsim \tfrac{\eta}{1-\eta}\cdot\tfrac{L}{B_{\text{beat}}}$; hitting 90% costs $N \approx 9L/B_{\text{beat}}$. This is the knee: outstanding depth is bought until $\eta$ flattens, then stopped, because each additional in-flight transaction costs tracking state and buffering (§8).
 
-A secure master (AxPROT[1] = 0) runs code in the Secure world. It can access both secure and non-secure address regions:
+**Why IDs, and why they enable *out-of-order* completion.** Once many transactions are outstanding, a fast slave (SRAM) may be ready before a slow one (DRAM) issued earlier. Forcing strict return order would let the slow response *head-of-line block* the fast one — throwing away the concurrency you just paid for. AXI tags every transaction with an **ID** and defines ordering *per ID*:
 
-```verilog
-Secure master:
-  - Can issue AxPROT[1]=0 (secure) transactions -> access secure peripherals, secure DRAM
-  - Can issue AxPROT[1]=1 (non-secure) transactions -> access non-secure peripherals, normal DRAM
-  - Dynamically switches between secure and non-secure mode based on software execution state
+- **Same ID → ordered.** Transactions sharing an ID are one logical stream and must complete in issue order.
+- **Different ID → reorderable.** The fabric and slaves may return them in any order.
 
-Non-secure master (AxPROT[1] = 1 always):
-  - Can ONLY issue AxPROT[1]=1 transactions
-  - Hardware prevents this master from ever asserting AxPROT[1]=0
-  - Any attempt to access a secure-address region returns SLVERR or DECERR
-```
+That is exactly the renaming/ROB logic of an OoO core: a shared ID is a dependence chain that must stay ordered (like a RAW chain on one architectural register); distinct IDs are *independent* work that may overlap and complete out of order (like independent instructions overlapping cache misses to build MLP). The ID on the response (`RID`/`BID`) is the completion *tag* that tells the master which stream a returning beat belongs to — the bus analog of the common-data-bus tag that wakes the right consumer. A master that wants strict global order simply uses one ID; a master that wants maximum concurrency spreads IDs across independent streams.
 
-### 13.3 TrustZone Controller (TZC)
+**The trade-offs this opens:**
+- *Outstanding depth vs area.* Every in-flight transaction needs a tracking slot and reorder buffering; depth is sized to the BW-delay product of the *slowest* slave it talks to, no deeper.
+- *ID width vs reorder freedom.* More ID bits = more independent streams the fabric can juggle, at more buffering and more complex reorder logic.
+- *Ordering vs simplicity.* AXI3 allowed **write-data interleaving** (data from different write transactions mixed on W, tagged by `WID`); AXI4 **removed** it because it complicated every slave and interconnect for a benefit almost nobody used. The general rule — weaker ordering buys concurrency but costs verification state-space — is why AXI4 keeps read reordering (high value) but drops write interleaving (low value).
 
-The TZC sits between the AXI interconnect and DRAM (dynamic random-access memory). It acts as a security firewall:
-
-TZC configuration (programmed by secure firmware at boot):
-Region 0: 0x0000_0000 - 0x0FFF_FFFF  -> Secure-only
-Region 1: 0x1000_0000 - 0x2FFF_FFFF  -> Non-secure
-Region 2: 0x3000_0000 - 0x3FFF_FFFF  -> Secure-only
-Region 3: 0x4000_0000 - 0x7FFF_FFFF  -> Both secure and non-secure
-
-**Filtering rules:**
-   - Transaction with AxPROT[1]=1 (non-secure) to Region 0 -> DENIED (SLVERR)
-   - Transaction with AxPROT[1]=0 (secure)    to Region 0 -> GRANTED
-   - Transaction with AxPROT[1]=1 (non-secure) to Region 1 -> GRANTED
-   - Transaction with AxPROT[1]=0 (secure)    to Region 1 -> GRANTED
-
-The TZC checks AxPROT[1] against its region table on every transaction. A denied transaction triggers a BRESP/RRESP = SLVERR and raises a security violation interrupt to the secure interrupt controller.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    AXI_TXN[Incoming AXI Transaction<br>with AxPROT] --> CHECK_ADDR{Address matches<br>which TZC region?}
-    CHECK_ADDR -->|Region marked<br>Secure-only| CHECK_NS{AxPROT[1] == ?}
-    CHECK_NS -->|AxPROT[1]=0 Secure| GRANT[Grant Access<br>Pass to DRAM]
-    CHECK_NS -->|AxPROT[1]=1 Non-secure| DENY[Deny Access<br>Return SLVERR<br>Raise IRQ]
-    CHECK_ADDR -->|Region marked<br>Non-secure| GRANT2[Grant Access]
-    CHECK_ADDR -->|No matching region| DENY2[Deny Access<br>Return DECERR]
-```
-
-### 13.4 Use Case: Secure Boot and Rich OS
-
-```verilog
-Boot sequence:
-  1. ROM (secure) executes first -> verifies bootloader signature
-  2. Secure bootloader runs in Secure world (AxPROT[1]=0)
-     - Initializes TZC region map
-     - Locks secure peripherals (crypto engine, OTP key storage)
-     - Sets up secure monitor (ARM TrustZone monitor mode / EL3)
-  3. Rich OS (Linux, Android) boots in Non-secure world (AxPROT[1]=1)
-     - Cannot read secure DRAM regions
-     - Cannot access secure peripherals
-     - Cannot read OTP/encryption keys
-  4. Secure services (payment, DRM, biometric) run in Secure world
-     - Rich OS requests service via SMC (Secure Monitor Call)
-     - Monitor transitions CPU to secure state, changes AxPROT[1]=0
-     - Service completes, monitor returns to non-secure state
-```
-
-### 13.5 Debug Security
-
-Debug access is also partitioned by TrustZone:
-
-```verilog
-Debug authentication levels:
-  Level 0: No debug access (production device, fuses blown)
-  Level 1: Non-secure debug only (can debug rich OS, not secure world)
-  Level 2: Secure debug requires authentication token
-           - External debugger must present a signed certificate
-           - Token is validated by a debug authentication module
-           - Grants access to secure memory and registers
-  Level 3: Full debug access (development only, never shipped)
-
-SP (Security Policy) block controls:
-  - JTAG/SWD access filtered by authentication level
-  - Trace outputs filtered (secure world traces suppressed on production devices)
-  - Breakpoint and watchpoint access restricted by security state
-```
+**The one hard boundary: 4 KB.** A single burst may not cross a 4 KB address boundary. This is load-bearing: 4 KB is the minimum page size, so the rule guarantees a burst stays within one page and therefore within one slave and one protection region — the interconnect can route and permission-check a whole burst from its start address alone, without splitting mid-burst.
 
 ---
 
-## 13. AXI Region Identifiers
+## 5. Bursts: amortizing the address phase
 
-### 14.1 ARREGION / AWREGION (4 bits)
+Every transaction pays for one address handshake. When the data is *sequential* — a cache-line fill, a DMA block, a framebuffer scan — sending a fresh address per beat is pure overhead. A **burst** sends the address once and streams $n$ data beats under it. The payoff is the same amortization curve as any fixed-cost-per-batch system:
 
-Each AXI address channel carries a 4-bit Region identifier (`ARREGION` for reads,
-`AWREGION` for writes). The region field allows a single slave to expose up to 16
-independent address spaces without requiring the master to know the full decoded address.
+$$
+\eta_{\text{burst}} \;=\; \frac{n}{n + c},\qquad
+\text{where } n=\text{beats per burst},\ c=\text{address/overhead beats amortized over the burst.}
+$$
 
-**Key properties:**
+A single-beat access ($n{=}1$) wastes half its cycles on address overhead; a long burst ($n{=}16$) runs at ~94% of the raw wire bandwidth. This is *the* reason DMA and cache traffic use long bursts and register accesses do not — random single-word accesses cannot amortize the address and live near 50% efficiency.
 
-- The region value is a hint from the interconnect to the slave -- it does NOT modify the
-  address. The slave sees both the full address (`AxADDR`) and the region index.
-- A slave that decodes region must use the region index to select its internal address map.
-  A slave that ignores region treats all accesses through a single unified address space.
-- The interconnect is responsible for driving `AxREGION` based on the system address map.
+Three burst *kinds* exist as points on a use-case space (the address arithmetic is not worth memorizing):
+- **INCR** — addresses increment; the workhorse for sequential block moves.
+- **WRAP** — addresses increment then wrap to an aligned boundary; this is **critical-word-first cache-line fill** — start at the word the CPU stalled on so it can resume immediately, then wrap to fill the rest of the line ([Cache_Microarchitecture](07_Cache_Microarchitecture.md)).
+- **FIXED** — the same address every beat; for streaming a peripheral data port (e.g. a FIFO register) rather than a memory region.
 
-### 14.2 Use Case: PCIe Address Space Mapping
-
-PCIe (Peripheral Component Interconnect Express) devices expose multiple independent address spaces (Memory, I/O, Configuration,
-Message) through a single AXI slave interface. Region identifiers map naturally:
-
-```text
-PCIe TLP Type          AXI Region   AXI Address Space
--------------------------------------------------------
-Memory Read/Write      0x0          Memory-mapped BAR space
-I/O Read/Write         0x1          I/O BAR space (legacy)
-Configuration Type 0   0x2          Config space (local bus)
-Configuration Type 1   0x3          Config space (hierarchical)
-Message                0x4          Message TLPs
-Message (Vendor)       0x5          Vendor-specific messages
-
-Without regions:
-  The PCIe bridge must decode address ranges within a contiguous address map
-  to distinguish Memory vs I/O vs Config. This wastes address space and requires
-  the CPU to use different address windows for each space.
-
-With regions:
-  CPU issues a single address (e.g., 0x1000) with AxREGION = 2 for config space.
-  The PCIe bridge uses AxREGION to construct the correct TLP type, and AxADDR
-  as the offset within that TLP type's address space.
-  No address aliasing or window management needed.
-```
-
-### 14.3 Region vs Address Decoding
-
-Scenario: An AXI interconnect with one slave port serving a complex peripheral.
-
-**Without regions:**
-   - Interconnect decodes address:
-   - 0x0000_0000 - 0x0FFF_FFFF -> Slave 0, Data registers
-   - 0x1000_0000 - 0x1FFF_FFFF -> Slave 0, Control registers
-   - 0x2000_0000 - 0x2FFF_FFFF -> Slave 0, DMA descriptors
-   - Slave 0 sees three non-contiguous address windows and must internally
-   - decode which subsystem is targeted based on the full address.
-
-**With regions:**
-   - Interconnect routes ALL three address ranges to Slave 0 with:
-   - AxREGION = 0 for Data registers
-   - AxREGION = 1 for Control registers
-   - AxREGION = 2 for DMA descriptors
-   - Slave 0 uses AxREGION to index a register bank select, no address decoding.
-   - Simpler slave design, lower latency.
-
-### 14.4 Implementation Notes
-
-```text
-1. AxREGION is driven by the interconnect, not the master. Masters typically
-   tie AxREGION = 0 (or leave it unconnected).
-
-2. Slaves that do not support regions must ignore AxREGION and treat all
-   accesses through a single address space. This is backward compatible.
-
-3. The region index can change between beats of a burst. Each beat of an
-   INCR burst may have a different AxREGION if the interconnect remaps
-   the address. However, for most practical designs, AxREGION is constant
-   within a burst.
-
-4. In PCIe root complexes, the region field is typically used to encode
-   the TLP type. The AXI-to-PCIe bridge examines AxREGION to determine
-   whether to generate a Memory Read TLP, a Config Read TLP, etc.
-```
+**Byte strobes as a concept.** Real writes are not always full-width or aligned: a 32-bit store on a 128-bit bus, or an unaligned copy, touches only some byte lanes. Rather than special-case each, AXI carries a **write strobe** (`WSTRB`) — one enable bit per byte lane — and the slave writes only the enabled bytes. Narrow and unaligned transfers then need no separate mechanism: they are just bursts with the appropriate lanes masked. Keep the *idea* (per-byte enables make width/alignment a data-plane detail); the lane-by-lane arithmetic is mechanical.
 
 ---
 
-## 14. AXI5 New Features vs AXI4
+## 6. The three-tier family: AXI vs AHB vs APB as a PPA trade
 
-### 15.1 Summary of AXI5 Additions
+Why does AMBA ship *three* protocols instead of one? Because a single design point cannot be simultaneously high-bandwidth and low-area/low-power, and a real SoC needs both — on different edges. The family is a **bandwidth ↔ complexity ↔ power** trade, and each tier is one point on it:
 
-| Feature | AXI4 | AXI5 | Benefit |
-|---------|------|------|---------|
-| AtomicLoad (ADD, CLR, EOR, SET, MAX, MIN) | Not supported | AxATOP[5:0] | Single-round-trip atomic RMW |
-| AtomicStore (ADD, CLR, EOR, SET) | Not supported | AxATOP[5]=1, no R data | Atomic without return data |
-| AtomicSwap | Not supported | AxATOP = 0x10 | Unconditional swap |
-| AtomicCompare (CAS) | Not supported | AxATOP = 0x14 | Lock-free data structures |
-| Posted writes | Not supported (B channel always required) | Optional (AxATOP can suppress B) | Lower latency for fire-and-forget |
-| Multiple outstanding atomics | N/A | Up to design depth | Higher concurrency |
-| Enhanced exclusive access | AxLOCK only | AxLOCK retained + ATOP | Backward compatible |
-| WSTRB on reads | Not supported | ARSIDEBAND (optional) | Partial read masks |
+| | **APB** (peripheral) | **AHB** (legacy fabric) | **AXI** (high-perf fabric) |
+|---|---|---|---|
+| Channels | 1 (shared) | 1 (shared, addr-pipelined) | 5 (independent) |
+| Pipelining | none | address-phase overlap | full, per channel |
+| Burst / outstanding / OoO | no / no / no | yes / no / no | yes / yes / yes |
+| Cost per transfer | 2 cycles | ~1 cycle (pipelined) | ~1 beat/cycle × wide, deep |
+| Relative slave complexity | ~hundreds of gates | moderate | thousands of gates + reorder |
+| Optimized for | **area / power** | moderate BW, simplicity | **throughput / concurrency** |
+| Use | UART, GPIO, config regs | on-chip SRAM, DMA (legacy) | DDR, GPU, CPU cluster |
 
-#### AXI5 vs AXI4 Atomic Operations — Detailed Comparison
+**APB — optimize for simplicity, because the traffic is trivial.** A UART or a GPIO or a config register is touched rarely and moves a handful of bytes. Spending AXI's five channels, ID tracking, and reorder logic on it is pure waste — of area, of leakage power, and of verification effort. APB is deliberately minimal: one channel, no pipeline, no burst, no outstanding, a two-phase (SETUP → ACCESS) transfer that costs 2 cycles. The quantitative argument is decisive: a chip may have 50–100 leaf peripherals; giving each a full-AXI port would multiply the interconnect's gate count and verification surface by that count, whereas hanging them all off **one** AXI-to-APB bridge (§8) spends AXI complexity *once* and APB's few-hundred-gate cost per leaf. That 50–100× saving on structures that never needed bandwidth is why APB is not going away.
 
-```verilog
-AXI4 mechanism: Exclusive access (ARLOCK/AWLOCK)
-  1. Master issues exclusive read (ARLOCK=1) -> gets value V
-  2. Master computes new value locally (ADD, XOR, etc.)
-  3. Master issues exclusive write (AWLOCK=1) with computed value
-  4. Slave's exclusive monitor checks: was V overwritten by another master?
-     If no: write succeeds, BRESP = EXOKAY
-     If yes: write fails, BRESP = OKAY, master retries from step 1
+**AHB — the middle that history left behind.** AHB is a *single, shared, pipelined* bus: the address phase of transfer $n{+}1$ overlaps the data phase of transfer $n$, so it sustains ~1 transfer/cycle — double APB — without AXI's channel count. But it is fundamentally one-transaction-at-a-time and arbitrated: a slow slave stalls the whole bus (the historical SPLIT/RETRY responses existed precisely to let the arbiter reclaim the bus from a slow slave, an ancestor of AXI's outstanding model). AHB has largely collapsed to **AHB-Lite** — single-master, no arbitration, no SPLIT/RETRY — used for a simple subsystem where one master talks to a few SRAM/ROM slaves and AXI would be overkill. Treat full AHB as legacy; its ideas (address pipelining, bursts) were absorbed and generalized by AXI.
 
-  Round trips per operation: 2 (read + write)
-  Under contention: retries multiply cost (p_retry * 2 additional round trips)
-  Master-side computation: ALL atomic logic is in the master (CPU core)
+**AXI — pay maximum complexity for maximum concurrency.** Everything in §3–§5 is AXI spending gates to remove couplings: five channels (no address/data or read/write contention), outstanding + OoO (latency hiding), long bursts (address amortization). It earns that cost only where bandwidth dominates — the DDR path, the GPU, the CPU cluster — which is why it anchors the SoC backbone (ARM CoreLink NIC-400 class interconnects, AMD/Xilinx Zynq PS↔PL ports, virtually every mobile application processor).
 
-AXI5 mechanism: Atomic operations (AxATOP)
-  1. Master issues single write with AxATOP encoding the operation
-  2. Slave performs read-modify-write internally:
-     old_value = memory[AWADDR]
-     new_value = old_value <op> WDATA  (op = ADD, CLR, EOR, SET, MAX, MIN, SWAP, CAS)
-     memory[AWADDR] = new_value
-  3. For AtomicLoad: R channel returns old_value
-     For AtomicStore: B channel acknowledges (no data return)
-     For AtomicSwap: R channel returns old_value
-     For AtomicCompare: R channel returns old_value, write only if match
+**Two AXI *dialects* fill out the space:**
+- **AXI4-Lite** — AXI's channel structure and handshake, but single-beat, no IDs, no bursts. It is the register-interface point: a control/status block wants AXI's toolchain and VIP but none of its throughput, and dropping burst/outstanding logic cuts slave gate count by ~50–70% versus full AXI.
+- **AXI4-Stream** — pure dataflow: **no address at all**, just `TVALID`/`TREADY`/`TDATA` with a `TLAST` packet marker. For video, DSP, and networking there is no random access — data simply *flows* from producer to consumer — so the entire address apparatus is removed and only the §2 handshake (plus backpressure) remains. It is the clearest proof that the handshake, not the address, is the irreducible core.
 
-  Round trips per operation: 1
-  Under contention: serialization at slave, no retries needed
-  Master-side computation: NONE (all done at slave)
-
-Latency comparison for atomic counter increment:
-  AXI4 exclusive: 2 * t_round_trip + t_CPU_compute + p_retry * 2 * t_round_trip
-  AXI5 ATOP:     1 * t_round_trip
-
-  For DDR with 80 ns round trip, no contention:
-    AXI4: 160 ns + 2 ns (CPU ADD) = 162 ns
-    AXI5: 80 ns (2x faster)
-
-  Under 50% contention (p_retry = 0.5):
-    AXI4: 160 + 0.5*160 = 240 ns average (with retries)
-    AXI5: 80 ns (no retries, slave serializes)
-
-  Under 90% contention (p_retry = 0.9):
-    AXI4: 160 + 0.9*160 = 304 ns average (many retries)
-    AXI5: 80 ns (still 1 round trip, serialized at slave)
-    ATOP is 3-4x faster under high contention.
-```
-
-### 15.2 Posted Writes in Detail
-
-In AXI4, every write transaction must receive a B channel response confirming completion.
-For some writes (e.g., flushing a write buffer to memory, writing to a FIFO), the master
-does not need confirmation -- it just wants the data to arrive eventually.
-
-AXI5 allows a master to indicate that a write does not require a B channel response
-(this is encoded via the ATOP mechanism for AtomicStore operations, where only a B
-response is generated and no R channel data). For non-atomic posted writes, the
-interconnect can optionally suppress B channel responses for designated transactions.
-
-**Impact on ordering:** Posted writes relax the ordering guarantee. The master must not
-assume the write has reached its final destination until a subsequent non-posted
-transaction to the same address completes. This is similar to PCIe posted writes
-(write transactions that do not generate a completion TLP (Transaction Layer Packet)).
-
-### 15.3 AtomicLoad Operations -- Worked Example
-
-```verilog
-Scenario: 4 cores share a counter at address 0x5000. Each core increments it once.
-
-AXI4 (exclusive access):
-  Core 0: LDREX 0x5000 -> reads 0
-           ADD R1, R0, #1 -> computes 1
-           STREX 0x5000, R1 -> BRESP=EXOKAY (success), memory = 1
-  Core 1: LDREX 0x5000 -> reads 1
-           ADD R1, R0, #1 -> computes 2
-           STREX 0x5000, R1 -> BRESP=EXOKAY, memory = 2
-  Total: 4 round trips (2 per core), no contention
-
-AXI5 (AtomicLoad ADD):
-  Core 0: ATOMIC_ADD 0x5000, value=1 -> R data = 0 (old value), memory = 1
-  Core 1: ATOMIC_ADD 0x5000, value=1 -> R data = 1 (old value), memory = 2
-  Total: 2 round trips (1 per core), simpler master logic
-
-Under contention (all 4 cores issue simultaneously):
-  AXI4 exclusive: likely 2-3 retries per core, 8-12 round trips total
-  AXI5 ATOP: serializes at the slave, 4 round trips, no retries
-  ATOP is 2-3x faster under contention
-```
+The system-level picture is separation of concerns made physical: **AXI backbone, AHB-Lite subsystems, APB peripheral leaves behind a bridge** — complexity spent exactly where bandwidth is, and nowhere else.
 
 ---
 
-## 15. AXI Atomic Operations (ATOP)
+## 7. Topology: the fabric as a separate, scalable concern
 
-### 16.1 Overview: ATOP in AXI5
+Because endpoints only see the protocol (§1), the *transport* is free to be whatever scales best. Three points on the topology curve:
 
-AXI5 introduces atomic operations via the AxATOP signal, eliminating the need for the two-phase exclusive access pattern (LDREX + STREX). A single AXI transaction can perform a read-modify-write at the target slave in one round trip.
+| Topology | Concurrent paths | Area | Scales to | Why it stops |
+|---|---|---|---|---|
+| Shared bus | 1 | $O(M{+}S)$ | a handful of masters | one transfer at a time; arbitration + wire capacitance bottleneck |
+| Crossbar | $\min(M,S)$ | $O(M\times S)$ | ~8–16 ports | area/wiring grow **quadratically** in port count |
+| NoC (mesh) | many | $O(N)$ | 100s of nodes | — (see [Network_on_Chip](13_Network_on_Chip.md)) |
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A[AXI5 Master<br>issues AxATOP != 0] --> B{ATOP Type?}
-    B -->|AtomicLoad<br>AxATOP[5]=0| C[Slave reads old value<br>Modifies per operation<br>Returns old data on R channel]
-    B -->|AtomicStore<br>AxATOP[5]=1, AxATOP[0]=0| D[Slave reads value<br>Modifies per operation<br>Writes back new value<br>No data return]
-    B -->|AtomicSwap<br>AxATOP=0x10| E[Slave writes WDATA<br>Returns old value on R channel]
-    B -->|AtomicCompare<br>AxATOP=0x14| F{Stored value ==<br>compare value?}
-    F -->|Yes| G[Write WDATA<br>Return old value]
-    F -->|No| H[No write<br>Return old value]
-    C --> I[Response on R channel]
-    D --> J[Response on B channel only]
-    E --> I
-    G --> I
-    H --> I
-```
+The crossbar's $O(M\times S)$ area is the knee: it gives full concurrency (any master to any free slave in parallel) but its cost explodes past ~8–16 ports, which is exactly where a packet-switched **NoC** — routers, links, $O(N)$ area, many concurrent flows — takes over (ARM CMN-600/700 meshes in Neoverse; §13). The fabric changed; not one endpoint did.
 
-### 16.2 ATOP Operation Categories
+Two invariants any fabric must uphold, both derived from correctness rather than performance:
+- **Address decode + a default slave.** The fabric routes by decoding the address; an access to an *unmapped* region must be steered to a **default slave** that returns an error, because the alternative — no slave responds, `READY`/`VALID` never complete — hangs the master forever. "Someone must always answer, even if only to say no" is a liveness requirement, not an optimization.
+- **ID-width expansion.** Two different masters may innocently use the *same* transaction ID. If both reach one slave, their responses would be indistinguishable and the per-ID ordering rule (§4) would be violated. The interconnect prevents this by **prepending master-identifying bits** to the ID on the way in (widening it to $\text{ID\_WIDTH} + \lceil\log_2 M\rceil$) and stripping them on the way back — so streams from different masters are always distinct IDs at the slave. It is the fabric's version of renaming a namespace to avoid false collisions.
 
-**AtomicLoad operations** (AxATOP[5] = 0): read the target location, apply an operation, write the result back, and return the original value on the R channel.
+Arbitration policy (round-robin for fairness, fixed-priority for latency, weighted for differentiated service) is the last fabric concern; QoS (§9) is how a transaction influences it.
 
-| AxATOP[5:0] | Operation | Description |
-|-------------|-----------|-------------|
-| 0x00        | AtomicLoad ADD | Return old value, write (old + WDATA) |
-| 0x01        | AtomicLoad CLR | Return old value, write (old AND NOT WDATA) |
-| 0x02        | AtomicLoad EOR | Return old value, write (old XOR WDATA) |
-| 0x03        | AtomicLoad SET | Return old value, write (old OR WDATA) |
-| 0x04        | AtomicLoad SMAX | Return old value, write max(old, WDATA) signed |
-| 0x05        | AtomicLoad SMIN | Return old value, write min(old, WDATA) signed |
-| 0x06        | AtomicLoad UMAX | Return old value, write max(old, WDATA) unsigned |
-| 0x07        | AtomicLoad UMIN | Return old value, write min(old, WDATA) unsigned |
+---
 
-**AtomicStore operations** (AxATOP[5] = 1, AxATOP[0] = 0): read, modify, write back, but do NOT return data. Only a B channel response is generated.
+## 8. Bridges: everything reduces to buffering behind a handshake
 
-| AxATOP[5:0] | Operation | Description |
-|-------------|-----------|-------------|
-| 0x10        | AtomicSwap | Write WDATA to location, return old value on R channel |
-| 0x14        | AtomicCompare | CAS: if stored == compare value, write WDATA; return old value |
-| 0x20        | AtomicStore ADD | Write (old + WDATA), no data return |
-| 0x21        | AtomicStore CLR | Write (old AND NOT WDATA), no data return |
-| 0x22        | AtomicStore EOR | Write (old XOR WDATA), no data return |
-| 0x23        | AtomicStore SET | Write (old OR WDATA), no data return |
+A **bridge** sits wherever two interfaces disagree — different protocol, different width, different rate, different clock — and *every* such adapter reduces to the same recipe: **two VALID/READY interfaces with a buffer between them.** The elasticity of §2 is what makes this legal; a FIFO can sit in the middle of a handshake transparently because each side just re-handshakes against the FIFO.
 
-### 16.3 Advantage Over AXI4 Exclusive Access
+- **Protocol bridge (e.g. AXI → APB).** Accept the rich transaction on one side, drive the poorer protocol's sequence on the other, funnel status back. An AXI burst becomes a series of APB single transfers; the bridge is a small state machine plus the backpressure to stall AXI while APB grinds through its 2-cycle transfers. (This is why one bridge can serve a whole APB peripheral island — §6.)
+- **Width bridge (down/up-sizer).** A 128-bit master to a 32-bit slave: one wide beat becomes four narrow beats (adjust address, split `WSTRB`, accumulate the worst error into one response). Width mismatch is just a beat-count transform behind the handshake.
+- **Rate bridge.** Different clock frequencies, *same* clock source: a FIFO decouples a fast producer from a slow consumer; backpressure (§2) does the throttling with zero protocol changes.
 
-**AXI4 exclusive access (LDREX + STREX):**
-   - Phase 1: Exclusive read (ARLOCK=1) -> returns value V     [1 round trip]
-   - Master computes new value locally
-   - Phase 2: Exclusive write (AWLOCK=1) -> BRESP=EXOKAY/OKAY [1 round trip]
-   - Total: 2 round trips, plus master-side computation between them
-   - If EXOKAY fails (another writer intervened), must retry BOTH phases
+**CDC bridges — the interesting case.** When master and slave live in **asynchronous clock domains** (a 500 MHz CPU issuing to a 200 MHz peripheral island), a signal sampled near its transition can go **metastable** and resolve unpredictably, corrupting the handshake state machines. You cannot naively wire VALID/READY across the boundary. The canonical solution is an **asynchronous FIFO**: data is written in the source clock and read in the destination clock, and the *only* thing that crosses each way is a **pointer**, encoded in **Gray code** and passed through a **two-flop synchronizer**. The two ideas are worth carrying:
 
-**AXI5 ATOP (single transaction):**
-   - Phase 1: Write with AxATOP -> slave performs operation internally -> response
-   - Total: 1 round trip
-   - No retry loop needed: the operation is indivisible at the slave
-
-Latency comparison for a counter increment at DDR:
+- *Why Gray code:* consecutive values differ by exactly **one bit**, so a pointer sampled mid-transition resolves to either the old or the new value — never a garbage intermediate. (A binary pointer with several bits changing at once could resolve to any combination.)
+- *Why two flops:* the first flop may catch metastability; the second gives it a full clock period to resolve, driving the failure rate down to negligibility. The mean time between failures is
 
 $$
-T_{\text{exclusive}} = 2 \times t_{\text{round\_trip}} + t_{\text{compute}} + p_{\text{retry}} \times 2 \times t_{\text{round\_trip}}
+\text{MTBF} \;=\; \frac{e^{t_s/\tau}}{W \cdot f_{\text{src}} \cdot f_{\text{dst}}},\qquad
+\text{where } t_s=\text{settling time available},\ \tau,W=\text{technology metastability constants},\ f=\text{domain clocks.}
 $$
 
-$$
-T_{\text{ATOP}} = 1 \times t_{\text{round\_trip}}
-$$
+The exponential in $t_s$ is why one extra flop (one more $t_s$ worth of settling) buys astronomical MTBF and two flops suffice for almost all SoC crossings. This page uses CDC bridges as a *concept*; the full metastability derivation, the MTBF numbers, and the production Gray-code FIFO live in [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §1, §5 and are signed off by the static checks in [Lint_CDC_RDC_Signoff](../03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md). The point here is architectural: because AXI is per-channel VALID/READY, a CDC bridge is *five independent async FIFOs* (one per channel, B and R running the reverse direction) — the protocol's uniformity makes crossing clocks mechanical.
 
-Where $t_{\text{round\_trip}}$ is the memory round-trip latency, $t_{\text{compute}}$ is the master-side compute time between the exclusive read and write, and $p_{\text{retry}}$ is the probability of exclusive access failure under contention. Under high contention (many cores), $p_{\text{retry}}$ approaches 1.0, making ATOP significantly faster.
+---
 
-### 16.4 AtomicCompare (CAS) Detail
+## 9. Policy sidebands: QoS, security, and atomics
 
-The compare-and-swap operation is the foundation of lock-free data structures:
+A shared fabric needs more than data movement — it needs *policy*. AXI carries a few orthogonal sideband fields alongside every transaction; they are hints/attributes, not part of the data plane, and they exist because the fabric is shared.
 
-```verilog
-AtomicCompare (AxATOP = 0x14):
-  W channel carries two values:
-    WDATA = new value to write if comparison succeeds
-    Additional compare value (convention: upper bits of a wider WDATA,
-    or a separate sideband signal depending on implementation)
+**QoS — arbitration priority.** With many masters contending for one slave (the DDR controller especially), the fabric must choose an order, and pure fairness is wrong for real-time traffic. Each transaction carries a 4-bit **QoS** value (0–15); the arbiter favours higher QoS. The load-bearing example is a **display controller**: it must never underrun its line FIFO or the screen tears, so it raises QoS *dynamically* — low when its FIFO is full (yield bandwidth to others), maximum when the FIFO is nearly empty (an under-run is imminent and non-negotiable). This is how a throughput-optimal DRAM schedule ([DDR_Controller](10_DDR_Controller.md) §5) is overridden by hard deadlines: the `AxQOS` tag carries the urgency into the memory scheduler.
 
-  At the slave:
-    old_value = memory[AWADDR]
-    if (old_value == compare_value) then
-        memory[AWADDR] = WDATA    // write new value
-    end if
-    R channel returns old_value   // master checks: if old == compare, CAS succeeded
+**Security — access control at the fabric.** ARM TrustZone partitions the system into Secure and Non-secure worlds, and the partition is enforced *on the bus*: every transaction carries an `AxPROT` bit declaring secure vs non-secure, and a filter (TrustZone Controller) at the fabric/memory boundary checks each access against a region table, returning an error and raising an interrupt on a violation. The concept is the important part — **the interconnect is the natural chokepoint for a hardware security boundary**, because every access to protected memory must pass through it — not the bit encodings.
 
-  This is the hardware primitive for:
-    - Lock-free stacks and queues
-    - RC11 memory model atomic operations
-    - Linux kernel atomic_cmpxchg()
-```
+**Atomics — pushing read-modify-write to the slave.** A lock or counter update is a read-modify-write that must be indivisible. AXI4 does this with **exclusive access** (an exclusive read then a conditional exclusive write, retried on contention) — two round trips plus a retry loop. AXI5 adds **far-atomics (ATOP)**: the master sends the operation (add, swap, compare-and-swap…) in a *single* transaction and the *slave* performs the read-modify-write internally, collapsing two round trips (plus retries) to one. The mechanics and the operation tables are out of scope here; the concept is the same round-trip-reduction logic that motivates outstanding transactions and bursts — *do the work where the data is, and cross the fabric as few times as possible.* Full coherent/atomic protocols are the subject of [ACE_and_CHI](12_ACE_and_CHI.md).
 
-### 16.5 Restrictions and Compatibility
+---
 
-**ATOP is only defined in AXI5 (AMBA 5):**
-   - AXI4-Lite: does NOT support ATOP (no AxATOP signal)
-   - AXI4-Stream: not applicable (no address/data write model)
-   - AXI4: no AxATOP signal; must use exclusive access (AxLOCK) instead
-   - AXI5: full support
+## 10. Numbers to memorize
 
-Interconnect behavior with mixed AXI4/AXI5:
-- If an AXI5 master issues AxATOP != 0 to an AXI4 slave:
-   - The interconnect must either:
-   - (a) Return SLVERR (ATOP not supported at this slave)
-   - (b) Convert ATOP to an internal exclusive access sequence (complex)
+| Quantity | Value | Why / section |
+|---|---|---|
+| AXI independent channels | **5** (AW, W, B, AR, R) | decouple addr/data and read/write (§3) |
+| APB transfer cost | **2 cycles** (SETUP → ACCESS) | minimal, no pipeline (§6) |
+| AHB throughput | **~1 transfer/cycle** (pipelined) | address/data overlap (§6) |
+| AXI raw bandwidth | $\text{width}\times f/8$ | e.g. 64 b @ 200 MHz = **1.6 GB/s** (§10) |
+| Data-bus widths | 32 / 64 / 128 / 256 / 512 / 1024 b | width is the first bandwidth lever (§6) |
+| Burst efficiency | $n/(n{+}c)$ | 1 beat ≈ 50%, 16 beats ≈ **94%** (§5) |
+| Outstanding for ~90% $\eta$ | $N \approx 9L/B_{\text{beat}}$ | BW-delay product, Little's law (§4) |
+| Burst address boundary | **4 KB** (never crossed) | one page → one slave/region (§4) |
+| Max burst length | **256** beats (AXI4), 16 (AXI3) | `AxLEN` is 8 bits in AXI4 (§5) |
+| Read ordering | same ID in-order, **diff ID reorderable** | ID = completion tag / dependence chain (§4) |
+| AXI4-Lite gate saving | **50–70%** vs full AXI | drops burst/outstanding logic (§6) |
+| APB leaf saving | ~50–100 peripherals behind **1** bridge | spend AXI complexity once (§6) |
+| Crossbar area | $O(M\times S)$ | quadratic knee at ~8–16 ports (§7) |
+| Slave-side ID width | $\text{ID\_W} + \lceil\log_2 M\rceil$ | fabric prepends master bits (§7) |
+| CDC crossing | Gray-code pointer + **2-flop** sync | one-bit-change + MTBF (§8) |
+| QoS field | **4 bits**, 0–15 | arbitration priority (§9) |
 
-- Best practice: only issue ATOP to known AXI5-capable slaves.
-   - Use a discovery mechanism or static system configuration to identify
-   - which slaves support ATOP.
+**Bandwidth-hiding intuition (why outstanding is mandatory for DRAM):** at a 40-cycle DDR read latency, a single-outstanding 16-beat burst runs at ~29% of peak; 4 outstanding ≈ 55%; 8 outstanding ≈ 76%; enough to cover the BW-delay product ≈ 100%. The address channel must run far ahead of the data — the bus form of MLP.
 
-- AxATOP signal defaults to 0 for AXI4 masters, ensuring backward
-   - compatibility. An AXI4 master connected to an AXI5 interconnect
-   - simply never asserts AxATOP.
+---
 
-### 16.6 ATOP and Transaction Ordering
+## 11. Worked problems
 
-```text
-An ATOP transaction has special ordering implications:
+**1 — Size the outstanding depth for a DDR port (Little's law).** A 64-bit AXI port at 200 MHz (5 ns/cycle) feeds a DDR controller with ~40-cycle read latency; bursts are 16 beats (16 cycles of data, 128 bytes). One burst in flight yields $\eta = 16/(16+40) = 29\%$. To cover the latency you need the data phase to fill the pipeline: $N \gtrsim L/n = 40/16 \approx 2.5$, so **3 outstanding** reaches ~55% and **~4** approaches full bandwidth. The number tracks the BW-delay product, not the slave's speed — the same reason an OoO ROB is sized to $\text{IPC}\times L_{\text{miss}}/\text{MLP}$ (§4, [OoO_Execution](05_OoO_Execution.md)).
 
-  1. An AtomicLoad/AtomicSwap/AtomicCompare uses BOTH the AW channel
-     (to send address and operation) AND the R channel (to return data).
-     This means it occupies both a write and a read "slot" simultaneously.
+**2 — Burst vs single-beat bandwidth.** On the same 1.6 GB/s port, a stream of *single*-beat transactions pays one address cycle per data cycle: $\eta = 1/(1+1) = 50\%$ → 800 MB/s. Switching to INCR16 amortizes that address over 16 beats: $\eta = 16/17 = 94\%$ → ~1.5 GB/s. **Long bursts, not a faster clock, recover the missing half** — which is why DMA and cache traffic burst and register accesses (which cannot) live at ~50%.
 
-  2. The transaction ID on AW and R must match (same AxID == RID).
+**3 — Pick the tier.** A block is a set of 20 config registers written once at boot. It needs no bandwidth, no burst, no outstanding. Giving it a full-AXI port adds thousands of gates and a large verification surface for zero benefit; **APB (or AXI4-Lite) behind the SoC's one peripheral bridge** is correct — spend the interconnect complexity on the DDR/GPU edges where §4–§5 actually pay, and nowhere else. This is §6's separation-of-concerns argument in one decision.
 
-  3. Ordering rules:
-     - ATOP transactions are ordered with respect to other writes
-       with the same ID (same as normal write ordering).
-     - The R channel response is ordered with respect to other
-       reads with the same ID.
-     - No ordering guarantee between ATOP and normal reads of the
-       same address unless they share the same ID.
+---
 
-  4. A slave must not merge or combine ATOP transactions:
-     each must execute as an indivisible operation.
+## Cross-references
 
-  5. Outstanding depth consideration: an ATOP consumes one outstanding
-     entry on both the write and read sides of the master's tracking logic.
-     Master must account for this when managing outstanding limits.
-```
+- **Down the stack (what this is built from):** [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (metastability, MTBF, the Gray-code async FIFO behind §8's CDC bridges), [Lint_CDC_RDC_Signoff](../03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md) (the static sign-off those crossings must pass), [Memory](09_Memory.md) (the SRAM/FIFOs that implement buffers and outstanding-transaction tracking), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the wire RC and metastability physics that bound shared-bus fanout and synchronizer settling).
+- **Up the stack (what builds on it):** [ACE_and_CHI](12_ACE_and_CHI.md) (coherence and far-atomics extending AXI's channels with snoop), [Network_on_Chip](13_Network_on_Chip.md) (the packet fabric that replaces the §7 crossbar past its area knee), [DDR_Controller](10_DDR_Controller.md) (where the `AxQOS`-tagged, outstanding read stream lands and is scheduled), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (bus bandwidth/latency in the virtual platform), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (an open core whose memory subsystem speaks TileLink/AXI).
+- **Adjacent / conceptual mirror:** [OoO_Execution](05_OoO_Execution.md) (outstanding transactions = MLP; the ID = the ROB/rename tag; the handshake = pipeline backpressure), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) (the critical-word-first line fill that motivates WRAP bursts, §5), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md) (the physical addresses these buses carry, and the 4 KB page behind §4's burst boundary), [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md) (the VIP/RAL that verify a block against this contract).
+
+---
+
+## References
+
+1. Arm, *AMBA AXI and ACE Protocol Specification* (IHI 0022). The five-channel model, handshake rules, ordering by ID, and the 4 KB burst rule of §2–§5.
+2. Arm, *AMBA APB Protocol Specification* (IHI 0024). The two-phase peripheral transfer of §6.
+3. Arm, *AMBA 3 AHB-Lite / AMBA 5 AHB Protocol Specification* (IHI 0033). Address pipelining, bursts, and the legacy arbitration/SPLIT model of §6.
+4. Cummings, C.E., "Simulation and Synthesis Techniques for Asynchronous FIFO Design," *SNUG*, 2002. The Gray-code pointer async FIFO underpinning §8.
+5. Pasricha, S. and Dutt, N., *On-Chip Communication Architectures: System on Chip Interconnect*, Morgan Kaufmann, 2008. Bus/crossbar/NoC topology and the composition arguments of §1, §7.
+6. Hennessy, J.L. and Patterson, D.A., *Computer Architecture: A Quantitative Approach*, 6th ed., 2017. Little's law and the bandwidth–delay reasoning reused in §4.

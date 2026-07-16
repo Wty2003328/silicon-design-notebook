@@ -1,1157 +1,369 @@
-# Adders — From First Principles to Silicon
+# Datapath Arithmetic — The Carry Chain and How to Beat It
 
-## Half Adder — The Foundation
-
-Two single-bit inputs A, B produce Sum and Carry:
-
-```text
-Sum   = A XOR B
-Carry = A AND B
-```
-
-| A | B | Sum | Carry |
-|---|---|-----|-------|
-| 0 | 0 |  0  |   0   |
-| 0 | 1 |  1  |   0   |
-| 1 | 0 |  1  |   0   |
-| 1 | 1 |  0  |   1   |
-
-Gate count: 1 XOR + 1 AND = 2 gates, 6 transistors in CMOS (complementary metal-oxide-semiconductor).
+> **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, series-stack fan-in limits, wire RC), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (MUX, XOR, comparator).
+> **Hands off to:** [Floating_Point](04_Floating_Point.md) (the final CPA + rounding this feeds; SRT/Goldschmidt division), [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — these circuits *are* that menu), [NPU_Accelerators](../01_Architecture_and_PPA/16_NPU_Accelerators.md) (MAC arrays, approximate arithmetic).
 
 ---
 
-## Full Adder — Deriving Generate and Propagate
+## 0. Why this page exists
 
-### Truth Table and Equations
+Addition looks trivial and is not. Adding two $n$-bit numbers is inherently **serial**, because bit $i$'s carry-out depends on bit $i-1$'s carry-out, which depends on bit $i-2$'s, all the way down: the carry ripples through a chain whose length is the word width. That chain is almost always the **longest combinational path in the datapath** — it is what sets the ALU's cycle time, and by extension a large part of the core's clock ([CPU_Architecture](../01_Architecture_and_PPA/03_CPU_Architecture.md) §1, the EX-stage $t_{\text{logic}}$).
 
-| A | B | Cin | Sum | Cout |
-|---|---|-----|-----|------|
-| 0 | 0 |  0  |  0  |  0   |
-| 0 | 0 |  1  |  1  |  0   |
-| 0 | 1 |  0  |  1  |  0   |
-| 0 | 1 |  1  |  0  |  1   |
-| 1 | 0 |  0  |  1  |  0   |
-| 1 | 0 |  1  |  0  |  1   |
-| 1 | 1 |  0  |  0  |  1   |
-| 1 | 1 |  1  |  1  |  1   |
+So every adder architecture in this page is one answer to a single question:
 
-From the truth table, using K-map or algebraic simplification:
-```text
-Sum  = A XOR B XOR Cin
-Cout = A*B + Cin*(A XOR B)
-```
+> **How do I compute the carries, or avoid waiting for them, instead of rippling through the chain?**
 
-### Derivation of G and P
+Read the whole page through that lens and the zoo collapses into a line. Ripple **accepts** the $O(n)$ chain. Carry-skip and carry-select **cut it into blocks** and handle the block-to-block carry cleverly, buying $O(\sqrt n)$. Carry-lookahead **computes** the carries directly from a recurrence, and — once fan-in reality forces it into a hierarchy — becomes $O(\log n)$. Parallel-prefix adders make that hierarchy explicit: they recognise "compute all carries" as a **prefix-sum over an associative $(g,p)$ operator**, which has a provably $O(\log n)$-depth parallel solution, and then trade depth against fan-out against wiring. Carry-save adders **refuse to propagate at all**, keeping the result in redundant form — the trick that makes multipliers and accumulators fast, because a multiplier is just a big multi-operand addition where the carry problem appears twice (once per partial-product row, once in the final sum).
 
-Let's define:
-```text
-G_i = A_i AND B_i        (Generate: carry is produced regardless of incoming carry)
-P_i = A_i XOR B_i        (Propagate: incoming carry passes through)
-```
-
-**Why these definitions?** Look at Cout:
-```text
-Cout = A*B + Cin*(A XOR B)
-     = G_i + P_i * Cin
-```
-
-This is the **fundamental carry recurrence:**
-```text
-C_{i+1} = G_i + P_i * C_i
-```
-
-And Sum:
-```text
-S_i = A_i XOR B_i XOR C_i = P_i XOR C_i
-```
-
-**Physical meaning:**
-- **Generate (G=1):** Both inputs are 1, so a carry is ALWAYS produced (like a battery generating voltage)
-- **Propagate (P=1):** Exactly one input is 1, so a carry from below passes through (like a wire conducting)
-- **Kill (G=0, P=0):** Both inputs are 0, carry is absorbed (blocked)
-
-### Gate Delay Model
-
-For the rest of this document, we use the following gate delay model (representative of a 28nm standard-cell library, in units of "gate delays" ≈ FO4 inverter delay ≈ 15-25 ps):
-
-| Gate     | Delay (gate delays) | Notes                                  |
-|----------|--------------------|-----------------------------------------|
-| INV      | 0.5                | Simplest, fastest gate                  |
-| NAND2    | 1.0                | Reference gate                          |
-| NOR2     | 1.0                | Slightly slower than NAND in CMOS       |
-| AND2     | 1.0                | Often implemented as NAND+INV           |
-| OR2      | 1.0                | Often implemented as NOR+INV            |
-| XOR2     | 2.0                | Typically 2 NAND delays (complex gate)  |
-| AOI21    | 1.0                | AND-OR-Invert: fast compound gate       |
-| OAI21    | 1.0                | OR-AND-Invert: fast compound gate       |
-| MUX2     | 1.0-1.5            | Transmission gate or AOI implementation |
-| FA carry | 1.5                | Using AOI/OAI: G+P*Cin in one compound gate |
-| FA sum   | 2.0                | XOR of P and Cin                        |
+We derive each structure from the carry problem, quantify where it sits in the delay/area/wiring space, and say **why real high-performance datapaths pick what they pick** (radix-4 Booth + a Dadda tree + a sparse prefix CPA, essentially every time). By the end you should be able to place any adder on the $[\,O(\log n)\text{ delay},\,O(n)\text{ area}\,]$ map and explain the constant-factor fight — fan-out and wire congestion — that decides real designs, rather than recite gate schematics.
 
 ---
 
-## Subtractor and Overflow Detection
+## 1. The carry chain is the whole problem
 
-### Subtractor
+Everything starts from one Boolean recurrence. For a single bit, with inputs $a_i,b_i$ and incoming carry $c_i$:
 
-To compute A - B using an adder, exploit 2's complement: A - B = A + (~B) + 1.
+$$
+s_i = a_i \oplus b_i \oplus c_i, \qquad c_{i+1} = a_ib_i + c_i(a_i \oplus b_i)
+$$
 
-**Implementation:** Invert all bits of B (NOT gate per bit) and set the carry-in of the LSB (least significant bit) full adder to 1. The carry-in = 1 completes the 2's complement negation of B.
+Factor the carry into two per-bit signals — this is the single most important move in the whole subject:
 
-```text
-    A[N-1:0]   ~B[N-1:0]
-       |           |
-     [  Adder, Cin = 1  ]
-       |
-     S[N-1:0] = A - B
-```
+$$
+g_i = a_i b_i \quad(\text{generate}), \qquad p_i = a_i \oplus b_i \quad(\text{propagate}) \;\Longrightarrow\; \boxed{\,c_{i+1} = g_i + p_i\,c_i\,}, \quad s_i = p_i \oplus c_i
+$$
 
-A combined adder/subtractor uses a MUX (multiplexer) on each B bit (select B or ~B) and sets Cin accordingly:
+where $g_i$ = "this bit makes a carry no matter what" (both inputs 1), $p_i$ = "this bit passes an incoming carry through" (exactly one input 1), and the third case $\bar g_i\bar p_i$ = "kill" (both 0, carry absorbed). Read the boxed recurrence as physics: a carry is *born* where something generates and *dies* at the first bit that does not propagate.
 
-```verilog
-wire [N-1:0] b_effective = sub ? ~b : b;
-wire         cin_effective = sub;
-assign {cout, sum} = a + b_effective + cin_effective;
-```
+**Where the difficulty lives.** The sum $s_i = p_i \oplus c_i$ is one XOR once you have the carry. All $g_i,p_i$ are computable *in parallel* in one gate level, independent of width. So the entire adder-design problem reduces to one thing: **compute the prefix carries $c_1,\dots,c_n$ fast.** Unrolling the recurrence shows why that is hard —
 
-### Overflow Detection for 2's Complement Signed Addition
+$$
+c_{i+1} = g_i + p_i g_{i-1} + p_i p_{i-1} g_{i-2} + \dots + p_i p_{i-1}\cdots p_0\, c_0
+$$
 
-Overflow occurs when two same-sign numbers produce a different-sign result.
+so $c_{i+1}$ is a function of $2i+2$ inputs. That single fact sets two hard limits that bound the *entire* design space:
 
-**Method 1 — Carry XOR:**
-```text
-Overflow = carry_in[MSB] XOR carry_out[MSB]
-```
+- **Delay $\ge \Omega(\log n)$.** Any circuit of bounded fan-in $f$ computing a function that truly depends on $m$ inputs needs depth $\ge \lceil\log_f m\rceil$. The MSB carry depends on all $2n$ inputs, so no bounded-fan-in adder can be faster than $\log_f(2n)=\Theta(\log n)$ levels. Parallel-prefix adders *achieve* this — the bound is tight.
+- **Area $\ge \Omega(n)$.** The result depends on every input bit, so at least $n$ gates must exist. Ripple *achieves* this.
 
-Why: carry_in[MSB] and carry_out[MSB] (MSB = most significant bit) disagree exactly when the sign of the result is wrong. If both are 1, the MSB propagated a carry correctly. If both are 0, no carry was involved. Only when they differ did a carry appear or disappear in a way that flipped the sign unexpectedly.
+Every adder therefore lives inside the box $[\,\Theta(\log n)\text{ delay},\,\Theta(n)\text{ area}\,]$, and **the whole game is constants** — how much area, fan-out, and wire you spend to get near the delay floor. The taxonomy:
 
-**Method 2 — Sign check:**
-```text
-Overflow = (A[MSB] == B[MSB]) AND (Sum[MSB] != A[MSB])
-```
+| Strategy | Answer to "what about the carry?" | Delay | Area | Where it wins |
+|---|---|---|---|---|
+| Ripple (§2) | accept the chain | $O(n)$ | $O(n)$ | tiny widths, FPGA carry chains, energy |
+| Carry-skip (§3) | bypass all-propagate blocks | $O(\sqrt n)$ | $\sim1.5\times$ | medium width, low wiring |
+| Carry-select (§3) | precompute both carries, MUX late | $O(\sqrt n)$ | $\sim2\times$ | when a late carry-in is the problem |
+| Carry-lookahead (§4) | compute carries from the recurrence | $O(\log n)$ | $O(n\log n)$ | classic hierarchical ALU adder |
+| Parallel-prefix (§5) | prefix-sum over the $(g,p)$ monoid | $O(\log n)$ | $O(n\log n)$ | high-performance 32/64-bit ALUs |
+| Carry-save (§6) | don't propagate — stay redundant | $O(1)$/level | $O(n)$/level | multipliers, MAC accumulators |
 
-This directly encodes the definition: same-sign inputs, different-sign output.
-
-**Worked example (4-bit):** 0111 (7) + 0011 (3) = 1010 (-6 in 4-bit 2's complement).
-- carry_in[MSB] = 1 (carry propagated into bit 3)
-- carry_out[MSB] = 0 (no carry out of bit 3)
-- Overflow = 1 XOR 0 = 1 -- overflow detected correctly.
-
-### Magnitude Comparator
-
-To compare A and B: compute A - B and examine the carry-out of the subtractor.
-
-- If cout = 1: no borrow occurred, so A >= B.
-- If cout = 0: borrow occurred, so A < B.
-- Equality: A == B iff the subtractor result is zero (use a NOR tree on all sum bits).
+**Delay model used below.** Costs are in *gate delays* $\approx$ one FO4 inverter delay $\approx 15\text{–}25$ ps at 28 nm, $\approx 8$ ps at 7 nm ([CMOS_Fundamentals](01_CMOS_Fundamentals.md)). The load-bearing per-gate numbers: XOR $\approx 2$, a compound AOI/OAI carry gate $\approx 1.5$, MUX $\approx 1$. A full-adder contributes $\approx 1.5$ to the carry path and $\approx 2$ to the sum.
 
 ---
 
-## Ripple Carry Adder (RCA)
+## 2. Ripple-carry: accept the chain (the $O(n)$ baseline)
 
-### Architecture
+The honest literal circuit: one full adder per bit, $c_{i+1}$ wired straight into the next stage's $c_i$. It exists because it is **provably area- and energy-minimal** — $n$ full adders, no speculation, no duplicated logic, the least switching per add — and because it is the baseline every faster adder must justify its extra area against. On an FPGA it is often the *right* answer up to 32–48 bits: the fabric has a dedicated hardened carry chain, so `a + b` ripples faster than any LUT-built prefix tree could.
 
-Chain N full adders, Cout[i] → Cin[i+1]:
+Its delay is the chain length, directly from the recurrence:
 
-```ascii-graph
-    A[0] B[0]    A[1] B[1]    A[2] B[2]        A[N-1] B[N-1]
-      |   |        |   |        |   |              |     |
-     [FA_0]-------[FA_1]-------[FA_2]--- ... ---[FA_{N-1}]
-      |   |        |   |        |   |              |     |
-     S[0] Cout→Cin S[1] Cout→Cin S[2]           S[N-1] Cout
-```
+$$
+T_{\text{RCA}}(n) \approx t_{\text{pg}} + (n-1)\,t_{\text{carry}} + t_{\text{sum}} = 4.0 + 1.5\,(n-1)\ \text{gate delays}
+$$
 
-### Exact Delay Analysis
-
-**Critical path:** Carry from bit 0 to bit N-1, then final sum.
-
-```text
-T_RCA = T_PG_generation + (N-1) * T_carry_propagation + T_final_sum
-      = T_XOR + (N-1) * T_AOI + T_XOR
-```
-
-Using our delay model:
-```text
-T_PG = 2.0 (XOR for P_i)
-T_carry = 1.5 (AOI/OAI compound gate for G + P*C)
-T_final_sum = 2.0 (XOR for P XOR C)
-
-T_RCA(N) = 2.0 + (N-1) * 1.5 + 2.0 = 4.0 + 1.5*(N-1)
-```
-
-**Numerical examples:**
-
-| Bit width | Delay (gate delays) | @28nm FO4=20ps | @7nm FO4=8ps |
-|-----------|--------------------|--------------------|------------------|
-| 4-bit     | 8.5                | 170 ps             | 68 ps            |
-| 8-bit     | 14.5               | 290 ps             | 116 ps           |
-| 16-bit    | 26.5               | 530 ps             | 212 ps           |
-| 32-bit    | 50.5               | 1010 ps            | 404 ps           |
-| 64-bit    | 98.5               | 1970 ps            | 788 ps           |
-
-A 32-bit RCA at 28nm takes ~1 ns — far too slow for a 2 GHz design (500 ps clock period). This motivates all the fast adder architectures.
-
-```verilog
-module ripple_carry_adder #(parameter N = 32) (
-    input  [N-1:0] a, b,
-    input           cin,
-    output [N-1:0] sum,
-    output          cout
-);
-    wire [N:0] c;
-    assign c[0] = cin;
-
-    genvar i;
-    generate
-        for (i = 0; i < N; i = i + 1) begin : fa
-            assign sum[i] = a[i] ^ b[i] ^ c[i];
-            assign c[i+1] = (a[i] & b[i]) | (c[i] & (a[i] ^ b[i]));
-        end
-    endgenerate
-
-    assign cout = c[N];
-endmodule
-```
+The $(n-1)\,t_{\text{carry}}$ term is the killer. A 32-bit RCA is $\approx 50$ gate delays $\approx 1$ ns at 28 nm — hopeless for a 2 GHz core with a 500 ps period. **That single number is why the rest of this page exists.** Ripple is $\Theta(n)$ delay for $\Theta(n)$ area: one corner of the design box, optimal on area, worst on delay. Everything below spends area to walk toward the $\Theta(\log n)$ corner.
 
 ---
 
-## Carry Look-Ahead Adder (CLA) — Full Derivation
+## 3. Carry-skip and carry-select: the $\sqrt n$ block methods
 
-### Expanding the Carry Recurrence
+If the chain is too long, cut it into $n/k$ blocks of $k$ bits and attack only the *inter-block* carry. Two dual ideas do this without full lookahead, and both land at $O(\sqrt n)$ — the natural middle of the box.
 
-Starting from `C_{i+1} = G_i + P_i * C_i`:
+**Carry-skip (bypass).** A block *entirely propagates* iff every bit in it propagates: $\text{BP}=p_i p_{i+1}\cdots p_{i+k-1}$. When $\text{BP}=1$ the block's carry-out simply equals its carry-in, so route the carry *around* the block through one AND (for BP) and a 2:1 MUX instead of rippling through $k$ full adders. No duplication — you add roughly one gate per block, so area is only $\sim1.5\times$ ripple. The critical path enters through the first block's ripple, skips the propagating middle blocks, and ripples out the last block.
 
-```text
-C1 = G0 + P0 * C0                                              ... (1)
+**Carry-select (speculate).** Compute each block's sum *twice in parallel* — once assuming carry-in $=0$, once assuming $=1$ — and when the real carry finally arrives, a MUX picks the right precomputed sum. This converts a slow ripple-in into a fast MUX-select, at the cost of **two adders per block** ($\sim2\times$ area). Its refinement is elegant: since later blocks receive their carry later, make them **bigger** (block sizes $k,\,k{+}1,\,k{+}2,\dots$) so each block finishes its dual add exactly as its select MUX is ready — a self-balancing chain.
 
-C2 = G1 + P1 * C1
-   = G1 + P1 * (G0 + P0 * C0)                    [substitute (1)]
-   = G1 + P1*G0 + P1*P0*C0                                     ... (2)
+**Why both are $O(\sqrt n)$.** With uniform blocks the delay is a ripple-in-a-block plus a MUX-per-block chain:
 
-C3 = G2 + P2 * C2
-   = G2 + P2 * (G1 + P1*G0 + P1*P0*C0)           [substitute (2)]
-   = G2 + P2*G1 + P2*P1*G0 + P2*P1*P0*C0                      ... (3)
+$$
+T(k) \approx a\,k + b\,\frac{n}{k} \;\xrightarrow{\;dT/dk=0\;}\; k_{\text{opt}}=\sqrt{\tfrac{b}{a}\,n}=\Theta(\sqrt n),\qquad T_{\min}=\Theta(\sqrt n)
+$$
 
-C4 = G3 + P3 * C3
-   = G3 + P3*G2 + P3*P2*G1 + P3*P2*P1*G0 + P3*P2*P1*P0*C0   ... (4)
-```
+where $k$ = block size, the $a\,k$ term is the intra-block ripple and the $b\,n/k$ term is the chain of $n/k$ skip/select MUXes. Minimising the sum of a term rising in $k$ and one falling in $k$ always lands at $k_{\text{opt}}\propto\sqrt n$ — carry-select tunes to $k_{\text{opt}}\approx\sqrt n$, carry-skip to $\approx\sqrt{n/2}$ (its per-block term is heavier). For $n=32$ both sit around 18–26 gate delays: roughly $2.5\times$ faster than ripple, meaningfully slower than a prefix tree.
 
-**Observation:** Each carry expression is a sum-of-products with increasing fan-in:
-- C1: 2-input AND + 2-input OR
-- C2: 3-input AND + 3-input OR
-- C3: 4-input AND + 4-input OR
-- C4: 5-input AND + 5-input OR
-
-### Fan-In Explosion Problem
-
-For a flat (non-hierarchical) 16-bit CLA:
-```text
-C16 = G15 + P15*G14 + P15*P14*G13 + ... + P15*P14*...*P0*C0
-```
-
-This requires a **17-input AND gate** and a **17-input OR gate**. In CMOS:
-- Maximum practical fan-in is 4-5 (beyond this, the series NMOS/PMOS stack resistance causes excessive delay)
-- A 17-input AND must be decomposed into a tree: log2(17) ≈ 5 levels of 2-input ANDs
-
-This defeats the purpose of O(1) look-ahead!
-
-### Hierarchical CLA Solution
-
-Group 4-bit CLA blocks, then apply look-ahead again at the group level.
-
-**Group Generate and Propagate for bits i:j (e.g., bits 3:0):**
-```text
-G_{3:0} = G3 + P3*G2 + P3*P2*G1 + P3*P2*P1*G0
-P_{3:0} = P3 * P2 * P1 * P0
-```
-
-These are computed within each 4-bit CLA block (fan-in ≤ 4, feasible).
-
-**Second-level CLA computes group carries:**
-```text
-C4  = G_{3:0}  + P_{3:0}  * C0
-C8  = G_{7:4}  + P_{7:4}  * C4
-C12 = G_{11:8} + P_{11:8} * C8
-C16 = G_{15:12}+ P_{15:12}* C12
-```
-
-Or, expanded:
-```text
-C8  = G_{7:4} + P_{7:4}*G_{3:0} + P_{7:4}*P_{3:0}*C0
-C12 = G_{11:8} + P_{11:8}*G_{7:4} + P_{11:8}*P_{7:4}*G_{3:0} + ...
-C16 = ... (still only 5-input fan-in at the second level)
-```
-
-### Delay of Hierarchical CLA
-
-1. **PG generation** (XOR, AND)               = 2.0 gate delays
-2. **4-bit CLA block** (2 gate levels: AND-OR) = 2.0 gate delays
-3. **Second-level CLA** (group carries)        = 2.0 gate delays
-4. **Carry back into blocks + final sum      = 2.0 gate delays**
-
-- **Total for 16-bit** — ~8 gate delays
-
-For 64-bit (3 levels of hierarchy):
-```text
-Total for 64-bit: ~12 gate delays  (vs. 98.5 for RCA)
-```
-
-**Comparison: 32-bit adders**
-
-| Architecture       | Delay (gate delays) | Area (relative) |
-|--------------------|--------------------|--------------------|
-| RCA                | 50.5               | 1.0x               |
-| Hierarchical CLA   | 10                  | ~2.5x              |
-| Carry Select        | ~18                | ~2.0x              |
-| Carry Skip          | ~20                | ~1.5x              |
-| Kogge-Stone prefix  | ~9                 | ~4.0x              |
-| Brent-Kung prefix   | ~14                | ~1.8x              |
-| Han-Carlson prefix  | ~10                | ~2.5x              |
+**The trade-off, and why they persist.** Carry-skip is the cheap option (little area, low wiring, low power) but a run of propagating blocks can chain the skips, so its constant is worse. Carry-select is faster but pays $\sim2\times$ area for the duplicate adders and burns power computing sums it throws away. Neither beats a prefix adder on delay, but both use **far less wiring** than Kogge-Stone (§5) — which is exactly why the *conditional-sum* idea (carry-select's recursive cousin) survives inside modern **sparse-prefix** adders: compute a few real carries with a small tree, then carry-select the bits between them, dodging the wire congestion a full prefix tree would suffer at 64 bits.
 
 ---
 
-## Carry Select Adder (CSLA) — Optimal Block Sizing
+## 4. Carry-lookahead: compute the carries directly
 
-### Basic Structure
+Instead of waiting for the ripple, compute each carry straight from the unrolled recurrence:
 
-Divide N-bit adder into blocks. For each block except the first, compute two sums in parallel (assuming Cin=0 and Cin=1), then select the correct one with a MUX when the actual carry arrives.
+$$
+c_4 = g_3 + p_3g_2 + p_3p_2g_1 + p_3p_2p_1g_0 + p_3p_2p_1p_0c_0
+$$
 
-- **Block 0** — [0:k-1]    Compute normally (RCA)
-- **Block 1** — [k:2k-1]   Two RCAs + MUX
-- **Block 2** — [2k:3k-1]  Two RCAs + MUX
-...
-- **Block m** — [...:N-1]   Two RCAs + MUX
+In principle this is $O(1)$ *logic depth* — a two-level AND-OR — so every carry is available at once. The catch is **fan-in**: $c_{i+1}$ needs a gate with $i{+}2$ inputs, and a flat 16-bit CLA would demand a 17-input AND. In CMOS, series transistor stacks past $\sim4$ tall have ruinous resistance and delay ([CMOS_Fundamentals](01_CMOS_Fundamentals.md)), so a wide flat CLA must be decomposed into a gate *tree* anyway — defeating the "$O(1)$" promise.
 
-### Delay with Uniform Block Size k
+The fix is **hierarchy**, and it is the conceptual bridge to everything after. Compute each 4-bit block's *group* generate/propagate —
 
-```text
-T_CSLA = T_RCA(k) + (N/k - 1) * T_MUX
-```
+$$
+G_{[i:j]} = g_i + p_i g_{i-1} + \dots + p_i\cdots p_{j+1}g_j, \qquad P_{[i:j]} = p_i p_{i-1}\cdots p_j
+$$
 
-Where $T_{RCA}(k) = 4.0 + 1.5(k-1)$ and $T_{MUX} \approx 1.0\text{–}1.5$.
+— which are exactly a block's own $(g,p)$ collapsed into one pair, computable with fan-in $\le 4$. Then run lookahead *again* across the groups ($C_4=G_{[3:0]}+P_{[3:0]}c_0$, etc.), and recurse. Each level is bounded fan-in and covers $\sim4\times$ more bits, so a 64-bit CLA is $\sim3$ levels $\approx 12$ gate delays — versus 98 for ripple.
 
-### Optimal Block Size — Calculus Derivation
-
-For uniform blocks:
-```text
-T(k) = T_RCA(k) + (N/k - 1) * T_MUX
-     = [4.0 + 1.5(k-1)] + (N/k - 1) * 1.5
-     = 2.5 + 1.5k + 1.5N/k - 1.5
-     = 1.0 + 1.5k + 1.5N/k
-```
-
-Minimize by taking derivative and setting to zero:
-```text
-dT/dk = 1.5 - 1.5N/k^2 = 0
-k^2 = N
-k_opt = sqrt(N)
-```
-
-**Optimal delay:**
-```text
-T_opt = 1.0 + 1.5*sqrt(N) + 1.5*sqrt(N) = 1.0 + 3.0*sqrt(N)
-```
-
-This is **O(sqrt(N))**.
-
-**Numerical example for N=32:**
-```ascii-graph
-k_opt = sqrt(32) ≈ 5.66 → use k=6 (or try 5 and 6)
-
-k=5: T = 1.0 + 1.5*5 + 1.5*32/5 = 1.0 + 7.5 + 9.6 = 18.1
-k=6: T = 1.0 + 1.5*6 + 1.5*32/6 = 1.0 + 9.0 + 8.0 = 18.0
-```
-
-### Square-Root Carry Select (Variable Block Sizes)
-
-The insight: block 0 doesn't need to be fast because it has no MUX chain to feed. Later blocks can be larger because by the time their carry arrives, they've had more time to compute.
-
-Use increasing block sizes: k1, k1+1, k1+2, ... such that:
-```text
-T_RCA(k_j) = T_RCA(k_1) + j * T_MUX
-```
-
-This balances the RCA delay of each block with the accumulated MUX chain delay.
-
-```text
-T_RCA(k_j) - T_RCA(k_1) = j * T_MUX
-1.5 * (k_j - k_1) = j * 1.5
-k_j = k_1 + j
-```
-
-So block sizes are: k1, k1+1, k1+2, ..., covering N total bits:
-```text
-sum = k1 + (k1+1) + (k1+2) + ... + (k1+m-1) = m*k1 + m*(m-1)/2 = N
-```
-
-For N=16, k1=2: blocks of 2, 3, 4, 5, 2 spare → total = 2+3+4+5 = 14 (need 2 more in last block = 7), or readjust: 2, 2, 3, 4, 5 = 16.
-
-```text
-T = T_RCA(2) + 4 * T_MUX = 5.5 + 6.0 = 11.5 gate delays
-```
-
-vs. uniform k=4: T = T_RCA(4) + 3*T_MUX = 8.5 + 4.5 = 13.0. The variable sizing saves 1.5 gate delays.
+But look at what the hierarchy actually computes: it repeatedly **combines two adjacent $(G,P)$ groups into one**. That combining rule *is* an associative operator, and computing all the block carries *is* a prefix-sum. Hierarchical CLA is a parallel-prefix adder that has not yet admitted it. §5 makes it explicit and thereby gains the freedom to optimise the tree shape.
 
 ---
 
-## Carry Skip (Bypass) Adder — Derivation
+## 5. Prefix adders: addition is a prefix-sum
 
-### Skip Condition
+This is the theoretical heart of the page. Define the **carry operator** $\circ$ on $(g,p)$ pairs, with the *left* operand the more-significant group:
 
-For a block of k bits (positions i to i+k-1):
-```text
-Block Propagate: BP = P_i * P_{i+1} * ... * P_{i+k-1}
-```
+$$
+(g_L,p_L)\circ(g_R,p_R) = \big(\,g_L + p_L\,g_R,\;\; p_L\,p_R\,\big)
+$$
 
-If BP = 1, **every bit in the block propagates**, so:
-```text
-Cout_block = Cin_block (carry passes through unchanged)
-```
+"The combined group generates if the upper part generates, or it propagates and the lower part generates; it propagates iff both do." This operator is **associative** (a monoid, with identity $(0,1)$ = "generate nothing, propagate everything"). Associativity is the entire ballgame:
 
-If BP = 0, at least one bit generates or kills, and the block carry comes from the RCA within the block.
+$$
+\big[(g_a,p_a)\circ(g_b,p_b)\big]\circ(g_c,p_c) = \big(g_a+p_ag_b+p_ap_bg_c,\;p_ap_bp_c\big) = (g_a,p_a)\circ\big[(g_b,p_b)\circ(g_c,p_c)\big]
+$$
 
-### Implementation
+Both sides collapse to the same triple — you can regroup the product any way you like. (It is **not** commutative: bit order is significant.) Now observe that the carries are exactly the **prefixes** of the per-bit pairs under $\circ$:
 
-```text
-Cout_block = (BP * Cin_block) | (~BP * Cout_RCA)
-           = BP ? Cin_block : Cout_RCA
-```
+$$
+(G_{[i:0]},P_{[i:0]}) = (g_i,p_i)\circ(g_{i-1},p_{i-1})\circ\cdots\circ(g_0,p_0), \qquad c_{i+1}=G_{[i:0]}\;(\text{when }c_0=0)
+$$
 
-This is a 2:1 MUX (or AND-OR gate). The skip path bypasses the entire RCA delay.
+"Compute all the carries" **is** "compute all prefixes of an associative sequence" — the classic parallel-prefix (scan) problem. And a prefix-sum over an associative operator has a **$\lceil\log_2 n\rceil$-depth** parallel solution. That is *why* prefix adders hit the $\Theta(\log n)$ delay floor of §1: the carry problem was a scan in disguise, and scans parallelise logarithmically.
 
-### Delay Analysis
+### 5.1 The prefix family is one trade-off surface
 
-Critical path goes through:
-1. First block: full RCA delay (no skip possible — no prior carry to skip)
-2. Middle blocks: skip path (AND gate for BP + MUX)
-3. Last block: full RCA delay (must compute final sum, can't skip)
+All prefix adders compute the same prefixes; they differ only in the **shape of the prefix graph** — which cells combine which spans at which level. Harris's taxonomy captures the entire family with a beautiful conservation law. Characterise a network by three costs beyond the minimum:
 
-```text
-T_skip = T_RCA(k) + (N/k - 2) * T_skip_MUX + T_RCA(k)
-       = 2 * T_RCA(k) + (N/k - 2) * T_skip
-```
+- **$l$** = extra logic levels beyond the $\log_2 n$ floor,
+- **$f$** = fan-out (how many cells a result must drive, $\propto$ electrical load),
+- **$t$** = wiring tracks (how many long lateral wires run in parallel, $\propto$ congestion).
 
-Using our model:
-```text
-T_skip = 2 * [4.0 + 1.5(k-1)] + (N/k - 2) * 1.5
-       = 2 * (2.5 + 1.5k) + 1.5N/k - 3.0
-       = 5.0 + 3.0k + 1.5N/k - 3.0
-       = 2.0 + 3.0k + 1.5N/k
-```
+Then for the standard radix-2 networks,
 
-### Optimal Block Size — sqrt(N) Proof
+$$
+\boxed{\,l + f + t = \log_2 n - 1\,}
+$$
 
-```text
-dT/dk = 3.0 - 1.5N/k^2 = 0
-k^2 = N/2
-k_opt = sqrt(N/2)
-```
+You **cannot minimise depth, fan-out, and wiring at once** — spend on one, pay on another. The named adders are the corners and edges of this simplex:
 
-**Optimal delay:**
-```text
-T_opt = 2.0 + 3.0*sqrt(N/2) + 1.5*sqrt(2N)
-      = 2.0 + 3.0*sqrt(N/2) + 3.0*sqrt(N/2)     [since 1.5*sqrt(2N) = 3.0*sqrt(N/2)]
-      = 2.0 + 6.0*sqrt(N/2) = 2.0 + 3.0*sqrt(2N)
-```
+| Network | Depth (levels) | Cells (size) | Max fan-out | Wiring | $(l,f,t)$ corner |
+|---|---|---|---|---|---|
+| **Kogge-Stone** | $\log_2 n$ | $n\log_2 n - n + 1$ | 2 | **highest** (many long wires) | min depth & fan-out, max wire |
+| **Sklansky** | $\log_2 n$ | $\tfrac{n}{2}\log_2 n$ | **$n/2$** | low | min depth & cells, max fan-out |
+| **Brent-Kung** | $2\log_2 n - 1$ | $2n - 2 - \log_2 n$ | 2 | **lowest** | min cells, fan-out & wire; **max depth** |
+| **Han-Carlson** | $\log_2 n + 1$ | $\approx\tfrac{n}{2}\log_2 n$ | 2 | medium ($\approx$ half of K-S) | +1 level buys half the wiring |
 
-This is O(sqrt(N)), same asymptotic class as carry select, but with less area (no dual computation).
+Read the physics off the table:
 
-**For N=32:** k_opt = sqrt(16) = 4
-```text
-T = 2.0 + 3.0*4 + 1.5*32/4 = 2.0 + 12.0 + 12.0 = 26.0 gate delays
-```
+- **Kogge-Stone** replicates cells to keep fan-out at 2 and hit the exact $\log_2 n$ depth — the fastest *logically*. It pays with $\Theta(n\log n)$ cells and, worse, a dense mat of long wires (the last level connects bit $i$ to bit $i-n/2$). In modern nodes those wires' RC and routing congestion — not the gates — set the real delay, which is why **pure Kogge-Stone is rarely used past 32 bits**.
+- **Brent-Kung** uses a forward reduction tree plus an inverse tree, halving the cell count to $\Theta(n)$ with minimal fan-out and wiring — but at $\approx2\times$ the depth. It is the pick when area/power dominate and the clock is relaxed.
+- **Sklansky** hits $\log_2 n$ depth with few cells by *broadcasting*: one cell drives up to $n/2$ others. That fan-out must be buffered, and the buffers eat much of the depth advantage — so its ideal $\log_2 n$ is optimistic in silicon.
+- **Han-Carlson** runs a Kogge-Stone tree on the *even* bits only and cleans up the odd bits with one extra level: $\log_2 n + 1$ depth at roughly **half** Kogge-Stone's wiring. This near-optimal balance is why Han-Carlson (and Ladner-Fischer, and Knowles points between K-S and Sklansky) are the ones that actually ship in high-performance 32/64-bit ALUs. The **Knowles $[\dots]$ parameterisation** is the continuous knob: it sets the fan-out cap per level, sweeping from Kogge-Stone $[1,1,\dots]$ to Sklansky $[n/2,\dots]$ along the $l+f+t$ surface.
 
-### Variable Block Sizing (Advanced)
+### 5.2 What real 64-bit ALU adders actually do
 
-Use smaller blocks at the beginning and end (where the critical path starts/ends) and larger blocks in the middle (where the skip path dominates). The optimal sizing has blocks growing as 1, 2, 3, ..., 3, 2, 1 (pyramid shape).
+The $O(\log n)$-delay / $O(n\log n)$-area / wiring-congestion knee bites hardest at 64 bits, so production adders rarely use a textbook network verbatim. Two tricks dominate:
 
-The optimal variable-block skip adder achieves delay proportional to O(sqrt(N)) with a smaller constant factor.
+- **Sparse prefix + conditional-sum.** Build the prefix tree only to every 2nd or 4th bit (a "sparse" or "radix-higher" tree), cutting the long wires and cell count by that factor, then fill in the intermediate bits with tiny carry-selects (§3). This trades one logic level for a large wiring/area win — the standard high-performance 64-bit ALU adder.
+- **Ling recoding.** Reformulate the recurrence around a *pseudo-carry* $H_i = c_i + c_{i+1}$ that removes one AND from the critical first level, shaving a full gate level off any prefix tree at essentially no cost. Used in IBM POWER, Itanium, and many x86 ALUs.
+
+**Concretely:** ALU adders are latency-critical (one cycle, feeding the §4.3 wakeup-select loop in [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md)) → sparse Han-Carlson/Kogge-Stone, often Ling-recoded. Address adders (AGU) similarly. Wide but timing-relaxed adders (a divider's residual, an FP mantissa path) → Brent-Kung or even carry-select, to save area and power.
 
 ---
 
-## Prefix Adders — Formal Treatment
+## 6. Carry-save: stop propagating (the multi-operand trick)
 
-### The Prefix Operator
+The deepest idea in datapath arithmetic is that when you must add **many** numbers, you should not propagate a carry for each addition — you should defer *all* propagation to the very end. A **carry-save adder (CSA)** is a full adder used sideways: it takes three bits *in the same column* and emits a sum bit and a carry bit, but the carry is **not** passed along the word — it is kept and re-injected, shifted one column left, at the *next reduction level*.
 
-Define the carry operator "o" on (G, P) pairs:
-```text
-(G_L, P_L) o (G_R, P_R) = (G_L + P_L * G_R, P_L * P_R)
-```
+$$
+\text{3:2 CSA: } (x,y,z)\ \mapsto\ \big(s = x\oplus y\oplus z,\; c = xy + z(x\oplus y)\big),\qquad \text{value } = s + 2c
+$$
 
-**Physical meaning:** "o" combines two adjacent groups. The combined group generates a carry if the left group generates, OR the left propagates AND the right generates. The combined group propagates if BOTH propagate.
+Because no carry travels along the word, a CSA has **$O(1)$ delay independent of width**. It converts three operands into two (a redundant sum/carry pair) every level. So to crush $n$ operands down to two:
 
-### Proof of Associativity
+$$
+\text{levels} \approx \lceil \log_{1.5}(n/2)\rceil,\qquad \text{since each 3:2 level shrinks the count by the ratio }3{:}2
+$$
 
-We must show: `[(G_a, P_a) o (G_b, P_b)] o (G_c, P_c) = (G_a, P_a) o [(G_b, P_b) o (G_c, P_c)]`
+That $\log_{1.5}$ is the multiplier's whole speed story (§7.2). The practical building block is the **4:2 compressor** (two full adders arranged so its carry-out feeds the *same* column's next level, not the next column — critical path $\approx3$ XOR delays, and it lays out regularly). You pay **once** at the end: a single carry-propagate adder (§5) resolves the final redundant pair into a normal number.
 
-**Left side:**
-```text
-(G_a, P_a) o (G_b, P_b) = (G_a + P_a*G_b, P_a*P_b)
-
-[(G_a + P_a*G_b, P_a*P_b)] o (G_c, P_c)
-= ((G_a + P_a*G_b) + P_a*P_b*G_c, P_a*P_b*P_c)
-= (G_a + P_a*G_b + P_a*P_b*G_c, P_a*P_b*P_c)
-```
-
-**Right side:**
-```text
-(G_b, P_b) o (G_c, P_c) = (G_b + P_b*G_c, P_b*P_c)
-
-(G_a, P_a) o [(G_b + P_b*G_c, P_b*P_c)]
-= (G_a + P_a*(G_b + P_b*G_c), P_a*P_b*P_c)
-= (G_a + P_a*G_b + P_a*P_b*G_c, P_a*P_b*P_c)
-```
-
-Both sides equal `(G_a + P_a*G_b + P_a*P_b*G_c, P_a*P_b*P_c)`. **QED.**
-
-Associativity means we can evaluate the prefix computation in ANY order — this is what enables tree-structured parallel computation.
-
-**Note:** The operator is NOT commutative. `(G_a, P_a) o (G_b, P_b) ≠ (G_b, P_b) o (G_a, P_a)` in general. The left-right ordering matters (it corresponds to bit position ordering).
-
-### The Parallel Prefix Problem
-
-Given N individual (G_i, P_i) pairs, compute all PREFIX results:
-```text
-(G_{0:0}, P_{0:0}) = (G_0, P_0)
-(G_{1:0}, P_{1:0}) = (G_1, P_1) o (G_0, P_0)
-(G_{2:0}, P_{2:0}) = (G_2, P_2) o (G_1, P_1) o (G_0, P_0)
-...
-(G_{N-1:0}, P_{N-1:0}) = (G_{N-1}, P_{N-1}) o ... o (G_0, P_0)
-```
-
-Each (G_{i:0}, P_{i:0}) directly gives carry C_{i+1}:
-```text
-C_{i+1} = G_{i:0} + P_{i:0} * C_0
-```
-
-If C_0 = 0 (typical): `C_{i+1} = G_{i:0}`.
-
-### 8-bit Kogge-Stone — Detailed Computation Graph
-
-```ascii-graph
-Bit position:    7      6      5      4      3      2      1      0
-                 |      |      |      |      |      |      |      |
-Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
-                 |      |      |      |      |      |      |      |
-Level 1:       [7:6]  [6:5]  [5:4]  [4:3]  [3:2]  [2:1]  [1:0]  [0]
-  (span 1)       \   / \   / \   / \   / \   / \   /
-                  [o]   [o]   [o]   [o]   [o]   [o]    (7 nodes use result from 1 position left)
-                 |      |      |      |      |      |      |      |
-Level 2:       [7:4]  [6:3]  [5:2]  [4:1]  [3:0]  [2:0]  [1:0]  [0]
-  (span 2)       \     |   / \     |   /     |      |
-                  \    [o]    \    [o]        |      |     (combine with result from 2 positions left)
-                 |      |      |      |      |      |      |      |
-Level 3:       [7:0]  [6:0]  [5:0]  [4:0]  [3:0]  [2:0]  [1:0]  [0]
-  (span 4)       \     |     |   /           |      |
-                  \   [o]   [o]  /           |      |     (combine with result from 4 positions left)
-                 |      |      |      |      |      |      |      |
-
-Total prefix nodes: 7 + 5 + 3 = 15  (general: N*log2(N) - N + 1)
-Depth: 3 levels (log2(8) = 3)
-Fan-out: maximum 2 (each node feeds at most 2 nodes in the next level)
-Wire tracks: at level k, wires cross 2^(k-1) bit positions → level 3 has wires spanning 4 positions
-```
-
-**Key property of Kogge-Stone:** Every prefix result is available at the same level (level 3 = log2(N)). No node waits for another node at the same level. Maximum parallelism.
-
-**Key drawback:** Wiring congestion. At level 3, each node connects to a node 4 positions away. For a 64-bit Kogge-Stone, level 6 has wires spanning 32 bit positions. These long wires dominate the physical delay in advanced nodes. **In practice, Kogge-Stone is rarely used beyond 32 bits because wiring congestion kills the speed benefit.**
-
-### 8-bit Brent-Kung — Detailed Computation Graph
-
-```ascii-graph
-Bit position:    7      6      5      4      3      2      1      0
-                 |      |      |      |      |      |      |      |
-Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
-                 |      |      |      |      |      |      |      |
-Level 1:       [7:6]  [6]   [5:4]  [4]   [3:2]  [2]   [1:0]  [0]
-  (span 1)     /  \          /  \          /  \          /  \
-              [o]   skip   [o]   skip    [o]   skip   [o]   skip
-                 |      |      |      |      |      |      |      |
-Level 2:       [7:4]  [6]   [5:4]  [4]   [3:0]  [2]   [1:0]  [0]
-  (span 2)     /  \                      /  \
-              [o]   skip               [o]   skip
-                 |      |      |      |      |      |      |      |
-Level 3:       [7:0]  [6]   [5:4]  [4]   [3:0]  [2]   [1:0]  [0]
-  (span 4)
-         ─── now propagate results back DOWN ───
-                 |      |      |      |      |      |      |      |
-Level 4:       [7:0]  [6:0]  [5:4]  [4:0]  [3:0]  [2:0]  [1:0]  [0]
-  (inverse)              \     |            \     |
-                         [o]  skip          [o]  skip  (combine with left neighbor's prefix)
-                 |      |      |      |      |      |      |      |
-Level 5:       [7:0]  [6:0]  [5:0]  [4:0]  [3:0]  [2:0]  [1:0]  [0]
-                         |
-                        [o]  (combine [5:4] with [3:0])
-
-Total prefix nodes: 4 + 2 + 1 + 2 + 1 = 10  (general: 2N - 2 - log2(N))
-Depth: 5 levels (2*log2(N) - 1 = 5)
-Fan-out: higher (level 3 node [7:0] feeds 3 nodes in inverse tree)
-Wire tracks: much lower than Kogge-Stone
-```
-
-**Brent-Kung trade-off:** Nearly half the depth is "wasted" on the inverse tree (propagating prefix results from even to odd positions). But the total node count is O(N) instead of O(N*log N), making it dramatically cheaper in area and wiring.
-
-### 8-bit Sklansky — Fan-Out Doubling Scheme
-
-The Sklansky adder uses a fan-out doubling scheme: at level i, prefix results from row i-1 are broadcast to all higher rows.
-
-```text
-Bit position:    7      6      5      4      3      2      1      0
-                 |      |      |      |      |      |      |      |
-Level 0 (PG):  [7]    [6]    [5]    [4]    [3]    [2]    [1]    [0]
-                 |      |      |      |      |      |      |      |
-Level 1:       [7:6]  [6:5]  [5:4]  [4:3]  [3:2]  [2:1]  [1:0]  [0]
-  (span 1)       [o]    [o]    [o]    [o]    [o]    [o]   (combine with 1 left)
-                 |      |      |      |      |      |      |      |
-Level 2:       [7:4]  [6:3]  [5:2]  [4:1]  [3:0]  [2:1]  [1:0]  [0]
-  (span 2)       [o]    [o]    [o]    [o]
-                 ↑ fan-out from level 1 = 2 per node
-                 |      |      |      |      |      |      |      |
-Level 3:       [7:0]  [6:3]  [5:2]  [4:1]  [3:0]  [2:1]  [1:0]  [0]
-  (span 4)       [o]
-                 ↑ fan-out from level 2 = 4 per node
-```
-
-**Key difference from Kogge-Stone:** Kogge-Stone replicates nodes to keep fan-out = 1 at every level. Sklansky accepts doubling fan-out instead: a node at level i drives 2^i downstream nodes. At the last level (level 3 for 8-bit), fan-out reaches N/2 = 4.
-
-- Area: O(N log N) -- fewer nodes than Kogge-Stone.
-- Wire: O(N log N) -- less wiring than Kogge-Stone.
-- Fan-out: up to N/2 at the last level -- this is the weakness. High fan-out increases electrical delay (capacitive loading) at later levels.
-- Delay: log2(N) prefix levels (same depth as Kogge-Stone), but the large fan-out degrades the electrical delay at later levels.
-
-### Knowles [l,k,m] Parameterization
-
-The Knowles parameterization generalizes prefix adders by specifying the maximum fan-out at each level of the prefix tree. The notation [l, k, m, ...] gives the fan-out limit at each level from the top down:
-
-| Adder         | Knowles parameter | Fan-out per level        | Notes                        |
-|---------------|--------------------|--------------------------|------------------------------|
-| Kogge-Stone   | [1, 1, 1, ...]    | Fan-out 1 at every level | Maximum replication, minimum fan-out |
-| Sklansky      | [N/2, N/4, ...]   | Maximum fan-out          | Minimum replication, maximum fan-out |
-| Brent-Kung    | Intermediate       | Moderate fan-out         | Inverse tree for propagation |
-
-This framework lets designers explore the trade-off between wiring complexity (Kogge-Stone) and fan-out loading (Sklansky) to find the optimal point for a given technology node and bit width.
-
-### Prefix Adder Comparison — Quantitative
-
-For N = 32:
-
-| Property            | Kogge-Stone | Brent-Kung | Sklansky   | Han-Carlson  |
-|---------------------|-------------|------------|------------|--------------|
-| Depth (levels)      | 5           | 9          | 5          | 6            |
-| Prefix nodes        | 129         | 57         | 80         | ~65          |
-| Max wire span       | 16 positions| 2 positions| 16 positions| 8 positions |
-| Max fan-out         | 2           | 16         | 16         | 2            |
-| Delay (gate delays) | ~12         | ~20        | ~12*       | ~14          |
-| Area (relative)     | 4.0x        | 1.8x       | 2.5x       | 2.5x        |
-
-*Sklansky's 12 gate-delay estimate assumes ideal fan-out. With buffer insertion for the exponential fan-out, actual delay is 15-18 gate delays, comparable to Brent-Kung.
-
-### Kogge-Stone 16-bit — Complete Synthesizable Verilog
-
-```verilog
-module kogge_stone_16 (
-    input  [15:0] a, b,
-    input          cin,
-    output [15:0] sum,
-    output         cout
-);
-    // Level 0: Initial PG generation
-    wire [15:0] g0, p0;
-    assign g0 = a & b;
-    assign p0 = a ^ b;
-
-    // Prefix tree — 4 levels for 16 bits
-    // Level 1: span 1
-    wire [15:0] g1, p1;
-    assign g1[0]  = g0[0] | (p0[0] & cin);
-    assign p1[0]  = p0[0];  // p1[0] not used for carry, but keep for regularity
-
-    genvar i;
-    generate
-        for (i = 1; i < 16; i = i + 1) begin : L1
-            assign g1[i] = g0[i] | (p0[i] & g0[i-1]);
-            assign p1[i] = p0[i] & p0[i-1];
-        end
-    endgenerate
-
-    // Level 2: span 2
-    wire [15:0] g2, p2;
-    assign g2[0] = g1[0]; assign p2[0] = p1[0];
-    assign g2[1] = g1[1]; assign p2[1] = p1[1];
-
-    generate
-        for (i = 2; i < 16; i = i + 1) begin : L2
-            assign g2[i] = g1[i] | (p1[i] & g1[i-2]);
-            assign p2[i] = p1[i] & p1[i-2];
-        end
-    endgenerate
-
-    // Level 3: span 4
-    wire [15:0] g3, p3;
-    generate
-        for (i = 0; i < 4; i = i + 1) begin : L3_pass
-            assign g3[i] = g2[i]; assign p3[i] = p2[i];
-        end
-        for (i = 4; i < 16; i = i + 1) begin : L3
-            assign g3[i] = g2[i] | (p2[i] & g2[i-4]);
-            assign p3[i] = p2[i] & p2[i-4];
-        end
-    endgenerate
-
-    // Level 4: span 8
-    wire [15:0] g4, p4;
-    generate
-        for (i = 0; i < 8; i = i + 1) begin : L4_pass
-            assign g4[i] = g3[i]; assign p4[i] = p3[i];
-        end
-        for (i = 8; i < 16; i = i + 1) begin : L4
-            assign g4[i] = g3[i] | (p3[i] & g3[i-8]);
-            assign p4[i] = p3[i] & p3[i-8];
-        end
-    endgenerate
-
-    // Carry vector: C[i+1] = G_{i:0} (since cin is folded into g1[0])
-    // Sum: S[i] = P[i] ^ C[i]
-    assign sum[0] = p0[0] ^ cin;
-    generate
-        for (i = 1; i < 16; i = i + 1) begin : SUM
-            assign sum[i] = p0[i] ^ g4[i-1];
-        end
-    endgenerate
-
-    assign cout = g4[15];
-endmodule
-```
+**Carry-save's role in accumulation.** The same trick spans *time*, not just space. A multiply-accumulate (MAC) unit keeps its running sum in **redundant carry-save form across cycles**, feeding each new product into a CSA against the stored (sum, carry) pair — an $O(1)$ update every cycle — and resolves to a real number with one CPA only when the final result is read out. This is why dot-product engines, FIR filters, and NPU accumulators ([NPU_Accelerators](../01_Architecture_and_PPA/16_NPU_Accelerators.md)) can accumulate at full clock: they never pay the carry chain until the very end. The cost is that the intermediate value is redundant — unusable anywhere that needs a comparable, non-redundant number mid-stream.
 
 ---
 
-## Carry-Save Adder (CSA)
+## 7. Multipliers: generate, reduce, add
 
-### 3:2 CSA — A Full Adder Repurposed
+A multiplier is three stacked problems, and each is a place the carry chain tries to reappear:
 
-A 3:2 CSA (carry-save adder) is simply a full adder used differently: it takes 3 input bits at the same bit position and produces 2 output bits (Sum and Carry). The critical property: **the carry is NOT propagated to the next column** -- it is "saved" and shifted left by 1 position (its weight is 2x).
+1. **Partial-product generation** — form the shifted multiplicand copies. Naïvely $n$ of them (one per multiplier bit), each an AND of the multiplicand with a multiplier bit.
+2. **Reduction** — sum those $n$ partial products. This is exactly the multi-operand addition of §6.
+3. **Final carry-propagate add** — resolve the one redundant pair the reduction leaves.
 
-```text
-Inputs:  A[i], B[i], C_in[i]
-Outputs: Sum[i], Carry[i-1]  (Carry has weight of position i+1)
+Naïve reduction with $n-1$ carry-propagate adds is the $O(n^2)$ disaster the next two subsections dismantle: **Booth** attacks stage 1 (fewer partial products), **Wallace/Dadda** attacks stage 2 (a carry-save tree instead of a ripple of adders).
 
-Sum[i]   = A[i] XOR B[i] XOR C_in[i]
-Carry[i] = (A[i] AND B[i]) OR (C_in[i] AND (A[i] XOR B[i]))
-```
+### 7.1 Booth recoding: fewer partial products
 
-Because there is no carry chain, a 3:2 CSA has **O(1) delay regardless of bit width**.
+Booth's insight is arithmetic: a run of 1s in the multiplier can be expressed as one subtraction and one addition instead of many additions, since $2^{k+1}-2^{j}=\underbrace{1\cdots1}_{j..k}$. Recode the multiplier from $\{0,1\}$ into signed digits. **Radix-4 (modified Booth)** is the one that matters: scan overlapping 3-bit windows and assign
 
-### Multi-Operand Reduction
+$$
+d_i = -2\,b_{2i+1} + b_{2i} + b_{2i-1} \in \{-2,-1,0,+1,+2\}
+$$
 
-To reduce N operands to 2 operands (Sum vector + Carry vector), use a tree of 3:2 CSAs:
+Each digit selects one partial product from $\{0,\pm A,\pm 2A\}$ — all trivial (a shift and/or a two's-complement negate, no addition). This **halves** the partial-product count to $\lceil n/2\rceil$, *guaranteed* (not data-dependent), and handles signed two's-complement operands naturally, because the recoding produces the negative partial products itself.
 
-- Each CSA layer reduces the operand count by 1 (3 inputs -> 2 outputs, net reduction of 1).
-- Total layers needed: N - 2.
+**Radix-2 vs radix-4 vs radix-8 — the count-vs-hard-multiple trade.** Higher radix cuts the partial-product count further, but the multiples get expensive:
 
-The final Sum and Carry vectors must be added by a carry-propagate adder (CPA) to produce a single result.
+| Radix | Window | PP count | Multiples needed | Verdict |
+|---|---|---|---|---|
+| 2 | 2 bits | $n$ | $0,\pm A$ | data-dependent, no guaranteed win |
+| **4** | 3 bits | $n/2$ | $0,\pm A,\pm 2A$ (shifts only) | **universal — the sweet spot** |
+| 8 | 4 bits | $n/3$ | adds $\pm 3A$ — a **hard multiple** | needs a real CPA to precompute $3A$ |
 
-### CSA vs CPA
+Radix-8 removes another third of the rows but requires $3A$, which is not a shift — it costs a carry-propagate add up front and extra mux area, usually eating the reduction win. So **radix-4 Booth is the default in every commercial multiplier and synthesis library** (DesignWare and friends). Radix-8/16 appear only in very wide or heavily-pipelined multipliers where the hard-multiple precompute amortises across many partial products.
 
-| Property        | CSA (3:2)           | CPA (e.g., RCA, CLA)          |
-|-----------------|----------------------|--------------------------------|
-| Delay           | O(1) per layer       | O(N) or O(log N)              |
-| Outputs         | 2 vectors (Sum, Carry) | 1 vector (result)           |
-| Use case        | Multi-operand reduction | Final summation of 2 operands |
-| Carry chain     | None                 | Yes (this is the bottleneck)  |
+### 7.2 Reduction: Wallace vs Dadda trees
 
-CSA trees are the backbone of multipliers (Wallace/Dadda trees), dot-product units, and FIR (finite impulse response) filter accumulators. The CPA at the end of the tree is the only stage with carry propagation.
+The partial-product array is a multi-operand add, so reduce it with a carry-save tree (§6). Both classic trees hit the same $\lceil\log_{1.5}(n/2)\rceil$ depth; they differ only in *when* they do the compressing:
 
----
+- **Wallace** — reduce **eagerly**: at every level, compress every group of three bits it can. Uses more full adders, but the redundant pair converges to a **narrower** final CPA.
+- **Dadda** — reduce **lazily**: compress only enough to bring each column down to the next Dadda number $d_{j+1}=\lfloor1.5\,d_j\rfloor$ ($2,3,4,6,9,13,19,28,\dots$), deferring everything else. Uses **fewer** full adders (more half adders), a **wider** final CPA, and lays out more regularly.
 
-## Booth Encoding for Multipliers
+| | Wallace | Dadda |
+|---|---|---|
+| Full adders | more (eager) | fewer (lazy) |
+| Final CPA width | narrower | wider |
+| Layout regularity | lower | higher |
+| Net | essentially a wash — synthesis chooses | |
 
-### The Problem
+In practice the difference is a few percent and the tool picks; the *concept* — a $\log$-depth CSA tree feeding one CPA — is what matters.
 
-A straightforward N×N multiplier generates N partial products, each N bits wide. Reducing N partial products is expensive (N-1 levels of carry-save addition).
-
-### Radix-2 Booth Encoding
-
-Recode the multiplier B to use digits from {-1, 0, +1} instead of {0, 1}:
-
-```text
-Scanning from LSB, examine overlapping pairs (b_{i}, b_{i-1}) where b_{-1} = 0:
-  b_i  b_{i-1}  |  Booth digit  |  Action
-   0      0     |       0       |  No partial product (skip)
-   0      1     |      +1       |  Add multiplicand
-   1      0     |      -1       |  Subtract multiplicand
-   1      1     |       0       |  No partial product (skip)
-```
-
-**Advantage:** Strings of consecutive 1s in the multiplier (like 0111110) produce only two non-zero digits (-1 at the start, +1 at the end), reducing the number of partial products.
-
-**Disadvantage:** Worst case (alternating 01010101) still produces N non-zero digits — no reduction.
-
-### Radix-4 (Modified Booth) Encoding
-
-Scan the multiplier in overlapping groups of 3 bits: (b_{2i+1}, b_{2i}, b_{2i-1}):
-
-```ascii-graph
-b_{2i+1}  b_{2i}  b_{2i-1}  |  Booth digit  |  Partial product
-   0        0        0       |       0        |  0
-   0        0        1       |      +1        |  +A
-   0        1        0       |      +1        |  +A
-   0        1        1       |      +2        |  +2A (left shift A by 1)
-   1        0        0       |      -2        |  -2A
-   1        0        1       |      -1        |  -A
-   1        1        0       |      -1        |  -A
-   1        1        1       |       0        |  0
-```
-
-**Key benefit:** Reduces N partial products to N/2 — cutting the partial product tree depth roughly in half.
-
-**Hardware for each Booth digit:**
-- +A: pass through
-- -A: bitwise invert + add 1 (2's complement)
-- +2A: left shift by 1
-- -2A: invert + shift + add 1
-- 0: zero
-
-**Cost:** Each partial product generator requires a small MUX network (select between 0, A, 2A, -A, -2A) plus a sign-extension scheme. But the reduction from N to N/2 partial products more than compensates.
-
-**Radix-4 Booth is the standard in all commercial multiplier designs.** It is the default in synthesis tools (DesignWare, etc.).
-
-### Signed vs Unsigned with Booth
-
-Booth encoding naturally handles signed multiplication (2's complement) — negative partial products are generated by the encoding itself. For unsigned multiplication, prepend a 0-bit to both operands to prevent incorrect sign extension.
+**Array vs tree.** A pure **array multiplier** ripples the partial products through regular rows: $O(n)$ depth, but dead-regular layout, short local wires, and trivial to pipeline deeply — favoured in some throughput DSP/FPGA datapaths and where floorplan regularity beats latency. A **tree** (Wallace/Dadda) is $O(\log n)$ depth but irregular and wire-heavy. High-performance CPU/GPU multipliers take the tree for latency; the recurring recipe is **radix-4 Booth → 4:2-compressor Dadda tree → sparse-prefix final CPA**.
 
 ---
 
-## Wallace Tree and Dadda Tree Multipliers
+## 8. Sequential vs combinational: the throughput knob
 
-### The Partial Product Reduction Problem
+Everything in §7 is combinational — one deep path, one result per cycle if pipelined. The opposite extreme reuses **one** adder over $\sim n$ cycles:
 
-After Booth encoding, an N-bit multiplier has N/2 partial products, each ~N+1 bits wide. We need to reduce these to two numbers (which are then added by a final CPA — carry-propagate adder).
+$$
+\text{repeat } n\text{ times: if } P[0]\!=\!1,\ P[2n{:}n]\mathrel{+}= M;\quad P \mathrel{>>}= 1
+$$
 
-### Wallace Tree
+The shift-add multiplier keeps a $2n$-bit product register (multiplier loaded low), conditionally adds the multiplicand to the high half, and shifts right — walking one multiplier bit into $P[0]$ per cycle. It needs **one CPA, one shift register, an AND-gate, and a tiny FSM**: near-zero area, at the cost of $\sim n$ cycles per product. Radix-4 Booth halves that to $\sim n/2$ and handles sign.
 
-**Strategy:** At each level, group columns of bits into sets of 3, reduce each set with a full adder (3:2 compressor), and carry the sum/carry to the next level. Half adders (2:2 compressors) handle remaining pairs.
+The decision is purely **required multiply throughput**:
 
-**For 8×8 multiplier (with Booth: 4 partial products):**
+| Design | Area | Throughput | Latency | Use when |
+|---|---|---|---|---|
+| Shift-add | **1 CPA, tiny** | 1 per $\sim n$ clk | $\sim n$ cyc | rare multiplies (config math, address calc) |
+| Radix-4 Booth sequential | 1 CPA + encoder | 1 per $\sim n/2$ clk | $\sim n/2$ cyc | moderate rate |
+| Pipelined Booth+tree | $O(n^2)$ FAs | 1 per clk | $\log$-depth, $P$ stages | every-cycle products (datapath, MAC array) |
 
-```ascii-graph
-Level 0: Partial products (max column height = 4)
-         4   4   4   4   4   4   3   2   1  (bit column heights, approximately)
-
-Level 1: Apply FA to groups of 3, HA to pairs
-         After reduction: max height 3
-
-Level 2: Apply FA again
-         After reduction: max height 2
-
-Level 3: Final CPA (2 → 1)
-```
-
-**General:** Wallace tree reduces N partial products to 2 in ceil(log_{1.5}(N)) levels. For N=4: 3 levels. For N=16: 6 levels.
-
-### Dadda Tree
-
-**Strategy:** Reduce the minimum number of entries per column at each level to a predetermined sequence: ..., 6, 4, 3, 2. At each stage, only reduce columns that exceed the target height.
-
-**Dadda sequence:** d_1 = 2, d_{j+1} = floor(1.5 * d_j)
-```text
-2, 3, 4, 6, 9, 13, 19, 28, 42, 63, ...
-```
-
-For N partial products, find the smallest d_j >= N, then reduce backward to d_1 = 2.
-
-**Dadda vs Wallace comparison:**
-
-| Property          | Wallace Tree      | Dadda Tree        |
-|-------------------|-------------------|-------------------|
-| Number of levels  | Same              | Same              |
-| FAs used          | More (eager)      | Fewer (lazy)      |
-| HAs used          | Fewer             | More              |
-| Final CPA width   | Narrower          | Wider             |
-| Total hardware    | Slightly more     | Slightly less     |
-| Regularity        | Less regular      | More regular      |
-
-In practice, the difference is small. Synthesis tools choose the optimal reduction tree automatically.
-
-### 4:2 Compressor
-
-A common building block that compresses 4 bits + carry-in into 2 bits + carry-out:
-
-```text
-Inputs:  x1, x2, x3, x4, cin
-Outputs: sum, carry, cout
-
-sum  = x1 XOR x2 XOR x3 XOR x4 XOR cin
-carry = (x1 XOR x2 XOR x3 XOR x4) ? cin : x4
-cout  = (x1 XOR x2) ? x3 : x1
-```
-
-**Key property:** cout does NOT depend on cin — it feeds the same column's next level, not the next column. This breaks the carry chain and allows parallel reduction.
-
-A 4:2 compressor is equivalent to 2 cascaded full adders, but with the critical path optimized (3 XOR delays instead of 4).
+Occasional multiply → spend nothing, take the cycles. Sustained one-per-cycle → pay for the pipelined tree. This is the same latency/throughput/area reasoning the scheduler sees as a unit's "latency + initiation interval" ([OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) §7).
 
 ---
 
-## Sequential (Shift-Add) Multiplier
+## 9. Subtraction, comparison, and overflow: the adder, reused
 
-The Booth/Wallace/Dadda multipliers above are *combinational*: they build the entire partial-product tree in hardware and produce a result in one (deep) combinational path. The shift-add multiplier makes the opposite trade — it reuses **one** adder over ~N cycles instead of a tree, trading throughput and latency for a large area saving.
+None of these need new hardware — they are the carry tree wearing a hat, which is why an ALU folds ADD/SUB/CMP/branch-condition into one adder:
 
-### Algorithm (N×N → 2N-bit)
-
-Keep a single `2N`-bit *product* register; load the multiplier into its low half and clear the high half. The multiplicand sits in its own `N`-bit register. Each cycle:
-
-1. If `product[0] == 1`, add the multiplicand to the **high half** of the product register.
-2. **Shift the whole product register right by 1** (this also walks the multiplier bits down to `product[0]` one at a time).
-
-After `N` cycles the multiplier bits are exhausted and the `2N`-bit product register holds `multiplicand × multiplier`.
-
-```text
-init:  P[2N-1:N] = 0 ;  P[N-1:0] = multiplier ;  M = multiplicand
-repeat N times:
-    if (P[0]) P[2N:N] = P[2N-1:N] + M     // extra bit catches the add carry
-    P = P >> 1                            // shift right by 1
-result: P[2N-1:0]
-```
-
-**Signed:** use an **arithmetic** right shift and sign-extend the partial sum, or Booth-encode the multiplier — radix-4 Booth also **halves the cycle count** (~N/2) while handling sign naturally (see [Booth Encoding for Multipliers](#booth-encoding-for-multipliers) above).
-
-### Hardware
-
-- One `N`-bit carry-propagate adder (CPA) — the only arithmetic unit, reused every cycle.
-- A `(2N+1)`-bit shift register (the product reg plus a carry bit).
-- AND-gating on the multiplicand (the conditional add = `M & {N{P[0]}}`).
-- A small control FSM (finite state machine) / down-counter with a `start` / `valid` (busy) / `done` handshake.
-
-### Tradeoff vs Combinational Multipliers
-
-| Multiplier        | Adders / area      | Throughput      | Latency        | Use when |
-|-------------------|--------------------|-----------------|----------------|----------|
-| Shift-add (this)  | **1 CPA**, tiny    | 1 result / ~N clk | ~N cycles    | area-critical, low multiply rate |
-| Radix-4 Booth seq | 1 CPA + encoder    | 1 result / ~N/2 clk | ~N/2 cycles | area-critical, moderate rate |
-| Array / Wallace (comb) | O(N²) FAs     | 1 result / clk (if pipelined) | 1 deep comb path (or P stages) | high throughput |
-
-Rule of thumb: pick the architecture from the required multiply throughput. If you issue a multiply only occasionally (config math, address calc), the shift-add unit's near-zero area wins; if every cycle needs a product (datapath, MAC (multiply-accumulate) array), pay for the pipelined Wallace tree.
+- **Subtraction.** $A-B = A + \overline{B} + 1$ (two's complement): invert $B$ and force $c_0=1$. A shared adder/subtractor XORs each $b_i$ with a `sub` control (conditional invert) and drives $c_0=\texttt{sub}$.
+- **Comparison.** Subtract and read the flags. For unsigned, carry-out $=1$ means no borrow, so $A\ge B$; equality is a NOR of the difference. Signed comparisons combine the sign and overflow bits. A comparator *is* a subtractor whose sum bits are discarded — hence "add-compare" fuses cheaply.
+- **Overflow (signed).** The single cleanest signal:
+$$
+\text{overflow} = c_{\text{in}}^{\text{MSB}} \oplus c_{\text{out}}^{\text{MSB}}
+$$
+They disagree exactly when a carry appeared or vanished at the sign bit in a way that flipped the result's sign — i.e. two same-sign operands produced an opposite-sign sum. One XOR off the top of the carry chain.
 
 ---
 
-## Adder Selection Guide — Practical Wisdom
+## 10. Approximate adders: trading correctness for the chain
 
-### When to Hand-Instantiate vs. Let the Tool Decide
+If the carry chain is the cost and the application tolerates error, **cut the chain and accept an occasionally wrong carry**. Neural-network inference is the canonical case: ReLU clips, saturating nonlinearities absorb, quantisation to INT8/FP8 already discards most precision, and QAT can be trained against the injected error — so a sub-1% top-1 hit buys real delay/area/power. Every approximate adder is the same principle — *truncate carry propagation* — applied at a different granularity:
 
-In modern ASIC (application-specific integrated circuit) flows (Synopsys Design Compiler with DesignWare, Cadence Genus):
+| Scheme | What it approximates | Error behaviour |
+|---|---|---|
+| **Truncated / segmented carry** | drop the carry *between* $K$-bit blocks | blocks run in parallel, delay $O(K)$; missing inter-block carry |
+| **Lower-part-OR (LOA)** | low $K$ bits use $a_i\!\mid\!b_i$ instead of add | only the $(1,1)$ case errs (prob $1/4$/bit), bounded by $K$ |
+| **Error-tolerant (ETA)** | low half drops carries, high half exact + estimated carry-in | error $\sim$ few % of magnitude, bounded by $2^{n/2}$ |
+| **Speculative carry** | predict each block's carry-in from a short window | $1\text{–}5\%$ mispredict, optionally MUX-corrected |
 
-```text
-// This is the RIGHT way for 99% of cases:
-assign sum = a + b;
-// The tool selects the optimal adder from its library
-// based on timing constraints, area goals, and bit width.
-```
-
-**When to manually instantiate:**
-
-1. **Specific pipeline structure:** If you need the adder split across pipeline stages (e.g., G/P generation in stage 1, prefix tree in stage 2, sum in stage 3), the tool cannot infer this from `a + b`.
-
-2. **Compound operations:** For operations like `(a + b) == c` (add-compare), a manual implementation can merge the adder and comparator, saving hardware. The tool may not discover this.
-
-3. **Critical path engineering:** If the tool's adder choice creates a critical path through one specific bit position, you might restructure the prefix tree to balance delays differently.
-
-4. **DesignWare override:** You can hint to the tool:
-```verilog
-// Synopsys DesignWare pragmas:
-// synopsys dc_script_begin
-// set_implementation DW01_add/cla [find cell "add_instance"]
-// synopsys dc_script_end
-```
-
-5. **FPGA (field-programmable gate array) carry chains:** On FPGAs, always use `+` — the dedicated carry chain hardware is faster than any custom LUT-based adder. Manually implementing a Kogge-Stone on FPGA would waste LUTs (lookup tables) and be slower.
-
-### Area-Delay Trade-off — Numerical Summary
-
-For 32-bit adders in 28nm, post-synthesis:
-
-| Architecture        | Area (um^2) | Delay (ps) | Power (uW@1GHz) |
-|---------------------|-------------|------------|------------------|
-| RCA                 | 280         | 980        | 12               |
-| Carry Skip          | 410         | 480        | 18               |
-| Carry Select        | 520         | 420        | 22               |
-| Brent-Kung prefix   | 450         | 380        | 20               |
-| Han-Carlson prefix  | 580         | 320        | 25               |
-| Kogge-Stone prefix  | 820         | 290        | 32               |
-| DesignWare auto     | ~500        | ~330       | ~23              |
-
-These are representative numbers — actual values depend on the specific library, drive strengths, and tool optimization effort.
+The universal design rules follow from the error model: **keep the MSBs (magnitude and sign) exact**, approximate only the low bits; make the error **zero-mean** so it does not bias accumulation; and keep the **first and last network layers** accurate where errors matter most. In practice this shows up in NPU MAC accumulators (approximate the low $8\text{–}12$ bits of a $24\text{–}32$-bit accumulator) and in attention/softmax score paths, cutting the arithmetic critical path 30–50% ([NPU_Accelerators](../01_Architecture_and_PPA/16_NPU_Accelerators.md)). Outside error-tolerant domains, approximation is off the table — general-purpose ALUs are always exact.
 
 ---
 
-## Approximate Adders for AI and Neural Networks
+## 11. Choosing the structure
 
-### Motivation
+**For 99% of RTL: write `a + b` and let synthesis choose.** Design Compiler/DesignWare and Genus pick the adder from the library against your timing and area constraints far better than hand-instantiation. Hand-build only when the tool cannot see what you can:
 
-Neural network inference is inherently error-tolerant — small arithmetic errors in individual additions are absorbed by the network's redundancy and activation functions. This creates an opportunity to trade arithmetic accuracy for speed, area, and power using **approximate adders**.
+- you need the adder *split across pipeline stages* (G/P in stage 1, prefix tree in stage 2, sum in stage 3) — the tool cannot infer that from `+`;
+- you want to *fuse* an add with a neighbour (add-compare, add-select) to share the carry tree;
+- you are on an **FPGA** — always use `+`, because the hardened carry chain beats any LUT-built prefix adder.
 
-Error tolerance in neural networks:
-- ReLU (rectified linear unit) activation clips negative values to 0 → errors on small values don't propagate
-- Sigmoid/tanh saturate for large values → errors on large values don't propagate
-- Weight regularization (L2, dropout) already introduces noise → approximate arithmetic fits naturally
-- Quantization to INT8/FP8 already loses 90%+ of precision → adder errors are secondary
-- Typical accuracy impact: < 1% drop in top-1 accuracy for 8-bit approximate adders
+The concrete area/delay/power trade at 32 bits, 28 nm post-synthesis — the numbers that justify each corner of the §1 box:
 
-### Truncated Carry Chain Adder
+| Architecture | Area (µm²) | Delay (ps) | Power (µW @1 GHz) | Reason it exists |
+|---|---|---|---|---|
+| Ripple | 280 | 980 | 12 | minimal area/energy; the baseline |
+| Carry-skip | 410 | 480 | 18 | $\sqrt n$ delay, low wiring |
+| Carry-select | 520 | 420 | 22 | fast late-carry, $2\times$ area |
+| Brent-Kung | 450 | 380 | 20 | $O(n)$ cells, min wiring; deeper |
+| Han-Carlson | 580 | 320 | 25 | near-min depth at half K-S wiring |
+| Kogge-Stone | 820 | 290 | 32 | fastest logically; wire/area heavy |
+| DesignWare auto | $\sim500$ | $\sim330$ | $\sim23$ | what the tool actually picks |
 
-```ascii-graph
-Idea: Only propagate carries for the lower K bits instead of all N bits.
-
-  Standard N-bit RCA: carries propagate through all N bit positions
-  Truncated (K-segment): only propagate carries within each K-bit block
-
-  For N=8, K=4:
-    Block 0: bits [3:0] — full carry chain within block
-    Block 1: bits [7:4] — full carry chain within block
-    Carry from block 0 to block 1 is IGNORED (assumed 0)
-
-  Error rate: ~50% of inputs produce wrong results
-  Error magnitude: up to 2^N - 2^(N-K) (missing carry can affect upper bits)
-  But in practice, average error is small for random inputs
-
-  Area savings: ~30-40% (eliminates inter-block carry logic)
-  Delay savings: O(K) instead of O(N) → critical path is K bits, not N
-
-  Hardware:
-    N/K independent K-bit adders operating in parallel
-    Each block: K-bit RCA or CLA
-    No carry chain between blocks
-```
-
-### Error-Tolerant Adder (ETA)
-
-```ascii-graph
-The Error-Tolerant Adder splits the adder into accurate and approximate regions:
-
-  For an N-bit adder, split at bit position N/2:
-    Lower half (bits 0 to N/2-1): approximate addition
-    Upper half (bits N/2 to N-1): accurate addition
-
-  Lower half (approximate):
-    Modified full adder where carry is NOT propagated to the next bit
-    Instead, each bit computes: S_i = A_i XOR B_i (XOR instead of full add)
-    This is equivalent to assuming Cin = 0 for every bit position
-    No carry chain at all → O(1) delay for the lower half
-
-  Upper half (accurate):
-    Standard adder (CLA, RCA, etc.) for the upper N/2 bits
-    Carry-in from lower half is estimated:
-      If lower half would produce a carry-out > 50% of the time,
-      set Cin to 1 (heuristic)
-
-  Error characteristics:
-    Lower half has at most 1-bit error per position (no carry propagation)
-    Average error: ~2-5% of the result magnitude
-    Maximum error: bounded by 2^(N/2) (about half the result)
-```
-
-### Lower-Part-OR Adder (LOA)
-
-```ascii-graph
-Simple approximate adder where the lower bits use OR instead of addition:
-
-  N-bit adder split at position K:
-    Upper bits [N-1:K]: standard accurate adder (e.g., Kogge-Stone)
-    Lower bits [K-1:0]: bitwise OR → S_i = A_i | B_i
-
-  Why OR? Truth table comparison:
-    A_i  B_i  | Correct (A+B)  | OR  | Error
-     0    0   |       0        |  0  |  none
-     0    1   |       1        |  1  |  none
-     1    0   |       1        |  1  |  none
-     1    1   |      10        |  1  |  missing carry (error of +1 at position i)
-
-  Only the (1,1) case produces an error (missing carry).
-  Error probability per bit: P(A=1 AND B=1) = 1/4 for random inputs.
-  Total error: bounded by K (if all K lower bits have missing carries).
-
-  Carry from lower to upper: use AND of A[K-1] and B[K-1] as carry-in
-  (captures the most significant carry that matters)
-
-  Area savings: K XOR gates replaced by K OR gates (slightly simpler)
-  Plus: no carry chain in lower K bits → significant delay and power savings
-```
-
-### Speculative Carry-Lookahead Approximate Adder
-
-```ascii-graph
-Combines speculative execution with approximation:
-
-  Strategy:
-    1. Divide N-bit addition into M blocks of size K = N/M
-    2. Each block starts computing simultaneously
-    3. For carry-in to each block (except the first), SPECULATE:
-       - Compute two results: one assuming Cin=0, one assuming Cin=1
-       - OR: predict carry-in using lower bits only (no waiting for actual carry)
-
-  Speculative carry prediction:
-    For block j, predict carry-out of block j-1:
-      Predict_Cout = OR(A[j-1], B[j-1])  (overestimate: assumes propagation)
-      If any bit in the previous block has both A=1 and B=1, carry is guaranteed
-      If all bits have A=0 and B=0, carry is impossible
-      Middle cases: prediction may be wrong
-
-  Error recovery:
-    In some implementations, compute actual carry in parallel
-    If prediction was wrong, use a MUX to select correct result (1-cycle penalty)
-    In approximate mode: skip the check, accept occasional errors
-
-  Area: 2x the adder blocks (for dual computation) + MUX + prediction logic
-  Delay: O(K) for K-bit blocks, computed in parallel → much faster than O(N)
-  Error rate: depends on prediction accuracy, typically 1-5%
-```
-
-### Practical Application in AI Accelerators
-
-**Where approximate adders are used:**
-
-1. MAC (Multiply-Accumulate) units in neural network inference:
-- Partial sums: approximate addition of accumulator and product
-   - Accumulator width: typically 24-32 bits
-   - Lower 8-12 bits can use approximation with minimal accuracy impact
-   - Upper bits (which determine the output value) remain accurate
-
-2. Softmax and attention mechanisms:
-- Exponent subtraction for attention scores: approximate subtraction acceptable
-   - Reduces critical path in attention computation by 30-50%
-
-3. ReLU / activation functions:
-- Only need to determine sign (positive or negative) for ReLU
-   - Approximate addition sufficient for sign detection in most cases
-
-4. Pooling layers:
-- Average pooling: sum followed by division
-   - Approximate sum has negligible effect after division
-
-**Design considerations:**
-   - Always keep the MSB (sign bit) computation accurate
-   - Error should be unbiased (zero mean) to avoid systematic drift
-   - Use accurate adders for the first and last layers of a network
-   - (where errors have the most impact on final output)
-   - Quantization-aware training (QAT) can compensate for approximate hardware
-   - by training the network with injected adder errors
+Note the knee: Kogge-Stone buys the last $\sim30$ ps over Han-Carlson for $\sim40\%$ more area and power — a trade only a latency-critical path takes. Most ALUs land where the tool lands: a Han-Carlson-class sparse prefix.
 
 ---
 
-## Numbers to Memorize
+## 12. Numbers to memorize
 
-| Quantity | Value |
-|---|---|
-| RCA delay (28nm) | 4.0 + 1.5(N-1) gate delays |
-| CLA delay (28nm) | ~4 gate delays (any width) |
-| Kogge-Stone delay | log2(N) prefix levels |
-| Kogge-Stone area | O(N log^2 N) |
-| Sklansky delay | log2(N) levels + fan-out penalty |
-| Sklansky area | O(N log N) |
-| Brent-Kung delay | 2 log2(N) - 1 levels |
-| Carry-select optimal block | sqrt(N) |
-| Carry-skip optimal block | sqrt(N/2) |
-| 32-bit RCA delay (28nm) | ~50 gate delays |
-| 32-bit CLA delay (28nm) | ~4 gate delays |
-| 32-bit Kogge-Stone delay (28nm) | ~6 gate delays |
-| FA area (28nm) | ~20-30 gate equivalents |
-| 32-bit RCA area (28nm) | ~640-960 GE |
-| 32-bit Kogge-Stone area (28nm) | ~3000-5000 GE |
+| Quantity | Value | Why (section) |
+|---|---|---|
+| Carry recurrence | $c_{i+1}=g_i+p_i c_i$, $s_i=p_i\oplus c_i$ | the whole problem (§1) |
+| Delay floor / area floor | $\Omega(\log n)$ / $\Omega(n)$ | bounded fan-in + must read all bits (§1) |
+| Ripple delay | $4.0+1.5(n-1)$ gate delays; 32b $\approx50\approx1$ ns @28 nm | the chain (§2) |
+| Carry-select / carry-skip block | $k_{\text{opt}}=\sqrt n$ / $\sqrt{n/2}$, delay $O(\sqrt n)$ | balance ripple vs MUX chain (§3) |
+| Hierarchical CLA / prefix delay | $O(\log n)$; 64b CLA $\approx3$ levels | recurrence / prefix-sum (§4–5) |
+| Prefix conservation law | $l+f+t=\log_2 n-1$ | can't min depth, fan-out, wire together (§5.1) |
+| Kogge-Stone | depth $\log_2 n$, cells $n\log_2 n-n+1$, fan-out 2, max wire | min depth, max wiring (§5.1) |
+| Brent-Kung | depth $2\log_2 n-1$, cells $2n-2-\log_2 n$ | min cells/wiring, $2\times$ depth (§5.1) |
+| Han-Carlson | depth $\log_2 n+1$, $\approx$ half K-S wiring | the shipping sweet spot (§5.1) |
+| 3:2 CSA | $O(1)$ delay, any width; $n{\to}2$ in $\lceil\log_{1.5}(n/2)\rceil$ levels | multi-operand add (§6) |
+| Radix-4 Booth | partial products $n\to\lceil n/2\rceil$, guaranteed | fewer PPs, only easy multiples (§7.1) |
+| Dadda number sequence | $2,3,4,6,9,13,19,28,\dots$ ($d_{j+1}=\lfloor1.5d_j\rfloor$) | reduction-tree targets (§7.2) |
+| Overflow (signed) | $c_{\text{in}}^{\text{MSB}}\oplus c_{\text{out}}^{\text{MSB}}$ | one XOR off the carry (§9) |
+| Standard multiplier recipe | radix-4 Booth → Dadda tree → sparse-prefix CPA | universal (§7) |
+
+---
+
+## Cross-references
+
+- **Down the stack (what these circuits are built from):** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, the series-stack fan-in limit that forces hierarchical CLA in §4, and the wire RC that makes Kogge-Stone lose at 64b in §5), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (the MUX behind carry-select/skip, the XOR behind sum and Booth, the comparator of §9).
+- **Up the stack (what builds on this):** [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — the 1-cycle prefix-adder ALU, the log-depth Booth+tree multiplier, and why divide is a serial digit recurrence that will *not* flatten into a tree), [CPU_Architecture](../01_Architecture_and_PPA/03_CPU_Architecture.md) (the EX-stage ALU whose adder sets $t_{\text{logic}}$ and the pipeline clock), [Floating_Point](04_Floating_Point.md) (the mantissa CPA and rounding this feeds; SRT and Goldschmidt division/reciprocal reuse the CSA and CPA here), [NPU_Accelerators](../01_Architecture_and_PPA/16_NPU_Accelerators.md) (the MAC leaf of §6's carry-save accumulation and §10's approximate arithmetic), [GPU_Architecture](../01_Architecture_and_PPA/15_GPU_Architecture.md) (the same Booth+tree multipliers replicated across many lanes).
+- **Adjacent / prerequisite:** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) and [Floating_Point](04_Floating_Point.md) share the comparator, priority-encoder, and leading-zero circuits that pair with these adders.
+
+---
+
+## References
+
+1. Weste, N.H.E. and Harris, D.M., *CMOS VLSI Design: A Circuits and Systems Perspective*, 4th ed., Addison-Wesley, 2010. Ch. 11 — adders, prefix networks, and multipliers.
+2. Harris, D., "A Taxonomy of Parallel Prefix Networks," *Asilomar Conf. on Signals, Systems and Computers*, 2003. The $l+f+t$ conservation law of §5.1.
+3. Kogge, P.M. and Stone, H.S., "A Parallel Algorithm for the Efficient Solution of a General Class of Recurrence Equations," *IEEE Trans. Computers*, C-22(8), 1973.
+4. Brent, R.P. and Kung, H.T., "A Regular Layout for Parallel Adders," *IEEE Trans. Computers*, C-31(3), 1982.
+5. Han, T. and Carlson, D.A., "Fast Area-Efficient VLSI Adders," *IEEE Symp. on Computer Arithmetic (ARITH-8)*, 1987.
+6. Knowles, S., "A Family of Adders," *IEEE Symp. on Computer Arithmetic (ARITH-14/15)*, 1999/2001. The fan-out-per-level parameterisation.
+7. Ling, H., "High-Speed Binary Adder," *IBM J. Research and Development*, 25(3), 1981. Pseudo-carry recoding.
+8. Booth, A.D., "A Signed Binary Multiplication Technique," *Quarterly J. Mechanics and Applied Mathematics*, 4(2), 1951.
+9. Wallace, C.S., "A Suggestion for a Fast Multiplier," *IEEE Trans. Electronic Computers*, EC-13(1), 1964.
+10. Dadda, L., "Some Schemes for Parallel Multipliers," *Alta Frequenza*, 34, 1965.
+11. Parhami, B., *Computer Arithmetic: Algorithms and Hardware Designs*, 2nd ed., Oxford University Press, 2010.

@@ -1,597 +1,247 @@
-# Block Activity Power -- Estimation, Monitoring, and Management
+# Block Activity and Power — Estimating the One Term You Can't Read Off the Schematic
 
-The phrase "block activity power" covers one core idea at three different stages of a
-chip's life:
+> **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) §4 (the $\tfrac12 CV^2$ dissipated per transition, the three powers), [Power_Fundamentals](01_Power_Fundamentals.md) (the total-power equation and the system budget these estimates feed).
+> **Hands off to:** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics, IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (what to *do* about a high-activity net), [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md) (composing block power into a chip).
+
+---
+
+## 0. Why this page exists
+
+Dynamic power is $P_{dyn} = \alpha\, C\, V^2 f$, and three of its four factors are already sitting in the design database. The capacitance $C$ comes from the netlist plus parasitic extraction; the voltage $V$ and frequency $f$ come from the operating point you chose. The fourth factor — $\alpha$, how often each node actually toggles — is a property of the **data flowing through the logic**, not of the logic itself. You cannot read it off the schematic. The identical multiplier burns an order of magnitude more power at 50 % activity than at 5 %, and nothing in its gate-level structure tells you which it will be.
+
+So block-power estimation is, almost in its entirety, **activity estimation**: predicting $\alpha$ for every node, on a workload that resembles the one the chip will really run, *before there is silicon to measure*. Two families of methods fall out of that single need, and they sit at opposite ends of one accuracy-vs-cost axis:
+
+- **Vectored (simulation-driven).** Drive the design with representative input *vectors*, simulate, and count the toggles. Empirical and accurate — but only for the workload you actually ran, and slow.
+- **Vectorless (probabilistic).** Assign statistics — a signal probability and a toggle rate — to the primary inputs, and *propagate* them analytically through the logic. No vectors, fast, input-independent — but it must assume the inputs are independent, and real data is not.
+
+Everything below is either a point on that vectored↔vectorless axis or a reason the estimate is hard: the probability algebra of propagation (§3), the correlation that breaks it (§4), glitch power that a zero-delay model cannot even see (§5), and the fidelity ladder from architectural models to gate-level signoff (§7). This page owns *how $\alpha$ is obtained and turned into watts*. The physics of the $CV^2$ per transition lives in [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md); the chip-level budget these watts feed lives in [Power_Fundamentals](01_Power_Fundamentals.md).
+
+---
+
+## 1. What the activity factor actually is
+
+Before estimating $\alpha$ you have to be precise about what it counts, because two different numbers get called "activity" and they differ by a factor of two.
+
+- **Signal probability** $p$ — the long-run fraction of cycles a node holds logic 1. A static property of the value.
+- **Activity factor** $\alpha$ — the *expected number of energy-drawing transitions per clock*. Only the $0\!\to\!1$ transition pulls charge from the supply (it charges the load cap; the $1\!\to\!0$ edge dumps that charge to ground and draws nothing further). Over a full up-then-down cycle the node dissipates $CV^2$, so the $\alpha$ in $P=\alpha C V^2 f$ is the probability of a $0\!\to\!1$ transition per cycle, $\alpha \in [0,1]$.
+
+For a **temporally independent** (memoryless) node the two are tied together:
+
+$$
+\alpha \;=\; P(0\!\to\!1) \;=\; p\,(1-p), \qquad \alpha_{\max}=0.25 \ \text{ at } p=0.5
+$$
+
+where $p$ = signal probability. This is why "random data" sits at $\alpha \approx 0.25$: uniformly random bits have $p=0.5$ and toggle a quarter of the time on the charging edge. The **toggle rate** that simulators report counts *both* edges and is therefore $2\alpha$; a clock has $\alpha=1$ (one rising edge every cycle) but a toggle rate of 2. Keeping this convention straight is the first thing a power estimate can get quietly wrong — the tool hands you toggle counts, but the equation wants $0\!\to\!1$ charging events.
+
+Activity spans two orders of magnitude across a chip, and the ladder itself is the intuition:
+
+| Signal class | Typical $\alpha$ | Why |
+|---|---|---|
+| Clock net | $1.0$ | one charging edge every cycle, by definition |
+| Datapath, random data | $\approx 0.25$ | the $p(1-p)$ maximum |
+| Datapath, real data | $0.05$–$0.25$ | correlated: sign bits, zero bytes, slow-moving MSBs |
+| Control / FSM | $0.02$–$0.10$ | mostly stable between events |
+| Config / CSR | $<0.01$ | written once, then static — prime clock-gating target |
+
+The gap between "random data" and "real data" is not noise; it is **correlation** (§4), and it is exactly the gap a vectorless estimator has to model or else over-count. Two subtleties already visible here — that clock nets dominate because $\alpha=1$ meets the largest capacitance on the die (§6), and that low-$\alpha$ config nets are where clock gating pays — are the payoff of getting activity right.
+
+**The bridge this page is about.** Architecture teams describe a block by its *utilization* or *occupancy* — the fraction of cycles it issues an instruction, accepts a transaction, or fires a MAC. Power teams need $\alpha$. The block's power model is the translator between them, and mapping occupancy to per-net activity is the single hardest, most valuable step in the whole flow. Everything else is bookkeeping around that conversion.
+
+---
+
+## 2. Two ways to get $\alpha$: vectored vs vectorless
+
+The dichotomy of §0 is the field's fundamental fork, and each side is the other's weakness turned inside out.
+
+| | **Vectored** (simulation-driven) | **Vectorless** (probabilistic) |
+|---|---|---|
+| Input | representative stimulus (tests, traces, software) | signal probability + toggle rate on primary inputs |
+| Mechanism | simulate, record every net's toggles (VCD/SAIF) | propagate probabilities through the netlist (§3) |
+| Correlation | captured *for free* — it is implicit in the vectors | must be modeled explicitly, or assumed away |
+| Accuracy | high *on the workload run* | typically $10$–$20\%$ worse when correlation matters |
+| Cost | expensive: simulation is slow, few cycles | cheap: one pass over the graph, seconds |
+| Blind spot | **coverage** — only sees the vectors you chose | **correlation** — independence assumption (§4) |
+| Used when | signoff, workload-specific power, peak vectors | early "is any node pathological?" screening, untestable blocks, coverage backfill |
+
+Neither is a superset of the other, so real flows use both: vectorless to sweep the whole design cheaply and flag hot nets that no test happens to exercise, vectored to pin down the number that matters on a workload that matters. The vectored side has its own **accuracy ladder**, set by how realistic the stimulus is:
+
+| Activity source | Typical error | Why |
+|---|---|---|
+| Analytical / spreadsheet utilization | $\ge 2\times$ | a guess per sub-block from a performance model |
+| Architectural-simulator event counts | $30$–$50\%$ | per-block events $\times$ energy-per-event, no real toggles |
+| RTL simulation (short directed tests) | $20$–$30\%$ | real toggles, but seconds of activity |
+| RTL/gate activity from **emulation** | $10$–$20\%$ | real software: boot, a game frame, an inference pass |
+| Gate-level + parasitics, real windows | $5$–$15\%$ | toggles *and* timing (glitch, §5) |
+
+The jump from short tests to emulation is the one that surprises people: a directed testbench keeps a block continuously busy and so **systematically over-estimates** $\alpha$ while **under-estimating** idle and clock-gated residency. Real software has phases — an OS timer tick that keeps a "mostly idle" cluster at 30 % clock activity, a driver bug that never lets a block reach its low-power state — and only long windows see them.
+
+**The worst case is also a vectored question.** Signoff needs not the *average* $\alpha$ but the *peak*, to size the power grid against dynamic IR drop. That peak is found with an adversarial **power-virus** vector — synthetic stimulus that maximizes $\alpha$ everywhere at once (all lanes computing, maximum-toggle data patterns). It is the vectored *upper* bound, in contrast to the average-activity estimate the battery-life model wants; the two live at opposite ends of the same vectored method, and the grid must survive the burst even though cooling only has to handle the average.
+
+### 2.1 The statistics of a finite window
+
+A vectored estimate is a *measurement over a finite sample*, so it carries sampling error, and that error is the mathematical form of the "coverage" blind spot. Treat a node's $0\!\to\!1$ events over $N$ cycles as Bernoulli with rate $\alpha$; the natural estimator $\hat\alpha = (\text{count})/N$ then has
+
+$$
+\operatorname{Var}[\hat\alpha] \approx \frac{\alpha(1-\alpha)}{N}, \qquad
+\frac{\text{SE}[\hat\alpha]}{\alpha} \approx \sqrt{\frac{1-\alpha}{\alpha\,N}}
+$$
+
+where $N$ = simulated cycles, $\alpha$ = true activity, SE = standard error. The relative error scales as $1/\sqrt{\alpha N}$, so **rare-toggling nets are the expensive ones**: a control net at $\alpha=10^{-3}$ needs on the order of $10^5$–$10^6$ cycles just to pin its activity to $\pm 10\%$, which a microsecond directed test cannot supply. This is the quantitative reason low-activity control and configuration logic is estimated badly by short simulation and why emulation (billions of cycles) exists — not to average a busy datapath more finely, but to *see the tail* at all.
+
+Sampling variance is the optimistic half of the story; the pessimistic half is **representativeness**. Even an infinite window of the *wrong* workload converges to the wrong $\alpha$, and the phase-to-phase swing between workloads dwarfs the within-workload noise. Hence the discipline of choosing power-representative windows (the SimPoint idea) rather than simply simulating longer: a well-placed $10\,\mu s$ window beats a poorly-placed millisecond.
+
+---
+
+## 3. Vectorless in theory: propagating probabilities through logic
+
+Vectorless estimation earns its speed by never simulating a vector — it computes each internal node's statistics directly from the inputs'. Given each primary input's signal probability, and *assuming the inputs are independent*, probability flows through the Boolean operators by a small algebra:
+
+$$
+\begin{aligned}
+\text{NOT: } & p_y = 1-p_a &
+\text{AND: } & p_y = p_a\,p_b \\
+\text{OR: } & p_y = 1-(1-p_a)(1-p_b) &
+\text{XOR: } & p_y = p_a + p_b - 2p_a p_b
+\end{aligned}
+$$
+
+where $p_a,p_b$ = input signal probabilities, $p_y$ = output. One topological pass yields $p$ at every node; feeding each $p$ into $\alpha = p(1-p)$ gives a first activity estimate.
+
+That last step secretly re-assumes temporal independence, so the rigorous formulation works in **transition density** instead of re-deriving $\alpha$ from $p$. Najm's result propagates activity through a gate via the *Boolean difference*: node $y$ can only toggle when it is *sensitive* to an input that toggled, and it is sensitive to $x_i$ exactly when $\partial y/\partial x_i = y|_{x_i=1}\oplus y|_{x_i=0}$ is true. For independent inputs,
+
+$$
+D(y) \;=\; \sum_i P\!\left(\frac{\partial y}{\partial x_i}\right) D(x_i)
+$$
+
+where $D(\cdot)$ = transition density (transitions per unit time) and $P(\partial y/\partial x_i)$ = signal probability of the Boolean difference (the fraction of the time $y$ is sensitive to $x_i$). The formula makes the character of each gate quantitative:
+
+- **XOR** ($y=a\oplus b$): $\partial y/\partial a \equiv 1$ — $y$ flips *whenever either input flips*, so $D(y)=D(a)+D(b)$. XOR **passes all activity through**, which is why adders, LFSRs, and crypto datapaths are activity hot-spots.
+- **AND** ($y=ab$): $\partial y/\partial a = b$, so $D(y)=p_b\,D(a)+p_a\,D(b)$. AND **attenuates** activity by the probability the *other* input is enabling — an AND with a mostly-0 input is a natural activity filter, the mechanism operand isolation and clock gating exploit.
+
+This is the whole theoretical spine of vectorless estimation: a single graph traversal, gate rules that either pass or attenuate density, and one load-bearing assumption — input independence — that §4 is about to break.
+
+---
+
+## 4. Why the estimate is hard: temporal and spatial correlation
+
+Both the memoryless model $\alpha=p(1-p)$ and the propagation algebra of §3 assume signals are independent — of their own past, and of each other. Real signals are neither, and the two failures have names.
+
+**Temporal correlation — a signal remembers its last value.** Real data has runs. A sign bit stays 0 through a long stretch of positive numbers; the MSBs of an up-counter almost never move while the LSB toggles every cycle. Such a signal can have $p=0.5$ yet an $\alpha$ far *below* the memoryless $0.25$, because "was 0, is 0" is the common case. The memoryless model, which assumes each cycle is an independent coin flip, systematically **over-estimates** the activity of slow-moving data and **under-estimates** bit-flipping counters. The fix is to characterize a signal by both $p$ and $\alpha$ independently (which SAIF does, recording time-at-1 *and* toggle count) rather than deriving one from the other.
+
+**Spatial correlation — signals share a source.** The product rule $p_y=p_a p_b$ is exact only when $a$ and $b$ are independent. At **reconvergent fanout** — where one signal fans out, passes through different logic, and meets itself downstream — they are not, and the error can be large. The textbook trap is $y = a \wedge \bar a$: the true answer is $p_y=0$, but blind propagation gives $p_a(1-p_a)$, a spurious activity out of thin air. Buses are correlated the same way (adjacent bits of an address move together), so treating them as independent nets mis-estimates the whole datapath.
+
+These two effects *are* the accuracy gap in the §2 table. A vectored simulation gets correlation for free — it is baked into the vectors, so the toggles it counts are the real, correlated ones. A vectorless estimator has to model correlation explicitly (pairwise correlation coefficients, supergate/BDD analysis of reconvergent regions) or accept the error, and modeling it fully is as expensive as the simulation it was trying to avoid. That is the fundamental reason vectorless is *fast but approximate* and vectored is *accurate but expensive* — not an implementation detail, but the independence assumption meeting real data.
+
+---
+
+## 5. Glitch power: the activity a zero-delay model can't see
+
+Everything so far counted *functional* transitions — one per node per cycle at most. Real gates also produce **glitches**: spurious extra transitions within a single cycle, and at advanced nodes they are not a rounding error but **25–40 % of dynamic power** in datapath-heavy blocks (higher still in GPU/video-class designs). They are also the hardest activity to predict, for a reason that cuts to the vectored/vectorless divide.
+
+**The mechanism is timing, not logic.** A gate whose inputs derive from a common source receives them with a time spread $\Delta t$ set by path-delay imbalance. If $\Delta t$ exceeds the gate's inertial (switching) delay $\tau$, the output pulses to a wrong value and back before settling — one glitch, drawing a full (or partial) $CV^2$ for a result that was never logically real.
 
 ```text
-P_block = sum over nets (alpha * C * Vdd^2 * f) + P_leak(block)
-
-A block's power is dominated by HOW ACTIVE it is (alpha, utilization),
-not just by what's instantiated. The same multiplier burns 10x different
-power at 5% vs 50% utilization.
-
-Stage 1 (Design Time)  : PREDICT per-block power from estimated activity
-Stage 2 (Verification) : MEASURE activity on real workloads, refine
-Stage 3 (Silicon)      : MONITOR activity live and CONTROL power with it
+   a ─────\
+           XOR ── y     a and b both rise, but b arrives ~80 ps late:
+   b ──╲    /           y pulses high for ~80 ps, then falls back —
+       (+80ps)          two spurious transitions, ~CV² wasted, no logical change
 ```
 
-This note covers all three. Cross-reference: [Power_Fundamentals](01_Power_Fundamentals.md)
-(activity factor physics), [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md)
-(SAIF (Switching Activity Interchange Format)/VCD (Value Change Dump) annotation mechanics), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md)
-(what to do about high activity).
+Two properties make glitches grow rather than average out:
+
+- **Amplification with depth.** A glitched output is an input to the next stage, which can glitch again. Through deep reconvergent structures — ripple-carry chains, Wallace-tree multipliers — glitches compound, and a single node can see *more than one* spurious transition per cycle. Arithmetic is the worst offender precisely because it is deep and reconvergent.
+- **Filtering weakens as nodes shrink.** A pulse narrower than $\tau$ is swallowed (inertial filtering). But scaling makes gates *faster* (smaller $\tau$) while wire delay spread grows, so each node filters *less* — which is why the glitch share of power has climbed with every process generation rather than staying put.
+
+**Why it defeats RTL power.** A zero-delay RTL simulation collapses every transition to an instant and lets them all happen simultaneously at the clock edge — so it can represent *no* glitch at all. RTL-derived power is therefore a **glitch-free lower bound**, and it under-estimates datapath power systematically. Seeing glitches requires timing, and that reopens the §2 fork:
+
+- **Vectored with timing** — gate-level simulation with SDF-back-annotated delays produces the real glitches, at real (slow) gate-sim speed. This is the only rung that sees them fully, which is why glitch power is fundamentally a *signoff* number.
+- **Vectorless with timing** — propagate arrival-time *windows* statistically through the timing graph and estimate expected spurious transitions per node, without vectors. Fast and approximate; the "glitch mode" in RTL/gate power tools. Signoff reports even split the result into *transparent* (full-swing) and *filtered* (partial-swing) glitches, since a partly-formed pulse still burns partial $CV^2$.
+
+The practical consequences flow to reduction, not estimation, and live in [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md): path balancing to equalize arrival times, operand isolation and don't-care gating to stop invalid data rippling through wide datapaths, and retiming to break deep combinational clouds. The device-level view of hazard switching is in [Power_Fundamentals §9](01_Power_Fundamentals.md).
 
 ---
 
-## 1. Activity Factor by Signal Class -- The Starting Intuition
+## 6. From $\alpha$ to block power: component decomposition
 
-| Signal class | Typical alpha (0->1 per cycle) | Notes |
-|--------------|-------------------------------|-------|
-| Clock nets | 1.0 | Toggles every cycle by definition (2 transitions = 1 full cycle) |
-| Clock enables / gated clock | = CGE-dependent | The whole point of clock gating |
-| Datapath (random data) | 0.25-0.5 | Random bit flips with p=0.5 give alpha=0.25 |
-| Datapath (real data) | 0.05-0.25 | Real data is correlated: sign bits, zero bytes |
-| Control / FSM | 0.02-0.10 | Mostly stable between events |
-| Config / CSR registers | <0.01 | Written rarely; prime clock-gating targets |
-| Reset, scan enable | ~0 | Static in functional mode |
-| Memory bitlines/wordlines | Access-rate dependent | Driven by transaction rate, not clock |
+The `sum over nets` picture of $P_{block}$ is conceptually right but is never evaluated net-by-net above gate level. Instead a block is broken into a handful of **component primitives**, each with its own model and — the reason this section belongs here — its own *source* for the three inputs $C$, $\alpha$, and leakage. This is exactly how McPAT and Wattch decompose a block architecturally and how PrimePower/Joules decompose it at RTL.
 
-**Key derived metric -- block activity ratio:** for a block, the fraction of cycles it
-performs useful work (issues an instruction, accepts a transaction, computes a MAC (multiply-accumulate)).
-Architecture teams call this *utilization*; power teams convert it to alpha through the
-block's power model. The two communities meeting at this number is exactly where
-"block activity power" questions come from in interviews.
+$$
+P_{\text{comp}} = \underbrace{\alpha\,C_{\text{eff}}\,V^2 f}_{\text{or } E_{\text{op}}\times(\text{access rate})} + \underbrace{N_{\text{dev}}\,I_{\text{leak}}(V_t,V,T)\,V}_{\text{static}}
+$$
 
----
+where $C_{\text{eff}}$ = effective switched capacitance (gate + wire), $E_{\text{op}}$ = characterized energy per access, $I_{\text{leak}}$ = per-device leakage. The inputs come from different places for different primitives:
 
-## 2. Design-Time: Per-Block, Per-Mode Power Modeling
+| Component | Dynamic model | Where $\alpha$ (activity) comes from |
+|---|---|---|
+| Combinational logic | $\alpha\,C_{\text{eff}}V^2 f$ per net, *including glitch* $CV^2$ | net annotation (SAIF) or vectorless propagation (§3) |
+| **Flip-flop + clock tree** | clock-pin $CV^2$ **every cycle** ($\alpha_{\text{clk}}=1$) + data-path $CV^2$ at $\alpha_{\text{data}}$ | clock-gating efficiency (CGE) from activity; **clock tree dominates** |
+| **SRAM / cache** | per-access read/write energy (**CACTI**: decoder + wordline + bitline + sense-amp) $\times$ access rate | access rate from perf sim or SAIF; leakage/retention often exceeds dynamic |
+| Interconnect / wire | $\alpha\,C_{\text{wire}}V^2 f$; long global wires dominate | net annotation or per-mm cap density |
+| I/O / PHY | energy per transition, often fixed mW/Gbps per lane | lane utilization from datasheet/IP characterization |
 
-### 2.1 The Mode/Block Power Matrix
+Two primitives concentrate the power, and both are structural rather than workload-driven — which is why they are the first levers:
 
-Every serious SoC (System on Chip) maintains a power model long before RTL (register-transfer level) is complete -- a matrix of
-blocks (rows) vs operating modes (columns):
+- **The clock tree is the headline.** Its net toggles every cycle by construction ($\alpha=1$) and it carries the largest fanout and total capacitance on the die (CTS buffers, every FF clock pin, the H-tree). So **clock power is commonly 30–40 % of total dynamic power**, higher in flop-dense, low-logic-depth blocks. This is the whole reason clock gating is the first-line dynamic-power lever ([Power_Reduction_Techniques §2](03_Power_Reduction_Techniques.md)): killing one node's clock removes its single biggest per-cycle energy term, guaranteed, independent of data.
+- **Memory arrays concentrate the rest.** [CACTI](https://en.wikipedia.org/wiki/CACTI) is the standard analytical model for array access energy — given (capacity, ports, banks, node) it sums decoder, wordline, **bitline** (the dominant term: precharge and discharge of long bitlines), sense-amp, and H-tree energy. In large arrays *leakage* and, in retention modes, retention power often exceed dynamic, which is why last-level caches are aggressively power-gated or held at low $V$ when idle.
 
-|  | Camera 4K | Video play | Gaming | Idle screen-on | Standby |
-|---|---|---|---|---|---|
-| CPU big cluster | 450 mW | 80 mW | 900 mW | 15 mW | 0 (PG) |
-| CPU LITTLE | 200 mW | 120 mW | 250 mW | 40 mW | 2 mW |
-| GPU | 150 mW | 60 mW | 1800 mW | 0 (PG) | 0 (PG) |
-| NPU | 800 mW | 0 (PG) | 50 mW | 0 (PG) | 0 (PG) |
-| ISP | 900 mW | 0 (PG) | 0 | 0 (PG) | 0 (PG) |
-| Video codec | 300 mW | 250 mW | 80 mW | 0 (PG) | 0 (PG) |
-| Memory ctrl+DRAM | 700 mW | 350 mW | 950 mW | 90 mW | 8 mW |
-| Display | 250 mW | 240 mW | 280 mW | 180 mW | 0 |
-| Always-on island | 10 mW | 10 mW | 10 mW | 10 mW | 3 mW |
-| TOTAL | ~3.8 W | ~1.1 W | ~4.3 W | ~0.34 W | ~13 mW |
-
-Each cell = (block's C_eff and leakage) x (activity in that mode) x (V,f in that mode).
-This matrix drives: battery-life projections, thermal design, PMIC (power management integrated circuit) rail planning,
-per-block power BUDGETS handed to design teams, and the UPF (Unified Power Format) power-state table.
-
-```text
-Per-block budget flowdown (what a mid-level engineer owns):
-  SoC budget 4.3W gaming -> GPU gets 1.8W -> shader array gets 1.2W
-  -> Your block gets 85 mW at 800 MHz, 0.75V, with an assumed 40% activity.
-  -> You sign off against it at every netlist drop, and explain every
-     regression (new feature? activity assumption broke? clock gating lost?).
-```
-
-### 2.2 Where the Activity Numbers Come From (Before Silicon)
-
-```text
-Quality ladder (worst to best):
-1. Analytical guess                   : utilization assumptions from performance models
-                                        (spreadsheet alpha per sub-block)                      -> Error: 2x or worse
-2. Architectural simulator traces     : per-block event counts (cache accesses, ALU issues)
-                                        x energy-per-event                                     -> Error: 30-50%
-3. RTL simulation activity            : SAIF/FSDB on short directed tests                      -> Error: 20-30%
-4. RTL/gate activity from EMULATION   : on real software (boot, game frame, LLM inference)     -> Error: 10-20%
-5. Gate-level + parasitics            : real workload windows                                  -> Error: 5-15%
-```
-
-The jump from (3) to (4) matters: short testbenches systematically OVERESTIMATE
-activity (they exercise the block continuously) and UNDERESTIMATE idle/clock-gated
-residency. Real software has phases.
+Everything else in the block is combinational logic and wires, whose power the earlier sections were about estimating.
 
 ---
 
-## 3. RTL Power Estimation -- The Shift-Left Toolchain
+## 7. The fidelity ladder: architectural → RTL → gate → SPICE
 
-Waiting for gate-level signoff to discover a power bust is a schedule disaster, so the
-industry runs power analysis from RTL onward. Current tool landscape (2025-2026):
+Because activity gets more real and structure gets more detailed as a design firms up, power estimation is a ladder you descend over the project, trading runtime for fidelity — the same speed↔accuracy ladder as [performance modeling](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md#1-the-modeling-fidelity-ladder). Each rung needs both a *structural* model (what is instantiated) and an *activity* source (this whole page).
 
-| Tool | Vendor | Notes |
-|------|--------|-------|
-| PrimePower RTL | Synopsys | RTL power with implementation-calibrated models; feeds the same engine as gate-level PrimePower signoff |
-| Joules (+ Joules RTL Design Studio) | Cadence | Time-based RTL power; integrates with Genus/Innovus models; guidance for gating fixes |
-| PowerArtist | Keysight (acquired from Ansys, 2025 -- divested as a condition of the Synopsys-Ansys merger) | The classic RTL design-for-power platform: analysis + automatic reduction guidance |
-| PowerPro | Siemens EDA | Sequential/observability-based gating analysis and insertion (SLEC-verified) |
+| Level | Example | Accuracy | Speed | Activity source |
+|---|---|---|---|---|
+| **Architectural** | McPAT, Wattch (+CACTI for arrays) | $\pm 20$–$30\%$ (worse un-calibrated) | instant | event counts from a perf simulator (gem5/Sniper) — *not* real toggles |
+| **RTL power** | PrimePower RTL, Joules, PowerArtist | $\pm 10$–$20\%$ vs gates | minutes–hours | RTL-sim SAIF/FSDB or emulation activity |
+| **Gate-level** | PrimePower, Voltus | $\pm 5$–$10\%$ (signoff) | hours–days | SDF-annotated gate sim — **the only rung that sees glitch** (§5) |
+| **SPICE** | HSPICE, Spectre | golden per-cell | impractical above small blocks | actual transient waveforms |
 
-```verilog
-What RTL power tools actually do:
-1. Elaborate RTL, do a fast synthesis-like mapping to estimate gates/wires.
-2. Read activity (RTL sim FSDB/SAIF, or emulation activity database).
-3. Report per-hierarchy: dynamic power, leakage, CLOCK power split,
-   clock-gating efficiency, memory access power.
-4. Flag reduction opportunities:
-   - FFs clocking with stable D (wasted clock)      -> Gating candidates
-   - Memories read every cycle but data used rarely -> Access gating
-   - High-toggle nets feeding disabled logic        -> Operand isolation
+Two things about this ladder carry the design decisions:
 
-Accuracy: typically within 10-20% of gate-level if activity is realistic --
-good enough to TREND and to catch architecture-level regressions.
-```
+**Why shift left.** Discovering a power bust at gate-level signoff is a schedule disaster, so the industry runs RTL power from the moment RTL exists — its $\pm 10$–$20\%$ accuracy is enough to *trend* and to catch architecture-level regressions even though it cannot sign off. Mature teams run RTL power on fixed workload snippets at every RTL drop with a per-block budget, so a merge that drops clock-gating efficiency from 78 % to 60 % is flagged like a failing test. The vendor tool you use matters far less than feeding it *realistic activity*: the number is only as good as the vectors or the input statistics behind it.
 
-**Power regression in CI:** mature teams run RTL power on fixed workload snippets at
-every RTL drop, with budgets per block. A merge that drops CGE (clock-gating efficiency) from 78% to 60% gets
-flagged like a failing test. Being able to describe this flow is a strong mid-level
-interview signal.
+**The calibration chain.** Each rung is anchored by the one below it. SPICE characterizes the `.lib` energy and leakage tables; those feed gate-level signoff; gate-level results calibrate the RTL-power models; RTL and silicon results calibrate the architectural coefficients. An un-calibrated McPAT run can be $2\times$ off — the same trap as an un-validated cycle-accurate performance model — because a bottom-up architectural model is a stack of assumptions with no measurement holding it down. The chain continues past tape-out: in silicon the same weighted-activity idea reappears as an on-die **power proxy** ($\hat P = w_0 + \sum_i w_i\,\text{event}_i$, weights fit to measured power), closing the loop by feeding real activity back to re-anchor the models — but that live estimation, and the closed-loop management it drives, belong to the reduction and signoff pages, not here.
+
+The mechanics of the activity files themselves — SAIF's backward/forward annotation, the toggle/time-at-1 fields, VCD/FSDB capture — are in [Power_Analysis_and_Signoff §2](05_Power_Analysis_and_Signoff.md). Composing these per-block estimates into a full chip, with the contention and DVFS-budget layers that make it more than a sum, is [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md).
 
 ---
 
-## 4. Glitch Power -- The Activity You Didn't Mean to Have
+## 8. Numbers to memorize
 
-A glitch is a spurious transition: a gate output toggles 2+ times in one cycle because
-its inputs arrive at different times, before settling to the final value. The wasted
-charge is real power.
-
-```verilog
-       a ----\ 
-              XOR ---- y        a and b both rise, but b arrives 80 ps late:
-       b ----/                  y pulses high for 80 ps -> 2 extra transitions
-
-Glitch Generation  : Unequal arrival times at reconvergent logic.
-Glitch PROPAGATION : Downstream gates re-toggle too (amplifies through arithmetic: 
-                     adder carry chains, multiplier arrays are the worst -- deep 
-                     reconvergent structures).
-Inertial Filtering : A pulse shorter than a gate's switching delay dies out; 
-                     at advanced nodes gates are FAST, so more glitches survive 
-                     and propagate further.
-```
-
-**Why it's a headline topic now:** at 7nm and below, glitch power is commonly **25-40%
-of dynamic power** in datapath-heavy designs (GPU/video-class blocks reported worst).
-It grew because logic got faster (less filtering), wires got relatively slower (more
-arrival-time spread), and datapaths got wider.
-
-**Measurement subtlety (interview checkpoint):**
-```text
-Zero-delay RTL simulation CANNOT see glitches (all transitions instantaneous)
-  -> RTL-based power UNDERESTIMATES datapath power systematically
-
-Options:
-  - Gate-level sim with SDF timing          : Real glitches, but slow.
-  - Vectorless/statistical glitch estimation: In power tools (propagate arrival-time windows; 
-                                              PrimePower/Joules support glitch modes).
-  - Delay-annotated emulation hybrids       : Alternative solution.
-
-A "transparent" (full-swing) vs "filtered" (partial-swing) glitch split is
-reported by signoff tools; filtered glitches still burn partial CV^2.
-```
-
-**Reduction techniques:** path balancing (equalize arrival times into reconvergent
-logic), operand isolation, register retiming to cut deep combinational clouds,
-gating-off of don't-care inputs, and at the architecture level: avoid letting wide
-datapaths free-run on invalid data (the same valid-gating that helps clock power).
+| Quantity | Value | Why (section) |
+|---|---|---|
+| Activity factor definition | $\alpha=P(0\!\to\!1)=p(1-p)$, memoryless | §1 |
+| Random-data $\alpha$ (max of $p(1-p)$) | $0.25$ at $p=0.5$ | §1 |
+| Real-data datapath $\alpha$ | $0.05$–$0.25$ (correlation pulls it down) | §1, §4 |
+| Clock-net $\alpha$ | $1.0$ (one charging edge/cycle) | §1, §6 |
+| Toggle rate vs $\alpha$ | toggle rate $=2\alpha$ (both edges) | §1 |
+| Clock-tree share of dynamic power | $30$–$40\%$ (higher in flop-dense blocks) | §6 |
+| Glitch share, $\le 7$ nm datapath | $25$–$40\%$ (up to $\sim 60\%$ GPU-class) | §5 |
+| Vectorless vs vectored accuracy gap | $\sim 10$–$20\%$ when correlation matters | §2, §4 |
+| RTL power accuracy vs gate-level | $\pm 10$–$20\%$ | §7 |
+| Gate-level signoff accuracy | $\pm 5$–$10\%$ | §7 |
+| Architectural (McPAT) accuracy | $\pm 20$–$30\%$ calibrated ($2\times$ un-cal.) | §7 |
+| Finite-window relative error | $\propto \sqrt{(1-\alpha)/(\alpha N)}$ | §2.1 |
+| Emulation vs simulation scale | $10^{9}$+ cycles vs $10^{5}$–$10^{6}$ | §2 |
+| Density through XOR / AND | XOR passes 100 %; AND attenuates by enabling-input $p$ | §3 |
 
 ---
 
-## 5. Emulation-Based Power -- Activity at Software Scale
+## 9. Cross-references
 
-Simulation gives you microseconds of activity; real power questions need *seconds* of
-software: OS boot, a game frame, an LLM inference pass, a 5G call.
-
-```text
-Flow (all vendors have an equivalent):
-  1. Map RTL onto emulator (Cadence Palladium, Siemens Veloce, Synopsys ZeBu).
-  2. Run REAL workload: billions of cycles.
-  3. Emulator streams a compact activity database (toggle counts per net per time 
-     window -- e.g., Palladium DPA, "Dynamic Power Analysis").
-  4. Power tool (Joules / PrimePower / PowerArtist) converts windowed activity 
-     -> power-over-time waveform per block.
-  5. Find: peak windows (which 10 us window draws max power?), average per phase, 
-     idle residency, CGE on real software.
-
-What it catches that simulation never will:
-  - The OS timer tick that keeps a "mostly idle" cluster at 30% clock activity.
-  - A driver bug that never lets the GPU enter its low-power state.
-  - DVFS governor thrash between operating points.
-  - The true peak window to feed dynamic IR drop signoff (vectors that actually 
-    happen, vs synthetic worst-case).
-```
+- **Down the stack (the physics these estimates rest on):** [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $\tfrac12 CV^2$ dissipated per transition and the leakage that sets the static term), [Power_Fundamentals](01_Power_Fundamentals.md) (the switching-power derivation, hazard/glitch fundamentals §9, and the total-power equation this page supplies the $\alpha$ for).
+- **Up the stack (what consumes the estimate):** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics and the peak-activity vectors that drive dynamic IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (clock gating, operand isolation, and path balancing — what you *do* about the high-$\alpha$ nets and glitches this page finds), [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md) (composes per-block $\alpha C V^2 f$ into a chip with contention and DVFS layers).
+- **Adjacent:** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) (the same fidelity ladder, and the event counts / utilization an architectural power model turns into $\alpha$).
 
 ---
 
-## 6. Silicon: On-Die Activity Monitoring and Power Telemetry
-
-Once the chip exists, activity becomes something you MEASURE and CONTROL against.
-
-### 6.1 The Monitoring Stack
-
-1. **Performance/activity counters** (per block)
-   - issue counts, cache accesses, FLOP counts, busy/idle residency
-   - free byproduct of the microarchitecture; coarse but cheap
-
-2. **Digital power meters** (DPM) / energy counters
-   - Hardware computes a POWER PROXY each cycle: a weighted sum of selected activity signals, weights fit during characterization so the proxy tracks true power within a few % P_proxy = w0 + sum_i ( w_i * event_i )    (per block, per cycle)
-   - Accumulated into energy counters firmware can read (e.g., the model behind Intel RAPL (Running Average Power Limit) energy reporting on modern parts)
-   - Fast (ns-us) and per-block -- this IS "block activity power" in silicon
-
-3. **Analog telemetry**
-   - VRM/PMIC current sense (board-level truth, but ms-slow and per-rail)
-   - On-die voltage droop monitors, thermal sensor grids (10s per die)
-
-4. **Speed monitors**
-   - Ring oscillators / critical-path replicas: how fast IS this silicon at this V,T -- closes the AVS/AVFS (adaptive voltage/frequency scaling) loop
-
-### 6.2 Closed-Loop Uses
-
-```text
-Power capping      : Firmware keeps a sliding-window average below a limit (Intel RAPL power limits; 
-                     NVIDIA power limit / nvidia-smi; AMD PPT). Enforced by DVFS backoff.
-Current limiting   : Protect the VRM and package: peak current (EDC) and sustained current (TDC) 
-                     limits trigger fast clock throttle.
-Thermal control    : Sensor grid -> throttle or migrate work before Tj_max.
-Energy attribution : Per-block energy counters let the OS/scheduler bill energy to processes/VMs 
-                     and let cloud operators meter it.
-Turbo/boost        : The INVERSE use -- spend the headroom: if telemetry says power/thermal/current 
-                     budgets have slack, raise V/f (all modern boost algorithms are telemetry-driven).
-```
-
-**The reaction-time hierarchy (memorize this -- it organizes every PM interview answer):**
-
-| Timescale | Phenomenon | Mechanism |
-|-----------|------------|-----------|
-| ns | di/dt first droop | decap; droop detector + adaptive clock stretch |
-| us | load steps, rail settling | regulator loop; fast DVFS (IVR/DLVR) |
-| ms | workload phases | firmware DVFS governor, power capping |
-| 100ms-s | thermal time constants | thermal throttling, fan/cooling control |
-| s-min | job/rack level | scheduler placement, rack power smoothing |
-
-### 6.3 Worked Example: Power Proxy Design
-
-```text
-Task: Build a power proxy for a matrix-multiply engine block.
-Candidate events: mac_issue_count, operand_sram_rd, operand_sram_wr, accum_writeback, clk_enabled_cycles
-
-1. Run characterization workloads on silicon (or gate-level power on the same windows), 
-   recording true block power + event counts per window.
-2. Least-squares fit weights w_i (per voltage/frequency point, or normalize events by 
-   f and fit in energy units).
-3. Validate on held-out workloads: target within ~3-5% of measured power.
-4. Hardware: multiply-accumulate of ~5-10 counters x constants per window (trivial area, 
-   runs continuously).
-
-Why not just measure current? Per-block attribution (one rail feeds many blocks), and 
-speed (proxy updates every window; VRM telemetry is ms-slow and noisy). The proxy plus 
-occasional analog calibration is the standard.
-```
-
----
-
-## 7. Component-Level Power Models -- Building P_block Bottom-Up
-
-The `sum over nets` formula is conceptually right but never evaluated net-by-net at
-the architecture or RTL level. Instead power is built from a handful of *component
-primitives*, each with its own model and its own source for the three inputs (C, alpha,
-leakage). This is exactly how McPAT/Wattch (architectural) and PrimePower/Joules (RTL)
-decompose a block.
-
-```verilog
-For each component:  P = P_dyn + P_leak
-                     P_dyn = E_op * (access rate)  OR  alpha * C * Vdd^2 * f
-                     P_leak = N_dev * I_leak(Vt, V, T) * Vdd
-
-Where each input comes from:
-  C            <- Parasitic extraction (RC) for gate-level; library C_load + wire-load
-                  models for RTL; analytical area * cap-density for architectural.
-  E_op         <- Characterized .lib energy tables (per-cell switching energy),
-                  or CACTI/closed-form for arrays.
-  alpha (act.) <- SAIF/FSDB annotation (sim/emulation), or event counts from a perf
-                  simulator (architectural), or assumed utilization (spreadsheet).
-  I_leak       <- .lib leakage tables, per Vt flavor, scaled by state + temperature.
-```
-
-| Component | Dynamic model | Leakage / static | Where the inputs come from |
-|-----------|---------------|------------------|----------------------------|
-| **Combinational logic** | `alpha*C_eff*Vdd^2*f` per net; C_eff = gate input caps + wire C; includes glitch CV^2 | sub-threshold + gate leakage per cell, Vt-mix dependent | C from extraction (.spef) or wire-load; alpha from annotation; E from .lib cell tables |
-| **Flip-flop + clock tree** | per-FF: clock-pin CV^2 every cycle (alpha_clk=1 unless gated) + data-path CV^2 at alpha_data; **clock tree CV^2 dominates** | small | clock net C from CTS/extraction; gating efficiency (CGE) from activity |
-| **SRAM / cache** | per-access read/write energy from **CACTI** (bitline + wordline + sense-amp + decoder + H-tree), times access rate | bitcell leakage (huge in large arrays) + **retention** power in drowsy/light-sleep | CACTI model (size, banks, ports, tech node); access rate from perf sim / SAIF |
-| **Interconnect / wire** | `alpha*C_wire*Vdd^2*f`; repeaters add cell energy; long global wires dominate datapath C | repeater leakage | C_wire from extraction or per-mm cap density; alpha from net annotation |
-| **I/O / PHY** | termination + driver energy per transition; often a fixed mW/Gbps per lane | bias currents (analog, ~always on) | datasheet / IP characterization; lane utilization |
-
-**Clock-tree power is the headline.** The clock net toggles every cycle by definition
-(`alpha_clk = 1.0`), it has the largest fanout and total capacitance on the die (CTS
-buffers + all FF clock pins + the H-tree wires), so **clock power is commonly 30-40% of
-total dynamic power** (higher in flop-dense, low-logic-depth designs). This is *why*
-clock gating is the first-line dynamic-power lever (see
-[Power_Reduction_Techniques](03_Power_Reduction_Techniques.md)): killing a cycle of clock
-toggling on a gated FF removes the single biggest per-FF energy term.
-
-**SRAM detail (CACTI's role).** [CACTI](https://en.wikipedia.org/wiki/CACTI) is the
-standard analytical model for SRAM/cache access energy, delay, and area: given
-(capacity, block size, associativity, #banks/ports, tech node) it returns per-read and
-per-write energy by summing decoder, wordline, bitline (the dominant term -- precharge
-+ discharge of long bitlines), sense-amp, and H-tree distribution energy. McPAT calls
-CACTI for every array (regfile, caches, TLBs (translation lookaside buffers), buffers). For arrays, leakage and (in
-drowsy/retention modes) *retention* power often exceed dynamic in idle-heavy blocks --
-the reason large LLCs (last-level caches) are aggressively power-gated way down or retained at low Vdd.
-
----
-
-## 8. The Power-Modeling Abstraction Ladder
-
-Power modeling has the same speed<->accuracy ladder as the performance modeling in
-[Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md#1-the-modeling-fidelity-ladder)
--- and you move *down* it as the design firms up, trading runtime for fidelity. Each
-rung needs both a structural model (what's instantiated) and an activity source.
-
-| Level | Tool / example | Fidelity | Speed | Activity source |
-|-------|----------------|----------|-------|-----------------|
-| **Architectural** | **McPAT**, **Wattch** (+ **CACTI** for arrays, Orion/DSENT for NoC) | ±20-30% (un-calibrated worse) | instant (per-design-point) | event counts from a perf simulator (gem5/Sniper): cache accesses, ALU issues, regfile reads |
-| **RTL power** | PrimePower RTL, Cadence **Joules**, **PowerArtist** (Keysight), PowerPro (Siemens) | ±10-20% vs gates (good activity) | minutes-hours | RTL sim SAIF/FSDB or emulation activity DB |
-| **Gate-level** | **PrimePower** / PrimeTime-PX (Synopsys), Cadence Voltus/Joules gate mode | ±5-10% (signoff) | hours-days | SDF-annotated gate sim VCD/SAIF (captures glitch) |
-| **SPICE / circuit** | HSPICE, Spectre, FineSim | golden (per-cell) | impractical above small blocks | actual transient waveforms |
-
-- **Architectural (McPAT-style)** = `sum over components ( events_c * E_op,c ) + leakage`
-   - bottom-up: each component's E_op from CACTI/closed-form, area-derived caps
-   - activity = performance-counter / simulator event counts (NOT real toggles)
-   - used in early DSE (design-space exploration): power as a first-class axis alongside perf and area
-- **RTL power** = `fast-map RTL to gates, annotate real toggles -> per-hierarchy power`
-- **Gate PrimePower** = `mapped netlist + .spef parasitics + .lib energy + SDF activity`
-   - this is signoff; the only rung that sees real glitch power (Section 4)
-- **SPICE** = `ground truth, used to CHARACTERIZE the .lib tables the upper rungs trust`
-
-**The calibration chain:** SPICE characterizes the `.lib` energy/leakage tables; those
-feed gate-level PrimePower; gate-level results calibrate the RTL-power models; RTL/silicon
-results calibrate the architectural McPAT coefficients. Each rung is only as good as the
-rung below that anchored it -- an un-calibrated McPAT run can be 2x off, the same trap as
-an un-validated cycle-accurate performance model.
-
----
-
-## 9. Dynamic Power Management (DPM) -- Modeling Idleness as a State Machine
-
-Sections 1-8 model power *while a block works*. But **real workloads are idle-dominated**
--- a CPU, GPU, or NPU (neural processing unit) spends most wall-clock time waiting (between frames, between
-requests, between training steps). A peak-power or even average-active model says nothing
-about the energy of those idle gaps, and *that energy is often the majority of the total*.
-DPM is the discipline of spending idleness: detect idle, transition to a low-power state,
-wake up in time. The canonical framework is Benini, Bogliolo & De Micheli's *Survey of
-Design Techniques for System-Level Dynamic Power Management* (IEEE TVLSI, 2000).
-
-### 9.1 The Power State Machine (PSM)
-
-A power-manageable component is modeled as a finite-state machine. Each **state** has a
-power level; each **transition** has an energy and a latency cost (you pay to go to sleep
-and, more expensively, to wake up).
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-stateDiagram-v2
-    direction LR
-    ACTIVE: ACTIVE · P_on
-    SLEEP: SLEEP · P_off
-    ACTIVE --> SLEEP: sleep (T_sl, E_sl)
-    SLEEP --> ACTIVE: wake (T_wake, E_wake)
-```
-
-States carry `P_state`; edges carry `T_trans, E_trans`. Real components have many inactive states (idle/clock-gated, retention, deep-sleep, off): a deeper state means lower `P_state` but longer `T_wake` and larger `E_wake`. Example — StrongARM SA-1100: RUN ≈ 400 mW, IDLE ≈ 50 mW (fast exit), SLEEP ≈ 0.16 mW (slow, costly wake-up). Idle is cheap to enter/exit; Sleep saves ~3000× power but its wake cost is large — in a two-state On/Off reduction the SA-1100 Sleep break-even time is ~160 ms, so only idle gaps longer than that pay off.
-
-### 9.2 Break-Even Time -- When Is Sleeping Worth It?
-
-The core decision metric. The **break-even time** `T_be` is the minimum idle duration for
-which entering a low-power state actually saves energy, after paying the transition cost.
-If an idle period is shorter than `T_be`, sleeping *costs* more than it saves (you burn
-wake-up energy for nothing) -- you must stay awake.
-
-```text
-Two-state derivation (ACTIVE P_on <-> SLEEP P_off, transition time T_tr, transition power P_tr):
-
-  Energy if you STAY AWAKE for idle time T_idle:     E_stay  = P_on  * T_idle
-  Energy if you SLEEP (enter+exit cost + residency):  E_sleep = P_tr*T_tr + P_off*(T_idle - T_tr)
-
-  Sleeping wins when E_sleep < E_stay. Setting equal and solving for the idle time:
-
-           ___________________________________
-          |                                    |
-          |   T_be = T_tr  +  T_tr * (P_tr - P_on)          ... if P_tr > P_on (overhead)
-          |                    -----------------                                              |
-          |                       (P_on - P_off)                                              |
-          |___________________________________|
-
-  - When transition power P_tr <= P_on (e.g. SA-1100, where wake power ~= run power),
-    T_be reduces to just T_tr -- the latency itself is the whole barrier.
-  - When there's extra wake energy (mechanical inertia: disks; or large rush current),
-    the second term adds the time needed to amortize that excess.
-  - DEEPER states have larger T_tr/E_wake => larger T_be => need LONGER idle gaps to pay off.
-```
-
-Rationale, stated plainly: DPM **trades wake-up latency (a performance/responsiveness
-cost) against leakage + idle-clock savings**. The break-even time quantifies that trade.
-The whole game is predicting whether the *upcoming* idle period exceeds `T_be`.
-
-### 9.3 The Three Policy Classes (Governors)
-
-You don't know the future idle length, so a **policy** must guess. The survey's taxonomy:
-
-| Class | Mechanism | Pro | Con |
-|-------|-----------|-----|-----|
-| **Timeout** | Sleep after the block has been idle `T_timeout` (often `T_timeout = T_be`) | simple, workload-agnostic, *safe* (tune by raising timeout) | wastes the timeout window of power every idle period; trades efficiency for safety. Karlin's result: timeout = T_be is **2-competitive** (<=2x ideal energy) |
-| **Predictive** | Predict the idle length from history (e.g. short busy => long idle), sleep *immediately* if predicted idle > T_be | no wasted timeout window; can wake *before* the request (hide T_wake) | mispredicts: **over-prediction** = performance penalty (woke late), **under-prediction** = wasted power. Quality = safety vs efficiency |
-| **Stochastic (MDP)** | Model workload + PSM as a Markov Decision Process; solve for the policy minimizing expected energy under a performance constraint | provably optimal for the modeled distribution; handles multi-state and constraints natively | needs a workload model; optimum only as good as the model; non-stationary workloads need adaptation |
-
-```text
-Energy accounting for ANY policy over a run:
-  E_total = sum over states (residency_s * P_state,s) + sum over transitions (N_trans * E_trans)
-            \________________ time IN states _______/   \____ cost of MOVING between states ____/
-
-  A good policy maximizes residency in deep states for idle gaps > T_be while keeping the
-  transition-energy term (and the latency it implies) small.
-```
-
-### 9.4 CPU Instantiation -- C-states, P-states, and the PCU
-
-The CPU is the most-engineered DPM instance, split into two orthogonal axes:
-
-- **ACPI (Advanced Configuration and Power Interface) C-states** = `the IDLE PSM (DPM proper -- "how asleep when not running")`
-   - C0 = active (executing).  C1 = halt (clock-gated core).  C3/C6/C7... = deeper:
-   - flush caches, power-gate the core, save state -> lower P_off but larger T_wake.
-   - Deeper C-state <-> larger break-even time: the OS/firmware idle governor (e.g. Linux
-   - 'menu'/'TEO' cpuidle) PREDICTS the idle duration and picks the deepest C-state whose
-   - T_be fits -- a literal predictive DPM governor (Section 9.3).
-
-- **ACPI P-states** = `DVFS while ACTIVE (voltage/frequency operating points, NOT idle)`
-   - P0 highest V/f ... Pn lowest. Reduces alpha*C*V^2*f when running but slower.
-   - (DVFS (Dynamic Voltage and Frequency Scaling) is detailed in Power_Reduction_Techniques; counters drive P-state choice -- see Q8.)
-
-Package C-states (PC2/PC6...) = the WHOLE-PACKAGE PSM: once ALL cores are in a deep
-core C-state, the UNCORE (LLC, ring/mesh, memory controller, PLLs) can also retire to
-a package-level low-power state. Bigger savings, bigger wake cost -- a higher-T_be PSM.
-
-The PCU (Power Control Unit) / PMU = the on-die microcontroller running these governors:
-reads telemetry + counters (Section 6.2), enforces C-state/P-state transitions, power
-caps (RAPL), and turbo. It IS the hardware power manager of the PSM.
-
-This makes Section 6's telemetry and Section 9's PSM one loop: the PCU *measures* activity
-(proxies/counters) and *acts* on the PSM (C/P-states) -- estimate -> monitor -> manage.
-
----
-
-## 10. Counter-Based Power Proxies -- Runtime / Online Power
-
-Online power management (Section 9) needs power *now*, per block, far faster and cheaper
-than analog current sense. The answer is a **power proxy**: a weighted sum of activity
-counters whose weights are fit (offline) so the proxy tracks true power. This generalizes
-the digital power meter of Section 6.2 and is the standard industrial mechanism.
-
-```text
-P_proxy = w0 + sum_i (w_i * event_i)
-
-events = issue counts, cache/SRAM accesses, FP-width usage, clk-enabled cycles, ...
-Weights w_i fit by least-squares against measured/gate-level power per (V,f) point;
-accumulated into an ENERGY counter firmware reads. Accuracy ~3-5% on held-out workloads.
-```
-
-| Mechanism | What it is | Notes |
-|-----------|-----------|-------|
-| **Intel RAPL** (Running Average Power Limit) | Per-domain energy counters + power-limit registers, exposed via MSRs, updated ~1 ms | Domains: **PKG** (whole socket), **PP0** (cores), **PP1** (iGPU, client parts), **DRAM** (server). Early parts used a counter-based *model*; later parts blend on-die sensing. Drives power *capping* (PL1 sustained / PL2 burst), enforced by the PCU via DVFS backoff |
-| **IBM POWER on-die "power proxy"** | Per-core hardware estimator: weighted sum of activity events accumulated continuously | Feeds the on-chip power-management controller (OCC) for per-core DVFS, capping, and idle management -- a textbook silicon power proxy |
-| **Performance-counter regression models** | Software/OS builds a linear (or ML) model from existing PMU counters (IPC, LLC misses, etc.) to estimate power without dedicated HW | Used where no energy counter exists; the per-process/per-VM **energy attribution** and cloud metering mechanism |
-
-The deliberate trade: a proxy gives **per-block attribution** (one VRM (voltage regulator module) rail feeds many
-blocks, so analog sense can't separate them) and **speed** (per-window vs ms-slow, noisy
-rail telemetry). Standard practice pairs a fast proxy with occasional analog calibration.
-
----
-
-## 11. Per-Architecture Block Power -- CPU, GPU, NPU
-
-The same $P = \alpha C V^2 f + \text{leak}$ and PSM machinery, instantiated per architecture.
-The art is mapping *occupancy/utilization* (the architecture team's number) to per-block
-alpha (the power team's number) -- the bridge this whole page is about.
-
-> **Composing these per-block numbers into a full chip** (CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod) — plus the contention, overlap, DVFS-budget, and thermal-coupling layers that make it a *chip* model, not a sum of blocks — is [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md).
-
-```text
-CPU (P_core + P_caches + P_uncore)
-  core           : fetch/decode/rename/issue/ALU/FPU/LSU -- per-unit E_op * access counts
-                   (McPAT decomposition); clock tree 30-40% (Section 7)
-  caches         : L1/L2 per-access (CACTI) + LLC leakage/retention (often power-gated down)
-  uncore         : ring/mesh NoC, memory controller, PLLs -- significant FIXED + idle floor;
-                   only retired in package C-states (Section 9.4)
-  activity from  : perf counters (issue/access rates) -> proxy (Section 10)
-
-GPU (SM/CU array + register file + shared mem + L2 + HBM)
-  SM array       : thousands of lanes; power scales with OCCUPANCY (active warps/SM) ->
-                   alpha. Low occupancy = idle lanes = wasted leakage + clock
-  register file  : huge, multi-ported SRAM -- a top energy consumer (CACTI-modeled);
-                   read/write per instruction operand
-  shared mem/L2  : per-access energy; bank-conflict stalls lower effective activity
-  HBM            : pJ/bit * bytes moved -- bandwidth-bound phases are HBM-power-bound
-  capping        : NVIDIA power limit / nvidia-smi enforce a board cap via DVFS (Section 6.2)
-
-NPU (systolic/MAC array + vector unit + on-chip SRAM + HBM + ICI)
-  systolic array : alpha ~ MAC-array utilization for the operator (a 256x256 array at 40%
-                   mapping efficiency burns clock+leakage on 60% idle PEs)
-  vector/SFU     : activation/normalization -- bursty, lower duty cycle
-  SRAM (scratch) : weight/activation buffers -- CACTI per-access + retention
-  HBM + ICI      : off-chip + inter-chip (NVLink/ICI) energy per byte; collective/comm
-                   phases are interconnect-power-bound, compute idle
-                   
-  POWER IS OPERATOR-LEVEL: each layer (GEMM vs attention vs elementwise) has a distinct
-  block-activity signature -- exactly what an operator-level perf+power model predicts.
-  Cross-link: the NeuSim operator-level example in [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md)
-  produces the per-operator activity these NPU block-power numbers consume.
-```
-
-**NPU power gating is a fine-grained DPM instance.** Because an NPU's array is idle
-during memory-bound or communication phases, accelerators power-gate (or clock-gate)
-unused PE (processing element) tiles, vector units, and SRAM banks at sub-operator granularity. This is the
-PSM of Section 9 applied per-tile: each tile has active/clock-gated/power-gated states
-with their own break-even times, and the dataflow schedule effectively *is* the DPM
-policy -- it decides which tiles sleep when, and for how long (must exceed the tile's
-`T_be`). DVFS across the array adds the P-state axis.
-
----
-
-## 12. Peak Power, Power Virus, and TDP -- Block Activity at Its Worst
-
-```text
-Hierarchy of power numbers for one chip (illustrative ratios):
-  Idle                               ~0.05-0.15x TDP
-  Typical application                ~0.4-0.7x TDP
-  TDP (thermal design power)          1.0x  -- sustained cooling design point
-  Electrical design max (Pmax/EDP)    1.3-2.5x TDP -- worst realistic burst
-  Power virus ceiling                 up to ~2-3x TDP -- adversarial
-
-Power virus: A synthetic workload that maximizes alpha everywhere at once --
-all lanes computing, all caches missing, maximum toggle data patterns.
-Used ON PURPOSE for: dynamic IR signoff vectors, VRM/package stress test,
-throttling-mechanism validation. Guarded against in production by EDC/TDC
-current limits and fast throttle (chips are NOT built to sustain it).
-
-Why TDP < Pmax is fine: Thermal time constants are long (the heatsink
-averages over seconds), but the POWER DELIVERY must survive the burst --
-hence different limits enforced at different timescales (PL1/PL2-style
-sustained vs burst limits, peak current throttle at us scale).
-```
-
-**AI-cluster extension:** when thousands of accelerators synchronize (training), the
-burst/idle pattern that power limits handle per-chip becomes a megawatt square wave at
-the facility. See the DVFS section of
-[Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (GB300 NVL72 power
-smoothing: per-GPU energy storage, ramp-limited caps, controlled burn-down) and the
-AI-infra notes on rack-scale design -- interviewers for AI-hardware roles love this
-bridge.
-
----
-
-## 13. Numbers to Remember
-
-| Quantity | Value |
-|----------|-------|
-| Datapath alpha, real data | 0.05-0.25 |
-| Clock net alpha | 1.0 (by definition) |
-| Glitch share of dynamic power, ≤7nm datapath designs | 25-40% (up to ~60% reported in GPU-class blocks) |
-| RTL power accuracy vs gate-level (good activity) | 10-20% |
-| Emulation activity scale | billions of cycles (vs ~10^5-10^6 for sim) |
-| Power proxy accuracy (fitted, per block) | ~3-5% |
-| Clock-tree share of dynamic power | ~30-40% (higher in flop-dense blocks) |
-| McPAT / architectural power accuracy (calibrated) | ~20-30% (worse un-calibrated) |
-| Break-even time (2-state, P_tr<=P_on) | T_be = T_tr (the wake latency itself) |
-| Timeout=T_be competitiveness (Karlin) | <=2x ideal energy (2-competitive) |
-| SA-1100 PSM (survey canonical) | Run ~400 mW / Idle ~50 mW / Sleep ~0.16 mW; Sleep T_be ~160 ms |
-| RAPL domains | PKG (socket) / PP0 (cores) / PP1 (iGPU) / DRAM; ~1 ms update |
-| Pmax vs TDP | ~1.3-2.5x (power virus up to ~3x) |
-| Reaction-time hierarchy | ns: clock stretch / us: regulator / ms: firmware DVFS / s: thermal |
-| GB300 NVL72 power smoothing | ~65 J storage per GPU; up to ~30% peak grid demand reduction |
-
----
-
-*Mid-level interview focus: connect utilization to watts at every stage -- predicted
-(power matrix, McPAT/CACTI bottom-up), measured (SAIF/emulation), live
-(counters/proxies/RAPL), and MANAGED (PSM / break-even / C-P-states / DPM governors).
-Cross-reference: [Power_Fundamentals](01_Power_Fundamentals.md),
-[Power_Reduction_Techniques](03_Power_Reduction_Techniques.md),
-[Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md),
-[Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md).*
+## References
+
+1. Rabaey, J.M., Chandrakasan, A., and Nikolić, B., *Digital Integrated Circuits: A Design Perspective*, 2nd ed., Prentice Hall, 2003. The $\alpha C V^2 f$ model and the $p(1-p)$ activity result.
+2. Najm, F.N., "Transition Density: A New Measure of Activity in Digital Circuits," *IEEE TCAD*, 12(2), 1993. The Boolean-difference density propagation of §3.
+3. Najm, F.N., "A Survey of Power Estimation Techniques in VLSI Circuits," *IEEE TVLSI*, 2(4), 1994. The vectored-vs-vectorless taxonomy and the correlation problem of §4.
+4. Li, S. et al., "McPAT: An Integrated Power, Area, and Timing Modeling Framework for Multicore Architectures," *MICRO*, 2009. The architectural component decomposition of §6–§7.
+5. Muralimanohar, N., Balasubramonian, R., and Jouppi, N.P., "CACTI 6.0: A Tool to Model Large Caches," HP Labs, 2009. The array access-energy model of §6.

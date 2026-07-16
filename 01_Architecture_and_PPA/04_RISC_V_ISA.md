@@ -1,1982 +1,315 @@
-# RISC-V ISA — RV64G Complete Reference
+# RISC-V ISA — Design Rationale of a Modular Load-Store Contract
 
-> Prerequisites: [CPU_Architecture](03_CPU_Architecture.md), [Basic_Knowledge](../00_Fundamentals/02_Logic_Building_Blocks.md).
-> Hands off to: [OoO_Execution](05_OoO_Execution.md), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md).
+> **Prerequisites:** [CPU_Architecture](03_CPU_Architecture.md) (pipelining, decode, hazards), [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) (the decoders and datapath these instructions drive).
+> **Hands off to:** [OoO_Execution](05_OoO_Execution.md), [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md).
 
 ---
 
 ## 0. Why this page exists
 
-RISC-V (Reduced Instruction Set Computer, fifth generation) is the dominant open instruction set architecture. Every serious CPU design project
-in academia and most new commercial SoCs (systems-on-chip) now target RV64G as their ISA. Unlike ARM or x86,
-RISC-V has no license fee and no hidden microarchitectural contract, which means a hardware
-engineer must understand the full RV64G specification at the bit level to build a compliant
-processor. This page covers the base integer ISA (RV64I), the M/A/F/D (Multiply, Atomic, Float, Double) extensions, compressed
-instructions, privilege modes, and virtual memory, with enough encoding detail to debug a
-processor by reading hex dumps from an instruction trace.
+An ISA is not a list of instructions; it is the **contract** between everyone who writes software and everyone who builds silicon — the one interface that must stay fixed while both sides evolve independently for decades. The whole art of ISA design is deciding what goes *into* that contract, because **every bit the hardware is obligated to decode is a complexity tax paid on every fetch, forever, by every implementation** — from a 10 kgate microcontroller to a 500-wide-window server core.
+
+RISC-V's thesis is a single sentence: **make the mandatory contract as small as possible, and make everything else optional and orthogonal.** A tiny frozen base plus a set of independently-ratified extensions, so that the decode/area cost a chip pays scales with the features it actually instantiates, and the software ecosystem still has a stable target.
+
+This page derives RISC-V's design *from that thesis* rather than cataloguing encodings. For each major choice — load-store, fixed-width instructions, the compressed extension, the modular M/A/F/D/B extensions, the M-S-U privilege stack with Sv39 virtual memory, the length-agnostic vector extension — we ask the same three questions the rest of this notebook asks of hardware: **what problem does it solve, what does the alternative cost, and why did real silicon land here.** Bit-field layouts, opcode maps, and hex-decode drills are reference material; they live in the spec. What survives here are the ideas a hardware designer must actually hold — with one or two representative encodings kept only where the layout *is* the design argument.
 
 ---
 
-## 1. RV64I Base Integer ISA
+## 1. The ISA as a contract: a small base plus orthogonal extensions
 
-### 1.1 Register File
+An ISA has exactly two jobs, and they pull against each other: expose *enough* capability that software expresses any computation efficiently, and hide *everything* about how the hardware does it so the two sides change independently. More capability written into the contract means more that every implementation must always provide. So the first design question is not "which instructions" but "**how much is mandatory**."
 
-RV64I provides 32 general-purpose registers, each 64 bits wide. Register `x0` is hardwired
-to zero; writes to `x0` are silently discarded.
+**Two philosophies answer differently.**
 
-| Register | ABI Name | Description              |
-|----------|----------|--------------------------|
-| x0       | zero     | Hardwired zero           |
-| x1       | ra       | Return address           |
-| x2       | sp       | Stack pointer            |
-| x3       | gp       | Global pointer           |
-| x4       | tp       | Thread pointer           |
-| x5       | t0       | Temporary / alternate link |
-| x6-x7    | t1-t2    | Temporaries              |
-| x8       | s0/fp    | Saved register / frame ptr |
-| x9       | s1       | Saved register           |
-| x10-x11  | a0-a1    | Function args / return vals |
-| x12-x17  | a2-a7    | Function arguments       |
-| x18-x27  | s2-s11   | Saved registers          |
-| x28-x31  | t3-t6    | Temporaries              |
+- **Monolithic (x86, the CISC lineage).** One ever-growing mandatory ISA. Four decades of accreted instructions, none of which can *ever* be removed because some shipped binary uses it, so the decoder must handle all of it (cracking the rare and complex forms through microcode). The tax is permanent and compounding: every new core re-implements the entire historical surface.
+- **Modular (RISC-V).** A minimal **frozen base** the spec guarantees will never change — **RV32I / RV64I, ~40 integer instructions** — plus a set of separately-specified, independently-optional **extensions** (M multiply, A atomics, F/D float, C compressed, V vector, B bitmanip, H hypervisor, …). A chip includes an extension only if its workload pays for the area. The common shorthand **"RV64G"** is just the general-purpose bundle: **I + M + A + F + D + Zicsr + Zifencei**.
 
-There is no dedicated flags or condition-code register. Compare-and-branch instructions
-test registers directly.
+Because the base is frozen, a decoder and a toolchain built against it are correct *forever*; because the extensions are orthogonal, the decode cost of a design is **additive and opt-in**:
 
-### 1.2 Instruction Encoding Formats
+$$
+A_{\text{decode}} \;\propto\; I_{\text{base}} \;+\; \sum_{e\,\in\,\text{included}} I_e \qquad\text{vs. monolithic}\qquad A_{\text{decode}} \;\propto\; I_{\text{all}}\ \text{(always)}
+$$
 
-Every RV64I instruction is 32 bits wide (unless compressed, see Section 5). The ISA uses
-six encoding formats. The bit-field layout for each is shown below.
+where $I_{\text{base}}$ = base instruction forms, $I_e$ = forms added by extension $e$, $I_{\text{all}}$ = the entire historical set. A control microcontroller implements ~RV32IMC and spends *zero* gates decoding vector or floating-point; a datacenter core adds V and H. Nothing pays for what it does not instantiate.
 
-**R-type (Register-register ALU — Arithmetic Logic Unit)**
+**The trade is modularity versus fragmentation.** Orthogonal extensions create a combinatorial space of possible feature subsets; if every chip picks its own, software must target the lowest common denominator or ship many builds — the exact fragmentation that hurt early ARM. RISC-V's answer is **profiles**: **RVA23** (2024) mandates a specific extension set (V, bitmanip, crypto, …) that an application-class chip *must* implement, giving compilers and Linux distributions one stable target. The contract is deliberately re-widened at *profile* granularity rather than per-chip — modularity kept from becoming chaos.
 
-```verilog
-[31:25]  [24:20]  [19:15]  [14:12]  [11:7]   [6:0]
-funct7    rs2       rs1     funct3     rd     opcode
-```
+| Axis | Monolithic ISA (x86) | Modular ISA (RISC-V) |
+|---|---|---|
+| Mandatory decode surface | Entire history, always | Small frozen base only |
+| Cost of a new capability | Added to the mandatory set forever | An optional extension, opt-in by area |
+| Removing a feature | Impossible (binary compat) | Never was mandatory |
+| Ecosystem stability | Guaranteed but monolithic | Guaranteed *per profile* |
+| Customization | Vendor-controlled | Open + reserved custom opcodes (§7) |
 
-**I-type (Immediate ALU / Load / JALR)**
-
-```verilog
-[31:20]       [19:15]  [14:12]  [11:7]   [6:0]
-imm[11:0]      rs1     funct3     rd     opcode
-```
-
-**S-type (Store)**
-
-```verilog
-[31:25]        [24:20]  [19:15]  [14:12]  [11:7]        [6:0]
-imm[11:5]       rs2       rs1     funct3   imm[4:0]     opcode
-```
-
-**B-type (Branch)**
-
-```verilog
-[31]   [30:25]     [24:20]  [19:15]  [14:12]  [11:8]      [7]     [6:0]
-imm[12] imm[10:5]   rs2       rs1     funct3   imm[4:1]  imm[11]  opcode
-```
-
-The B-type immediate encodes a signed 13-bit offset (multiplied by 2) with bits
-scattered: `imm[12|10:5|4:1|11]`.
-
-**U-type (Upper immediate)**
-
-```verilog
-[31:12]           [11:7]   [6:0]
-imm[31:12]         rd      opcode
-```
-
-The 20-bit upper immediate is placed into bits 31:12 of a 32-bit value; the
-low 12 bits are zero. Used by LUI and AUIPC.
-
-**J-type (Jump)**
-
-```verilog
-[31]    [30:21]       [20]     [19:12]      [11:7]   [6:0]
-imm[20] imm[10:1]    imm[11]   imm[19:12]    rd      opcode
-```
-
-The J-type immediate encodes a signed 21-bit offset (multiplied by 2). Bits are
-reordered: `imm[20|10:1|11|19:12]`.
-
-All immediates are sign-extended from their highest bit within the instruction word
-(bit 31 for I/S/B/U/J types). R-type instructions have no immediate field -- bits
-31:25 are occupied by funct7 instead.
-
-### 1.3 Arithmetic and Logical Instructions
-
-**Register-register operations (R-type):**
-
-| Instruction | funct7 | funct3 | Operation                           |
-|-------------|--------|--------|-------------------------------------|
-| ADD         | 0x00   | 0x0    | rd = rs1 + rs2                      |
-| SUB         | 0x20   | 0x0    | rd = rs1 - rs2                      |
-| SLL         | 0x00   | 0x1    | rd = rs1 << rs2[5:0]               |
-| SLT         | 0x00   | 0x2    | rd = (rs1 < rs2) ? 1 : 0 (signed)  |
-| SLTU        | 0x00   | 0x3    | rd = (rs1 < rs2) ? 1 : 0 (unsigned)|
-| XOR         | 0x00   | 0x4    | rd = rs1 ^ rs2                      |
-| SRL         | 0x00   | 0x5    | rd = rs1 >> rs2[5:0] (logical)     |
-| SRA         | 0x20   | 0x5    | rd = rs1 >> rs2[5:0] (arithmetic)  |
-| OR          | 0x00   | 0x6    | rd = rs1 OR rs2                     |
-| AND         | 0x00   | 0x7    | rd = rs1 AND rs2                    |
-
-**Immediate operations (I-type):**
-
-| Instruction | funct3 | Operation                                 |
-|-------------|--------|-------------------------------------------|
-| ADDI        | 0x0    | rd = rs1 + imm (12-bit signed)            |
-| SLTI        | 0x2    | rd = (rs1 < imm) ? 1 : 0 (signed)        |
-| SLTIU       | 0x3    | rd = (rs1 < imm) ? 1 : 0 (unsigned, imm sign-ext) |
-| XORI        | 0x4    | rd = rs1 ^ imm                            |
-| ORI         | 0x6    | rd = rs1 OR imm                           |
-| ANDI        | 0x7    | rd = rs1 AND imm                          |
-| SLLI        | 0x1    | rd = rs1 << shamt (imm[5:0], imm[11:6]=0) |
-| SRLI        | 0x5    | rd = rs1 >> shamt (logical, imm[11:6]=0)  |
-| SRAI        | 0x5    | rd = rs1 >> shamt (arith, imm[11:6]=0x10) |
-
-The shift amount `shamt` occupies `imm[5:0]` (bits 24:20 of the instruction).
-For RV64, `shamt` is 6 bits (shifts 0-63).
-
-### 1.4 Upper Immediate Instructions
-
-**LUI (Load Upper Immediate):** `rd = imm << 12`
-Places the 20-bit U-type immediate into the upper 20 bits of `rd`, clearing the
-lower 12 bits. Opcode: `0110111`.
-
-**AUIPC (Add Upper Immediate to PC, the Program Counter):** `rd = PC + (imm << 12)`
-Computes PC-relative address with a 20-bit upper immediate. Essential for building
-large offsets when combined with a subsequent ADDI or JALR. Opcode: `0010111`.
-
-### 1.5 Jump Instructions
-
-**JAL (Jump and Link):** `rd = PC + 4; PC = PC + offset`
-J-type encoding. The default `rd = x1` (ra) stores the return address. The offset
-is a signed 21-bit value (in units of 2 bytes), giving a range of $\pm 1\text{MiB}$.
-
-**JALR (Jump and Link Register):** `rd = PC + 4; PC = (rs1 + imm) & ~1`
-I-type encoding. The target address is computed from a base register plus a 12-bit
-signed immediate, with the least significant bit cleared. Used for returns (`jalr x0, 0(ra)`)
-and indirect calls.
-
-### 1.6 Conditional Branches
-
-All branch instructions use B-type encoding. The offset is a signed 13-bit value
-(in units of 2 bytes), giving a range of $\pm 4\text{KiB}$. No branch writes to a register.
-
-| Instruction | funct3 | Condition (signed/unsigned)       |
-|-------------|--------|------------------------------------|
-| BEQ         | 0x0    | branch if rs1 == rs2               |
-| BNE         | 0x1    | branch if rs1 != rs2               |
-| BLT         | 0x4    | branch if rs1 < rs2   (signed)     |
-| BGE         | 0x5    | branch if rs1 >= rs2  (signed)     |
-| BLTU        | 0x6    | branch if rs1 < rs2   (unsigned)   |
-| BGEU        | 0x7    | branch if rs1 >= rs2  (unsigned)   |
-
-### 1.7 Load and Store Instructions
-
-RV64I supports byte, halfword, word, and doubleword memory accesses. All use
-little-endian byte order.
-
-**Loads (I-type):**
-
-| Instruction | funct3 | Width    | Sign extend |
-|-------------|--------|----------|-------------|
-| LB          | 0x0    | 8 bit    | Yes         |
-| LH          | 0x1    | 16 bit   | Yes         |
-| LW          | 0x2    | 32 bit   | Yes         |
-| LD          | 0x3    | 64 bit   | N/A         |
-| LBU         | 0x4    | 8 bit    | No (zero)   |
-| LHU         | 0x5    | 16 bit   | No (zero)   |
-| LWU         | 0x6    | 32 bit   | No (zero)   |
-
-**Stores (S-type):**
-
-| Instruction | funct3 | Width    |
-|-------------|--------|----------|
-| SB          | 0x0    | 8 bit    |
-| SH          | 0x1    | 16 bit   |
-| SW          | 0x2    | 32 bit   |
-| SD          | 0x3    | 64 bit   |
-
-Effective address = `rs1 + imm` (sign-extended 12-bit immediate for loads,
-split immediate for stores). All memory addresses must be naturally aligned in
-the base ISA; misaligned access support is optional.
-
-### 1.8 RV64-specific Word Operations
-
-RV64I adds "W" suffix variants that perform 32-bit arithmetic on the lower word
-of the register and sign-extend the result to 64 bits.
-
-| Instruction | Operation                                |
-|-------------|------------------------------------------|
-| ADDW        | rd = sign_ext((rs1 + rs2)[31:0])         |
-| SUBW        | rd = sign_ext((rs1 - rs2)[31:0])         |
-| SLLW        | rd = sign_ext(rs1[31:0] << rs2[4:0])    |
-| SRLW        | rd = sign_ext(rs1[31:0] >> rs2[4:0]) (logical) |
-| SRAW        | rd = sign_ext(rs1[31:0] >>a rs2[4:0])   |
-| ADDIW       | rd = sign_ext((rs1 + imm)[31:0])         |
-| SLLIW       | rd = sign_ext(rs1[31:0] << shamt[4:0])  |
-| SRLIW       | rd = sign_ext(rs1[31:0] >> shamt[4:0]) (logical) |
-| SRAIW       | rd = sign_ext(rs1[31:0] >>a shamt[4:0]) |
-
-The W variants use a 5-bit shift amount (not 6), since only the low 32 bits
-participate. These instructions exist because many programs use 32-bit values
-(INT in C), and without them every 32-bit operation would require explicit
-sign-extension instructions.
+That the base is a *specification and not a licensed product* — no royalty, no NDA'd microarchitecture contract — is what lets academia, startups, and hyperscalers each build compliant cores against the same frozen base (expanded in §7).
 
 ---
 
-## 2. RV64M Extension (Multiply/Divide)
+## 2. Load-store and fixed width: designing the encoding for the decoder
 
-The M extension provides integer multiplication and division. It uses R-type
-encoding with opcode `0111011` (for the 64-bit variants) and `0111011` with
-funct7 fields to distinguish operations.
+The decoder sits on the critical path of *every* instruction, and its complexity is fixed by the encoding before any clever microarchitecture can help. Two encoding decisions dominate that complexity — **where operands live** and **how instructions are delimited** — and RISC-V makes both in the decoder's favor.
 
-### 2.1 Multiplication
+### 2.1 Load-store: memory is touched only by loads and stores
 
-| Instruction | funct7 | Operation                                         |
-|-------------|--------|---------------------------------------------------|
-| MUL         | 0x01   | rd = (rs1 * rs2)[63:0] (lower 64 bits)            |
-| MULH        | 0x01   | rd = (rs1 * rs2)[127:64] (signed * signed)        |
-| MULHU       | 0x01   | rd = (rs1 * rsu)[127:64] (unsigned * unsigned)    |
-| MULHSU      | 0x01   | rd = (rs1 * rsu)[127:64] (signed * unsigned)      |
+Arithmetic is strictly register-to-register; only explicit load/store instructions reach memory. Derive the consequence: every instruction then has **at most one memory access** and a *fixed, statically-known* set of register operands. So the pipeline has exactly one memory stage, every ALU op has uniform single-cycle latency, and the number of things that can fault or stall per instruction is bounded. For an out-of-order core this is decisive — address generation separates cleanly into the AGU/load-store queue (→ [OoO_Execution](05_OoO_Execution.md) §5), and there is no "add-to-memory" instruction that is simultaneously an ALU op *and* a store with two distinct fault points mid-instruction.
 
-The product of two 64-bit numbers is 128 bits wide. `MUL` returns the lower
-64 bits; `MULH`/`MULHU`/`MULHSU` return the upper 64 bits, differing only
-in whether operands are treated as signed or unsigned.
+The alternative is CISC memory operands: x86's `add [mem], reg` fuses load + add + store in one instruction — denser code, fewer fetches — but that "instruction" is really three µops the hardware must crack, with an addressing-mode decode and a mid-instruction fault boundary. RISC's bet, vindicated once pipelining and OoO dominate: **regularity is worth more than density, and the lost density is recoverable separately** (§3).
 
-`MULHSU` is the signed-times-unsigned variant, useful for implementing
-64-bit division by a constant via multiply-high.
+### 2.2 Fixed 32-bit width: the decoder knows every boundary for free
 
-**32-bit variant:**
+The deepest cost in a variable-length ISA is *finding where each instruction starts*. In x86 an instruction is **1–15 bytes**, and you cannot decode instruction $i{+}1$ until you know the length of instruction $i$ — a serial dependence that makes wide parallel decode painful (hence length-predecode bits cached alongside the i-cache, and x86 decoders being a notorious power/area sink). Fixed 32-bit width places every boundary at a known 4-byte multiple, so an $N$-wide decoder is simply $N$ identical decoders running in parallel with **zero inter-instruction dependency**. This is *the* reason RISC-V (and AArch64) scale decode width cheaply.
 
-| Instruction | Operation                                  |
-|-------------|--------------------------------------------|
-| MULW        | rd = sign_ext((rs1 * rs2)[31:0])           |
+$$
+\text{start}(i) \;=\; \sum_{j<i} \ell_j \;\; \text{(variable: serial prefix, or } O(N^2)\text{ speculative predecode)} \qquad\text{vs.}\qquad \text{start}(i) = 4i \;\; \text{(fixed: } O(1)\text{)}
+$$
 
-MULW uses opcode `0111011` with a funct7 that marks it as a word-size multiply.
+where $\ell_j$ = length of instruction $j$. The fixed-width column is why parallel fetch/decode is a solved problem here and an engineering saga on x86.
 
-### 2.2 Division
+### 2.3 Static register fields and a fixed sign bit: reading before decode finishes
 
-| Instruction | funct7 | Operation                                  |
-|-------------|--------|--------------------------------------------|
-| DIV         | 0x01   | rd = rs1 / rs2  (signed, truncate to zero) |
-| DIVU        | 0x01   | rd = rs1 / rs2  (unsigned)                 |
-| REM         | 0x01   | rd = rs1 % rs2  (signed remainder)         |
-| REMU        | 0x01   | rd = rs1 % rs2  (unsigned remainder)       |
-
-**32-bit variants:** DIVW, DIVUW, REMW, REMUW operate on lower 32 bits and
-sign-extend the result.
-
-### 2.3 Special Cases
-
-Division by zero:
-- `DIV(U)`: quotient = all 1s (i.e., $2^{64}-1$ for 64-bit, $2^{32}-1$ for W variants)
-- `REM(U)`: remainder = dividend (rs1)
-
-Signed overflow (only `DIV`): $-2^{63} / -1$ produces $-2^{63}$ (the quotient
-would be $+2^{63}$ which is not representable in signed 64-bit).
-
-These definitions avoid trapping on division edge cases, simplifying
-microarchitectural implementation.
-
----
-
-## 3. RV64A Extension (Atomic)
-
-The A extension provides two mechanisms for synchronization: load-reserved /
-store-conditional (LR/SC) and atomic memory operations (AMO). All A-extension
-instructions use opcode `0101111`.
-
-### 3.1 Load Reserved / Store Conditional
-
-**LR.W / LR.D (Load Reserved):**
-```verilog
-lr.{w,d} rd, (rs1)
-```
-Loads a word (32-bit) or doubleword (64-bit) from the address in `rs1` and
-places it in `rd`. Simultaneously creates a **reservation set** that tracks
-whether the loaded memory location is modified before a subsequent SC.
-
-Encoding: I-type sub-format. `rs2 = 0`, `funct3 = 010` (W) or `011` (D),
-`funct7 = 00010{aq}{rl}` where aq and rl are single-bit ordering hints.
-
-**SC.W / SC.D (Store Conditional):**
-```verilog
-sc.{w,d} rd, rs2, (rs1)
-```
-Attempts to store `rs2` to the address in `rs1`. If the reservation is still
-valid (no other hart wrote to the reservation set), the store succeeds and
-`rd` is set to 0. If the reservation was invalidated, the store fails and
-`rd` is set to a nonzero value.
-
-Encoding: R-type. `funct7 = 00011{aq}{rl}`, `funct3 = 010` (W) or `011` (D).
-
-### 3.2 Atomic Memory Operations (AMO)
-
-Each AMO instruction atomically loads a value from memory, performs an
-operation with a register operand, stores the result back, and places the
-original loaded value in `rd`.
-
-| Instruction | funct7 | Operation: rd = *addr; *addr = rd op rs2 |
-|-------------|--------|------------------------------------------|
-| AMOSWAP     | 00001  | Swap: *addr = rs2                         |
-| AMOADD      | 00000  | *addr = *addr + rs2                       |
-| AMOXOR      | 00100  | *addr = *addr XOR rs2                     |
-| AMOOR       | 01000  | *addr = *addr OR rs2                      |
-| AMOAND      | 01100  | *addr = *addr AND rs2                     |
-| AMOMIN      | 10000  | *addr = min(*addr, rs2) (signed)          |
-| AMOMAX      | 10100  | *addr = max(*addr, rs2) (signed)          |
-| AMOMINU     | 11000  | *addr = min(*addr, rs2) (unsigned)        |
-| AMOMAXU     | 11100  | *addr = max(*addr, rs2) (unsigned)        |
-
-Each has `.W` (funct3=010) and `.D` (funct3=011) variants for RV64.
-
-### 3.3 Memory Ordering: aq and rl Bits
-
-Every A-extension instruction carries two single-bit ordering hints in the
-instruction encoding (bits 26 and 25 of the instruction, within funct7):
-
-- **aq (acquire):** Ensures subsequent memory operations in program order
-  cannot be reordered before this AMO/LR.
-- **rl (release):** Ensures prior memory operations in program order cannot
-  be reordered after this AMO/SC.
-
-| aq  | rl  | Semantics                                  |
-|-----|-----|---------------------------------------------|
-| 0   | 0   | No ordering guarantee (relaxed)             |
-| 0   | 1   | Release: prior ops visible before this one   |
-| 1   | 0   | Acquire: this op visible before subsequent   |
-| 1   | 1   | Sequentially consistent: full fence          |
-
-A sequentially consistent AMO (`aq=1, rl=1`) is equivalent to a full memory
-barrier for that address.
-
-### 3.4 Reservation Set Semantics
-
-A **reservation set** is a set of bytes that a hart is monitoring. The spec
-does not mandate a particular granularity; implementations may track a cache
-line, a page, or the entire address space. The only guarantee is:
-
-1. An LR creates a reservation.
-2. If another hart writes to any byte in the reservation set between LR and SC,
-   the SC must fail (rd != 0).
-3. A forward-progress guarantee: at least one hart in a tight LR/SC loop must
-   eventually succeed (no livelock).
-
-In practice, most implementations track at cache-line granularity (64 bytes
-on most modern processors). This means a false failure can occur if an
-unrelated store hits the same cache line.
-
----
-
-## 4. RV64F/D Extensions (Float/Double)
-
-The F extension adds single-precision (32-bit IEEE 754) floating-point. The D
-extension adds double-precision (64-bit IEEE 754). Together they are required
-for the G extension group (IMA + F + D).
-
-### 4.1 Floating-Point Register File
-
-The F/D extensions add a separate register file `f0`-`f31`, each 64 bits wide
-(even when only F is present, the registers are 64 bits to support double).
-There is also a control/status register `fcsr` that holds the rounding mode
-and accrued exception flags.
-
-| Field    | Bits | Description                                    |
-|----------|------|------------------------------------------------|
-| frm      | 7:5  | Rounding mode                                  |
-| fflags   | 4:0  | Accrued exception flags (NX, UF, OF, DZ, NV)   |
-
-The `fcsr` can be accessed as a single CSR or as two separate CSRs
-(`frm` at CSR 0x002, `fflags` at CSR 0x001).
-
-### 4.2 Floating-Point Load and Store
-
-| Instruction | funct3 | Operation                          |
-|-------------|--------|------------------------------------|
-| FLW         | 010    | f[rd] = sign_ext(M[rs1+imm][31:0]) (F) |
-| FLD         | 011    | f[rd] = M[rs1+imm][63:0] (D)       |
-| FSW         | 010    | M[rs1+imm] = f[rs2][31:0] (F)      |
-| FSD         | 011    | M[rs1+imm] = f[rs2][63:0] (D)      |
-
-FLW and FLD use I-type encoding; FSW and FSD use S-type encoding. The opcode
-is `0000111` for loads and `0100111` for stores.
-
-### 4.3 Floating-Point Arithmetic
-
-**Basic operations (.S = single, .D = double):**
-
-| Instruction | Operation           |
-|-------------|---------------------|
-| FADD.S / FADD.D   | f[rd] = f[rs1] + f[rs2]  |
-| FSUB.S / FSUB.D   | f[rd] = f[rs1] - f[rs2]  |
-| FMUL.S / FMUL.D   | f[rd] = f[rs1] * f[rs2]  |
-| FDIV.S / FDIV.D   | f[rd] = f[rs1] / f[rs2]  |
-| FSQRT.S / FSQRT.D | f[rd] = sqrt(f[rs1])     |
-
-**Fused multiply-add operations:**
-
-| Instruction  | Operation                                |
-|--------------|------------------------------------------|
-| FMADD.S / FMADD.D   | f[rd] = f[rs1] * f[rs2] + f[rs3]  |
-| FMSUB.S / FMSUB.D   | f[rd] = f[rs1] * f[rs2] - f[rs3]  |
-| FNMSUB.S / FNMSUB.D | f[rd] = -(f[rs1] * f[rs2]) + f[rs3] |
-| FNMADD.S / FNMADD.D | f[rd] = -(f[rs1] * f[rs2]) - f[rs3] |
-
-These use a special R4-type encoding with an additional `rs3` field in bits
-31:27. The fused operations compute a single rounding at the end, avoiding
-the double-rounding error of separate multiply then add.
-
-### 4.4 Conversion Instructions
-
-| Instruction   | Operation                                   |
-|---------------|---------------------------------------------|
-| FCVT.S.D      | f[rd] = (float)f[rs1]   (double to single)  |
-| FCVT.D.S      | f[rd] = (double)f[rs1]  (single to double)  |
-| FCVT.S.W      | f[rd] = (float)x[rs1]   (int32 to single)   |
-| FCVT.S.WU     | f[rd] = (float)x[rs1]   (uint32 to single)  |
-| FCVT.S.L      | f[rd] = (float)x[rs1]   (int64 to single)   |
-| FCVT.S.LU     | f[rd] = (float)x[rs1]   (uint64 to single)  |
-| FCVT.D.W      | f[rd] = (double)x[rs1]  (int32 to double)   |
-| FCVT.D.WU     | f[rd] = (double)x[rs1]  (uint32 to double)  |
-| FCVT.D.L      | f[rd] = (double)x[rs1]  (int64 to double)   |
-| FCVT.D.LU     | f[rd] = (double)x[rs1]  (uint64 to double)  |
-| FCVT.W.S      | x[rd] = (int32)f[rs1]   (single to int32)   |
-| FCVT.WU.S     | x[rd] = (uint32)f[rs1]  (single to uint32)  |
-| FCVT.L.S      | x[rd] = (int64)f[rs1]   (single to int64)   |
-| FCVT.LU.S     | x[rd] = (uint64)f[rs1]  (single to uint64)  |
-| FCVT.W.D      | x[rd] = (int32)f[rs1]   (double to int32)   |
-| FCVT.WU.D     | x[rd] = (uint32)f[rs1]  (double to uint32)  |
-| FCVT.L.D      | x[rd] = (int64)f[rs1]   (double to int64)   |
-| FCVT.LU.D     | x[rd] = (uint64)f[rs1]  (double to uint64)  |
-
-Out-of-range conversions produce the nearest representable integer. The
-`fflags` field records overflow (OF) and invalid (NV) exceptions.
-
-### 4.5 Floating-Point Compare
-
-| Instruction    | Operation                              |
-|----------------|----------------------------------------|
-| FEQ.S / FEQ.D  | x[rd] = (f[rs1] == f[rs2]) ? 1 : 0    |
-| FLT.S / FLT.D  | x[rd] = (f[rs1] < f[rs2])  ? 1 : 0    |
-| FLE.S / FLE.D  | x[rd] = (f[rs1] <= f[rs2]) ? 1 : 0    |
-
-The result is written to an **integer** register `x[rd]`, not an FP register.
-FEQ never raises an invalid exception for NaN (Not a Number) operands; FLT and FLE do.
-
-### 4.6 Sign Injection
-
-| Instruction        | Operation                               |
-|--------------------|-----------------------------------------|
-| FSGNJ.S / FSGNJ.D  | f[rd] = |f[rs1]| with sign of f[rs2]    |
-| FSGNJN.S / FSGNJN.D| f[rd] = |f[rs1]| with neg sign of f[rs2]|
-| FSGNJX.S / FSGNJX.D| f[rd] = f[rs1] with sign bit XOR f[rs2] sign |
-
-These are the only FP-to-FP operations that operate on the sign bit without
-raising any exceptions, even for NaN operands. FSGNJ is used for `fabs()`,
-FSGNJN for `fneg()`, and FSGNJX for `fabs()` conditional negation.
-
-### 4.7 FMIN and FMAX
-
-| Instruction        | Operation                                |
-|--------------------|------------------------------------------|
-| FMIN.S / FMIN.D   | f[rd] = min(f[rs1], f[rs2])              |
-| FMAX.S / FMAX.D   | f[rd] = max(f[rs1], f[rs2])              |
-
-These write the minimum or maximum of two FP operands to `f[rd]`. For NaN
-inputs, the result is the non-NaN operand; if both are NaN, the result is
-the canonical NaN. FMIN/FMAX raise the invalid operation exception (NV) only
-when either operand is a signaling NaN, not for quiet NaN. In IEEE 754
-terminology, these implement the `minimumNumber` and `maximumNumber`
-operations (not the non-quiet `minNum`/`maxNum`).
-
-### 4.8 FCLASS — Classify Floating-Point Number
-
-```verilog
-FCLASS.S / FCLASS.D  x[rd] = classify(f[rs1])
-```
-
-Returns a 10-bit one-hot mask in `x[rd]` indicating the class of the
-floating-point value:
-
-| Bit | Class                            |
-|-----|----------------------------------|
-| 0   | $-\infty$                        |
-| 1   | Negative normal number           |
-| 2   | Negative subnormal number        |
-| 3   | $-0$                             |
-| 4   | $+0$                             |
-| 5   | Positive subnormal number        |
-| 6   | Positive normal number           |
-| 7   | $+\infty$                        |
-| 8   | Signaling NaN                    |
-| 9   | Quiet NaN                        |
-
-Exactly one bit is set. This instruction is used for software implementations
-of `isnan()`, `isinf()`, `isnormal()`, and similar classification functions.
-
-### 4.9 Rounding Modes
-
-The rounding mode is specified either in the `frm` field of `fcsr` (when the
-instruction's `rm` field is `111` = DYN) or directly in the instruction's
-3-bit `rm` field (bits 14:12 for some FP encodings).
-
-| rm  | Mnemonic | Description                          |
-|-----|----------|--------------------------------------|
-| 000 | RNE      | Round to Nearest, ties to Even       |
-| 001 | RTZ      | Round toward Zero (truncate)         |
-| 010 | RDN      | Round Down (toward $-\infty$)        |
-| 011 | RUP      | Round Up (toward $+\infty$)          |
-| 100 | RMM      | Round to Nearest, ties to Max Magnitude |
-| 101 | --       | Reserved                             |
-| 110 | --       | Reserved                             |
-| 111 | DYN      | Dynamic: use frm field in fcsr       |
-
-In most production software, DYN is the default, and the language runtime
-sets `frm` to RNE at program start.
-
----
-
-## 5. RVC (Compressed Instructions)
-
-The C extension defines 16-bit encodings for the most frequently used
-instructions. Any RVC instruction expands to a unique 32-bit instruction;
-the two encoding spaces are orthogonal. A processor can treat RVC as a
-fetch-time decompression stage and execute only 32-bit micro-ops internally.
-
-### 5.1 RVC Encoding Formats
-
-RVC defines eight encoding formats, identified by the two-bit `op` field
-(bits 1:0 of the 16-bit instruction):
-
-| Format | op[1:0] | Description                           |
-|--------|---------|---------------------------------------|
-| CR     | 10      | Register-register (2 reg operands)    |
-| CI     | 01, 10  | Register-immediate                    |
-| CSS    | 10      | Store with stack-pointer relative off |
-| CIW    | 00      | Wide immediate, register destination  |
-| CL     | 00      | Load (register + immediate address)   |
-| CS     | 00      | Store (register + immediate address)  |
-| CB     | 01      | Branch (register + offset)            |
-| CJ     | 01      | Jump (offset only)                    |
-
-The `op` field alone does not uniquely determine the format; bits 15:13 and
-bit 2 provide further discrimination.
-
-### 5.2 Key Compressed Instructions
-
-**Stack-pointer based:**
-
-| C Instruction | Expansion                | Notes                        |
-|---------------|--------------------------|------------------------------|
-| C.ADDI4SPN    | addi rd', x2, nzuimm    | 0-immediate illegal          |
-| C.ADDI16SP    | addi x2, x2, nzimm      | Stack pointer adjust         |
-| C.LWSP        | lw rd, x2, offset        | Load from stack              |
-| C.LDSP        | ld rd, x2, offset        | Load from stack (RV64)       |
-| C.SWSP         | sw rs2, x2, offset       | Store to stack               |
-| C.SDSP         | sd rs2, x2, offset       | Store to stack (RV64)        |
-
-**Register-immediate:**
-
-| C Instruction | Expansion               | Notes                        |
-|---------------|-------------------------|------------------------------|
-| C.NOP         | addi x0, x0, 0          | No operation                 |
-| C.ADDI        | addi rd, rd, imm        | Short immediate add          |
-| C.LI          | addi rd, x0, imm        | Load immediate               |
-| C.LUI         | lui rd, imm             | Upper immediate (rd != x2)   |
-| C.SLLI        | slli rd, rd, shamt      | Shift left logical           |
-| C.SRLI        | srli rd', rd', shamt    | Shift right logical          |
-| C.SRAI        | srai rd', rd', shamt    | Shift right arithmetic       |
-| C.ANDI        | andi rd', rd', imm      | AND immediate                |
-
-**Register-register:**
-
-| C Instruction | Expansion               | Notes                        |
-|---------------|-------------------------|------------------------------|
-| C.MV          | add rd, x0, rs2         | Register move (rd != x0)     |
-| C.ADD         | add rd, rd, rs2         | Add (rd != x0)               |
-| C.SUB         | sub rd', rd', rs2'      | Subtract                     |
-| C.AND         | and rd', rd', rs2'      | AND                          |
-| C.OR          | or rd', rd', rs2'       | OR                           |
-| C.XOR         | xor rd', rd', rs2'      | XOR                          |
-
-Note: `rd'` and `rs2'` denote the compressed register set `x8-x15` (8 registers),
-encoded in 3 bits rather than 5.
-
-**Load/store (register+offset):**
-
-| C Instruction | Expansion               |
-|---------------|-------------------------|
-| C.LW          | lw rd', offset(rs1')    |
-| C.LD          | ld rd', offset(rs1')    |
-| C.SW          | sw rs2', offset(rs1')   |
-| C.SD          | sd rs2', offset(rs1')   |
-
-**Control flow:**
-
-| C Instruction | Expansion               | Notes                  |
-|---------------|-------------------------|------------------------|
-| C.J           | jal x0, offset          | Unconditional jump     |
-| C.JAL         | jal x1, offset          | Jump and link (RV32)   |
-| C.JR          | jalr x0, rs1, 0         | Register jump          |
-| C.JALR        | jalr x1, rs1, 0         | Register jump and link |
-| C.BEQZ        | beq rs1', x0, offset    | Branch if zero         |
-| C.BNEZ        | bne rs1', x0, offset    | Branch if not zero     |
-
-### 5.3 Code Density
-
-RVC typically reduces static code size by 25-30% compared to RV64I alone.
-The improvement is not 50% because:
-
-1. Not every instruction has a compressed mapping (e.g., no C.SLT).
-2. The compressed register file (`x8-x15`) limits which operands can be used.
-3. Immediate fields are narrower (5-6 bits instead of 12).
-
-For instruction-fetch bandwidth, RVC is a significant win: a 32-byte cache
-line holds 8 compressed instructions instead of 4 uncompressed instructions,
-effectively doubling the icache coverage.
-
----
-
-## 6. Privilege Architecture
-
-RISC-V defines three privilege levels. Each level has its own set of
-control and status registers (CSRs) and trap-handling mechanisms.
-
-### 6.1 Privilege Modes
-
-| Level | Encoding | Name        | Description                       |
-|-------|----------|-------------|-----------------------------------|
-| 0     | 00       | U (User)    | Application code                  |
-| 1     | 01       | S (Supervisor) | OS kernel, virtual memory      |
-| 3     | 11       | M (Machine) | Highest privilege, firmware/BIOS   |
-
-Level 2 (H, Hypervisor) is defined in the H extension (see Section 11). Code
-running at a given privilege level can only access CSRs at that level or lower.
-
-### 6.2 Trap Handling
-
-A **trap** is an exceptional condition (exception or interrupt) that transfers
-control to a trap handler at a higher privilege level. The trap sequence for
-a machine-mode trap:
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A[Exception or Interrupt occurs] --> B[Save PC to mepc]
-    B --> C[Set mcause to trap cause]
-    C --> D[Save current MIE to MPIE, clear MIE]
-    D --> E[Save current privilege to MPP]
-    E --> F[PC = mtvec base + offset]
-    F --> G[Execute trap handler]
-    G --> H[MRET instruction]
-    H --> I[PC = mepc]
-    I --> J[Restore MIE from MPIE]
-    J --> K[Restore privilege from MPP]
-```
-
-For supervisor-mode traps, the same sequence uses `sepc`, `scause`, `stvec`,
-and `sstatus` (with SIE/SPIE/SPP fields).
-
-**mtvec (Machine Trap-Vector):**
-
-| Field    | Bits  | Description                             |
-|----------|-------|-----------------------------------------|
-| BASE     | 63:2  | Base address (must be 4-byte aligned)   |
-| MODE     | 1:0   | 0 = Direct, 1 = Vectored                |
-
-In Direct mode, all traps set `PC = BASE`. In Vectored mode, synchronous
-exceptions set `PC = BASE`, but interrupts set `PC = BASE + 4 * cause`.
-
-### 6.3 mstatus Register
-
-The `mstatus` register (CSR 0x300) controls interrupt enable bits and tracks
-the pre-trap state:
-
-| Field  | Bits   | Description                                      |
-|--------|--------|--------------------------------------------------|
-| SIE    | 1      | Supervisor Interrupt Enable                       |
-| MIE    | 3      | Machine Interrupt Enable                          |
-| SPIE   | 5      | Saved SIE (Supervisor Previous Interrupt Enable)  |
-| MPIE   | 7      | Saved MIE (Machine Previous Interrupt Enable)     |
-| SPP    | 8      | Saved Supervisor Previous Privilege (0=U, 1=S)    |
-| MPP    | 12:11  | Saved Machine Previous Privilege (00=U,01=S,11=M) |
-| MPRV   | 17     | Memory Privilege override for loads/stores        |
-| SUM    | 18     | Supervisor User Memory access                     |
-| MXR    | 19     | Make eXecutable Readable                          |
-| TVM    | 20     | Trap Virtual Memory (prevent S-mode satp access)  |
-| TW     | 21     | Timeout Wait (WFI traps to M-mode)                |
-| TSR    | 22     | Trap SRET                                         |
-| SD     | 63     | Summary bit: 1 if any FS/XS/VS field is dirty     |
-
-**sstatus** (CSR 0x100) is a restricted view of `mstatus` with only the
-S-relevant fields visible.
-
-### 6.4 Key Machine-Mode CSRs
-
-| CSR     | Address | Description                            |
-|---------|---------|----------------------------------------|
-| mstatus | 0x300   | Machine status register                 |
-| mepc    | 0x341   | Machine exception PC                    |
-| mcause  | 0x342   | Machine trap cause                      |
-| mtvec   | 0x305   | Machine trap-vector base-address        |
-| mtval   | 0x343   | Machine trap value (bad addr/instr)     |
-| medeleg | 0x302   | Machine exception delegation            |
-| mideleg | 0x303   | Machine interrupt delegation            |
-| mie     | 0x304   | Machine interrupt-enable                |
-| mip     | 0x344   | Machine interrupt-pending               |
-
-**mcause encoding:**
-
-| Interrupt | Exception Code | Description             |
-|-----------|---------------|-------------------------|
-| 0         | 0             | Instruction address misaligned |
-| 0         | 1             | Instruction access fault       |
-| 0         | 2             | Illegal instruction            |
-| 0         | 3             | Breakpoint                     |
-| 0         | 4             | Load address misaligned        |
-| 0         | 5             | Load access fault              |
-| 0         | 6             | Store address misaligned       |
-| 0         | 7             | Store access fault             |
-| 0         | 8             | ecall from U-mode              |
-| 0         | 9             | ecall from S-mode              |
-| 0         | 11            | ecall from M-mode              |
-| 0         | 12            | Instruction page fault         |
-| 0         | 13            | Load page fault                |
-| 0         | 15            | Store page fault               |
-| 1         | N             | Interrupt number N             |
-
-Bit 63 of `mcause` distinguishes interrupts (1) from exceptions (0). The
-lower bits encode the specific cause.
-
-### 6.5 Supervisor-Mode CSRs
-
-| CSR     | Address | Description                            |
-|---------|---------|----------------------------------------|
-| sstatus | 0x100   | Supervisor status (view of mstatus)     |
-| sepc    | 0x141   | Supervisor exception PC                 |
-| scause  | 0x142   | Supervisor trap cause                   |
-| stvec   | 0x105   | Supervisor trap-vector base-address     |
-| stval   | 0x143   | Supervisor trap value                   |
-| satp    | 0x180   | Supervisor address translation and protection |
-| senvcfg | 0x10A   | Supervisor environment configuration    |
-
-### 6.6 Delegation
-
-The `medeleg` and `mideleg` registers allow M-mode to delegate specific
-exceptions and interrupts to S-mode. When a bit is set in `medeleg`, the
-corresponding exception is handled by S-mode instead of M-mode (the trap
-is taken in S-mode with `sepc`, `scause`, etc.).
-
-For example, setting bit 8 in `medeleg` delegates `ecall-from-U-mode` to
-S-mode, which is how a standard OS handles system calls: the U-mode `ecall`
-traps directly to the kernel.
-
-### 6.7 satp — Supervisor Address Translation
-
-The `satp` register controls virtual memory for S-mode:
-
-| Field  | Bits    | Description                             |
-|--------|---------|-----------------------------------------|
-| MODE   | 63:60   | 0=Off, 8=Sv39, 9=Sv48, 10=Sv57          |
-| ASID   | 59:44   | Address Space Identifier (16 bits)       |
-| PPN    | 43:0    | Physical Page Number of root PT          |
-
-Writing `satp` with MODE=0 disables address translation (bare mode). The ASID
-is used for TLB (Translation Lookaside Buffer) tagging; on a context switch, the OS writes a new ASID so the
-TLB does not need a full flush.
-
----
-
-## 7. Virtual Memory — Sv39 and Sv48
-
-### 7.1 Sv39 Page Table Walk
-
-Sv39 maps 39-bit virtual addresses to 56-bit physical addresses. The virtual
-address is decomposed as:
-
-$$\text{VA}[63:0] \rightarrow \underbrace{\text{VA}[38:30]}_{\text{VPN}[2]} \underbrace{\text{VA}[29:21]}_{\text{VPN}[1]} \underbrace{\text{VA}[20:12]}_{\text{VPN}[0]} \underbrace{\text{VA}[11:0]}_{\text{page offset}}$$
-
-Here each $\text{VPN}[i]$ (the virtual page number) is a 9-bit index selecting one page-table entry at level $i$, and the page offset is the low 12 bits addressing a byte within the 4 KB page.
-
-Bits 63:39 must equal bit 38 (sign extension of the 39-bit address), otherwise
-a page fault occurs. The translation proceeds through three levels:
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    A["satp.PPN (root table base)"] --> B["Level 1: index with VPN[2]"]
-    B --> C{"PTE.V = 1?"}
-    C -- No --> FAULT["Page fault"]
-    C -- Yes --> D{"PTE is leaf? (R or W or X)"}
-    D -- Yes --> ALIGN["Check alignment, compute PA"]
-    D -- No --> E["PPN from PTE = next level base"]
-    E --> F["Level 2: index with VPN[1]"]
-    F --> G{"PTE.V = 1?"}
-    G -- No --> FAULT
-    G -- Yes --> H{"PTE is leaf?"}
-    H -- Yes --> ALIGN
-    H -- No --> I["PPN from PTE = next level base"]
-    I --> J["Level 3: index with VPN[0]"]
-    J --> K{"PTE.V = 1?"}
-    K -- No --> FAULT
-    K -- Yes --> ALIGN
-    ALIGN --> DONE["PA = PTE.PPN[55:12] concat VA[11:0]"]
-```
-
-Each page table has 512 entries ($2^9$ entries indexed by 9-bit VPN slices)
-of 8 bytes each, totaling 4 KB per page table (exactly one page).
-
-### 7.2 Page Table Entry (PTE) Format
-
-A 64-bit PTE has the following fields:
-
-| Field | Bits   | Description                                    |
-|-------|--------|------------------------------------------------|
-| V     | 0      | Valid                                          |
-| R     | 1      | Readable                                       |
-| W     | 2      | Writable                                       |
-| X     | 3      | Executable                                     |
-| U     | 4      | User-mode accessible                           |
-| G     | 5      | Global (ignore ASID in TLB)                    |
-| A     | 6      | Accessed (set by hardware on first access)     |
-| D     | 7      | Dirty (set by hardware on first write)         |
-| RSW   | 11:8   | Reserved for Software (OS can use freely)      |
-| PPN   | 53:10  | Physical Page Number                           |
-| Reserved | 63:54 | Must be zero                                   |
-
-**Leaf vs. non-leaf PTE:** If R, W, or X is set, the PTE is a leaf (maps to a
-physical page). If R=W=X=0, the PTE is a non-leaf pointer to the next-level
-page table.
-
-**Permission rules:**
-- W implies R: a writable page must also be readable.
-- X implies R: an executable page must also be readable.
-- A page with R=0, W=0, X=0 is a non-leaf pointer (unless V=0, which is invalid).
-
-**Accessed and Dirty bits:** Hardware sets A on any access (load, store, fetch)
-and D on any store. Software can clear these bits for page-replacement
-algorithms; if software clears A, the hardware will set it again on the next
-access (providing an access-notification mechanism).
-
-### 7.3 Sv48
-
-Sv48 extends Sv39 by adding a fourth level of page table, supporting 48-bit
-virtual addresses:
-
-$$\text{VA}[47:0] \rightarrow \underbrace{\text{VA}[47:39]}_{\text{VPN}[3]} \underbrace{\text{VA}[38:30]}_{\text{VPN}[2]} \underbrace{\text{VA}[29:21]}_{\text{VPN}[1]} \underbrace{\text{VA}[20:12]}_{\text{VPN}[0]} \underbrace{\text{VA}[11:0]}_{\text{offset}}$$
-
-The walk starts by indexing the root table with VPN[3], then proceeds identically
-to Sv39 for the remaining three levels. Sv48 is backward-compatible: an OS can
-use Sv39 by setting `satp.MODE = 8` even on hardware that supports Sv48.
-
-### 7.4 Superpages
-
-A superpage is a leaf PTE encountered at a level above the last level. The
-PPN bits below the leaf level are concatenated with the corresponding VPN
-bits from the virtual address to form the physical address.
-
-| Level of leaf | Page size  | Physical address computation             |
-|---------------|------------|------------------------------------------|
-| L3 (last)     | 4 KB       | PA = PTE.PPN[55:12] : VA[11:0]           |
-| L2            | 2 MB       | PA = PTE.PPN[55:21] : VA[20:0]           |
-| L1            | 1 GB       | PA = PTE.PPN[55:30] : VA[29:0]           |
-
-For a superpage to be valid, the PPN bits that "should not exist" at that
-level must be zero. For example, a 2 MB superpage (leaf at L2) requires
-PTE.PPN[11:0] = 0, ensuring the physical address is 2 MB-aligned.
-
-### 7.5 Page Table Size
-
-Each page table page contains $512 \times 8 = 4096$ bytes (exactly one 4 KB
-page). For a process with $N$ pages of virtual memory:
-
-- Worst case (no superpages): 3 page tables at L1 + up to 512 at L2 + up to
-  $512 \times 512$ at L3. The L3 tables alone cover $512 \times 512 \times 4\text{KB}$
-  = 1 GiB of virtual address space.
-
-- In practice, sparse address spaces use far fewer page tables. The kernel text,
-  heap, stack, and shared libraries might require only 4-10 page table pages total.
-
----
-
-## 8. V Extension (Vector)
-
-The V extension adds variable-length vector processing to RISC-V. Unlike fixed-width
-SIMD (Single Instruction, Multiple Data; e.g. ARM NEON, x86 AVX), RISC-V vectors are length-agnostic: the same binary runs
-on hardware with different vector register lengths. This is critical for AI
-accelerators and DSP (Digital Signal Processing) workloads where the implementer chooses the hardware parallelism.
-
-### 8.1 Core Parameters
-
-| Parameter | Meaning | Typical Values |
-|-----------|---------|---------------|
-| VLEN | Vector register width in bits | 128, 256, 512, 1024+ |
-| ELEN | Maximum element width in bits | 32 (int/fp), 64 (double) |
-| SLEN | Strip width (must equal VLEN in v1.0) | = VLEN |
-| LMUL | Vector register group multiplier | 1, 2, 4, 8, fractional: 1/2, 1/4, 1/8 |
-| VTA | Vector tail agnostic policy | 0 = undisturbed, 1 = agnostic |
-| VMA | Vector mask agnostic policy | 0 = undisturbed, 1 = agnostic |
-
-**LMUL** controls how many vector registers are grouped into a single operand. `LMUL=4`
-with `VLEN=256` gives an effective vector length of 1024 bits per operand, using 4
-consecutive vector registers (e.g., v2-v5). Fractional LMUL (`LMUL=1/4`) lets a
-128-bit VLEN machine process elements as if VLEN were 16, reducing active lanes.
-
-### 8.2 Vector Registers
-
-The V extension adds 32 vector registers **v0-v31**, each VLEN bits wide. These are
-separate from both the integer register file (x0-x31) and the FP register file
-(f0-f31). Key points:
-
-- **v0 is special:** it serves as the mask register when masking is enabled. Only
-  v0 can be used as a mask operand.
-- When `LMUL > 1`, registers are grouped: `v2` with `LMUL=2` means the operand spans
-  `v2` and `v3`. Software must avoid overlapping source and destination groups.
-- The `vtype` CSR (set by `vsetvli` / `vsetvl`) controls the current SEW (selected
-  element width), LMUL, and tail/mask policies.
-- Vector FP operations use the same rounding mode and exception flags as the scalar
-  F/D extensions.
-
-### 8.3 Configuration CSRs
-
-| CSR | Address | Purpose |
-|-----|---------|---------|
-| vstart | 0x008 | Element index to resume after a trap (hardware sets, software clears) |
-| vtype | 0x0C7 | VILL, SEW, LMUL, VTA, VMA (written only by vsetvli/vsetvl) |
-| vl | 0xC20 | Actual vector length returned by vsetvli (<= VLMAX) |
-| vlenb | 0xC22 | VLEN in bytes (read-only, for software discovery) |
-
-### 8.4 Key Instruction Categories
-
-**Element width (SEW) is implicit from vtype, not encoded in the instruction name.**
-The assembler suffixes `.v`, `.vv`, `.vx`, `.vf`, `.wv`, etc. indicate operand types.
-
-**Load/Store (unit-stride, strided, indexed):**
-
-| Instruction | Pattern | Description |
-|-------------|---------|-------------|
-| vle8.v / vle16.v / vle32.v / vle64.v | vleSEW.v vd, (rs1) | Unit-stride load (contiguous) |
-| vse8.v / vse16.v / vse32.v / vse64.v | vseSEW.v vs3, (rs1) | Unit-stride store |
-| vlse32.v | Strided: vd, (rs1), rs2 | Load with byte stride in rs2 |
-| vsse32.v | Strided: vs3, (rs1), rs2 | Store with byte stride in rs2 |
-| vluxei32.v | Indexed: vd, (rs1), vs2 | Gather-load (unordered) |
-| vsoxei32.v | Indexed: vs3, (rs1), vs2 | Scatter-store (unordered) |
-
-**Arithmetic (OPIVV / OPIVX / OPIVI):**
-
-| Instruction | Operation | Notes |
-|-------------|-----------|-------|
-| vadd.vv | vd = vs1 + vs2 | Vector-vector add |
-| vadd.vx | vd = vs1 + x[rs1] | Vector-scalar add |
-| vsub.vv | vd = vs2 - vs1 | Vector-vector subtract |
-| vmul.vv | vd = vs2 * vs1 | Integer multiply (lower half) |
-| vmulh.vv | vd = (vs2 * vs1) >> SEW | Signed multiply high |
-| vdiv.vv | vd = vs2 / vs1 | Integer divide |
-| vmerge.vvm | vd = v0 ? vs1 : vs2 | Merge under mask (if-else per element) |
-| vand.vv / vor.vv / vxor.vv | Bitwise logic | AND, OR, XOR |
-| vsll.vv / vsrl.vv / vsra.vv | Shifts | Left, right logical, right arithmetic |
-
-**Reduction:**
-
-| Instruction | Operation | Notes |
-|-------------|-----------|-------|
-| vredsum.vs | vd[0] = sum(vs1[0..vl-1]) + vs2[0] | Sum reduction |
-| vredmax.vs | vd[0] = max(vs1[0..vl-1], vs2[0]) | Max reduction |
-| vredmin.vs | vd[0] = min(vs1[0..vl-1], vs2[0]) | Min reduction |
-| vredand.vs | vd[0] = AND of all elements | AND reduction |
-
-The result of a reduction is placed in element 0 of `vd`; remaining elements are
-set according to the tail policy (undisturbed or agnostic).
-
-**Masking:**
-
-Most vector instructions accept an optional mask operand (always v0). A masked
-instruction operates only on elements where the corresponding bit in v0 is 1:
-
-```verilog
-vadd.vv v2, v4, v6, v0.t    # add only where v0[i] = 1
-```
-
-The `.t` suffix is the default (true-mask). The inverse (`.f`) does not exist as
-a separate encoding -- use `vmnot` to invert the mask first.
-
-### 8.5 Stripmining Loop Pattern
-
-The fundamental software pattern for processing arrays longer than VLMAX is
-**stripmining**: each iteration processes `vl` elements, where `vl` is set by
-`vsetvli`.
-
-```verilog
-# a0 = element count, a1 = src pointer, a2 = dst pointer
-loop:
-    vsetvli  t0, a0, e32, m1    # SEW=32, LMUL=1, t0 = min(a0, VLMAX)
-    vle32.v  v1, (a1)           # load vl elements
-    vadd.vv  v2, v1, v1         # double each element
-    vse32.v  v2, (a2)           # store vl elements
-    sub      a0, a0, t0         # remaining -= vl
-    slli     t0, t0, 2          # byte offset = vl * 4
-    add      a1, a1, t0         # advance src pointer
-    add      a2, a2, t0         # advance dst pointer
-    bnez     a0, loop           # loop if elements remain
-```
-
-**Key invariant:** `vsetvli` returns `vl = min(requested_avl, VLMAX)`. When
-`requested_avl <= VLMAX`, the entire operation completes in one iteration. When
-`requested_avl > VLMAX`, the loop processes VLMAX elements per iteration.
-
-### 8.6 Why V Matters for AI Accelerators
-
-**Vectorized matrix multiply (GEMM):** The inner product of a row-column pair is a
-multiply-accumulate across a vector dimension. With SEW=32 and LMUL=8, a single
-`vfmacc.vf` instruction multiplies 8 FP32 elements by a scalar and accumulates --
-the core of a weight-stationary dataflow.
-
-**SoftMax:** The three phases (exp, sum-reduce, divide) map directly to vector
-operations:
-1. `vfsub.vv` to subtract the max (numerical stability).
-2. `vexp.v` (if available) or a polynomial approximation with `vfmul.vv` + `vfadd.vv`.
-3. `vredsum.vs` for the denominator.
-4. `vfdiv.vf` to normalize.
-
-**Attention score computation (Q * K^T):** Each query vector is broadcast with
-`vfmul.vv` against a key vector, reduced with `vredsum.vs`. The V extension's
-masking enables variable-length sequence handling without padding.
-
-The length-agnostic design means a model compiled for VLEN=256 runs unchanged on
-VLEN=4096 (the `vsetvli` auto-negotiates vl). This eliminates the ISA re-encode
-pain that x86/ARM face when moving from SSE to AVX-256 to AVX-512.
-
----
-
-## 9. B Extension (Bitmanip)
-
-The B extension accelerates bit-level operations that are pervasive in cryptography,
-hash tables, error-correcting codes, and bioinformatics. It is divided into
-sub-extensions that can be implemented independently.
-
-### 9.1 Sub-Extensions
-
-| Sub-extension | Name | Scope |
-|---------------|------|-------|
-| Zba | Bitmanip address generation | Accelerates address computation (shift + add) |
-| Zbb | Basic bit manipulation | Count, reverse, OR-combine, boolean ops |
-| Zbc | Carry-less multiply | Galois-field multiplication (CRC, GCM) |
-| Zbs | Single-bit operations | Set/clear/toggle/extract individual bits |
-
-Most implementations provide Zba+Zbb+Zbs; Zbc is optional and primarily targets
-crypto workloads.
-
-### 9.2 Key Instructions
-
-**Zbb -- Basic bit manipulation:**
-
-| Instruction | Operation | Why it matters |
-|-------------|-----------|---------------|
-| clz rd, rs | Count leading zeros | Priority encoding, finding MSB, normalization |
-| ctz rd, rs | Count trailing zeros | De Bruijn sequences, finding LSB, ffs() |
-| cpop rd, rs | Population count (hamming weight) | Hamming distance, bloom filters, parity |
-| rol rd, rs1, rs2 | Rotate left | Cryptographic rounds (SHA, AES key schedule) |
-| ror rd, rs1, rs2 | Rotate right | Same, complement direction |
-| rori rd, rs1, imm | Rotate right by immediate | Constant rotations in crypto |
-| rev8 rd, rs | Byte-reverse | Endianness conversion (big/little endian) |
-| orc.b rd, rs | OR-combine bytes: each byte = OR of its bits | String length, strlen() acceleration |
-| sext.b / sext.h | Sign-extend byte/halfword | Replaces shift-left + shift-right-arithmetic pair |
-| min / max | Signed minimum/maximum | Branch-free min/max (compare + select) |
-| minu / maxu | Unsigned minimum/maximum | Same for unsigned |
-
-**Example -- population count without B extension vs. with:**
-
-Without B:
-```verilog
-# Classic Hamming weight: shift-xor-tree, ~15 instructions
-li    a1, 0x5555555555555555
-and   a2, a0, a1
-srli  a3, a0, 1
-and   a3, a3, a1
-add   a0, a2, a3
-# ... 4 more rounds of parallel prefix ...
-```
-
-With B:
-```verilog
-cpop  a0, a0     # 1 instruction, 1 cycle on most implementations
-```
-
-**Zba -- Address generation:**
-
-| Instruction | Operation | Use case |
-|-------------|-----------|----------|
-| sh1add rd, rs1, rs2 | rd = rs1 << 1 + rs2 | Array indexing (2-byte elements) |
-| sh2add rd, rs1, rs2 | rd = rs1 << 2 + rs2 | Array indexing (4-byte elements: int/float) |
-| sh3add rd, rs1, rs2 | rd = rs1 << 3 + rs2 | Array indexing (8-byte elements: double/pointer) |
-
-These replace the common `slli + add` pattern in indexed array access. On a
-single-ALU machine they save one instruction; on a superscalar machine they
-consume one fewer issue slot and reduce register pressure.
-
-**Zbc -- Carry-less multiply:**
-
-| Instruction | Operation | Use case |
-|-------------|-----------|----------|
-| clmul rd, rs1, rs2 | Carry-less multiply (low 64 bits) | CRC-32, GCM/GHASH, Reed-Solomon |
-| clmulh rd, rs1, rs2 | Carry-less multiply (high 64 bits) | Same, upper product |
-| clmulr rd, rs1, rs2 | Carry-less multiply (middle 64 bits) | CRC with bit reversal |
-
-Carry-less multiplication operates in GF(2) -- there is no carry propagation
-between bit positions. This is the core primitive for CRC (Cyclic Redundancy Check) computation: a CRC-32
-over a 64-bit word is `clmul(data, polynomial)` followed by a 32-bit XOR reduction.
-Without Zbc, CRC-32 requires a table lookup per byte (~8 loads + 8 XORs per word).
-
-**Zbs -- Single-bit operations:**
-
-| Instruction | Operation | Use case |
-|-------------|-----------|----------|
-| bext rd, rs1, rs2 | Extract single bit: rd = (rs1 >> rs2) & 1 | Bit-field extraction |
-| bdep rd, rs1, rs2 | Deposit single bit: rd[rs2] = rs1[0] | Bit-field insertion |
-| bset rd, rs1, rs2 | Set single bit: rd = rs1 OR (1 << rs2) | Bitmask construction |
-| bclr rd, rs1, rs2 | Clear single bit: rd = rs1 AND ~(1 << rs2) | Flag manipulation |
-| binv rd, rs1, rs2 | Invert single bit: rd = rs1 XOR (1 << rs2) | Toggle flags |
-
-All have immediate variants (bseti, bclri, binvi, bexti).
-
-### 9.3 Why Bitmanip Matters
-
-**Cryptography:** AES (Advanced Encryption Standard) mixcolumns, SHA (Secure Hash Algorithm) rotate-xor rounds, CRC integrity checks,
-and GCM authentication all decompose into the instructions above. A 10x speedup
-on CRC via clmul is typical.
-
-**Hash tables:** `cpop` + `ror` implement Fibonacci hashing; `clmul` gives
-universal hash functions. Hash table throughput is often limited by the hash
-function, not the lookup.
-
-**Bioinformatics:** DNA sequence alignment operates on 2-bit encoded bases.
-Population count, bit extraction, and carry-less XOR are the hot inner-loop
-operations in seed-and-extend aligners (BWA-MEM2, minimap2).
-
-**Compilers:** GCC and LLVM automatically emit B-extension instructions when
-targeting a B-capable core. No source changes required -- the existing `__builtin_clz`,
-`__builtin_popcount`, and `std::rotl` intrinsics map 1:1.
-
----
-
-## 10. PLIC and CLINT
-
-A RISC-V SoC needs two interrupt controllers: the **CLINT** (Core Local Interruptor)
-for timer and software interrupts, and the **PLIC** (Platform-Level Interrupt
-Controller) for external device interrupts. Both are memory-mapped devices, not
-CSR-based.
-
-### 10.1 CLINT (Core Local Interruptor)
-
-The CLINT generates two types of interrupts per hart:
-
-| Interrupt | mcause | Trigger | Use |
-|-----------|--------|---------|-----|
-| Machine Software Interrupt (MSI) | 3 | Write to msip[hart] | Inter-processor interrupt (IPI) |
-| Machine Timer Interrupt (MTI) | 7 | mtime >= mtimecmp[hart] | Timer, scheduler tick |
-
-**Memory map (typical, QEMU / SiFive):**
-
-| Address | Width | Register |
-|---------|-------|----------|
-| 0x0200_0000 | 4 bytes | msip (bit 0 = SW interrupt for hart 0) |
-| 0x0200_0004 | 4 bytes | msip for hart 1 (if present) |
-| ... | ... | ... |
-| 0x0200_4000 | 8 bytes | mtimecmp for hart 0 |
-| 0x0200_4008 | 8 bytes | mtimecmp for hart 1 |
-| ... | ... | ... |
-| 0x0200_BFF8 | 8 bytes | mtime (shared counter, all harts read same value) |
-
-**Timer interrupt generation:**
+The layout that makes decode cheap is best shown once, then reasoned about — this is the *only* bit-field figure this page keeps, because the placement **is** the design argument:
 
 ```text
-mtime increments at a fixed frequency (e.g., 10 MHz on SiFive, ~1 GHz on fast SoCs).
-When mtime >= mtimecmp[hart], the timer interrupt pending bit is set in mip.MTIP (bit 7).
-The interrupt fires if mie.MTIE (bit 7) = 1 and mstatus.MIE = 1.
+        31          25 24    20 19    15 14  12 11     7 6      0
+R-type: |  funct7     |  rs2   |  rs1   | fn3 |  rd     | opcode |
+I-type: |  imm[11:0]           |  rs1   | fn3 |  rd     | opcode |
+S-type: | imm[11:5]   |  rs2   |  rs1   | fn3 | imm[4:0]| opcode |
+                        ^^^^^^   ^^^^^^         ^^^^^^
+                        rs2      rs1            rd   ← always these columns
+        ^ imm[31] is the immediate's sign bit in EVERY format that has one
 ```
 
-To schedule a timer interrupt 1 ms from now on a 10 MHz clock:
+Two hardware wins fall out of this:
 
-```c
-uint64_t delta = 10000; // 10 MHz * 0.001 s
-*(uint64_t*)MTIMECMP = *(uint64_t*)MTIME + delta;
-```
+- **Register specifiers are position-invariant.** `rs1` (bits 19:15), `rs2` (24:20), and `rd` (11:7) sit in the *same columns* in every format that uses them. So the register file read fires from those fixed fields **speculatively, in parallel with opcode decode**, and the result is discarded if the format turns out not to use it — no mux, no wait for decode.
+- **The immediate's sign bit is always bit 31.** The immediates *look* scrambled (B- and J-type scatter their bits), but the scramble is deliberate: it pins the sign bit to bit 31 so sign-extension is a single hard-wired fan-out rather than a format-dependent mux, and it moves each immediate bit as little as possible between formats to minimize the immediate-generator's muxing. The encoding optimizes the *machine* that decodes it billions of times per second, at the cost of looking ugly to the human who reads it rarely — exactly the right trade.
 
-The timer interrupt is level-triggered: it remains pending until software writes a
-new `mtimecmp` value that is strictly greater than `mtime`. Forgetting to update
-`mtimecmp` in the handler causes an interrupt storm.
+Two more base-ISA choices earn their keep by simplifying the very cores later pages build:
 
-**Software interrupt (IPI):**
+- **No condition-code register.** Compare-and-branch instructions test registers directly; there is no global flags register. A flags register is a hidden serializing dependency that *every* arithmetic instruction writes and *every* branch reads — a rename and hazard headache in an OoO machine. RISC-V has none, so a branch depends only on the explicit registers it names.
+- **`x0` hardwired to zero.** Reads yield 0, writes are discarded. This one choice synthesizes NOP (`addi x0,x0,0`), register move (`add rd,x0,rs`), value-discard, and unconditional-compare idioms *for free*, so no dedicated opcodes are spent on them — a trivial encoding investment that pays across the whole instruction set.
 
-Writing 1 to `msip[hart]` sets `mip.MSIP` (bit 3) for that hart. The handler must
-clear the interrupt by writing 0 to `msip`. Used for:
-- Booting secondary harts (the SBI, or Supervisor Binary Interface, sends IPI to wake them).
-- TLB shootdown: hart 0 sends IPI to hart 1 to flush its TLB.
+---
 
-### 10.2 PLIC (Platform-Level Interrupt Controller)
+## 3. The compressed (C) extension: buying code density back as an option
 
-The PLIC manages external interrupts from devices (UART, disk, network, GPIO, etc.)
-and routes them to harts. It supports up to 1023 interrupt sources (source 0 is
-reserved), each with configurable priority.
+Fixed width's one real cost is **code density**: RV64I code is roughly 20–30% larger than a variable-length encoding's, and code size is not vanity — it sets i-cache footprint, fetch bandwidth, and, in embedded parts, ROM cost. The C extension recovers most of it *without* surrendering the §2 decode simplicity.
 
-**Memory map (typical SiFive-style PLIC):**
+**Mechanism.** C defines 16-bit encodings for the most common instructions, each of which is a pure **alias that expands to exactly one 32-bit base instruction** at fetch. A small fixed decompressor sits in front of the normal decoder; everything downstream — rename, the OoO core — still sees only base instructions. There is no new datapath and, crucially, no second execution *mode*.
 
-| Address Range | Register | Description |
-|---------------|----------|-------------|
-| 0x0C00_0000 - 0x0C00_0FFC | Priority[n] | 1 word per source: priority 0-7 (0 = disabled) |
-| 0x0C00_1000 - 0x0C00_107F | Pending[n] | 1 bit per source: 1 = interrupt pending |
-| 0x0C00_2000 - 0x0C00_207F | Enable[ctx][n] | Per-context enable bits (ctx = hart * modes) |
-| 0x0C20_0000 + ctx*0x1000 | Threshold[ctx] | Per-context priority threshold |
-| 0x0C20_0004 + ctx*0x1000 | Claim/Complete[ctx] | Read = claim, Write = complete |
+**What C actually costs.** Instructions may now begin on any **2-byte** boundary, so a 4-byte instruction can straddle a fetch group, cache line, or page. That reintroduces an alignment problem — but a *bounded* one: **two** possible alignments, not the fifteen of x86. Fetch absorbs it with a small alignment buffer rather than a predecode CAM. This is the subtle payoff of having chosen fixed width first: adding density costs only a *small* alignment complication, whereas a natively variable-length ISA pays the full boundary-finding cost on every instruction.
 
-**Context numbering:** On a 2-hart system with M-mode and S-mode:
-- Context 0 = Hart 0, M-mode
-- Context 1 = Hart 0, S-mode
-- Context 2 = Hart 1, M-mode
-- Context 3 = Hart 1, S-mode
+**Why the win is ~25–30%, not 50%.** Model static size as the mean bytes per instruction:
 
-**Interrupt processing flow:**
+$$
+\bar{B} \;=\; 2 f_c + 4(1 - f_c), \qquad \text{shrink} \;=\; 1 - \frac{\bar{B}}{4} \;=\; \frac{f_c}{2}
+$$
 
-```verilog
-1. Device asserts interrupt source N.
-2. PLIC sets Pending[N] = 1.
-3. If Enable[ctx][N] = 1 and Priority[N] > Threshold[ctx],
-   PLIC signals the hart via the external interrupt line.
-4. Hart traps to mtvec/stvec. mcause = 11 (MEI) or scause = 9 (SEI).
-5. Handler reads Claim[ctx]: returns the highest-priority pending source ID.
-   Side effect: PLIC clears Pending[ID] for that source.
-6. Handler services the device (read UART data, acknowledge DMA, etc.).
-7. Handler writes the source ID back to Complete[ctx].
-8. PLIC can now re-signal the same source.
-```
+where $f_c$ = fraction of static instructions that have a 16-bit form. Typical integer code gives $f_c \approx 0.5\text{–}0.6 \Rightarrow$ **25–30% smaller**, matching measurement. The 50% ceiling is reached only if *every* instruction compresses ($f_c = 1$), which it cannot: not all instructions have a 16-bit form, the compressed forms can name only the 8 registers **x8–x15** (3-bit specifiers), and their immediates are narrow — the exact corners cut to fit 16 bits.
 
-**Priority arbitration:** When multiple sources are pending and enabled, the PLIC
-presents the one with the highest priority. Ties are broken by the lowest source ID.
-Only one interrupt per context is serviced at a time; the handler must claim-complete
-in a loop until claim returns 0 (no more pending interrupts).
+**The fetch-bandwidth win is often the real motive.** A cache line holds twice as many compressed instructions (a 32-byte line: **16 vs 8**) — up to ~2× effective i-cache reach and front-end throughput on compressed-heavy code. That, not static size, is why a *performance* core (not just an embedded one) includes C. And unlike ARM Thumb — a *mode* you branch into and out of, with a state bit and switch cost — RVC interleaves 16- and 32-bit instructions freely in one stream, the cleaner realization of the same idea.
 
-**Threshold filtering:** If `Threshold[ctx] = 5`, only interrupts with priority > 5
-reach the hart. Setting threshold to 7 effectively disables all PLIC interrupts for
-that context (since max priority is 7). Setting threshold to 0 allows all enabled
-interrupts.
+---
 
-### 10.3 PLIC/CLINT and the Trap Handling Flow
+## 4. The modular extensions: capability paid for in area, not mandatory complexity
 
-The interrupt path through the CSR state machine:
+Each standard extension is a self-contained capability an integrator switches on at design time when the workload justifies its area and power; because they are orthogonal, their decode cost is additive (§1). Read each below as **problem → what the hardware pays → the load-bearing design decision** — not as an instruction catalogue.
+
+| Ext. | Problem it solves | What the hardware pays | The design decision worth remembering |
+|---|---|---|---|
+| **M** | integer `* / %` | a 64×64 multiplier tree + a slow SRT divider | divide edge cases are **defined and non-trapping** |
+| **A** | multicore atomicity | RMW datapath + reservation tracking | ordering **self-annotated** per atomic (`aq`/`rl`) |
+| **F/D** | IEEE-754 float | a separate FP datapath + register file | **FMA is a primitive** (single rounding); separate namespace |
+| **B** | hot bit/byte ops | almost none (a popcount tree, the shifter's rotate) | accelerate what's hot for near-zero gates |
+
+### 4.1 M — multiply/divide
+
+Optional because the *hardware* is expensive and workload-dependent: a 64×64 multiplier is a large Booth/Wallace tree and divide is a slow digit-recurrence (both in [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md)); a deeply embedded control core that never multiplies should pay for neither. The one design choice to carry forward: **divide edge cases are defined and do not trap** — divide-by-zero returns an all-ones quotient with the dividend as remainder, and signed overflow ($-2^{63}/-1$) returns $-2^{63}$. This keeps the divider entirely *off the exception path*, so an OoO core never has to take a precise trap out of the middle of a divide — the recovery logic (→ [OoO_Execution](05_OoO_Execution.md) §9) is simpler for it. The concept (define the corners so they can't fault), not the special-case table, is the point.
+
+### 4.2 A — atomics
+
+Multicore needs atomic read-modify-write that no sequence of plain loads and stores can synthesize race-free. RISC-V provides **two** mechanisms because they cover different needs:
+
+- **AMO** (atomic memory operation) — one instruction performs load-op-store atomically (swap/add/and/or/min/max). Efficient for the common fetch-and-op and for atomics executed *near memory*.
+- **LR/SC** (load-reserved / store-conditional) — a reservation-based pair that lets software build *arbitrary* atomic sequences (compare-and-swap, multi-word updates) the fixed AMO menu cannot express; SC fails if anyone disturbed the reservation between the two, the classic lock-free retry primitive.
+
+The load-bearing idea is the **`aq`/`rl` (acquire/release) bits** every atomic carries. Instead of a separate fence around each atomic, RISC-V's memory model (RVWMO, a release-consistency model) lets each atomic *self-annotate* its ordering:
+
+| `aq` | `rl` | Meaning |
+|---|---|---|
+| 0 | 0 | relaxed — no ordering |
+| 1 | 0 | **acquire** — later accesses can't rise above it |
+| 0 | 1 | **release** — earlier accesses can't sink below it |
+| 1 | 1 | sequentially-consistent point |
+
+Reservations are tracked at cache-line granularity, so an unrelated store to the same line can cause a *spurious* SC failure — which is why the spec guarantees forward progress for a tight LR/SC loop rather than guaranteeing any single SC succeeds.
+
+### 4.3 F / D — floating point
+
+IEEE-754 single (F) and double (D), optional because FP is a large, separable datapath many workloads never touch. Three decisions matter:
+
+- **A separate `f0`–`f31` register file.** FP is a distinct namespace, so it neither steals integer register ports and bandwidth nor forces integer-only chips to carry FP state — and an OoO core renames it in its own physical pool (→ [OoO_Execution](05_OoO_Execution.md) §7).
+- **FMA is a primitive**, computing `a*b + c` with a *single* rounding. Not two instructions, because the fused form both halves the rounding error and is the throughput core of every dense-linear-algebra kernel; making it one instruction with one rounding is an ISA-level correctness *and* performance decision (circuit in [Floating_Point](../00_Fundamentals/04_Floating_Point.md)).
+- **Compares write an integer register; the rounding mode is dynamic** (`fcsr.frm`) or static per instruction. The full FCVT conversion matrix — every int/uint × 32/64 × single/double corner — exists so software never needs a library cast; *that it is complete* is the point, not its rows.
+
+### 4.4 B — bitmanip, the archetype of "accelerate what's hot for almost nothing"
+
+Population-count, count-leading/trailing-zeros, rotates, byte-reverse, single-bit ops, and carry-less multiply are **one cycle in hardware but 10–15 instructions in software**, and they are pervasive — cryptography, hashing, codecs, bioinformatics, and the compiler's own idioms. Representative of the whole extension: `cpop` (population count), `clz`/`ctz` (leading/trailing zeros), `ror` (rotate), and `clmul` (carry-less multiply). Each is tiny area you often *already have* (a popcount tree; the barrel shifter's rotate path) for order-of-magnitude speedups — `clmul` alone turns table-driven CRC-32 (~8 loads + XORs per word) into a couple of instructions and is the primitive behind GCM/GHASH.
+
+B is the modular thesis at its purest: a capability nearly free in gates, enormous for the workloads that need it, and pure dead-weight-free *omission* for those that don't.
+
+---
+
+## 5. Privilege and virtual memory: the mechanism system software needs
+
+An operating system and a hypervisor need three things from the ISA that user code cannot build for itself, and the entire privileged architecture is the minimal machinery that provides exactly them:
+
+1. a **protection boundary** — supervisory code the supervised code cannot bypass;
+2. a **controlled crossing** of that boundary — traps that are precise and resumable;
+3. **address translation with protection** — per-process virtual address spaces.
+
+The M/S/U modes, the trap machinery, and Sv39 all derive from these three needs.
+
+### 5.1 Three privilege modes, derived
+
+- **U (user)** — applications; no access to system state.
+- **S (supervisor)** — the OS kernel; owns virtual memory (`satp`) and handles the traps delegated to it.
+- **M (machine)** — always present; owns the raw hardware (firmware, the SBI, a security monitor). The mode that exists *below* the OS.
+
+Why this layering and not two: U/S is the classic user/kernel split every OS needs. **M exists beneath S** so that firmware and a security monitor are isolated from the kernel itself — you can run (and decline to fully trust) an S-mode OS while M-mode retains ultimate control, which is exactly what secure boot, a TEE, or a hypervisor-below-the-OS requires. A minimal embedded chip implements **M-only or M+U** and simply omits S — and with it virtual memory — the same opt-in-by-area principle as the extensions. A mode can access only its own and lower CSRs, and the CSR *address ranges* encode the level (**U 0x000–0x0FF, S 0x100–0x1FF, M 0x300–0x3FF**) — the memorizable pattern; individual addresses are lookup.
+
+### 5.2 Traps: the controlled crossing, and why delegation exists
+
+A trap — exception or interrupt — is the only upward control transfer. To be **precise and resumable**, the hardware must atomically save exactly the state needed to name the fault, dispatch the handler, and return as if nothing happened. Derive that state rather than memorizing an address table: on trap entry the hardware records the **restart PC** (`*epc`), the **cause** (`*cause`), a **fault value** such as the bad address (`*tval`), consults **where to jump** (`*tvec`), and stacks the **pre-trap interrupt-enable and privilege** into `*status` for `MRET`/`SRET` to restore. That is the minimal ledger for a clean trap; the *pipeline* mechanism that makes exceptions precise is the reorder buffer's job (→ [OoO_Execution](05_OoO_Execution.md) §9).
+
+The load-bearing design idea is **delegation** (`medeleg`/`mideleg`). Without it, every page fault and system call from a U/S-mode OS would trap into M-mode firmware and be reflected back down — a round-trip on the hottest control paths. Delegation lets M-mode hand entire classes of trap (page faults, `ecall`s) *directly* to S-mode, so the kernel services its own faults with no firmware detour. It is a pure virtualization-performance win the layered model makes possible.
+
+**Interrupt sources** are standardized as two memory-mapped controllers (not CSRs, so they live outside the core and scale with the platform): the per-hart **CLINT** for timer (`mtime`/`mtimecmp`) and software (inter-processor) interrupts, and the **PLIC**, which routes external device interrupts by priority through a claim/complete handshake. That shape is the load-bearing fact; the register maps and initialization sequences are board reference.
+
+### 5.3 Virtual memory: a radix page table sized to the page
+
+The OS needs per-process address spaces with page-granular protection. RISC-V uses a **radix (multi-level) page table** walked by hardware. Radix rather than hashed/inverted because the walk is a short, deterministic loop of dependent PTE fetches; a sparse address space costs only the levels it actually uses; and **superpages fall out for free** by stopping the walk early at an aligned level — a hashed table would need collision handling in hardware, whereas radix needs only an adder and a memory read per level.
+
+The elegant invariant worth carrying: each level indexes exactly **512 = 2⁹** entries, because a 4 KB page holds 512 eight-byte PTEs — so **every page table is itself exactly one page.** That single fact fixes the whole geometry:
+
+$$
+\text{VA}_{\text{bits}} \;=\; 12 + 9L
+$$
+
+where 12 = page-offset bits, 9 = VPN index bits per level, $L$ = levels. $L=3 \Rightarrow$ **Sv39** (39-bit VA, 512 GB reach), $L=4 \Rightarrow$ **Sv48**, $L=5 \Rightarrow$ **Sv57**. You buy one more level of reach at the cost of **one more dependent memory access per walk** — the reach-vs-latency knee the TLB exists to hide (→ [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md)).
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    A["Device / Timer / Software event"] --> B{"Which controller?"}
-    B -- "CLINT timer" --> C["Set mip.MTIP (bit 7)"]
-    B -- "CLINT software" --> D["Set mip.MSIP (bit 3)"]
-    B -- "PLIC external" --> E["Set mip.MEIP (bit 11)"]
-    C --> F{"mie.MTIE = 1 AND mstatus.MIE = 1?"}
-    D --> G{"mie.MSIE = 1 AND mstatus.MIE = 1?"}
-    E --> H{"mie.MEIE = 1 AND mstatus.MIE = 1?"}
-    F -- Yes --> I["Trap to mtvec, mcause = 0x80000007"]
-    G -- Yes --> J["Trap to mtvec, mcause = 0x80000003"]
-    H -- Yes --> K["Trap to mtvec, mcause = 0x8000000B"]
-    I --> L["Handler: read mtimecmp, set next deadline, clear MTIP"]
-    J --> M["Handler: clear msip"]
-    K --> N["Handler: PLIC claim, service, complete"]
+    A["satp.PPN\n(root table = 1 page)"] --> B["index level with VPN slice (9 bits)"]
+    B --> C{"PTE valid?"}
+    C -- No --> F["page fault"]
+    C -- Yes --> D{"leaf? (R/W/X set)"}
+    D -- No --> E["PTE.PPN = next table base"]
+    E --> B
+    D -- Yes --> G["PA = PTE.PPN : page-offset\n(stop early = superpage)"]
 ```
 
-If interrupts are delegated via `mideleg`, MEI and SEI trap to S-mode instead:
-- `mideleg` bit 11 = 1: external interrupts go to S-mode (scause = 9, SEI).
-- `mideleg` bit 7 = 1: timer interrupts go to S-mode (scause = 5, STI).
-- `mideleg` bit 3 = 1: software interrupts go to S-mode (scause = 1, SSI).
+The walk is the concept: `satp.PPN` names the root page; index it by the top VPN slice; follow non-leaf PTEs down; a leaf gives the physical page. The leaf PTE's *role* bits are what the OS relies on — **R/W/X/U** for protection, and **A/D (accessed/dirty)**, which hardware sets to give the OS its hooks for page replacement and copy-on-write. A superpage is simply a leaf found one level early (a 2 MB leaf at L2 requires the low PPN bits to be zero, i.e. natural alignment). **ASID** tags each translation with an address-space ID so a context switch needn't flush the whole TLB. The exact PTE bit positions and a hex walk are spec reference; the invariant and the reach/latency law above are what a designer reasons with.
 
-**mcause interrupt values (bit 63 = 1 for interrupts):**
+### 5.4 The hypervisor (H) extension: virtualization as recursion of the same mechanism
 
-| Source | M-mode mcause | S-mode scause |
-|--------|--------------|---------------|
-| Software (MSI/SSI) | 0x8000_0003 | 0x8000_0001 |
-| Timer (MTI/STI) | 0x8000_0007 | 0x8000_0005 |
-| External (MEI/SEI) | 0x8000_000B | 0x8000_0009 |
+A hypervisor must virtualize the very mechanism §5.3 defines, so H adds a **second stage** of translation: guest virtual → guest physical (stage 1, the guest's own tables under `vsatp`) → host physical (stage 2, the hypervisor's tables under `hgatp`), with a **VMID** tagging stage-2 translations the way ASID tags stage-1.
 
-**mie / sip layout (same bit positions for both):**
+The cost is the deepening the original framing missed: the two-stage walk is **not additive but multiplicative**, because every guest-physical address touched *during* the stage-1 walk must itself be translated by a full stage-2 walk. For $L$-level tables in both dimensions the worst case is
 
-| Bit | Name | Description |
-|-----|------|-------------|
-| 3 | MSIE / SSIE | Software interrupt enable / pending |
-| 7 | MTIE / STIE | Timer interrupt enable / pending |
-| 11 | MEIE / SEIE | External interrupt enable / pending |
+$$
+N_{\text{access}} \;\le\; (L+1)^2 - 1
+$$
 
-### 10.4 Typical Initialization Sequence
-
-```c
-// 1. Set up trap vector
-mtvec = (uint64_t)trap_handler;     // direct mode
-
-// 2. Configure CLINT timer
-mtimecmp = mtime + TICK_INTERVAL;
-
-// 3. Configure PLIC
-for (int i = 1; i <= MAX_SRC; i++)
-    plic_priority[i] = 0;           // disable all priorities
-for (int i = 0; i < NCONTEXTS; i++)
-    plic_threshold[i] = 7;          // block all interrupts
-
-plic_priority[UART_IRQ] = 5;        // UART = priority 5
-plic_enable[MY_CTX][UART_IRQ / 32] |= (1 << (UART_IRQ % 32));
-plic_threshold[MY_CTX] = 0;         // allow all priorities
-
-// 4. Enable interrupts in CSRs
-mie = (1 << 7) | (1 << 11);         // MTIE | MEIE
-mstatus |= (1 << 3);                // MIE = 1
-```
+i.e. up to **15** memory accesses for Sv39 two-stage (and the well-known **24** for x86's 4-level nested paging), versus **3** for a native Sv39 walk. This quadratic blow-up is precisely *why* nested TLBs and page-walk caches are mandatory for acceptable virtualization performance — not the "3 + 3 = 6" an additive intuition suggests.
 
 ---
 
-## 11. Instruction Encoding Reference Table
+## 6. The vector (V) extension: length-agnostic as a portability contract
 
-The table below shows the complete 32-bit encoding for representative
-instructions across all major extensions. Fields are listed from most
-significant bit to least significant bit.
+Fixed-width SIMD's original sin is that the vector width lives *in the opcode*. Every widening — SSE (128) → AVX (256) → AVX-512, or NEON (128) → a new width — is a **new instruction set** software must be recompiled and re-encoded for, and yesterday's binary cannot use tomorrow's wider datapath. RISC-V V makes the vector length a **runtime quantity the program asks for**, so one binary runs on any hardware VLEN.
 
-| Instruction  | funct7[31:25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | rd[11:7] | opcode[6:0] | Hex (example)      |
-|--------------|---------------|------------|------------|---------------|----------|-------------|---------------------|
-| ADD          | 0000000       | rs2        | rs1        | 000           | rd       | 0110011     | varies              |
-| SUB          | 0100000       | rs2        | rs1        | 000           | rd       | 0110011     | varies              |
-| ADDI         | ----------- imm[11:0] ------- | rs1        | 000           | rd       | 0010011     | varies              |
-| AND          | 0000000       | rs2        | rs1        | 111           | rd       | 0110011     | varies              |
-| OR           | 0000000       | rs2        | rs1        | 110           | rd       | 0110011     | varies              |
-| XOR          | 0000000       | rs2        | rs1        | 100           | rd       | 0110011     | varies              |
-| SLL          | 0000000       | rs2        | rs1        | 001           | rd       | 0110011     | varies              |
-| SRL          | 0000000       | rs2        | rs1        | 101           | rd       | 0110011     | varies              |
-| SRA          | 0100000       | rs2        | rs1        | 101           | rd       | 0110011     | varies              |
-| LW           | ---- imm[11:0] ---------    | rs1        | 010           | rd       | 0000011     | varies              |
-| LD           | ---- imm[11:0] ---------    | rs1        | 011           | rd       | 0000011     | varies              |
-| SW           | imm[11:5]     | rs2        | rs1        | 010           | imm[4:0] | 0100011     | varies              |
-| SD           | imm[11:5]     | rs2        | rs1        | 011           | imm[4:0] | 0100011     | varies              |
-| BEQ          | imm[12|10:5]  | rs2        | rs1        | 000           | imm[4:1|11] | 1100011  | varies              |
-| JAL          | imm[20|10:1|11|19:12]       | ---        | ---           | rd       | 1101111     | varies              |
-| LUI          | -------- imm[31:12] --------| ---        | ---           | rd       | 0110111     | varies              |
-| MUL          | 0000001       | rs2        | rs1        | 000           | rd       | 0110011     | varies              |
-| DIV          | 0000001       | rs2        | rs1        | 100           | rd       | 0110011     | varies              |
-| LR.W         | 00010{aq}{rl} | 00000      | rs1        | 010           | rd       | 0101111     | varies              |
-| SC.W         | 00011{aq}{rl} | rs2        | rs1        | 010           | rd       | 0101111     | varies              |
-| FLW          | ---- imm[11:0] ---------    | rs1        | 010           | rd       | 0000111     | varies              |
-| FLD          | ---- imm[11:0] ---------    | rs1        | 011           | rd       | 0000111     | varies              |
-| FMADD.S      | rs3[31:27]    | 00         | rs1        | rm            | rd       | 1000011     | varies              |
+**The mechanism that makes portability work** (the concept, not the encodings):
 
-**Fixed opcode values to memorize:**
+- `vsetvli` tells the hardware "I have this many elements left; how many can you do?" and the hardware answers with `vl = min(requested, VLMAX)`, where
 
-| Opcode (hex) | Opcode (bin) | Category                   |
-|---------------|--------------|----------------------------|
-| 0x37          | 0110111      | LUI                        |
-| 0x17          | 0010111      | AUIPC                      |
-| 0x6F          | 1101111      | JAL                        |
-| 0x67          | 1100111      | JALR                       |
-| 0x63          | 1100011      | Branch (BEQ/BNE/BLT/...)   |
-| 0x03          | 0000011      | Load (LB/LH/LW/LD/...)     |
-| 0x23          | 0100011      | Store (SB/SH/SW/SD)        |
-| 0x33          | 0110011      | OP (ADD/SUB/SLL/... + M)   |
-| 0x13          | 0010011      | OP-IMM (ADDI/ANDI/SLLI/...)|
-| 0x1B          | 0111011      | OP-32 (ADDW/SUBW/MULW/...) |
-| 0x2F          | 0101111      | AMO (LR/SC/AMOSWAP/...)    |
-| 0x07          | 0000111      | FP Load (FLW/FLD)          |
-| 0x27          | 0100111      | FP Store (FSW/FSD)         |
-| 0x53          | 1010011      | FP OP (FADD/FSUB/...)      |
-| 0x43          | 1000011      | FMADD                      |
-| 0x47          | 1000111      | FMSUB                      |
-| 0x4B          | 1001011      | FNMSUB                     |
-| 0x4F          | 1001111      | FNMADD                     |
+$$
+\text{VLMAX} \;=\; \frac{\text{LMUL}\times \text{VLEN}}{\text{SEW}}
+$$
+
+with **VLEN** = hardware vector-register width (the implementation's free choice), **SEW** = element width (set at runtime), **LMUL** = how many registers to gang into one logical vector.
+- The **stripmine loop** processes `vl` elements per iteration and re-asks; the final short iteration runs the *same code* with a smaller `vl` — **no scalar epilogue, no tail predication.** That is the whole trick: the program never names a width, so the iteration count $\lceil N/\text{VLMAX}\rceil$ scales with the hardware while **source and binary never change.**
+- **`v0` doubles as the mask register** — per-element predication that turns data-dependent control flow (`if (a[i] > 0) …`) into branch-free masked vector ops. LMUL (and fractional LMUL) let software trade register count against vector length and mix element widths in one loop.
+
+**The trade against fixed-width SIMD.** VLA wins on **portability** (one binary from a VLEN-128 phone to a VLEN-1024+ datacenter part), **code size** (no per-width intrinsics, no epilogue), and **forward compatibility** (a profile mandates V once and hardware widens freely). Fixed-width wins on **hardware simplicity** — a known-width datapath needs no `vl` plumbing or partial-vector tail logic — and can be marginally easier to peak on a fixed size. For new, portable, AI/DSP-heavy designs the industry has taken the VLA side. The implementer's bonus: because software is width-agnostic, **VLEN is a free throughput dial** — add lanes to raise throughput with no ISA change. Real cores: Alibaba **Xuantie C910/C920** (open-sourced OoO RV64GCV, VLEN=256), **SiFive P870** (VLEN=256, 4 lanes, RVA23), **Ventana Veyron** (8-wide OoO server). The vector register file is $32 \times \text{VLEN}$ bits (1–2 KB at VLEN 256–512), and chaining hides producer→consumer latency — the sizing facts worth keeping.
+
+**Ecosystem tie-back.** RVA23 makes V **mandatory** to break the chicken-and-egg: software won't vectorize for a feature that might be absent, so the profile guarantees it and the whole toolchain (LLVM, glibc, the Android runtime) can assume it — §1's modularity-vs-fragmentation trade resolved at profile granularity.
 
 ---
 
-## 12. Numbers to Memorize
+## 7. Why RISC-V matters for hardware design
 
-| Quantity                              | Value                   |
-|---------------------------------------|-------------------------|
-| Integer registers (x)                 | 32                      |
-| FP registers (f)                      | 32                      |
-| Vector registers (v)                  | 32                      |
-| Register width (RV64)                 | 64 bits                 |
-| Privilege levels                      | 3 standard: U=0, S=1, M=3; HS=2 in hypervisor extension |
-| Privilege encodings (binary)          | U=00, S=01, M=11        |
-| Default XLEN (RV32)                   | 32 bits                 |
-| Default XLEN (RV64)                   | 64 bits                 |
-| Default XLEN (RV128)                  | 128 bits                |
-| Base instruction length               | 32 bits                 |
-| Compressed instruction length (C ext) | 16 bits                 |
-| Extended instruction length (proposed)| 48 bits                 |
-| Page size (base)                      | 4 KB                    |
-| Superpage sizes                       | 2 MB, 1 GB              |
-| Sv39 virtual address width            | 39 bits                 |
-| Sv39 physical address width           | 56 bits                 |
-| Sv39 page table levels                | 3                       |
-| Sv48 virtual address width            | 48 bits                 |
-| Sv48 page table levels                | 4                       |
-| PTE size                              | 8 bytes (64 bits)       |
-| Page table entries per page           | 512                     |
-| VPN bits per level                    | 9                       |
-| Page offset bits                      | 12                      |
-| ASID width (satp)                     | 16 bits                 |
-| CSR address space                     | 12 bits (0x000 - 0xFFF) |
-| CSR range: User                       | 0x000 - 0x0FF           |
-| CSR range: Supervisor                 | 0x100 - 0x1FF           |
-| CSR range: Hypervisor                 | 0x200 - 0x2FF           |
-| CSR range: Machine                    | 0x300 - 0x3FF           |
-| CSR range: Debug/Custom               | 0x7C0 - 0x7FF, 0xFC0 - 0xFFF |
-| B-type branch range                   | +/- 4 KiB               |
-| J-type jump range                     | +/- 1 MiB               |
-| I-type immediate width                | 12 bits (sign-extended) |
-| U-type immediate width                | 20 bits (upper)         |
-| mstatus CSR address                   | 0x300                   |
-| mepc CSR address                      | 0x341                   |
-| mcause CSR address                    | 0x342                   |
-| mtvec CSR address                     | 0x305                   |
-| mtval CSR address                     | 0x343                   |
-| medeleg CSR address                   | 0x302                   |
-| mideleg CSR address                   | 0x303                   |
-| mie CSR address                       | 0x304                   |
-| mip CSR address                       | 0x344                   |
-| sstatus CSR address                   | 0x100                   |
-| sepc CSR address                      | 0x141                   |
-| scause CSR address                    | 0x142                   |
-| stvec CSR address                     | 0x105                   |
-| stval CSR address                     | 0x143                   |
-| satp CSR address                      | 0x180                   |
-| fcsr CSR address                      | 0x003                   |
-| fflags CSR address                    | 0x001                   |
-| frm CSR address                       | 0x002                   |
-| vstart CSR address                    | 0x008                   |
-| vtype CSR address                     | 0x0C7                   |
-| vl CSR address                        | 0xC20                   |
-| vlenb CSR address                     | 0xC22                   |
-| CLINT base (typical)                  | 0x0200_0000             |
-| PLIC base (typical)                   | 0x0C00_0000             |
-| PLIC max interrupt sources            | 1023 (source 0 reserved)|
-| PLIC priority levels                  | 0-7 (0 = disabled)      |
-| MEI mcause (M-mode)                   | 0x8000_000B (bit63 + 11)|
-| MTI mcause (M-mode)                   | 0x8000_0007 (bit63 + 7) |
-| MSI mcause (M-mode)                   | 0x8000_0003 (bit63 + 3) |
+Two properties make RISC-V the default substrate for new hardware, and both follow from the §1 thesis.
+
+**Extensibility — the ISA is built to be extended at the leaf.** The encoding permanently reserves *custom* opcode space (custom-0/1/2/3), so a designer can bolt domain-specific instructions onto a compliant core without forking the base or breaking the toolchain. This is the accelerator story: **Tenstorrent** uses small RISC-V cores as the control plane beside Tensix matrix engines; **Esperanto** placed 1000+ RV64 cores on one inference die; **Alibaba Xuantie** adds custom matrix/int8 extensions over the standard base. The frozen base guarantees the OS, compiler, and debugger keep working; the custom leaf accelerates the hot kernel. The alternative is a fixed proprietary ISA you cannot extend without the vendor's cooperation.
+
+**Open — the contract is a specification, not a product.** No per-core royalty and no NDA'd microarchitecture contract means academia, startups, and hyperscalers can each build compliant silicon against the *same frozen base* and share *one* software ecosystem. That is why RISC-V is simultaneously the teaching and research default — you can read, modify, and tape out a complete core ([Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md)) — and, increasingly, the control-plane ISA inside GPUs, NICs, SSDs, and NPUs ([NPU_Accelerators](16_NPU_Accelerators.md)).
+
+**The lesson that ties the page together: RISC-V is a study in the discipline of subtraction.** A good ISA is defined as much by what it refuses to make mandatory as by what it includes, because every mandate is a permanent, compounding hardware tax. Load-store, fixed-width encoding, static register fields, the modular extensions, the layered privilege stack, and the length-agnostic vector model are the *same bet placed six times*: keep the mandatory core minimal and trivially decodable, and make every added capability optional, orthogonal, and composable. That bet is why one ISA now spans a 10 kgate microcontroller and a 500-wide-window server core.
 
 ---
 
-## 13. Worked Problems
+## Numbers to memorize
 
-### Problem 1: Decode Instruction 0x005100B3
-
-**Task:** Identify the format, instruction, and all operand fields.
-
-**Solution:**
-
-Convert to binary:
-```verilog
-0000000 00101 00010 000 00101 0110011
-funct7  rs2   rs1   f3  rd    opcode
-```
-
-- opcode = 0110011 = 0x33, which is the OP (register-register) category.
-- funct3 = 000, funct7 = 0000000. This combination is **ADD**.
-- rd = 00101 = x5 (t0)
-- rs1 = 00010 = x2 (sp)
-- rs2 = 00101 = x5 (t0)
-
-The instruction is `ADD x5, x2, x5`, which computes `t0 = sp + t0`.
-
-### Problem 2: Encode ADDI x5, x10, -1
-
-**Task:** Produce the 32-bit hex encoding.
-
-**Solution:**
-
-ADDI uses I-type format: `imm[11:0] rs1 funct3 rd opcode`
-
-- imm = -1 = 0xFFF (12-bit sign-extended, all 1s)
-- rs1 = x10 = 01010
-- funct3 = 000
-- rd = x5 = 00101
-- opcode = 0010011
-
-Assemble:
-```verilog
-111111111111 01010 000 00101 0010011
-```
-
-Group into 4-bit nibbles from MSB:
-```verilog
-1111 1111 1111 0101 0000 0010 1001 0011
-   F    F    F    5    0    2    9    3
-```
-
-The encoding is **0xFFF50293**.
-
-### Problem 3: Sv39 Translation Walk
-
-**Given:**
-- satp = 0x8000000000001000 (MODE=8, ASID=0, PPN=0x1000)
-- Virtual address = 0x00000000ABCDEF80
-
-**Task:** Compute the physical address step by step.
-
-**Solution:**
-
-Step 1: Decompose the virtual address.
-
-VA = 0x00000000ABCDEF80
-
-In binary: `0000...0000 1010 1011 1100 1101 1110 1111 1000 0000`
-
-Bits 63:39 are all zero, matching bit 38 (which is 0). No sign-extension fault.
-
-```verilog
-VA[38:30] = VPN[2] = 0x0A = 10
-VA[29:21] = VPN[1] = 0x5E = 94
-VA[20:12] = VPN[0] = 0x0F = 15
-VA[11:0]  = offset  = 0xF80
-```
-
-Step 2: Level 1 lookup (index with VPN[2] = 10).
-
-Root PT physical address = PPN * page_size = 0x1000 * 4096 = 0x1000000.
-
-PTE address at level 1 = 0x1000000 + 10 * 8 = 0x1000000 + 0x50 = 0x1000050.
-
-Suppose PTE at 0x1000050 = `0x200040C1`:
-- V = 1, R = 0, W = 0, X = 0 (non-leaf pointer)
-- PPN = 0x200040 (from bits 53:10)
-
-Step 3: Level 2 lookup (index with VPN[1] = 94).
-
-L2 PT base = 0x200040 * 4096 = 0x200040000.
-
-PTE address = 0x200040000 + 94 * 8 = 0x200040000 + 0x2F0 = 0x2000402F0.
-
-Suppose PTE at 0x2000402F0 = `0x000CB0CF`:
-- V = 1, R = 1, W = 1, X = 1 (leaf PTE)
-- PPN = 0x000CB (from bits 53:10)
-
-Step 4: Compute physical address.
-
-PA = PPN * 4096 + offset = 0x000CB * 0x1000 + 0xF80 = 0x000CB000 + 0xF80 = **0x000CBF80**.
-
-Note: Since this is a leaf at L2 (not L3), the PPN bits [11:0] must be zero
-for a valid superpage, or if a regular page is expected, the next level must
-be walked. In this example, PPN[11:0] = 0 is satisfied.
-
-### Problem 4: LR/SC Implementation in a Cache
-
-**Task:** Describe how LR/SC is implemented in a data cache with reservation
-sets. Explain the forward-progress guarantee.
-
-**Solution:**
-
-An LR/SC implementation tracks reservations at cache-line granularity (64 bytes
-on a typical system):
-
-**LR.W rd, (rs1):**
-1. Perform a normal cache read at address `addr = rs1 + 0`.
-2. Record the reservation: store `{hart_id, addr_tag}` in a reservation
-   register inside the cache controller. The tag matches the cache line
-   containing the loaded address.
-3. Return the loaded word in `rd`.
-
-**SC.W rd, rs2, (rs1):**
-1. Check whether the reservation for this hart is still valid:
-   - The reservation must match the cache line containing `addr = rs1 + 0`.
-   - No other hart must have written to (or evicted) that cache line since
-     the LR.
-2. If valid:
-   - Write `rs2` to memory at `addr`.
-   - Set `rd = 0` (success).
-   - Clear the reservation.
-3. If invalid:
-   - Do NOT write to memory.
-   - Set `rd = nonzero` (failure, typically 1).
-   - Clear the reservation.
-
-**Reservation invalidation events:**
-- Another hart's store (or AMO) hits the same cache line.
-- A cache eviction or replacement removes the line.
-- Another LR on the same hart (replaces the old reservation).
-- Certain fence instructions may also clear reservations.
-
-**Forward-progress guarantee:** The RISC-V spec requires that under no
-circumstances shall a sequence of LR/SC pairs on the same hart with the same
-address be prevented from making forward progress indefinitely. In practice
-this means the cache controller must ensure that if two harts are competing
-for the same line, at least one must succeed within a bounded number of
-attempts. Implementations typically guarantee success when the LR/SC pair
-is inside a tight loop with no intervening memory operations to the same line.
-
-**Microarchitectural note:** In a non-blocking cache, the reservation check
-during SC requires that the cache line is present and in an exclusive or
-modified state (the E or M state of the MESI protocol, i.e. Modified/Exclusive/Shared/Invalid). If the line is shared, the SC must issue a
-bus upgrade transaction before checking the reservation.
-
-### Problem 5: U-mode ecall to S-mode and sret
-
-**Task:** Trace the CSR state changes when a user-mode program executes
-`ecall`, the S-mode handler processes it, and then executes `sret`.
-
-**Initial state:**
-- Privilege = U (User mode)
-- sstatus.SPP = 0
-- sstatus.SIE = 1 (interrupts enabled in S-mode)
-- sstatus.SPIE = 0
-- sepc = 0x80001000
-- stvec = 0x80200000
-
-**Step 1: User executes `ecall` at PC = 0x00001000.**
-
-`ecall` from U-mode (with bit 8 delegated in medeleg) traps to S-mode:
-
-| CSR      | Before         | After          | Reason                              |
-|----------|----------------|----------------|--------------------------------------|
-| sepc     | 0x80001000     | 0x00001000     | Set to PC of ecall                   |
-| scause   | --             | 8              | Exception code 8 = ecall from U-mode |
-| sstatus.SPP | 0           | 0              | Previous privilege was U (SPP = 0)   |
-| sstatus.SIE | 1           | 0              | Interrupts disabled in handler       |
-| sstatus.SPIE| 0           | 1              | Saved old SIE                        |
-| PC       | 0x00001000     | 0x80200000     | Set to stvec (direct mode)           |
-
-The CPU transitions from U-mode to S-mode. The kernel handler at
-0x80200000 reads `scause` to identify the ecall, reads `sepc` to find
-the faulting PC, and reads `a7` (x17) to determine the syscall number.
-
-**Step 2: Kernel processes the system call.**
-
-The kernel handler saves remaining user registers, performs the requested
-service, places the return value in `a0` (x10), and may adjust `sepc` by
-+4 so that `sret` resumes at the instruction after the ecall (if the OS
-chooses to advance past the ecall):
-
-`sepc = sepc + 4 = 0x00001004`
-
-**Step 3: Kernel executes `sret`.**
-
-`sret` restores the supervisor state:
-
-| CSR         | Before     | After      | Reason                              |
-|-------------|------------|------------|--------------------------------------|
-| sstatus.SIE | 0          | 1          | Restored from SPIE                   |
-| sstatus.SPIE| 1          | 1          | Set to 1 (spec requires SPIE=1 after sret) |
-| sstatus.SPP | 0          | 0          | Not changed directly, but used to set privilege |
-| PC          | 0x8020XXXX | 0x00001004 | Set to sepc                         |
-
-The privilege is restored to U-mode (because SPP was 0). The processor
-resumes executing user code at 0x00001004 with interrupts re-enabled
-at the S-level (so the next S-mode trap can be taken).
+| Quantity | Value | Why it matters (section) |
+|---|---|---|
+| Integer / FP / vector registers | 32 / 32 / 32 | fixed namespaces; `x0` = hardwired zero (§2.3) |
+| XLEN | 32 / 64 / 128 | register + address width (RV32/64/128) |
+| Base ISA size | ~40 instructions, **frozen** | small mandatory contract (§1) |
+| RV64G | I + M + A + F + D + Zicsr + Zifencei | the general-purpose bundle (§1) |
+| Base / compressed instruction length | 32 / 16 bits | fixed-width decode vs C density (§2.2, §3) |
+| RVC static code shrink | 25–30% | $f_c/2$, $f_c\!\approx\!0.5$–0.6 (§3) |
+| Static field positions | rs1 = 19:15, rs2 = 24:20, rd = 11:7 | speculative register read (§2.3) |
+| Immediate sign bit | always bit 31 | single-wire sign-extend (§2.3) |
+| I-type / U-type immediate | 12 / 20 bits | reach of immediate forms |
+| Branch / jump range | ±4 KiB / ±1 MiB | B-type / J-type offset (×2) |
+| Atomic ordering combinations | 4 (`aq`,`rl`) | release-consistency memory model (§4.2) |
+| Privilege modes | U=0, S=1, M=3 (HS=2 w/ H) | protection layering (§5.1) |
+| Privilege encodings | U=00, S=01, M=11 | 2-bit mode field (§5.1) |
+| CSR address ranges | U 0x000 / S 0x100 / M 0x300 | level encoded in address (§5.1) |
+| Key CSRs | mstatus 0x300, mtvec 0x305, mepc 0x341, satp 0x180 | trap + translation control (§5.2–5.3) |
+| Page size / PTE size | 4 KB / 8 bytes | 512 PTEs = exactly one page (§5.3) |
+| PTEs per table / VPN bits per level | 512 / 9 | the $2^9$ invariant (§5.3) |
+| Page-offset bits | 12 | $\text{VA}_{\text{bits}} = 12 + 9L$ (§5.3) |
+| Sv39 / Sv48 / Sv57 | 39-bit ÷3 lvl / 48 ÷4 / 57 ÷5 | reach vs walk latency (§5.3) |
+| Sv39 physical address | 56 bits | leaf PPN width |
+| Superpage sizes | 2 MB, 1 GB | leaf found one/two levels early (§5.3) |
+| ASID / VMID | 16 / 14 bits | TLB tagging, no full flush (§5.3–5.4) |
+| Two-stage walk worst case | $(L{+}1)^2\!-\!1$ → 15 (Sv39), 24 (x86 L4) | nested-paging is multiplicative (§5.4) |
+| Vector registers / VLEN | 32 / ≥128 (128–1024+) | VLEN is a free throughput dial (§6) |
+| SEW / LMUL | 8/16/32/64 / 1–8 (+1/2–1/8) | VLMAX = LMUL·VLEN/SEW (§6) |
+| Vector mask register | `v0` | per-element predication (§6) |
+| CLINT / PLIC base (typical) | 0x0200_0000 / 0x0C00_0000 | timer+IPI / external IRQ routing (§5.2) |
+| PLIC sources / priorities | ≤1023 / 0–7 | external interrupt scaling (§5.2) |
 
 ---
 
-## 14. RV64V -- Vector Extension V 1.0 (Ratified)
+## Cross-references
 
-The V extension adds a scalable vector unit. Unlike fixed-width SIMD (ARM NEON,
-x86 AVX), RISC-V vectors have a **design-time-agnostic** programming model: the
-same binary runs on hardware with different vector lengths. The programmer (or
-compiler) writes loops in terms of "strip mines" and the hardware handles the
-rest.
-
-### 14.1 Vector Registers and Configuration CSRs
-
-The V extension adds 32 vector registers `v0`--`v31`, each `VLEN` bits wide
-(`VLEN >= 128` in the ratified spec, common implementations: 128--512 bits).
-
-| CSR | Purpose |
-|-----|---------|
-| `vstart` | Element index at which to resume after a trap |
-| `vxsat` | Fixed-point saturation flag |
-| `vxrm` | Fixed-point rounding mode |
-| `vcsr` | Vector control and status (contains vxsat, vxrm) |
-| `vlenb` | VLEN in bytes (read-only, VLEN/8) |
-
-Three configuration CSRs set the vector operating parameters:
-
-| Parameter | Full Name | Description |
-|-----------|-----------|-------------|
-| **SEW** | Selected Element Width | Width of each vector element: 8, 16, 32, or 64 bits (also 128 in some profiles) |
-| **LMUL** | Vector Length Multiplier | Groups of vector registers treated as one: 1, 2, 4, 8 (or fractional: 1/2, 1/4, 1/8) |
-| **VL** | Vector Length | Number of elements to process in the current strip-mine iteration |
-
-The `vsetvli` / `vsetivli` / `vsetvl` instructions configure SEW, LMUL, and VL
-simultaneously:
-
-```verilog
-vsetvli rd, rs1, vtypei   // rd = old VL; VL = min(rs1, VLMAX); vtype = imm
-vsetvl  rd, rs1, rs2      // rd = old VL; VL = min(rs1, VLMAX); vtype = rs2
-```
-
-`VLMAX = LMUL * VLEN / SEW`. This is the maximum number of elements that fit in
-the grouped vector registers. Setting LMUL > 1 multiplies the effective register
-width (e.g., LMUL=2 with VLEN=128 gives 256-bit effective vectors using two
-registers as one).
-
-### 14.2 Strip Mining
-
-Strip mining is the key programming idiom. A vectorizable loop is written as:
-
-```c
-// C pseudocode for strip-mined vector loop
-size_t vl;
-for (size_t avl = n; avl > 0; avl -= vl) {
-    vl = vsetvl_e32m1(avl);   // configure SEW=32, LMUL=1, returns actual VL
-    vfloat32m1_t a = vle32_v_f32m1(src, vl);   // vector load VL elements
-    vfloat32m1_t b = vfmul_vf_f32m1(a, 2.0f, vl);  // multiply each by 2
-    vse32_v_f32m1(dst, b, vl);                  // vector store VL elements
-    src += vl; dst += vl;
-}
-```
-
-The hardware sets `VL = min(requested_avl, VLMAX)`. If `VLMAX = 4` (128-bit VLEN,
-SEW=32, LMUL=1) and `n = 13`, the loop executes 4 iterations: VL = 4, 4, 4, 1.
-No predication or tail-handling code is needed -- instructions respect VL
-naturally.
-
-### 14.3 Vector Load and Store
-
-| Instruction | Description |
-|-------------|-------------|
-| `vle{sew}.v` | Unit-stride load (contiguous elements) |
-| `vse{sew}.v` | Unit-stride store |
-| `vlse{sew}.v` | Strided load (constant byte stride) |
-| `vsse{sew}.v` | Strided store |
-| `vluxei{sew}.v` | Indexed-unordered load (gather) |
-| `vsoxei{sew}.v` | Indexed-unordered store (scatter) |
-
-Unit-stride loads/stores are the most common and map directly to cache-line
-fills. Strided and indexed variants require the address-generation unit to
-compute a separate address per element.
-
-### 14.4 Vector Arithmetic
-
-The V extension defines a comprehensive set of arithmetic instructions that
-operate element-wise on VL elements:
-
-| Category | Examples |
-|----------|----------|
-| Integer ALU | `vadd.vv`, `vsub.vv`, `vand.vv`, `vor.vv`, `vxor.vv` |
-| Integer shift | `vsll.vv`, `vsrl.vv`, `vsra.vv` |
-| Integer compare | `vmseq.vv`, `vmslt.vv`, `vmsle.vv` |
-| Integer multiply | `vmul.vv`, `vmulh.vv`, `vmacc.vv` |
-| Integer divide | `vdivu.vv`, `vrem.vv` |
-| FP arithmetic | `vfadd.vv`, `vfsub.vv`, `vfmul.vv`, `vfdiv.vv` |
-| Fused multiply-add | `vfmacc.vv` (a = a + b * c) |
-| Reduction | `vredsum.vs` (sum all elements into scalar) |
-| Masked operations | Any instruction can take a mask register (`v0`) |
-
-**Masking:** Bit 0 of the instruction encodes whether masking is active. If so,
-only elements where `v0[i] = 1` are computed; others are left unchanged (or set
-to the undisturbed value). This is critical for conditional SIMD code (e.g.,
-`if (a[i] > 0) b[i] = a[i] * 2`).
-
-### 14.5 Microarchitectural Implications
-
-- **Register file sizing:** 32 registers x VLEN bits. At VLEN = 256, this is
-  1 KB. At VLEN = 512, it is 2 KB. The vector register file needs 2 read + 1
-  write ports for a single-issue vector pipeline; wider issue requires more ports.
-- **Chaining:** Analogous to instruction forwarding, vector chaining allows a
-  dependent vector instruction to begin execution before the producer has finished
-  all elements. For example, `vfmul` producing element 0 can chain into `vfadd`
-  consuming element 0 in the next cycle. Full chaining reduces the effective
-  latency of back-to-back vector operations to 1 element per cycle.
-- **Lane decomposition:** A common implementation partitions the vector datapath
-  into N lanes (e.g., 4 lanes of 128 bits each for VLEN = 512). Each lane
-  processes SEW-width elements in parallel. Lane count determines throughput:
-  4 lanes with SEW=32 produce 4 x 4 = 16 float32 results per cycle.
-
----
-
-## 15. RVA23 Profile -- Application Processor Standard
-
-The RISC-V profiles define mandatory extension sets that software can rely on.
-The **RVA23U64** profile (ratified 2024) is the target for general-purpose
-application processors running rich OSes (Linux, Android). It mandates:
-
-### 15.1 Mandatory Extensions
-
-| Extension | Full Name | Purpose |
-|-----------|-----------|---------|
-| **V** | Vector Extension | Scalable SIMD for media, ML, crypto |
-| **Zicond** | Conditional Operations | `czero.eqz`, `czero.nez` -- conditional moves without branch |
-| **Zvfh** | Vector FP16 | Half-precision (16-bit) floating-point in vectors |
-| **Zawrs** | Wait-on-Reservation-Set | `WRS.STO`, `WRS.NTO` -- low-power wait for semaphore |
-| **Zihintpause** | Pause Hint | `PAUSE` instruction -- hint to pipeline for spin-wait optimization |
-| **Zicsr** | CSR Instructions | `CSRRW`, `CSRRS`, `CSRRC` (already implied by base) |
-| **Zifencei** | Instruction-Fence | `FENCE.I` -- instruction-cache coherence |
-| **Zcb** | Compressed Bit-Manipulation | Additional compressed instructions for code density |
-| **Zba / Zbb / Zbs** | Bit-Manipulation | Address-generation acceleration, population count, bit set/clear |
-| **Zfhmin** | FP16 Minimal | Load/store/move for IEEE half-precision floats |
-| **Zkt** | Data-Independent Execution Timing | Constant-time execution for crypto (resists timing side-channels) |
-| **Zvkng** | Vector Crypto -- NIST Suite | AES-256, SHA-256, SHA-512, SM3, SM4, GCM in vector unit |
-
-### 15.2 Why V Is Mandatory
-
-Making V mandatory in RVA23 means application software (Android runtime, Linux
-glibc, LLVM/OpenMP) can assume vector support and ship pre-compiled vectorized
-libraries. This breaks the chicken-and-egg problem: ISAs without a guaranteed
-SIMD baseline force developers to ship scalar fallback paths that leave hardware
-underutilized.
-
-### 15.3 Impact on Hardware Design
-
-An RVA23-compliant core must implement:
-
-1. A vector unit with at least VLEN = 128 (V extension).
-2. Half-precision FP datapaths in both scalar and vector units (Zfhmin + Zvfh).
-3. Conditional select in the integer ALU (Zicond adds 2 instructions to the
-   decoder, minimal gate cost).
-4. Crypto-constant-time guarantees in the pipeline (Zkt constrains the
-   multiplier and divider to not have data-dependent latency).
-5. PAUSE as a no-op that signals the fetch/issue logic to yield resources to
-   the other SMT (Simultaneous Multithreading) thread (Zihintpause).
-
----
-
-## 16. RISC-V in AI Accelerators
-
-RISC-V has become the ISA of choice for several major AI/ML accelerator
-programs because of its license-free model and extensibility.
-
-### 16.1 Alibaba Xuantie C910 / C920
-
-- **C910:** 6-wide out-of-order RV64GCV core at 2.5 GHz (TSMC 7 nm). Features a
-  256-bit vector unit (VLEN=256), 128-entry ROB (Reorder Buffer), 3 ALU + 2 FPU (Floating-Point Unit) execution units.
-  Achieves ~7 SPECint2006/GHz. Open-sourced in 2022.
-- **C920:** Successor with improved branch prediction (TAGE-based), larger
-  L2 cache, and RISC-V hypervisor extension support. Targets cloud AI inference.
-- **Extension for AI:** Xuantie adds custom T-Head extensions for matrix
-  operations (int8/matmul acceleration), interleaved memory access patterns, and
-  a custom cache-prefetch hint.
-
-### 16.2 SiFive P870
-
-- 6-wide out-of-order RV64GCV core. Designed for high-performance computing
-  and automotive. Implements RVA23 profile (V, Zicond, Zvfh, Zba, Zbb, Zbs).
-- Vector unit: VLEN=256, 4 lanes, supports FP16/BF16/INT8/INT4 data types.
-- Coherent mesh interconnect (SiFive CacheCoherent Interconnect) supports
-  up to 16 P870 cores in a single cluster.
-
-### 16.3 Tenstorrent
-
-- Founded by Jim Keller. Uses RISC-V as the control processor for AI
-  accelerator tiles.
-- Each tile contains a small RISC-V core (in-order, RV32IMC) plus a matrix
-  math unit (Tensix core). Tiles communicate via a packet-switched network-on-chip.
-- The RISC-V core handles data movement, synchronization, and kernel dispatch;
-  the matrix unit handles the compute-heavy GEMM operations.
-- Grayskull (2020): 120 tiles, 368 MB SRAM (Static Random-Access Memory). Wormhole (2023): expanded with
-  Ethernet-die-to-die links for multi-chip scaling.
-
-### 16.4 Other Notable RISC-V AI Designs
-
-| Company | Product | Core Type | Target |
-|---------|---------|-----------|--------|
-| Esperanto | ET-1031 | 1000+ in-order RV64GC cores + VPU | Datacenter inference |
-| Ventana | Veyron V1 | 8-wide OoO RV64GCV | Cloud/server |
-|小米 | Xuanjie C1350 | 6-wide OoO with NPU | Mobile SoC |
-
----
-
-## 17. RISC-V Hypervisor Extension (H Extension)
-
-The H extension adds hardware support for Type-1 and Type-2 hypervisors. It was
-ratified in 2021 and enables virtualization without binary translation.
-
-### 17.1 Two-Stage Address Translation
-
-Without the H extension, the MMU (Memory Management Unit) performs a single translation: VA -> PA. With
-the H extension active, the MMU performs **two-stage translation**:
-
-```verilog
-Guest Virtual Address (GVA)
-        |
-   [Stage 1: Guest VM page table]     <-- controlled by guest OS
-        |
-   Guest Physical Address (GPA)
-        |
-   [Stage 2: Host / hypervisor page table]  <-- controlled by hypervisor
-        |
-   Host Physical Address (HPA / actual PA)
-```
-
-- **Stage 1** is managed by the guest OS writing to its own `satp` (called
-  `vsatp` in the hypervisor context). The hardware walks the guest page table
-  (in GPA space) to produce a GPA.
-- **Stage 2** is managed by the hypervisor via the `hgatp` CSR (Hypervisor
-  Guest Address Translation and Protection). The hardware walks the host page
-  table to translate GPA to HPA.
-
-Each stage follows the standard Sv39/Sv48 radix-tree format. The total walk
-latency doubles: 3 memory accesses for Stage 1 + 3 for Stage 2 = 6 accesses
-(worst case without caching).
-
-### 17.2 VMID (Virtual Machine ID)
-
-Analogous to ASID for processes, the **VMID** tags Stage-2 TLB entries to avoid
-flushing the entire TLB on VM context switches.
-
-```verilog
-hgatp CSR format:
-  [Mode (4 bits)] [VMID (14 bits)] [PPN of Stage-2 root table (44 bits)]
-```
-
-- VMID width: 14 bits = 16,384 concurrent VMs (before recycling).
-- On a VM switch, the hypervisor writes the new VMID to `hgatp`. TLB entries
-  from the previous VM remain valid but will not match (VMID mismatch).
-
-### 17.3 Key Hypervisor CSRs
-
-| CSR | Address | Purpose |
-|-----|---------|---------|
-| `hstatus` | 0x600 | Hypervisor status (VS-field, VTVM, VTM) |
-| `hedeleg` | 0x602 | Hypervisor exception delegation to VS-mode |
-| `hideleg` | 0x603 | Hypervisor interrupt delegation to VS-mode |
-| `hie` | 0x604 | Hypervisor interrupt enable |
-| `hgeie` | 0x607 | Hypervisor guest external interrupt enable |
-| `hgatp` | 0x680 | Stage-2 page table base + VMID |
-| `vsatp` | 0x280 | Guest's satp (Stage-1 page table base) |
-| `vstvec` | 0x280 | Guest's stvec |
-| `hgeip` | 0xE12 | Guest external interrupt pending |
-| `htval` | 0x643 | Hypervisor trap value |
-| `htinst` | 0x64A | Hypervisor trap instruction |
-
-### 17.4 Instruction Emulation with htinst
-
-When a guest executes a privileged instruction that must be trapped (e.g.,
-accessing a device register via load/store), the hypervisor needs to know which
-instruction caused the trap. The `htinst` CSR provides the **transformed
-instruction encoding** of the trapping instruction, allowing the hypervisor to
-decode and emulate it without reading guest memory. This is critical for
-performance: device emulation in the hypervisor avoids a costly instruction-fetch
-from guest physical memory.
-
-### 17.5 Memory Mapping for VMs
-
-The hypervisor maps guest physical frames to host physical frames via the
-Stage-2 page tables. This enables:
-
-1. **Memory overcommitment:** Allocate more GPA space than physical HPA, swap
-   unused guest pages to disk.
-2. **Device pass-through:** Map a physical device's MMIO (Memory-Mapped I/O) range directly into
-   the guest GPA so the guest can access it without hypervisor intervention.
-3. **Memory isolation:** Ensure a malicious guest cannot access another VM's
-   memory (enforced by Stage-2 PTE permissions).
+- **Down the stack (what these instructions are built from):** [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) (the decoders and ALU the encoding drives), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md) (the M-extension multiplier tree and SRT divider), [Floating_Point](../00_Fundamentals/04_Floating_Point.md) (the F/D datapath and FMA), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the gates decode and CSR logic are built from).
+- **Up the stack (what builds on this contract):** [OoO_Execution](05_OoO_Execution.md) (renames this register namespace, exploits load-store for the LSQ, and implements the precise-trap model of §5.2), [Cache_Microarchitecture](07_Cache_Microarchitecture.md) & [TLB_and_Virtual_Memory](08_TLB_and_Virtual_Memory.md) (the caches and TLB that hold the Sv39 walk this page specifies), [Branch_Prediction_Deep_Dive](06_Branch_Prediction_Deep_Dive.md) (predicts the flags-free branches of §2.3), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md) (a complete open RV64GC core), [NPU_Accelerators](16_NPU_Accelerators.md) & [GPU_Architecture](15_GPU_Architecture.md) (where the V and custom extensions of §6–§7 land).
+- **Adjacent / prerequisite:** [CPU_Architecture](03_CPU_Architecture.md) (the in-order pipeline that decodes and executes these), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (where extension choices become area/performance trade studies).
 
 ---
 
 ## References
 
-- RISC-V ISA Specification (Volume 1, Ratified 20191213-draft)
-- RISC-V Privileged Architecture Specification (20211203)
-- RISC-V Vector Extension V 1.0 (ratified 2023)
-- RISC-V Hypervisor Extension H (ratified 2021)
-- RVA23 Profiles Specification (RISC-V International, 2024)
-- Patterson, David A. and Andrew S. Waterman, *The RISC-V Reader: An
-  Open Architecture Atlas*, First Edition, Strawberry Canyon, 2017.
-- RISC-V International, "RISC-V Instruction Set Manual," available at
-  https://riscv.org/technical/specifications/
-
----
-
-## Navigation
-
-**Up:** [../Index](../Index.md)
-**Next:** [OoO_Execution](05_OoO_Execution.md)
-**See also:** [CPU_Architecture](03_CPU_Architecture.md), [Xiangshan_CPU_Design](14_Xiangshan_CPU_Design.md)
+1. RISC-V International, *The RISC-V Instruction Set Manual, Vol. I: Unprivileged ISA* (ratified 2019 onward). Base integer ISA, M/A/F/D/C/B extensions.
+2. RISC-V International, *The RISC-V Instruction Set Manual, Vol. II: Privileged Architecture* (2021 onward). Privilege modes, traps, delegation, Sv39/48/57, the H extension.
+3. RISC-V International, *RISC-V "V" Vector Extension, Version 1.0* (ratified 2021). The length-agnostic model of §6.
+4. RISC-V International, *RVA23 Profiles* (2024). Mandatory extension sets and the fragmentation argument of §1 and §6.
+5. Waterman, A., *Design of the RISC-V Instruction Set Architecture*, PhD thesis, UC Berkeley, 2016. The modularity and compressed-encoding rationale of §1–§3.
+6. Patterson, D.A. and Waterman, A., *The RISC-V Reader: An Open Architecture Atlas*, Strawberry Canyon, 2017.
+7. Bhargava, R. et al., "Accelerating Two-Dimensional Page Walks for Virtualized Systems," *ASPLOS*, 2008. The nested-paging cost model of §5.4.
