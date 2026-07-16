@@ -310,29 +310,77 @@ The capstone question: **how do the analytical kernels of §9–§10 become a re
 
 > **Scope boundary.** Composing these operator-level results *up* the hierarchy — core→chip→pod, with contention, compute/memory/comm overlap, DVFS/turbo, and thermal throttling co-modeled — is [Full_Chip_Modeling §4](02_Full_Chip_Modeling.md). NeuSim's place in the *simulator* taxonomy (operator-level vs cycle-accurate vs analytical-mapping) is [Accelerator_and_NPU_Simulators §7](../07_Simulators/05_Accelerator_and_NPU_Simulators.md). This section owns the "how you build one" concept.
 
-**Ingredient 1 — one perf model per block, reporting the bottleneck class as output.** NeuSim models each component with exactly the §10 abstraction, and for **each tensor operator** reports execution time, FLOPS, and memory traffic, and **classifies it SA-/VU-/HBM-bound** — the §10.3 taxonomy emitted automatically instead of hand-derived:
+### 11.1 The operator cost model — how one tensor op becomes a time
 
-| Component | Modeled quantity | Maps to |
+The atom NeuSim reasons about is one **tensor operator** (a fused GEMM, an attention softmax, a layernorm), and it summarizes each with a small record — call it the operator's *cost node* — carrying seven numbers: the systolic-array time $t_{\text{SA}}$, the vector-unit time $t_{\text{VU}}$, the HBM time $t_{\text{mem}}$, a raw compute time $t_{\text{cmp}}$, the operator's byte traffic $Q$ and flop count $F$, and the delivered latency $t_{\text{op}}$. The first three come straight from the §10 kernels — $t_{\text{SA}}$ from the systolic cycle model §10.1, $t_{\text{VU}}$ from the SIMD-width model below, $t_{\text{mem}}=Q/B_{\text{HBM}}$ — evaluated per operator from its static shape (which is why this is an *offline analysis*, §10).
+
+The load-bearing move is how those combine into $t_{\text{op}}$. They do **not** add: the SA, the VU, and HBM run **concurrently** because the SRAM is double-buffered — while the array computes one tile, the DMA engine stages the next and the VU drains the last. So the operator's latency is the **critical path through overlapping resources**, not their sum. NeuSim captures this by charging the array time and then, *in parallel with it*, the larger of the remaining demands:
+
+$$t_{\text{op}} \;\approx\; t_{\text{SA}} + \underbrace{\max\!\big(t_{\text{VU}},\; t_{\text{mem}},\; t_{\text{cmp}}-t_{\text{SA}}\big)}_{\text{the part the SA cannot hide}}, \qquad \text{and if } t_{\text{SA}}=0,\ t_{\text{op}} = \max(t_{\text{VU}}, t_{\text{mem}}).$$
+
+The three terms in the $\max$ are the three ways an operator's tail can outlast the array: a heavy softmax/layernorm ($t_{\text{VU}}$), a low-reuse weight or KV-cache stream that starves the array ($t_{\text{mem}}$), or leftover scalar compute ($t_{\text{cmp}}-t_{\text{SA}}$). **Whichever term wins names the bottleneck class** — SA-bound when $t_{\text{SA}}$ dominates, VU-bound or HBM-bound when the corresponding $\max$ term does — so the §10.3 taxonomy falls out as $\arg\max$ over $\{t_{\text{SA}}, t_{\text{VU}}, t_{\text{mem}}\}$, computed, not hand-labelled. This is the roofline made per-operator: with **arithmetic intensity** $I = F/Q$ (flop/byte) and the machine's ridge $I^\star = \text{peak flop/s} \,/\, B_{\text{HBM}}$, the operator is compute-bound iff $I>I^\star$ — exactly the condition under which the compute term wins the $\max$.
+
+Two guardrails in the model are worth internalizing because they encode real physics. First, the delivered **memory bandwidth** is reported as $B_{\text{op}} = Q/t_{\text{op}}$ but **capped** at a per-core ceiling ($\sim\!330$ GB/s, TPUv2-class) — a single core cannot pull HBM faster than its own port, no matter how bandwidth-hungry the op. Second, both $t_{\text{mem}}$ and $t_{\text{op}}$ are **floored** (at $\sim\!200$ ns): below that, a pure bandwidth model $Q/B$ is unphysical because *fixed access latency* (row activate, queueing) dominates a tiny transfer. Together they bound the roofline model to the regime where it is valid — the mark of a cost model that knows its own edges.
+
+### 11.2 Intra-core parallelism — the SA/VU allocation law
+
+A core has several systolic arrays and several vector units, and the operator can be spread across them. The vector unit's peak is a plain product of its VLIW/SIMD dimensions,
+
+$$\text{flop/cycle}_{\text{VU}} = w_{\text{SIMD}} \times n_{\text{sublane}} \times n_{\text{slot}}, \qquad \text{flop/s}_{\text{VU}} = \text{flop/cycle}_{\text{VU}}\times f,$$
+
+where $w_{\text{SIMD}}$ is the lane width, $n_{\text{sublane}}$ the sublanes per lane, $n_{\text{slot}}$ the issue slots, and $f$ the clock — the accelerator's answer to "issue width × frequency." An operator whose demand is *below* that peak is latency-bound and more slots do not help; only an op *above* the peak is throughput-bound and scales with width. That is the same compute-vs-latency-bound split as everywhere else on this page, here deciding whether widening the VU buys anything.
+
+Spreading one operator across $n$ identical units divides its cycles, with a ceiling for the leftover tile:
+
+$$\text{cycles}(n) = \left\lceil \frac{\text{cycles}(1)}{n} \right\rceil.$$
+
+The scaling is **linear** because a GEMM's output tiles (or a vector op's lanes) partition evenly across units — intra-operator data parallelism with no dependence between tiles — and the $\lceil\cdot\rceil$ is the one partial tile that cannot be split. This is why doubling the arrays roughly halves an SA-bound op but does *nothing* for an HBM-bound one (you divided $t_{\text{SA}}$, but $\max$ still returns $t_{\text{mem}}$): **parallelism only moves the term it divides.**
+
+Which sets the real question — given a fixed budget of execution units, *how many arrays vs vector units* should this operator get? Allocate $n_{\text{SA}}$ arrays and $n_{\text{VU}}$ vector units and the op's compute tail becomes $\max\!\big(t_{\text{SA}}/n_{\text{SA}},\, t_{\text{VU}}/n_{\text{VU}}\big)$; minimizing that under $n_{\text{SA}}+n_{\text{VU}}\le N$ is minimized when the two are **balanced**,
+
+$$\frac{t_{\text{SA}}}{n_{\text{SA}}} \approx \frac{t_{\text{VU}}}{n_{\text{VU}}} \;\;\Longrightarrow\;\; \frac{n_{\text{SA}}}{n_{\text{VU}}} \approx \frac{t_{\text{SA}}}{t_{\text{VU}}},$$
+
+i.e. **give each unit type resources in proportion to the work it must do.** NeuSim precomputes this best $(n_{\text{SA}}, n_{\text{VU}})$ per operator (the split maximizing combined SA+VU utilization). The payoff is the whole thesis of the underlying *neucloud/vNPU* work: because different operators — and different whole models — have wildly different $t_{\text{SA}}\!:\!t_{\text{VU}}$ ratios, a chip provisioned at a fixed 1:1 leaves one unit type idle most of the time, and letting the SA/VU split be *allocated per workload* (a "virtual NPU") is what recovers the lost utilization. The allocator is a §5 optimization at operator granularity.
+
+### 11.3 Inter-chip parallelism — the collective cost on a torus
+
+Above one chip, a model is sharded across many by a **parallelism strategy** — tensor (TP), pipeline (PP), data (DP), expert (EP) — and each strategy induces **collective communication**: TP and DP reduce partial results with All-Reduce, PP passes activations point-to-point, EP shuffles tokens with All-to-All. NeuSim places the chips on a **3D-torus** and models each inter-chip (ICI) link as a pipe of bandwidth $B_{\text{link}}$ (tens of GB/s), with dimension-order routing laying each transfer onto specific links.
+
+The canonical cost is the bandwidth-optimal **ring All-Reduce**: to reduce a tensor of $V$ bytes across $p$ chips, each chip sends and receives $\tfrac{p-1}{p}V$ bytes in the reduce-scatter half and again in the all-gather half, so
+
+$$t_{\text{AR}} \approx \underbrace{2\,\frac{p-1}{p}\,\frac{V}{B_{\text{link}}}}_{\text{bandwidth term}} \;+\; \underbrace{2(p-1)\,\alpha}_{\text{latency term}} \;\xrightarrow[p\ \text{large}]{}\; \frac{2V}{B_{\text{link}}},$$
+
+where $\alpha$ is per-hop latency. The striking part — the bandwidth term becomes **independent of $p$** — is *why* ring All-Reduce is the workhorse: doubling the group does not double the reduce time, only the (small) latency term grows. But that clean number holds only if the ring **embeds into the torus with no two of its hops sharing a physical link.** When the parallel-group-to-torus mapping forces link sharing, several flows contend and the real wall-time is the **most-loaded link**:
+
+$$t_{\text{coll}} = \max_{\text{link } \ell} \frac{(\text{traffic routed onto }\ell)}{B_{\text{link}}}.$$
+
+That bottleneck-link formula is exactly why NeuSim models physical links and routing rather than a single "network bandwidth" scalar: the *same* collective, moving the *same* bytes, can cost 2–4× more purely from a worse embedding — so the parallelism strategy and its mapping onto the torus are a first-class DSE knob, not a detail.
+
+### 11.4 Why analytical, not cycle-accurate — and what it buys
+
+Notice what §11.1–§11.3 never did: step a clock. Because an operator's work is known from its shape, its time is a closed-form (or table) evaluation, and a whole model's time is the critical path over its operator graph plus the collectives between shards. That is what lets NeuSim evaluate a *config* in milliseconds and therefore sweep **millions** of them — the cost being intra-operator cycle detail (it trusts each cost node rather than simulating the array's stalls, which is the cycle-accurate rung's job, [Accelerator_and_NPU_Simulators §6](../07_Simulators/05_Accelerator_and_NPU_Simulators.md)). The trade is the recurring one of this page: buy speed and breadth with a model whose error bars you know, and reserve the slow rung for the one configuration you finally build.
+
+### 11.5 The three ingredients — assembling the tool
+
+With the cost layer derived, the tool is three parts:
+
+**Ingredient 1 — one perf model per block, reporting the bottleneck class as output.** Each component is the §10/§11.1 abstraction, and per operator it emits time, FLOPS, traffic, and the SA-/VU-/HBM-bound label ($\arg\max$ of §11.1):
+
+| Component | Modeled quantity | Cost formula |
 |---|---|---|
-| **Systolic array (SA)** | GEMM cycles, FLOPS, utilization | §10.1 (SA-bound) |
-| **Vector unit (VU)** | SIMD time for non-GEMM ops | §10.3 (VU-bound) |
-| **On-chip SRAM** | capacity, reuse, DMA staging | tiling / §10.3 |
-| **HBM** | bandwidth, memory traffic | §10.3 (HBM-bound) |
-| **ICI (inter-chip interconnect)** | collective BW across a pod (2D/3D torus) | multi-chip parallelism |
+| **Systolic array (SA)** | GEMM cycles, FLOPS, utilization | §10.1 fill/drain; scales as §11.2 |
+| **Vector unit (VU)** | SIMD time for non-GEMM ops | $F/\text{flop-per-cycle}_{\text{VU}}$ (§11.2) |
+| **On-chip SRAM** | capacity, reuse, DMA staging | double-buffer overlap (§11.1) |
+| **HBM** | bandwidth, memory traffic | $Q/B_{\text{HBM}}$, capped + floored (§11.1) |
+| **ICI (inter-chip interconnect)** | collective time across a pod | ring-AR + bottleneck link (§11.3) |
 
-**Ingredient 2 — an energy/carbon overlay on top of the perf activity.** The tool separates concerns into modular stages, each consuming the previous stage's output, so you can re-run power without re-running performance: per-operator **performance** → per-component **energy** (static + dynamic) → **carbon** (embodied + operational, from energy × carbon-intensity × duty cycle) → **SLO** filtering (which configs meet a latency target). This is the accelerator analogue of "gem5 → McPAT → power/thermal → does-it-meet-spec," but operator-level and carbon-aware — the same activity × per-event-energy pattern McPAT uses for CPUs ([Full_Chip_Modeling §1.5](02_Full_Chip_Modeling.md)).
+**Ingredient 2 — an energy/carbon overlay on the perf activity.** Modular stages, each consuming the previous output so power re-runs without re-running performance: per-operator **performance** → per-component **energy** (static + dynamic) → **carbon** (embodied + operational, energy × carbon-intensity × duty cycle) → **SLO** filtering. This is the accelerator analogue of "gem5 → McPAT → power/thermal → does-it-meet-spec," operator-level and carbon-aware — the same activity × per-event-energy pattern McPAT uses for CPUs ([Full_Chip_Modeling §1.5](02_Full_Chip_Modeling.md)).
 
-**Ingredient 3 — a config-swept, distributed search.** The design space is three orthogonal config axes swept combinatorially — this is §5's DSE made real for NPUs:
+**Ingredient 3 — a config-swept, distributed search.** Three orthogonal axes swept combinatorially (§5's DSE, made real): **hardware** (#SAs, #VUs, frequency, HBM BW, SRAM), **model** (graph + TP/PP/DP/EP strategy, which §11.3 costs), **system** (PUE, carbon intensity). *#chips × batch × NPU-version × parallelism* explodes into millions of jobs, so a distributed scheduler (Ray) fans them out — the practical answer to "the space is combinatorial, you can't brute-force cycle-accurate." The output is a Pareto set the SLO stage filters to the cheapest/greenest config meeting the target.
 
-- **hardware** — #SAs, #VUs, core frequency, HBM bandwidth, SRAM size;
-- **model** — the network graph + parallelism strategy (tensor/pipeline/data/expert, TP/PP/DP/EP);
-- **system** — datacenter PUE and carbon intensity (the carbon axis).
+NeuSim also exposes knobs the static roofline cannot see — **power gating** and **DVFS** per component — capturing leakage burned in the idle bubbles *between* operators (30–72% of NPU energy is static; ReGate, MICRO'25); [Block_Activity_and_Power](../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) has the power-side detail.
 
-Sweeping *#chips × batch × NPU-version × parallelism* explodes into millions of jobs, so a distributed scheduler (Ray) fans them across machines — the practical answer to "the space is combinatorial, you can't brute-force cycle-accurate" (§5). The output is a Pareto set the SLO stage filters to the most cost-/carbon-efficient config meeting the target.
-
-NeuSim also exposes power-side knobs the static roofline cannot see — **power gating** and **DVFS** per component — which capture leakage burned in the idle bubbles *between* operators (30–72% of NPU energy is static; ReGate, MICRO'25). Modeling those is what turns a perf model into a perf-*and*-power co-model; the power-side detail is [Block_Activity_and_Power](../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md).
-
-**The lesson for an architect:** an industrial DSE tool is **(component perf models) + (an energy/carbon overlay) + (a config-swept, distributed search)** — nothing more exotic. The §2/§9/§10 analytical kernels become the per-component models, §5 DSE becomes the distributed sweep, and §6 PPA trade-offs become the SLO/carbon Pareto filter. Every piece on this page is a piece of that tool.
+**The lesson for an architect:** an industrial DSE tool is **(per-component cost models) + (an energy/carbon overlay) + (a config-swept, distributed search)** — nothing more exotic. §11.1's operator cost, §11.2's allocation law, and §11.3's collective model are the per-component layer; §5 DSE is the distributed sweep; §6 PPA trade-offs are the SLO/carbon Pareto filter. Every piece on this page is a piece of that tool.
 
 ---
 
