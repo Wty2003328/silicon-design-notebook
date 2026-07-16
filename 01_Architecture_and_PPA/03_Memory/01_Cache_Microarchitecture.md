@@ -30,15 +30,21 @@ When the bet holds, a 32 KB array a thousand times smaller than DRAM captures 90
 
 ### 1.2 AMAT: the equation the whole page optimizes
 
-For a single level, AMAT is a hit that always happens plus a penalty that sometimes does:
+For a single level, AMAT is a hit that always happens plus a penalty that sometimes does. It is an **expected value**, and deriving it that way makes every later term precise. An access hits with probability $1-m$ and misses with probability $m$; on a hit it costs $t_{hit}$, and on a miss it costs the hit-detection time *plus* the trip to the next level, $t_{hit}+t_{penalty}$ — you must probe this cache and learn it missed before you can leave it. Taking the expectation,
 
-$$\text{AMAT} = t_{hit} + m \times t_{penalty}$$
+$$\text{AMAT} = (1-m)\,t_{hit} + m\,(t_{hit}+t_{penalty}) = t_{hit} + m \times t_{penalty}$$
 
-where $t_{hit}$ = hit access time (cycles), $m$ = miss rate (misses per access), $t_{penalty}$ = extra cost of a miss (cycles to the next level). Because the next level is itself a cache, $t_{penalty}$ expands recursively:
+where $t_{hit}$ = hit access time (cycles), $m$ = miss rate (misses per access *to this level*), $t_{penalty}$ = extra cost of a miss (cycles to satisfy it from the next level). The cross-term cancels cleanly — which is precisely *why* $t_{penalty}$ is defined as the **extra** cost beyond the hit probe rather than the full next-level latency: the definition is chosen to collapse the expectation to two terms.
+
+**The recursion.** The penalty is not a constant. A miss is served by the next level, which is itself a cache with its own AMAT, so $t_{penalty}^{(k)} = \text{AMAT}_{k+1}$. Substituting level by level unrolls the hierarchy:
 
 $$\text{AMAT} = t_{L1} + m_{L1}\big(t_{L2} + m_{L2}\big(t_{L3} + m_{L3}\,t_{DRAM}\big)\big)$$
 
-(worked numeric example: [CPU_Architecture §7](../02_CPU/01_CPU_Architecture.md)). Two facts fall straight out of this form. First, the terms are **multiplicative**, so the design must attack all three — a brilliant hit time is wasted if $m\,t_{penalty}$ dominates, and vice-versa. Second, the *local* miss rate $m_{Lk}$ is weighted by the product of all miss rates above it, so a rare L3 miss still hurts because it is multiplied by the enormous $t_{DRAM}$. That single observation is why the whole hierarchy exists and why the last level is huge.
+(worked numeric example: [CPU_Architecture §7](../02_CPU/01_CPU_Architecture.md); full multi-level solve in §12.1). Multiplying out separates the **local** miss rate $m_{Lk}$ (misses per access *reaching* level $k$) from the **global** miss rate (misses per *CPU* access), which is the product of every local rate above:
+
+$$\text{AMAT} = \underbrace{t_{L1}}_{\text{always}} + \underbrace{m_{L1}\,t_{L2}}_{\text{reach L2}} + \underbrace{m_{L1}m_{L2}\,t_{L3}}_{\text{reach L3}} + \underbrace{m_{L1}m_{L2}m_{L3}\,t_{DRAM}}_{\text{reach DRAM}}, \qquad \big(\text{level-}k\text{ contribution}\big) = \Big(\textstyle\prod_{j<k} m_{Lj}\Big)\,t_{Lk}$$
+
+Three facts fall straight out of this form. First, AMAT is **additive across levels, but each level's contribution is itself a product** — a brilliant $t_{hit}$ is wasted if the miss term $m\,t_{penalty}$ dominates, and a huge last level is wasted if $m_{L1}$ is already tiny; you attack the term the decomposition says is largest, never uniformly. Second, the *local* rate $m_{Lk}$ is weighted by the product of every rate above it, so the *global* rate reaching DRAM can be minuscule even when the *local* last-level miss rate is large — a 20 % local L3 rate can become a 0.04 % global rate (§12.1), so its 200-cycle penalty contributes under 0.1 cycle. Third — the flip side — a *rare* last-level miss still hurts because that tiny global rate is multiplied by the enormous $t_{DRAM}$, so the last level is made huge to drive its *local* rate down. That tension is the whole reason the hierarchy exists.
 
 Every mechanism on this page is a lever on one term. This table is the page's roadmap:
 
@@ -56,9 +62,21 @@ The one term AMAT hides is **effective** penalty. A blocking cache pays $t_{pena
 
 $m$ is not one thing. Decomposing it names *which* mechanism can move it:
 
-- **Compulsory** — the first-ever touch of a line; unavoidable except by prefetch (§7), which is precisely why prefetch is the only attack on it.
-- **Capacity** — the working set exceeds the cache; only a bigger cache (or a better working set) helps. Associativity and replacement cannot.
-- **Conflict** — the working set *fits* but too many hot lines map to one set and evict each other. This is the miss that **associativity** (§2) and **victim caches** (§6.4) exist to kill, and the only C that a placement change can remove.
+- **Compulsory** — the first-ever touch of a line; unavoidable except by prefetch (§7) or a larger line that pulls in more neighbours per miss (§1.1) — which is exactly why those two are its only attacks.
+- **Capacity** — the working set exceeds the cache; only a bigger cache (or a smaller working set) helps. Associativity and replacement cannot.
+- **Conflict** — the working set *fits* but too many hot lines map to one set and evict each other. This is the miss that **associativity** (§2) and **victim caches** (§6.3) exist to kill, and the only C that a placement change can remove.
+
+**Making the split precise — reuse distance.** The three C's are not fuzzy categories; they are defined by one measurable quantity. For a reference to line $X$, its **reuse (stack) distance** $d$ is *one plus the number of distinct lines touched since $X$ was last referenced* — equivalently, $X$'s depth in a fully-associative LRU stack (MRU $=1$). By LRU's stack property (§5.2) a fully-associative cache of $C$ lines holds exactly the $C$ most-recently-used distinct lines, so
+
+$$\text{a reference hits in a fully-associative LRU cache of size } C \iff d \le C.$$
+
+That test classifies every miss unambiguously:
+
+- $d = \infty$ (no previous reference) → **compulsory**;
+- $d$ finite but $d > C$ (misses even fully-associative) → **capacity**;
+- $d \le C$ (would hit fully-associative) yet misses in the *actual* set-associative cache → **conflict** — the reference's set held more than $N$ nearer-reused lines even though the cache as a whole had room.
+
+So compulsory + capacity misses are *exactly* the misses of an idealized fully-associative LRU cache of the same size, and conflict misses are the **excess** the real organization adds (Hill & Smith's operational definition). One pass over a trace, histogramming $d$, therefore yields the miss rate at *every* capacity at once (§5.2) — which is why the reuse-distance curve is the workhorse of cache sizing.
 
 Keep the three C's in hand through §2 and §5: associativity attacks conflict, replacement attacks conflict-plus-capacity-at-the-margin, prefetch attacks compulsory, and nothing but capacity attacks capacity.
 
@@ -73,6 +91,20 @@ For a cache of capacity $C$, associativity $N$, line size $L$:
 $$\text{sets} = \frac{C}{N\,L}, \quad \text{offset} = \log_2 L, \quad \text{index} = \log_2(\text{sets}), \quad \text{tag} = A - \text{index} - \text{offset}$$
 
 *Worked geometry (32 KB, 4-way, 64 B lines, 32-bit address):* sets $= 32768/(4\cdot64) = 128$; offset $= 6$; index $= 7$; tag $= 32-7-6 = 19$. Each line carries $19$ tag $+\,1$ valid $+\,1$ dirty $= 21$ overhead bits against $512$ data bits — about **4 % storage overhead**, the price of being content-addressable rather than a flat array. The tag SRAM is roughly $25\times$ smaller than the data SRAM, and §2 turns that size asymmetry into a timing and a power lever.
+
+### 1.5 The VIPT ceiling: how translation caps L1 geometry
+
+Every access on a modern core carries a *virtual* address, but correctness demands a *physical* tag (two virtual pages may alias one physical frame). The translation that produces the physical bits ([TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md)) sits in series ahead of a physically-tagged cache — *unless* the cache is indexed with bits translation never changes, so index-and-read can run in parallel with the TLB. That is **virtually-indexed, physically-tagged (VIPT)**: index the set with low bits *now*, compare the physical tag when it arrives. The overlap mechanism and its synonym hazards are owned by [TLB_and_Virtual_Memory §6](02_TLB_and_Virtual_Memory.md); what belongs *here* is the geometric constraint it forces on cache size, because it is a fact about the index/offset split of §1.4.
+
+Translation rewrites the page-number bits and leaves the **page offset** — the low $\log_2 P$ bits, $P$ = page size — untouched. For the index to be translation-invariant, every index *and* offset bit must lie within that untouched offset field:
+
+$$\underbrace{\log_2 L}_{\text{offset}} + \underbrace{\log_2(\text{sets})}_{\text{index}} \;\le\; \log_2 P.$$
+
+Substitute $\text{sets} = C/(N L)$ from §1.4; the line size $L$ cancels and the constraint collapses to a statement about capacity *per way*:
+
+$$\log_2\!\frac{C}{N} \le \log_2 P \quad\Longrightarrow\quad \boxed{\;\dfrac{C}{N} \le P\;} \quad\Longleftrightarrow\quad C \le N\,P$$
+
+where $C$ = capacity, $N$ = associativity, $L$ = line size, $P$ = page size. The reading is physical: one *way* (a column of $C/N$ bytes) must fit inside a single page, so that changing the page frame can never change which set is selected. *Worked number:* at the near-universal $P = 4\text{ KB}$ page with $N = 8$ ways, $C \le 8 \times 4\text{ KB} = \mathbf{32\ KB}$ — exactly why mainstream L1 caps at **32–64 KB** and why L1 capacity and associativity are chosen *together*, not independently. The two escapes drop straight out of $C \le NP$: **raise $N$** (16-way lifts the ceiling to 64 KB at a 4 KB page, paying the §2.1 hit-path cost) or **raise $P$** (Apple's 16 KB base page lifts it to $8\times16\text{ KB} = 128\text{ KB}$, which is how its 8-way L1D is that large). Overshoot the ceiling and index bits spill into the translated page number, so one physical line can land in two sets under two virtual addresses — the **synonym** problem the TLB page resolves with page colouring or the same enlarge-$N$/enlarge-$P$ levers.
 
 ---
 
@@ -91,6 +123,21 @@ More ways cost on three axes at once, all in the hit path:
 The benefit side has sharply diminishing returns. Write the miss rate as its three C's:
 
 $$m(N) = m_{compulsory} + m_{capacity} + m_{conflict}(N), \qquad m_{conflict}(N)\to 0 \text{ as } N \text{ grows}$$
+
+**Why $m_{conflict}\to 0$ — a pigeonhole / balls-in-bins argument.** The index hashes addresses onto $S = C/(NL)$ sets of $N$ frames each. A conflict miss is a *collision*: with $W$ simultaneously-hot lines spread across $S$ sets, any set that receives more than $N$ of them must evict a still-live line even while frames sit free in other sets — pure pigeonhole. Model the hash as uniform, so each set's load is $\approx\text{Poisson}(\lambda)$ with mean $\lambda = W/S$ hot lines per set. The fraction of hot references that are conflict-evicted is the expected per-set *overflow* past $N$, normalized by the load:
+
+$$f_{conflict}(N) \approx \frac{\mathbb{E}\big[(X-N)^+\big]}{\lambda}, \qquad X\sim\text{Poisson}(\lambda),\ \ (x)^+ \equiv \max(x,0).$$
+
+*Worked number* — a working set that exactly fills the cache, $W = S$ so $\lambda = 1$ hot line per set, sweeping associativity:
+
+| $N$ | $\mathbb{E}[(X-N)^+]$ at $\lambda{=}1$ | conflict fraction |
+|---|---|---|
+| 1 (direct) | $e^{-1}=0.368$ | **37 %** |
+| 2 | $3e^{-1}-1=0.104$ | **10 %** |
+| 4 | $\approx 0.0045$ | **0.45 %** |
+| 8 | $\approx 10^{-6}$ | **~0 %** |
+
+The tail collapses faster than geometrically — each added way roughly squares the shrinking overflow — which *is* the "doubling $N$ ≈ doubling $C$" rule while conflicts remain, and the hard knee once they are gone. A fully-associative cache is the limit $S = 1$: there is no "wrong set" to collide in, so pigeonhole never bites, $f_{conflict}=0$ by construction, and only the compulsory + capacity misses of §1.3 survive. (Real streams are not uniformly hashed — a pathological power-of-two stride can pile every hot line into one set and keep conflicts alive past this estimate, which is exactly what the victim cache of §6.3 and skewed/hashed indexing target.)
 
 Only the conflict term responds to $N$, and it falls roughly geometrically: the classic rule of thumb is that **doubling associativity cuts the miss rate about as much as doubling capacity** — but *only until conflict misses are gone*. Past that, $m$ is all compulsory-plus-capacity, which associativity cannot touch, so the curve flattens hard. That crossover is the knee, and for L1 data caches it sits at **4–8 ways**: enough to erase most conflict misses while keeping the compare-and-select network inside one fast cycle. Fully associative ($N = $ lines) removes conflict misses entirely but needs $O(N)$ comparators — affordable only for tiny structures (TLBs, victim caches). Real designs land at:
 
@@ -142,7 +189,19 @@ The count is a bandwidth–delay product, the memory-system twin of the ROB sizi
 
 $$N_{MSHR} \;\ge\; \lambda_{miss}\times L_{miss}$$
 
-where $\lambda_{miss}$ = misses issued per cycle, $L_{miss}$ = miss latency. But $k$ is not free to grow: the *independent* misses available to overlap are limited by how far the instruction window can run ahead, which the ROB caps ([OoO_Execution §3.2](../02_CPU/03_OoO_Execution.md)). So MSHR count and window size are co-designed — an L1D that could track 40 misses is pointless behind a window that only ever exposes 8. This is why real MSHR counts track the level's realistic MLP, not the theoretical maximum:
+where $\lambda_{miss}$ = misses issued per cycle, $L_{miss}$ = miss latency.
+
+**Deriving the bound (Little's law).** In steady state, misses are *born* at the same rate they *complete* — call it $\lambda_{miss}$ — and each outstanding miss occupies exactly one MSHR for its whole lifetime $L_{miss}$ (allocate on detect, free on fill). Little's law $L=\lambda W$ applied to the MSHR file as a queueing system gives the average number of simultaneously-occupied slots directly:
+
+$$\bar{N}_{\text{occupied}} = \lambda_{miss}\times L_{miss}.$$
+
+Provision *below* this and the file saturates: a new miss finds no free slot and the cache blocks *as if it were a blocking cache*, which throttles the actual issue rate back down to $N_{MSHR}/L_{miss}$. So $N_{MSHR}\ge \lambda_{miss}L_{miss}$ is the **no-self-throttle** condition — the memory-system twin of ROB/LSQ sizing on the OoO page, where the same law sets how far the window must reach to keep the machine fed.
+
+**The bandwidth-saturation reading.** The identical law says what it takes to *fill the memory pipe*. To sustain bandwidth $B$ with $G$-byte lines, misses must complete at rate $\lambda = B/G$, so the outstanding count must reach
+
+$$N_{MSHR} \ge \frac{B}{G}\times L_{miss} \quad(\text{a bandwidth–delay product, in units of lines}).$$
+
+*Worked number* — hide a $L_{miss}=100\text{ ns}$ DRAM miss while saturating one DDR-class channel of $B=25.6\text{ GB/s}$ with $G=64\text{ B}$ lines: the completion rate is $\lambda = 25.6\times10^{9}/64 = 4.0\times10^{8}$ misses/s, so $N \ge 4.0\times10^{8}\times100\times10^{-9} = \mathbf{40}$ outstanding misses. That is why an aggressive L1D/L2 path exposes tens of MSHRs: at 100 ns and 64 B lines you need ~40 in flight *just to keep one channel busy*, and proportionally more for multi-channel HBM-class bandwidth. Equivalently, at 3 GHz that 100 ns is ~300 cycles, so the demanded MLP to cut the effective penalty to ~10 cycles (§3.1) is $\approx 30$ — the same order. But $k$ is not free to grow: the *independent* misses available to overlap are limited by how far the instruction window can run ahead, which the ROB caps ([OoO_Execution §3.2](../02_CPU/03_OoO_Execution.md)). So MSHR count and window size are co-designed — an L1D that could track 40 misses is pointless behind a window that only ever exposes 8. This is why real MSHR counts track the level's realistic MLP, not the theoretical maximum:
 
 | Level | MSHRs | What sets it |
 |---|---|---|
@@ -182,7 +241,7 @@ Writes are where a cache stops being a transparent speed-up and starts making po
 
 $$\frac{\text{traffic}_{\text{through}}}{\text{traffic}_{\text{back}}} \;\approx\; \bar{w}_{\text{line}} \quad(\text{writes per line before eviction})$$
 
-For a hot, repeatedly-written line $\bar{w}_{\text{line}}$ is large, so write-back can cut write bandwidth by an order of magnitude. Its cost is bookkeeping and coherence: other caches may now hold stale copies, and the dirty bit, write buffer, and writeback path all exist to make deferral safe. Bandwidth wins decisively on modern chips, so **every high-performance level is write-back** — ARM Neoverse N2, Apple M-series, AMD Zen 4, Intel Golden Cove all use write-back L1D. Write-through appears only in simple embedded cores and a few L1s that prize coherence simplicity over bandwidth.
+*Deriving the ratio.* Over a line's residency it absorbs $\bar{w}_{\text{line}}$ stores (and any number of loads, which neither policy sends downward). Write-through emits one downstream line-write *per store* → $\bar{w}_{\text{line}}$ writes; write-back emits the line downward **at most once**, on eviction, and only if it is dirty → $\le 1$ write. The ratio is therefore $\bar{w}_{\text{line}}:1$ exactly. *Worked number:* a core running 2 GIPS (billion instructions/s) with 20 % stores retires $0.4\times10^{9}$ stores/s; at 64 B/line with $\bar{w}_{\text{line}}=8$, write-through pushes $0.4\times10^{9}\times64 = 25.6\text{ GB/s}$ of write traffic — a whole DDR4-3200 channel spent on stores alone — while write-back pushes $25.6/8 = 3.2\text{ GB/s}$. The 22 GB/s reclaimed is why no high-performance level is write-through. For a hot, repeatedly-written line $\bar{w}_{\text{line}}$ is large, so write-back can cut write bandwidth by an order of magnitude. Its cost is bookkeeping and coherence: other caches may now hold stale copies, and the dirty bit, write buffer, and writeback path all exist to make deferral safe. Bandwidth wins decisively on modern chips, so **every high-performance level is write-back** — ARM Neoverse N2, Apple M-series, AMD Zen 4, Intel Golden Cove all use write-back L1D. Write-through appears only in simple embedded cores and a few L1s that prize coherence simplicity over bandwidth.
 
 A small **write buffer** (4–16 entries at L1) hides the downstream write latency from the core and **merges** repeat writes to the same line — 2–8× traffic reduction on sequential stores — so the CPU continues the moment the buffer accepts the entry rather than when the next level acknowledges.
 
@@ -220,6 +279,20 @@ Every subsequent access misses — **0 % hit rate after warm-up**, the worst pos
 | BRRIP / SHiP | 8 bits + policy/history | strong | low–moderate |
 
 Design landing: L1/L2 use **PLRU** (cheap, and their footprints are LRU-friendly); large shared **L3 uses RRIP-family** policies because they see the scans and streaming that thrash LRU.
+
+### 5.2 The two theorems under the column: Belady's bound and LRU's stack property
+
+Two results sit beneath the whole replacement story — an *upper* bound on what any policy can achieve, and the property that makes LRU well-behaved.
+
+**Belady's MIN is optimal — the exchange argument.** MIN evicts the line whose next use is furthest away. *Proof no policy beats it:* take any policy $P$ and the first eviction at which it diverges from MIN — there $P$ evicts a line $a$ whose next use is *sooner* than the line $b$ MIN would evict. Build $P'$ identical to $P$ but evicting $b$ instead of $a$ at that step. Because $b$ is not referenced until after $a$, across the interval up to $a$'s next use $P'$ never needs $b$, so it takes **no extra miss** there — and it *saves* the miss $P$ suffers when $a$ is re-referenced. Each such exchange transforms $P$ one step toward MIN without ever raising the miss count, so MIN is optimal. MIN is unimplementable (it needs the future), but it is the **bound** every real policy is scored against, and the gap to it is precisely the value lost by predicting reuse from the past instead of knowing it.
+
+**LRU's stack property (inclusion).** Order all lines by time of last reference. After *any* access sequence an LRU cache of $C$ lines holds exactly the $C$ most-recently-used distinct lines, so its contents are always a **subset** of a larger cache's on the same stream:
+
+$$\text{contents}(C) \subseteq \text{contents}(C') \quad \forall\, C < C'.$$
+
+Two consequences make LRU special. First, **monotonicity**: every hit in the small cache is a hit in the large one, so miss rate is non-increasing in size — LRU can never suffer **Belady's anomaly** (FIFO can, because insertion order is not a nested ordering). "Bigger is monotonically better" is not an empirical hope for LRU; it is a theorem. Second, this is the very property that makes the reuse-distance test of §1.3 exact — a reference hits iff its stack distance $d\le C$ — so a single histogram of $d$ yields the miss curve for *all* sizes in one trace pass (Mattson's stack simulation).
+
+**Why pseudo-LRU is good enough.** Exact LRU keeps $\lceil\log_2 N!\rceil$ bits of true order per set, rewritten on every hit; tree-PLRU keeps one bit per internal node of a binary tree over the $N$ ways ($N-1$ bits) and, on a hit, flips only the $\log_2 N$ nodes on the path to point *away* from the just-used way. It never reconstructs the exact order — it records, at each node, only which *half* was used less recently — so its victim is provably "an old line," not necessarily "the oldest." The approximation costs little because eviction only needs to *avoid the most-recently-used* lines, not to rank the cold ones: PLRU protects the hot half at every tree level, which is where nearly all of LRU's benefit lives. The result is $O(\log N)$ update in $N-1$ bits against LRU's $O(N)$ update in $\log_2 N!$ bits, for a miss-rate penalty usually under a few percent — the trade the §5 table prices, and the reason L1/L2 ship PLRU.
 
 ---
 
@@ -263,6 +336,14 @@ $$\text{Accuracy} = \frac{\text{useful prefetches}}{\text{total prefetches}}, \q
 Accuracy guards against **pollution** (a wrong prefetch evicts a useful line and wastes bandwidth); coverage measures how many real misses were caught. Pushing coverage up (fetch more, further ahead) tends to drag accuracy down — the central prefetch trade — and both are bounded by **timeliness**: the line must arrive *before* it is demanded but not so early it is evicted first. The distance to run ahead is set by how long a miss takes relative to how fast the program consumes lines:
 
 $$\text{prefetch distance} \;=\; \frac{L_{miss}}{\text{cycles between accesses}}$$
+
+*Worked number (distance).* If a miss takes $L_{miss}=100$ cycles and the loop touches a new line every 5 cycles, the prefetcher must run $100/5 = 20$ lines ahead to be *timely*; fetch only 4 ahead and the line is still ~80 cycles out when demanded (late — partial benefit), fetch 200 ahead and it may be evicted before use (early — wasted, and polluting). Timeliness is a *window*, not a target.
+
+*The pollution trade, quantified.* A prefetch is worth issuing only if its expected benefit beats its expected harm. With accuracy $a$ (fraction useful), a useful prefetch saves $\approx t_{penalty}$; a useless one wastes bandwidth and, with probability $\rho$, evicts a live line that is then re-missed at cost $t_{penalty}$. Net benefit per prefetch $\approx a\,t_{penalty} - (1-a)\,\rho\,t_{penalty} = t_{penalty}\big(a - (1-a)\rho\big)$, so prefetching pays only while
+
+$$a > \frac{\rho}{1+\rho}.$$
+
+For a small, hot L1 a wrong prefetch is very likely to evict something live ($\rho \to 1$), pushing break-even toward $a > 0.5$ and — once the wasted bandwidth is added — to the **>90 %** target of the table; a large L2 with spare capacity has $\rho \ll 1$, so **70–85 %** already pays. This is the accuracy-vs-pollution trade as an inequality, and the pollution term $(1-a)\rho$ is exactly what makes coverage-chasing (fetch more, further ahead) self-defeating once it drags $a$ below break-even.
 
 The predictor menu is a **predictability-vs-cost** curve, mirroring the replacement curve:
 
@@ -347,6 +428,12 @@ The trade is isolation granularity against overall utilization — coarse way-pa
 | Drowsy leakage saving | 40–60 % | retention voltage (§9) |
 | Write buffer depth (L1) | 4–16 | hide write latency (§4) |
 | DDR4-3200 / DDR5-5600 BW | 25.6 / 44.8 GB/s per channel | the $t_{DRAM}$ backing store |
+| VIPT L1 ceiling | $C \le N\times P$ (32 KB @ 8-way/4 KB) | index must be translation-invariant (§1.5) |
+| Reuse-distance hit test | hit iff $d \le C$ (fully-assoc LRU) | defines capacity vs conflict (§1.3, §5.2) |
+| Conflict fraction vs assoc | 37 / 10 / 0.5 % @ $N=$1/2/4 | balls-in-bins collapse (§2.1) |
+| MSHRs to saturate one channel | ~40 (100 ns · 64 B · 25.6 GB/s) | bandwidth–delay product (§3.2) |
+| Optimal replacement bound | Belady MIN (evict furthest reuse) | ceiling real policies chase (§5.2) |
+| Prefetch break-even accuracy | $a > \rho/(1+\rho)$ | benefit vs pollution (§7) |
 
 **Memory hierarchy latencies** (why the last level must be huge): L1 3–4 · L2 8–14 · L3 30–50 · **DRAM 100–300 cycles** — the $t_{DRAM}$ that every miss rate is multiplied by in §1.2.
 
@@ -354,20 +441,28 @@ The trade is isolation granularity against overall utilization — coarse way-pa
 
 ## 12. Worked problems
 
-**1 — Multi-level AMAT (which term dominates).** $t_{L1}=4$, $m_{L1}=0.10$; $t_{L2}=15$, $m_{L2}=0.02$; $t_{L3}=40$, $m_{L3}=0.20$; $t_{DRAM}=200$. Then $\text{AMAT}=4+0.10(15+0.02(40+0.20\cdot200)) = 4+0.10(15+0.02\cdot80)=4+0.10\cdot16.6 = 5.66$ cyc. Drop L2/L3 entirely and $\text{AMAT}=4+0.10\cdot200 = 24$ cyc — **4.2× worse**, the whole justification for the hierarchy. Notice the L3 miss term $0.20\cdot200=40$ dominates the inner bracket despite the low local rate, because it is multiplied by $t_{DRAM}$.
+**1 — Multi-level AMAT (which term dominates).** $t_{L1}=4$, $m_{L1}=0.10$; $t_{L2}=15$, $m_{L2}=0.02$; $t_{L3}=40$, $m_{L3}=0.20$; $t_{DRAM}=200$ (cycles; local miss rates). Then
+
+$$\text{AMAT}=4+0.10\big(15+0.02(40+0.20\cdot200)\big) = 4+0.10(15+0.02\cdot80)=4+0.10\cdot16.6 = 5.66\text{ cyc.}$$
+
+Multiply out into per-level contributions $(\prod_{j<k}m_{Lj})\,t_{Lk}$ (§1.2) to see *where the 5.66 lives*: L1 $=4$ (70.7 %), L2 $=0.10\cdot15=1.5$ (26.5 %), L3 $=0.10\cdot0.02\cdot40=0.08$ (1.4 %), DRAM $=0.10\cdot0.02\cdot0.20\cdot200=0.08$ (1.4 %). The DRAM term is tiny *not* because $t_{DRAM}$ is small — it is 200 cycles — but because the **global** rate reaching DRAM is $0.10\cdot0.02\cdot0.20 = 0.0004$ (0.04 %), the product of three local rates; the hierarchy has defanged a 20 % *local* L3 miss rate into a 0.04 % *global* one. Drop L2/L3 entirely so L1 misses go straight to DRAM and $\text{AMAT}=4+0.10\cdot200 = 24$ cyc — **4.2× worse**, the whole justification for the hierarchy in one number.
 
 **2 — Sizing MSHRs for a target MLP (Little's law).** A core issues $\lambda_{miss}=0.2$ demand misses/cycle to DRAM at $L_{miss}=180$ cyc. To never stall for a tracking slot, $N_{MSHR}\ge 0.2\times180 = 36$. But if the OoO window only exposes ~10 independent misses at once, effective MLP caps at 10 and the extra MSHRs sit idle — so an L1D of ~12–16 MSHRs is matched to its window, and $t_{penalty}^{\text{eff}}\approx 180/10 = 18$ cyc instead of 180. Overlap, not depth, bought the 10×.
 
 **3 — Write-through vs write-back traffic.** A loop writes a 64 B line 8 times before it is evicted. Write-through issues 8 downstream writes; write-back issues 1 (the dirty eviction). Traffic ratio $\bar{w}_{\text{line}} = 8\times$ — and across a working set of such lines this is the order-of-magnitude bandwidth gap that makes every modern level write-back (§4).
 
-**4 — Associativity knee.** Going 2-way→4-way removes most remaining conflict misses (say $m$: 6 %→4.5 %); 4→8 removes a little more (4.5 %→4.0 %); 8→16 barely moves it (4.0 %→3.9 %) because what is left is compulsory+capacity, which associativity cannot touch (§1.3). The marginal miss reduction per doubling collapses while comparator/mux cost keeps rising linearly — which is exactly why L1 stops at 4–8 ways (§2.1).
+**4 — Associativity knee.** Going 2-way→4-way removes most remaining conflict misses (say $m$: 6 %→4.5 %); 4→8 removes a little more (4.5 %→4.0 %); 8→16 barely moves it (4.0 %→3.9 %) because what is left is compulsory+capacity, which associativity cannot touch (§1.3). The marginal miss reduction per doubling collapses while comparator/mux cost keeps rising linearly — which is exactly why L1 stops at 4–8 ways (§2.1). The Poisson balls-in-bins model of §2.1 predicts the shape: conflict fraction $37\%\to10\%\to0.45\%$ across $N=1,2,4$ at a full working set.
+
+**5 — VIPT ceiling (why L1 stops at 32 KB).** A VIPT L1D must keep index+offset inside the 4 KB page offset (12 bits). At 64 B lines (6 offset bits) and 8-way, $C\le N\cdot P = 8\times4\text{ KB}=32\text{ KB}$: sets $=32768/(8\cdot64)=64$, so index $=6$ bits and offset+index $=6+6=12$ — exactly the page offset, sitting on the ceiling. Want 64 KB at 8-way with the same 4 KB page? Index needs 7 bits, offset+index $=13>12$: one bit spills into the translated VPN and breaks VIPT. The two legal fixes: go **16-way** ($C\le16\times4\text{ KB}=64\text{ KB}$) or enlarge the page to **8 KB** ($8\times8\text{ KB}=64\text{ KB}$). This is the constraint that couples L1 size, associativity, and page size (§1.5; full treatment in [TLB_and_Virtual_Memory §6](02_TLB_and_Virtual_Memory.md)).
+
+**6 — Reuse distance classifies a miss.** A stream re-references line $X$ after touching 40 distinct other lines, so its stack distance is $d=41$ (§1.3). In a 32-line fully-associative LRU cache ($C=32$): $d=41>32$ → **capacity** miss, unavoidable even by the ideal cache. In a 64-line cache: $d=41\le64$ → hit. If a *real* 64-line, 2-way cache still misses on $X$, that extra miss is **conflict** — $X$'s set held two nearer-reused lines — recoverable by more ways or a victim cache (§6.3), not by more total capacity. One number, $d$, named both the miss type and the only lever that removes it.
 
 ---
 
 ## Cross-references
 
 - **Down the stack (what this is built from):** [Memory](03_Memory.md) (the SRAM cell and DRAM array behind every latency here), [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 budget and leakage that bound §2's hit path and §9's power techniques), [DDR_Controller](04_DDR_Controller.md) (the $t_{DRAM}$ and bandwidth a last-level miss actually pays).
-- **Up the stack (what builds on this):** [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the LSQ and window that generate the MLP §3 exploits and set the MSHR ceiling), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (translation in front of the index/tag split), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) & [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md) (the full coherence protocols §8 only sketches), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where AMAT and MLP feed design-space exploration), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete open core composing this hierarchy).
+- **Up the stack (what builds on this):** [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the LSQ and window that generate the MLP §3 exploits and set the MSHR ceiling via the same Little's law), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (translation in front of the index/tag split; §1.5 derives the VIPT ceiling $C\le N\!\times\!P$, its §6 owns the overlap mechanism and synonyms), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) & [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md) (the full coherence protocols §8 only sketches), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where AMAT, the reuse-distance miss curve, and MLP feed design-space exploration), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete open core composing this hierarchy).
 - **Adjacent:** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) (the AMAT baseline and pipeline this deepens).
 
 ---

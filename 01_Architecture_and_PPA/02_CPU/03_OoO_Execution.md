@@ -94,6 +94,8 @@ With 32 architectural names, three "dependences" can appear between two instruct
 
 Give every new destination a *fresh* physical register and the collisions vanish: the later writer gets its own location, so it can neither clobber a value an earlier reader still needs (WAR) nor race an earlier writer for a name (WAW). Only RAW — resolved by making the consumer read the exact physical tag the producer will write — survives. Renaming is therefore **exact**: it removes precisely the false dependences and nothing else.
 
+*Why exact, in one argument.* Model the rename map as a function from each *dynamic definition* (one per executed write) to a physical tag. Because every write is handed an unused tag, that function is **injective** over the live window — no two in-flight definitions share a location. Now classify the three hazards by what forces the edge. A hazard exists only where two instructions *name the same storage*: WAR and WAW both require the later writer to reuse a name an earlier instruction reads or writes, and injectivity gives that writer its own fresh tag, so **both edges are deleted by construction**. RAW is different in kind — it is not a name collision but a value flow, and the consumer must read *some* location; correctness forces that location to be the producer's exact tag, so the edge is *preserved*, not removed. Renaming thus deletes every edge that is a naming artifact and no edge that is a value flow: the constraint graph collapses from the ISA's total order to the true-data-dependence DAG. That DAG's longest path is the hard floor on execution time no amount of hardware can beat — the wall §10 returns to.
+
 ### 2.2 The state renaming must keep — derived from the job
 
 One translation job forces exactly four pieces of state. Read each as a *consequence*, not a feature:
@@ -121,6 +123,14 @@ $$
 $$
 
 where $N_{arch}$ = architectural registers (32 for RV64I), $N_{ROB}$ = reorder-buffer depth, $N_{phys}$ = physical registers. Below this floor the free list can drain while the ROB still has empty slots: dispatch stalls with instruction bandwidth to spare — an *artificial* ILP ceiling created purely by under-naming.
+
+**Free-list dynamics.** The floor also drops straight out of a conservation argument on the free list — the pool of tags neither held by the committed architectural map nor by an in-flight writer. Its occupancy is
+
+$$
+N_{free}(t) \;=\; N_{phys} - N_{arch} - N^{wr}_{inflight}(t),
+$$
+
+and it moves by exactly two events: rename **pops** one tag per register-writing dispatch, commit **pushes** back one displaced tag per register-writing retire (§2.4). In steady state pop-rate $=$ push-rate $= f\cdot\text{IPC}$, so the list holds level on average; it is the *burst* that bites. Little's law applied to the tags themselves says the mean number checked out is $\bar N^{wr}_{inflight} = f\cdot\text{IPC}\times\bar T_{tag}$, where $\bar T_{tag}$ = a tag's mean lifetime from rename to the commit of its overwriter. Rename **stalls** the instant a burst drives $N^{wr}_{inflight}$ to $N_{phys}-N_{arch}$ (list empty), and in the worst case $N^{wr}_{inflight}$ reaches $N_{ROB}$ — recovering $N_{phys}\ge N_{arch}+N_{ROB}$ from the free-list side. *Worked:* the 128-PRF / 128-ROB / 32-arch machine has $128-32 = 96$ speculatively allocatable tags for up to 128 in-flight writers, so the list empties only when a window runs $>96/128 = 75\%$ register-writers; with $f\approx0.7$ that burst is rare, which is precisely the deliberate under-provision (§13.3) — a handful of rename bubbles traded for the quadratic port area of the 32 registers left below the 160-tag floor.
 
 The floor is a worst case that real code does not hit, because only a fraction $f \approx 0.6\text{–}0.8$ of instructions write a register (stores, branches, and pure compares do not). The *expected* demand is $N_{arch} + f\,N_{ROB}$, so designers deliberately under-provision to roughly that and absorb the rare rename stall — e.g. **128 physical registers for a 32-arch, 128-ROB machine** (floor 160), or Golden Cove's **~280 for a 512-ROB** window.
 
@@ -157,7 +167,7 @@ $$
 \Delta\text{CPI} \;=\; \frac{\text{MPKI}}{1000}\times k
 $$
 
-where MPKI = mispredicts per 1000 instructions. At MPKI $=$ 5 and $k \approx 14$ extra cycles, that is $\approx 0.07$ CPI thrown away versus a checkpoint — significant at high clock. So **high-performance cores checkpoint** (Golden Cove, Zen 4, Cortex-X) and **area-constrained cores walk** the ROB (early MIPS, small embedded OoO). A common hybrid checkpoints *branches* (frequent, latency-critical) and walks the ROB for *exceptions* (rare, latency-tolerant), getting one-cycle branch recovery at branch-only checkpoint cost.
+where MPKI = mispredicts per 1000 instructions. The walk depth $k$ is itself derivable: at one entry unwound per cycle it equals the number of in-flight instructions younger than the resolving branch, on average $k\approx\text{IPC}\times\bar t_{resolve}$ where $\bar t_{resolve}$ = the branch's mean dispatch-to-resolve latency. A branch that resolves 10–20 cycles after dispatch therefore leaves $k$ of order 10–20 entries to unwind, and a *deeper* window makes $k$ larger, not smaller — the walk cost scales with exactly the window depth §3.2 wants to grow. A checkpoint collapses $k$ to $\approx1$ by construction, recovering nearly all of that $\frac{\text{MPKI}}{1000}\times k$ penalty. At MPKI $=$ 5 and $k \approx 14$ extra cycles, that is $\approx 0.07$ CPI thrown away versus a checkpoint — significant at high clock. So **high-performance cores checkpoint** (Golden Cove, Zen 4, Cortex-X) and **area-constrained cores walk** the ROB (early MIPS, small embedded OoO). A common hybrid checkpoints *branches* (frequent, latency-critical) and walks the ROB for *exceptions* (rare, latency-tolerant), getting one-cycle branch recovery at branch-only checkpoint cost.
 
 Renaming ~4–6 instructions per cycle then requires a small port-heavy RAT (2 read ports per source lane, one write port per destination) with intra-group bypass so that instruction $i{+}1$ sees $i$'s fresh mapping within the same cycle — a $W\times W$ compare. It is a real cost but a bounded one; the window-sizing knees above dominate the design.
 
@@ -190,13 +200,20 @@ Three operations follow directly: **allocate** at the tail in program order at d
 
 ### 3.2 How big should the ROB be? A real model of diminishing returns
 
-The ROB is a queue, so start with **Little's law**. To sustain a commit rate of IPC instructions per cycle, the buffer must hold, on average, one entry for every cycle an instruction spends inside it:
+The ROB is a queue, so start with **Little's law** — and derive it rather than cite it, because the derivation is what pins $\lambda$ and $W$ to real quantities. Let $A(t)$ and $D(t)$ count instructions that have *entered* (dispatched into) and *left* (committed from) the ROB by time $t$; occupancy is $N(t)=A(t)-D(t)$. Integrate occupancy over a window $[0,T]$ and count the area $\int_0^T N\,dt$ two ways: **horizontally** it is the time-average occupancy times the interval, $\bar N\,T$; **vertically** it is the sum over instructions of the time each spent inside, $\sum_i T_{res,i}$ (an instruction resident for $\tau$ cycles paints a $\tau$-tall column). Equate and divide by $T$:
+
+$$
+\bar N \;=\; \underbrace{\frac{\#\text{arrivals}}{T}}_{\lambda}\;\cdot\;\underbrace{\frac{\sum_i T_{res,i}}{\#\text{arrivals}}}_{\bar W} \;=\; \lambda\,\bar W
+\qquad\Longrightarrow\qquad N = \lambda W.
+$$
+
+This is a pure accounting identity — no distribution assumed. For the ROB the steady-state arrival rate *is* the commit throughput, $\lambda=\text{IPC}$ (instr/cycle), and $W=\bar T_{res}$ is mean residency from dispatch to commit, so
 
 $$
 N_{ROB} \;\ge\; \text{IPC} \times \bar{T}_{res}
 $$
 
-where $\bar{T}_{res}$ = mean residency from dispatch to commit (cycles). The ROB must be at least the *bandwidth–delay product* of the window; anything smaller caps IPC below target regardless of how much execution bandwidth exists.
+where $\bar{T}_{res}$ = mean residency from dispatch to commit (cycles). The ROB must be at least the *bandwidth–delay product* of the window; anything smaller caps IPC below target — if $N_{ROB}<\text{IPC}\times\bar T_{res}$ the buffer saturates, dispatch stalls, and the *achieved* rate falls to $\lambda = N_{ROB}/\bar T_{res}<\text{IPC}$, so the window depth, not the execution bandwidth, is the binding constraint.
 
 Residency is set by the slowest instruction still ahead in program order, and the dominant case is a **last-level-cache miss**. An instruction that misses to DRAM sits at or near the head, blocking retirement, for $L_{miss}$ cycles. To keep issuing useful work *underneath* that miss — the entire point of a big window — the ROB must hold every instruction dispatched in the miss's shadow:
 
@@ -205,6 +222,14 @@ N_{ROB} \;\gtrsim\; \text{IPC}\times\frac{L_{miss}}{\text{MLP}}
 $$
 
 where $L_{miss}$ = miss latency ($\approx$ 100–300 cycles to DRAM), MLP = memory-level parallelism = the number of *independent* misses the window overlaps. A larger ROB directly buys MLP: it exposes more independent misses to overlap, amortising $L_{miss}$ across them. This is why server cores carry enormous ROBs — Golden Cove's **512** is sized so that ~400 loads can be in flight against ~100 ns DRAM, turning a single 400-cycle stall into many overlapped ones.
+
+It pays to separate the two effects. Set MLP $=1$ (a single *isolated* miss): Little's law demands the raw
+
+$$
+N_{ROB} \;\gtrsim\; \text{IPC}\times L_{miss}
+$$
+
+just to keep dispatching for the miss's whole shadow. *Worked — a 300-cycle LLC miss at IPC 4:* $N_{ROB}\gtrsim 4\times300 = \mathbf{1200}$ entries to *fully* hide one miss behind independent work — more than double the largest shipping ROB (Golden Cove's 512). The blunt lesson: **you cannot outlast an isolated LLC miss by window depth alone.** What makes deep windows pay is MLP — overlapping $k$ independent misses so their latencies *share* the shadow, cutting the requirement to $\text{IPC}\times L_{miss}/\text{MLP}$; at MLP $=4$ the same miss stream needs only $1200/4 = 300$ entries, now buildable. A big ROB buys performance by converting one unhideable 300-cycle stall into four overlapped ones, not by waiting a single miss out.
 
 Memory pushes the ROB *up*. Two horizons push back and produce the diminishing returns everyone cites.
 
@@ -216,6 +241,14 @@ $$
 
 where $b$ = branches per instruction ($\approx 0.2$), $p_{mp}$ = per-branch mispredict rate ($\approx 0.02$ at 98 % accuracy), MPKI = mispredicts per 1000 instructions. For MPKI $\approx 4$ that is **~250 instructions**: a ROB much larger than this spends its far end holding instructions that, on average, will be squashed before they commit. Branch-predictor accuracy — not buffer area — sets this ceiling, which is why practical ROB growth has tracked predictor improvement, not just process scaling.
 
+*Proof that the useful window saturates* (the mean run length above is not the whole story — the useful *occupancy* is what caps returns). Let $q=b\,p_{mp}$ be the probability that a given dispatched instruction is a mispredicting branch. An entry at program-order distance $k$ behind the commit head commits only if **none** of the $k$ older in-flight instructions is a mispredicting branch — the oldest such branch squashes everything younger. Assuming independence, that survival probability is $(1-q)^k$, so the expected number of entries in an $N$-deep ROB that will *actually commit* is a geometric sum:
+
+$$
+E[\text{useful}] \;=\; \sum_{k=0}^{N-1}(1-q)^k \;=\; \frac{1-(1-q)^N}{q} \;\xrightarrow[N\to\infty]{}\; \frac{1}{q} \;=\; \frac{1000}{\text{MPKI}}.
+$$
+
+Useful occupancy is **bounded by $1/q$ for every window size** — the far end of a large ROB holds work exponentially (in $N$) likely to be squashed. The marginal committing instruction contributed by the $N$-th entry is $\frac{d}{dN}E[\text{useful}]\approx(1-q)^N\approx e^{-qN}$: at the horizon $N=1/q$ it is already down to $e^{-1}\approx0.37$, and by $N=3/q$ to $e^{-3}\approx0.05$. *Worked (MPKI $=4$, $q=0.004$, ceiling $1/q=250$):* a 256-entry ROB commits on average $E=(1-0.996^{256})/0.004\approx\mathbf{160}$ of its entries; doubling to 512 lifts that to only $(1-0.996^{512})/0.004\approx\mathbf{218}$ — a **+36 % return for 2× the entries**, and already 87 % of the hard 250 ceiling *no* window can pass. That saturating $1/q$, not the transistor budget, is why ROBs stall out near 512.
+
 **The ILP horizon.** Even with a perfect predictor and an infinite buffer, extractable parallelism is bounded by the true-dependence (RAW) critical path through the window. As the window grows, each newly fetched instruction is *less* likely to be independent of everything already in flight, so measured ILP rises sub-linearly:
 
 $$
@@ -223,6 +256,8 @@ $$
 $$
 
 so the *marginal* IPC per entry falls off as $N_{ROB}^{\,\alpha-1}$ — each doubling of the window yields less than the last. Floating-point and streaming code have longer independent chains (larger $\alpha$), which is exactly why they reward bigger windows and vector cores build them.
+
+The same independence limit caps the *memory* benefit specifically. A larger ROB helps memory only by exposing more independent misses, but a program supplies only so many — an intrinsic $\text{MLP}_{\max}$ set by how many cache lines it can chase without a dependence between them. Once the window is deep enough to hold all of them at once — at $N_{ROB}\approx\text{IPC}\times L_{miss}/\text{MLP}_{\max}$ — every *further* entry can only hold an instruction that **depends** on one of the misses already in flight, so it cannot issue: the window is **independent-starved**, and the exposed penalty $L_{miss}/\text{MLP}(N)$ has already bottomed out at $L_{miss}/\text{MLP}_{\max}$. Both horizons are then one theorem in two guises — past the depth where new entries hold only *squashed* work (branch horizon) or *dependence-blocked* work (MLP/ILP horizon), IPC per entry collapses and the added silicon buys nothing.
 
 The design point is where **marginal IPC per entry equals marginal area/power/timing cost per entry**. Integer desktop and mobile code — moderate MPKI, footprints that mostly hit in L2/L3 — lands at 128–320 (Zen 4: 320). Server code — high MLP demand, large footprints missing to DRAM — justifies 512 (Golden Cove). Beyond ~512 the branch horizon dominates for almost every workload and the returns effectively vanish; this, not area alone, is why no shipping core has a 4096-entry ROB.
 
@@ -263,10 +298,16 @@ $$
 C_{wakeup} \;=\; N \times S \times N_{cdb}\ \ \text{tag compares per cycle}
 $$
 
-  This is a CAM, and both the compare count and the *wire length* grow with $N$: driving a tag across $N$ entries and OR-reducing the match lines is $O(N)$ logic on wires that lengthen with the array.
+  This is a CAM, and both the compare count and the *wire length* grow with $N$: driving a tag across $N$ entries and OR-reducing the match lines is $O(N)$ logic on wires that lengthen with the array. *Worked count:* a 128-entry queue with $S=2$ sources and $N_{cdb}=8$ result buses performs $128\times2\times8 = 2048$ tag comparisons **every cycle**; at a 7-bit physical tag that is ~14 000 bit-comparators toggling per cycle, each gated by a match line that must precharge and conditionally discharge inside the single wakeup phase.
 - **Select is a priority arbitration.** From up to $N$ ready entries, pick $W$ oldest that have an available port — an $O(\log N)$ tree whose wires also lengthen with $N$.
 
-The sting is that a more aggressive machine scales **both** $N$ (deeper window) **and** $N_{cdb}$ (more result buses, $\propto W$), so wakeup work grows roughly as $W^2$ — the "$N^2$" scheduler cost that folklore attaches to issue logic. Concretely, at 3 GHz a cycle is $\approx 333$ ps $\approx 12$ FO4 inverter delays, and wakeup+select alone consume 6–9 of them:
+The sting is that a more aggressive machine scales **both** $N$ (deeper window) **and** $N_{cdb}$ (more result buses, $\propto W$), so wakeup work grows roughly as $W^2$ — the "$N^2$" scheduler cost that folklore attaches to issue logic. Make the coupling explicit. A balanced machine sizes its window to feed its width — enough in-flight instructions to keep $W$ ports busy across the average dependence spacing — so $N\propto W$; and it provisions one result bus per issue port, $N_{cdb}\propto W$. Substituting into $C_{wakeup}=N\,S\,N_{cdb}$:
+
+$$
+C_{wakeup} \;\propto\; W\cdot S\cdot W \;=\; S\,W^2,
+$$
+
+**the associative wakeup cost is quadratic in issue width.** This is the theoretical reason superscalar width *plateaus*: doubling $W$ quadruples the per-cycle CAM work *and* lengthens the broadcast wires, yet all of it must still complete inside the one-cycle wakeup→select recurrence that (unlike the rest of the pipe) cannot be pipelined away. The achievable $N$ and $W$ are jointly whatever keeps that loop's delay under $t_{cyc}$; since the delay rises with $N$ (tag flight + match-line RC) and with $W$ (more buses to compare), there is a hard *frequency-bounded* ceiling on the two together — which is why sustained issue width has sat at 4–8 for two decades while transistor budgets grew ~100×. The escape is not a bigger CAM but **partitioning** (§4.5): $c$ clusters of $N/c$ entries cut each queue's compare count and wire length by $\sim c$, trading cross-cluster steering for a loop that closes. Concretely, at 3 GHz a cycle is $\approx 333$ ps $\approx 12$ FO4 inverter delays, and wakeup+select alone consume 6–9 of them:
 
 | Component | FO4 | Note |
 |---|---|---|
@@ -296,7 +337,7 @@ $$
 P_{IQ} \;\propto\; N_{entries}\times N_{cdb}\times f_{clock}\times E_{cam}
 $$
 
-where $E_{cam} \approx 1\text{–}5$ fJ per 7-bit tag compare in 7 nm. For a 64-entry queue with 4 CDB lines at 4 GHz this is on the order of 1–5 W — a real slice of the core budget — which is why designs **gate** matches for entries whose operands are already ready, **compact** out invalid entries, and **bank** the queue so only the relevant bank wakes. Latency-aware **speculative wakeup** (waking a consumer a fixed number of cycles after a known-latency producer issues, e.g. a 3-cycle multiply, so the dependent issues exactly as the result lands) hides multi-cycle latencies without breaking the single-cycle recurrence, at the cost of occasionally cancelling and re-waking consumers of a load that mispredicted its latency (an L1 miss).
+where $E_{cam} \approx 1\text{–}5$ fJ per 7-bit tag compare in 7 nm. Plug in a 64-entry queue with $S=2$ sources and $N_{cdb}=4$ CDB lines at 4 GHz: the *bare-compare* term is $64\times2\times4\times4{\times}10^{9}\times(1\text{–}5){\times}10^{-15} \approx 2\text{–}10$ mW — small on its own. What makes the scheduler a *real* slice of the core budget (hundreds of mW, approaching ~1 W in a wide, high-clock core) is everything the raw compare count omits: precharging every match line across the **full** tag width each cycle, driving the tag broadcast down the array's long wires, the select tree, and the payload read. Those wire- and match-line-dominated terms, not the comparator arithmetic, are the actual power — which is why designs **gate** matches for entries whose operands are already ready, **compact** out invalid entries, and **bank** the queue so only the relevant bank wakes. Latency-aware **speculative wakeup** (waking a consumer a fixed number of cycles after a known-latency producer issues, e.g. a 3-cycle multiply, so the dependent issues exactly as the result lands) hides multi-cycle latencies without breaking the single-cycle recurrence, at the cost of occasionally cancelling and re-waking consumers of a load that mispredicted its latency (an L1 miss).
 
 ---
 
@@ -334,6 +375,14 @@ flowchart TB
     LQ --> DCACHE
 ```
 
+**Sizing the queues.** The LQ and SQ are windows onto the *same* in-flight stream as the ROB, so the same Little's law (§3.2) fixes them — each must hold its op-type's fraction of the window or it fills *before* the ROB and throttles dispatch below IPC with ROB slots to spare:
+
+$$
+N_{LQ} \;\gtrsim\; f_{ld}\,N_{ROB}, \qquad N_{SQ} \;\gtrsim\; f_{st}\,N_{ROB},
+$$
+
+where $f_{ld},f_{st}$ = load/store fractions of dynamic instructions. *Worked:* at $f_{ld}\approx0.25$, a 512-ROB core wants $\gtrsim128$ load slots — Golden Cove's 128-entry load capacity — and Zen 4's 320 ROB scales to $\approx0.25\times320 = 80$ LQ, exactly its 80. Stores run *richer* than the bare $f_{st}\approx0.15$ fraction (Zen 4: 64 SQ vs $0.15\times320\approx48$) because §5.3 loads the SQ with a second duty — buffering committed stores through their cache-drain latency — so its residency $\bar T_{res}$ exceeds a load's and Little's law returns a larger count.
+
 ### 5.1 To speculate or to stall: the memory-dependence trade-off
 
 For a load with older, address-unresolved stores ahead of it, there are two pure policies:
@@ -347,7 +396,13 @@ $$
 E[\text{conservative}] = \bar{C}_{stall}, \qquad E[\text{speculative}] = p_{viol}\times C_{flush}
 $$
 
-where $\bar{C}_{stall}$ = mean cycles a load waits for older store addresses, $p_{viol}$ = probability this load actually aliases an older in-flight store, $C_{flush}$ = flush penalty. Violations are *rare* ($p_{viol}\approx 0.1\text{–}1\%$ of loads) while stalls are *frequent*, so with $C_{flush}\approx 15$ the speculative expectation is $\approx 0.02\text{–}0.15$ cycles/load — far below the several cycles/load the conservative policy pays. High-performance cores therefore **speculate by default**.
+where $\bar{C}_{stall}$ = mean cycles a load waits for older store addresses, $p_{viol}$ = probability this load actually aliases an older in-flight store, $C_{flush}$ = flush penalty. Speculation wins whenever $E[\text{speculative}]<E[\text{conservative}]$, i.e. above a **break-even alias rate**
+
+$$
+p_{viol} \;<\; \frac{\bar C_{stall}}{C_{flush}}.
+$$
+
+*Worked:* with $\bar C_{stall}\approx3$ cycles and $C_{flush}\approx15$, break-even is $p_{viol}=0.2$ — speculation loses only if *more than one load in five* truly aliases a pending store. Violations are in fact *rare* ($p_{viol}\approx 0.1\text{–}1\%$ of loads) while stalls are *frequent*, so with $C_{flush}\approx 15$ the speculative expectation is $\approx 0.02\text{–}0.15$ cycles/load — two orders of magnitude under break-even, and far below the several cycles/load the conservative policy pays. High-performance cores therefore **speculate by default**.
 
 The predictor closes the remaining gap. Rather than one blanket policy, a **store-set predictor** (Chrysos–Emer) decides *per load*, exploiting the fact that memory dependences are stable — a given load tends to alias the same store(s) run after run, so history predicts them. Each load carries a *store set* (the stores it has aliased before) and waits only for those; loads with empty sets fire speculatively. This drives the per-load cost toward $\min(\bar{C}_{stall},\,p_{viol}C_{flush})$ — spending a stall only where a flush is genuinely likely. Store-set predictors reach **>95 % accuracy** and ship in Intel Core, AMD Zen, and ARM Cortex. Cheaper *store-coloring* schemes (hash the address to a few-bit colour, stall only on colour matches) trade some accuracy for area in mid-range cores. The whole design target is to push the product $p_{viol}\times C_{flush}$ below the conservative stall it replaces.
 
@@ -496,6 +551,9 @@ Typical parameters for a modern high-performance 4-to-6-wide OoO core (early 202
 | Checkpoint depth | 8–16 | 4–32 | in-flight branches (§2.5) |
 | L1D load-use latency | 4 cyc | 3–5 | AGU + TLB + array (§7) |
 | Clock frequency | 3–5 GHz | 2–6 | bounded by wakeup–select (§4.3) |
+| Branch (useful-window) horizon | $1000/\text{MPKI}$ | ~250 @ MPKI 4 | $E[\text{useful}]\!\to\!1/q$ caps ROB return (§3.2) |
+| ROB miss floor (Little's law) | $\text{IPC}\times L_{miss}$ | ÷ MLP with overlap | in-flight to hide one miss (§3.2) |
+| Wakeup CAM cost | $\propto S\,W^2$ | quadratic in width | why issue width plateaus at 4–8 (§4.3) |
 
 **Memory hierarchy latencies** (why the ROB must be big): PRF ~1 cycle · L1D 3–4 · L2 10–15 · L3 30–50 · **DRAM 100–300 cycles** — the $L_{miss}$ that drives §3.2.
 
@@ -514,7 +572,7 @@ Typical parameters for a modern high-performance 4-to-6-wide OoO core (early 202
 ## Cross-references
 
 - **Down the stack (what this datapath is built from):** [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the ALU/MUL/DIV circuits behind §7's latency menu), [Floating_Point](../../00_Fundamentals/04_Floating_Point.md) (FPU/FMA, SRT/Goldschmidt division), [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and dynamic CAM cells that bound §4.3).
-- **Up the stack (what builds on it):** [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (drives the front end and sets the §3.2 branch horizon and §6 penalty), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) & [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the memory system the LSQ and AGU talk to; the $L_{miss}$ of §3.2), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open OoO core composing every structure here), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where these window-sizing models feed design-space exploration).
+- **Up the stack (what builds on it):** [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (drives the front end and sets the §3.2 branch horizon and §6 penalty), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) & [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the memory system the LSQ and AGU talk to; the $L_{miss}$ of §3.2), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open OoO core composing every structure here), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where these window-sizing models feed design-space exploration — the Little's-law ROB floor and MLP overlap of §3.2 are the microarchitectural origin of its §2.1 exposed-penalty/overlap factor, and the $S\,W^2$ wakeup cost of §4.3 is the origin of its §2.4/§6 super-linear width cost).
 - **Adjacent / prerequisite:** [CPU_Architecture](01_CPU_Architecture.md) (the in-order pipeline and hazards this relaxes), [RISC_V_ISA](02_RISC_V_ISA.md) (the architectural namespace being renamed and the trap model of §9).
 
 ---
