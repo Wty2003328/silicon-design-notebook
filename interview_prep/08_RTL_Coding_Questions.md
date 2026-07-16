@@ -103,7 +103,7 @@ module rr_arb #(parameter N=4)
 endmodule
 ```
 
-`x & ~(x-p)` isolates the least-significant 1 of `x` at or above one-hot `p` (subtract borrows through the low zeros). **Follow-ups:** fairness definition (work-conserving, bounded waiting ≤ N−1 grants); weighted RR (per-source credit counters); matrix arbiter alternative; how this becomes the SA (switch allocation) stage of a NoC (Network-on-Chip) router ([Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md)).
+`x & ~(x-p)` isolates the least-significant 1 of `x` at or above one-hot `p` (subtract borrows through the low zeros). **Follow-ups:** fairness definition (work-conserving, bounded waiting ≤ N−1 grants); weighted RR (per-source credit counters); matrix arbiter alternative; how this becomes the SA (switch allocation) stage of a NoC (Network-on-Chip) router ([Network_on_Chip](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md)).
 
 ---
 
@@ -177,7 +177,7 @@ module afifo #(parameter W=32, A=4)
 endmodule
 ```
 
-**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../01_Architecture_and_PPA/09_Memory.md) / [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC, async FIFO).
+**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../01_Architecture_and_PPA/03_Memory/03_Memory.md) / [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC, async FIFO).
 
 ---
 
@@ -317,7 +317,7 @@ module skid #(parameter W=32)
 endmodule
 ```
 
-**Why it's asked:** it is the atom of every AXI (Advanced eXtensible Interface) register slice ([AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md)) and elastic pipeline. Follow-up: full-throughput proof (accepts every cycle downstream is ready; skid absorbs exactly the one in-flight beat) and the half-bandwidth naive alternative (deassert ready whenever output valid — 50% duty under stall).
+**Why it's asked:** it is the atom of every AXI (Advanced eXtensible Interface) register slice ([AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md)) and elastic pipeline. Follow-up: full-throughput proof (accepts every cycle downstream is ready; skid absorbs exactly the one in-flight beat) and the half-bandwidth naive alternative (deassert ready whenever output valid — 50% duty under stall).
 
 ---
 
@@ -409,5 +409,5 @@ What senior interviewers actually score:
 ## Cross-references
 
 - Building blocks: [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md).
-- Deep dives behind problems: [Memory](../01_Architecture_and_PPA/09_Memory.md) (FIFOs/SRAM), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC), [Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md) (arbiter in context).
+- Deep dives behind problems: [Memory](../01_Architecture_and_PPA/03_Memory/03_Memory.md) (FIFOs/SRAM), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC), [Network_on_Chip](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md) (arbiter in context).
 - Companion: [Hardware_Interview_Questions](09_Hardware_Interview_Questions.md) (concept Q&A + timing/power math); the AI-systems counterpart (*System Design Interview*) lives in the companion AI-infra notebook.

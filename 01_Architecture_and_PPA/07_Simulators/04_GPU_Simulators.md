@@ -1,15 +1,15 @@
 # GPU Simulators — GPGPU-Sim and Accel-Sim
 
-> **Prerequisites:** [Simulation_Methodology](01_Simulation_Methodology.md) (execution- vs trace-driven §4, the event engine §3, ROI/warm-up/sampling §5), [Performance_Modeling_and_DSE §9](../01_Performance_Modeling_and_DSE.md) (the GPU roofline/occupancy model these tools make executable).
-> **Hands off to:** [Full_Chip_Modeling §3](../02_Full_Chip_Modeling.md) (GPU as a chip in the perf→power→thermal ladder), and the companion **AI-infra notebook** ([silicon-to-serving](https://github.com/Wty2003328/silicon-to-serving)) for GPU *microarchitecture* depth (SM internals, warp execution, tensor cores) that this page cites but does not re-derive.
+> **Prerequisites:** [Simulation_Methodology](01_Simulation_Methodology.md) (execution- vs trace-driven §4, the event engine §3, ROI/warm-up/sampling §5), [Performance_Modeling_and_DSE §9](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the GPU roofline/occupancy model these tools make executable).
+> **Hands off to:** [Full_Chip_Modeling §3](../01_Modeling/02_Full_Chip_Modeling.md) (GPU as a chip in the perf→power→thermal ladder), and the companion **AI-infra notebook** ([silicon-to-serving](https://github.com/Wty2003328/silicon-to-serving)) for GPU *microarchitecture* depth (SM internals, warp execution, tensor cores) that this page cites but does not re-derive.
 
 ---
 
 ## 0. Why this page exists
 
-A GPU number — "1.9 IPC," "achieved 82% of HBM peak," "230 W" — is only as trustworthy as the model that produced it, and GPUs stress the modeling problem harder than CPUs: performance is a *throughput* emergent property of thousands of warps contending for L1/L2/HBM and an on-chip crossbar, not a per-instruction latency ([Performance_Modeling_and_DSE §9](../01_Performance_Modeling_and_DSE.md)). This page explains the two open simulators that dominate architecture research — **GPGPU-Sim** (the execution-driven original) and **Accel-Sim** (the modern trace-driven framework that wraps GPGPU-Sim as its timing model) — at the level of *how the model works and how a CUDA kernel becomes an IPC/bandwidth number*, with the validation story that says whether to believe it (Accel-Sim lands within **~15% of real silicon** on cycles).
+A GPU number — "1.9 IPC," "achieved 82% of HBM peak," "230 W" — is only as trustworthy as the model that produced it, and GPUs stress the modeling problem harder than CPUs: performance is a *throughput* emergent property of thousands of warps contending for L1/L2/HBM and an on-chip crossbar, not a per-instruction latency ([Performance_Modeling_and_DSE §9](../01_Modeling/01_Performance_Modeling_and_DSE.md)). This page explains the two open simulators that dominate architecture research — **GPGPU-Sim** (the execution-driven original) and **Accel-Sim** (the modern trace-driven framework that wraps GPGPU-Sim as its timing model) — at the level of *how the model works and how a CUDA kernel becomes an IPC/bandwidth number*, with the validation story that says whether to believe it (Accel-Sim lands within **~15% of real silicon** on cycles).
 
-The scope line, per the [brief's](../02_Full_Chip_Modeling.md) cross-link discipline: **microarchitecture depth (what an SM *is*) lives in the companion AI-infra notebook; this page is about the *simulator* — its paradigm, its timing model, and how it turns a workload into a validated statistic.**
+The scope line, per the [brief's](../01_Modeling/02_Full_Chip_Modeling.md) cross-link discipline: **microarchitecture depth (what an SM *is*) lives in the companion AI-infra notebook; this page is about the *simulator* — its paradigm, its timing model, and how it turns a workload into a validated statistic.**
 
 ---
 
@@ -39,7 +39,7 @@ The heart of both tools is the **SIMT core** (GPGPU-Sim calls it a *shader core*
 - **Execution units.** Separate pipelines — SP/INT (ALU), SFU (transcendental), LD/ST, and **Tensor Cores** (§4) — each with a configured latency and initiation interval. The units and their counts come from a config file (per-GPU).
 - **Writeback** frees scoreboard entries and wakes dependent warps.
 
-**The point of this model is the same as an OoO core model's ([OoO_Execution](../05_OoO_Execution.md)): throughput is set by whichever structure saturates first** — not enough eligible warps (low occupancy)? scheduler starved on scoreboard stalls? operand-collector bank conflicts? execution-unit initiation-interval limited? The simulator tells you *which*, which is the whole reason to run it over a roofline estimate.
+**The point of this model is the same as an OoO core model's ([OoO_Execution](../02_CPU/03_OoO_Execution.md)): throughput is set by whichever structure saturates first** — not enough eligible warps (low occupancy)? scheduler starved on scoreboard stalls? operand-collector bank conflicts? execution-unit initiation-interval limited? The simulator tells you *which*, which is the whole reason to run it over a roofline estimate.
 
 ---
 
@@ -49,7 +49,7 @@ Memory is where GPU performance is usually won or lost, and where the "achieved 
 
 - **Coalescer.** A warp's 32 per-lane addresses are merged into the fewest memory transactions. GPGPU-Sim (GT200 era) coalesces at half-warp granularity; **Accel-Sim models a sub-warp, sectored coalescer on 32-byte sectors**, matching the sector structure reverse-engineered on Pascal/Volta/Turing. A perfectly coalesced access touches one line; a scattered one explodes into many transactions — the model counts the *post-coalescer* access count, which is what actually hits the caches.
 - **L1 / L2.** Both sectored (32 B sectors within 128 B lines) with MSHRs bounding outstanding misses. Accel-Sim adds an **adaptive, streaming L1** and an **IPOLY-hashed L2** that scatters addresses across L2 slices to avoid *partition camping* (a few hot slices serializing traffic) — the GPU cousin of the DRAM bank-hashing in [DRAM_Simulators §5](03_DRAM_Simulators.md). Write-back + write-allocate with sub-sector write merging to conserve DRAM bandwidth.
-- **Interconnect.** GPGPU-Sim routes SM↔L2-slice traffic through **BookSim** (a detailed virtual-channel NoC simulator; separate request/response networks to avoid protocol deadlock); Accel-Sim uses a configurable crossbar with set flit size and bandwidth. **This is the contention layer** — the shared resource where two SMs' memory streams serialize (the [Network_on_Chip](../13_Network_on_Chip.md) theory, in-package).
+- **Interconnect.** GPGPU-Sim routes SM↔L2-slice traffic through **BookSim** (a detailed virtual-channel NoC simulator; separate request/response networks to avoid protocol deadlock); Accel-Sim uses a configurable crossbar with set flit size and bandwidth. **This is the contention layer** — the shared resource where two SMs' memory streams serialize (the [Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md) theory, in-package).
 - **DRAM (GDDR/HBM).** A cycle-level GDDR/HBM controller with row buffers, JEDEC-style timing, and FIFO or FR-FCFS scheduling — the same kind of model as the [DRAM_Simulators](03_DRAM_Simulators.md) page, just wider and hotter. Achieved HBM bandwidth is an *output* of this stack.
 
 The queueing intuition from [Simulation_Methodology §7](01_Simulation_Methodology.md) applies at every one of these shared resources: latency stays flat until utilization nears saturation, then climbs as $\sim 1/(1-\rho)$. **Accel-Sim's tuning of this layer is exactly what closed the accuracy gap** — it reaches ~82% of theoretical HBM bandwidth and ~85% of L1 bandwidth on microbenchmarks, versus GPGPU-Sim 3.x's ~62% and ~33%, because the older coalescer/cache/interconnect models under-delivered bytes.
@@ -102,7 +102,7 @@ where $f$ = core clock and *warp-instructions* (machine-instruction count) is us
 
 ## 7. Power — GPUWattch and AccelWattch
 
-Power reuses the perf model's **activity counts** and multiplies by **per-event energy** — the same activity×energy principle as McPAT/DRAMPower ([Full_Chip_Modeling §1.7](../02_Full_Chip_Modeling.md)):
+Power reuses the perf model's **activity counts** and multiplies by **per-event energy** — the same activity×energy principle as McPAT/DRAMPower ([Full_Chip_Modeling §1.7](../01_Modeling/02_Full_Chip_Modeling.md)):
 
 $$P_{\text{dyn}} = \sum_i a_i \cdot \frac{E_i}{T_{\text{elapsed}}}, \qquad P_{\text{total}} = \underbrace{\beta C f^3}_{\text{dynamic, DVFS}} + \underbrace{\tau f}_{\text{static}} + \underbrace{P_{\text{const}}}_{\text{fans/aux}}$$
 
@@ -147,8 +147,8 @@ Per-metric on Volta the agreement is tight: dynamic **instruction count 1% MAE**
 
 ## Cross-references
 
-- **Down the stack:** [DRAM_Simulators](03_DRAM_Simulators.md) (the GDDR/HBM tier behind the GPU memory system — same model, wider), [Network_on_Chip](../13_Network_on_Chip.md) (the SM↔L2 interconnect/BookSim contention layer), [OoO_Execution](../05_OoO_Execution.md) (the "which structure saturates first" framing, borrowed for warps).
-- **Up the stack:** [Simulation_Methodology](01_Simulation_Methodology.md) (execution-vs-trace §4, workload→number §5, validation §8), [Performance_Modeling_and_DSE §9](../01_Performance_Modeling_and_DSE.md) (the GPU roofline/occupancy model this makes executable) and [§11 NeuSim](../01_Performance_Modeling_and_DSE.md) (the operator-level NPU analogue), [Full_Chip_Modeling §3](../02_Full_Chip_Modeling.md) (GPU in the chip-level perf→power→thermal ladder), [Root Index](../../Index.md).
+- **Down the stack:** [DRAM_Simulators](03_DRAM_Simulators.md) (the GDDR/HBM tier behind the GPU memory system — same model, wider), [Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md) (the SM↔L2 interconnect/BookSim contention layer), [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the "which structure saturates first" framing, borrowed for warps).
+- **Up the stack:** [Simulation_Methodology](01_Simulation_Methodology.md) (execution-vs-trace §4, workload→number §5, validation §8), [Performance_Modeling_and_DSE §9](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the GPU roofline/occupancy model this makes executable) and [§11 NeuSim](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the operator-level NPU analogue), [Full_Chip_Modeling §3](../01_Modeling/02_Full_Chip_Modeling.md) (GPU in the chip-level perf→power→thermal ladder), [Root Index](../../Index.md).
 - **Companion notebook:** GPU **microarchitecture** depth — SM internals, warp execution, Tensor Cores, CUDA kernels — lives in the AI-infra notebook, [silicon-to-serving](https://github.com/Wty2003328/silicon-to-serving); this page deliberately models the *simulator*, not the silicon.
 
 ---

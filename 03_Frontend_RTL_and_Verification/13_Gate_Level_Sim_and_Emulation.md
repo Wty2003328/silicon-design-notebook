@@ -211,7 +211,7 @@ flowchart TD
 
 - **RTL simulation** — the default and the vast majority of cycles: block-to-cluster functional, directed + constrained-random ([UVM](10_UVM_Methodology.md)), coverage closure ([planning](11_Verification_Planning_and_Coverage_Closure.md)). Best debug productivity, unlimited instances; bounded by the throughput wall (§6).
 - **GLS** — the *targeted* post-synthesis/post-scan residue (§1): reset/power-up/`X`, DFT/scan-pattern validation, and a few SDF async/timing-function sanity tests. Never the full regression (§5).
-- **Emulation** — full-chip functional + **HW/SW co-verification** (boot the OS, run firmware/drivers against real RTL), long regressions, and early **performance validation** on real workloads that confirms the [performance model](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md). Depth *with* visibility.
+- **Emulation** — full-chip functional + **HW/SW co-verification** (boot the OS, run firmware/drivers against real RTL), long regressions, and early **performance validation** on real workloads that confirms the [performance model](../01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md). Depth *with* visibility.
 - **FPGA prototype** — pre-silicon **software development** at near-real-time, system/peripheral-in-the-loop, and demos. Speed over visibility.
 - **Silicon bring-up** — the last rung, where visibility collapses to DFT/DFD hooks — which is *why* the scan and trace structure GLS validated (§4) matters so much ([bring-up](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md)).
 
@@ -239,7 +239,7 @@ The same throughput-vs-visibility logic governs why power signoff leans on [emul
 
 - **Down the stack (what GLS/emulation run on):** [Synthesis_and_Optimization](../04_Synthesis/01_Synthesis_and_Optimization.md) (produces the netlist; hosts LEC in the signoff flow), [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md) (the scan/test structure GLS validates and the ATPG patterns it re-simulates), [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (the four-state/`X` system behind §2).
 - **Up / alongside (what scopes or consumes GLS):** [Formal_Verification](12_Formal_Verification.md) (LEC proves the equivalence that lets GLS skip re-checking function, §1), [STA](../06_Signoff/01_STA.md) (timing margins plus the SDF that GLS back-annotates, §3), [UVM_Methodology](10_UVM_Methodology.md) & [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the RTL-sim regression this page brackets).
-- **Downstream:** [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) (silicon, where visibility collapses to the DFT hooks GLS checked), [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) (the model emulation validates), [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (emulation-driven activity for power).
+- **Downstream:** [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) (silicon, where visibility collapses to the DFT hooks GLS checked), [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md) (the model emulation validates), [Block_Activity_and_Power](../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (emulation-driven activity for power).
 
 ---
 

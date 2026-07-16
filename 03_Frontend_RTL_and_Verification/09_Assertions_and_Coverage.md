@@ -159,7 +159,7 @@ property p_no_ovf;    @(posedge clk) disable iff(!rst_n) full  |-> !wr_en;      
 property p_vld_stbl;  @(posedge clk) disable iff(!rst_n) (vld && !rdy) |=> vld;      endproperty   // handshake
 ```
 
-(The `disable iff(!rst_n)` clause exempts reset — a standard reset gate; the AXI valid/ready contract these encode lives in [AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md).)
+(The `disable iff(!rst_n)` clause exempts reset — a standard reset gate; the AXI valid/ready contract these encode lives in [AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md).)
 
 Where assertions **do not** pay: deep *datapath* correctness — "did this 3,000-cycle DSP pipeline compute the right transform?" is not a local temporal invariant, and forcing it into SVA is painful. That is a **scoreboard / reference-model** job: mirror the DUT in behavioral code and compare results (the FIFO data-integrity check is the small end of this — a `queue` reference model comparing read data against expected). Assertions check *rules*; reference models check *values*. Knowing which a property is keeps you from abusing either.
 
@@ -308,7 +308,7 @@ A property with an assertion *and* a cover on its antecedent is the fully-formed
 
 ## Cross-references
 
-- **Down the stack (what these mechanisms observe and are built from):** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (the DUT whose invariants become assertions), [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (the 4-state `x` that `$isunknown` checks), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the event scheduler and regions that define *sampled* semantics), [AHB_AXI_APB](../01_Architecture_and_PPA/11_AHB_AXI_APB.md) (the valid/ready protocol contract the interface assertions of §3 encode).
+- **Down the stack (what these mechanisms observe and are built from):** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (the DUT whose invariants become assertions), [Data_Types_and_Basics](02_Data_Types_and_Basics.md) (the 4-state `x` that `$isunknown` checks), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the event scheduler and regions that define *sampled* semantics), [AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md) (the valid/ready protocol contract the interface assertions of §3 encode).
 - **Up the stack (what builds on this):** [OOP_and_Randomization](08_OOP_and_Randomization.md) (the constrained-random stimulus that fills the coverage model of §4), [UVM_Methodology](10_UVM_Methodology.md) (the components — subscribers, scoreboards — that orchestrate checkers and collectors), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the vplan and the closure loop of §4.4), [Formal_Verification](12_Formal_Verification.md) (the same assertions proven exhaustively, and true unbounded liveness, §2.4–2.5).
 - **Adjacent / prerequisite:** [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (the metastability physics behind CDC checks — assert in the *destination* domain, after the synchronizer, never on the metastable crossing net), [Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md) (static structural checking, the complement to these dynamic assertions), [Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md) (where a subset of assertions carries into gate-level and emulation runs).
 

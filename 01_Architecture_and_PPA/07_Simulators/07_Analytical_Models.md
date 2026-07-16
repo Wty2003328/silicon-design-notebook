@@ -1,13 +1,13 @@
 # Analytical models — the closed-form duals of the simulators
 
-> **Prerequisites:** [Simulation_Methodology](01_Simulation_Methodology.md) (why a closed-form is the top rung of the fidelity ladder), [Performance_Modeling_and_DSE](../01_Performance_Modeling_and_DSE.md) (the CPI stack §2.1, Amdahl §2.2, roofline §2.3/§9.3, occupancy/Little §9.1 — **this page extends those kernels, it does not repeat them**).
+> **Prerequisites:** [Simulation_Methodology](01_Simulation_Methodology.md) (why a closed-form is the top rung of the fidelity ladder), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the CPI stack §2.1, Amdahl §2.2, roofline §2.3/§9.3, occupancy/Little §9.1 — **this page extends those kernels, it does not repeat them**).
 > **Hands off to:** [gem5](02_gem5.md) and the other per-tool pages — the executable models you escalate to when the closed form stops distinguishing your choices.
 
 ---
 
 ## 0. Why this page exists
 
-Every simulator in this folder is an *executable* model; each has a **closed-form dual** that returns the answer on a whiteboard, to ~10–20%, in the time it takes to divide two numbers — and, more valuably, tells you **which knob is live before you spend a CPU-week simulating.** The [Performance_Modeling_and_DSE](../01_Performance_Modeling_and_DSE.md) page introduced the working kernels (CPI stack, Amdahl, roofline, occupancy). This page is their **rigorous back**: the ceilings and cache-aware form of roofline, the full mechanistic CPI equation behind the interval model, Amdahl's missing *contention* term, and the **queueing spine** (Little + M/M/1) that every contention model in a simulator is secretly a structural realization of. The organizing claim: **analytical models bound, decompose, and size; simulators only tell you the same thing more slowly and more accurately.** Knowing the dual is what lets you *read* a simulator's output instead of merely collecting it.
+Every simulator in this folder is an *executable* model; each has a **closed-form dual** that returns the answer on a whiteboard, to ~10–20%, in the time it takes to divide two numbers — and, more valuably, tells you **which knob is live before you spend a CPU-week simulating.** The [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) page introduced the working kernels (CPI stack, Amdahl, roofline, occupancy). This page is their **rigorous back**: the ceilings and cache-aware form of roofline, the full mechanistic CPI equation behind the interval model, Amdahl's missing *contention* term, and the **queueing spine** (Little + M/M/1) that every contention model in a simulator is secretly a structural realization of. The organizing claim: **analytical models bound, decompose, and size; simulators only tell you the same thing more slowly and more accurately.** Knowing the dual is what lets you *read* a simulator's output instead of merely collecting it.
 
 ---
 
@@ -23,7 +23,7 @@ And they answer a fourth question the simulator cannot: **when do I even need th
 
 ---
 
-## 2. Roofline — the throughput bound (extends [DSE §2.3](../01_Performance_Modeling_and_DSE.md))
+## 2. Roofline — the throughput bound (extends [DSE §2.3](../01_Modeling/01_Performance_Modeling_and_DSE.md))
 
 The basic model and the per-kernel GPU treatment are in the DSE page; here is what to add so the bound is used correctly.
 
@@ -41,7 +41,7 @@ is the intensity at which the two roofs meet: $I<I^{*}$ is bandwidth-bound (on t
 
 ## 3. The interval / mechanistic model — core CPI in closed form
 
-This is the analytical dual of gem5's O3 timing model ([gem5 §3](02_gem5.md)) and the rigorous version of the CPI stack ([DSE §2.1](../01_Performance_Modeling_and_DSE.md)). **Interval analysis** (Karkhanis–Smith 2004; formalized by Eyerman, Eeckhout, Karkhanis & Smith 2009) observes that a balanced out-of-order core issues at close to its **dispatch width $D$** during steady intervals, and that performance is set by **miss events that punctuate those intervals** — each punches a characterizable hole in the issue rate. Summing the per-event CPI increments (superposition) reproduces full-simulation CPI to within a few percent.
+This is the analytical dual of gem5's O3 timing model ([gem5 §3](02_gem5.md)) and the rigorous version of the CPI stack ([DSE §2.1](../01_Modeling/01_Performance_Modeling_and_DSE.md)). **Interval analysis** (Karkhanis–Smith 2004; formalized by Eyerman, Eeckhout, Karkhanis & Smith 2009) observes that a balanced out-of-order core issues at close to its **dispatch width $D$** during steady intervals, and that performance is set by **miss events that punctuate those intervals** — each punches a characterizable hole in the issue rate. Summing the per-event CPI increments (superposition) reproduces full-simulation CPI to within a few percent.
 
 The mechanistic total-cycle equation:
 
@@ -58,7 +58,7 @@ Accuracy is **~7% mean vs a width-4 O3 simulation** — good enough to rank pipe
 
 ## 4. Amdahl — and the contention term it omits (USL)
 
-Amdahl ([DSE §2.2](../01_Performance_Modeling_and_DSE.md)) gives the parallel ceiling from a serial fraction $p_s$:
+Amdahl ([DSE §2.2](../01_Modeling/01_Performance_Modeling_and_DSE.md)) gives the parallel ceiling from a serial fraction $p_s$:
 $$S(N)=\frac{1}{(1-p_s)+p_s/N}\ \xrightarrow{N\to\infty}\ \frac{1}{1-p_s}.$$
 Its blind spot is that it assumes the parallel part scales *perfectly*: it has **no term for contention** (serialized access to a shared resource) or **coherency** (keeping shared data consistent). Real multicore silicon has both, and they bend the curve *down*. **Gunther's Universal Scalability Law (USL)** adds exactly those two terms:
 
@@ -68,7 +68,7 @@ where $N$ = degree of parallelism (cores/threads), $\alpha$ = **contention/seria
 
 $$N^{*}=\sqrt{\frac{1-\alpha}{\beta}}.$$
 
-For silicon this is not academic: $\beta$ is the **coherence traffic and shared-cache/NoC crosstalk** ([ACE_and_CHI](../12_ACE_and_CHI.md), [Network_on_Chip](../13_Network_on_Chip.md)) that a naive Amdahl estimate misses, and it is *why* adding cores past $N^{*}$ makes a workload slower. When you need the actual coherence traffic that sets $\beta$, that is the escalation to gem5 **Ruby** ([gem5 §4](02_gem5.md)).
+For silicon this is not academic: $\beta$ is the **coherence traffic and shared-cache/NoC crosstalk** ([ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md), [Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md)) that a naive Amdahl estimate misses, and it is *why* adding cores past $N^{*}$ makes a workload slower. When you need the actual coherence traffic that sets $\beta$, that is the escalation to gem5 **Ruby** ([gem5 §4](02_gem5.md)).
 
 ---
 
@@ -80,7 +80,7 @@ For silicon this is not academic: $\beta$ is the **coherence traffic and shared-
 $$L=\lambda\,W,$$
 where $L$ = mean number of items in the system, $\lambda$ = arrival/throughput rate, $W$ = mean time in system. It has two readings an architect uses constantly:
 
-- **Latency hiding / sizing concurrency** (the GPU-occupancy result of [DSE §9.1](../01_Performance_Modeling_and_DSE.md)): to keep a unit busy through a latency $L_\text{lat}$ at throughput $\lambda$, you need $L=\lambda L_\text{lat}$ operations *in flight*. Too few → the unit stalls with peak throughput untouched.
+- **Latency hiding / sizing concurrency** (the GPU-occupancy result of [DSE §9.1](../01_Modeling/01_Performance_Modeling_and_DSE.md)): to keep a unit busy through a latency $L_\text{lat}$ at throughput $\lambda$, you need $L=\lambda L_\text{lat}$ operations *in flight*. Too few → the unit stalls with peak throughput untouched.
 - **Sizing the memory system** (the same law, memory units): to sustain bandwidth $\beta$ at memory latency $L_\text{mem}$, you need $\beta\times L_\text{mem}$ bytes outstanding — the **latency–bandwidth product**. In requests: $\text{MSHRs}\gtrsim \beta L_\text{mem}/\text{line}$. **This is the exact quantity roofline (§2) assumes you have** when it draws you on the bandwidth roof; if your MLP is below it, you fall off the roof.
 
 **M/M/1** (Poisson arrivals, exponential service, one server) puts numbers on saturation. With utilization $\rho=\lambda/\mu$ (offered rate over service rate $\mu$):
@@ -91,7 +91,7 @@ The $\dfrac{1}{1-\rho}$ factor **is the knee**: latency is roughly flat at low l
 
 **Variability matters — M/G/1 (Pollaczek–Khinchine).** Real service times are not exponential, and the wait scales with their variance:
 $$W_q=\frac{\rho}{1-\rho}\cdot\frac{1+C_v^2}{2}\cdot\frac{1}{\mu},$$
-where $C_v$ = coefficient of variation of service time. For deterministic service ($C_v=0$, M/D/1) the queueing wait is **half** the M/M/1 value; for bursty service it is worse. This is the analytical reason **DRAM and NoC schedulers exist**: FR-FCFS row-buffer reordering and NoC arbitration *reduce effective service variance* ($C_v$), buying back queueing latency without adding bandwidth ([DDR_Controller](../10_DDR_Controller.md), [Network_on_Chip](../13_Network_on_Chip.md)). Any credible memory/interconnect model is a structural realization of these three equations; recognizing them is how you audit one.
+where $C_v$ = coefficient of variation of service time. For deterministic service ($C_v=0$, M/D/1) the queueing wait is **half** the M/M/1 value; for bursty service it is worse. This is the analytical reason **DRAM and NoC schedulers exist**: FR-FCFS row-buffer reordering and NoC arbitration *reduce effective service variance* ($C_v$), buying back queueing latency without adding bandwidth ([DDR_Controller](../03_Memory/04_DDR_Controller.md), [Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md)). Any credible memory/interconnect model is a structural realization of these three equations; recognizing them is how you audit one.
 
 ---
 
@@ -107,7 +107,7 @@ with $\beta$ the algorithm's complexity exponent ($\beta=1$ linear, $>1$ super-l
 
 $$g_1=\frac{A}{A-1}\left(\frac{o+L}{C}\right)^{1/\beta},$$
 
-which is set by the **interface cost $(o+L)$**, and is *essentially independent of $A$* for large $A$. The architect's takeaway: **a faster accelerator does not lower the size at which offload pays — the interface does.** A 100× engine behind a high-overhead bus is worthless for small tiles; you must either amortize over large $g$ or cut $(o+L)$. This is the analytical dual of the accelerator/offload cost that shows up in [AHB_AXI_APB](../11_AHB_AXI_APB.md)/[ACE_and_CHI](../12_ACE_and_CHI.md) and in the NPU dataflow models of [DSE §10](../01_Performance_Modeling_and_DSE.md).
+which is set by the **interface cost $(o+L)$**, and is *essentially independent of $A$* for large $A$. The architect's takeaway: **a faster accelerator does not lower the size at which offload pays — the interface does.** A 100× engine behind a high-overhead bus is worthless for small tiles; you must either amortize over large $g$ or cut $(o+L)$. This is the analytical dual of the accelerator/offload cost that shows up in [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md)/[ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) and in the NPU dataflow models of [DSE §10](../01_Modeling/01_Performance_Modeling_and_DSE.md).
 
 ---
 
@@ -123,7 +123,7 @@ The discipline is the escalation rule of [Simulation_Methodology §2/§4](01_Sim
 | Memory/NoC saturation latency? | Little + M/M/1 (§5) | traffic is near-Poisson, one bottleneck | Ramulator/DRAMSim3, Garnet — bursty/structured traffic, scheduler reordering |
 | Is offload worth it, at what size? | LogCA/LogGP (§6) | the interface is uncontended | gem5 **FS** — shared-interface contention, driver/OS cost |
 
-The failure mode in both directions is real: **trusting an analytical *ceiling* as a *prediction*** (roofline attainment without checking MLP) over-promises; **cycle-simulating a question a closed form already answers** wastes a CPU-week and, worse, hides the mechanism the equation would have made obvious. The mature workflow is **prune analytically, then cycle-simulate the survivors** — the DSE recipe of [DSE §5](../01_Performance_Modeling_and_DSE.md).
+The failure mode in both directions is real: **trusting an analytical *ceiling* as a *prediction*** (roofline attainment without checking MLP) over-promises; **cycle-simulating a question a closed form already answers** wastes a CPU-week and, worse, hides the mechanism the equation would have made obvious. The mature workflow is **prune analytically, then cycle-simulate the survivors** — the DSE recipe of [DSE §5](../01_Modeling/01_Performance_Modeling_and_DSE.md).
 
 ---
 
@@ -147,8 +147,8 @@ The failure mode in both directions is real: **trusting an analytical *ceiling* 
 
 ## Cross-references
 
-- **Down the stack:** [Performance_Modeling_and_DSE](../01_Performance_Modeling_and_DSE.md) (the working kernels this page makes rigorous — CPI stack, Amdahl, roofline, occupancy), [OoO_Execution](../05_OoO_Execution.md) (the structures the interval model abstracts), [Memory](../09_Memory.md) / [DDR_Controller](../10_DDR_Controller.md) & [Network_on_Chip](../13_Network_on_Chip.md) (the queues M/M/1 abstracts; the schedulers that cut $C_v$), [ACE_and_CHI](../12_ACE_and_CHI.md) (the coherence traffic behind the USL $\beta$ term).
-- **Up the stack:** [Simulation_Methodology](01_Simulation_Methodology.md) (the fidelity ladder these models top, and the escalation rule), [Full_Chip_Modeling](../02_Full_Chip_Modeling.md) (analytical leaf models composed into a chip).
+- **Down the stack:** [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the working kernels this page makes rigorous — CPI stack, Amdahl, roofline, occupancy), [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the structures the interval model abstracts), [Memory](../03_Memory/03_Memory.md) / [DDR_Controller](../03_Memory/04_DDR_Controller.md) & [Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md) (the queues M/M/1 abstracts; the schedulers that cut $C_v$), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the coherence traffic behind the USL $\beta$ term).
+- **Up the stack:** [Simulation_Methodology](01_Simulation_Methodology.md) (the fidelity ladder these models top, and the escalation rule), [Full_Chip_Modeling](../01_Modeling/02_Full_Chip_Modeling.md) (analytical leaf models composed into a chip).
 - **Sibling (this folder):** [gem5](02_gem5.md) — the executable form of the interval (O3), queueing (Ruby/memory), and roofline (DSE) models here; escalate to it per §7.
 
 ---

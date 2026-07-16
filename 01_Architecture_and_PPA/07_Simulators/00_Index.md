@@ -1,8 +1,8 @@
-# 06 · Simulators — Folder Index
+# 07 · Architecture › Simulators — Subfolder Index
 
 *How the tools that produce every non-silicon number in this notebook actually work — conceptually, then tool by tool.*
 
-This folder is the conceptual companion to the tool/fidelity ladder in [Full_Chip_Modeling](../02_Full_Chip_Modeling.md) and the analytical kernels in [Performance_Modeling_and_DSE](../01_Performance_Modeling_and_DSE.md). Those pages tell you *which tool* to use for a job; this folder tells you *how each tool models compute, memory, and time*, how a workload becomes a statistic, and where the error comes from.
+This folder is the conceptual companion to the tool/fidelity ladder in [Full_Chip_Modeling](../01_Modeling/02_Full_Chip_Modeling.md) and the analytical kernels in [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md). Those pages tell you *which tool* to use for a job; this folder tells you *how each tool models compute, memory, and time*, how a workload becomes a statistic, and where the error comes from.
 
 | # | Page | Coverage |
 |---|------|----------|
@@ -16,4 +16,4 @@ This folder is the conceptual companion to the tool/fidelity ladder in [Full_Chi
 
 ---
 
-⬅ prev [05 · Interconnect / NoC](../13_Network_on_Chip.md) · [Root Index](../../Index.md) · [Flow Overview](../../Chip_Design_Flow_Overview.md) · next ➡ [Simulation Methodology](01_Simulation_Methodology.md)
+⬅ [Architecture & PPA index](../00_Index.md) · [Root Index](../../Index.md) · [Flow Overview](../../Chip_Design_Flow_Overview.md) · next ➡ [Simulation Methodology](01_Simulation_Methodology.md)

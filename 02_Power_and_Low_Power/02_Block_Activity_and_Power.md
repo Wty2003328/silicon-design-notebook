@@ -1,7 +1,7 @@
 # Block Activity and Power — Estimating the One Term You Can't Read Off the Schematic
 
 > **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) §4 (the $\tfrac12 CV^2$ dissipated per transition, the three powers), [Power_Fundamentals](01_Power_Fundamentals.md) (the total-power equation and the system budget these estimates feed).
-> **Hands off to:** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics, IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (what to *do* about a high-activity net), [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md) (composing block power into a chip).
+> **Hands off to:** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics, IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (what to *do* about a high-activity net), [Full_Chip_Modeling](../01_Architecture_and_PPA/01_Modeling/02_Full_Chip_Modeling.md) (composing block power into a chip).
 
 ---
 
@@ -190,7 +190,7 @@ Everything else in the block is combinational logic and wires, whose power the e
 
 ## 7. The fidelity ladder: architectural → RTL → gate → SPICE
 
-Because activity gets more real and structure gets more detailed as a design firms up, power estimation is a ladder you descend over the project, trading runtime for fidelity — the same speed↔accuracy ladder as [performance modeling](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md#1-the-modeling-fidelity-ladder). Each rung needs both a *structural* model (what is instantiated) and an *activity* source (this whole page).
+Because activity gets more real and structure gets more detailed as a design firms up, power estimation is a ladder you descend over the project, trading runtime for fidelity — the same speed↔accuracy ladder as [performance modeling](../01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md#1-the-modeling-fidelity-ladder). Each rung needs both a *structural* model (what is instantiated) and an *activity* source (this whole page).
 
 | Level | Example | Accuracy | Speed | Activity source |
 |---|---|---|---|---|
@@ -205,7 +205,7 @@ Two things about this ladder carry the design decisions:
 
 **The calibration chain.** Each rung is anchored by the one below it. SPICE characterizes the `.lib` energy and leakage tables; those feed gate-level signoff; gate-level results calibrate the RTL-power models; RTL and silicon results calibrate the architectural coefficients. An un-calibrated McPAT run can be $2\times$ off — the same trap as an un-validated cycle-accurate performance model — because a bottom-up architectural model is a stack of assumptions with no measurement holding it down. The chain continues past tape-out: in silicon the same weighted-activity idea reappears as an on-die **power proxy** ($\hat P = w_0 + \sum_i w_i\,\text{event}_i$, weights fit to measured power), closing the loop by feeding real activity back to re-anchor the models — but that live estimation, and the closed-loop management it drives, belong to the reduction and signoff pages, not here.
 
-The mechanics of the activity files themselves — SAIF's backward/forward annotation, the toggle/time-at-1 fields, VCD/FSDB capture — are in [Power_Analysis_and_Signoff §2](05_Power_Analysis_and_Signoff.md). Composing these per-block estimates into a full chip, with the contention and DVFS-budget layers that make it more than a sum, is [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md).
+The mechanics of the activity files themselves — SAIF's backward/forward annotation, the toggle/time-at-1 fields, VCD/FSDB capture — are in [Power_Analysis_and_Signoff §2](05_Power_Analysis_and_Signoff.md). Composing these per-block estimates into a full chip, with the contention and DVFS-budget layers that make it more than a sum, is [Full_Chip_Modeling](../01_Architecture_and_PPA/01_Modeling/02_Full_Chip_Modeling.md).
 
 ---
 
@@ -233,8 +233,8 @@ The mechanics of the activity files themselves — SAIF's backward/forward annot
 ## 9. Cross-references
 
 - **Down the stack (the physics these estimates rest on):** [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $\tfrac12 CV^2$ dissipated per transition and the leakage that sets the static term), [Power_Fundamentals](01_Power_Fundamentals.md) (the switching-power derivation, hazard/glitch fundamentals §9, and the total-power equation this page supplies the $\alpha$ for).
-- **Up the stack (what consumes the estimate):** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics and the peak-activity vectors that drive dynamic IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (clock gating, operand isolation, and path balancing — what you *do* about the high-$\alpha$ nets and glitches this page finds), [Full_Chip_Modeling](../01_Architecture_and_PPA/02_Full_Chip_Modeling.md) (composes per-block $\alpha C V^2 f$ into a chip with contention and DVFS layers).
-- **Adjacent:** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) (the same fidelity ladder, and the event counts / utilization an architectural power model turns into $\alpha$).
+- **Up the stack (what consumes the estimate):** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics and the peak-activity vectors that drive dynamic IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (clock gating, operand isolation, and path balancing — what you *do* about the high-$\alpha$ nets and glitches this page finds), [Full_Chip_Modeling](../01_Architecture_and_PPA/01_Modeling/02_Full_Chip_Modeling.md) (composes per-block $\alpha C V^2 f$ into a chip with contention and DVFS layers).
+- **Adjacent:** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md) (the same fidelity ladder, and the event counts / utilization an architectural power model turns into $\alpha$).
 
 ---
 

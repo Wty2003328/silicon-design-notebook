@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `01_Architectu
 
 ## ACE and CHI -- AMBA Coherence Extensions Beyond AXI
 
-*From [ACE_and_CHI.md](../01_Architecture_and_PPA/12_ACE_and_CHI.md)*
+*From [ACE_and_CHI.md](../01_Architecture_and_PPA/04_Interconnect/02_ACE_and_CHI.md)*
 
 ### Problem 1: ACE Transaction Sequence
 
@@ -205,7 +205,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ## AMBA Bus Protocols: APB, AHB, and AXI -- The Complete Interview Bible
 
-*From [AHB_AXI_APB.md](../01_Architecture_and_PPA/11_AHB_AXI_APB.md)*
+*From [AHB_AXI_APB.md](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md)*
 
 ### Q1: What are the main differences between APB, AHB, and AXI?
 
@@ -291,7 +291,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ## Branch Prediction -- Deep Dive for CPU Designers
 
-*From [Branch_Prediction_Deep_Dive.md](../01_Architecture_and_PPA/06_Branch_Prediction_Deep_Dive.md)*
+*From [Branch_Prediction_Deep_Dive.md](../01_Architecture_and_PPA/02_CPU/04_Branch_Prediction_Deep_Dive.md)*
 
 ### Problem 1: gshare Index Computation and Prediction
 
@@ -619,7 +619,7 @@ history window.
 
 ## CPU Architecture -- The Complete Interview Bible
 
-*From [CPU_Architecture.md](../01_Architecture_and_PPA/03_CPU_Architecture.md)*
+*From [CPU_Architecture.md](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md)*
 
 ### Q1: Describe the 5 pipeline stages in detail. What happens at each stage?
 
@@ -705,7 +705,7 @@ history window.
 
 ## Cache Microarchitecture — Controller Design and Performance
 
-*From [Cache_Microarchitecture.md](../01_Architecture_and_PPA/07_Cache_Microarchitecture.md)*
+*From [Cache_Microarchitecture.md](../01_Architecture_and_PPA/03_Memory/01_Cache_Microarchitecture.md)*
 
 ### Problem 1: Design a 4-Way 32 KB L1 D-Cache
 
@@ -910,7 +910,7 @@ limited by memory bandwidth.
 
 ## DDR Memory Controller -- From Protocol to Scheduler
 
-*From [DDR_Controller.md](../01_Architecture_and_PPA/10_DDR_Controller.md)*
+*From [DDR_Controller.md](../01_Architecture_and_PPA/03_Memory/04_DDR_Controller.md)*
 
 ### Problem 1: Peak and Effective Bandwidth
 
@@ -1127,7 +1127,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Memory Architecture and Design — Senior Engineer Level
 
-*From [Memory.md](../01_Architecture_and_PPA/09_Memory.md)*
+*From [Memory.md](../01_Architecture_and_PPA/03_Memory/03_Memory.md)*
 
 ### Q1: Derive the read stability condition for a 6T SRAM cell.
 
@@ -1193,7 +1193,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Network-on-Chip (NoC) — Topology, Routing, Flow Control, Router Microarchitecture
 
-*From [Network_on_Chip.md](../01_Architecture_and_PPA/13_Network_on_Chip.md)*
+*From [Network_on_Chip.md](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md)*
 
 - **"Why a NoC over a bus/crossbar?"** → bandwidth scales with bisection not constant; $O(N^2)$ crossbar area/wire-delay avoided; links are short repeatable wires that close timing; modularity (tile + DFT (design for test) + CDC per hop).
 - **"Wormhole vs cut-through?"** → buffer flits not packets (area), but blocked packets span routers → HoL (head-of-line) blocking & deadlock pressure; VCs (virtual channels) mitigate.
@@ -1205,7 +1205,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## TLB and Virtual Memory -- Hardware Microarchitecture
 
-*From [TLB_and_Virtual_Memory.md](../01_Architecture_and_PPA/08_TLB_and_Virtual_Memory.md)*
+*From [TLB_and_Virtual_Memory.md](../01_Architecture_and_PPA/03_Memory/02_TLB_and_Virtual_Memory.md)*
 
 ### Problem 1: Design a 64-Entry 4-Way DTLB for RV64 Sv39
 
@@ -1518,7 +1518,7 @@ significantly -- and why superpages are critical for data-intensive workloads.
 
 ## Xiangshan (香山) — Open-Source RISC-V OoO Processor Case Study
 
-*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/14_Xiangshan_CPU_Design.md)*
+*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/02_CPU/05_Xiangshan_CPU_Design.md)*
 
 ### Problem 1: Pipeline Mispredict Recovery Path
 

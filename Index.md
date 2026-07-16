@@ -29,24 +29,27 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 ---
 
 ## [01 · Architecture and PPA](01_Architecture_and_PPA/00_Index.md)
-*Explore the microarchitecture; model performance; budget power and area — before RTL.*
+*Explore the microarchitecture; model performance; budget power and area — before RTL. Organized as **chip types** (CPU/GPU/NPU) + **shared parts** (Modeling/Memory/Interconnect/Simulators).*
 
-| Page | Coverage |
-|------|----------|
-| [01 · Performance Modeling & DSE](01_Architecture_and_PPA/01_Performance_Modeling_and_DSE.md) | modeling-fidelity ladder, CPI stack, gem5/SystemC-TLM, SimPoint, design-space exploration, PPA tradeoffs |
-| [02 · Full-Chip Modeling](01_Architecture_and_PPA/02_Full_Chip_Modeling.md) | full-chip hierarchical power+perf modeling: CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod, contention/overlap/DVFS/thermal coupling |
-| [03 · CPU Architecture](01_Architecture_and_PPA/03_CPU_Architecture.md) | 5-stage pipeline, hazards, forwarding network, Tomasulo, superscalar, MESI, SMT, µop fusion, Spectre/Meltdown |
-| [04 · RISC-V ISA](01_Architecture_and_PPA/04_RISC_V_ISA.md) | RV64GC, privilege modes, Sv39/48, Vector, Bitmanip, Hypervisor |
-| [05 · OoO Execution](01_Architecture_and_PPA/05_OoO_Execution.md) | rename/RAT, ROB, issue queue wakeup-select, LSQ, misprediction recovery, exception pipeline, execution units |
-| [06 · Branch Prediction Deep Dive](01_Architecture_and_PPA/06_Branch_Prediction_Deep_Dive.md) | BTB, gshare, TAGE-SC-L, perceptron, RAS, ITTAGE, fetch unit + FTQ |
-| [07 · Cache Microarchitecture](01_Architecture_and_PPA/07_Cache_Microarchitecture.md) | pipeline, MSHR, write policy, prefetch, replacement, coherence implementation |
-| [08 · TLB and Virtual Memory](01_Architecture_and_PPA/08_TLB_and_Virtual_Memory.md) | TLB format, page-table walker, VIPT, shootdown, superpages, 5-level |
-| [09 · Memory](01_Architecture_and_PPA/09_Memory.md) | the bit-storage trade surface: 6T/8T/10T SRAM (SNM vs area vs speed), DRAM 1T1C density-vs-refresh, memory compiler, multi-port/register-file port cost, ECC coding theory, CAM/TCAM, compute-in-memory |
-| [10 · DDR Controller](01_Architecture_and_PPA/10_DDR_Controller.md) | commands, timing, row-buffer, FR-FCFS, ECC, DDR5, LPDDR5X |
-| [11 · AHB / AXI / APB](01_Architecture_and_PPA/11_AHB_AXI_APB.md) | AMBA bus protocols, AXI4 spec, CDC bridges, ATOP |
-| [12 · ACE and CHI](01_Architecture_and_PPA/12_ACE_and_CHI.md) | cache-coherence protocols, snoop, CXL/PCIe |
-| [13 · Network-on-Chip](01_Architecture_and_PPA/13_Network_on_Chip.md) | topology/bisection math, wormhole/VC flow control, router datapath + allocators, deadlock theory, CHI-over-mesh |
-| [14 · Xiangshan CPU Design](01_Architecture_and_PPA/14_Xiangshan_CPU_Design.md) | open-source RISC-V OoO core case study (Nanhu/Kunminghu) |
+| Part | Page | Coverage |
+|------|------|----------|
+| Modeling | [Performance Modeling & DSE](01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md) | modeling-fidelity ladder, CPI stack, gem5/SystemC-TLM, SimPoint, design-space exploration, PPA tradeoffs |
+| Modeling | [Full-Chip Modeling](01_Architecture_and_PPA/01_Modeling/02_Full_Chip_Modeling.md) | hierarchical power+perf modeling: CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod, contention/overlap/DVFS/thermal |
+| CPU | [CPU Architecture](01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md) | 5-stage pipeline, hazards, forwarding network, Tomasulo, superscalar, MESI, SMT, µop fusion, Spectre/Meltdown |
+| CPU | [RISC-V ISA](01_Architecture_and_PPA/02_CPU/02_RISC_V_ISA.md) | RV64GC, privilege modes, Sv39/48, Vector, Bitmanip, Hypervisor |
+| CPU | [OoO Execution](01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) | rename/RAT, ROB, issue queue wakeup-select, LSQ, misprediction recovery, exception pipeline, execution units |
+| CPU | [Branch Prediction Deep Dive](01_Architecture_and_PPA/02_CPU/04_Branch_Prediction_Deep_Dive.md) | BTB, gshare, TAGE-SC-L, perceptron, RAS, ITTAGE, fetch unit + FTQ |
+| CPU | [Xiangshan CPU Design](01_Architecture_and_PPA/02_CPU/05_Xiangshan_CPU_Design.md) | open-source RISC-V OoO core case study (Nanhu/Kunminghu) |
+| Memory | [Cache Microarchitecture](01_Architecture_and_PPA/03_Memory/01_Cache_Microarchitecture.md) | pipeline, MSHR, write policy, prefetch, replacement, coherence implementation |
+| Memory | [TLB and Virtual Memory](01_Architecture_and_PPA/03_Memory/02_TLB_and_Virtual_Memory.md) | TLB format, page-table walker, VIPT, shootdown, superpages, 5-level |
+| Memory | [Memory](01_Architecture_and_PPA/03_Memory/03_Memory.md) | the bit-storage trade surface: 6T/8T/10T SRAM (SNM vs area vs speed), DRAM 1T1C density-vs-refresh, memory compiler, multi-port/register-file port cost, ECC coding theory, CAM/TCAM, compute-in-memory |
+| Memory | [DDR Controller](01_Architecture_and_PPA/03_Memory/04_DDR_Controller.md) | commands, timing, row-buffer, FR-FCFS, ECC, DDR5, LPDDR5X |
+| Interconnect | [AHB / AXI / APB](01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md) | AMBA bus protocols, AXI4 spec, CDC bridges, ATOP |
+| Interconnect | [ACE and CHI](01_Architecture_and_PPA/04_Interconnect/02_ACE_and_CHI.md) | cache-coherence protocols, snoop, CXL/PCIe |
+| Interconnect | [Network-on-Chip](01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md) | topology/bisection math, wormhole/VC flow control, router datapath + allocators, deadlock theory, CHI-over-mesh |
+| GPU | [GPU Architecture](01_Architecture_and_PPA/05_GPU/01_GPU_Architecture.md) | SIMT + massive multithreading, the SM as a hardware block, warp divergence, memory coalescing, occupancy, HBM hierarchy |
+| NPU | [NPU / Dataflow Accelerators](01_Architecture_and_PPA/06_NPU/01_NPU_Accelerators.md) | why spatial/dataflow beats von-Neumann for GEMM: systolic array, WS/OS/RS dataflow, scratchpad + mapping, roofline, scale-out |
+| Simulators | [Simulators folder →](01_Architecture_and_PPA/07_Simulators/00_Index.md) | methodology, gem5, DRAM (DRAMSim/Ramulator), GPU (GPGPU-Sim/Accel-Sim), accelerator/NPU (SCALE-Sim/Timeloop/NeuSim), other-architecture, analytical/roofline models |
 
 ---
 

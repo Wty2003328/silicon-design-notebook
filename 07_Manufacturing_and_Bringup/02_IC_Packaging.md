@@ -1,7 +1,7 @@
 # IC Packaging — The Four Jobs, and Why Advanced Packaging Became a Performance Lever
 
 > **Prerequisites:** [Fabrication_Process](01_Fabrication_Process.md) (the wafer this operates on, the reticle limit, and the Poisson yield law $Y=e^{-AD_0}$ this page turns into a packaging argument), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (RLC parasitics, IR/EM, the PnR-side power grid), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (target impedance and PDN pass/fail — this page owns the *package half* of that network).
-> **Hands off to:** [Tapeout_and_Post_Silicon_Bringup](03_Tapeout_and_Post_Silicon_Bringup.md) (the assembled part becomes a validated product), [Memory](../01_Architecture_and_PPA/09_Memory.md) (the HBM stacks this page places beside logic, and why bandwidth is the AI-infra wall), [Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md) (the on-chip fabric that UCIe extends across the package).
+> **Hands off to:** [Tapeout_and_Post_Silicon_Bringup](03_Tapeout_and_Post_Silicon_Bringup.md) (the assembled part becomes a validated product), [Memory](../01_Architecture_and_PPA/03_Memory/03_Memory.md) (the HBM stacks this page places beside logic, and why bandwidth is the AI-infra wall), [Network_on_Chip](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md) (the on-chip fabric that UCIe extends across the package).
 
 ---
 
@@ -208,7 +208,7 @@ flowchart TB
     SUB -->|"BGA balls"| PCB["PCB"]
 ```
 
-**Why HBM lives here.** High-bandwidth memory is the canonical customer. HBM presents a **1024-bit** interface per stack (HBM4: 2048-bit) — two orders of magnitude wider than DDR5's 64 bits — run at a *deliberately low* per-pin rate. Why wide-and-slow instead of narrow-and-fast? Energy. Bandwidth $= W\times f$, and interconnect energy scales with $f$ and with reach, so for a target bandwidth the *wide, slow, short* bus wins on pJ/bit — but only if you can physically route 1024+ signals into the memory, which needs interposer-class pitch. HBM-beside-logic-on-an-interposer is "wide, slow, short" made physical: NVIDIA's H100 places a GPU die and its HBM3 stacks on a $\sim\!2500\ \text{mm}^2$ CoWoS interposer for $\sim\!5\ \text{TB/s}$. The memory-side view — why *bandwidth*, not capacity, is the AI-infrastructure wall — is [Memory](../01_Architecture_and_PPA/09_Memory.md).
+**Why HBM lives here.** High-bandwidth memory is the canonical customer. HBM presents a **1024-bit** interface per stack (HBM4: 2048-bit) — two orders of magnitude wider than DDR5's 64 bits — run at a *deliberately low* per-pin rate. Why wide-and-slow instead of narrow-and-fast? Energy. Bandwidth $= W\times f$, and interconnect energy scales with $f$ and with reach, so for a target bandwidth the *wide, slow, short* bus wins on pJ/bit — but only if you can physically route 1024+ signals into the memory, which needs interposer-class pitch. HBM-beside-logic-on-an-interposer is "wide, slow, short" made physical: NVIDIA's H100 places a GPU die and its HBM3 stacks on a $\sim\!2500\ \text{mm}^2$ CoWoS interposer for $\sim\!5\ \text{TB/s}$. The memory-side view — why *bandwidth*, not capacity, is the AI-infrastructure wall — is [Memory](../01_Architecture_and_PPA/03_Memory/03_Memory.md).
 
 **The cost trade: don't buy silicon you don't need.** A full silicon interposer is expensive (adds ~100–500 USD/unit) and, being large, warps (§1.2). So the field offers a ladder of "fine pitch only where you need it":
 
@@ -262,7 +262,7 @@ Once chiplets exist, the die-to-die link is the new "pin," and it needs a standa
 - **UCIe** — the emerging standard (physical + link + protocol layers, tunnelling PCIe/CXL/AXI). Two flavours mirror §6's cost ladder: a **standard package** variant (organic, 100–130 µm pitch, $\sim\!250$–500 Gb/s per mm of edge) and an **advanced package** variant (silicon bridge/interposer, 25–55 µm pitch, $\sim\!2$–4 Tb/s per mm) at $\sim\!0.25$–0.5 pJ/bit — 10–20$\times$ more efficient than board-level PCIe/DDR ($\sim\!5$–8 pJ/bit) because the link is short and stays in-package.
 - **BoW** (raw parallel bus, lowest latency, memory-to-logic) and HBM's **JEDEC PHY** (the standardized memory interface) are the other two points on the same trade surface.
 
-The link layer (training, CRC/retry, credit-based flow control) rides on the same principles as any on-chip network — see [Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md), which owns the routing/flow-control view and treats UCIe as its package-scale extension.
+The link layer (training, CRC/retry, credit-based flow control) rides on the same principles as any on-chip network — see [Network_on_Chip](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md), which owns the routing/flow-control view and treats UCIe as its package-scale extension.
 
 ---
 
@@ -296,7 +296,7 @@ The link layer (training, CRC/retry, credit-based flow control) rides on the sam
 ## Cross-references
 
 - **Down the stack (what packaging is built on):** [Fabrication_Process](01_Fabrication_Process.md) (the wafer, the reticle limit, and the Poisson yield law $Y=e^{-AD_0}$ whose exponential tail §5 turns into the chiplet argument), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the RLC parasitics, EM, and PnR-side power grid the bump/TSV network extends), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (target impedance and PDN signoff — §3 is the package half of that network).
-- **Up the stack (what builds on it):** [Tapeout_and_Post_Silicon_Bringup](03_Tapeout_and_Post_Silicon_Bringup.md) (the assembled part enters lab bring-up), [Memory](../01_Architecture_and_PPA/09_Memory.md) (the HBM this page places on an interposer, and why bandwidth is the AI-infra wall), [Network_on_Chip](../01_Architecture_and_PPA/13_Network_on_Chip.md) (the fabric UCIe extends across the package, §9).
+- **Up the stack (what builds on it):** [Tapeout_and_Post_Silicon_Bringup](03_Tapeout_and_Post_Silicon_Bringup.md) (the assembled part enters lab bring-up), [Memory](../01_Architecture_and_PPA/03_Memory/03_Memory.md) (the HBM this page places on an interposer, and why bandwidth is the AI-infra wall), [Network_on_Chip](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md) (the fabric UCIe extends across the package, §9).
 
 ---
 

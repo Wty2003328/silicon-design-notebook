@@ -1,7 +1,7 @@
 # Logic building blocks — from Boolean function to timed silicon
 
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the transistor, inverter VTC and noise margins, RC delay and the FO4 unit, device-level logic families).
-> **Hands off to:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (carry/prefix trees built from these gates), [CPU_Architecture](../01_Architecture_and_PPA/03_CPU_Architecture.md) (pipelines of these registers), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (synchronizers, Gray FIFO pointers, MTBF budgeting), [STA](../06_Signoff/01_STA.md) (setup/hold signoff, time borrowing), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (glitch-free clock switching).
+> **Hands off to:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (carry/prefix trees built from these gates), [CPU_Architecture](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md) (pipelines of these registers), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (synchronizers, Gray FIFO pointers, MTBF budgeting), [STA](../06_Signoff/01_STA.md) (setup/hold signoff, time borrowing), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (glitch-free clock switching).
 
 ---
 
@@ -68,7 +68,7 @@ $$
 \rho \approx e \approx 2.7\ (p_{inv}{=}0),\qquad \rho\approx 3.6\text{–}4\ (p_{inv}{\approx}1),\qquad \hat N \approx \log_\rho F \approx \log_4 F
 $$
 
-The delay curve is so flat that any stage effort from ~2.4 to ~6 is within a few percent of optimum, so the whole industry standardizes on **stage effort 4** — the **fan-out-of-4 (FO4)**. An inverter at $h{=}4$ has delay $1\cdot4+1=5\tau$, and because that number is nearly process-independent, FO4 is *the* portable delay unit (the OoO scheduler's cycle budget is quoted in FO4 for exactly this reason — [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) §4.3).
+The delay curve is so flat that any stage effort from ~2.4 to ~6 is within a few percent of optimum, so the whole industry standardizes on **stage effort 4** — the **fan-out-of-4 (FO4)**. An inverter at $h{=}4$ has delay $1\cdot4+1=5\tau$, and because that number is nearly process-independent, FO4 is *the* portable delay unit (the OoO scheduler's cycle budget is quoted in FO4 for exactly this reason — [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) §4.3).
 
 Consequences you will reuse: driving a large load (a wide bus, a clock net, a decoder wordline) makes $H$ large, so you need $\hat N\approx\log_4 H$ buffer stages — the reason repeater/buffer trees exist. Both one huge gate (too few stages) and an over-buffered chain (too many) are slower than the $\log_4 F$ sweet spot.
 
@@ -234,7 +234,7 @@ where $t_r$ = time allowed to resolve, $T_0$ = width of the aperture around the 
 
 ## 5. Registers and register files: composing the primitives
 
-Group the flip-flop and it becomes the workhorse sequential block. A **register** is $N$ flip-flops on one clock (optionally with an enable driven by a clock-gate, §2.3). A **shift register** wires each $Q$ to the next $D$ — serial↔parallel conversion and delay lines. A **register file** is where §2–§4 compose into one structure: an array of registers, a **decoder** (§3.1) per port turning an address into a wordline, and a read **mux/bitline** (§2) per port selecting the addressed row. Its cost is dominated by **ports**, not depth: each added read/write port threads another word- and bit-line through *every* cell, so cell area grows as $\sim P^2$ and access time with it — the identical quadratic-port wall that caps issue width in an OoO core ([OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) §2.3). This is why register files bank and cluster rather than pile on ports, and why "just add a port" is never cheap.
+Group the flip-flop and it becomes the workhorse sequential block. A **register** is $N$ flip-flops on one clock (optionally with an enable driven by a clock-gate, §2.3). A **shift register** wires each $Q$ to the next $D$ — serial↔parallel conversion and delay lines. A **register file** is where §2–§4 compose into one structure: an array of registers, a **decoder** (§3.1) per port turning an address into a wordline, and a read **mux/bitline** (§2) per port selecting the addressed row. Its cost is dominated by **ports**, not depth: each added read/write port threads another word- and bit-line through *every* cell, so cell area grows as $\sim P^2$ and access time with it — the identical quadratic-port wall that caps issue width in an OoO core ([OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) §2.3). This is why register files bank and cluster rather than pile on ports, and why "just add a port" is never cheap.
 
 ---
 
@@ -333,7 +333,7 @@ where $B$ = burst length and $r_{wr},r_{rd}$ = effective write/read rates (throu
 
 - **Down the stack (what these blocks are built from):** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) — the transistor, inverter VTC, noise margins, RC delay and FO4, and the device-level static/pass/TG/dynamic families behind §1.4.
 - **Same layer (blocks composed into datapaths):** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (carry/prefix trees — the §1.3 tree argument and the §3.3 comparator in full), [Floating_Point](04_Floating_Point.md) (the LZA/LZC normalization of §3.2).
-- **Up the stack (what builds on these blocks):** [CPU_Architecture](../01_Architecture_and_PPA/03_CPU_Architecture.md) (pipelines of these registers and the setup/hold budget of §4.2), [OoO_Execution](../01_Architecture_and_PPA/05_OoO_Execution.md) (register files and the $P^2$ port wall of §5, the FO4 cycle budget of §1.2), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (metastability budgeting, Gray pointers, async FIFO of §4.4/§7/§9), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (the glitch-free clock mux of §2.3), [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (ICG / clock gating), [STA](../06_Signoff/01_STA.md) (setup/hold and time-borrowing signoff of §4.2–4.3).
+- **Up the stack (what builds on these blocks):** [CPU_Architecture](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md) (pipelines of these registers and the setup/hold budget of §4.2), [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) (register files and the $P^2$ port wall of §5, the FO4 cycle budget of §1.2), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (metastability budgeting, Gray pointers, async FIFO of §4.4/§7/§9), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (the glitch-free clock mux of §2.3), [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (ICG / clock gating), [STA](../06_Signoff/01_STA.md) (setup/hold and time-borrowing signoff of §4.2–4.3).
 
 ---
 

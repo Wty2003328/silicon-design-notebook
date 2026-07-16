@@ -1,7 +1,7 @@
 # DRAM Simulators — Ramulator, DRAMSim3, DRAMPower, USIMM
 
-> **Prerequisites:** [Simulation_Methodology](01_Simulation_Methodology.md) (the event engine, trace- vs execution-driven, the queueing backbone in §7), [Memory](../09_Memory.md) (the 1T1C cell, sense amp, and refresh *physics* these tools abstract), [DDR_Controller](../10_DDR_Controller.md) (the JEDEC timing, row-buffer policies, FR-FCFS, and bandwidth math these tools *encode*).
-> **Hands off to:** [Full_Chip_Modeling](../02_Full_Chip_Modeling.md) (how a DRAM model plugs into a perf→power→thermal chip flow), and the gem5 / GPU / accelerator pages that consume a DRAM model as their memory backend.
+> **Prerequisites:** [Simulation_Methodology](01_Simulation_Methodology.md) (the event engine, trace- vs execution-driven, the queueing backbone in §7), [Memory](../03_Memory/03_Memory.md) (the 1T1C cell, sense amp, and refresh *physics* these tools abstract), [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the JEDEC timing, row-buffer policies, FR-FCFS, and bandwidth math these tools *encode*).
+> **Hands off to:** [Full_Chip_Modeling](../01_Modeling/02_Full_Chip_Modeling.md) (how a DRAM model plugs into a perf→power→thermal chip flow), and the gem5 / GPU / accelerator pages that consume a DRAM model as their memory backend.
 
 ---
 
@@ -9,13 +9,13 @@
 
 For most modern workloads the memory system, not the core, sets performance — so the credibility of a whole study often rests on one component: the DRAM model. A fixed-latency memory ("every access costs 100 ns") has *no queue*, so it cannot show bandwidth saturation and is optimistic by construction ([Simulation_Methodology §7](01_Simulation_Methodology.md)). A cycle-level DRAM simulator exists to compute the one thing that model cannot: **achieved bandwidth and access latency as *outputs* of contention** for banks, buses, and the row buffer, under real JEDEC timing and a real scheduler.
 
-This page is not a second copy of the [DDR_Controller](../10_DDR_Controller.md) page. That page derives the timing parameters and explains the *hardware* controller; this page explains how four simulators — **Ramulator (1.0/2.0), DRAMSim3, DRAMPower, and USIMM** — turn those same constraints into an *executable state machine* whose statistics you can trust to a known error bar. The division of labor: [Memory](../09_Memory.md) = device physics, [DDR_Controller](../10_DDR_Controller.md) = the real controller, *this page* = the model of both.
+This page is not a second copy of the [DDR_Controller](../03_Memory/04_DDR_Controller.md) page. That page derives the timing parameters and explains the *hardware* controller; this page explains how four simulators — **Ramulator (1.0/2.0), DRAMSim3, DRAMPower, and USIMM** — turn those same constraints into an *executable state machine* whose statistics you can trust to a known error bar. The division of labor: [Memory](../03_Memory/03_Memory.md) = device physics, [DDR_Controller](../03_Memory/04_DDR_Controller.md) = the real controller, *this page* = the model of both.
 
 ---
 
 ## 1. What a DRAM simulator models — and what it deliberately doesn't
 
-A cycle-level DRAM simulator is a **discrete-event, cycle-approximate** timing model ([Simulation_Methodology §2–3](01_Simulation_Methodology.md)). It does **not** simulate charge sharing, sense-amp settling, or bit-line voltages ([Memory §DRAM](../09_Memory.md)) — those are collapsed into *timing constants* (a `tRCD` of 14 ns already contains all the analog physics). What it *does* model, cycle by cycle, is:
+A cycle-level DRAM simulator is a **discrete-event, cycle-approximate** timing model ([Simulation_Methodology §2–3](01_Simulation_Methodology.md)). It does **not** simulate charge sharing, sense-amp settling, or bit-line voltages ([Memory §DRAM](../03_Memory/03_Memory.md)) — those are collapsed into *timing constants* (a `tRCD` of 14 ns already contains all the analog physics). What it *does* model, cycle by cycle, is:
 
 1. the **hierarchy** channel → rank → bank-group → bank → row → column, each level a small finite-state machine;
 2. the **JEDEC timing constraints** as guards that decide when the next command on each FSM is legal;
@@ -46,7 +46,7 @@ When a command *is* issued, the FSM (a) transitions state and (b) **pushes forwa
 
 ## 3. JEDEC timing constraints as the transition guards
 
-The timing parameters are the guards in §2. The [DDR_Controller §3](../10_DDR_Controller.md) page *derives* them from the device; here they are simply the numbers the FSM enforces. The load-bearing set (define at first use):
+The timing parameters are the guards in §2. The [DDR_Controller §3](../03_Memory/04_DDR_Controller.md) page *derives* them from the device; here they are simply the numbers the FSM enforces. The load-bearing set (define at first use):
 
 $$t_{RC} = t_{RAS} + t_{RP}$$
 
@@ -63,7 +63,7 @@ The simulator enforces each as `next_allowed[node][following] = t_issue + t_para
 
 ## 4. Row-buffer management — open vs closed page
 
-A DRAM read is *destructive*: `ACT` copies a whole row (typically 1–2 KB) into the bank's sense-amp latches — the **row buffer** — and every `RD`/`WR` then hits that buffer. The simulator tracks one open-row register per bank and classifies each incoming request ([DDR_Controller §4](../10_DDR_Controller.md) derives the hit-rate math; don't re-derive it):
+A DRAM read is *destructive*: `ACT` copies a whole row (typically 1–2 KB) into the bank's sense-amp latches — the **row buffer** — and every `RD`/`WR` then hits that buffer. The simulator tracks one open-row register per bank and classifies each incoming request ([DDR_Controller §4](../03_Memory/04_DDR_Controller.md) derives the hit-rate math; don't re-derive it):
 
 | Case | Condition | Commands needed | Latency (read) |
 |---|---|---|---|
@@ -91,13 +91,13 @@ Both simulators make the mapping fully programmable. DRAMSim3 exposes "a locatio
 [ column | channel | bank | bank_group | rank | row ]
 ```
 
-Real controllers and these models also **XOR-hash** bank bits with row bits (`bank ^= row_bits`) to break pathological strides that would otherwise hammer one bank — the same permutation-diffusion trick GPUs use on L2 slices and NoCs use on home nodes ([Network_on_Chip](../13_Network_on_Chip.md)). Because the mapping is swappable, the simulator is the tool you use to *choose* it for a workload — a canonical DRAM-simulator study.
+Real controllers and these models also **XOR-hash** bank bits with row bits (`bank ^= row_bits`) to break pathological strides that would otherwise hammer one bank — the same permutation-diffusion trick GPUs use on L2 slices and NoCs use on home nodes ([Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md)). Because the mapping is swappable, the simulator is the tool you use to *choose* it for a workload — a canonical DRAM-simulator study.
 
 ---
 
 ## 6. The request scheduler — FR-FCFS and its variants
 
-Each cycle the controller model holds a queue of pending requests and must pick one *ready* command to issue. The default across essentially every DRAM simulator is **FR-FCFS — First-Ready, First-Come-First-Served** ([DDR_Controller §7.1](../10_DDR_Controller.md)):
+Each cycle the controller model holds a queue of pending requests and must pick one *ready* command to issue. The default across essentially every DRAM simulator is **FR-FCFS — First-Ready, First-Come-First-Served** ([DDR_Controller §7.1](../03_Memory/04_DDR_Controller.md)):
 
 1. **First-Ready**: among commands whose timing guards (§3) are satisfied *and* whose row is already open (a row hit), pick one — i.e. **prefer row hits**.
 2. **FCFS** breaks ties by age (oldest request first).
@@ -105,7 +105,7 @@ Each cycle the controller model holds a queue of pending requests and must pick 
 FR-FCFS is a *reordering* scheduler: it will service a younger row-hit ahead of an older row-conflict because the hit is cheaper, which **raises the row-buffer hit rate and thus the effective bandwidth** (§8). That reordering is the entire reason a scheduler exists, and simulating it is the only way to know the payoff for a given stream. Layered on top, the models also handle:
 
 - **Read/write batching** — writes are drained in bursts because each read↔write turnaround costs bus idle ($t_{WTR}$, $t_{RTW}$); the model batches to amortize it, at the cost of latency for reads stuck behind a write drain.
-- **Refresh interleave** — postpone/pull-in `REF` within the JEDEC slack window ([DDR_Controller §6](../10_DDR_Controller.md)) to avoid blocking a hot burst.
+- **Refresh interleave** — postpone/pull-in `REF` within the JEDEC slack window ([DDR_Controller §6](../03_Memory/04_DDR_Controller.md)) to avoid blocking a hot burst.
 
 Ramulator 2.0 makes the scheduler (and refresh manager, and RowHammer mitigations) a **plugin** on a fixed controller: each plugin gets an `update(cmd, addr)` callback per issued command, so PARA, Graphene, Hydra, TWiCe, and friends "plug into the same baseline controller without changing its code." This is why Ramulator is the vehicle of choice for *new-mechanism* research. USIMM (§10) took the extreme version: contestants wrote **only** a `schedule()` function and the framework guaranteed timing correctness — the cleanest possible statement of "the scheduler is a policy over a fixed timing model."
 
@@ -116,7 +116,7 @@ Ramulator 2.0 makes the scheduler (and refresh manager, and RowHammer mitigation
 A timing model needs a request stream. There are two ways to feed a DRAM simulator, and for DRAM the *addresses and their arrival times* are the faithful stimulus, so trace-driven is sound here in a way it is **not** for a core ([Simulation_Methodology §4](01_Simulation_Methodology.md)):
 
 - **Trace-driven (standalone).** A trace of `(cycle, R/W, physical address)` — usually already filtered through the last-level cache — is replayed into the controller. Fast, repeatable, and correct for memory-system studies because the DRAM does not feed back into which addresses exist. This is USIMM's only mode and every tool's default.
-- **CPU-coupled (execution-driven).** The DRAM model is a *backend* to a core simulator, and the loop closes: a load's latency stalls the core, which changes *when* the next request arrives, which changes contention. **This feedback is why memory latency and core IPC cannot be studied independently under load.** Ramulator plugs into gem5 and ships a simple built-in out-of-order core (a small [ROB](../05_OoO_Execution.md) model) to generate realistic timing without a full CPU sim; DRAMSim3 integrates as the memory backend for **gem5, SST, and zSim**; both are the DRAM tier behind the [gem5](02_gem5.md) memory system.
+- **CPU-coupled (execution-driven).** The DRAM model is a *backend* to a core simulator, and the loop closes: a load's latency stalls the core, which changes *when* the next request arrives, which changes contention. **This feedback is why memory latency and core IPC cannot be studied independently under load.** Ramulator plugs into gem5 and ships a simple built-in out-of-order core (a small [ROB](../02_CPU/03_OoO_Execution.md) model) to generate realistic timing without a full CPU sim; DRAMSim3 integrates as the memory backend for **gem5, SST, and zSim**; both are the DRAM tier behind the [gem5](02_gem5.md) memory system.
 
 The rule from the methodology page holds exactly: trace-driven is sound *because* the DRAM channel does not feed back into the instruction path — only into *timing*, which a trace with timestamps already carries.
 
@@ -171,7 +171,7 @@ E_{\text{bg}} &= V_{DD}\!\!\sum_{s\in\{2N,2P,3N,3P\}}\!\! I_{DD_s}\cdot t_s
 \end{aligned}
 $$
 
-where $t_{\text{burst}}$ = data-burst duration and $t_s$ = cycles spent in background state $s$ (all four counted from the command trace). Total device energy is the sum over all commands plus background plus I/O and termination power (the last taken from Micron's calculator). **The whole scheme is "count exactly how long the trace kept each bank in each state, and how many of each command it issued, then multiply by the datasheet current" — activity × per-event energy, the same principle as McPAT for logic** ([Full_Chip_Modeling §1.7](../02_Full_Chip_Modeling.md)). Its accuracy is therefore bounded by two things: the datasheet IDD values (vendor-to-vendor spread) and the fidelity of the command trace — which is why coupling DRAMPower to a *good* timing model matters.
+where $t_{\text{burst}}$ = data-burst duration and $t_s$ = cycles spent in background state $s$ (all four counted from the command trace). Total device energy is the sum over all commands plus background plus I/O and termination power (the last taken from Micron's calculator). **The whole scheme is "count exactly how long the trace kept each bank in each state, and how many of each command it issued, then multiply by the datasheet current" — activity × per-event energy, the same principle as McPAT for logic** ([Full_Chip_Modeling §1.7](../01_Modeling/02_Full_Chip_Modeling.md)). Its accuracy is therefore bounded by two things: the datasheet IDD values (vendor-to-vendor spread) and the fidelity of the command trace — which is why coupling DRAMPower to a *good* timing model matters.
 
 ---
 
@@ -185,11 +185,11 @@ where $t_{\text{burst}}$ = data-burst duration and $t_s$ = cycles spent in backg
 | **DRAMPower** (tukl-msd) | trace-driven **energy** model | DDR2/3/4, LPDDR, WIDE-IO | n/a (post-processes traces) | standard IDD energy engine; embedded in gem5 & DRAMSim3 |
 | **USIMM** (MSC'12) | trace-driven, DDR3, ROB core | DDR3 | teaching/competition scale | Memory Scheduling Championship reference |
 
-**DRAMSim3's thermal path** is its distinctive feature: it distributes each command's energy (§9) to physical die locations via an address→location map and solves the transient heat equation $G\mathbf{T} + P = C\,\tfrac{d\mathbf{T}}{dt}$ per epoch — closing a performance→power→temperature loop *inside* the DRAM model, the memory-side analogue of the chip-level loop in [Full_Chip_Modeling](../02_Full_Chip_Modeling.md). This matters because $t_{REFI}$ *halves* above 85 °C, so temperature feeds back into refresh overhead and thus $\mu_{\text{eff}}$ (§8).
+**DRAMSim3's thermal path** is its distinctive feature: it distributes each command's energy (§9) to physical die locations via an address→location map and solves the transient heat equation $G\mathbf{T} + P = C\,\tfrac{d\mathbf{T}}{dt}$ per epoch — closing a performance→power→temperature loop *inside* the DRAM model, the memory-side analogue of the chip-level loop in [Full_Chip_Modeling](../01_Modeling/02_Full_Chip_Modeling.md). This matters because $t_{REFI}$ *halves* above 85 °C, so temperature feeds back into refresh overhead and thus $\mu_{\text{eff}}$ (§8).
 
 ## 10a. USIMM in one paragraph
 
-**USIMM (Utah SImulated Memory Module)** was released for the **Memory Scheduling Championship at ISCA-2012**. It is trace-driven, models DDR3 channels/ranks/banks with real JEDEC timing ($t_{RCD}, t_{RP}, t_{CAS}, t_{WTR}$, refresh), and — its teaching move — puts a **simple out-of-order core with a 128–160-entry [ROB](../05_OoO_Execution.md) per core** in front of the memory, so a scheduler's effect on *memory stalls* turns into a *system* metric (execution time), not just an average latency. The framework owns all correctness (DRAM state, timing, the Micron power model); competitors wrote only `schedule()`, choosing from the ready commands USIMM presents each cycle, under a 68 KB storage budget. It reports execution time, Energy-Delay Product, and a Performance-Fairness product. It is small and slow (~12 K req/s) and no longer state-of-the-art, but it remains the cleanest pedagogical model of "a scheduler is a policy over a fixed timing machine," and it seeded much of the scheduling literature Ramulator now hosts as plugins.
+**USIMM (Utah SImulated Memory Module)** was released for the **Memory Scheduling Championship at ISCA-2012**. It is trace-driven, models DDR3 channels/ranks/banks with real JEDEC timing ($t_{RCD}, t_{RP}, t_{CAS}, t_{WTR}$, refresh), and — its teaching move — puts a **simple out-of-order core with a 128–160-entry [ROB](../02_CPU/03_OoO_Execution.md) per core** in front of the memory, so a scheduler's effect on *memory stalls* turns into a *system* metric (execution time), not just an average latency. The framework owns all correctness (DRAM state, timing, the Micron power model); competitors wrote only `schedule()`, choosing from the ready commands USIMM presents each cycle, under a 68 KB storage budget. It reports execution time, Energy-Delay Product, and a Performance-Fairness product. It is small and slow (~12 K req/s) and no longer state-of-the-art, but it remains the cleanest pedagogical model of "a scheduler is a policy over a fixed timing machine," and it seeded much of the scheduling literature Ramulator now hosts as plugins.
 
 ---
 
@@ -212,8 +212,8 @@ where $t_{\text{burst}}$ = data-burst duration and $t_s$ = cycles spent in backg
 
 ## Cross-references
 
-- **Down the stack:** [Memory](../09_Memory.md) (the 1T1C cell, sense amp, and refresh physics collapsed into these timing constants), [DDR_Controller](../10_DDR_Controller.md) (§3 timing derivations, §4 row-buffer policy math, §7 FR-FCFS, §8 bandwidth — this page *runs* what those sections *derive*), [OoO_Execution](../05_OoO_Execution.md) (the ROB whose stalls turn memory latency into system time).
-- **Up the stack:** [Simulation_Methodology](01_Simulation_Methodology.md) (the event engine §3, trace-vs-execution §4, and the queueing backbone §7 this page instantiates), [gem5](02_gem5.md) (which mounts Ramulator/DRAMSim3 as its memory backend), [Full_Chip_Modeling](../02_Full_Chip_Modeling.md) (composing the DRAM model into a perf→power→thermal chip flow), [Root Index](../../Index.md).
+- **Down the stack:** [Memory](../03_Memory/03_Memory.md) (the 1T1C cell, sense amp, and refresh physics collapsed into these timing constants), [DDR_Controller](../03_Memory/04_DDR_Controller.md) (§3 timing derivations, §4 row-buffer policy math, §7 FR-FCFS, §8 bandwidth — this page *runs* what those sections *derive*), [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the ROB whose stalls turn memory latency into system time).
+- **Up the stack:** [Simulation_Methodology](01_Simulation_Methodology.md) (the event engine §3, trace-vs-execution §4, and the queueing backbone §7 this page instantiates), [gem5](02_gem5.md) (which mounts Ramulator/DRAMSim3 as its memory backend), [Full_Chip_Modeling](../01_Modeling/02_Full_Chip_Modeling.md) (composing the DRAM model into a perf→power→thermal chip flow), [Root Index](../../Index.md).
 - **Sibling:** [GPU_Simulators](04_GPU_Simulators.md) (whose GDDR/HBM tier is the same kind of model, wider and hotter).
 
 ---
