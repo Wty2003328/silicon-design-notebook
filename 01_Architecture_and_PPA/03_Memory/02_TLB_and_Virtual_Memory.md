@@ -141,6 +141,21 @@ When both TLB levels miss, a hardware **page-table walker** — an FSM in the MM
 
 Those two bands are just $t_{walk}=K\times t_{mem}$ read off at the two places a PTE can live, because **each of the $K$ dependent reads is itself a full memory access** that may hit the L2/L3 cache or miss to DRAM. Warm — all $K$ reads hitting L2/L3 at ~7–13 cyc — gives $K\times{\sim}10\approx20\text{–}40$ cyc; a cold walk pays a DRAM access (~100 cyc) for *each* level that misses the cache, so it ranges from ~100 cyc (only the leaf cold, the upper levels cached or served by the PWC of §5.2) up to ~300 cyc (several levels missing to DRAM) — which is the 100–300 band. And because the reads are strictly dependent, this latency is un-overlappable *within a single walk*: no memory-level parallelism helps, since read $i{+}1$'s address is not known until read $i$ returns. Every lever in §5.2–§5.5 therefore attacks the *length* of the chain, never its width.
 
+**Worked trace — one Sv39 walk, in hex.** The flowchart in [RISC_V_ISA §5.3](../02_CPU/02_RISC_V_ISA.md) *is* the algorithm; running it on real numbers makes the address arithmetic explicit. Translate `VA = 0x80A102A0` (a valid Sv39 virtual address — bit 38 is 0, so the required sign-extension of bits 63:39 is all-zero) with `satp.PPN = 0x01000`, i.e. the root table sits at physical `0x01000 × 0x1000 = 0x0100_0000`. Sv39 slices the 39-bit VA into three 9-bit VPN indices and a 12-bit offset:
+
+- `offset = VA[11:0] = 0x2A0`
+- `VPN[0] = VA[20:12] = 0x010` (16)
+- `VPN[1] = VA[29:21] = 0x005` (5)
+- `VPN[2] = VA[38:30] = 0x002` (2)
+
+The walker (PTE size = 8 B) then chases three dependent reads, each at `table_base + VPN[level] × 8`:
+
+1. **Level 2.** Read the PTE at `0x0100_0000 + 2×8 = 0x0100_0010`. Value `0x0048_0001` → low bits `V=1, R=W=X=0`, so it is **not a leaf** but a pointer; its PPN field (`0x0048_0001 >> 10 = 0x1200`) gives the next table base `0x1200 × 0x1000 = 0x0120_0000`.
+2. **Level 1.** Read the PTE at `0x0120_0000 + 5×8 = 0x0120_0028`. Value `0x0054_0001` → again `V=1, R/W/X=0`, a pointer; PPN `0x1500` → next base `0x0150_0000`.
+3. **Level 0.** Read the PTE at `0x0150_0000 + 16×8 = 0x0150_0080`. Value `0x02AF_34D7` → low byte `0xD7` decodes `V=1, R=1, W=1, X=0, U=1, A=1, D=1`; `R=1` marks a **leaf**, with PPN `0x02AF_34D7 >> 10 = 0xABCD`.
+
+The leaf ends the chase: **`PA = (leaf PPN : offset) = (0xABCD × 0x1000) | 0x2A0 = 0x0ABC_D2A0`.** Three dependent memory reads — at `0x0100_0010`, `0x0120_0028`, `0x0150_0080`, each of which may hit L2/L3 or miss to DRAM (the two bands above) — turned one virtual address into one physical address. Three checks along the way are the fault and fast-path conditions the same walker enforces: a PTE with `V=0` (or the reserved `R=0, W=1`) raises a **page fault**; a leaf found early at level 1 or 2 with non-zero low PPN bits is a **misaligned-superpage** fault; and if `A` is clear (or `D` is clear on a store) the walker must first set it with a write-back before the translation is usable. Swap the level-0 pointer for a leaf *at level 1* and the identical VA resolves in **two** reads to a 2 MB superpage — the early-termination win quantified in §7.
+
 ### 5.2 The page-walk cache — exploiting upper-level redundancy
 
 The walk's saving grace is that the top of the tree is enormously **redundant across misses**. The radix structure fans out so widely that one upper-level entry governs a vast region of virtual space: in Sv39 a single level-2 PTE covers 2 MB, a single level-1 PTE covers 1 GB. Every translation whose address falls in that region shares the *same* upper-level PTEs — so across many distinct TLB misses the walker re-reads the identical top-of-tree entries again and again, and only the leaf differs.
