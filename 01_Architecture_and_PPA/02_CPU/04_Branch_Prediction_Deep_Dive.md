@@ -195,6 +195,34 @@ A BTB says *where* a taken branch goes; it says nothing about *whether* a condit
 
 Most branches are heavily skewed: a loop back-edge is taken $N{-}1$ of $N$ times, an error check almost never fires. The minimum state that captures skew is a small saturating counter per branch. The classic **2-bit** counter (states strongly/weakly not-taken → weakly/strongly taken; predict taken when in the top half) is chosen not because 2 bits store more skew than 1, but for **hysteresis**: it takes *two* consecutive surprises to flip the prediction, so a loop that is taken 99 times then falls through once loses only *one* prediction at the exit instead of two (one at the exit, one on re-entry). One bit would double the error on every loop boundary. That is the entire reason 2-bit is the floor and 1-bit is not used.
 
+The state machine this names is small enough to draw in full — a taken outcome steps one notch toward **ST**, a not-taken one notch toward **SN**, and both ends saturate:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+stateDiagram-v2
+    direction LR
+    SN: SN 00 Strongly Not-Taken (predict NT)
+    WN: WN 01 Weakly Not-Taken (predict NT)
+    WT: WT 10 Weakly Taken (predict T)
+    ST: ST 11 Strongly Taken (predict T)
+    SN --> SN: Not-Taken (saturate)
+    SN --> WN: Taken
+    WN --> SN: Not-Taken
+    WN --> WT: Taken
+    WT --> WN: Not-Taken
+    WT --> ST: Taken
+    ST --> WT: Not-Taken
+    ST --> ST: Taken (saturate)
+    note right of ST
+      Hysteresis buffer = the two weak states (WN, WT).
+      From a saturated state one surprise only steps into
+      the buffer (still the same prediction); two in a row
+      are needed to flip, so a lone anomaly cannot punch through.
+    end note
+```
+
+The prediction is just the high bit — the right pair predicts taken, the left pair not-taken — and the middle pair **WN**/**WT** is the **hysteresis buffer**: a lone surprising outcome out of a saturated end (SN or ST) only lands *inside* that buffer and keeps the prediction, so flipping it takes *two* consecutive surprises — a single anomaly cannot punch through. The Markov chain below quantifies this exact walk.
+
 **The Markov-chain derivation.** Model the counter as a 4-state Markov chain over $\{{\tt SN}{=}0,{\tt WN}{=}1,{\tt WT}{=}2,{\tt ST}{=}3\}$: a taken outcome increments (saturating at 3), a not-taken decrements (saturating at 0), and the prediction is the top bit (states 2, 3 ⇒ predict taken). Drive it with a branch taken i.i.d. with probability $p$ (write $q=1-p$, and $r=p/q$ the *odds*). Each up-step carries a factor $p$ and each down-step a factor $q$, so adjacent stationary masses sit in ratio $r$ — the stationary distribution is a *truncated geometric in the odds*:
 
 $$
@@ -264,6 +292,47 @@ Keep **several** tables at **geometrically spaced** history lengths ($0, 4, 16, 
 - **A usefulness counter + an alternate.** A freshly allocated long-history entry is unproven. So TAGE keeps the second-longest match as an **alternate** and trusts the long **provider** only once a small per-entry usefulness counter shows it has earned it; on a mispredict it *allocates* a new entry in a longer, currently-missing table, so the next encounter has a more specific predictor available. The allocation/decay bookkeeping is all in service of one online question: *which history length should I believe for this branch, right now?* — i.e. discovering each branch's true correlation depth $h$ empirically.
 
 The essential per-entry state, derived from that job (not a bit-field dump): a **prediction counter** (3-bit saturating direction), a **partial tag** (8–10 bits, the "am I really the right entry" check), and a **usefulness counter** (2-bit, "have I earned trust over the alternate"). The base component is untagged (it always hits, as the fallback of last resort).
+
+Those obligations compose into one **provider-selection datapath**: every component is looked up in parallel from the PC and the folded global history, the *longest tag-matching trained entry* becomes the **provider**, its shorter runner-up (or the base) is held as the **alternate**, and the usefulness/allocation bookkeeping closes on resolve:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart TD
+    PC["Fetch PC"]
+    GHR["Global history\n(folded per table)"]
+    IDX["index = hash(PC, folded history)\ngeometrically longer L per table"]
+    PC --> IDX
+    GHR --> IDX
+    subgraph COMP["Predictor components — looked up in parallel"]
+        BASE["Base bimodal\nL=0, untagged\n(always hits)"]
+        T1["T1  L=4\ntag, 3b ctr, u"]
+        T2["T2  L=16\ntag, 3b ctr, u"]
+        T3["T3  L=64\ntag, 3b ctr, u"]
+        T4["T4  L=256\ntag, 3b ctr, u"]
+    end
+    IDX --> BASE
+    IDX --> T1
+    IDX --> T2
+    IDX --> T3
+    IDX --> T4
+    BASE --> SEL
+    T1 --> SEL
+    T2 --> SEL
+    T3 --> SEL
+    T4 --> SEL
+    SEL{"pick longest\ntag-matching entry"}
+    SEL -->|longest match = provider| PROV["Provider prediction\n(its 3b counter)"]
+    SEL -->|next match / base = alternate| ALT["Alternate prediction"]
+    PROV --> PICK{"provider trusted?\n(not newly allocated)"}
+    ALT --> PICK
+    PICK -->|yes| OUT["Predicted direction"]
+    PICK -->|weak / new: use alt| OUT
+    OUT --> RES["resolve in execute"]
+    RES --> UPD["update: bump provider counter; u++ if provider right and alt wrong;\non mispredict allocate an entry in a longer table (u=0)"]
+    UPD -.->|train / allocate / decay| COMP
+```
+
+The untagged base is the fallback of last resort; every tagged hit above it is a bid to override with a longer, more specific history, trusted over its alternate only once its usefulness counter shows that context has *earned* it — and a mispredict then allocates a fresh entry in a still-longer table, so the next encounter has a sharper predictor to try. (§4.2 justifies why those lengths grow *geometrically* rather than linearly.)
 
 ### 4.2 Why *geometric* spacing — reach that is exponential in table count
 

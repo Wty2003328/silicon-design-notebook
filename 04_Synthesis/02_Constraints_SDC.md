@@ -15,7 +15,7 @@ Because those tools have no other source of timing truth, they trust SDC **compl
 - **Under-constrain** (a missing clock, a missing I/O delay, a false path that isn't false) → a real path is never checked → the tools report *clean* and the chip fails in silicon.
 - **Over-constrain** (period too tight, pessimistic uncertainty, an async clock pair left un-grouped) → the tools burn area and power chasing margin that doesn't exist, or grind against a path that can never close.
 
-This page derives each SDC construct from the *intent it captures*, shows how every construct sets one term of the STA setup/hold inequality, and treats the trade-offs and the "constraints are unverified source code" problem as first-class. It is deliberately **not** a command reference: the exhaustive syntax and a complete worked SoC SDC live in [STA §10](../06_Signoff/01_STA.md). Here we care about *why each construct must exist, and how it goes wrong.*
+This page derives each SDC construct from the *intent it captures*, shows how every construct sets one term of the STA setup/hold inequality, and treats the trade-offs and the "constraints are unverified source code" problem as first-class. It is deliberately **not** a command reference: the exhaustive command syntax lives in vendor SDC references, while the setup/hold inequality each construct feeds is derived in [STA](../06_Signoff/01_STA.md). Here we care about *why each construct must exist, and how it goes wrong.*
 
 ---
 
@@ -260,7 +260,7 @@ Quantitative margins (7 nm-class, for the $t_{unc}$ term):
 ## Cross-references
 
 - **Down the stack (where the facts SDC encodes come from):** [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) (the PLL that makes the clock and the tree whose real latency replaces the §2.3 estimate), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (the dividers/gaters/muxes that become the generated clocks of §2.1), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (the async crossings that become the clock groups / `max_delay` of §2.2).
-- **Up the stack (the tools that consume this file):** [Synthesis_and_Optimization](01_Synthesis_and_Optimization.md) (optimizes to it first), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (builds the real clock tree that turns estimated latency/uncertainty into propagated values), [STA](../06_Signoff/01_STA.md) (owns the setup/hold inequality of §1.1 and §3, the multicycle proof of §4.2, and a full worked SoC SDC in its §10).
+- **Up the stack (the tools that consume this file):** [Synthesis_and_Optimization](01_Synthesis_and_Optimization.md) (optimizes to it first), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (builds the real clock tree that turns estimated latency/uncertainty into propagated values), [STA](../06_Signoff/01_STA.md) (owns the setup/hold inequality of §3 and the multicycle proof of §6.2).
 - **Adjacent / co-authored:** SDC is written alongside [Synthesis_and_Optimization](01_Synthesis_and_Optimization.md); its terms plug directly into the derivation in [STA §3](../06_Signoff/01_STA.md).
 
 ---

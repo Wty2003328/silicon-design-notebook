@@ -157,7 +157,7 @@ Two properties make glitches grow rather than average out:
 - **Vectored with timing** — gate-level simulation with SDF-back-annotated delays produces the real glitches, at real (slow) gate-sim speed. This is the only rung that sees them fully, which is why glitch power is fundamentally a *signoff* number.
 - **Vectorless with timing** — propagate arrival-time *windows* statistically through the timing graph and estimate expected spurious transitions per node, without vectors. Fast and approximate; the "glitch mode" in RTL/gate power tools. Signoff reports even split the result into *transparent* (full-swing) and *filtered* (partial-swing) glitches, since a partly-formed pulse still burns partial $CV^2$.
 
-The practical consequences flow to reduction, not estimation, and live in [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md): path balancing to equalize arrival times, operand isolation and don't-care gating to stop invalid data rippling through wide datapaths, and retiming to break deep combinational clouds. The device-level view of hazard switching is in [Power_Fundamentals §9](01_Power_Fundamentals.md).
+The practical consequences flow to reduction, not estimation, and live in [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md): path balancing to equalize arrival times, operand isolation and don't-care gating to stop invalid data rippling through wide datapaths, and retiming to break deep combinational clouds. The device-level view of switching (including the short-circuit/crowbar current during transitions) is in [Power_Fundamentals §2.1](01_Power_Fundamentals.md).
 
 ---
 
@@ -232,7 +232,7 @@ The mechanics of the activity files themselves — SAIF's backward/forward annot
 
 ## 9. Cross-references
 
-- **Down the stack (the physics these estimates rest on):** [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $\tfrac12 CV^2$ dissipated per transition and the leakage that sets the static term), [Power_Fundamentals](01_Power_Fundamentals.md) (the switching-power derivation, hazard/glitch fundamentals §9, and the total-power equation this page supplies the $\alpha$ for).
+- **Down the stack (the physics these estimates rest on):** [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $\tfrac12 CV^2$ dissipated per transition and the leakage that sets the static term), [Power_Fundamentals](01_Power_Fundamentals.md) (the switching-power derivation §2, the short-circuit-current taxonomy §2.1, and the total-power equation this page supplies the $\alpha$ for).
 - **Up the stack (what consumes the estimate):** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics and the peak-activity vectors that drive dynamic IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (clock gating, operand isolation, and path balancing — what you *do* about the high-$\alpha$ nets and glitches this page finds), [Full_Chip_Modeling](../01_Architecture_and_PPA/01_Modeling/02_Full_Chip_Modeling.md) (composes per-block $\alpha C V^2 f$ into a chip with contention and DVFS layers).
 - **Adjacent:** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md) (the same fidelity ladder, and the event counts / utilization an architectural power model turns into $\alpha$).
 

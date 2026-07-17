@@ -302,6 +302,8 @@ Private per-core caches create a correctness problem the single-core machine nev
 - **Single-Writer / Multiple-Reader (SWMR):** for any line, at any instant, either *one* cache may write it (and no other holds it) *or* any number may read it (and none writes). Writer and readers are mutually exclusive in time.
 - **Data-Value:** a read returns the value of the *last* write to that line in the coherence order — no copy lags behind a completed write.
 
+**Why private caches break both invariants without a protocol — a two-line trace.** Cores A and B each load line $x$ (value 42) into their private L1s; both now hold a valid copy. A executes `x = 99`, updating *only its own* cache. Nothing informs B, so B's next load returns the stale 42 — SWMR is technically intact (A could be the sole writer) but **data-value is violated**: B did not observe the last write. Alternatively let both write at once — A sets `x = 99`, B sets `x = 7` — each mutates its own copy and now **SWMR is violated**: two live writers, two divergent values, and no single coherence order $\prec_x$ into which they can be placed. A write-back cache makes it worse still, because *memory itself* is stale until the dirty owner evicts, so "just read memory" does not recover the truth. The fix is not to forbid private caches — they are the whole point of §6 — but to add hardware that **tracks who holds each line and forces every copy to agree on each write**. That bookkeeping is exactly what the four MESI states encode; the same staleness bug, drawn on the wire, opens [ACE_and_CHI §0](../04_Interconnect/02_ACE_and_CHI.md).
+
 Every state and transition in MESI is the *minimal bookkeeping* needed to enforce those two invariants, and reading the states as answers to two yes/no questions is more useful than memorizing a transition table:
 
 | State | "Am I the only cached copy?" | "Is memory stale (am I dirty)?" | What it buys |
@@ -311,7 +313,27 @@ Every state and transition in MESI is the *minimal bookkeeping* needed to enforc
 | **Shared** | no | no | read freely; must announce before writing |
 | **Invalid** | — | — | not present; must fetch |
 
+That two-bit intuition unfolds into the **full per-state contract** — the permissions and obligations a controller actually acts on. This is the state semantics in reference form:
+
+| State | Read? | Write? | Data valid? | May be dirty? | Others may hold? | On eviction |
+|---|---|---|---|---|---|---|
+| **M** odified | yes | **yes** | yes | **yes** (memory stale) | no (sole copy) | **write back** |
+| **E** xclusive | yes | yes\* | yes | no (clean) | no (sole copy) | silent (clean) |
+| **S** hared | yes | **no** | yes | no (clean) | yes (0+ others) | silent (clean) |
+| **I** nvalid | no | no | **no** | — | — | — |
+
+\*E grants write permission *architecturally*, but the first write is the silent E→M transition (§8.1) — the entire point of E is that this write needs **no bus transaction**. Only the two *exclusive* states (M, E) permit a write at all, and the sole difference between them is whether memory is already current (the "dirty?" bit); S is the only *sharable* state and the only present-state that forbids writing without first announcing on the bus; I is the absence of a copy. Read left to right, each row is one line of the SWMR + data-value contract: "Others may hold?" is the SWMR column (a writer must be alone), "May be dirty?" is the data-value column (a dirty copy owes memory a write-back).
+
 The four states are exactly the two bits those two questions need. **Why Exclusive exists** is the subtle part: without it, the extremely common read-then-modify pattern (load a line, then store to it) would need a bus invalidation on the store even when no other cache holds the line. E records "I am the only copy *and* clean," so the subsequent write upgrades E→M **silently** — a bus transaction saved on the most common private-data access pattern. That single optimization is why MESI is the baseline over the older MSI.
+
+**Proof that without E every read-then-write pays a bus transaction.** Put MSI (three states M, S, I — no Exclusive) head to head with MESI on the ubiquitous *read-then-write* idiom: a core loads a line no other cache holds, then stores to it (`x++`, acquiring an uncontended lock, initializing a freshly-allocated object). Trace both:
+
+- **MSI.** The load misses in I and issues BusRd; lacking an E state, the line can only enter **S**. The store then finds it in S, and $S\!\to\!M$ *must* issue a **BusUpgr** to invalidate other copies — even though there are none — because S carries no record of exclusivity, so the controller cannot *prove* the broadcast is skippable. Cost: **2 bus transactions** (BusRd + BusUpgr).
+- **MESI.** The load misses in I and issues BusRd; the snoop responses show no other holder (the *shared* line stays deasserted), so the cache installs the line in **E**. The store finds E and does $E\!\to\!M$ **silently**. Cost: **1 bus transaction** (BusRd only).
+
+So MESI saves *exactly one* bus transaction per read-then-write to unshared data — and in MSI that saved BusUpgr is **pure waste**, a broadcast invalidation that reaches no cache. The saving is large because the pattern is not rare: essentially every store to a stack local, a private heap object, or an uncontended lock is a read-then-write to a line the writing core alone holds.
+
+*Worked number.* Take a workload where stores are 30% of dynamic instructions and 60% of those hit a line the core just loaded and no other cache holds ($0.30\times0.60 = 0.18$ of all instructions). Per 1000 instructions, MSI issues **180 BusUpgr** invalidations that reach nobody; MESI issues **0**. If each broadcast invalidate occupies the shared snoop path for $\sim\!10$ cycles of tag-lookup bandwidth across the other caches, MSI burns $180\times10 = 1800$ bus-cycles per 1000 instructions invalidating *private* data — on the very shared medium whose bandwidth is the $O(N^2)$ wall of [ACE_and_CHI §3](../04_Interconnect/02_ACE_and_CHI.md). E does not merely shave latency off one store; it lowers the coherence-transaction rate $r$ that the snoop wall multiplies, so its value *grows with core count*. That is why MESI, not MSI, is the floor of every modern protocol.
 
 **Why four is the minimum — a counting argument.** To act on a line *without* consulting the bus, a cache must answer exactly the questions the two invariants pose. SWMR forces it to know *may I write?*, which requires *am I the sole copy?* (a writer must be alone); the data-value invariant forces it to know *must I write memory back on eviction/downgrade?*, i.e. *am I dirty?* Two independent yes/no facts give $2\times2=4$ combinations, plus the degenerate *not present*:
 
@@ -325,37 +347,116 @@ The four states are exactly the two bits those two questions need. **Why Exclusi
 
 MESI *chooses* to forbid the (shared, dirty) cell — a dirty line must first become sole (M) or be cleaned to memory before it may be shared (S), which is exactly why the M→S transition carries a writeback (§8.1). Admitting that fifth legal state is precisely MOESI's **Owned**. So the count is not arbitrary: **three present-states (M, E, S) plus Invalid is the minimum a clean-on-share protocol needs to answer both invariants locally.** Drop Exclusive and you get correctness-minimal MSI (3 states) at the price of a bus transaction on every read-then-write; add Owned and you get traffic-optimal MOESI (5 states) at the price of one more encoded bit. MESI is the knee between them.
 
-**Each transition is forced by an invariant, not chosen.** Read the arrows below as consequences of the two rules. To write a Shared or Invalid line, SWMR demands every other copy vanish first, so S→M and I→M must issue an invalidate / read-for-ownership; to write an Exclusive line no other copy exists, so E→M is **silent**; when another core reads a Modified line, the data-value invariant demands it observe the latest write, so M→S (or M→I on the other core's write) must supply the dirty data and refresh memory; a Shared or Exclusive line hit by another core's write drops to Invalid because SWMR tolerates only one writer. No arrow is free to be otherwise without breaking an invariant — the sense in which MESI is *derived*, not designed.
+### 8.1 The complete transition table and the state diagram
+
+Everything a snooping MESI controller does is two lookup tables — one for the events its *own* processor generates, one for the events it *observes* on the bus — and each entry is the mechanical consequence of the two invariants: SWMR fixes when a copy must vanish or downgrade, data-value fixes when dirty data must be supplied or written back. The bus vocabulary is minimal: **BusRd** (fetch a readable copy), **BusRdX** (read-for-ownership — fetch *and* invalidate all others, for a write miss), **BusUpgr** (invalidate-only, no data — for a writer that already holds valid data in S), and **BusWB / Flush** (a holder writes the dirty line back to memory and/or supplies it).
+
+**Processor-side** — this core issues a load, store, or replacement:
+
+| State | PrRd (load) | PrWr (store) | Evict / replace |
+|---|---|---|---|
+| **I** | BusRd → **E** (no sharer) / **S** (a sharer answers) | BusRdX → **M** | — |
+| **S** | hit → **S** | **BusUpgr** → **M** | silent → **I** |
+| **E** | hit → **E** | *silent* → **M** (no bus) | silent → **I** |
+| **M** | hit → **M** | hit → **M** | **BusWB** (flush dirty) → **I** |
+
+**Snoop-side** — this core observes a *remote* core's request to the same line:
+
+| State | observe BusRd | observe BusRdX (RFO) | observe BusUpgr |
+|---|---|---|---|
+| **I** | ignore → **I** | ignore → **I** | ignore → **I** |
+| **S** | assert *shared* → **S** | invalidate → **I** | invalidate → **I** |
+| **E** | assert *shared*, downgrade → **S** | invalidate → **I** | cannot occur † |
+| **M** | **Flush** (supply + write back) → **S** | **Flush** (supply) + invalidate → **I** | cannot occur † |
+
+† A BusUpgr is issued *only* by a cache holding the line in **S**, which presupposes the line is shared — so no cache can simultaneously hold it in **E** or **M** (both mean *sole copy*). The (E or M) × BusUpgr cells are unreachable in a correct protocol: a small consistency check that the table encodes the invariants rather than an arbitrary FSM.
+
+**Every arrow is forced, not chosen.** To write a Shared or Invalid line, SWMR demands every other copy vanish first, so S→M and I→M must issue an invalidate (BusUpgr) or read-for-ownership (BusRdX); to write an Exclusive line no other copy exists, so E→M is **silent**; when another core reads a Modified line, the data-value invariant demands it observe the latest write, so M→S must Flush the dirty data and refresh memory; a Shared or Exclusive line hit by another core's BusRdX drops to Invalid because SWMR tolerates only one writer. No arrow is free to be otherwise without breaking an invariant — the sense in which MESI is *derived*, not designed. (The interconnect-message dual of these bus actions — get-shared / get-unique / upgrade / writeback / snoop — is [ACE_and_CHI §1.1](../04_Interconnect/02_ACE_and_CHI.md); this page owns the *state* view, that page the *message* view of the same protocol.)
+
+The diagram makes the two tables one picture. Processor-initiated triggers are named `Pr*` (this core); snoop-initiated triggers are prefixed `snoop` / `Bus*` (a remote core's request seen on the bus); the text after `/` is the bus action, and `silent` means no bus transaction — the star of the whole protocol being the silent E→M:
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 stateDiagram-v2
     direction LR
     I: Invalid
     S: Shared
     E: Exclusive
     M: Modified
-    I --> E: read, no other copy
-    I --> S: read, others share
-    I --> M: write (invalidate others)
-    E --> M: write (silent!)
-    E --> S: another core reads
-    S --> M: write (invalidate others)
-    S --> I: another core writes
-    E --> I: another core writes
-    M --> S: another core reads (write back)
-    M --> I: another core writes (write back)
+    I --> E: PrRd / BusRd (no sharer)
+    I --> S: PrRd / BusRd (sharer)
+    I --> M: PrWr / BusRdX
+    S --> M: PrWr / BusUpgr
+    E --> M: PrWr / silent, no bus
+    E --> S: snoop BusRd / assert shared
+    M --> S: snoop BusRd / Flush (WB + supply)
+    S --> I: evict (silent), or snoop BusRdX/BusUpgr (inval)
+    E --> I: evict (silent), or snoop BusRdX (inval)
+    M --> I: evict / BusWB, or snoop BusRdX / Flush + inval
+    S --> S: PrRd hit; snoop BusRd (assert shared)
+    E --> E: PrRd hit
+    M --> M: PrRd / PrWr hit
+    note left of E
+      Pr* = this core (processor-initiated).
+      snoop / Bus* = a remote core's request.
+      After the slash is the bus action;
+      'silent' = no bus transaction.
+      The silent E to M is MESI's reason to exist.
+    end note
 ```
 
-### 8.1 The two protocol trade-offs
+**Why a real controller has more than four states — the transient limbo.** The tables above assume an *atomic bus*: a request, all snoops, and the data transfer appear to happen in one indivisible step, so a line is only ever in one of the four stable states. Real interconnects are **split-transaction** — a coherence operation is a *chain* of messages (request → arbitration → snoops → responses → data → completion) spread over many cycles and, on a mesh, many hops. Between issuing a BusRdX and receiving the last acknowledgement, the line is neither cleanly I nor cleanly M: it sits *in flight*, and a second core may race a conflicting request to it in that window. The controller must therefore hold it in a **transient state** — conventionally named for the pending transition (e.g. an "I heading to M, awaiting data and acks" state) — in which it stalls or NACKs conflicting snoops until the chain closes. This is why a production coherence FSM has not 4 but **dozens** of states: the four stable states plus a transient state for each multi-message transition. We do not enumerate them — the *count* is an implementation detail — but the *reason* is fundamental, and the agent that makes the sprawling chain *appear* atomic (the ordering point that admits one transaction per line at a time) is derived at the interconnect level in [ACE_and_CHI §1.1 and §4.1](../04_Interconnect/02_ACE_and_CHI.md). The canonical race lives exactly here: two S-holders both issuing BusUpgr for the same line resolve at the serialization point, which orders one first; the loser observes the winner's invalidate, drops S→I, and its own BusUpgr **fails and is reissued as a BusRdX** (it no longer has valid data) — a transition the atomic-bus table cannot express but the transient states must.
 
-**M→S wastes bandwidth; MOESI fixes it.** When a Modified line is read by another core, MESI forces a write-back to memory before sharing — even though a direct cache-to-cache transfer would suffice. **MOESI** adds an **Owned** state: the writer keeps the dirty line as Owner, supplies it directly to the requester (who gets Shared), and defers the memory write-back until eviction. This turns a memory round-trip into a cache-to-cache transfer on every producer→consumer sharing event — which is why **AMD uses MOESI** (MOESI-F, with a Forward state to pick one supplier among sharers) on its bandwidth-sensitive multi-die parts.
+### 8.2 The fifth state: MOESI's Owned and MESIF's Forward
 
-**Snooping does not scale; directories do.** The mechanism that answers "who else holds this line?" is the real scalability limiter:
-- **Snooping** broadcasts every coherence request to *all* caches, which filter by address. Bandwidth grows as $O(N)$ per transaction with $N$ cores, and the shared bus saturates beyond ~8–16 cores. Simple and low-latency at small scale.
-- **Directories** keep, per line, a record of which caches share it, and send **point-to-point** messages only to the caches that actually hold the line. This removes the broadcast, scaling to 100+ cores, at the cost of a directory lookup in the latency path and storage for the sharer vectors. Every large server fabric (AMD EPYC, Intel Xeon SP, ARM CMN) is directory-based; the choice is a pure bandwidth-scaling-versus-latency/area trade.
+The counting argument left one legal combination on the table — (shared, dirty) — that MESI forbids by making a dirty line write back before it may be shared. The two production five-state protocols each admit a *different* missing capability, and each is worth deriving because each proves its own traffic saving.
 
-### 8.2 Coherence traffic and false sharing — the ping-pong cost
+**Owned (MOESI) — cache-to-cache dirty supply without a writeback.** In MESI, when a Modified line is read by another core, the M→S transition **writes the dirty data back to memory** as it shares — a DRAM write on *every* producer→consumer hand-off, even though the two on-chip caches could have exchanged the line directly. MOESI admits the forbidden cell as **Owned (O)**: on a remote BusRd, the dirty holder supplies the data **cache-to-cache**, keeps it as **Owner** (still dirty, still responsible), transitions M→O instead of M→S, and **defers the memory writeback to eviction**. The reader gets the line in S; memory is *not* updated.
+
+*Proof of the traffic saving.* Consider a producer→consumer loop: core A writes line $x$ (produces), core B reads it (consumes), repeated $n$ times. In MESI each iteration is A-write (line becomes M) → B-read (M→S forces a 64 B **writeback to DRAM**), so $n$ iterations cost $n$ DRAM writes $= 64n$ bytes of memory write traffic. In MOESI each iteration is A-write → B-read (M→O, **cache-to-cache**, no DRAM write); the lone writeback happens once, when the Owned line is finally evicted. So MOESI cuts the pattern's DRAM write traffic from $64n$ B to $64$ B — a factor of $n$, i.e. it *eliminates* the writeback from the steady state. For $n = 10^{6}$ hand-offs that is **64 MB** of DRAM write traffic removed and converted into lower-latency on-chip transfers — the exact constant the §8.5 ping-pong number credits MOESI with. **AMD uses MOESI** (Opteron onward, over HyperTransport / Infinity Fabric) precisely because its multi-die parts are memory-bandwidth-bound and cache-to-cache dirty supply is the cheapest way to move a producer's output to its consumer.
+
+**Forward (MESIF) — one designated responder among clean sharers.** Owned solves *dirty* supply; a symmetric problem afflicts *clean* supply. Suppose a clean line sits in **S** in $k$ caches and a new core issues BusRd — who answers? Two bad options: (a) **memory** supplies (correct but slow — a DRAM access though $k$ on-chip copies exist); (b) **every S-holder** supplies, so all $k$ caches respond to one request — a **response storm** of $k$ redundant data messages contending for the fabric. Plain MESI takes (a) to avoid the storm, eating a DRAM latency. **MESIF** designates exactly one sharer as **Forward (F)** — the rest stay S — and *only* the F-holder supplies data on a BusRd; S-holders merely assert *shared* and stay silent.
+
+*Proof it removes the storm.* With $k$ sharers, "any sharer may supply" draws up to $k$ data responses per read — $O(k)$ traffic that grows with the sharer count, worst for the hottest, most widely-shared lines. Designating one F-holder makes the response count **exactly 1**, independent of $k$: an $O(k)\!\to\!O(1)$ collapse that keeps the cache-to-cache *latency* win (no DRAM access) while removing the storm that made clean cache-to-cache supply untenable. The F token is handed to the **most recent** cache to receive the line, so it stays populated as caches evict (a departing F hands off, or the system falls back to memory-supply). *Worked number:* a hot read-only structure — a dispatch table, a config page — shared by $k = 8$ cores. Under "any sharer supplies," each external read draws 8 data responses (7 wasted); under MESIF, exactly 1 — an **8× cut** in response traffic — *and* it beats plain MESI's memory-supply by a full DRAM latency ($\sim$100+ cycles versus a $\sim$30–60-cycle cache-to-cache transfer). **Intel uses MESIF** (Nehalem onward, over QPI / UPI) for exactly this: cache-to-cache supply of clean shared lines without the broadcast response storm.
+
+The two extra states are **orthogonal** — Owned adds a *shared-dirty* responder (killing writebacks), Forward adds a *single clean* responder (killing the storm) — which is why they are two different letters in two different vendors' protocols, not one. At the interconnect the distinction is a property of the *snoop response*, not a new request type ([ACE_and_CHI §1.1](../04_Interconnect/02_ACE_and_CHI.md) carries the O-state as cache-to-cache dirty supply and the CHI shared-dirty encoding).
+
+### 8.3 Write-invalidate vs write-update
+
+MESI, MOESI, and MESIF are all **write-invalidate**: a write to a shared line *invalidates* every other copy, and later readers miss and re-fetch. The alternative is **write-update** (write-broadcast, as in the historical Dragon and Firefly protocols): a write *broadcasts the new value* to every cache holding the line, updating them in place so readers never miss. Which wins is a pure traffic question, decided by the workload's write-to-read ratio and its sharer count.
+
+Model one shared line with $k$ reader-sharers and count transactions over a window of writes and reads:
+
+- **Write-invalidate.** The *first* write invalidates the $k$ copies (one broadcast, or $k$ targeted messages); subsequent writes by the same owner are **local M-hits — free** — until another core reads. Each post-invalidation reader then pays one full-line miss to re-fetch. So a burst of $m$ writes by one core followed by $k$ reads costs $\approx 1$ invalidate $+\ k$ line-refetches, **independent of $m$**.
+- **Write-update.** *Every* write broadcasts the changed word ($w$ bytes) to all $k$ caches; readers always hit and never re-fetch. So the same $m$ writes then $k$ reads cost $\approx m$ update broadcasts (each delivering $w$ bytes to $k$ caches), **scaling with $m$**.
+
+The crossover falls straight out — invalidate wins when a burst has more writes than the invalidate-plus-refetch it would replace:
+
+$$
+\text{invalidate wins} \iff \underbrace{m}_{\text{update broadcasts}} \;>\; \underbrace{1 + k}_{\text{invalidate}\,+\,\text{refetches}}, \qquad \text{update wins} \iff m \ll 1 + k,
+$$
+
+$$
+\text{where } m = \text{writes per burst before a remote read},\ k = \text{sharers},\ w = \text{bytes changed per write}.
+$$
+
+Read off the two regimes:
+
+- **Migratory / low-sharing data (invalidate wins).** A line a core writes many times before it migrates ($m$ large): a lock held for a while, a private-turned-shared object, a thread-local promoted to shared. Invalidate pays *once* per migration ($\approx 2$ transactions) regardless of the write count; update pays *per write*, most broadcasts landing on sharers that have moved on and no longer read — almost pure waste.
+- **Producer→consumer / dissemination (update wins).** Every write is immediately read by many cores ($m \approx 1$, $k$ large, tight write-read alternation): a barrier flag, a frequently-polled status word, a streaming producer. Update keeps every reader hot with a small $w$-byte message; invalidate throws away all $k$ copies and re-ships $k$ *full lines* on the next reads.
+
+*Worked number.* Line 64 B, changed datum $w = 8$ B, $k = 4$ sharers. *Producer→consumer, each write consumed by all four:* invalidate $= 1$ invalidate $+\ 4\times64$ B refetch $= 256$ B per write; update $= 4\times8$ B $= 32$ B per write — **update is $8\times$ cheaper**. *Migratory, $m = 10$ writes/burst, sharers stale:* invalidate $\approx 1$ invalidate $+\ 1\times64$ B refetch $= 64$ B per 10 writes $= 6.4$ B/write; update $= 10\times8$ B $= 80$ B per 10 writes $= 8$ B/write, *all of it wasted* (nobody reads) — **invalidate wins**. Real sharing is dominated by the migratory/stale-sharer case (locks, task migration, data written far more than remotely read), and update carries two further penalties — it complicates the consistency model (writes become visible incrementally) and has no clean way to stop spamming a sharer that lost interest. That is why **every mainstream ISA's hardware is write-invalidate**; write-update survives only as a niche technique and as motivation for *software* publish patterns.
+
+### 8.4 Snooping vs directories — the scaling axis
+
+The mechanism that answers "who else holds this line?" is the real scalability limiter, and it is a single axis with two ends:
+
+- **Snooping** broadcasts every coherence request to *all* caches, which filter by address. Serialization is free — winning bus arbitration for an address *is* winning its coherence order — but broadcast bandwidth grows as $O(N^2)$ in core count $N$, and the shared medium saturates at **~8–16 cores**. Simple and low-latency at small scale, the regime MESI-over-a-bus was designed for.
+- **Directories** keep, per line, a record of which caches share it and send **point-to-point** messages only to the actual holders. This removes the broadcast, scaling to **64–128+ cores**, at the cost of a directory lookup in the latency path and $O(N)$-per-line sharer storage. Every large server fabric (AMD EPYC, Intel Xeon SP, Arm CMN) is directory-based.
+
+This is the ACE-vs-CHI decision, and its full derivation — the $O(N^2)$ snoop-bandwidth wall, the $O(1)$-per-miss directory message count, directory-storage encodings, and the home node as simultaneous directory / serializer / ordering-point — is [ACE_and_CHI §3–§5](../04_Interconnect/02_ACE_and_CHI.md), which owns the interconnect realization of this page's protocol. The states and transitions are identical; only the *transport* of the coherence question changes.
+
+### 8.5 Coherence traffic, false sharing, and the ping-pong worked example
 
 The same invariants that keep caches correct make *sharing* expensive, and the cost follows directly from SWMR: since at most one cache may hold a line writable, every write to a line another core wants forces an ownership transfer. Two patterns expose it.
 
@@ -365,9 +466,23 @@ $$
 t_{\text{ping-pong}} \approx N \cdot t_{\text{coh-miss}}, \qquad \text{slowdown} \approx \frac{t_{\text{coh-miss}}}{1\ \text{cyc}} .
 $$
 
+**Worked example — the exact MESI state sequence.** Two cores A and B alternately *store* to one shared line $x$; memory initially holds it, both caches Invalid. Trace the per-cache state and count bus transactions:
+
+| Step | Event | A's state | B's state | Bus transaction |
+|---|---|---|---|---|
+| 0 | A stores $x$ | I → **M** | I | BusRdX (fetch + inval; no other copy) |
+| 1 | B stores $x$ | M → **I** | I → **M** | BusRdX; A snoops in M → **Flush** dirty data |
+| 2 | A stores $x$ | I → **M** | M → **I** | BusRdX; B snoops in M → **Flush** |
+| 3 | B stores $x$ | M → **I** | I → **M** | BusRdX; A **Flush** |
+| … | (alternating) | M ↔ I | I ↔ M | one BusRdX + one Flush per write |
+
+The line never reaches S (neither core ever merely reads), so each cache oscillates **M ↔ I** and every write after the first is a **coherence miss**: a BusRdX that forces the other core to Flush the dirty line. Over $n$ alternating writes the bus carries $n$ BusRdX plus $n-1$ Flushes $\approx 2n$ coherence operations — against **zero** had the two cores written *different, unshared* lines. That entire $\approx 2n$ is the sharing tax, and it charges each write $t_{\text{coh-miss}}$ ($\sim$100–200 cyc) instead of the $\sim$1 cycle a private M-hit costs.
+
+**What MOESI can and cannot fix here.** MOESI (§8.2) makes each Flush a *cache-to-cache* transfer with no memory writeback, shrinking the per-bounce **constant** (the 150–200-cycle figure toward ~100). It cannot shrink the transaction **count**: SWMR permits only one writer, so a write-write ping-pong *must* transfer exclusive ownership once per write no matter how many states the protocol carries. The count falls only when *sharing* falls — which is why, when the sharing is **false**, the fix is layout, not a richer protocol.
+
 **False sharing** is that identical cost with none of the intent: two cores write *different* variables that merely occupy the *same* line. Coherence tracks state per line (typically 64 B), not per byte, so the protocol cannot distinguish independent accesses from a genuine conflict — the line ping-pongs though the data never overlaps. The fix is layout, not protocol: pad or align the two variables onto separate lines.
 
-*Worked number.* Two cores in a tight loop alternating writes to one line, with a cache-to-cache coherence miss $\approx 100$ cycles at 3 GHz. Private-cache throughput would be ~1 write/cycle; ping-pong throughput is ~1 write / 100 cycles — a **100× slowdown**. For $N = 10^{6}$ writes that is ~$10^{6}$ ownership transactions and $\approx 10^{8}$ cycles $\approx 33$ ms, versus $\approx 0.33$ ms had the line stayed local. In MESI the M→S/M→I transfer routes the dirty data through memory (writeback + refill), pushing the constant nearer 150–200 cycles; MOESI's Owned state (§8.1) supplies it cache-to-cache and roughly halves that — the concrete payoff of the extra state. When the sharing is *false*, the entire cost is pure waste that 64-B alignment removes for free — the first thing to check when a parallel loop refuses to scale. (Line geometry is [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md); the transactions on the wire are [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md).)
+*Worked number.* Two cores in a tight loop alternating writes to one line, with a cache-to-cache coherence miss $\approx 100$ cycles at 3 GHz. Private-cache throughput would be ~1 write/cycle; ping-pong throughput is ~1 write / 100 cycles — a **100× slowdown**. For $N = 10^{6}$ writes that is ~$10^{6}$ ownership transactions and $\approx 10^{8}$ cycles $\approx 33$ ms, versus $\approx 0.33$ ms had the line stayed local. In MESI the M→S/M→I transfer routes the dirty data through memory (writeback + refill), pushing the constant nearer 150–200 cycles; MOESI's Owned state (§8.2) supplies it cache-to-cache and roughly halves that — the concrete payoff of the extra state. When the sharing is *false*, the entire cost is pure waste that 64-B alignment removes for free — the first thing to check when a parallel loop refuses to scale. (Line geometry is [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md); the transactions on the wire are [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md).)
 
 ---
 
@@ -467,8 +582,10 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 | Store buffer | ~48 | 32–60 | speculation + decouple + OoO data (§6.2) |
 | TLB hit / miss | 1 / 10–60 cyc | — | cache of translations (§7) |
 | MESI states | 4 | — | 2 questions × 2 bits (§8) |
-| Snoop scaling limit | ~8–16 cores | — | $O(N)$ broadcast bandwidth (§8.1) |
-| Coherence-miss (ping-pong) | ~100–200 cyc | — | true/false-sharing tax per write (§8.2) |
+| MSI → MESI saving | 1 bus txn / read-then-write | — | E enables the silent E→M (§8) |
+| MOESI / MESIF | 5 states | — | Owned = dirty c2c; Forward = 1 responder (§8.2) |
+| Snoop scaling limit | ~8–16 cores | — | $O(N^2)$ broadcast bandwidth (§8.4) |
+| Coherence-miss (ping-pong) | ~100–200 cyc | — | true/false-sharing tax per write (§8.5) |
 | SMT-2 speedup | 1.2–1.35× | 1.1–1.4× | $1+\alpha(t{-}1)$, shared-resource ceiling (§10) |
 | SMT ceiling | $1/u$ | — | idle-slot (Amdahl) bound on utilization $u$ (§10) |
 | Full mitigation cost | 10–30 % | — | close window / isolate / check (§11) |
@@ -492,7 +609,7 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 ## Cross-references
 
 - **Down the stack (what this machine is built from):** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and $t_{\text{ovh}}$ behind §1.3), [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the EX-stage ALU whose delay sets $t_{\text{logic}}$).
-- **Up the stack (what builds on it):** [OoO_Execution](03_OoO_Execution.md) (the renaming, dynamic scheduling, ROB, and LSQ of §5 in full — the machine this in-order pipe becomes), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE/perceptron/BTB/RAS realization of §4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (the cache internals of §6 and the in-cache coherence controller of §8), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the translation microarchitecture of §7), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the interconnect that carries the coherence protocol of §8), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open core composing all of this).
+- **Up the stack (what builds on it):** [OoO_Execution](03_OoO_Execution.md) (the renaming, dynamic scheduling, ROB, and LSQ of §5 in full — the machine this in-order pipe becomes), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE/perceptron/BTB/RAS realization of §4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (the cache internals of §6 and the in-cache coherence controller of §8), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the translation microarchitecture of §7), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the interconnect that carries the coherence protocol of §8 — this page owns the MESI/MOESI/MESIF *state* view and its transition table, that page owns the dual *message* set, the ordering/serialization point behind §8.1's transient states, and the $O(N^2)$-snoop-vs-directory *scaling* of §8.4), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open core composing all of this).
 - **Adjacent:** [RISC_V_ISA](02_RISC_V_ISA.md) (the instruction set, trap model, and fence encodings referenced in §5/§9), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (Amdahl's law and the CPI stack — the iron law of §1 and the additive hazard-CPI of §2 are the same decomposition, built bottom-up here from the pipeline and read top-down there as a modeling kernel).
 
 ---
