@@ -1,7 +1,7 @@
 # Memory Circuits — the Bit-Storage Trade Surface
 
 > **Prerequisites:** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) §2–§3 (the inverter VTC, gain, and noise-margin primitives) and §9 (Pelgrom $\sigma_{V_{th}}$ variation) — the device-level foundation the SRAM margin derivations build **on top of**. This page **owns** the SRAM-specific 6T butterfly/SNM, read-disturb, and write-margin derivations (§2); CMOS §12 carries a companion bitcell view.
-> **Hands off to:** [Cache_Microarchitecture](01_Cache_Microarchitecture.md) (how these arrays are organised into caches), [DDR_Controller](04_DDR_Controller.md) (the DRAM interface/scheduling view), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (the CAM of §10 in its natural home).
+> **Hands off to:** [Cache_Microarchitecture](01_Cache_Microarchitecture.md) (how these arrays are organised into caches), [Cache_Coherence](05_Cache_Coherence.md) (directory, sharer, and transaction-state storage), [DDR_Controller](04_DDR_Controller.md) (the DRAM interface/scheduling view), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (the CAM of §10 in its natural home).
 > **Scope:** cell- and array-level *circuits* — what physical state stores a bit, what it costs to read/hold/write it, and why each memory technology lands where it does on that trade surface. Protocol/timing (DDR), cache organisation, memory BIST ([DFT_and_ATPG](../../06_Signoff/02_DFT_and_ATPG.md) §7), and the async FIFO ([Async_Design_and_CDC](../../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §5) live on their own pages.
 
 ---
@@ -13,6 +13,20 @@ Storing a bit is a **bet, not a given**. A bit needs a physical state that survi
 This page derives the memory zoo from that surface instead of cataloguing schematics — and it owns the transistor-level SRAM margin theory (the 6T butterfly/SNM, read-disturb, and write-margin derivations of §2), built on the plain-inverter VTC, gain, and noise-margin primitives of [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) §2–§3 and its Pelgrom variation model (§9). On that foundation we ask the architect's questions. Why does the 6T cell force *read stability* and *write-ability* to fight over the same access transistors, and why does that fight become unwinnable at low $V_{DD}$ — the reason 8T and 10T exist? Why does DRAM throw away the storage feedback loop entirely, and what does that one decision cost in destructive reads and refresh bandwidth? Why is ECC (error-correcting code) a *coding-theory* question about Hamming distance, not a bit-field? Why does a CAM burn 10–20× the power of an SRAM to answer one question, and why do we pay it anyway for a TLB? And what breaks — usefully — when compute-in-memory stops separating storage from arithmetic. By the end you should be able to place any cell on the surface and predict its failure mode, rather than recite its transistors.
 
 A single quantitative motif recurs and is worth holding from the start: **memory signal is a ratio, and margin collapses as $V_{DD}$ scales.** SRAM read stability is a ratio of transistor strengths; DRAM read signal is a ratio of capacitances; both shrink faster than $V_{DD}$ does. Low-voltage operation, not raw area, is the modern memory wall.
+
+### System view — cell physics becomes an architectural resource
+
+Every architectural memory structure is a stack of abstractions. The cell fixes stability/density; the array adds wordlines, bitlines, sensing, and variation; the compiler wraps that array in a timed macro; the microarchitecture composes macros into caches, register files, CAMs, and buffers.
+
+```mermaid
+flowchart LR
+    C["Bit cell<br/>6T / 8T / 1T1C / NVM"] --> A["Array<br/>WL + BL + sense + write"]
+    A --> Y["Yield / ECC / redundancy"]
+    Y --> M["Memory macro<br/>ports + timing + power"]
+    M --> R["Register file / SRAM / CAM"]
+    R --> U["Cache / TLB / queue / scratchpad"]
+    U --> S["System PPA + reliability"]
+```
 
 ---
 
@@ -429,7 +443,7 @@ By 2 nm, $CR\to1.0$ leaves almost no gap between "read-stable" and "writable," a
 ## Cross-references
 
 - **Down the stack (what these cells are built from):** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) §2 (the inverter VTC and gain), §3 (noise margins and the regenerative property), §9 (Pelgrom $\sigma_{V_{th}}$ variation) — the device-level primitives this page's §2 butterfly/SNM, read-disturb, and write-margin derivations build on (CMOS §12 carries a companion bitcell view).
-- **Up the stack (what builds on these arrays):** [Cache_Microarchitecture](01_Cache_Microarchitecture.md) (SRAM/eDRAM organised into set-associative caches; tag CAMs), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (the fully-associative CAM of §10), [DDR_Controller](04_DDR_Controller.md) (the DRAM protocol/scheduling view of §5–§6), [OoO_Execution](../02_CPU/03_OoO_Execution.md) §2 (the physical register file whose port cost is §7), [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) & [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) (consumers of the CIM/near-memory of §11 and the banked register files of §7), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (consumes this page's DRAM latency/bandwidth and SRAM access time as the $p_{\text{mem}}$ and roofline $\beta$ of its CPI stack).
+- **Up the stack (what builds on these arrays):** [Cache_Microarchitecture](01_Cache_Microarchitecture.md) (SRAM/eDRAM organised into set-associative caches; tag CAMs), [Cache_Coherence](05_Cache_Coherence.md) (SRAM/CAM structures for directory sharers and transient transaction state), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (the fully-associative CAM of §10), [DDR_Controller](04_DDR_Controller.md) (the DRAM protocol/scheduling view of §5–§6), [OoO_Execution](../02_CPU/03_OoO_Execution.md) §2 (the physical register file whose port cost is §7), [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) & [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) (consumers of the CIM/near-memory of §11 and the banked register files of §7), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (consumes this page's DRAM latency/bandwidth and SRAM access time as the $p_{\text{mem}}$ and roofline $\beta$ of its CPI stack).
 - **Adjacent / sibling structures:** [Async_Design_and_CDC](../../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) §5 (the async FIFO — a CDC structure that happens to be a memory), [DFT_and_ATPG](../../06_Signoff/02_DFT_and_ATPG.md) §7 (memory BIST and March tests that verify these arrays), [Power_Reduction_Techniques](../../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (SRAM retention/drowsy modes of §4), [Floating_Point](../../00_Fundamentals/04_Floating_Point.md) (ECC context).
 
 ---

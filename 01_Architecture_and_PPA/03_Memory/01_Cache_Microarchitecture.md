@@ -1,7 +1,7 @@
 # Cache Microarchitecture — Locality, AMAT, and Controller Design
 
 > **Prerequisites:** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) (pipeline, memory hierarchy, the AMAT baseline of its §7), [Memory](03_Memory.md) (SRAM cell, DRAM organization), [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the instruction window that generates the memory-level parallelism §3 exploits).
-> **Hands off to:** [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (coherence protocols at scale), [DDR_Controller](04_DDR_Controller.md) (the DRAM a last-level miss talks to), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (the translation in front of every access).
+> **Hands off to:** [Cache_Coherence](05_Cache_Coherence.md) (stable/transient protocol states, races, directory sizing, atomics/DMA, and verification), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (coherence messages at scale), [DDR_Controller](04_DDR_Controller.md) (the DRAM a last-level miss talks to), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (the translation in front of every access).
 
 ---
 
@@ -357,7 +357,7 @@ Nothing catches truly random access (hash probes, unstructured graph walks) — 
 
 ## 8. Coherence: the conceptual story
 
-*Scope: the idea and where it lands in a cache. Full MESI/MOESI transition tables, snoop walkthroughs, and directory scaling live in [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md) and [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md).*
+*Scope: the idea and where it lands in a cache. The architectural stable-state contract lives in [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md); the full controller—transient states, message traces, races, directory formats, false sharing, atomics/DMA, safety/liveness, and verification—lives in [Cache_Coherence](05_Cache_Coherence.md); the fabric realization lives in [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md).*
 
 With private per-core caches, one core's write can leave another's cached copy stale. A coherence protocol enforces one invariant — **single-writer / multiple-reader (SWMR)**: for any line, at any instant, *either* exactly one cache may write it *or* any number may read it, never both. Everything else is mechanism to maintain that invariant while spending the least bus traffic.
 
@@ -462,7 +462,7 @@ Multiply out into per-level contributions $(\prod_{j<k}m_{Lj})\,t_{Lk}$ (§1.2) 
 ## Cross-references
 
 - **Down the stack (what this is built from):** [Memory](03_Memory.md) (the SRAM cell and DRAM array behind every latency here), [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 budget and leakage that bound §2's hit path and §9's power techniques), [DDR_Controller](04_DDR_Controller.md) (the $t_{DRAM}$ and bandwidth a last-level miss actually pays).
-- **Up the stack (what builds on this):** [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the LSQ and window that generate the MLP §3 exploits and set the MSHR ceiling via the same Little's law), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (translation in front of the index/tag split; §1.5 derives the VIPT ceiling $C\le N\!\times\!P$, its §6 owns the overlap mechanism and synonyms), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) & [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md) (the full coherence protocols §8 only sketches), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where AMAT, the reuse-distance miss curve, and MLP feed design-space exploration), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete open core composing this hierarchy).
+- **Up the stack (what builds on this):** [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the LSQ and window that generate the MLP §3 exploits and set the MSHR ceiling via the same Little's law), [TLB_and_Virtual_Memory](02_TLB_and_Virtual_Memory.md) (translation in front of the index/tag split; §1.5 derives the VIPT ceiling $C\le N\!\times\!P$, its §6 owns the overlap mechanism and synonyms), [Cache_Coherence](05_Cache_Coherence.md) (the full controller this page motivates), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the transport and scaling of that controller's messages), [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md) (the architectural contract), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where AMAT, the reuse-distance miss curve, and MLP feed design-space exploration), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete open core composing this hierarchy).
 - **Adjacent:** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) (the AMAT baseline and pipeline this deepens).
 
 ---

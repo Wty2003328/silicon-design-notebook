@@ -9,6 +9,26 @@
 
 The gem5 / DRAM / GPU / accelerator pages in this folder cover the tools an architect reaches for most, but the field is wider: manycore-CPU studies, on-chip networks, compute-in-memory, datacenter fabrics, chiplet integration, and RISC-V core bring-up each have their own established simulators, built at different rungs of the fidelity ladder for different reasons. This page is a **surveyed catalog** — one table plus short conceptual notes per category — that places each tool in the [Simulation_Methodology](01_Simulation_Methodology.md) taxonomy (which paradigm, what it models, what it is blind to) and says *when* to use it. It is deliberately breadth-first: the goal is to know what exists, what class it belongs to, and therefore how far to trust its numbers, not to re-derive the mechanisms already covered on the methodology page.
 
+### System view — choose the simulator by the interaction under test
+
+The tool taxonomy follows the dominant state and feedback loop: instruction windows for many-core CPUs, flits and credits for networks, charge/spikes for emerging compute, packets/jobs for datacenters, and thermal/link coupling for chiplets.
+
+```mermaid
+flowchart LR
+    Q["What interaction sets the answer?"] --> C["Core / cache / coherence"]
+    Q --> N["NoC / packet transport"]
+    Q --> E["CIM / analog / neuromorphic"]
+    Q --> D["Datacenter / network / jobs"]
+    Q --> P["Chiplet / package / thermal"]
+    Q --> R["RISC-V ISA / core fidelity"]
+    C --> CT["Sniper / ZSim / SST"]
+    N --> NT["BookSim / Garnet / Noxim"]
+    E --> ET["NeuroSim / MNSIM / Nengo"]
+    D --> DT["SimGrid / ns-3 / gem5-SALAM"]
+    P --> PT["SST / gem5 / thermal-link models"]
+    R --> RT["Spike / QEMU / gem5 / RTL"]
+```
+
 ---
 
 ## 1. The catalog

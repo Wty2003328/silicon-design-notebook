@@ -888,6 +888,8 @@ limited by memory bandwidth.
 
 ### Problem 5: MESI Protocol Trace
 
+*From [Cache_Coherence.md](../01_Architecture_and_PPA/03_Memory/05_Cache_Coherence.md) and [CPU_Architecture §8](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md).*
+
 **Given:** 4-core system with MESI, shared bus. Line X initially not cached anywhere.
 
 **Trace:**
@@ -896,15 +898,45 @@ limited by memory bandwidth.
 |------|-------|-------------|-------------|-------------|-------------|-----------------|
 | 0 | Initial | I | I | I | I | -- |
 | 1 | Core 0 reads X (miss) | **E** | I | I | I | BusRd. Memory supplies. No other cache has X, so E (exclusive). |
-| 2 | Core 1 reads X (miss) | **S** | **S** | I | I | BusRd. Core 0 sees it, asserts Shared, flushes. Both now S. |
-| 3 | Core 0 writes X | **M** | **I** | I | I | BusUpgr. Core 1 sees it, invalidates (S-->I). Core 0 silently upgrades S-->M. |
+| 2 | Core 1 reads X (miss) | **S** | **S** | I | I | BusRd. Core 0 sees it and asserts Shared. E is clean, so memory may supply; Core 0 needs no dirty flush. Both now S. |
+| 3 | Core 0 writes X | **M** | **I** | I | I | BusUpgr. Core 1 sees it and invalidates (S-->I); after the invalidation completes, Core 0 upgrades S-->M. This is not silent—only E-->M is. |
 | 4 | Core 1 reads X (miss) | **S** | **S** | I | I | BusRd. Core 0 has M, must flush. Core 0: M-->S. Core 1: I-->S. Memory updated via flush. |
 | 5 | Core 2 reads X (miss) | **S** | **S** | **S** | I | BusRd. Cores 0,1 have S, assert Shared. Core 2 gets S. Memory can also supply (data was flushed in step 4). |
 | 6 | Core 3 writes X | **I** | **I** | **I** | **M** | BusRdX. Cores 0,1,2 all have S, all invalidate (S-->I). Core 3: I-->M. |
 
-**Total bus transactions:** 6 (3 BusRd + 1 BusUpgr + 1 BusRd + 1 BusRdX).
+**Total bus transactions:** 6 (4 BusRd + 1 BusUpgr + 1 BusRdX).
 **Total invalidations:** 1 (step 3) + 3 (step 6) = 4 invalidation actions.
-**Total flushes:** 2 (step 2: Core 0 flushes M-data-to-be-S; step 4: Core 0 flushes M).
+**Total dirty interventions/writebacks:** 1 (step 4: Core 0 owns M and must supply the newest data; step 2 started from clean E and needs no dirty writeback).
+
+---
+
+### Problem 6: Why SM Is Not Just S or M
+
+**Question:** Core 0 holds line X in S, issues an Upgrade, and waits for invalidation acknowledgements from three other sharers. What state should it use, and when may the store update the line?
+
+**Solution:** Use a transient **SM** state: source permission S, target permission M. Core 0 may still read its clean copy, but it may not write because other S copies remain. Initialize an acknowledgement counter to 3 and decrement only for matching invalidation acknowledgements. The store may update X only after the counter reaches zero and the home grants exclusive completion. Calling the line M early violates SWMR; leaving it ordinary S loses the in-flight transaction and can launch a duplicate Upgrade.
+
+### Problem 7: Directory Storage
+
+**Question:** A 32 MiB LLC has 64-byte lines and serves 48 coherent agents. How much storage does a full sharer vector require, before tags/ECC?
+
+**Solution:**
+
+$$
+L=\frac{32\cdot2^{20}}{64}=524{,}288\text{ lines}
+$$
+
+$$
+S=L\cdot48=25{,}165{,}824\text{ bits}=3\text{ MiB}.
+$$
+
+The sharer vector alone is 9.375% of the 32 MiB data store. Owner, protocol state, valid, tags, and ECC increase it further—why many-core systems use sparse or coarse directories.
+
+### Problem 8: Coherence or Consistency?
+
+**Question:** Producer stores D=42 and then F=1. Consumer observes F=1 but reads D=0. Does this prove the cache-coherence protocol is broken?
+
+**Solution:** No. Coherence orders accesses to each line separately; a weak consistency model can expose the store to F before the store to D. A release store to F and acquire load of F (or appropriate fences) order the two addresses. It becomes a coherence failure only if the consumer returns an older value for the *same line* after a newer write precedes it in that line's coherence order.
 
 ---
 

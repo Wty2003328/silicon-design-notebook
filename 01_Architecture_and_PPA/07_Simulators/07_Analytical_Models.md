@@ -9,6 +9,22 @@
 
 Every simulator in this folder is an *executable* model; each has a **closed-form dual** that returns the answer on a whiteboard, to ~10–20%, in the time it takes to divide two numbers — and, more valuably, tells you **which knob is live before you spend a CPU-week simulating.** The [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) page introduced the working kernels (CPI stack, Amdahl, roofline, occupancy). This page is their **rigorous back**: the ceilings and cache-aware form of roofline, the full mechanistic CPI equation behind the interval model, Amdahl's missing *contention* term, and the **queueing spine** (Little + M/M/1) that every contention model in a simulator is secretly a structural realization of. The organizing claim: **analytical models bound, decompose, and size; simulators only tell you the same thing more slowly and more accurately.** Knowing the dual is what lets you *read* a simulator's output instead of merely collecting it.
 
+### System view — use equations to decide what deserves simulation
+
+The analytical layer is a decision funnel: bound the answer, decompose the gap, size the live resource, and escalate only when close alternatives depend on interactions the closed form omits.
+
+```mermaid
+flowchart LR
+    Q["Architecture question"] --> B["Hard bound<br/>roofline / Amdahl / bisection"]
+    B --> D["Decompose<br/>CPI stack / queue / communication"]
+    D --> S["Size resource<br/>Little / occupancy / latency hiding"]
+    S --> K{"Decision robust<br/>to error bar?"}
+    K -->|yes| R["Choose / prune design"]
+    K -->|no| E["Escalate to targeted simulator"]
+    E --> V["Validate / calibrate"]
+    V --> D
+```
+
 ---
 
 ## 1. What the analytical layer is for — bound, decompose, size, escalate

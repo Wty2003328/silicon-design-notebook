@@ -6,6 +6,34 @@ This folder is a **hierarchical book**. It pairs **chip types** — [CPU](02_CPU
 
 State-bearing protocols (MESI/MOESI, CHI, the branch-predictor counter, the DRAM bank FSM, the SIMT reconvergence stack) carry state diagrams; every chapter closes with **Numbers to memorize** and **Cross-references**.
 
+## How the parts compose — follow one request through the machine
+
+The parts are not independent subjects. Modeling chooses a candidate machine; a CPU/GPU/NPU generates work; memory and interconnect carry it; simulators measure the composition; the resulting performance, power, and area feed the next design-space decision.
+
+```mermaid
+flowchart LR
+    M["Modeling & DSE<br/>workload + PPA targets"] --> C["CPU / GPU / NPU<br/>generate memory traffic"]
+    C --> T["TLB<br/>VA to PA"]
+    T --> L["Private cache<br/>hit, miss, MSHR"]
+    L --> H["Cache coherence<br/>permission + newest data"]
+    H --> N["ACE/CHI + NoC<br/>route and serialize"]
+    N --> D["LLC / DDR controller<br/>schedule DRAM"]
+    D --> N
+    N --> L
+    S["Simulators<br/>events, contention, validation"] -. observes .-> C
+    S -. observes .-> L
+    S -. observes .-> N
+    S -. observes .-> D
+    S --> M
+```
+
+| If the question is… | Start here | Then follow to… |
+|---|---|---|
+| Which design wins before RTL? | [Modeling](01_Modeling/00_Index.md) | the relevant machine chapter, then [Simulators](07_Simulators/00_Index.md) |
+| Why did this load take so long? | [CPU Architecture](02_CPU/01_CPU_Architecture.md) or [GPU](05_GPU/01_GPU_Architecture.md) | [TLB](03_Memory/02_TLB_and_Virtual_Memory.md) → [Cache](03_Memory/01_Cache_Microarchitecture.md) → [Coherence](03_Memory/05_Cache_Coherence.md) → [NoC](04_Interconnect/03_Network_on_Chip.md) → [DDR](03_Memory/04_DDR_Controller.md) |
+| Why does scaling stop? | [Full-Chip Modeling](01_Modeling/02_Full_Chip_Modeling.md) | [Coherence](03_Memory/05_Cache_Coherence.md), [ACE/CHI](04_Interconnect/02_ACE_and_CHI.md), and [Analytical Models](07_Simulators/07_Analytical_Models.md) |
+| Which abstraction is trustworthy? | [Simulation Methodology](07_Simulators/01_Simulation_Methodology.md) | the matching per-tool simulator chapter and its hardware chapter |
+
 ---
 
 ## Part 1 · [Modeling](01_Modeling/00_Index.md) — the PPA methodology — how you model performance, power, and area, and search the design space, *before* committing RTL
@@ -35,7 +63,7 @@ State-bearing protocols (MESI/MOESI, CHI, the branch-predictor counter, the DRAM
 <br/><span>§1 The design as a set of constraints  · §2 Pipeline depth and width: the first two bets  · §3 The decoupled front end: the FTQ as the front-end analogue of the ROB  · §4 Branch prediction: an accuracy machine that buys down the tax  · §5 The out-of-order window: three structures, three different theory curves  · §6 The load-store unit: the late-binding name space in practice  · §7 The memory hierarchy and interconnect: from private cache to coherent fabric  · §8 Reading the evolution as a trade-off trajectory  · §9 Numbers to memorize  · §10 Cross-references  · §11 References</span>
 
 
-## Part 3 · [Memory](03_Memory/00_Index.md) — the storage hierarchy every machine reuses — from the SRAM/DRAM bit cell up through caches, address translation, and the DRAM scheduler
+## Part 3 · [Memory](03_Memory/00_Index.md) — the storage hierarchy every machine reuses — from the SRAM/DRAM bit cell up through caches, coherence, address translation, and the DRAM scheduler
 
 **[Cache Microarchitecture — Locality, AMAT, and Controller Design](03_Memory/01_Cache_Microarchitecture.md)**  
 <br/><span>§1 The organizing theory: locality, the memory wall, and AMAT  · §2 Associativity: trading conflict misses against hit cost  · §3 Non-blocking caches and the MSHR: buying memory-level parallelism  · §4 Write policy: when the cached and backing copies may diverge  · §5 Replacement: predicting re-reference distance  · §6 The cache hierarchy: recursive AMAT and inclusion policy  · §7 Prefetching: converting misses to hits before they stall  · §8 Coherence: the conceptual story  · §9 Cache power: reducing the energy of the hit path  · §10 Quality of service: partitioning a shared last level  · §11 Numbers to memorize  · §12 Worked problems</span>
@@ -46,8 +74,11 @@ State-bearing protocols (MESI/MOESI, CHI, the branch-predictor counter, the DRAM
 **[Memory Circuits — the Bit-Storage Trade Surface](03_Memory/03_Memory.md)**  
 <br/><span>§1 The trade surface: store, read, hold  · §2 The 6T SRAM cell: six transistors, three conflicting jobs  · §3 Breaking the 6T conflict: 8T, 10T, and assist circuits  · §4 From cell to array: yield, soft errors, retention  · §5 DRAM 1T1C: trading persistence for density  · §6 The refresh tax: the price of volatility  · §7 Multi-port memories and register files: why ports cost quadratically  · §8 The memory compiler: SRAM as generated IP  · §9 ECC: coding theory for memory  · §10 CAM and TCAM: memory that compares itself  · §11 Compute-in-memory: moving the ALU onto the bitline  · §12 Scaling limits and emerging non-volatile memories</span>
 
-**[DDR Memory Controller — Why DRAM Needs a Scheduler](03_Memory/04_DDR_Controller.md)**  
+**[DDR Memory Controller — Why DRAM Needs a Scheduler](03_Memory/04_DDR_Controller.md)**
 <br/><span>§1 Why DRAM is not RAM: four broken clauses, one controller  · §2 The bank as a state machine, and the row buffer's three cases  · §3 JEDEC timing constraints as physics, not parameters  · §4 Row-buffer policy: a spatial-locality predictor  · §5 FR-FCFS: scheduling from the locality-vs-fairness trade  · §6 Refresh: the mandatory background tax  · §7 The achieved-bandwidth model and latency under load  · §8 ECC and RAS as concepts  · §9 DDR5 and LPDDR5X as concepts</span>
+
+**[Cache Coherence — From MESI States to a Correct Controller](03_Memory/05_Cache_Coherence.md)**
+<br/><span>§1 Coherence vs consistency vs synchronization  · §2 Stable permission states and messages  · §3 Transient states, TBEs, and acknowledgement proofs  · §4 Four critical request traces  · §5 Same-line races and serialization  · §6 Snoop/directory storage–traffic trade-offs  · §7 False sharing and coherence pathologies  · §8 Atomics, DMA, maintenance, and aliases  · §9 Safety, liveness, and protocol deadlock  · §10 Verification strategy  · §11 Performance model and design decisions  · §12 Numbers to memorize  · §13 Worked problems</span>
 
 
 ## Part 4 · [Interconnect](04_Interconnect/00_Index.md) — how blocks, cores, and chips talk — the load/store fabric, the coherence protocols, and the on-chip network that scales past a bus

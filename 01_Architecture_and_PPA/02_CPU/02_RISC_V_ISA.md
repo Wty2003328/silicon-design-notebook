@@ -1,7 +1,7 @@
 # RISC-V ISA — Design Rationale of a Modular Load-Store Contract
 
 > **Prerequisites:** [CPU_Architecture](01_CPU_Architecture.md) (pipelining, decode, hazards), [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md) (the decoders and datapath these instructions drive).
-> **Hands off to:** [OoO_Execution](03_OoO_Execution.md), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md).
+> **Hands off to:** [OoO_Execution](03_OoO_Execution.md), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (atomics, fences, and the coherence/consistency boundary), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md).
 
 ---
 
@@ -371,7 +371,7 @@ Two properties make RISC-V the default substrate for new hardware, and both foll
 ## Cross-references
 
 - **Down the stack (what these instructions are built from):** [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md) (the decoders and ALU the encoding drives), [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the M-extension multiplier tree and SRT divider), [Floating_Point](../../00_Fundamentals/04_Floating_Point.md) (the F/D datapath and FMA), [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the gates decode and CSR logic are built from).
-- **Up the stack (what builds on this contract):** [OoO_Execution](03_OoO_Execution.md) (renames this register namespace, exploits load-store for the LSQ, and implements the precise-trap model of §5.2), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) & [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the caches and TLB that hold the Sv39 walk this page specifies), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (predicts the flags-free branches of §2.3), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open RV64GC core), [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) & [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) (where the V and custom extensions of §6–§7 land).
+- **Up the stack (what builds on this contract):** [OoO_Execution](03_OoO_Execution.md) (renames this register namespace, exploits load-store for the LSQ, and implements the precise-trap model of §5.2), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) & [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the caches and TLB that hold the Sv39 walk this page specifies), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (where AMOs, fences, and RVWMO meet coherent hardware), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (predicts the flags-free branches of §2.3), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open RV64GC core), [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) & [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) (where the V and custom extensions of §6–§7 land).
 - **Adjacent / prerequisite:** [CPU_Architecture](01_CPU_Architecture.md) (the in-order pipeline that decodes and executes these — §2–§3 there own the hazard-comparator and forwarding logic that §2.1's load-store orthogonality simplifies), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where extension choices become area/performance trade studies).
 
 ---

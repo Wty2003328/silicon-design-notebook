@@ -1,7 +1,7 @@
 # Xiangshan (香山) — Reading an Open OoO Core as a Sequence of Design Decisions
 
-> **Prerequisites:** [OoO_Execution](03_OoO_Execution.md) (the window structures and their sizing knees), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (TAGE, the FTQ, the mispredict tax), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (AMAT (average memory access time), MSHR (miss-status holding register)/MLP, inclusion), [RISC_V_ISA](02_RISC_V_ISA.md).
-> **Hands off to:** [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the coherence fabric Kunminghu moves to), [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) (TileLink/SoC integration), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the design-space walk each generation performs).
+> **Prerequisites:** [OoO_Execution](03_OoO_Execution.md) (the window structures and their sizing knees), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (TAGE, the FTQ, the mispredict tax), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (AMAT (average memory access time), MSHR (miss-status holding register)/MLP, inclusion), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (directory scaling and ownership flow), [RISC_V_ISA](02_RISC_V_ISA.md).
+> **Hands off to:** [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the coherence fabric Kunminghu moves to), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (the controller-side dual of that fabric), [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) (TileLink/SoC integration), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the design-space walk each generation performs).
 
 ---
 
@@ -12,6 +12,26 @@ The [OoO](03_OoO_Execution.md), [Branch](04_Branch_Prediction_Deep_Dive.md), and
 Xiangshan (香山) removes that wall. It is a **fully open-source, server-class RV64 out-of-order core** written in Chisel at ICT/UCAS and BOSC, targeting ARM Cortex-A76/A78-class performance. Because the RTL, the parameters, and four generations of history are all public, Xiangshan is the one core where you can watch every trade-off on the sibling pages get *decided* — and, uniquely, **re-decided three times** as the team climbs toward its target.
 
 So this page is not a block-diagram tour. It reads Xiangshan as a **sequence of design decisions** — pipeline depth, fetch/decode width, the decoupled front end, the branch predictor, the ROB/IQ/PRF window, the load-store unit, the memory hierarchy — asking of each: *what did they pick, which theory curve does that point sit on, why there and not elsewhere, and how did the pick move from Nanhu to Kunminghu?* The generational deltas are the most valuable thing an open core offers: a controlled experiment in **what to spend the next transistor budget on**, and the answer is never "make it wider."
+
+### System view — one open core as a chain of bounded queues
+
+Xiangshan is easiest to read as a request moving through capacity-limited structures: the FTQ decouples prediction from fetch, rename allocates speculative names, the ROB restores order, issue queues expose dataflow, and the LSU turns loads/stores into cache/coherence traffic.
+
+```mermaid
+flowchart LR
+    P["BPU<br/>TAGE / RAS / target"] --> F["Fetch + FTQ"]
+    F --> D["Decode + rename<br/>RAT / free list"]
+    D --> R["ROB + dispatch"]
+    R --> I["Integer / FP / memory issue"]
+    I --> E["Execution units"]
+    I --> L["LSU<br/>LQ / SQ"]
+    L --> C["L1 / L2 cache"]
+    C --> N["Coherent interconnect / memory"]
+    E --> R
+    L --> R
+    R --> K["In-order commit"]
+    K -. recovery / checkpoints .-> P
+```
 
 ---
 
@@ -328,9 +348,9 @@ That is the whole value of an open core: not the block diagram, but the chance t
 
 ## 10. Cross-references
 
-- **Down the stack (the models this page instantiates):** [OoO_Execution](03_OoO_Execution.md) (the ROB/IQ/PRF/LSQ derivations and sizing knees §5–§6 make concrete), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE, FTQ, and $W\times P$-tax theory behind §2–§4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (AMAT, MSHR/MLP, and inclusion behind §6–§7).
+- **Down the stack (the models this page instantiates):** [OoO_Execution](03_OoO_Execution.md) (the ROB/IQ/PRF/LSQ derivations and sizing knees §5–§6 make concrete), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE, FTQ, and $W\times P$-tax theory behind §2–§4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (AMAT, MSHR/MLP, and inclusion behind §6–§7), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (the directory and ownership-transfer model behind §7's TileLink→CHI move).
 - **The exact derivation each § instantiates:** the [OoO §3.2](03_OoO_Execution.md) Little's-law ROB and geometric branch-horizon (§5.1), the [OoO §2.3](03_OoO_Execution.md) $N_{arch}+N_{ROB}$ PRF floor (§5.2), the [OoO §4.3](03_OoO_Execution.md) $S\,W^2$ wakeup recurrence (§2, §5.3), the [OoO §5](03_OoO_Execution.md) LQ/SQ window fractions (§6), the [Branch §0.2](04_Branch_Prediction_Deep_Dive.md) $p_{\text{miss}}^\star\propto1/(WP)$ accuracy floor and $S\propto p_{\text{miss}}^{-2}$ storage tax (§4), the [Branch §7.1–7.2](04_Branch_Prediction_Deep_Dive.md) FTQ Little's law and fetch-width wall (§2–§3), the [Cache §1.2](../03_Memory/01_Cache_Microarchitecture.md) recursive AMAT and [§3.2](../03_Memory/01_Cache_Microarchitecture.md) MSHR Little's law (§6–§7), and the [Performance_Modeling_and_DSE §5](../01_Modeling/01_Performance_Modeling_and_DSE.md) DSE budget inequality the agile trajectory runs on (§1.3, §8).
-- **Up / adjacent (what this core plugs into):** [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the coherence trade-off behind the TileLink→CHI move, §7), [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) (TileLink and SoC integration), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the iTLB/dTLB in the fetch and load paths), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the design-space walk §8 reads as a trajectory).
+- **Up / adjacent (what this core plugs into):** [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (the controller-side transient states, races, and proofs behind §7), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the fabric-side coherence trade-off behind the TileLink→CHI move), [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) (TileLink and SoC integration), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the iTLB/dTLB in the fetch and load paths), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the design-space walk §8 reads as a trajectory).
 - **Prerequisite:** [RISC_V_ISA](02_RISC_V_ISA.md) (the RV64GCB(V) namespace being renamed and the trap model at commit), [CPU_Architecture](01_CPU_Architecture.md) (the pipeline-depth/frequency trade of §2).
 
 ---
@@ -355,4 +375,4 @@ That is the whole value of an open core: not the block diagram, but the chance t
 | **Previous** | [Branch Prediction Deep Dive](04_Branch_Prediction_Deep_Dive.md) |
 | **Next** | [ACE and CHI](../04_Interconnect/02_ACE_and_CHI.md) |
 | **Up** | [CPU Architecture](01_CPU_Architecture.md) |
-| **Related** | [OoO Execution](03_OoO_Execution.md) · [Cache Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) · [Performance Modeling and DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) |
+| **Related** | [OoO Execution](03_OoO_Execution.md) · [Cache Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) · [Cache Coherence](../03_Memory/05_Cache_Coherence.md) · [Performance Modeling and DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) |

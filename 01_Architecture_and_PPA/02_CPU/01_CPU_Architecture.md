@@ -1,7 +1,7 @@
 # CPU Architecture — The Pipelined Machine and Its Contract
 
 > **Prerequisites:** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 (fan-out-of-4) unit and the gate-delay budget a stage must fit), [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the ALU that sits in EX).
-> **Hands off to:** [RISC_V_ISA](02_RISC_V_ISA.md), [OoO_Execution](03_OoO_Execution.md), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md).
+> **Hands off to:** [RISC_V_ISA](02_RISC_V_ISA.md), [OoO_Execution](03_OoO_Execution.md), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md).
 
 ---
 
@@ -295,7 +295,7 @@ Three ideas carry the topic; the microarchitecture (multi-level TLBs, page-walk 
 
 ## 8. Cache coherence: the single-writer invariant
 
-*This page owns the protocol-level view of coherence; the in-cache implementation (controller pipeline, MSHR interaction, inclusion) is [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) §9, and the on-chip-interconnect realization is [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md).*
+*This page owns the architectural contract and stable MESI/MOESI view. [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) turns those stable permissions into a correct controller—transient states, TBEs, races, acknowledgement proofs, atomics/DMA, safety, liveness, and verification. [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) owns the cache arrays/MSHRs/inclusion; [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) owns the fabric realization.*
 
 Private per-core caches create a correctness problem the single-core machine never had: the same memory line can sit in several caches at once, and one core's write must not leave another core reading a stale copy. Coherence is the protocol that preserves, across all those private copies, the illusion of **one shared memory**. Precisely, it maintains two invariants:
 
@@ -609,7 +609,7 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 ## Cross-references
 
 - **Down the stack (what this machine is built from):** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and $t_{\text{ovh}}$ behind §1.3), [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the EX-stage ALU whose delay sets $t_{\text{logic}}$).
-- **Up the stack (what builds on it):** [OoO_Execution](03_OoO_Execution.md) (the renaming, dynamic scheduling, ROB, and LSQ of §5 in full — the machine this in-order pipe becomes), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE/perceptron/BTB/RAS realization of §4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (the cache internals of §6 and the in-cache coherence controller of §8), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the translation microarchitecture of §7), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the interconnect that carries the coherence protocol of §8 — this page owns the MESI/MOESI/MESIF *state* view and its transition table, that page owns the dual *message* set, the ordering/serialization point behind §8.1's transient states, and the $O(N^2)$-snoop-vs-directory *scaling* of §8.4), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open core composing all of this).
+- **Up the stack (what builds on it):** [OoO_Execution](03_OoO_Execution.md) (the renaming, dynamic scheduling, ROB, and LSQ of §5 in full — the machine this in-order pipe becomes), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE/perceptron/BTB/RAS realization of §4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (the cache internals of §6), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (the transient controller, same-line races, directory formats, false sharing, atomics/DMA, and safety/liveness behind §8), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the translation microarchitecture of §7), [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the interconnect that carries the coherence protocol of §8 — this page owns the MESI/MOESI/MESIF stable-state view, while that page owns its message-set dual and snoop-vs-directory scaling), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open core composing all of this).
 - **Adjacent:** [RISC_V_ISA](02_RISC_V_ISA.md) (the instruction set, trap model, and fence encodings referenced in §5/§9), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (Amdahl's law and the CPI stack — the iron law of §1 and the additive hazard-CPI of §2 are the same decomposition, built bottom-up here from the pipeline and read top-down there as a modeling kernel).
 
 ---

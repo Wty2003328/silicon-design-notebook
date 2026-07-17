@@ -11,6 +11,24 @@ A DNN accelerator has almost no branches, no speculation, and a tiny instruction
 
 The single habit this page installs: **before you believe an accelerator PPA number, ask whether it came from an analytical mapping model, a cycle-accurate array model, or an operator-level graph model — because each is blind to a different thing.**
 
+### System view — three inputs, two outputs, several fidelity choices
+
+Every accelerator model consumes the same three objects: a workload, a hardware template, and a mapping. Analytical tools count reuse and transfers; cycle models schedule array and memory events; operator/system models compose kernels and collectives. All should converge on latency and energy with explicit provenance.
+
+```mermaid
+flowchart LR
+    W["Workload<br/>layer / graph / shapes"] --> M["Mapping<br/>tile + loop order + dataflow"]
+    H["Hardware<br/>array + buffers + links"] --> M
+    M --> A{"Model fidelity"}
+    A --> T["Timeloop / MAESTRO<br/>analytical reuse"]
+    A --> C["SCALE-Sim<br/>cycle-level array"]
+    A --> O["NeuSim / ONNXim<br/>operator + system"]
+    T --> L["Latency + access counts"]
+    C --> L
+    O --> L
+    L --> E["Energy + utilization + bottleneck"]
+```
+
 ---
 
 ## 1. The three paradigms and when to use each

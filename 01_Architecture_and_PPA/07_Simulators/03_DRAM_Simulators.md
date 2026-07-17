@@ -13,6 +13,24 @@ For most modern workloads the memory system, not the core, sets performance — 
 
 This page is not a second copy of the [DDR_Controller](../03_Memory/04_DDR_Controller.md) page. That page derives the timing parameters and explains the *hardware* controller; this page explains how four simulators — **Ramulator (1.0/2.0), DRAMSim3, DRAMPower, and USIMM** — turn those same constraints into an *executable state machine* whose statistics you can trust to a known error bar. The division of labor: [Memory](../03_Memory/03_Memory.md) = device physics, [DDR_Controller](../03_Memory/04_DDR_Controller.md) = the real controller, *this page* = the model of both.
 
+### System view — an address becomes a legal command schedule
+
+The simulator does not assign one fixed latency to a request. It maps the address, queues it, chooses among ready commands, checks every JEDEC timing guard, mutates bank/rank/channel state, and only then records completion and energy.
+
+```mermaid
+flowchart LR
+    R["Core / trace requests"] --> A["Address mapping<br/>ch / rank / bank / row / col"]
+    A --> Q["Read + write queues"]
+    Q --> F["FR-FCFS / policy"]
+    F --> G["JEDEC timing guards"]
+    G --> B["Bank / row-buffer FSMs"]
+    B --> C["Command + data buses"]
+    C --> X["Latency / bandwidth stats"]
+    B --> P["State residency + commands"]
+    P --> E["DRAMPower / energy"]
+    B -->|completion| Q
+```
+
 ---
 
 ## 1. What a DRAM simulator models — and what it deliberately doesn't

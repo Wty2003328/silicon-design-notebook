@@ -1,6 +1,6 @@
 # ACE and CHI — Realizing Cache Coherence at the Interconnect
 
-> **Prerequisites:** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) §8–§9 (the coherence *contract* — SWMR, MESI, snoop-vs-directory — and the consistency model this page realizes), [AHB_AXI_APB](01_AHB_AXI_APB.md) (AXI4 channels and handshake, the substrate ACE extends), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) §8 (private caches, MSHRs, inclusion — the caches being kept coherent).
+> **Prerequisites:** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) §8–§9 (the architectural coherence/consistency contract), [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (stable/transient controller states, races, directory formats, and correctness), [AHB_AXI_APB](01_AHB_AXI_APB.md) (AXI4 channels and handshake, the substrate ACE extends), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) §8 (private caches, MSHRs, and inclusion).
 > **Hands off to:** [Network_on_Chip](03_Network_on_Chip.md) (the mesh, routing, flow control, and deadlock the CHI protocol rides on), [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the memory subordinate at the far end), [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (coherence *clients* over CXL).
 
 ---
@@ -26,7 +26,7 @@ Take the MESI state machine of [§8](../02_CPU/01_CPU_Architecture.md) as given 
 
 2. **Serialize conflicting requests to a line.** On a real fabric there is no atomic global bus; a coherence "transaction" is many messages spread over many cycles, and two cores can have in-flight, conflicting requests to the *same* line at the *same* time. SWMR is an ordering invariant — the writer→reader and reader→writer transitions of a line must occur in *some* agreed total order — so **something must be the arbiter** that decides request A is ordered before request B. That agent is the **point of serialization**. Without it, two cores could both believe they are the single writer.
 
-3. **Make a multi-message transaction appear atomic.** Because a request, its snoops, the snoop responses, the data, and the completion acknowledgment span many cycles, the protocol must handle the window in which a line is *in transit* — transient states, races against a second requester, and acknowledgments that close the transaction. The fabric owns this "coherence over a non-atomic medium" bookkeeping; the cache only sees clean M/E/S/I.
+3. **Make a multi-message transaction appear atomic.** Because a request, its snoops, the snoop responses, the data, and the completion acknowledgment span many cycles, the protocol must handle the window in which a line is *in transit*. The cache controller records transient permissions and unfinished obligations in a TBE; the fabric's ordering point serializes same-line transactions and delivers the messages that discharge those obligations. [Cache_Coherence §3–§5](../03_Memory/05_Cache_Coherence.md) owns the controller side of that handshake.
 
 Obligations 1 and 2 are the load-bearing ones. Broadcast answers (1) by asking everyone and answers (2) by bus arbitration (winning the bus for an address *is* winning the order). A directory answers (1) with a lookup and answers (2) at the home node. Hold that framing and ACE and CHI stop being two protocols to memorize and become **two points on one trade-off curve.**
 
@@ -510,6 +510,7 @@ Read it as one decision. A mobile SoC with a 2–8 core cluster sits *below* the
 
 - **Down the stack (what this fabric is built from):** [Network_on_Chip](03_Network_on_Chip.md) (the mesh topology, credit-based flow control §3, routing/protocol deadlock and virtual networks §4, and the coherent-mesh/CMN realization §7 that CHI rides on; D2D physical layer §8), [AHB_AXI_APB](01_AHB_AXI_APB.md) (the AXI4 channels and handshakes ACE extends), [Memory](../03_Memory/03_Memory.md) & [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the SN-F memory endpoint), [IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (the chiplet/D2D substrate of §7).
 - **Up the stack (what defines the contract this realizes):** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) §8 (the SWMR/Data-Value invariants and the MESI/MOESI *state*-count derivation whose *message*-set dual is §1.1 here — this page names and diagrams those same five states as CHI's I/UC/UD/SC/SD in §4.3, and walks their canonical read-miss transaction flow with the `CompAck` ordering handshake in §4.4) and §9 (the consistency model the fabric's ordering honors) — specifically §8.2 for the core-side *latency* of the ping-pong whose *fabric-bandwidth* cost is derived in §3.1, [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) §8 (the in-cache coherence controller, MSHRs, and inclusion policy on the other side of the snoop; the four-Cs miss taxonomy and 64 B line geometry behind §3.1/§5.1).
+- **Controller dual:** [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) owns the transient states/TBEs, same-line races, acknowledgement proof, directory encodings, protocol deadlock, and safety/liveness properties that these fabric transactions must satisfy.
 - **Adjacent / consumers:** [OoO_Execution](../02_CPU/03_OoO_Execution.md) §5 (the LSQ that enforces per-core ordering the fabric completes), [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (accelerators that become CXL coherence clients, §7), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete core that plugs into such a fabric), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) §2.2 (the Universal Scalability Law contention term the §3.1 coherence miss feeds; where these scaling models feed system design-space exploration).
 
 ---
@@ -532,6 +533,7 @@ Read it as one decision. A mobile SoC with a 2–8 core cluster sits *below* the
 | Direction | Link |
 |---|---|
 | Prerequisite | [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) (coherence contract §8–§9) |
+| Prerequisite | [Cache_Coherence](../03_Memory/05_Cache_Coherence.md) (controller and correctness) |
 | Prerequisite | [AHB_AXI_APB](01_AHB_AXI_APB.md) (AXI4 substrate) |
 | Hands off to | [Network_on_Chip](03_Network_on_Chip.md) (the fabric CHI rides on) |
 | Related | [STA](../../06_Signoff/01_STA.md) (interconnect timing closure) |

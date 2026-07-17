@@ -11,6 +11,23 @@ Every performance or power number in this notebook that is not measured on real 
 
 The single most important habit: **before you believe a simulated number, ask which rung of the fidelity ladder it came from and what that rung is allowed to model.**
 
+### System view — the modeling loop
+
+A credible number is not produced by a simulator alone. Workload and configuration drive functional and timing models; statistics are reduced over a region of interest; validation compares them with a reference; calibration changes parameters or model structure and closes the loop.
+
+```mermaid
+flowchart LR
+    W["Workload + ROI"] --> F["Functional execution<br/>correct instruction stream"]
+    C["Machine configuration"] --> T["Timing / event model"]
+    F --> T
+    T --> P["Power / area / thermal overlay"]
+    T --> S["Statistics + confidence"]
+    P --> S
+    S --> V["Validation vs hardware / RTL"]
+    V -->|calibrate or refine| C
+    V --> R["Report result + provenance + error bar"]
+```
+
 ---
 
 ## 1. The three questions every simulator answers
@@ -276,3 +293,18 @@ The mature stance: quote simulated numbers with their provenance and error class
 - **Down the stack:** [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (analytical kernels + the NeuSim worked example), [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the structures an O3 timing model tracks), [Memory](../03_Memory/03_Memory.md) / [DDR_Controller](../03_Memory/04_DDR_Controller.md) (what DRAM simulators encode).
 - **Up the stack:** [Full_Chip_Modeling](../01_Modeling/02_Full_Chip_Modeling.md) (composing leaf models into a chip; the full tool/fidelity ladder and the perf→power→thermal loop).
 - **Sibling pages (this folder):** per-tool deep dives — [gem5](02_gem5.md) (the event engine + O3 cost model of §3/§6 made concrete), [DRAM_Simulators](03_DRAM_Simulators.md) (the banks/scheduler realizing §7's bandwidth-as-output), [GPU_Simulators](04_GPU_Simulators.md), [Accelerator_and_NPU_Simulators](05_Accelerator_and_NPU_Simulators.md), [Other_Architecture_Simulators](06_Other_Architecture_Simulators.md), and [Analytical_Models](07_Analytical_Models.md) (the closed-form dual of §6's interval model). Folder [index](00_Index.md).
+
+---
+
+## References
+
+1. Eeckhout, L., “Computer Architecture Performance Evaluation Methods,” Morgan & Claypool, 2010. Workload selection, sampling, validation, and simulation methodology.
+2. Wunderlich, R. E. et al., “SMARTS: Accelerating Microarchitecture Simulation via Rigorous Statistical Sampling,” *ISCA*, 2003. Systematic sampling, confidence intervals, and functional/detailed warming.
+3. Sherwood, T. et al., “Automatically Characterizing Large Scale Program Behavior,” *ASPLOS*, 2002. Basic-block vectors and representative phase selection (SimPoint).
+4. Karkhanis, T. S. and Smith, J. E., “A First-Order Superscalar Processor Model,” *ISCA*, 2004. The interval/mechanistic analytical dual of an out-of-order timing model.
+5. Lowe-Power, J. et al., “The gem5 Simulator: Version 20.0+,” *arXiv:2007.03152*, 2020. A modern event-driven architectural simulator and its validation surface.
+6. Jain, R., *The Art of Computer Systems Performance Analysis*, Wiley, 1991. Experimental design, statistics, confidence intervals, and queueing foundations.
+
+---
+
+⬅ [Simulators Index](00_Index.md) · [Architecture Book Contents](../00_Index.md) · next ➡ [gem5](02_gem5.md)

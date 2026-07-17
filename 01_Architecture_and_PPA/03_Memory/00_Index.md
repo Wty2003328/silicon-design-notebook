@@ -1,6 +1,6 @@
 # Part 3 · Architecture › Memory — Chapter Index
 
-*Shared part: the storage hierarchy every machine reuses — from the SRAM/DRAM bit cell up through caches, address translation, and the DRAM scheduler.*
+*Shared part: the storage hierarchy every machine reuses — from the SRAM/DRAM bit cell up through caches, coherence and address translation, to the DRAM scheduler.*
 
 Each chapter is concept-first — why the structure must exist, the mechanism, the trade-offs, then the derivations and worked numbers — closing with **Numbers to memorize** and **Cross-references**.
 
@@ -57,6 +57,22 @@ Each chapter is concept-first — why the structure must exist, the mechanism, t
 - §7  The achieved-bandwidth model and latency under load
 - §8  ECC and RAS as concepts
 - §9  DDR5 and LPDDR5X as concepts
+
+### [Cache Coherence — From MESI States to a Correct Controller](05_Cache_Coherence.md)
+
+- §1  Three contracts: coherence, consistency, and synchronization
+- §2  Stable permission states and the minimal message vocabulary
+- §3  Transient states, transaction storage, and acknowledgement proofs
+- §4  Read, write, dirty-owner, and upgrade traces
+- §5  Races: simultaneous writers, snoop collisions, and replacement
+- §6  Snoop/directory storage–traffic trade-offs
+- §7  False sharing, coherence misses, locks, and ownership prefetch
+- §8  Atomics, fences, DMA, instruction coherence, and aliases
+- §9  Safety, liveness, and protocol deadlock
+- §10 Verification strategy
+- §11 Performance model and design decisions
+- §12 Numbers to memorize
+- §13 Worked problems
 
 ---
 ⬅ [Architecture Book Contents](../00_Index.md) · [Root Index](../../Index.md) · [← Part 2 · CPU](../02_CPU/00_Index.md) · [Part 4 · Interconnect →](../04_Interconnect/00_Index.md)
