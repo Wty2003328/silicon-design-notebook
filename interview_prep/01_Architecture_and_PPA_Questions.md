@@ -6,7 +6,7 @@ Consolidated interview Q&A and worked problems from every page in `01_Architectu
 
 ## ACE and CHI -- AMBA Coherence Extensions Beyond AXI
 
-*From [ACE_and_CHI.md](../01_Architecture_and_PPA/04_Interconnect/02_ACE_and_CHI.md)*
+*From [ACE_and_CHI.md](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/02_ACE_and_CHI.md)*
 
 ### Problem 1: ACE Transaction Sequence
 
@@ -205,7 +205,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ## AMBA Bus Protocols: APB, AHB, and AXI -- The Complete Interview Bible
 
-*From [AHB_AXI_APB.md](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md)*
+*From [AHB_AXI_APB.md](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/01_AHB_AXI_APB.md)*
 
 ### Q1: What are the main differences between APB, AHB, and AXI?
 
@@ -291,7 +291,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ## Branch Prediction -- Deep Dive for CPU Designers
 
-*From [Branch_Prediction_Deep_Dive.md](../01_Architecture_and_PPA/02_CPU/04_Branch_Prediction_Deep_Dive.md)*
+*From [Branch_Prediction_Deep_Dive.md](../01_Architecture_and_PPA/02_CPU/02_Frontend_and_Prediction/01_Branch_Prediction_Deep_Dive.md)*
 
 ### Problem 1: gshare Index Computation and Prediction
 
@@ -619,7 +619,7 @@ history window.
 
 ## CPU Architecture -- The Complete Interview Bible
 
-*From [CPU_Architecture.md](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md)*
+*From [CPU_Architecture.md](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/01_CPU_Architecture.md)*
 
 ### Q1: Describe the 5 pipeline stages in detail. What happens at each stage?
 
@@ -705,7 +705,7 @@ history window.
 
 ## Cache Microarchitecture — Controller Design and Performance
 
-*From [Cache_Microarchitecture.md](../01_Architecture_and_PPA/03_Memory/01_Cache_Microarchitecture.md)*
+*From [Cache_Microarchitecture.md](../01_Architecture_and_PPA/03_Memory/01_Cache_Hierarchy/01_Cache_Microarchitecture.md)*
 
 ### Problem 1: Design a 4-Way 32 KB L1 D-Cache
 
@@ -888,7 +888,7 @@ limited by memory bandwidth.
 
 ### Problem 5: MESI Protocol Trace
 
-*From [Cache_Coherence.md](../01_Architecture_and_PPA/03_Memory/05_Cache_Coherence.md) and [CPU_Architecture §8](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md).*
+*From [Cache_Coherence.md](../01_Architecture_and_PPA/03_Memory/03_Coherence_and_Consistency/01_Cache_Coherence.md) and [CPU_Architecture §8](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/01_CPU_Architecture.md).*
 
 **Given:** 4-core system with MESI, shared bus. Line X initially not cached anywhere.
 
@@ -942,7 +942,7 @@ The sharer vector alone is 9.375% of the 32 MiB data store. Owner, protocol stat
 
 ## DDR Memory Controller -- From Protocol to Scheduler
 
-*From [DDR_Controller.md](../01_Architecture_and_PPA/03_Memory/04_DDR_Controller.md)*
+*From [DDR_Controller.md](../01_Architecture_and_PPA/03_Memory/05_Main_Memory/01_DDR_Controller.md)*
 
 ### Problem 1: Peak and Effective Bandwidth
 
@@ -1159,7 +1159,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Memory Architecture and Design — Senior Engineer Level
 
-*From [Memory.md](../01_Architecture_and_PPA/03_Memory/03_Memory.md)*
+*From [Memory.md](../01_Architecture_and_PPA/03_Memory/04_Memory_Technologies/01_Memory_Arrays_and_Technologies.md)*
 
 ### Q1: Derive the read stability condition for a 6T SRAM cell.
 
@@ -1225,7 +1225,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Network-on-Chip (NoC) — Topology, Routing, Flow Control, Router Microarchitecture
 
-*From [Network_on_Chip.md](../01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md)*
+*From [Network_on_Chip.md](../01_Architecture_and_PPA/04_Interconnect/02_Network_on_Chip/01_Network_on_Chip.md)*
 
 - **"Why a NoC over a bus/crossbar?"** → bandwidth scales with bisection not constant; $O(N^2)$ crossbar area/wire-delay avoided; links are short repeatable wires that close timing; modularity (tile + DFT (design for test) + CDC per hop).
 - **"Wormhole vs cut-through?"** → buffer flits not packets (area), but blocked packets span routers → HoL (head-of-line) blocking & deadlock pressure; VCs (virtual channels) mitigate.
@@ -1237,7 +1237,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## TLB and Virtual Memory -- Hardware Microarchitecture
 
-*From [TLB_and_Virtual_Memory.md](../01_Architecture_and_PPA/03_Memory/02_TLB_and_Virtual_Memory.md)*
+*From [TLB_and_Virtual_Memory.md](../01_Architecture_and_PPA/03_Memory/02_Virtual_Memory/01_TLB_and_Virtual_Memory.md)*
 
 ### Problem 1: Design a 64-Entry 4-Way DTLB for RV64 Sv39
 
@@ -1550,7 +1550,7 @@ significantly -- and why superpages are critical for data-intensive workloads.
 
 ## Xiangshan (香山) — Open-Source RISC-V OoO Processor Case Study
 
-*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/02_CPU/05_Xiangshan_CPU_Design.md)*
+*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/02_CPU/04_Core_Case_Studies/01_Xiangshan_CPU_Design.md)*
 
 ### Problem 1: Pipeline Mispredict Recovery Path
 
@@ -1815,3 +1815,265 @@ $$
 This would close the gap to approximately 29%, making Xiangshan competitive for
 many server workloads.
 
+---
+
+## Architecture Subdomain Deep-Dive Questions
+
+These questions cover the focused chapters added when the architecture book was
+split into implementation-oriented subdomains. A strong answer should state the
+governing invariant, identify the limiting resource, quantify the tradeoff, and
+name the measurement that would change the decision.
+
+### Modeling and PPA
+
+#### Q1: How do you know a sampled workload preserves architecture decisions?
+
+*From [Workload Characterization and Sampling](../01_Architecture_and_PPA/01_Modeling/01_Performance_Analysis/02_Workload_Characterization_and_Sampling.md)*
+
+**Answer:** Do not validate sampling only by average IPC. Cluster intervals using
+architecture-relevant features such as instruction mix, branch MPKI, cache MPKI,
+memory-level parallelism, footprint, and accelerator utilization. Weight the
+selected phases, warm each simulated structure to a comparable state, and place
+confidence intervals on each candidate's score. The decisive check is **decision
+rank stability**: if full-run uncertainty can reverse the ordering of two designs,
+the sample is not yet adequate for that decision.
+
+#### Q2: How should an architect present an early PPA estimate?
+
+*From [Early PPA Estimation and Uncertainty](../01_Architecture_and_PPA/01_Modeling/02_System_and_PPA/02_Early_PPA_Estimation_and_Uncertainty.md)*
+
+**Answer:** Report a calibrated range with explicit assumptions, not a precise
+point. Separate logic, memory, interconnect, clock, and physical overhead; scale
+from relevant reference blocks; and expose process, voltage, frequency, activity,
+utilization, and wire-length assumptions. Run sensitivity analysis to show which
+unknown dominates. Update the calibration at RTL, synthesis, and floorplanning
+milestones so the interval narrows and model error is distinguishable from an
+actual design regression.
+
+### CPU Frontend, Execution, and Recovery
+
+#### Q3: When does adding an SMT thread or wider vector unit fail to improve throughput?
+
+*From [SMT, SIMD, and Vector Execution](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/03_SMT_SIMD_and_Vector_Execution.md)*
+
+**Answer:** Both mechanisms improve utilization only when unused execution and
+memory capacity exists. SMT can instead amplify frontend, rename, ROB, cache,
+TLB, and bandwidth contention; vectors can become register-file, shuffle,
+load/store, or memory-bandwidth limited. Measure eligible issue slots, occupancy,
+per-thread progress, vector lane utilization, bank conflicts, and bytes per useful
+operation. Partition or throttle shared resources when total throughput rises but
+latency-critical progress collapses.
+
+#### Q4: A four-wide backend retires only two instructions per cycle. How do you prove the frontend is responsible?
+
+*From [Fetch, Decode, and µop Delivery](../01_Architecture_and_PPA/02_CPU/02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md)*
+
+**Answer:** Build a loss accounting chain from requested fetch slots to useful
+µops entering rename: I-cache and ITLB misses, taken-branch bubbles, alignment
+waste, variable-length decode limits, queue starvation, µop-cache misses, and
+wrong-path delivery. Check sustained—not peak—delivery and correlate backend
+starvation with each cause. A wider decoder does nothing when the limiting term
+is fetch bytes, prediction redirection, or queue refill latency.
+
+#### Q5: What makes a load/store unit correct under speculative execution?
+
+*From [Load/Store Unit and Memory Ordering](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md)*
+
+**Answer:** A load must receive the youngest older overlapping store bytes, or
+cache data only after all relevant older store addresses are known. Forwarding is
+byte-granular because a load may merge multiple stores and cache data. If a load
+executes before an older unknown-address store and later overlaps it, the machine
+must detect the violation, replay the affected dependence chain, and prevent stale
+data from retiring. Stress partial overlap, split accesses, exceptions, fences,
+and coherence invalidations.
+
+#### Q6: How do retirement and recovery preserve precise architectural state?
+
+*From [Retirement, Recovery, and Precise State](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md)*
+
+**Answer:** Execution may finish out of order, but retirement commits in program
+order. An exception becomes visible only when its instruction reaches the ROB
+head; younger stores, register mappings, and side effects must remain
+non-architectural. Branch checkpoints or history logs restore rename state, while
+generation tags or epochs prevent late responses from a squashed path from
+updating the new path. Recovery is complete only after every distributed queue
+and response path obeys the same kill boundary.
+
+### Memory Hierarchy and Consistency
+
+#### Q7: How do you decide whether a prefetcher is helping the system rather than its local cache?
+
+*From [Prefetching, Replacement, and QoS](../01_Architecture_and_PPA/03_Memory/01_Cache_Hierarchy/02_Prefetching_Replacement_and_QoS.md)*
+
+**Answer:** Accuracy alone is insufficient. Measure coverage, timeliness,
+pollution, useless evictions, MSHR occupancy, downstream bandwidth, row-buffer
+disruption, and harm to other requesters. Feed these signals back into prefetch
+degree and distance, and make replacement insertion aware of confidence. The
+system-level acceptance criterion is weighted speedup or service-level progress,
+not the prefetching core's hit rate in isolation.
+
+#### Q8: Why is IOMMU invalidation harder than a CPU TLB flush?
+
+*From [Page Walkers, IOMMUs, and Virtualization](../01_Architecture_and_PPA/03_Memory/02_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md)*
+
+**Answer:** Translation state may exist in device TLBs, an IOMMU, shared
+page-walk caches, and nested guest/host translation structures, with DMA already
+in flight. Software must update page tables, issue an invalidation with the right
+address-space scope, wait for completion from every caching agent, and order that
+completion before memory is reassigned. ATS and PRI improve locality and fault
+handling but add distributed state whose stale use is a correctness and security
+failure.
+
+#### Q9: Can a coherent machine still produce an unintuitive store-buffering result?
+
+*From [Memory Consistency and Atomics](../01_Architecture_and_PPA/03_Memory/03_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md)*
+
+**Answer:** Yes. Coherence orders writes to each individual cache line; a memory
+consistency model constrains ordering across different addresses and between
+loads and stores from each hart. Store buffers can let each core observe the
+other variable before its own buffered store becomes globally visible. A fence
+forbids the relevant reordering, while an atomic operation additionally requires
+indivisible read-modify-write behavior and a well-defined ordering strength.
+
+#### Q10: Why can an HBM system deliver far less than its pin bandwidth?
+
+*From [HBM and Advanced Memory Systems](../01_Architecture_and_PPA/03_Memory/05_Main_Memory/02_HBM_and_Advanced_Memory_Systems.md)*
+
+**Answer:** Peak bandwidth assumes enough independent, well-mapped, long,
+balanced transfers to keep all channels busy. Low memory-level parallelism,
+small or misaligned requests, hot channels or banks, read/write turnarounds,
+refresh, thermal throttling, protocol overhead, and remote NUMA placement reduce
+delivery. Measure per-channel utilization, queue occupancy, row behavior,
+transaction efficiency, temperature, and useful bytes—not merely controller
+request count.
+
+### Interconnect and System Fabrics
+
+#### Q11: How do you establish that a wormhole NoC is deadlock-free?
+
+*From [Routing, Flow Control, and Deadlock](../01_Architecture_and_PPA/04_Interconnect/02_Network_on_Chip/02_Routing_Flow_Control_and_Deadlock.md)*
+
+**Answer:** Construct the channel-dependency graph induced by every legal route
+and protocol dependency. A cycle means packets can hold one channel while waiting
+forever for the next. Break all cycles with restricted routing, ordered channel
+classes, or escape virtual channels whose own dependency graph is acyclic.
+Credits prevent buffer overflow but do not prove progress; include endpoint and
+coherence-message dependencies, then verify liveness under finite backpressure.
+
+#### Q12: What is required to turn a QoS priority field into a latency guarantee?
+
+*From [QoS, Ordering, and I/O Coherence](../01_Architecture_and_PPA/04_Interconnect/03_System_Fabrics/01_QoS_Ordering_and_IO_Coherence.md)*
+
+**Answer:** Every contended stage—source queue, NoC, bridge, memory controller,
+and return path—needs a compatible admission and arbitration policy. Bound burst
+size and outstanding traffic, reserve bandwidth or service opportunities, prevent
+priority inversion, and include ordering dependencies that can block a high-class
+request behind a low-class one. Validate the end-to-end tail latency under
+adversarial traffic; local priority without downstream enforcement is only a
+hint.
+
+#### Q13: What determines a good chiplet partition?
+
+*From [Chiplets, CXL, and Die-to-Die](../01_Architecture_and_PPA/04_Interconnect/03_System_Fabrics/02_Chiplets_CXL_and_Die_to_Die.md)*
+
+**Answer:** Trade reticle and yield benefits, node reuse, and product modularity
+against die-to-die latency, energy per bit, package routing, bandwidth demand,
+coherence scope, test, clock/reset, thermal density, and known-good-die yield.
+Budget protocol retries, lane repair, and credits, not just payload bandwidth.
+Keep high-volume, fine-grained feedback loops local unless the package link and
+protocol can tolerate their latency and failure modes.
+
+### GPU Architecture
+
+#### Q14: Why is high GPU occupancy neither necessary nor sufficient for high performance?
+
+*From [SIMT Scheduling and Occupancy](../01_Architecture_and_PPA/05_GPU/01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md)*
+
+**Answer:** Occupancy counts resident warps, not warps eligible to issue. More
+residency hides latency only until the scheduler has enough independent ready
+work; register pressure, shared-memory allocation, barriers, divergence, cache
+misses, or pipeline saturation can still leave no eligible warp or no free
+execution unit. Examine eligible warps, issue-slot utilization, stall reasons,
+register spills, and achieved memory bandwidth while sweeping block size.
+
+#### Q15: How can a fully coalesced GPU access still perform badly?
+
+*From [Coalescing, Caches, and Shared Memory](../01_Architecture_and_PPA/05_GPU/02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md)*
+
+**Answer:** Coalescing minimizes memory transactions for an instruction, but
+performance can still be limited by poor locality, partition camping, insufficient
+outstanding requests, cache thrashing, address translation, synchronization, or
+bandwidth saturation. Moving data to shared memory may trade global transactions
+for bank conflicts and occupancy loss. Count requested versus transferred bytes,
+transactions per warp, replay causes, bank conflicts, and useful reuse.
+
+#### Q16: Derive the communication volume of ring all-reduce and name its real bottleneck.
+
+*From [Multi-GPU Interconnect and Execution](../01_Architecture_and_PPA/05_GPU/03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md)*
+
+**Answer:** For message size $M$ on $N$ GPUs, reduce-scatter and all-gather each
+take $N-1$ steps moving $M/N$ per GPU, so each GPU sends and receives
+$2(N-1)M/N$ bytes. Large-message time approaches that volume divided by effective
+link bandwidth; small messages are dominated by step latency and launch overhead.
+Topology mapping, bidirectional use, link contention, and overlap with computation
+determine effective rather than nominal bandwidth.
+
+### NPU Architecture
+
+#### Q17: What causes a systolic array to have low utilization?
+
+*From [Systolic, Spatial, and Vector Dataflows](../01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md)*
+
+**Answer:** Edge tiles, dimensions smaller than the array, pipeline fill and
+drain, data dependencies, sparsity imbalance, and memory starvation leave PEs
+idle. Dataflow choice determines which operand stays local and therefore the
+required reuse and reduction network. Report useful MACs divided by available PE
+cycles, then separate geometric underfill, synchronization, and data-delivery
+losses before proposing a larger array.
+
+#### Q18: How do you choose an NPU tile shape?
+
+*From [Tensor Tiling and Data Movement](../01_Architecture_and_PPA/06_NPU/02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md)*
+
+**Answer:** The input, weight, partial-sum, double-buffer, alignment, and metadata
+footprints must fit the assigned SRAM banks while supplying enough parallel work
+to the array. Minimize costly hierarchy traffic by maximizing reuse, but include
+halo duplication, tail tiles, bank conflicts, DMA granularity, and overlap between
+load, compute, and store. Search legal shapes with a byte-accurate capacity model
+and rank them using measured cycles and traffic at every level.
+
+#### Q19: When does sparse execution lose to dense execution?
+
+*From [Sparsity, Quantization, and Compression](../01_Architecture_and_PPA/06_NPU/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md)*
+
+**Answer:** Sparse execution wins only when skipped MACs and reduced data movement
+exceed metadata, decode, indexing, load imbalance, fragmentation, and control
+overheads. The break-even density depends on structure: block or $N{:}M$ sparsity
+is easier to schedule than arbitrary sparsity but may expose fewer zeros.
+Quantization has a similar system boundary—include scale/zero-point operations,
+accumulator width, conversion traffic, accuracy loss, and fallback layers.
+
+#### Q20: What must be ordered when a coherent NPU signals completion?
+
+*From [Host Interface, Coherence, and Scheduling](../01_Architecture_and_PPA/06_NPU/03_System_Integration/01_Host_Interface_Coherence_and_Scheduling.md)*
+
+**Answer:** Descriptor fetches must observe the producer's writes; data reads must
+use the intended translation and protection context; result writes and any cache
+maintenance must become visible before the completion record, interrupt, or
+doorbell is observed. Define ownership, fences, IOMMU invalidation, fault replay,
+and cancellation behavior explicitly. Coherence supplies a visibility mechanism,
+but it does not by itself define the command protocol's ordering contract.
+
+### Simulation Methodology
+
+#### Q21: Why can a trace-driven NoC or coherence study give the wrong answer?
+
+*From [NoC and Coherence Simulation](../01_Architecture_and_PPA/07_Simulators/03_Memory_and_Interconnect/02_NoC_and_Coherence_Simulation.md)*
+
+**Answer:** A fixed trace removes feedback: in the real system, congestion delays
+misses, delayed misses reduce or reshape injection, backpressure changes MSHR and
+ROB occupancy, and coherence races can change the later request stream. Trace
+replay is useful when this feedback is demonstrably weak or the trace includes a
+validated dependency/timing model. Otherwise couple endpoints, caches, protocol
+controllers, and network timing, then validate queue occupancies and tail latency
+as well as average throughput.

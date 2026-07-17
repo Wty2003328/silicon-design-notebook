@@ -30,28 +30,35 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 ---
 
 ## [01 · Architecture and PPA](01_Architecture_and_PPA/00_Index.md)
-*Explore the microarchitecture; model performance; budget power and area — before RTL. Organized as **chip types** (CPU/GPU/NPU) + **shared parts** (Modeling/Memory/Interconnect/Simulators).*
+*Explore the microarchitecture; model performance; budget power and area — before RTL. The book now contains **45 chapters in 25 focused subdomains**, each with its own scope and reading order.*
 
-| Part | Page | Coverage |
-|------|------|----------|
-| Modeling | [Performance Modeling & DSE](01_Architecture_and_PPA/01_Modeling/01_Performance_Modeling_and_DSE.md) | modeling-fidelity ladder, CPI stack, gem5/SystemC-TLM, SimPoint, design-space exploration, PPA tradeoffs |
-| Modeling | [Full-Chip Modeling](01_Architecture_and_PPA/01_Modeling/02_Full_Chip_Modeling.md) | hierarchical power+perf modeling: CPU core→cluster→SoC/DDR, GPU SM→GPC→chip, NPU PE→array→core→chip→pod, contention/overlap/DVFS/thermal |
-| CPU | [CPU Architecture](01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md) | 5-stage pipeline, hazards, forwarding network, Tomasulo, superscalar, MESI, SMT, µop fusion, Spectre/Meltdown |
-| CPU | [RISC-V ISA](01_Architecture_and_PPA/02_CPU/02_RISC_V_ISA.md) | RV64GC, privilege modes, Sv39/48, Vector, Bitmanip, Hypervisor |
-| CPU | [OoO Execution](01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) | rename/RAT, ROB, issue queue wakeup-select, LSQ, misprediction recovery, exception pipeline, execution units |
-| CPU | [Branch Prediction Deep Dive](01_Architecture_and_PPA/02_CPU/04_Branch_Prediction_Deep_Dive.md) | BTB, gshare, TAGE-SC-L, perceptron, RAS, ITTAGE, fetch unit + FTQ |
-| CPU | [Xiangshan CPU Design](01_Architecture_and_PPA/02_CPU/05_Xiangshan_CPU_Design.md) | open-source RISC-V OoO core case study (Nanhu/Kunminghu) |
-| Memory | [Cache Microarchitecture](01_Architecture_and_PPA/03_Memory/01_Cache_Microarchitecture.md) | pipeline, MSHR, write policy, prefetch, replacement, coherence overview |
-| Memory | [TLB and Virtual Memory](01_Architecture_and_PPA/03_Memory/02_TLB_and_Virtual_Memory.md) | TLB format, page-table walker, VIPT, shootdown, superpages, 5-level |
-| Memory | [Memory](01_Architecture_and_PPA/03_Memory/03_Memory.md) | the bit-storage trade surface: 6T/8T/10T SRAM (SNM vs area vs speed), DRAM 1T1C density-vs-refresh, memory compiler, multi-port/register-file port cost, ECC coding theory, CAM/TCAM, compute-in-memory |
-| Memory | [DDR Controller](01_Architecture_and_PPA/03_Memory/04_DDR_Controller.md) | commands, timing, row-buffer, FR-FCFS, ECC, DDR5, LPDDR5X |
-| Memory | [Cache Coherence](01_Architecture_and_PPA/03_Memory/05_Cache_Coherence.md) | MESI/MOESI permissions, transient states, TBEs, races, directories, false sharing, atomics/DMA, safety/liveness, verification |
-| Interconnect | [AHB / AXI / APB](01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md) | AMBA bus protocols, AXI4 spec, CDC bridges, ATOP |
-| Interconnect | [ACE and CHI](01_Architecture_and_PPA/04_Interconnect/02_ACE_and_CHI.md) | cache-coherence protocols, snoop, CXL/PCIe |
-| Interconnect | [Network-on-Chip](01_Architecture_and_PPA/04_Interconnect/03_Network_on_Chip.md) | topology/bisection math, wormhole/VC flow control, router datapath + allocators, deadlock theory, CHI-over-mesh |
-| GPU | [GPU Architecture](01_Architecture_and_PPA/05_GPU/01_GPU_Architecture.md) | SIMT + massive multithreading, the SM as a hardware block, warp divergence, memory coalescing, occupancy, HBM hierarchy |
-| NPU | [NPU / Dataflow Accelerators](01_Architecture_and_PPA/06_NPU/01_NPU_Accelerators.md) | why spatial/dataflow beats von-Neumann for GEMM: systolic array, WS/OS/RS dataflow, scratchpad + mapping, roofline, scale-out |
-| Simulators | [Simulators folder →](01_Architecture_and_PPA/07_Simulators/00_Index.md) | methodology, gem5, DRAM (DRAMSim/Ramulator), GPU (GPGPU-Sim/Accel-Sim), accelerator/NPU (SCALE-Sim/Timeloop/NeuSim), other-architecture, analytical/roofline models |
+| Part | Subdomain | Coverage |
+|------|-----------|----------|
+| Modeling | [Performance Analysis](01_Architecture_and_PPA/01_Modeling/01_Performance_Analysis/00_Index.md) | workload characterization, sampling, analytical/cycle models and DSE |
+| Modeling | [System and PPA](01_Architecture_and_PPA/01_Modeling/02_System_and_PPA/00_Index.md) | full-chip composition, early PPA calibration and uncertainty |
+| CPU | [Core Foundations](01_Architecture_and_PPA/02_CPU/01_Core_Foundations/00_Index.md) | pipeline/ISA plus SMT, SIMD and vectors |
+| CPU | [Frontend and Prediction](01_Architecture_and_PPA/02_CPU/02_Frontend_and_Prediction/00_Index.md) | branch/target prediction through fetch, decode and µop delivery |
+| CPU | [Out-of-Order Backend](01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/00_Index.md) | rename/schedule, LSU ordering and precise retirement/recovery |
+| CPU | [Core Case Studies](01_Architecture_and_PPA/02_CPU/04_Core_Case_Studies/00_Index.md) | real open-core design decisions |
+| Memory | [Cache Hierarchy](01_Architecture_and_PPA/03_Memory/01_Cache_Hierarchy/00_Index.md) | nonblocking caches, prefetch, replacement and QoS |
+| Memory | [Virtual Memory](01_Architecture_and_PPA/03_Memory/02_Virtual_Memory/00_Index.md) | TLBs, walkers, IOMMUs, ATS/PRI and nested translation |
+| Memory | [Coherence and Consistency](01_Architecture_and_PPA/03_Memory/03_Coherence_and_Consistency/00_Index.md) | distributed permissions, weak ordering, fences and atomics |
+| Memory | [Memory Technologies](01_Architecture_and_PPA/03_Memory/04_Memory_Technologies/00_Index.md) | SRAM/DRAM/register-file/CAM/ECC structures |
+| Memory | [Main Memory](01_Architecture_and_PPA/03_Memory/05_Main_Memory/00_Index.md) | DDR and HBM controller/system design |
+| Interconnect | [Protocols](01_Architecture_and_PPA/04_Interconnect/01_Protocols/00_Index.md) | AXI/AHB/APB and ACE/CHI endpoint semantics |
+| Interconnect | [Network on Chip](01_Architecture_and_PPA/04_Interconnect/02_Network_on_Chip/00_Index.md) | topology/router timing plus flow-control/deadlock proofs |
+| Interconnect | [System Fabrics](01_Architecture_and_PPA/04_Interconnect/03_System_Fabrics/00_Index.md) | QoS/order/I/O coherence and UCIe/CXL chiplets |
+| GPU | [Core Architecture](01_Architecture_and_PPA/05_GPU/01_Core_Architecture/00_Index.md) | SIMT scheduling, scoreboards and occupancy |
+| GPU | [Memory System](01_Architecture_and_PPA/05_GPU/02_Memory_System/00_Index.md) | coalescing, shared memory, caches, translation and HBM |
+| GPU | [Scale-Up](01_Architecture_and_PPA/05_GPU/03_Scale_Up/00_Index.md) | peer memory, collectives and topology-aware multi-GPU execution |
+| NPU | [Compute Dataflows](01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/00_Index.md) | systolic/spatial/vector mappings and utilization |
+| NPU | [Mapping and Memory](01_Architecture_and_PPA/06_NPU/02_Mapping_and_Memory/00_Index.md) | tensor tiling, movement, sparsity, quantization and compression |
+| NPU | [System Integration](01_Architecture_and_PPA/06_NPU/03_System_Integration/00_Index.md) | command queues, DMA/IOMMU, coherence, scheduling and RAS |
+| Simulators | [Methodology](01_Architecture_and_PPA/07_Simulators/01_Methodology/00_Index.md) | experiment design, analytical bounds, calibration and validation |
+| Simulators | [CPU and System](01_Architecture_and_PPA/07_Simulators/02_CPU_and_System/00_Index.md) | execution-driven CPU/full-system simulation |
+| Simulators | [Memory and Interconnect](01_Architecture_and_PPA/07_Simulators/03_Memory_and_Interconnect/00_Index.md) | DRAM plus coupled NoC/coherence simulation |
+| Simulators | [Accelerator Simulation](01_Architecture_and_PPA/07_Simulators/04_Accelerator_Simulation/00_Index.md) | GPU and NPU timing/mapping/energy tools |
+| Simulators | [Specialized Simulators](01_Architecture_and_PPA/07_Simulators/05_Specialized_Simulators/00_Index.md) | manycore, CIM, datacenter, chiplet and ecosystem tools |
 
 ---
 

@@ -91,7 +91,7 @@ flowchart TD
 1. **Power-on.** The tensest minute in the lab: apply the rails and watch the current. A dead short is an [LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) or power-grid escape; a sane standby current means the die is alive and worth debugging.
 2. **Clocks & reset.** Does the [PLL](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) lock? Does reset release cleanly across domains? Reset-sequencing and [CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) escapes surface here.
 3. **Scan / JTAG access — the lifeline.** [DFT](../06_Signoff/02_DFT_and_ATPG.md) is not only a production-test feature: it is how you *see inside* a chip that will not boot. Freeze the clock, scan out the flop state, and reconstruct where execution died. A chip with weak DFT is nearly un-debuggable — the single most expensive lesson a first-time tape-out team learns.
-4. **Boot / basic I/O.** Bring up the UART, the memory interface, and the high-speed links ([PCIe](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md)/SerDes link-training).
+4. **Boot / basic I/O.** Bring up the UART, the memory interface, and the high-speed links ([PCIe](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/01_AHB_AXI_APB.md)/SerDes link-training).
 5. **Functional.** Run real software and workloads; reproduce any escaped bug on demand so it can be localized.
 6. **Characterization.** Shmoo the operating region (§6).
 7. **Validation.** Protocol compliance, margins, thermal, and reliability stress before production.

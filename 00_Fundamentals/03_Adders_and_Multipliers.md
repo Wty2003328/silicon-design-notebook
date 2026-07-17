@@ -1,13 +1,13 @@
 # Datapath Arithmetic — The Carry Chain and How to Beat It
 
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, series-stack fan-in limits, wire RC), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (MUX, XOR, comparator).
-> **Hands off to:** [Floating_Point](04_Floating_Point.md) (the final CPA + rounding this feeds; SRT/Goldschmidt division), [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — these circuits *are* that menu), [NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_NPU_Accelerators.md) (MAC arrays, approximate arithmetic).
+> **Hands off to:** [Floating_Point](04_Floating_Point.md) (the final CPA + rounding this feeds; SRT/Goldschmidt division), [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/01_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — these circuits *are* that menu), [NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/01_NPU_Accelerators.md) (MAC arrays, approximate arithmetic).
 
 ---
 
 ## 0. Why this page exists
 
-Addition looks trivial and is not. Adding two $n$-bit numbers is inherently **serial**, because bit $i$'s carry-out depends on bit $i-1$'s carry-out, which depends on bit $i-2$'s, all the way down: the carry ripples through a chain whose length is the word width. That chain is almost always the **longest combinational path in the datapath** — it is what sets the ALU's cycle time, and by extension a large part of the core's clock ([CPU_Architecture](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md) §1, the EX-stage $t_{\text{logic}}$).
+Addition looks trivial and is not. Adding two $n$-bit numbers is inherently **serial**, because bit $i$'s carry-out depends on bit $i-1$'s carry-out, which depends on bit $i-2$'s, all the way down: the carry ripples through a chain whose length is the word width. That chain is almost always the **longest combinational path in the datapath** — it is what sets the ALU's cycle time, and by extension a large part of the core's clock ([CPU_Architecture](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/01_CPU_Architecture.md) §1, the EX-stage $t_{\text{logic}}$).
 
 So every adder architecture in this page is one answer to a single question:
 
@@ -176,7 +176,7 @@ The $O(\log n)$-delay / $O(n\log n)$-area / wiring-congestion knee bites hardest
 - **Sparse prefix + conditional-sum.** Build the prefix tree only to every 2nd or 4th bit (a "sparse" or "radix-higher" tree), cutting the long wires and cell count by that factor, then fill in the intermediate bits with tiny carry-selects (§3). This trades one logic level for a large wiring/area win — the standard high-performance 64-bit ALU adder.
 - **Ling recoding.** Reformulate the recurrence around a *pseudo-carry* $H_i = c_i + c_{i+1}$ that removes one AND from the critical first level, shaving a full gate level off any prefix tree at essentially no cost. Used in IBM POWER, Itanium, and many x86 ALUs.
 
-**Concretely:** ALU adders are latency-critical (one cycle, feeding the §4.3 wakeup-select loop in [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md)) → sparse Han-Carlson/Kogge-Stone, often Ling-recoded. Address adders (AGU) similarly. Wide but timing-relaxed adders (a divider's residual, an FP mantissa path) → Brent-Kung or even carry-select, to save area and power.
+**Concretely:** ALU adders are latency-critical (one cycle, feeding the §4.3 wakeup-select loop in [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/01_OoO_Execution.md)) → sparse Han-Carlson/Kogge-Stone, often Ling-recoded. Address adders (AGU) similarly. Wide but timing-relaxed adders (a divider's residual, an FP mantissa path) → Brent-Kung or even carry-select, to save area and power.
 
 ---
 
@@ -196,7 +196,7 @@ $$
 
 That $\log_{1.5}$ is the multiplier's whole speed story (§7.2). The practical building block is the **4:2 compressor** (two full adders arranged so its carry-out feeds the *same* column's next level, not the next column — critical path $\approx3$ XOR delays, and it lays out regularly). You pay **once** at the end: a single carry-propagate adder (§5) resolves the final redundant pair into a normal number.
 
-**Carry-save's role in accumulation.** The same trick spans *time*, not just space. A multiply-accumulate (MAC) unit keeps its running sum in **redundant carry-save form across cycles**, feeding each new product into a CSA against the stored (sum, carry) pair — an $O(1)$ update every cycle — and resolves to a real number with one CPA only when the final result is read out. This is why dot-product engines, FIR filters, and NPU accumulators ([NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_NPU_Accelerators.md)) can accumulate at full clock: they never pay the carry chain until the very end. The cost is that the intermediate value is redundant — unusable anywhere that needs a comparable, non-redundant number mid-stream.
+**Carry-save's role in accumulation.** The same trick spans *time*, not just space. A multiply-accumulate (MAC) unit keeps its running sum in **redundant carry-save form across cycles**, feeding each new product into a CSA against the stored (sum, carry) pair — an $O(1)$ update every cycle — and resolves to a real number with one CPA only when the final result is read out. This is why dot-product engines, FIR filters, and NPU accumulators ([NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/01_NPU_Accelerators.md)) can accumulate at full clock: they never pay the carry chain until the very end. The cost is that the intermediate value is redundant — unusable anywhere that needs a comparable, non-redundant number mid-stream.
 
 ---
 
@@ -268,7 +268,7 @@ The decision is purely **required multiply throughput**:
 | Radix-4 Booth sequential | 1 CPA + encoder | 1 per $\sim n/2$ clk | $\sim n/2$ cyc | moderate rate |
 | Pipelined Booth+tree | $O(n^2)$ FAs | 1 per clk | $\log$-depth, $P$ stages | every-cycle products (datapath, MAC array) |
 
-Occasional multiply → spend nothing, take the cycles. Sustained one-per-cycle → pay for the pipelined tree. This is the same latency/throughput/area reasoning the scheduler sees as a unit's "latency + initiation interval" ([OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) §7).
+Occasional multiply → spend nothing, take the cycles. Sustained one-per-cycle → pay for the pipelined tree. This is the same latency/throughput/area reasoning the scheduler sees as a unit's "latency + initiation interval" ([OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/01_OoO_Execution.md) §7).
 
 ---
 
@@ -297,7 +297,7 @@ If the carry chain is the cost and the application tolerates error, **cut the ch
 | **Error-tolerant (ETA)** | low half drops carries, high half exact + estimated carry-in | error $\sim$ few % of magnitude, bounded by $2^{n/2}$ |
 | **Speculative carry** | predict each block's carry-in from a short window | $1\text{–}5\%$ mispredict, optionally MUX-corrected |
 
-The universal design rules follow from the error model: **keep the MSBs (magnitude and sign) exact**, approximate only the low bits; make the error **zero-mean** so it does not bias accumulation; and keep the **first and last network layers** accurate where errors matter most. In practice this shows up in NPU MAC accumulators (approximate the low $8\text{–}12$ bits of a $24\text{–}32$-bit accumulator) and in attention/softmax score paths, cutting the arithmetic critical path 30–50% ([NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_NPU_Accelerators.md)). Outside error-tolerant domains, approximation is off the table — general-purpose ALUs are always exact.
+The universal design rules follow from the error model: **keep the MSBs (magnitude and sign) exact**, approximate only the low bits; make the error **zero-mean** so it does not bias accumulation; and keep the **first and last network layers** accurate where errors matter most. In practice this shows up in NPU MAC accumulators (approximate the low $8\text{–}12$ bits of a $24\text{–}32$-bit accumulator) and in attention/softmax score paths, cutting the arithmetic critical path 30–50% ([NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/01_NPU_Accelerators.md)). Outside error-tolerant domains, approximation is off the table — general-purpose ALUs are always exact.
 
 ---
 
@@ -349,7 +349,7 @@ Note the knee: Kogge-Stone buys the last $\sim30$ ps over Han-Carlson for $\sim4
 ## Cross-references
 
 - **Down the stack (what these circuits are built from):** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, the series-stack fan-in limit that forces hierarchical CLA in §4, and the wire RC that makes Kogge-Stone lose at 64b in §5), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (the MUX behind carry-select/skip, the XOR behind sum and Booth, the comparator of §9).
-- **Up the stack (what builds on this):** [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — the 1-cycle prefix-adder ALU, the log-depth Booth+tree multiplier, and why divide is a serial digit recurrence that will *not* flatten into a tree), [CPU_Architecture](../01_Architecture_and_PPA/02_CPU/01_CPU_Architecture.md) (the EX-stage ALU whose adder sets $t_{\text{logic}}$ and the pipeline clock), [Floating_Point](04_Floating_Point.md) (the mantissa CPA and rounding this feeds; SRT and Goldschmidt division/reciprocal reuse the CSA and CPA here), [NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_NPU_Accelerators.md) (the MAC leaf of §6's carry-save accumulation and §10's approximate arithmetic), [GPU_Architecture](../01_Architecture_and_PPA/05_GPU/01_GPU_Architecture.md) (the same Booth+tree multipliers replicated across many lanes).
+- **Up the stack (what builds on this):** [OoO_Execution](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/01_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — the 1-cycle prefix-adder ALU, the log-depth Booth+tree multiplier, and why divide is a serial digit recurrence that will *not* flatten into a tree), [CPU_Architecture](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/01_CPU_Architecture.md) (the EX-stage ALU whose adder sets $t_{\text{logic}}$ and the pipeline clock), [Floating_Point](04_Floating_Point.md) (the mantissa CPA and rounding this feeds; SRT and Goldschmidt division/reciprocal reuse the CSA and CPA here), [NPU_Accelerators](../01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/01_NPU_Accelerators.md) (the MAC leaf of §6's carry-save accumulation and §10's approximate arithmetic), [GPU_Architecture](../01_Architecture_and_PPA/05_GPU/01_Core_Architecture/01_GPU_Architecture.md) (the same Booth+tree multipliers replicated across many lanes).
 - **Adjacent / prerequisite:** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) and [Floating_Point](04_Floating_Point.md) share the comparator, priority-encoder, and leading-zero circuits that pair with these adders.
 
 ---

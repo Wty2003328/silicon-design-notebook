@@ -1,78 +1,50 @@
-# Part 3 · Architecture › Memory — Chapter Index
+# Part 3 · Architecture › Memory
 
-*Shared part: the storage hierarchy every machine reuses — from the SRAM/DRAM bit cell up through caches, coherence and address translation, to the DRAM scheduler.*
+Memory is split by contract: local cache policy, address translation, distributed coherence/ordering, storage circuits, and package-level main memory.
 
-Each chapter is concept-first — why the structure must exist, the mechanism, the trade-offs, then the derivations and worked numbers — closing with **Numbers to memorize** and **Cross-references**.
+```mermaid
+flowchart LR
+    VA["virtual request"] --> VM["TLB / walker / IOMMU"]
+    VM --> Cache["cache hierarchy"]
+    Cache --> Coh["coherence + consistency"]
+    Coh --> Main["DDR / HBM controller"]
+    Tech["SRAM / DRAM / CAM / ECC"] --> VM
+    Tech --> Cache
+    Tech --> Coh
+    Tech --> Main
+```
 
-### [Cache Microarchitecture — Locality, AMAT, and Controller Design](01_Cache_Microarchitecture.md)
+## Subdomains
 
-- §1  The organizing theory: locality, the memory wall, and AMAT
-- §2  Associativity: trading conflict misses against hit cost
-- §3  Non-blocking caches and the MSHR: buying memory-level parallelism
-- §4  Write policy: when the cached and backing copies may diverge
-- §5  Replacement: predicting re-reference distance
-- §6  The cache hierarchy: recursive AMAT and inclusion policy
-- §7  Prefetching: converting misses to hits before they stall
-- §8  Coherence: the conceptual story
-- §9  Cache power: reducing the energy of the hit path
-- §10  Quality of service: partitioning a shared last level
-- §11  Numbers to memorize
-- §12  Worked problems
+| Subdomain | Chapters | Contract it owns |
+|---|---:|---|
+| [Cache Hierarchy](01_Cache_Hierarchy/00_Index.md) | 2 | hit/miss concurrency, prefetch, replacement and shared-cache QoS |
+| [Virtual Memory](02_Virtual_Memory/00_Index.md) | 2 | CPU/device translation, nested virtualization and invalidation |
+| [Coherence and Consistency](03_Coherence_and_Consistency/00_Index.md) | 2 | authoritative copy and legal cross-core observation order |
+| [Memory Technologies](04_Memory_Technologies/00_Index.md) | 1 | cells/arrays/ports/ECC/CAM and generated memory IP |
+| [Main Memory](05_Main_Memory/00_Index.md) | 2 | DDR/HBM scheduling, bandwidth, RAS, package/thermal limits |
 
-### [TLB and Virtual Memory — Address Translation on the Critical Path](02_TLB_and_Virtual_Memory.md)
+## Chapter map
 
-- §1  Translation is a memory access before every memory access
-- §2  What a TLB entry must hold — derived from three jobs
-- §3  Sizing and organization — the hot structure on the critical path
-- §4  ASIDs and the global bit — a tag that buys out a flush
-- §5  The page walk and the page-walk cache
-- §6  VIPT — overlapping translation with the cache
-- §7  Superpages — buying reach against fragmentation
-- §8  TLB shootdown — paying for absent coherence
-- §9  Worked problems
+| Chapter | Primary ownership |
+|---|---|
+| [Cache Microarchitecture](01_Cache_Hierarchy/01_Cache_Microarchitecture.md) | AMAT, associativity, nonblocking misses, writes and hierarchy |
+| [Prefetching, Replacement, and QoS](01_Cache_Hierarchy/02_Prefetching_Replacement_and_QoS.md) | feedback-directed prediction, RRIP-like policy and end-to-end resource control |
+| [TLB and Virtual Memory](02_Virtual_Memory/01_TLB_and_Virtual_Memory.md) | TLB reach, page walks, VIPT, superpages and shootdown |
+| [Page Walkers, IOMMUs, and Virtualization](02_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md) | nested walks, IOTLB/ATC, ATS/PRI, device isolation and invalidation |
+| [Cache Coherence](03_Coherence_and_Consistency/01_Cache_Coherence.md) | stable/transient permissions, races, directories, safety/liveness |
+| [Memory Consistency and Atomics](03_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md) | SC/TSO/RVWMO reasoning, litmus tests, fences and atomic serialization |
+| [Memory Arrays and Technologies](04_Memory_Technologies/01_Memory_Arrays_and_Technologies.md) | SRAM/DRAM cells, register files, compilers, ECC, CAM and emerging memory |
+| [DDR Controller](05_Main_Memory/01_DDR_Controller.md) | DRAM state/timing, FR-FCFS, refresh, ECC and achieved bandwidth |
+| [HBM and Advanced Memory Systems](05_Main_Memory/02_HBM_and_Advanced_Memory_Systems.md) | stacked channels, MLP, mapping, thermals, RAS and tiering |
 
-### [Memory Circuits — the Bit-Storage Trade Surface](03_Memory.md)
+## Reading paths
 
-- §1  The trade surface: store, read, hold
-- §2  The 6T SRAM cell: six transistors, three conflicting jobs
-- §3  Breaking the 6T conflict: 8T, 10T, and assist circuits
-- §4  From cell to array: yield, soft errors, retention
-- §5  DRAM 1T1C: trading persistence for density
-- §6  The refresh tax: the price of volatility
-- §7  Multi-port memories and register files: why ports cost quadratically
-- §8  The memory compiler: SRAM as generated IP
-- §9  ECC: coding theory for memory
-- §10  CAM and TCAM: memory that compares itself
-- §11  Compute-in-memory: moving the ALU onto the bitline
-- §12  Scaling limits and emerging non-volatile memories
-
-### [DDR Memory Controller — Why DRAM Needs a Scheduler](04_DDR_Controller.md)
-
-- §1  Why DRAM is not RAM: four broken clauses, one controller
-- §2  The bank as a state machine, and the row buffer's three cases
-- §3  JEDEC timing constraints as physics, not parameters
-- §4  Row-buffer policy: a spatial-locality predictor
-- §5  FR-FCFS: scheduling from the locality-vs-fairness trade
-- §6  Refresh: the mandatory background tax
-- §7  The achieved-bandwidth model and latency under load
-- §8  ECC and RAS as concepts
-- §9  DDR5 and LPDDR5X as concepts
-
-### [Cache Coherence — From MESI States to a Correct Controller](05_Cache_Coherence.md)
-
-- §1  Three contracts: coherence, consistency, and synchronization
-- §2  Stable permission states and the minimal message vocabulary
-- §3  Transient states, transaction storage, and acknowledgement proofs
-- §4  Read, write, dirty-owner, and upgrade traces
-- §5  Races: simultaneous writers, snoop collisions, and replacement
-- §6  Snoop/directory storage–traffic trade-offs
-- §7  False sharing, coherence misses, locks, and ownership prefetch
-- §8  Atomics, fences, DMA, instruction coherence, and aliases
-- §9  Safety, liveness, and protocol deadlock
-- §10 Verification strategy
-- §11 Performance model and design decisions
-- §12 Numbers to memorize
-- §13 Worked problems
+- **CPU load path:** TLB → Cache → Coherence → Consistency → DDR/HBM.
+- **Accelerator/device path:** IOMMU → QoS/I/O coherence → HBM.
+- **Shared-cache performance:** Cache → Prefetch/Replacement/QoS → Coherence → NoC → main memory.
+- **Correctness review:** Consistency/Atomics and Cache Coherence as a pair.
 
 ---
-⬅ [Architecture Book Contents](../00_Index.md) · [Root Index](../../Index.md) · [← Part 2 · CPU](../02_CPU/00_Index.md) · [Part 4 · Interconnect →](../04_Interconnect/00_Index.md)
+
+⬅ [CPU](../02_CPU/00_Index.md) · [Architecture Contents](../00_Index.md) · next ➡ [Interconnect](../04_Interconnect/00_Index.md)

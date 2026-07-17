@@ -291,7 +291,7 @@ A register test wants to say "set the enable bit," not "AXI-write `0x4` = `0x1`.
 - **Backdoor:** `reg.poke/peek` via `hdl_path` — zero simulation time, no bus; for setup, and for checking the frontdoor independently.
 - **Mirror + predict:** the model tracks what the register *should* hold. An **explicit predictor** subscribed to the bus monitor keeps that mirror honest even when firmware-style raw accesses (not model-initiated) change the register; `mirror(UVM_CHECK)` reads HW and compares against the mirror — the workhorse register check.
 
-The payoff is the decoupling seen everywhere else on this page: *which register* is stable, *which bus* is swappable, so the identical register test runs on APB today and AXI tomorrow by changing only the adapter ([AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md)). Built-in sequences (`uvm_reg_hw_reset_seq`, bit-bash, access) give day-one coverage of RO/RW/W1C policies from the model alone — reuse of *checks*, not just structure.
+The payoff is the decoupling seen everywhere else on this page: *which register* is stable, *which bus* is swappable, so the identical register test runs on APB today and AXI tomorrow by changing only the adapter ([AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/01_AHB_AXI_APB.md)). Built-in sequences (`uvm_reg_hw_reset_seq`, bit-bash, access) give day-one coverage of RO/RW/W1C policies from the model alone — reuse of *checks*, not just structure.
 
 ---
 
@@ -352,7 +352,7 @@ Every mechanism above can be reproduced with mailboxes, events, and fork/join ([
 
 - **Down the stack (what UVM is built from):** [OOP_and_Randomization](08_OOP_and_Randomization.md) (classes and polymorphism = the factory's substitution; constraints = sequence randomization; the reuse-under-change argument UVM operationalizes), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (fork/join, mailboxes, events — the raw IPC that TLM and phasing wrap and hide).
 - **Up the stack (what builds on it):** [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the coverage these subscribers collect feeds the closure and sign-off loop), [Assertions_and_Coverage](09_Assertions_and_Coverage.md) (SVA in interfaces and covergroups in subscribers — the checking UVM orchestrates).
-- **Adjacent / applied:** [AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_AHB_AXI_APB.md) & [ACE_and_CHI](../01_Architecture_and_PPA/04_Interconnect/02_ACE_and_CHI.md) (the bus protocols agents and RAL adapters target), [Formal_Verification](12_Formal_Verification.md) (the complement — what constrained-random UVM is *not* the right tool for).
+- **Adjacent / applied:** [AHB_AXI_APB](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/01_AHB_AXI_APB.md) & [ACE_and_CHI](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/02_ACE_and_CHI.md) (the bus protocols agents and RAL adapters target), [Formal_Verification](12_Formal_Verification.md) (the complement — what constrained-random UVM is *not* the right tool for).
 
 ---
 

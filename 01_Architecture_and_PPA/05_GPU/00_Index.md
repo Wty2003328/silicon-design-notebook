@@ -1,21 +1,37 @@
-# Part 5 · Architecture › GPU — Chapter Index
+# Part 5 · Architecture › GPU
 
-*Chip type: the throughput / latency-hiding machine — SIMT, occupancy, and why it is shaped opposite to a CPU.*
+The GPU section separates the resident-warp execution machine, its transaction-heavy memory hierarchy, and the point where multiple devices become one communication-limited system.
 
-Each chapter is concept-first — why the structure must exist, the mechanism, the trade-offs, then the derivations and worked numbers — closing with **Numbers to memorize** and **Cross-references**.
+```mermaid
+flowchart LR
+    Kernel["kernel / blocks"] --> Core["SIMT scheduling + occupancy"]
+    Core --> Mem["coalescing / shared / caches / HBM"]
+    Mem --> Scale["peer links / collectives / multi-GPU"]
+```
 
-### [GPU Architecture — The Throughput Machine and the Streaming Multiprocessor](01_GPU_Architecture.md)
+## Subdomains
 
-- §1  Throughput, not latency — why the machine is shaped differently
-- §2  SIMT — amortizing the front end over 32 lanes
-- §3  Warp divergence and reconvergence — the hardware cost of the SIMT bargain
-- §4  The Streaming Multiprocessor as a hardware block
-- §5  The register file and operand delivery — the SM's defining structure
-- §6  Memory coalescing — why it exists and the hardware that does it
-- §7  The memory hierarchy and occupancy — resource-limited concurrency
-- §8  Clocking and power at throughput — why wide-and-slow wins
-- §9  Numbers to memorize
-- §10  Worked problems
+| Subdomain | Chapters | Boundary it owns |
+|---|---:|---|
+| [Core Architecture](01_Core_Architecture/00_Index.md) | 2 | SIMT execution, residency, scoreboarding and issue |
+| [Memory System](02_Memory_System/00_Index.md) | 1 | lane coalescing through shared memory, caches, translation and HBM |
+| [Scale-Up](03_Scale_Up/00_Index.md) | 1 | topology, collectives, remote memory and communication overlap |
+
+## Chapter map
+
+| Chapter | Primary ownership |
+|---|---|
+| [GPU Architecture](01_Core_Architecture/01_GPU_Architecture.md) | throughput-machine overview, SM organization, divergence and occupancy |
+| [SIMT Scheduling and Occupancy](01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md) | resource admission, ready/eligible warps, scoreboards, schedulers and barriers |
+| [Coalescing, Caches, and Shared Memory](02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md) | sector formation, bank conflicts, MSHRs, translation and memory partitions |
+| [Multi-GPU Interconnect and Execution](03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md) | topology matrices, collectives, parallel decomposition, peer memory and scaling |
+
+## Reading paths
+
+- **Single GPU:** overview → SIMT scheduling → memory system → HBM.
+- **Kernel bottleneck:** occupancy/eligibility counters → coalescing/banks → HBM/partition balance.
+- **Scale training/HPC:** single-device roofs → multi-GPU decomposition/collectives → chiplet/off-node fabric.
 
 ---
-⬅ [Architecture Book Contents](../00_Index.md) · [Root Index](../../Index.md) · [← Part 4 · Interconnect](../04_Interconnect/00_Index.md) · [Part 6 · NPU →](../06_NPU/00_Index.md)
+
+⬅ [Interconnect](../04_Interconnect/00_Index.md) · [Architecture Contents](../00_Index.md) · next ➡ [NPU](../06_NPU/00_Index.md)

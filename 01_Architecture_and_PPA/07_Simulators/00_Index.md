@@ -1,87 +1,47 @@
-# Part 7 · Architecture › Simulators — Chapter Index
+# Part 7 · Architecture › Simulators
 
-*Shared part: how every non-silicon number in this book is produced — methodology, the tools tier by tier, and their closed-form duals.*
+Simulation is organized by question and modeled subsystem rather than by a flat tool catalog.
 
-Each chapter is concept-first — why the structure must exist, the mechanism, the trade-offs, then the derivations and worked numbers — closing with **Numbers to memorize** and **Cross-references**.
+```mermaid
+flowchart LR
+    Q["architecture question"] --> Method["method + analytical bound"]
+    Method --> CPU["CPU / full system"]
+    Method --> Mem["memory / NoC / coherence"]
+    Method --> Accel["GPU / NPU"]
+    CPU --> Validate["calibrate + validate + error budget"]
+    Mem --> Validate
+    Accel --> Validate
+```
 
-### [Simulation Methodology — How Architectural Simulators Actually Work](01_Simulation_Methodology.md)
+## Subdomains
 
-- §1  The three questions every simulator answers
-- §2  The fidelity–speed tradeoff (the master curve)
-- §3  The event-driven engine — the heart of a timing simulator
-- §4  Trace-driven vs execution-driven — where the instruction stream comes from
-- §5  How a workload becomes a number — the part people get wrong
-- §6  How compute is modeled — the timing of a core
-- §7  How the memory system is modeled — usually the dominant term
-- §8  Validation, calibration, and the error budget
-- §9  Numbers to memorize
+| Subdomain | Chapters | Use it for |
+|---|---:|---|
+| [Methodology](01_Methodology/00_Index.md) | 2 | fidelity selection, experiments, analytical bounds and error budgets |
+| [CPU and System](02_CPU_and_System/00_Index.md) | 1 | execution-driven core, OS and platform simulation |
+| [Memory and Interconnect](03_Memory_and_Interconnect/00_Index.md) | 2 | DRAM and coupled NoC/coherence timing |
+| [Accelerator Simulation](04_Accelerator_Simulation/00_Index.md) | 2 | GPU timing and NPU mapping/energy/cycle models |
+| [Specialized Simulators](05_Specialized_Simulators/00_Index.md) | 1 | manycore, neuromorphic, datacenter, chiplet and ecosystem tools |
 
-### [gem5 — the configurable full-system architectural simulator](02_gem5.md)
+## Chapter map
 
-- §1  What gem5 is — one functional core, many timing models
-- §2  SE vs FS — the "is there an operating system?" axis
-- §3  The CPU timing models — a fidelity ladder inside one tool
-- §4  Classic vs Ruby — two memory systems with different coherence fidelity
-- §5  The discrete-event engine, SimObjects, and ports
-- §6  How a workload becomes a statistic
-- §7  Fast-forwarding, checkpoints, and KVM warm-up
-- §8  Validation and the error vs real silicon
-- §9  Numbers to memorize
+| Chapter | Primary ownership |
+|---|---|
+| [Simulation Methodology](01_Methodology/01_Simulation_Methodology.md) | event engines, fidelity/speed, workload execution, warm-up and validation |
+| [Analytical Models](01_Methodology/02_Analytical_Models.md) | roofline, interval, queueing, scaling and communication bounds |
+| [gem5](02_CPU_and_System/01_gem5.md) | SE/FS, CPU models, classic/Ruby memory, checkpoints and statistics |
+| [DRAM Simulators](03_Memory_and_Interconnect/01_DRAM_Simulators.md) | bank/channel state, timing constraints, scheduling and power |
+| [NoC and Coherence Simulation](03_Memory_and_Interconnect/02_NoC_and_Coherence_Simulation.md) | finite protocol/network resources, synthetic versus coupled traffic and validation |
+| [GPU Simulators](04_Accelerator_Simulation/01_GPU_Simulators.md) | SIMT, coalescing, HBM, tensor pipelines and trace/execution trade-offs |
+| [Accelerator and NPU Simulators](04_Accelerator_Simulation/02_Accelerator_and_NPU_Simulators.md) | Timeloop/Accelergy, MAESTRO, SCALE-Sim and graph-scale tools |
+| [Other Architecture Simulators](05_Specialized_Simulators/01_Other_Architecture_Simulators.md) | manycore, NoC, CIM, datacenter, chiplet and RISC-V catalog |
 
-### [DRAM Simulators — Ramulator, DRAMSim3, DRAMPower, USIMM](03_DRAM_Simulators.md)
+## Reading paths
 
-- §1  What a DRAM simulator models — and what it deliberately doesn't
-- §2  The bank/rank/channel hierarchy as nested state machines
-- §3  JEDEC timing constraints as the transition guards
-- §4  Row-buffer management — open vs closed page
-- §5  Address mapping — physical → (channel, rank, bank, row, col)
-- §6  The request scheduler — FR-FCFS and its variants
-- §7  Driving the model — trace-driven or coupled to a core
-- §8  How bandwidth and latency are computed — the queueing intuition
-- §9  DRAMPower — energy as Σ(time-in-state × IDD current × voltage)
-- §10  The four tools at a glance
-
-### [GPU Simulators — GPGPU-Sim and Accel-Sim](04_GPU_Simulators.md)
-
-- §1  Two simulators, two paradigms
-- §2  The SIMT core timing model
-- §3  Coalescing and the cache / HBM / interconnect contention layer
-- §4  Tensor Core modeling
-- §5  Trace-driven vs execution-driven — Accel-Sim's key design point
-- §6  How a CUDA kernel or SASS trace becomes IPC and achieved bandwidth
-- §7  Power — GPUWattch and AccelWattch
-- §8  Supported GPUs and the validation story
-
-### [Accelerator & DNN/NPU Simulators — Mapping, Dataflow, and Cycles](05_Accelerator_and_NPU_Simulators.md)
-
-- §1  The three paradigms and when to use each
-- §2  From a layer + mapping to latency and energy — the shared mechanism
-- §3  The dataflow taxonomy and why it is mostly an energy lever
-- §4  Analytical mapping + energy — Timeloop and Accelergy
-- §5  Analytical data-centric reuse — MAESTRO
-- §6  Cycle-accurate systolic — SCALE-Sim v3
-- §7  Operator-level, graph-scale — NeuSim and ONNXim
-
-### [Other Architecture Simulators — A Surveyed Catalog](06_Other_Architecture_Simulators.md)
-
-- §1  The catalog
-- §2  Manycore / CPU — the speed-vs-fidelity split, made for many cores
-- §3  NoC / interconnect — cycle-accurate transport, and a separate energy model
-- §4  Compute-in-memory & neuromorphic — modeling analog physics and spikes
-- §5  Datacenter & network — parallel discrete-event at system scale
-- §6  Chiplet / 2.5D-3D — where communication and heat become the model
-- §7  RISC-V cores — the four rungs of the ladder in one ecosystem
-
-### [Analytical models — the closed-form duals of the simulators](07_Analytical_Models.md)
-
-- §1  What the analytical layer is for — bound, decompose, size, escalate
-- §2  Roofline — the throughput bound (extends DSE §2.3)
-- §3  The interval / mechanistic model — core CPI in closed form
-- §4  Amdahl, Gustafson, and the contention term Amdahl omits (USL)
-- §5  Little's law and M/M/1 — the backbone of every contention model
-- §6  LogCA / LogGP — the offload and communication cost model
-- §7  When analytical suffices, and when you must escalate
-- §8  Numbers to memorize
+- **Any study:** analytical bound → methodology → domain tool → validation/error budget.
+- **CPU/coherence:** methodology → gem5/Ruby → NoC/coherence simulation.
+- **NPU:** roofline → mapping simulator → cycle validation → full-chip composition.
 
 ---
-⬅ [Architecture Book Contents](../00_Index.md) · [Root Index](../../Index.md) · [← Part 6 · NPU](../06_NPU/00_Index.md)
+
+⬅ [NPU](../06_NPU/00_Index.md) · [Architecture Contents](../00_Index.md) · [Root Index](../../Index.md)
