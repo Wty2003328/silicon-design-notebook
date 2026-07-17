@@ -61,6 +61,14 @@ where $P_{uncore}$ (NoC + MC (memory controller) + PHY (physical-layer interface
 
 The one rule you cannot violate: **power rolls up additively; performance does not.** Watts sum because dissipation is extensive. Latency and bandwidth compose through the bottleneck — the slowest shared resource caps throughput (roofline), and delays overlap or queue rather than add. Never sum latencies across blocks; route them through the coupling layer of §2.
 
+**Why the composition operator differs by quantity — a derivation.** The abstract $\bigoplus_i$ of §0 is not one operator; it is *three*, and which one applies follows from what the quantity physically **is**.
+
+- **Power / energy — additive ($\bigoplus=\sum$).** Energy is *extensive*. The charge drawn from the rail in a cycle is the sum over every switching node, $E_{cyc}=\sum_i E_i$, because charge is conserved and the nodes draw independently from a common supply; dividing by the period gives $P=\sum_i P_i$ **exactly**, with no interaction term. That is why the roll-up is a plain sum and the only subtlety is *remembering* the uncore and delivery terms, not choosing the operator.
+- **Throughput — bottleneck ($\bigoplus=\min$).** A chain of resources passing a stream forwards at the rate of its slowest stage, $\Theta=\min_i \Theta_i$. *Proof:* in steady state every stage must process the same number of items per unit time — otherwise a queue between two stages grows without bound, violating stability (Little's law, §2.3, with $\bar N\!\to\!\infty$) — so the common rate cannot exceed the smallest stage capacity, and a work-conserving schedule attains it. This is the roofline $\min(\pi,\beta I)$ generalized from two roofs to a chain.
+- **Latency — max-or-sum ($\bigoplus\in[\max,\ \sum]$).** Two operations on the critical path add their times *if serial* and take the $\max$ *if overlapped*; the true value lies between and is fixed by the overlap fraction (§2.3). This is the one operator the naive model gets wrong in **both** directions — it sums when it should $\max$ (missing overlap) and $\max$es when it should sum (missing a serialized dependence).
+
+So "the chip is the sum of its blocks" is true for *exactly one* of the three quantities and false for the other two. The two corrections that make performance compose correctly are therefore named in advance: **overlap** (§2.3, which selects $\max$ vs $\sum$) and **contention** (§2.1–2.2, which inflates each $\Theta_i$ and each latency toward the queue). Up the hierarchy the same three operators recurse — a cluster's memory latency is $t_{\text{core}}+\max(t_{\text{LLC}},\ldots)+t_{\text{queue}}(\rho)$ (sum where serial, $\max$ where overlapped, plus the queue term §2.2 adds at *this* level's shared resource); a pod's step time is $\max(t_{\text{chip}},\,t_{\text{collective}})$ (§4.4) — while power stays a clean $\sum$-plus-glue at every level. **Naive summation fails precisely because it applies the power operator ($\sum$) to throughput and latency.**
+
 Concretely, the leaf→block step is what an architectural power model like **McPAT** does: it maps the µarch onto a few primitive circuit structures (arrays, wires, logic, clocking), pulls each array's per-access energy from an internal CACTI (its cache/array energy model), and composes
 
 $$
@@ -68,6 +76,14 @@ P_{core} \;=\; \sum_{u\in\text{units}} E_u\,A_u\,f \;+\; P_{clock} \;+\; \sum_u 
 $$
 
 where $E_u$ = per-event energy (from CACTI-fit arrays / characterized cells), $A_u$ = events per cycle (from the [CPI stack](01_Performance_Modeling_and_DSE.md) counters), $f$ = clock. There is **no new physics at the core level** — the clock tree ($P_{clock}$, typically 30–40% of core dynamic) and leakage ($V\cdot I_{leak}$, scaled by area and temperature) are added, and the array/op energies are *looked up, not recomputed*. That is the whole game restated: push the physics down, keep the composition cheap.
+
+Each per-event energy is itself the $\alpha C V^2$ of a structure (§2.4), so the roll-up is literally *activity × per-event-energy*, and it is worth carrying one to a number. *Worked number — McPAT-style rollup.* Take three structures on a core at $f=3$ GHz: an integer ALU at $E_{\text{ALU}}=3$ pJ/op, a 32 KB L1 at $E_{\text{L1}}=15$ pJ/access, and a register-file read port at $E_{\text{RF}}=1$ pJ/read. Suppose the per-cycle activity counts (from the CPI stack) are $A_{\text{ALU}}=1.0$ op, $A_{\text{L1}}=0.6$ access, $A_{\text{RF}}=2.4$ reads (two source operands + writeback per instruction at IPC $\approx1.5$). Then
+
+$$
+\textstyle\sum_u E_u A_u f=(3{\cdot}1.0+15{\cdot}0.6+1{\cdot}2.4)\ \text{pJ/cyc}\times 3\times10^{9}\ \text{cyc/s}=14.4\ \text{pJ/cyc}\times3\times10^{9}=43\ \text{mW}
+$$
+
+from just those three units. Add $P_{clock}\approx35\%$ of core dynamic and per-unit leakage and the core power emerges — and *every* term is one (energy × activity) product, characterized **once** (slow, circuit-level) and multiplied **forever** (fast, per-config). The composed number's error is the §1.3 propagation of the inherited $E_u$, not new physics — which is exactly why the architectural rung is instant yet trustworthy to ±20–30%.
 
 ### 1.2 Where the numbers come from: the calibration chain
 
@@ -104,6 +120,8 @@ Whether a roll-up can be trusted turns on how per-block error behaves under summ
 - **Random (uncorrelated) error cancels.** If $N$ blocks each carry independent relative error $\sigma$, the chip-total relative error scales as $\sim\sigma/\sqrt{N}$ — a fleet of $\pm25\%$ blocks can roll up to a $\pm8\text{–}10\%$ chip total. Summation is a variance-averaging operation.
 - **Systematic (correlated) error accumulates.** A consistent 15% activity-overestimate in *every* block (e.g. from a continuously-toggling testbench SAIF (Switching Activity Interchange Format)) stays 15% at the chip — it does not wash out. These are the dangerous ones.
 
+*Derivation of the $\sqrt N$.* Write each block as $P_i(1+\varepsilon_i)$ with $\mathbb{E}[\varepsilon_i]=0$, $\operatorname{Var}(\varepsilon_i)=\sigma^2$, the $\varepsilon_i$ independent. The estimated total is $\hat P=\sum_i P_i(1+\varepsilon_i)$, so its absolute error $\sum_i P_i\varepsilon_i$ has variance $\sum_i P_i^2\sigma^2$. For $N$ equal blocks ($P_i=P/N$) the error standard deviation is $\sigma(P/N)\sqrt N=\sigma P/\sqrt N$ — relative error $\sigma/\sqrt N$, the central-limit averaging (e.g. $N=9$ blocks at $\sigma=25\%$ → $25\%/3\approx8\%$). A *correlated* bias $\varepsilon_i=\beta$ (same sign every block) instead gives error $\sum_i P_i\beta=\beta P$, relative error $\beta$ **flat in $N$**: no averaging, because $N$ identical biases grow exactly as fast as the total they inflate. That contrast — $\sigma/\sqrt N$ shrinking vs $\beta$ constant — *is* why relative comparisons are trustworthy and absolute totals are not.
+
 The practical corollary is the single most useful fact about trusting a model: **it is most accurate for *relative* comparisons and least accurate for *absolute* Watts.** Comparing design A to design B in the same model, the systematic error is common-mode and cancels almost entirely; quoting an absolute socket-power number exposes the full systematic bias. So:
 
 | Validation target | Typical acceptance band |
@@ -134,6 +152,8 @@ $$
 
 *Arbitration decides who loses.* Round-robin / age-based arbiters split near-equally ($R/N$); priority or QoS (quality-of-service) arbiters protect one client at others' expense. The arbitration policy is therefore *part of the contention model* — the same saturated resource yields very different per-client outcomes under round-robin versus strict priority, which is why an MC that favours a latency-critical core, or a NoC with virtual-channel priorities, must be modeled as such and not as a fair split.
 
+*Why $\min()$ is exact, and the share formula.* Work-conservation pins both regimes. A work-conserving server never idles while requests wait, so its output rate is exactly $\min(\text{offered},\text{capacity})=\min(\sum_i d_i,\,R)$ — offered load when it fits, capacity when it does not, with nothing in between (any "achieved" above $R$ would violate the capacity bound; anything below offered-and-under-$R$ would mean the server idled with work pending). Above the knee the capacity is partitioned by the arbiter's weights $w_i$: client $i$ gets $R\,w_i/\sum_j w_j$. Equal weights give the $R/N$ fair split; demand-proportional weights ($w_i=d_i$) give $R\,d_i/\sum_j d_j$ (each keeps its *fraction* of the jam); strict priority gives the top client its full $d_i$ and starves the rest with the remainder. *Worked number.* Eight cores each demanding $d=8$ GB/s share an $R=25.6$ GB/s channel: $\sum d=64>25.6$, so aggregate clamps at $25.6$ and equal arbitration delivers $25.6/8=3.2$ GB/s per core — a core that measured $8$ GB/s standalone keeps just **40%** of it. Give one core strict priority and it holds its full $8$ GB/s, dropping the other seven to $(25.6-8)/7=2.5$ GB/s each: the *same* saturated $R$, a $3.2\times$ per-client spread from arbitration policy alone.
+
 Because a leaf measured alone always runs below its own private knee, **standalone leaf numbers overstate throughput the moment they are composed** — this is the mechanical reason full-chip $\ne \Sigma$ leaves for performance. The contended demand $\sum d_i$ must be evaluated with *every* client present; a per-core number measured in isolation is the wrong input.
 
 > **Auditor's red flag:** a cluster model that reports $N\times$ throughput and feeds each core its *standalone* memory-CPI has no contention layer and is wrong by the queueing gap of §2.2.
@@ -146,7 +166,38 @@ $$
 L \;\approx\; \frac{L_{\text{service}}}{1-\rho}, \qquad \rho \to 1 \Rightarrow L \to \infty
 $$
 
-where $L_{\text{service}}$ = unloaded service time. Latency blows up **super-linearly well before throughput flatlines**: a channel at $\rho = 0.9$ already carries roughly $10\times$ its unloaded queueing delay while still delivering "90% of peak bandwidth." So "achieved BW = 90% of peak" and "latency is fine" are not the same statement — the last 10% of bandwidth is bought with a latency cliff, and for a latency-sensitive core (one whose ROB cannot cover the stall) that cliff is the real cost. This is why contention and queueing are two faces of one resource: §2.1 is what the resource delivers, §2.2 is what it charges to deliver it, and both are governed by the same $\rho$.
+where $L_{\text{service}}$ = unloaded service time. Latency blows up **super-linearly well before throughput flatlines**: a channel at $\rho = 0.9$ already carries roughly $10\times$ its unloaded service latency while still delivering "90% of peak bandwidth." So "achieved BW = 90% of peak" and "latency is fine" are not the same statement — the last 10% of bandwidth is bought with a latency cliff, and for a latency-sensitive core (one whose ROB cannot cover the stall) that cliff is the real cost. This is why contention and queueing are two faces of one resource: §2.1 is what the resource delivers, §2.2 is what it charges to deliver it, and both are governed by the same $\rho$.
+
+**Deriving the $1/(1-\rho)$ blow-up (M/M/1).** Model the shared resource as a single server with Poisson arrivals at rate $\lambda$ and exponential service at rate $\mu$, so $\rho=\lambda/\mu$ is the utilization and $T_0=1/\mu$ the unloaded service time. Let $p_n$ be the steady-state probability of $n$ requests in the system. In steady state the probability flux across the boundary between states $n$ and $n{+}1$ must balance (a birth–death chain), giving detailed balance $\lambda p_n=\mu p_{n+1}$, hence $p_{n+1}=\rho\,p_n$ and, normalized by $\sum_{n\ge0}p_n=1$, the geometric law $p_n=(1-\rho)\rho^n$. The mean occupancy is
+
+$$
+\bar N=\sum_{n\ge0} n\,p_n=(1-\rho)\sum_{n\ge0} n\rho^n=(1-\rho)\frac{\rho}{(1-\rho)^2}=\frac{\rho}{1-\rho}.
+$$
+
+Little's law (§2.3), $\bar N=\lambda\bar T$, converts that *population* into a *latency*:
+
+$$
+\bar T=\frac{\bar N}{\lambda}=\frac{\rho/(1-\rho)}{\rho\mu}=\frac{1}{\mu(1-\rho)}=\frac{T_0}{1-\rho}=\frac{1}{\mu-\lambda},
+$$
+
+where $\bar T$ = mean response time (queue wait + service), $T_0=1/\mu$ = unloaded service time, $\rho=\lambda/\mu$ = utilization. This is the promised $T_0/(1-\rho)$: the service time is unchanged, but the *wait* to reach the server, $\bar T-T_0=\frac{\rho}{1-\rho}T_0$, diverges as $\rho\to1$ — because draining a backlog needs a run of below-average inter-arrival gaps, and such runs get exponentially rarer as arrivals approach capacity.
+
+**The variance correction (M/D/1, Pollaczek–Khinchine).** Exponential service is pessimistic — a DRAM burst or a NoC flit has *nearly deterministic* duration. For any service distribution (M/G/1) the Pollaczek–Khinchine formula gives the mean wait
+
+$$
+W_q=\frac{\rho}{1-\rho}\cdot\frac{1+C_v^2}{2}\,T_0,\qquad C_v=\frac{\sigma_S}{T_0},
+$$
+
+where $C_v$ = coefficient of variation of the service time (std ÷ mean) and $\sigma_S$ = service-time standard deviation. Exponential service has $C_v=1$, recovering M/M/1's $W_q=\frac{\rho}{1-\rho}T_0$; **deterministic** service (M/D/1) has $C_v=0$, halving it to $W_q=\frac{\rho}{2(1-\rho)}T_0$ — the *half-variance form*. Real memory/NoC service sits between and closer to deterministic, so M/M/1 is an *upper* bound on the queue and M/D/1 a *lower* one; the truth is bracketed by the two.
+
+*Worked number — DRAM/NoC latency at 60% vs 90% load.* Take unloaded service $T_0=80$ ns (a loaded-DRAM read, or a few-hop NoC traversal), response time $\bar T=T_0\big(1+\tfrac{\rho}{1-\rho}\cdot\tfrac{1+C_v^2}{2}\big)$:
+
+| $\rho$ | M/M/1 ($C_v{=}1$): $\bar T=T_0/(1-\rho)$ | M/D/1 ($C_v{=}0$): $\bar T=T_0\big(1+\tfrac{\rho}{2(1-\rho)}\big)$ |
+|---|---|---|
+| 0.60 | $80/0.40=200$ ns ($2.5\times$) | $80(1+0.75)=140$ ns ($1.75\times$) |
+| 0.90 | $80/0.10=800$ ns ($10\times$) | $80(1+4.5)=440$ ns ($5.5\times$) |
+
+Pushing utilization from 60% to 90% — a mere $1.5\times$ more offered load — inflates M/M/1 latency **4×** ($200\to800$ ns) while aggregate bandwidth climbed only from 60% to 90% of peak. That asymmetry is the whole lesson: **the last third of a resource's bandwidth is bought with a 4× latency cliff.** For a core whose ROB (reorder buffer) hides ~300 ns of memory latency, the channel is *invisible* at $\rho=0.6$ (200 ns, covered) and a *stall machine* at $\rho=0.9$ (800 ns, uncovered) — the same channel, the same leaf model, flipped by load alone. The M/D/1 column shows the payoff of an FR-FCFS controller that *regularizes* service (turning conflicts into near-deterministic row-hits, lowering $C_v$): it roughly halves the queue term at every $\rho$.
 
 The M/M/1 form is illustrative — real memory controllers are FR-FCFS (first-ready, first-come-first-served) with finite queues — but the $1/(1-\rho)$ blow-up is qualitatively universal, and it is the reason the memory-CPI in a cluster model must be driven by the *contended* channel at its true $\rho$, never the standalone one.
 
@@ -161,6 +212,22 @@ t_{step} = \max\big(t_{comp},\, t_{mem},\, t_{comm}\big)\ \text{(overlapped)} \q
 $$
 
 Overlap is what makes the *bottleneck resource — and only it —* set performance: if $t_{mem}$ is hidden under $t_{comp}$ you are compute-bound and memory is free; if the overlap fails, the times add and everything is slower. Real designs live between these bounds, and the **degree of overlap is a first-class model parameter, not a given.**
+
+**Deriving $\max$ vs $\sum$ from the pipeline.** Stream $n$ tiles, each needing compute $c$ and memory-move $m$, through a double-buffered engine (two SRAM tiles: while the array consumes tile $k$, the DMA fills tile $k{+}1$). Serially (one buffer), tile $k$ costs $c+m$ and the run is $n(c+m)$. Double-buffered, after a one-tile prologue fill of $m$ the two resources run *concurrently*: in each slot the array is busy for $c$ and the DMA for $m$, and the slot advances only when **both** finish, so the slot length is $\max(c,m)$ and the run is $m+n\max(c,m)$. Amortized over large $n$,
+
+$$
+t_{\text{tile}}\ \xrightarrow{\ n\to\infty\ }\ \max(c,m)\qquad\text{vs.}\qquad c+m\ \ (\text{serial}),
+$$
+
+so overlap replaces the *sum* by the *max* — the hidden resource is free up to the point where it *equals* the exposed one. The double-buffering speedup is $\frac{c+m}{\max(c,m)}\in[1,2]$, maximal ($2\times$) exactly when $c=m$ (perfectly balanced) and vanishing when one term dominates (nothing left to hide). This is the chip-scale restatement of the roofline $\max$ of [Perf_Modeling §11.1](01_Performance_Modeling_and_DSE.md): an operator's time is the critical path through concurrent resources, never their sum.
+
+**Partial overlap — the realistic interpolation.** Perfect $\max$ needs the *entire* hidden term to fit under the exposed one; real schedules hide only a fraction $\phi\in[0,1]$ of the smaller phase (finite buffering, imperfect prefetch distance, dependence stalls). With phase times $t_a\ge t_b$, the step interpolates linearly between the two bounds:
+
+$$
+t_{\text{step}}(\phi)=t_a+(1-\phi)\,t_b=\underbrace{t_a+t_b}_{\phi=0,\ \text{serial}\ (\sum)}\ \longrightarrow\ \underbrace{t_a}_{\phi=1,\ \text{overlapped}\ (\max)},
+$$
+
+where $\phi$ = overlap fraction (0 = none, 1 = smaller phase fully hidden), $t_a$ = larger phase time, $t_b$ = smaller. The sting is that $\phi$ **degrades under contention**: §2.1–2.2 inflate $t_b$ (the memory/comm phase) toward and past $t_a$, at which point even $\phi=1$ can no longer hide it and the step re-expands. Overlap and contention are thus coupled — contention is exactly what turns a hidden term back into an exposed one. *Worked number.* A training microstep has $t_{\text{comp}}=5.0$ ms and $t_{\text{comm}}=3.0$ ms (an AllReduce). Serial: $8.0$ ms. Perfect overlap: $\max(5,3)=5.0$ ms — the comm is free, a $1.6\times$ speedup. At $\phi=0.6$: $5.0+(1-0.6)\cdot3.0=6.2$ ms ($1.29\times$). Now let pod contention (§2.1) inflate the comm to $t_{\text{comm}}=6.0$ ms: even at $\phi=1$ the step is $\max(5,6)=6.0$ ms — the collective has become the *exposed* term, adding compute overlap buys nothing, and the fix is now bandwidth (a better torus embedding, §4.4), not scheduling. One knob — the contended comm time — moved the bottleneck across the $\max$.
 
 Overlap is *conditional* — the $\max()$ holds only when movement is decoupled from consumption:
 
@@ -191,6 +258,32 @@ P_{dyn} \;\propto\; V^2 f \;\propto\; f^3
 $$
 
 Dynamic power grows **cubically** with frequency. A small $f$ cut buys a large power cut, and conversely raising the budget buys only a *cube-root* frequency gain — which is exactly why turbo hands the budget to *few* cores (a large $f$ on one core costs what a modest $f$ costs on three) and why sustained all-core clock sits well below single-core burst.
+
+**Deriving $P_{dyn}=\alpha C V^2 f$.** A switching node is a capacitor $C$ charged to $V$ and discharged once per transition. Charging draws $Q=CV$ from the rail at voltage $V$, delivering energy $QV=CV^2$, of which exactly half lands on the capacitor ($\tfrac12CV^2$) and half is burned in the pull-up resistance regardless of its value; the discharge dumps the stored half through the pull-down. So a full charge/discharge cycle dissipates $CV^2$, and a node switching with probability $\alpha$ (the **activity factor**) each clock dissipates $\alpha CV^2$ per cycle, i.e. $P_{dyn}=\alpha CV^2 f$, where $\alpha$ = switching probability/cycle, $C$ = switched capacitance, $V$ = supply, $f$ = clock. Summed over the chip this is precisely the $\sum_u E_u A_u f$ of §1.1 with $E_u=\alpha_u C_u V^2$.
+
+**Why $V$ tracks $f$: the delay law.** A gate's output slews as its drive current charges the next stage: $t_{\text{gate}}\approx C V/I_{\text{on}}$. In the alpha-power (Sakurai) model $I_{\text{on}}\propto(V-V_t)^{\alpha_v}$ with $\alpha_v\in[1,2]$ ($2$ = long-channel square law, $\approx1.3$ modern short-channel), so
+
+$$
+f_{\max}\propto\frac{1}{t_{\text{gate}}}\propto\frac{(V-V_t)^{\alpha_v}}{V}\ \xrightarrow[\ V\gg V_t\ ]{}\ V,
+$$
+
+where $V_t$ = threshold voltage. Well above threshold the curve is close to *linear* in $V$ (the "$V\propto f$" used above); but as $V\to V_t$ the overdrive $(V-V_t)$ collapses and frequency dies, so the linear approximation — and the cube below — hold only inside the usable DVFS window and **fail at the low-voltage floor**.
+
+**Energy/op $\propto V^2$, power $\propto V^3$.** Divide by throughput. Energy *per cycle* is $P_{dyn}/f=\alpha CV^2$, **frequency-independent**, so the energy to do a fixed amount of work scales as
+
+$$
+E_{\text{op}}\propto V^2,\qquad\text{while}\qquad P_{dyn}=\alpha CV^2 f\propto V^3\ \ (\text{since }f\propto V).
+$$
+
+That asymmetry is the pivot of DVFS: **slowing down cuts power cubically but energy-per-op only quadratically**, because the work simply takes longer ($t\propto1/f$) and the $f$ in $P=E_{\text{op}}f$ cancels one power of the saving. Lowering $V$ is *always* good for dynamic energy; only the *time* it costs creates a trade.
+
+**The energy–frequency Pareto and race-to-idle.** Total energy to finish a fixed $W$-cycle job is dynamic + leakage over the active window $t=W/f$ (treating $P_{\text{leak}}$ as set mainly by $V_t,T$, hence roughly $V$-independent):
+
+$$
+E_{\text{total}}(V)=\underbrace{k\,W\,V^2}_{\text{dynamic},\ \downarrow\text{ with }V}+\underbrace{P_{\text{leak}}\,\frac{W}{f}}_{\text{leakage},\ \propto 1/V,\ \uparrow\text{ as you slow}},
+$$
+
+where $k$ absorbs $\alpha C$ per cycle and $f\propto V$. The terms pull opposite ways; setting $dE_{\text{total}}/dV=2kWV-P_{\text{leak}}W/(aV^2)=0$ (with $f=aV$) gives an interior **energy-optimal voltage** $V^\star=(P_{\text{leak}}/2ka)^{1/3}\propto P_{\text{leak}}^{1/3}$: below it, slowing further *costs* energy. This is the quantitative **race-to-idle vs pace-to-deadline** split — above $V^\star$ (leakage small) energy keeps dropping as you slow, so *pace-to-deadline* wins; below it (leaky node) the minimum is behind you and *race-to-idle* (run fast, finish, power-gate so leakage stops) wins. *Worked number.* A kernel runs at $(V,f)=(1.0\text{ V},3.0\text{ GHz})$ drawing $P_{dyn}=10$ W, finishing in $1.0$ s. Slow it to $2.4$ GHz ($0.8\times$), so $V\approx0.8$ V and $P_{dyn}=10\cdot0.8^3=5.12$ W — a **20% $f$-cut nearly halves dynamic power** — but it now takes $1.25$ s, and its *dynamic* energy drops $10\to5.12\cdot1.25=6.4$ J (a $3.6$ J saving, the $V^2=0.64$ energy/op ratio). Whether that wins depends on leakage over the deadline $D=1.25$ s: the fast run finishes early and power-gates for the spare $0.25$ s, so it leaks only for $1.0$ s while the paced run leaks the whole $1.25$ s. Race-to-idle wins when the paced run's extra leakage $P_{\text{leak}}\cdot0.25$ exceeds the $3.6$ J dynamic saving — i.e. $P_{\text{leak}}>14.4$ W. So at $P_{\text{leak}}=4$ W pacing wins (fast+gate $(10{+}4)\cdot1.0=14$ J vs paced $(5.12{+}4)\cdot1.25=11.4$ J), while at $P_{\text{leak}}=20$ W race-to-idle wins (fast+gate $(10{+}20)\cdot1.0=30$ J vs paced $(5.12{+}20)\cdot1.25=31.4$ J). The crossover is $V^\star$ in disguise, and it slides toward race-to-idle as the node gets leakier — exactly the advanced-node trend.
 
 Every vendor mechanism is the same idea — measure power, compare to a cap, actuate $(V,f)$ — under different names:
 
@@ -229,6 +322,28 @@ T_j(t) = T_\infty + (T_0 - T_\infty)\,e^{-t/\tau_\theta}, \qquad \tau_\theta = R
 $$
 
 The **thermal time constant** $\tau_\theta$ spans orders of magnitude within one package: the tiny die heats in **~ms** (small $C_\theta$), while the heatsink/package has $\tau_\theta$ of **~seconds to tens of seconds** (large $C_\theta$). That span *is* why burst beats sustained: for a few ms the die can dissipate above steady-state TDP because the heatsink has not warmed yet — precisely the headroom RAPL PL2 and Turbo (§2.4) exploit. When $T_j$ reaches $T_{j,max}$ (commonly ~95–105 °C for logic), the governor cuts $(V,f)$ to force $P$ down, so the **sustained clock is the frequency at which $T_j$ settles *at* $T_{j,max}$** — necessarily below the burst clock the die hits before the package warms.
+
+**Deriving the transient from an energy balance.** The RC form is not analogy-by-assertion; it is the heat-balance ODE. Power $P$ flows in; heat leaves to ambient through $R_\theta$ at rate $(T_j-T_{amb})/R_\theta$; the surplus heats the mass $C_\theta$ (J/°C):
+
+$$
+C_\theta\frac{dT_j}{dt}=P-\frac{T_j-T_{amb}}{R_\theta}.
+$$
+
+Setting $dT_j/dt=0$ returns the algebraic law $T_j=T_{amb}+PR_\theta$; for constant $P$ the linear ODE solves to $T_j(t)=T_\infty+(T_0-T_\infty)e^{-t/\tau_\theta}$ with $T_\infty=T_{amb}+PR_\theta$ and $\tau_\theta=R_\theta C_\theta$ — the quoted transient, now with $\tau_\theta$ *derived* as the product that makes the exponent dimensionless ($[\text{°C/W}]\cdot[\text{J/°C}]=[\text{s}]$).
+
+**The turbo-duration formula.** Start at $T_0$ and apply a burst power whose steady target $T_\infty=T_{amb}+P_{\text{burst}}R_\theta$ *exceeds* the limit $T_{j,max}$. The die climbs the exponential and trips when $T_j(t)=T_{j,max}$; solving for $t$,
+
+$$
+t_{\text{turbo}}=\tau_\theta\,\ln\!\frac{T_\infty-T_0}{T_\infty-T_{j,max}},
+$$
+
+where $T_0$ = temperature at burst onset, $T_\infty$ = the (unreachable) steady target of the burst, $T_{j,max}$ = throttle temperature. The burst lasts *longer* the larger the thermal mass ($\tau_\theta$) and the more headroom $T_{j,max}-T_0$ — which is exactly why the governor spends the die's small-$\tau$ capacitance first and the heatsink's large-$\tau$ capacitance second, and why PL2/Turbo windows are set to the package $\tau_\theta$ rather than chosen arbitrarily. *Worked number — how long can it boost?* (illustrative) In-case ambient $T_{amb}=45$ °C, cooling $R_\theta=0.30$ °C/W, limit $T_{j,max}=100$ °C. At a baseline $P_0=150$ W the junction settles at $T_0=45+150\cdot0.30=90$ °C (10 °C of headroom). Burst to $P_{\text{burst}}=250$ W: its steady target would be $T_\infty=45+250\cdot0.30=120$ °C — above the limit, so the burst is *thermally unsustainable* and runs only until the die hits 100 °C. With heatsink/package $C_\theta=100$ J/°C, $\tau_\theta=0.30\cdot100=30$ s, so
+
+$$
+t_{\text{turbo}}=30\,\ln\!\frac{120-90}{120-100}=30\,\ln\frac{30}{20}=30\cdot0.405=12.2\text{ s}.
+$$
+
+The part holds 250 W for ~12 s before throttling — the concrete meaning of "PL2 for $\tau\sim$ tens of seconds, then PL1." Halve the thermal mass and the boost halves to ~6 s; start hotter ($T_0=95$ °C) and it collapses to $30\ln(25/20)=6.7$ s. The **sustained** ceiling is then the fixed point of the throttle loop — the $P(f)$ at which $T_{amb}+P(f)R_\theta=T_{j,max}$: solving $45+0.30\,P=100$ gives $P_{\text{sust}}=183$ W, and the governor lowers $f$ until draw sits at that 183 W ceiling.
 
 The deepest coupling is a positive feedback. Subthreshold leakage rises *exponentially* with temperature — roughly **doubling every ~10 °C** — closing a loop:
 
@@ -302,6 +417,22 @@ $$
 
 where $C(N)$ is the contention term that *grows* with $N$ (LLC eviction, NoC and channel queueing, §2.1–2.2). This is why 8 memory-heavy cores deliver ~4–5× rather than 8×, while a cache-fitting compute phase approaches Amdahl's ceiling.
 
+**From Amdahl to the Universal Scalability Law.** Amdahl caps speedup with a *serial* fraction but predicts monotone gains; real machines get *worse* past a point, which needs a second penalty. The **USL** (Gunther) writes the $N$-way speedup as
+
+$$
+S(N)=\frac{N}{1+\sigma(N-1)+\kappa N(N-1)},
+$$
+
+where $\sigma$ = **contention** coefficient (the serialized/queued fraction a growing crowd must take turns on, §2.1–2.2) and $\kappa$ = **coherency** coefficient (the cost of keeping $N$ workers mutually consistent: snoops, invalidations, barriers). The growth orders differ: $\sigma(N-1)$ is *linear* (a shared queue serves one at a time, so the wait grows with the number waiting), while $\kappa N(N-1)$ is *quadratic* — it counts the $\binom{N}{2}$ **pairs** that must be kept coherent, since point-to-point consistency traffic is all-pairs. Setting $\kappa=0$ recovers Amdahl with $\sigma\leftrightarrow(1-p)$ (as $N\to\infty$, $S\to1/\sigma$, the serial ceiling); the heuristic $C(N)$ above *is* $\sigma(N-1)+\kappa N(N-1)$ made explicit.
+
+**Why there is a peak — and it retrogrades.** The quadratic term makes adding cores eventually *lose*. Maximize $S(N)$: with $D(N)=1+\sigma(N-1)+\kappa N(N-1)$, $\frac{dS}{dN}=\frac{D-ND'}{D^2}$, and $D-ND'=(1-\sigma)-\kappa N^2$ (the linear and constant pieces cancel), zero at
+
+$$
+N^\star=\sqrt{\frac{1-\sigma}{\kappa}}.
+$$
+
+Below $N^\star$ the numerator's $N$ outruns the denominator; above it the $\kappa N^2$ coherency cost dominates and **throughput falls as cores are added** — the *retrograde* regime, the quantitative reason a chip has an optimal core count rather than an unbounded one. (Amdahl, $\kappa=0$, has $N^\star\to\infty$: it saturates but never retrogrades, so it cannot even express the observed peak.) *Worked number.* Take $\sigma=0.08$ (8% contention), $\kappa=0.001$ (0.1% coherency). Peak at $N^\star=\sqrt{(1-0.08)/0.001}=\sqrt{920}\approx30$ cores, where $S(30)=\frac{30}{1+0.08\cdot29+0.001\cdot30\cdot29}=\frac{30}{1+2.32+0.87}=\frac{30}{4.19}=7.2\times$. Doubling to $N=64$ *regresses* to $S(64)=\frac{64}{1+0.08\cdot63+0.001\cdot64\cdot63}=\frac{64}{1+5.04+4.03}=\frac{64}{10.07}=6.4\times$ — **more than double the cores, less speedup**, the excess eaten by the $O(N^2)$ coherency term. The "~4–5× on 8 cores" above is the same curve at $N=8$: $S(8)=\frac{8}{1+0.08\cdot7+0.001\cdot8\cdot7}=\frac{8}{1.62}=4.9\times$. Past $N^\star$ the only fixes are lowering $\kappa$ (larger private caches, NUCA, relaxed consistency) or $\sigma$ (less sharing) — attacking the *coefficients*, never $N$.
+
 At the **SoC**, the DRAM channel is the canonical shared resource. Its *performance* and its *energy* are modeled by different tools — a distinction an auditor watches for: performance (achieved BW, latency, scheduling) from a cycle-level channel model (Ramulator / DRAMSim3), energy from a state-integrator (DRAMPower), which computes $\sum_{\text{states}}(\text{time in state}\times \text{IDD}\times V_{DD})$. Two device facts survive from the parameter detail (which lives in [DDR_Controller](../03_Memory/04_DDR_Controller.md) and [Memory](../03_Memory/03_Memory.md)):
 
 - **Achieved BW is access-pattern-bound, not just peak.** A row-buffer **hit** costs only $t_{CAS}$; a **miss** adds an activate; a **conflict** adds a precharge *and* an activate. FR-FCFS scheduling reorders to favour row-hits, so a streaming, well-interleaved stream reaches ~80–90% of peak while a conflict-heavy random stream falls to ~40–50% — the *same* channel, half the bandwidth, from access pattern alone.
@@ -319,7 +450,7 @@ $$
 B_{achieved} = \min\!\Big(\textstyle\sum_i \text{demand}_i,\; B_{HBM}\Big), \qquad N^\star = \frac{B_{HBM}}{\text{demand per SM}}
 $$
 
-At per-SM demand 30 GB/s and $B_{HBM}=3$ TB/s the knee is $N^\star = 100$ active SMs; on a ~130-SM die, all-SM streaming pushes $\sum\text{demand}=3.9$ TB/s past $B_{HBM}$, so achieved saturates at 3 TB/s and per-SM effective BW collapses from 30 → ~23 GB/s while every SM's memory-CPI rises together. Past the knee, *adding SMs adds no throughput* — only contention and power. Data-movement energy is a real uncore line, not a floor: **HBM3 ≈ 0.29 pJ/bit** at the interface, **NVLink ≈ 1.3 pJ/bit** (~5× more efficient than **PCIe Gen5 ≈ 6–7 pJ/bit**), so a multi-GPU AllReduce over NVLink is a quantifiable energy term.
+($N^\star$ is just the §2.1 knee in units of SMs: set $\sum_i\text{demand}_i=N\,d=B_{HBM}$ and solve. Past it, $\partial B_{achieved}/\partial N=0$ — the marginal SM adds compute *demand* but zero delivered *bytes*, so it buys only queueing and power.) At per-SM demand 30 GB/s and $B_{HBM}=3$ TB/s the knee is $N^\star = 100$ active SMs; on a ~130-SM die, all-SM streaming pushes $\sum\text{demand}=3.9$ TB/s past $B_{HBM}$, so achieved saturates at 3 TB/s and per-SM effective BW collapses from 30 → ~23 GB/s while every SM's memory-CPI rises together. Past the knee, *adding SMs adds no throughput* — only contention and power. Data-movement energy is a real uncore line, not a floor: **HBM3 ≈ 0.29 pJ/bit** at the interface, **NVLink ≈ 1.3 pJ/bit** (~5× more efficient than **PCIe Gen5 ≈ 6–7 pJ/bit**), so a multi-GPU AllReduce over NVLink is a quantifiable energy term.
 
 The GPU is where **both** coupling families bite at once: the *contention* layer collapses per-SM BW (above), and the *budget* layer (§2.4–2.5) runs GPU Boost — the highest clock with $P\le\text{cap}$ and $T\le T_{limit}$. These interact perversely: a memory-bound phase draws *less* core power, so Boost may *raise* the clock — which buys nothing, because the bottleneck is HBM, not compute; conversely a compute-bound tensor-core phase hits the power cap and throttles the very compute rate that defined it. A correct model co-solves BW-sharing and the power-capped clock in one loop (§3).
 
@@ -343,7 +474,7 @@ $$
 t_{AllReduce} \approx \underbrace{\frac{2(N-1)}{N}\cdot\frac{S}{B_{link}}}_{\text{bandwidth term}} + \underbrace{2(N-1)\,\ell}_{\text{latency term}}
 $$
 
-where $N$ = chips in the ring, $S$ = payload bytes, $B_{link}$ = per-link ICI (inter-chip interconnect) bandwidth, $\ell$ = per-hop latency. As $N\to\infty$ the bandwidth term $\to 2S/B_{link}$ — *independent of $N$*, the whole point of ring-AllReduce — while the latency term grows linearly, so at large $N$ or small $S$ latency dominates and hierarchical/tree collectives win. Worked: $N=256$, $S=256$ MB (bf16 shard), $B_{link}=1.2$ TB/s gives $t_{AllReduce}\approx 425\ \mu s$; against a ~5 ms per-step compute this is easily hidden — *compute-bound*, good scaling. The saving grace is again §2.3 overlap: AllReduce layer $L$ while the backward pass still computes layer $L{-}1$, so the effective step is $\max(t_{compute}, t_{comm})$ — but *only if* the schedule interleaves independent comm and compute *and* the ICI links are not already saturated by other tensor/pipeline-parallel traffic (the pod-scale contention layer). A model assuming free overlap overstates scaling.
+where $N$ = chips in the ring, $S$ = payload bytes, $B_{link}$ = per-link ICI (inter-chip interconnect) bandwidth, $\ell$ = per-hop latency. *Why $2(N-1)/N$* (sketch; full derivation in [Perf_Modeling §11.3](01_Performance_Modeling_and_DSE.md)): split the payload into $N$ chunks of $S/N$. Reduce-scatter runs $N-1$ steps, each chip sending one chunk per step until each owns one fully-reduced chunk — $(N-1)\tfrac{S}{N}$ bytes/chip; all-gather circulates those finished chunks in another $N-1$ steps — another $(N-1)\tfrac{S}{N}$; each chip sends and receives simultaneously, so wall-time is $\frac{2(N-1)}{N}\frac{S}{B_{link}}$. As $N\to\infty$ the bandwidth term $\to 2S/B_{link}$ — *independent of $N$*, the whole point of ring-AllReduce, since bigger rings use proportionally smaller chunks — while the latency term grows linearly, so at large $N$ or small $S$ latency dominates and hierarchical/tree collectives win. Worked: $N=256$, $S=256$ MB (bf16 shard), $B_{link}=1.2$ TB/s gives $t_{AllReduce}\approx 425\ \mu s$; against a ~5 ms per-step compute this is easily hidden — *compute-bound*, good scaling. The saving grace is again §2.3 overlap: AllReduce layer $L$ while the backward pass still computes layer $L{-}1$, so the effective step is $\max(t_{compute}, t_{comm})$ — but *only if* the schedule interleaves independent comm and compute *and* the ICI links are not already saturated by other tensor/pipeline-parallel traffic (the pod-scale contention layer). A model assuming free overlap overstates scaling.
 
 > **Auditor's red flag:** classifying a tile's regime (or a pod's scaling) from *standalone* bandwidth — the regime is set by how many siblings contend *right now*, and by whether the overlap preconditions actually hold.
 
@@ -366,14 +497,19 @@ Order-of-magnitude anchors for back-of-envelope full-chip sanity checks. **State
 | NoC energy | **~a few pJ/flit-hop** | DSENT/Orion, node-dependent (§4.2) |
 | NPU static (leakage) fraction | **~30–72%** | ReGate, MICRO 2025 (arXiv:2508.02536) (§4.4) |
 | Dynamic power vs frequency | **$P\sim f^3$** over the DVFS range | $V\propto f$ ⇒ small $f$ cut, large power cut (§2.4) |
+| Energy/op vs voltage | **$E_{op}\propto V^2$** (energy/cycle $=\alpha CV^2$, $f$-indep.) | slow-down cuts power cubically, energy quadratically (§2.4) |
+| Energy-optimal voltage | **$V^\star\propto P_{leak}^{1/3}$**; leakier ⇒ race-to-idle | pace-to-deadline above $V^\star$, race below (§2.4) |
 | RAPL windows | **PL1 $\tau\sim$ tens of s, PL2 $\tau\sim$ ms** | burst > sustained via thermal $C_\theta$ (§2.4–2.5) |
 | Junction-to-ambient $R_{\theta ja}$ | **~0.1–0.5 °C/W** (server+heatsink) to **>10 °C/W** (small pkg) | it's the cooling's number, not the die's (§2.5) |
 | Leakage vs temperature | **~2× per +10 °C** | subthreshold $T$-dependence; drives runaway loop (§2.5) |
 | Die vs package thermal time constant | **~ms (die) vs ~s (heatsink)** | $\tau_\theta=R_\theta C_\theta$; enables burst > sustained (§2.5) |
+| Turbo/boost duration | **$\tau_\theta\ln\frac{T_\infty-T_0}{T_\infty-T_{j,max}}$** | thermal mass + headroom set the window (§2.5) |
 | $T_{j,max}$ (logic throttle point) | **~95–105 °C** | sustained clock settles here (§2.5) |
-| Queueing blow-up at $\rho=0.9$ | **~10× unloaded latency** | $L\approx L_{svc}/(1-\rho)$ (§2.2) |
+| Queueing blow-up, $\rho=0.6\to0.9$ | **~2.5× → ~10×** unloaded (M/M/1); M/D/1 halves the queue | $\bar T=T_0/(1-\rho)$; det. service $C_v{=}0$ (§2.2) |
 | Ring-AllReduce bandwidth factor | **$2(N-1)/N \to 2$** | Patarasuk 2009; per-link cost $\to 2S/B_{link}$ (§4.4) |
 | Multicore speedup (mem-heavy) | **~4–5× on 8 cores** | Amdahl + contention $C(N)$, not 8× (§4.2) |
+| USL scalability peak | **$N^\star=\sqrt{(1-\sigma)/\kappa}$**, retrograde beyond | coherency $O(N^2)$ caps core count (§4.2) |
+| Double-buffer speedup | **$\le 2\times$**, max at $t_{comp}=t_{mem}$ | $(c{+}m)/\max(c,m)$; overlap replaces $\sum$ by $\max$ (§2.3) |
 
 ---
 
@@ -399,7 +535,7 @@ The columns are *different tools on purpose* — the auditor's distinction of §
 
 ## Cross-references
 
-- **Down the stack (what this composes):** [Block_Activity_and_Power](../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the leaf energies, McPAT/CACTI bottom-up, DPM/gating, clock-tree share), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (the CPI stack and roofline that supply activity and the bottleneck), [06_Simulators](../07_Simulators/00_Index.md) (how every tool in §6 actually models time, memory, and energy — [Analytical_Models](../07_Simulators/07_Analytical_Models.md) for the queueing/Little/roofline duals of §2), [Signal_Integrity_Reliability](../../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the PDN/IR-drop delivery loss of §1.1).
+- **Down the stack (what this composes):** [Block_Activity_and_Power](../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the leaf energies, McPAT/CACTI bottom-up, DPM/gating, clock-tree share), [Power_Fundamentals](../../02_Power_and_Low_Power/01_Power_Fundamentals.md) (the $\alpha CV^2f$ charge-accounting, the alpha-power delay law, and the DVFS energy/op $\propto V^2$ derivation behind §2.4), [Performance_Modeling_and_DSE](01_Performance_Modeling_and_DSE.md) (the CPI stack and roofline that supply activity and the bottleneck), [06_Simulators](../07_Simulators/00_Index.md) (how every tool in §6 actually models time, memory, and energy — [Analytical_Models](../07_Simulators/07_Analytical_Models.md) for the M/M/1–M/D/1 queueing, Little's-law, roofline, and USL duals of §2 and §4.2), [Signal_Integrity_Reliability](../../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the PDN/IR-drop delivery loss of §1.1).
 - **Up the stack (what builds on this):** [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) and [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (the µarch behind §4's power/perf roll-ups), [Power_Analysis_and_Signoff](../../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) and [Power_Reduction_Techniques](../../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (the budgeting/DVFS/gating mechanics at silicon).
 - **Adjacent / device detail:** [Memory](../03_Memory/03_Memory.md) & [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the DRAM timing/IDD parameters §4.2 abstracts), [Network_on_Chip](../04_Interconnect/03_Network_on_Chip.md) & [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the NoC/coherence fabric of §4.2), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (the LLC whose sharing drives cluster contention).
 
@@ -410,9 +546,11 @@ The columns are *different tools on purpose* — the auditor's distinction of §
 1. Li, S. et al., "McPAT: An Integrated Power, Area, and Timing Modeling Framework for Multicore and Manycore Architectures," *MICRO*, 2009. The architectural energy×activity roll-up of §1.1.
 2. Muralimanohar, N., Balasubramonian, R., and Jouppi, N.P., "CACTI 6.0: A Tool to Model Large Caches," HP Labs, 2009. The array energies §1 pushes down.
 3. Williams, S., Waterman, A., and Patterson, D., "Roofline: An Insightful Visual Performance Model for Multicore Architectures," *CACM*, 52(4), 2009. The bottleneck/overlap model of §2.3.
-4. Gunther, N.J., *Guerrilla Capacity Planning*, Springer, 2007. The Universal Scalability Law — Amdahl plus the contention term $C(N)$ of §4.2.
+4. Gunther, N.J., *Guerrilla Capacity Planning*, Springer, 2007. The Universal Scalability Law — Amdahl's serial term plus the $\sigma$-contention and $\kappa$-coherency terms, and the retrograde peak $N^\star=\sqrt{(1-\sigma)/\kappa}$ of §4.2.
 5. Chandrasekar, K. et al., "DRAMPower: Open-Source DRAM Power & Energy Estimation Tool," 2012. The IDD × time-in-state integral of §4.2.
 6. Skadron, K. et al., "Temperature-Aware Microarchitecture" (HotSpot), *ISCA*, 2003. The RC thermal model of §2.5.
 7. Patarasuk, P. and Yuan, X., "Bandwidth Optimal All-reduce Algorithms for Clusters of Workstations," *JPDC*, 69(2), 2009. The ring-AllReduce runtime of §4.4.
 8. Zhang, Y. et al., "ReGate: Fine-Grained Power Gating for NPUs," *MICRO*, 2025 (arXiv:2508.02536). The 30–72% static-energy finding of §4.4.
 9. Intel, *Running Average Power Limit (RAPL)* and *Turbo Boost* documentation; NVIDIA GPU Boost / `nvidia-smi` power-cap docs; AMD Precision Boost. The governor mechanisms of §2.4.
+10. Kleinrock, L., *Queueing Systems, Volume 1: Theory*, Wiley, 1975. The M/M/1 birth–death response time $T_0/(1-\rho)$ and the Pollaczek–Khinchine mean-wait formula (M/D/1 half-variance) behind the §2.2 queueing derivation.
+11. Sakurai, T. and Newton, A.R., "Alpha-power law MOSFET model and its applications to CMOS inverter delay," *IEEE JSSC*, 25(2), 1990. The $f\propto(V-V_t)^{\alpha_v}/V$ delay law behind the §2.4 DVFS cube.

@@ -45,6 +45,32 @@ flowchart TD
 
 The hardware alternative to this bug is not software cache maintenance (clean/invalidate instructions — slow, error-prone, and it pushes a hardware invariant onto programmers); it is a protocol on the interconnect that makes the staleness *impossible*. That is the whole point of ACE and CHI.
 
+### 1.1 The invariant, and the minimal message set it forces
+
+Make the contract precise before building to it. Write $\mathcal{C}(x)$ for the set of caches holding line $x$ and $\mathcal{W}(x)\subseteq\mathcal{C}(x)$ for those holding it *writable*. The two invariants are
+
+$$
+\underbrace{\;|\mathcal{W}(x)|\le 1 \ \wedge\ \big(|\mathcal{W}(x)|=1 \Rightarrow \mathcal{C}(x)=\mathcal{W}(x)\big)\;}_{\text{SWMR}}, \qquad \underbrace{\;\mathrm{read}(x)=\text{value of the last write in }\prec_x\;}_{\text{data-value}}
+$$
+
+$$
+\text{where } \mathcal{C}(x),\mathcal{W}(x) = \text{holders / writable-holders of line } x,\ \ \prec_x = \text{the coherence order (a single total order of all accesses to } x).
+$$
+
+SWMR says the writable set is empty or a singleton that *excludes every reader*; data-value says every read returns the most recent write in the per-line order $\prec_x$ (ordering *across* addresses is [§9](../02_CPU/01_CPU_Architecture.md)'s separate consistency contract). [CPU_Architecture §8](../02_CPU/01_CPU_Architecture.md) derives the **state** set from these invariants by a counting argument — MSI is correctness-minimal, $+$E is traffic-minimal, $+$O enables cache-to-cache dirty supply — and we do not repeat it. This page owns the dual object the state derivation implies: the minimal **message** set the fabric must carry to *move* a line between those states without ever transiently breaking SWMR or data-value.
+
+Enumerate the transitions that touch sharing and each forces exactly one message archetype:
+
+- **Read miss** (I→S/E): the cache needs a copy *and* needs to learn whether it is alone → a **get-shared** request; the reply carries data plus one bit, "others share (→S)" or "you are alone (→E)."
+- **Write to a line not held writable** (I/S→M): SWMR demands $\mathcal{W}(x)$ be emptied of everyone else *first* → a **get-unique** request that invalidates all $|\mathcal{C}(x)|-1$ other copies before granting write. That invalidation count is the term §3 and §4 fight over.
+- **Write to a line already held shared** (S→M): the data is already local, so re-fetching it is waste → an **upgrade** (invalidate-only, no data payload) — the message-level analog of the E optimization: it strips the *data* half off a get-unique exactly as E strips a whole transaction off a private read-then-write.
+- **Eviction of a dirty line** (M/O→I): data-value forbids losing the last write → a **writeback** to the home/memory.
+- The fabric's own two messages: the **snoop** (the query "do you hold $x$, in what state?") and the **snoop response** (hit/miss, $\pm$ the line's data).
+
+That is the entire protocol at interconnect level: three request archetypes $\{$get-shared, get-unique, upgrade$\}$, a writeback, and snoop/response — every richer transaction name in ACE or CHI is one of these five specialized. The single *interconnect-relevant* addition of MOESI over MESI is a property of the **snoop response**, not a new request: an **Owned** copy answers a snoop by *supplying dirty data cache-to-cache and remaining the authority*, so the writeback-to-memory is deferred rather than performed on every shared read. That message-level move — dirty data returned by a *cache* instead of memory — is precisely what Direct Cache Transfer (§5.2) accelerates, and why CHI's cache states $\{$I, UC$\approx$E, UD$\approx$M, SC$\approx$S, SD$\approx$O$\}$ carry a distinct *shared-dirty* encoding.
+
+**The transaction flow, and why it must appear atomic.** A coherence transaction is therefore not one message but a *chain* — request → (serialize) → snoop(s) → response(s)/data → completion — spread over many cycles and, on CHI, many hops. Obligation 3 of §1 is the requirement that this chain act as one indivisible step in $\prec_x$: between a requester's get-unique and its completion, no *other* requester may also be told it is the unique owner. The agent that guarantees this is the **ordering point** (the bus in ACE, the home node in CHI, §4.1); it admits one transaction per line into $\prec_x$ at a time, and the transient states (I→M is really I→*pending*→M) are the bookkeeping that holds the line "in flight" until the chain closes. This is the exact sense in which the fabric, not the cache, makes a multi-message transaction appear atomic.
+
 ---
 
 ## 2. Snoop coherence (ACE): broadcast the question
@@ -65,7 +91,34 @@ Two design elements matter conceptually; the rest of ACE's transaction menu is j
 
 ## 3. The $O(N^2)$ wall: why broadcast cannot scale
 
-This is the theoretical heart of the page and the single fact that forces directories. Model each core as generating coherence transactions (misses needing a coherence action) at rate $r$ per cycle. In a broadcast system every such transaction must be presented to all other caches, each of which does a snoop tag lookup.
+This is the theoretical heart of the page and the single fact that forces directories. Model each core as generating coherence transactions (misses needing a coherence action) at rate $r$ per cycle. In a broadcast system every such transaction must be presented to all other caches, each of which does a snoop tag lookup. We first name what those transactions *are* (§3.1 — the coherence miss and its cost as fabric bandwidth), then cost broadcasting them (§3.2 — the wall).
+
+### 3.1 Where $r$ comes from: the coherence miss (the fourth C), and false sharing
+
+The rate $r$ is not free traffic — it is the **coherence miss**, the *fourth* C beyond the compulsory/capacity/conflict misses of a uniprocessor cache ([Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md)): a miss caused not by the cache being too small but by *another core's write invalidating a line this core still wanted*. It exists only because sharing exists, and it is the entire reason a coherence fabric carries traffic at all. It has two sources — one irreducible, one pure waste:
+
+- **True sharing.** Two cores genuinely communicate through a line — a lock word, a shared counter, a producer's output. Core A's write invalidates B's copy (SWMR forbids a reader beside a writer), so B's next access misses and re-fetches. This traffic is intrinsic to the algorithm; you cut it only by sharing less.
+- **False sharing.** Two cores touch *different* bytes that merely fall in the *same* line. Because coherence tracks state at **line granularity** ($B_{\text{line}}=64$ B), not per byte, the protocol cannot tell the independent accesses apart — A's write to byte 0 invalidates B's line even though B only ever reads byte 40. The miss is an artifact of *layout*, yet costs the full price of a real conflict.
+
+**The ping-pong, costed as fabric bandwidth.** Take two cores alternately writing one line. Each write must acquire the line Unique, so it invalidates the other holder and drags the whole line across — the line *ping-pongs* between the two private caches, one line transfer per write. [CPU_Architecture §8.2](../02_CPU/01_CPU_Architecture.md) derives the *latency* view (each write stalls at coherence-miss latency instead of ~1 cycle — a ~100× per-access slowdown); here we own the *bandwidth* view the fabric feels. Every ping-pong write moves a full $B_{\text{line}}$-byte line to deliver only the $w$ bytes actually written, so the fabric hauls
+
+$$
+\text{amplification} \;=\; \frac{B_{\text{line}}}{w} \;=\; \frac{64\text{ B}}{8\text{ B}} \;=\; 8\times, \qquad w = \text{bytes written per update (an 8 B counter here),}
+$$
+
+more bytes than the computation needs. *Worked number.* Two 3 GHz cores each land one contended store per $\approx\!190$ cycles (a $\sim\!10$-cycle loop body plus a $\sim\!180$-cycle $\approx\!60$ ns cache-to-cache miss): $3\times10^9/190 \approx 15.8$ M ping-pong writes/s/core, so the pair drives $\approx 31.6$ M line-moves/s $\times\,64$ B $\approx \mathbf{2.0\ GB/s}$ of coherence traffic to accomplish only $31.6\text{ M}\times 8$ B $\approx 253$ MB/s of real updates — $8\times$ the bandwidth the work requires, burned on a single hot line. Direct Cache Transfer (§5.2) shrinks the $\sim\!60$ ns cache-to-cache latency toward $\sim\!22$ ns and so *raises the rate* of the ping-pong (cutting the slowdown to $\sim\!7$–8×), but it moves the *same* 64 B per bounce — DCT speeds the transfer, it does not touch the amplification. Only breaking the granularity does: padding each core's datum onto its **own 64 B line** turns every ping-pong miss back into a local L1 write, erasing both the latency and the $8\times$ bandwidth tax for the price of $B_{\text{line}}/w = 8\times$ the memory footprint.
+
+**Why the granule is 64 B — the trade this exposes.** False-sharing pressure pushes the line *small* (finer granularity → fewer independent data per line → less false invalidation), while tag/state overhead and spatial-locality prefetch push it *large* (a wide line amortizes its metadata and fetches neighbors you will likely use). The false-sharing collision probability of two independently-placed objects rises roughly linearly in $B_{\text{line}}$, so 64 B is the near-universal knee where the two pressures balance — and it is why the coherence *granule*, the directory *entry* granule (§5.1), and the cache *line* are the same 64 B. This coherence-miss traffic is the term the Universal Scalability Law bills as contention ([Performance_Modeling §2.2](../01_Modeling/01_Performance_Modeling_and_DSE.md)); the rest of §3 shows how even *one* such miss per core, broadcast, hits a wall.
+
+### 3.2 The broadcast wall: $O(N)$ messages per miss, $O(N^2)$ aggregate
+
+Now cost that traffic on a broadcast fabric. The defining property is **per-miss fan-out**: because no node knows who holds the line, a single coherence miss must be *presented to every other cache* — $N-1$ snoop deliveries out and $N-1$ responses back, so each miss costs
+
+$$
+M_{\text{snoop}}(N) \;=\; 2(N-1) \;=\; O(N) \quad\text{messages per coherence miss,}
+$$
+
+the "every node must see every request" tax. A shared bus amortizes the $N-1$ *address* deliveries into one electrical broadcast, but not the $N-1$ tag *lookups* nor the responses — the work is $O(N)$ per miss regardless of medium. Multiply by the miss rate to get the sustained load.
 
 **Per-cache snoop load — the first-order cost.** Each of the $N$ caches must absorb the snoops generated by all the others:
 
@@ -101,6 +154,14 @@ $$
 
 where $\bar{K}$ = mean number of actual sharers per line. Because the typical line is held by one or a few caches, coherence traffic now grows as $O(N)$, not $O(N^2)$ — the wall is gone, and CHI scales to **64–128+ cores.**
 
+Per **coherence miss** the contrast with §3.2 is the whole argument. A directory transaction is a lookup, not a broadcast: request → home ($1$) → targeted snoops to the $\bar{K}$ *actual* sharers ($\bar{K}$ out, $\bar{K}$ back) → data → requester, so
+
+$$
+M_{\text{dir}}(\bar{K}) \;=\; 2 + 2\bar{K} \;=\; O(1) \quad\text{messages per miss, independent of } N,
+$$
+
+against snoop's $M_{\text{snoop}}=2(N-1)=O(N)$. The directory converts a per-miss cost that *grows with the machine* into one that grows with the *sharing* — and real sharing, $\bar{K}\approx1\text{–}3$, does not grow with core count. That single swap, $O(N)\!\to\!O(1)$ per miss, is why the aggregate fell from $N^2 r$ to $N r\bar{K}$, and it sets up the crossover made precise in §5.2 and §11.
+
 ### 4.1 Why the home node is three things at once
 
 The deep point is *not* "CHI has a directory." It is that the directory's location is forced by §1's obligations to coincide with two other roles, and understanding **why they coincide** is understanding CHI:
@@ -110,6 +171,8 @@ The deep point is *not* "CHI has a directory." It is that the directory's locati
 - **It is the point of coherence (PoC)** — the ordering point *is*, by definition, where a write becomes globally ordered in the coherence order and hence "visible." That is not a separate mechanism; it is what serialization *means*.
 
 So the home node is the directory **because** it must be the serializer, and it is the serializer **because** SWMR is an ordering invariant that needs an arbiter. The three roles are one agent by necessity, not by convenience.
+
+Formally, the serializer admits transactions to line $x$ one at a time, which *is* a construction of the total coherence order $\prec_x$ of §1.1 — so "the agent that orders writes to $x$" and "the agent at which a write joins $\prec_x$ and becomes visible (the PoC)" are the *same* point by definition, leaving nothing for a separate coherence point to do. Split them — directory in one place, serializer in another — and you would need two agents to keep their orderings of $x$ mutually consistent, resurrecting exactly the multi-agent agreement problem the home node exists to collapse into one authority. Coincidence of the three roles is thus not an implementation choice but a corollary of $\prec_x$ being a *single* total order.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 50, "htmlLabels": false}}}%%
@@ -132,7 +195,7 @@ The node taxonomy is just this picture: **Request Nodes (RN)** issue requests (R
 
 ### 4.2 One serializer per line, many home nodes
 
-A single home node serializing all of memory would be a bottleneck as brutal as the bus it replaced. The fix is that **each *line* needs exactly one serializer, but different lines can use different ones.** Physical addresses are **hash-interleaved across many HN-F slices**, so the coherence-ordering workload spreads uniformly while each individual line still has one, and only one, point of coherence (preserving its order). By Little's law a home node with $E$ outstanding-transaction trackers and per-transaction occupancy $T_{\text{occ}}$ sustains $\lambda = E/T_{\text{occ}}$ transactions/s; $H$ interleaved homes give $H \lambda$. **Coherence throughput scales with home-node count, not core count** — which is why an Arm CMN mesh scatters dozens of HN-F slices across the die ([Network_on_Chip](03_Network_on_Chip.md) §6). The same address-hashing trick reappears at every scale (GPU L2 slices, DRAM channels): distribute to avoid a hotspot, but keep one owner per address to keep order.
+A single home node serializing all of memory would be a bottleneck as brutal as the bus it replaced. The fix is that **each *line* needs exactly one serializer, but different lines can use different ones.** Physical addresses are **hash-interleaved across many HN-F slices**, so the coherence-ordering workload spreads uniformly while each individual line still has one, and only one, point of coherence (preserving its order). By Little's law a home node with $E$ outstanding-transaction trackers and per-transaction occupancy $T_{\text{occ}}$ sustains $\lambda = E/T_{\text{occ}}$ transactions/s; $H$ interleaved homes give $H \lambda$. **Coherence throughput scales with home-node count, not core count** — which is why an Arm CMN mesh scatters dozens of HN-F slices across the die ([Network_on_Chip](03_Network_on_Chip.md) §7). The same address-hashing trick reappears at every scale (GPU L2 slices, DRAM channels): distribute to avoid a hotspot, but keep one owner per address to keep order.
 
 ---
 
@@ -142,7 +205,17 @@ Directories are not free. They trade the snoop's *bandwidth* problem for two cos
 
 ### 5.1 Storage: the directory has its own quadratic
 
-A full **bit-vector** directory stores, per tracked line, one presence bit per cache plus a few state bits. If it tracked all of memory it would be hopeless, so real directories are **sparse** (a snoop filter): they track only lines *actually cached*, giving roughly $N \cdot C_{\text{core}} / B_{\text{line}}$ entries. Combine the two factors:
+A full **bit-vector** directory stores, per tracked line, one presence bit per cache plus a few state bits.
+
+**The full-map baseline and its overhead ratio.** Track *all* of memory with a full $N$-bit sharer vector per line and the directory becomes a fixed fraction of memory itself: each $B_{\text{line}}$-byte line holds $8B_{\text{line}}$ data bits and carries $N$ presence bits, so
+
+$$
+\text{overhead} \;=\; \frac{N\ \text{presence bits}}{8\,B_{\text{line}}\ \text{data bits}} \;=\; \frac{N}{8\,B_{\text{line}}} \qquad(\text{full-map, per line, independent of memory size}).
+$$
+
+This linear-in-$N$ ratio is what kills full-map at scale: it reaches **100 %** — a directory as large as the memory it describes — at $N = 8B_{\text{line}} = 512$ cores (64 B lines), and exceeds it above. *Worked number (64 B lines):* $N{=}64 \Rightarrow 64/512 = \mathbf{12.5\%}$ (already a heavy SRAM budget); $N{=}1024 \Rightarrow 1024/512 = \mathbf{200\%}$ — the directory would be *twice* the DRAM it tracks, plainly untenable. Full-map is thus abandoned on two independent axes at once: the ratio grows with $N$, *and* tracking all of memory is wasteful when almost none of it is cached at any instant.
+
+If it tracked all of memory it would be hopeless, so real directories are **sparse** (a snoop filter): they track only lines *actually cached*, giving roughly $N \cdot C_{\text{core}} / B_{\text{line}}$ entries. Combine the two factors:
 
 $$
 S_{\text{dir}} \;\approx\; \underbrace{N\,\frac{C_{\text{core}}}{B_{\text{line}}}}_{\text{entries} \,\propto\, N} \;\times\; \underbrace{(N + s)}_{\text{bits/entry} \,\propto\, N} \;=\; O(N^2)
@@ -152,11 +225,12 @@ $$
 \text{where } C_{\text{core}} = \text{cache bytes per core},\; B_{\text{line}} = \text{line size (64 B)},\; s = \text{state bits}.
 $$
 
-So the directory is **also** $O(N^2)$ — but in *storage*, not bandwidth, and that distinction is the whole ballgame. Storage you can *engineer down* with encoding, and there are three standard moves, each a precision-vs-area trade:
+So the directory is **also** $O(N^2)$ — but in *storage*, not bandwidth, and that distinction is the whole ballgame. (The per-line law is unchanged: the *ratio* to the cache it covers stays $N/8B_{\text{line}}$ from the full-map derivation above; the absolute $O(N^2)$ is just that per-line $O(N)$ vector multiplied by the $O(N)$ cached lines a machine of $N$ caches holds.) Storage you can *engineer down* with encoding, and there are several standard moves, each a precision-vs-area trade:
 
-- **Coarse vector** — one bit per *cluster* of $g$ cores. Vector width drops to $N/g$; the cost is a snoop to a whole cluster when any of its cores holds the line (over-snooping). Storage $\propto N/g$.
-- **Limited pointers** — store $p$ explicit sharer IDs ($\log_2 N$ bits each) instead of a full vector, betting on $\bar{K}\approx 1\text{–}3$; on overflow, fall back to broadcast or force an eviction. Entry cost $O(p \log N)$, essentially flat in $N$.
+- **Coarse vector** — one bit per *cluster* of $g$ cores. Vector width drops to $N/g$; the cost is a snoop to a whole cluster when any of its cores holds the line (over-snooping). Storage $\propto N/g$ — but a write now snoops up to $g$ caches to reach the one real sharer, trading a factor-$g$ storage cut for up to a factor-$g$ rise in snoop traffic (the very §3 bandwidth it saved elsewhere). That bounded precision loss is why $g$ is kept small (4–8).
+- **Limited pointers** — store $p$ explicit sharer IDs ($\log_2 N$ bits each) instead of a full vector, betting on $\bar{K}\approx 1\text{–}3$; on overflow, fall back to broadcast or force an eviction. Entry cost $O(p \log N)$, essentially flat in $N$ — *exact* whenever the sharer count $K\le p$, which by $\bar{K}\approx1\text{–}3$ covers the vast majority of lines, and imprecise only on the small tail $\Pr[K>p]$ that overflows. So $p$ is a direct storage-vs-precision dial: $p{=}2$ costs 18 bits at 64 cores (§11) versus a 70-bit full vector — a ~4× cut, exact for all but the rare widely-shared line.
 - **Sparse / undersized filter** — provision fewer entries than the caches can hold and evict directory entries under pressure, forcing a **back-invalidation** of the line it stops tracking (you cannot forget a sharer silently). This is exactly the flow CXL.mem uses off-chip (§7).
+- **Hierarchical / multi-level** — a root directory records which *cluster* shares, a per-cluster leaf records which *core*; each level is a small vector, total storage $O(N)$ spread over $O(\log N)$ levels, and precision is recovered by descending only into clusters that actually share. It is the §4.2 distribute-and-refine idea applied to the *sharer set* itself, trading extra lookup hops for a storage bound that beats the flat $O(N^2)$.
 
 A full-map 64-core entry is about **70 bits** (64-bit sharer vector + state); a small 4-core snoop-filter entry is about **24 bits** (4-bit sharer + partial tag). The point stands: you can *trim* directory storage with cluster-coarsening or pointers, so the $O(N^2)$ is negotiable — whereas the snoop's $O(N^2)$ bandwidth on a fixed medium is not.
 
@@ -176,6 +250,14 @@ Structurally $T_{\text{dir}} > T_{\text{snoop}}$ — indirection is the director
 
 The crossover, then, is not subtle. At small $N$, snoop wins on latency *and* has spare bandwidth. Past the $O(N^2)$ bandwidth wall (§3) snoop is simply **infeasible at any latency**, so large machines pay the indirection and engineer it back down with DCT and home-side caching. There is no regime where broadcast beats directory at 64 cores; the only question at small scale is whether the directory's storage and latency overhead is worth it, and below ~8 cores it usually is not — which is precisely the ACE/CHI split.
 
+**The two crossovers, made precise.** Put the per-miss message counts head to head. The directory undercuts snoop in raw *traffic* as soon as $2(N-1) > 2 + 2\bar{K}$, i.e.
+
+$$
+N \;>\; \bar{K} + 2 \quad(\approx 4 \text{ for } \bar{K}=2) \qquad\text{— the traffic crossover,}
+$$
+
+barely past a handful of cores. Yet ACE survives to ~8–16, because message count is not the only ledger: the directory *also* pays $O(N)$ storage per line (§5.1) and one extra indirection hop (this section), and at small $N$ snoop's spare bus bandwidth and its 2-hop (vs 3-hop) latency outweigh its higher message count. So there are **two** distinct crossovers — the traffic one above, and a **feasibility crossover** at $N \approx \sqrt{B_{\text{fabric}}/r} \approx 8$ (§3, §11) where snoop's *aggregate* bandwidth saturates the shared medium and broadcast becomes impossible at any latency. The practical switch happens at the second: below it the directory's fixed overheads are not yet worth paying; above it they are not optional. That gap between "directory sends fewer messages" ($N\!\gtrsim\!4$) and "snoop physically cannot continue" ($N\!\gtrsim\!8$) *is* the ~8-core ACE/CHI boundary.
+
 ---
 
 ## 6. Why CHI is layered, and why it rides a mesh
@@ -184,9 +266,9 @@ CHI is not "ACE with more channels." It is a **clean-sheet, layered** coherence 
 
 Three consequences are load-bearing; the rest is transport detail owned by [Network_on_Chip](03_Network_on_Chip.md).
 
-- **Message classes must not block each other.** A coherence protocol has a built-in deadlock hazard: a *request* can occupy the buffering that its own *response* needs to drain, and a cycle forms across endpoints — a **protocol (message-dependent) deadlock**, distinct from routing deadlock. CHI's cure is to split traffic into independent classes — **request, snoop, response, data** — carried on **independent virtual networks** with separate buffering and flow control, so no class can be starved by another. This is *why* CHI has four message classes at all; it is a coherence-correctness requirement, not a convenience. The deadlock theory and the virtual-network mechanism are [Network_on_Chip](03_Network_on_Chip.md) §5.3.
+- **Message classes must not block each other — and the number of classes is derived, not chosen.** A coherence protocol carries a deadlock hazard invisible to routing analysis: the messages of a transaction form a **dependency chain** — a *request* triggers a *snoop*, a snoop triggers a *response*, a response carries or triggers *data*, i.e. $\text{REQ}\to\text{SNP}\to\text{RSP}\to\text{DAT}$ — and an agent cannot consume the earlier class until it can *emit* the next. If one buffer pool carried all four, a flood of requests could fill the very buffers the responses need to drain, closing a cycle **through the endpoints' transaction tables rather than through any channel** — a *protocol (message-dependent)* deadlock that the fabric's own acyclic-CDG proof (the Dally–Seitz channel-dependency theorem, [Network_on_Chip §4](03_Network_on_Chip.md)) cannot even see, because the cycle does not live in the channel dependency graph. The cure is forced by the chain: give each class its **own independent virtual network** — separate buffers and flow control end to end — so a lower class can *always* drain into the next without waiting on a busy predecessor. The minimum number of virtual networks is therefore the **length of the longest simultaneously-outstanding dependency chain**, and CHI's four classes $\{$REQ, SNP, RSP, DAT$\}$ are exactly that chain — *why there are four*, not three or five. There is a throughput half to the same argument: even absent deadlock, mixing classes in one queue lets a stalled *data* packet head-of-line-block unrelated *requests*, so independent VNs also keep one class's backpressure from throttling the others. The deadlock theorem and the virtual-network mechanism are [Network_on_Chip §4](03_Network_on_Chip.md); CHI supplies the coherence-specific reason the fabric must run $\ge\!4$ of them.
 
-- **Flow control is decoupled, because the endpoints are far apart.** AXI/ACE use same-cycle `valid`/`ready` handshakes, which assume both ends share a bus segment. Across a multi-hop mesh, propagating a `ready` back through routers every cycle is untenable, so CHI uses **credit-based** flow control: a receiver grants a sender $N$ credits (= buffer depth); the sender transmits while it has credits and the receiver returns them as it drains. This decouples sender and receiver timing across arbitrary hop counts. It is the *fabric's* mechanism, shared with any NoC, so the derivation lives in [Network_on_Chip](03_Network_on_Chip.md) §3.3 — the coherence-relevant fact is only that CHI *needs* it because its endpoints are not on a shared bus.
+- **Flow control is decoupled, because the endpoints are far apart.** AXI/ACE use same-cycle `valid`/`ready` handshakes, which assume both ends share a bus segment. Across a multi-hop mesh, propagating a `ready` back through routers every cycle is untenable, so CHI uses **credit-based** flow control: a receiver grants a sender $N$ credits (= buffer depth); the sender transmits while it has credits and the receiver returns them as it drains. This decouples sender and receiver timing across arbitrary hop counts. It is the *fabric's* mechanism, shared with any NoC, so the derivation lives in [Network_on_Chip](03_Network_on_Chip.md) §3 — the coherence-relevant fact is only that CHI *needs* it because its endpoints are not on a shared bus.
 
 - **Retry instead of stall, because the home node is contended.** With 64+ requesters hammering a handful of home nodes, a home whose trackers are full cannot simply stop accepting flits — that would back-pressure the fabric and block *unrelated* requests (head-of-line blocking). Instead the home **accepts the request and bounces it** ("retry later, here is the credit to use"), freeing its buffer immediately; the requester re-sends when the home grants a protocol credit. Retry converts a blocking stall into a non-blocking rejection — a scalability mechanism for a many-to-few contention pattern, the same reason a busy web server returns 503 rather than holding the socket. The signaling is bookkeeping; the concept is *don't let one busy home stall the whole fabric.*
 
@@ -232,7 +314,7 @@ The three CXL device types are just this taxonomy: **Type-1** (cache, no device 
 
 **The transport is what made it feasible now.** Coherent memory over a link is only sane if the link's bandwidth rivals a memory channel. **PCIe 6.0** delivers it: **PAM-4** signaling (4 voltage levels → 2 bits per unit interval, doubling rate without doubling frequency) plus **FLIT-mode** framing reach **64 GT/s**, so a ×16 link carries **~128 GB/s** — comparable to a DDR5 channel. That is the enabling condition for treating CXL-attached memory as real, NUMA-node memory rather than an IO buffer. The PAM-4 eye is noisier (it trades voltage margin for bits), so PCIe 6.0 adds lightweight forward error correction — a *transport* detail; the coherence story only needs the bandwidth headline.
 
-**Chiplets are the middle ground (CHI over D2D).** Between one die and an off-package accelerator sits the multi-die package: dies that *are* trusted and tightly coupled, connected by a die-to-die PHY (UCIe). Here you do **not** go asymmetric — you *extend the CHI directory protocol* across the D2D link, carrying the same REQ/SNP/RSP/DAT classes over UCIe flits. Link latency still forces optimizations: **per-die home nodes** (keep most coherence on-die) and **cross-die snoop shortcuts** (a directory on die 0 that tracks die 1's sharers snoops them directly rather than proxying through die 1's home), cutting D2D crossings and roughly **40–60 % of cross-die coherence latency** in the common two-die case. The D2D physical layer itself is [Network_on_Chip](03_Network_on_Chip.md) §7 and [IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
+**Chiplets are the middle ground (CHI over D2D).** Between one die and an off-package accelerator sits the multi-die package: dies that *are* trusted and tightly coupled, connected by a die-to-die PHY (UCIe). Here you do **not** go asymmetric — you *extend the CHI directory protocol* across the D2D link, carrying the same REQ/SNP/RSP/DAT classes over UCIe flits. Link latency still forces optimizations: **per-die home nodes** (keep most coherence on-die) and **cross-die snoop shortcuts** (a directory on die 0 that tracks die 1's sharers snoops them directly rather than proxying through die 1's home), cutting D2D crossings and roughly **40–60 % of cross-die coherence latency** in the common two-die case. The D2D physical layer itself is [Network_on_Chip](03_Network_on_Chip.md) §8 and [IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 
 ---
 
@@ -288,6 +370,15 @@ Read it as one decision. A mobile SoC with a 2–8 core cluster sits *below* the
 | CXL device types | 1 (cache), 2 (cache+mem, bias), 3 (mem) | client taxonomy (§7) |
 | PCIe 6.0 rate / ×16 BW | 64 GT/s (PAM-4, FLIT) / ~128 GB/s | ≈ a DDR5 channel — enables CXL.mem (§7) |
 | Cross-die coherence saving (CHI D2D) | 40–60 % latency | per-die homes + cross-die snoop (§7) |
+| Coherence miss (the 4th C) | another core's write invalidates a wanted line | the source of $r$ (§3.1) |
+| False-sharing amplification | $B_{\text{line}}/w \approx 8\times$ (64 B / 8 B) | 64 B moved per 8 B updated; ~2 GB/s on one hot line (§3.1) |
+| False-sharing fix | pad each datum to its own 64 B line | erases the ping-pong, latency + BW (§3.1) |
+| Snoop messages / miss | $2(N{-}1) = O(N)$ | broadcast reaches every cache (§3.2) |
+| Directory messages / miss | $2 + 2\bar{K} = O(1)$ | targeted to $\bar{K}$ actual sharers (§4) |
+| Full-map dir. overhead | $N/8B_{\text{line}}$: 12.5 % @64, 200 % @1024 | 100 % at $N{=}512$ cores → untenable (§5.1) |
+| Traffic vs feasibility crossover | $N\!\approx\!\bar{K}{+}2$ vs $N\!\approx\!\sqrt{B/r}$ | why ACE lasts to ~8, not ~4 (§5.2) |
+| Min interconnect message set | get-shared / get-unique / upgrade / writeback / snoop | +O ⇒ dirty cache-to-cache (§1.1) |
+| Virtual-network count | = dependency-chain length REQ→SNP→RSP→DAT (4) | protocol-deadlock cure (§6) |
 
 ---
 
@@ -295,17 +386,19 @@ Read it as one decision. A mobile SoC with a 2–8 core cluster sits *below* the
 
 **1 — The snoop-bandwidth ceiling.** A coherent cluster runs at $f$; each core generates $r = 0.02$ coherence transactions/cycle, and each snoop tag-lookup costs one cache cycle. A shared bus can broadcast $B_{\text{fabric}} = 1$ snoop/cycle to all caches. The fabric load is $\Lambda = N^2 r$, so saturation is $N^2 (0.02) = 1 \Rightarrow N = \sqrt{50} \approx 7$. That $\approx\!7$–8 is not a coincidence — it is the arithmetic behind "ACE tops out near 8 cores." Halving $r$ with a snoop filter (suppress lookups for uncached lines) buys $N \approx \sqrt{100} = 10$: a constant-factor win, *not* a change in the $O(N^2)$ law, which is why filters extend ACE but do not save it.
 
-**2 — Directory storage crossover.** 64 cores, 1 MB private cache each, 64 B lines → $64 \times 2^{14} = 2^{20}$ tracked lines. A full bit-vector entry is $64 + 6 = 70$ bits → $\approx 9$ MB of directory SRAM. Switch to **limited pointers** with $p=2$ sharers ($2 \times 6 = 12$ bits + 6 state = 18 bits/entry) → $\approx 2.3$ MB, a 4× cut, correct as long as $\bar{K}\le 2$ (true for most lines; overflow falls back to broadcast). This is the §5.1 point in numbers: the directory's $O(N^2)$ storage is *negotiable by encoding*, whereas the snoop's $O(N^2)$ *bandwidth* on a fixed bus is not — which is why scale goes directory.
+**2 — Directory storage crossover.** 64 cores, 1 MB private cache each, 64 B lines → $64 \times 2^{14} = 2^{20}$ tracked lines. A full bit-vector entry is $64 + 6 = 70$ bits → $\approx 9$ MB of directory SRAM. Switch to **limited pointers** with $p=2$ sharers ($2 \times 6 = 12$ bits + 6 state = 18 bits/entry) → $\approx 2.3$ MB, a 4× cut, correct as long as $\bar{K}\le 2$ (true for most lines; overflow falls back to broadcast). This is the §5.1 point in numbers: the directory's $O(N^2)$ storage is *negotiable by encoding*, whereas the snoop's $O(N^2)$ *bandwidth* on a fixed bus is not — which is why scale goes directory. As a *ratio to memory*, the full-map baseline (§5.1) is $N/8B_{\text{line}} = N/512$: **12.5 %** at 64 cores but **200 %** at 1024 cores (64 B lines) — a directory outweighing DRAM itself, which is why past a few hundred cores even sparse full-vectors yield to limited-pointer or hierarchical encodings.
 
 **3 — DCT latency payoff.** Cache-to-cache misses are 25 % of coherence misses on a 64-core server; non-DCT cache-to-cache costs 60 ns (data through the home), DCT costs 22 ns. If coherence misses are 30 % of all LLC misses at 5 M misses/s, cache-to-cache misses are $5\text{M}\times0.30\times0.25 = 375$k/s, and DCT saves $(60-22)\,\text{ns} \times 375\text{k} \approx 14$ ms/s of aggregate latency — plus it removes those transfers from the home node's data path entirely, which is often the larger win because it *unclogs the serialization point* (§4.1) rather than merely speeding one transfer.
+
+**4 — Snoop vs directory, per miss: 4-core SoC vs 64-core server.** Count messages per coherence miss, $M_{\text{snoop}}=2(N-1)$ vs $M_{\text{dir}}=2+2\bar{K}$ (§3.2, §4). *4-core mobile cluster* ($\bar{K}\approx1.5$): snoop $=2(3)=6$, directory $\approx 2+3=5$ — a near tie, and the directory would still owe an $N$-bit vector per line plus a third hop, so the SoC keeps **ACE** and pays nothing for a directory it does not need; aggregate snoop load $N^2 r = 16r$ sits trivially under any bus. *64-core server* ($\bar{K}\approx2$): snoop $=2(63)=126$, directory $\approx 2+4=6$ — **21× fewer** messages per miss, and aggregate snoop load $N^2 r = 4096r$ has long since blown past the shared medium (the $N\!\approx\!8$ ceiling of problem 1). Broadcast is infeasible at any latency, so the server takes **CHI**, pays the $O(N)$-per-line directory storage (spendable, §5.1) and the home hop (clawed back by DCT, problem 3). One trade-off curve; the core count reads off the point.
 
 ---
 
 ## Cross-references
 
-- **Down the stack (what this fabric is built from):** [Network_on_Chip](03_Network_on_Chip.md) (the mesh topology, credit-based flow control §3.3, routing/protocol deadlock and virtual networks §5, and the coherent-mesh/CMN realization §6 that CHI rides on; D2D physical layer §7), [AHB_AXI_APB](01_AHB_AXI_APB.md) (the AXI4 channels and handshakes ACE extends), [Memory](../03_Memory/03_Memory.md) & [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the SN-F memory endpoint), [IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (the chiplet/D2D substrate of §7).
-- **Up the stack (what defines the contract this realizes):** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) §8 (the SWMR/Data-Value invariants and MESI/MOESI states this page enforces on wires) and §9 (the consistency model the fabric's ordering honors), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) §8 (the in-cache coherence controller, MSHRs, and inclusion policy on the other side of the snoop).
-- **Adjacent / consumers:** [OoO_Execution](../02_CPU/03_OoO_Execution.md) §5 (the LSQ that enforces per-core ordering the fabric completes), [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (accelerators that become CXL coherence clients, §7), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete core that plugs into such a fabric), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (where these scaling models feed system design-space exploration).
+- **Down the stack (what this fabric is built from):** [Network_on_Chip](03_Network_on_Chip.md) (the mesh topology, credit-based flow control §3, routing/protocol deadlock and virtual networks §4, and the coherent-mesh/CMN realization §7 that CHI rides on; D2D physical layer §8), [AHB_AXI_APB](01_AHB_AXI_APB.md) (the AXI4 channels and handshakes ACE extends), [Memory](../03_Memory/03_Memory.md) & [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the SN-F memory endpoint), [IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (the chiplet/D2D substrate of §7).
+- **Up the stack (what defines the contract this realizes):** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) §8 (the SWMR/Data-Value invariants and the MESI/MOESI *state*-count derivation whose *message*-set dual is §1.1 here) and §9 (the consistency model the fabric's ordering honors) — specifically §8.2 for the core-side *latency* of the ping-pong whose *fabric-bandwidth* cost is derived in §3.1, [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) §8 (the in-cache coherence controller, MSHRs, and inclusion policy on the other side of the snoop; the four-Cs miss taxonomy and 64 B line geometry behind §3.1/§5.1).
+- **Adjacent / consumers:** [OoO_Execution](../02_CPU/03_OoO_Execution.md) §5 (the LSQ that enforces per-core ordering the fabric completes), [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (accelerators that become CXL coherence clients, §7), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete core that plugs into such a fabric), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) §2.2 (the Universal Scalability Law contention term the §3.1 coherence miss feeds; where these scaling models feed system design-space exploration).
 
 ---
 

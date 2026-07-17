@@ -27,6 +27,14 @@ $$
 
 where $t_{walk}$ = latency of a full walk, $K$ = tree depth (3 for RISC-V Sv39, 4 for Sv48 / x86-64, 5 for Sv57), and $t_{mem}^{(i)}$ = latency of the $i$-th dependent PTE read. If those PTEs are cold in DRAM at ~100 ns each, a single translation costs $3\text{–}5\times100$ ns — *before the actual load even issues.* Paying that on every memory reference is a non-starter; it would make virtual memory cost more than the computation it serves. The dependent chain also means the cost cannot be hidden by memory *bandwidth* — only by removing links from the chain, which is the recurring theme of §5.
 
+**The amortized cost — the AMAT adder.** You do not pay $t_{walk}$ on *every* access, only on a translation miss, so the true tax on the machine is the walk cost *weighted by how often it is incurred*. If a fraction $m_{walk}$ of memory references miss every TLB level and fall to the walker, and the radix has $K$ levels each costing one dependent access $t_{mem}$, translation adds to the average memory-access time exactly
+
+$$
+\Delta\text{AMAT}_{xlate} \;=\; m_{walk}\times t_{walk} \;=\; m_{walk}\times K \times t_{mem}
+$$
+
+where $m_{walk}=m_{L1}\,m_{L2}$ is the product of the per-level TLB miss rates (defined in §1.2/§3) and $t_{mem}$ is the latency of *one* dependent PTE read — itself an average, since each read may hit the L2/L3 cache or miss to DRAM (§5.1). This one number is what every later mechanism drives down, each attacking a different factor: the STLB shrinks $m_{walk}$ (§3.2), the page-walk cache shrinks the *effective* $K$ (§5.2), superpages shrink $m_{walk}$ by multiplying reach (§7). *Worked number:* a memory-bound workload with $m_{walk}=2\%$ on a 4-level tree ($K=4$) whose PTEs are cold ($t_{mem}\approx100$ cyc) pays $0.02\times4\times100=8$ cycles of translation on *every* memory reference on average — routinely larger than the data access it precedes. Warm those PTEs into L2 ($t_{mem}\approx10$ cyc) and it falls to $0.02\times4\times10=0.8$ cyc; halve $m_{walk}$ with a bigger STLB and it halves again. Because the tax is a *product*, any single lever that attacks any one factor pays.
+
 ### 1.2 Why a cache works — and why it must be *this* kind of cache
 
 Two facts rescue it. First, **locality**: programs touch few pages relative to their instruction count — a tight loop over a few arrays lives in a handful of 4 KB pages, so the *same* translations are demanded over and over. A cache of translations therefore hits nearly always. Second, a translation result is tiny (a VPN→PPN pair plus a few permission bits), so a few dozen of them cover the entire hot page working set.
@@ -83,7 +91,13 @@ $$
 R_{TLB} \;=\; N_{entries}\times S_{page}
 $$
 
-Any working set larger than the reach thrashes it. The fix is a second level, and because it is consulted *only on an L1 miss* it is off the load-use path and may trade latency for capacity: the **L2 shared TLB (STLB)** is 256–2048 entries, 4–8-way set-associative, 2–5-cycle hit. Set-associativity is the enabling trade — it caps the comparator count at the way-count instead of $N$, letting the array scale to thousands of entries at the price of occasional conflict misses and a replacement policy (PLRU). This is the same fully-associative-versus-set-associative split as the cache hierarchy, made for the same reason.
+Any working set larger than the reach thrashes it — and *how badly* follows from a **coverage argument**. A footprint of $W_p$ hot pages (bytes $S_{WS}=W_p\,S_{page}$) cannot fit in $N_{entries}$ slots once $W_p>N_{entries}$, i.e. once $S_{WS}>R_{TLB}$. Under a uniform-reuse model the probability that a referenced page is currently resident equals the fraction of the footprint the reach covers, $R_{TLB}/S_{WS}$, so the miss rate is
+
+$$
+m_{TLB} \;\approx\; \max\!\Big(0,\; 1-\frac{R_{TLB}}{S_{WS}}\Big),
+$$
+
+zero while the footprint fits ($S_{WS}\le R_{TLB}$) and climbing toward 1 as it outgrows the reach. (Strict cyclic LRU is the pathological worst case — *every* access misses once $W_p>N_{entries}$; pure streaming with no reuse takes one compulsory miss per page. The uniform estimate sits between them and is the right first-order number.) *Worked number:* a 64-entry, 4 KB DTLB reaches $R_{TLB}=256\text{ KB}$; against a $S_{WS}=1\text{ GB}$ working set the coverage is $R_{TLB}/S_{WS}=2^{18}/2^{30}=1/4096$, so $m_{TLB}\approx1-1/4096\approx99.98\%$ — translation walks on essentially every access, and no entry-count increase the critical path allows can close a 4096× gap. Only *page size* can: at 2 MB the same 64 entries reach 128 MB ($R/S_{WS}=1/8$, $m\approx88\%$ — better, still thrashing), while a 1024-entry STLB at 2 MB reaches 2 GB $>$ 1 GB and the capacity-miss term drops to ~0. This is the §7 reach lever quantified: for large footprints the deciding knob is $S_{page}$, not $N_{entries}$. The fix for the second factor is a second level, and because it is consulted *only on an L1 miss* it is off the load-use path and may trade latency for capacity: the **L2 shared TLB (STLB)** is 256–2048 entries, 4–8-way set-associative, 2–5-cycle hit. Set-associativity is the enabling trade — it caps the comparator count at the way-count instead of $N$, letting the array scale to thousands of entries at the price of occasional conflict misses and a replacement policy (PLRU). This is the same fully-associative-versus-set-associative split as the cache hierarchy, made for the same reason.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -125,6 +139,8 @@ The **global (G) bit** is the complementary move for the one address space *ever
 
 When both TLB levels miss, a hardware **page-table walker** — an FSM in the MMU — traverses the radix tree in memory. Its defining property, from §1.1, is that the traversal is *serial*: level $i$'s PTE holds the physical address of level $i{+}1$'s table, so the reads are strictly dependent and cannot overlap. An Sv39 miss is three dependent memory reads; Sv48 and Sv57 are four and five. This is why a miss costs 20–40 cycles even when the PTEs are warm in the L2/L3 cache, and 100–300 cycles when they are cold in DRAM — the chain cannot be shortened by more bandwidth, only by *removing levels from it*.
 
+Those two bands are just $t_{walk}=K\times t_{mem}$ read off at the two places a PTE can live, because **each of the $K$ dependent reads is itself a full memory access** that may hit the L2/L3 cache or miss to DRAM. Warm — all $K$ reads hitting L2/L3 at ~7–13 cyc — gives $K\times{\sim}10\approx20\text{–}40$ cyc; a cold walk pays a DRAM access (~100 cyc) for *each* level that misses the cache, so it ranges from ~100 cyc (only the leaf cold, the upper levels cached or served by the PWC of §5.2) up to ~300 cyc (several levels missing to DRAM) — which is the 100–300 band. And because the reads are strictly dependent, this latency is un-overlappable *within a single walk*: no memory-level parallelism helps, since read $i{+}1$'s address is not known until read $i$ returns. Every lever in §5.2–§5.5 therefore attacks the *length* of the chain, never its width.
+
 ### 5.2 The page-walk cache — exploiting upper-level redundancy
 
 The walk's saving grace is that the top of the tree is enormously **redundant across misses**. The radix structure fans out so widely that one upper-level entry governs a vast region of virtual space: in Sv39 a single level-2 PTE covers 2 MB, a single level-1 PTE covers 1 GB. Every translation whose address falls in that region shares the *same* upper-level PTEs — so across many distinct TLB misses the walker re-reads the identical top-of-tree entries again and again, and only the leaf differs.
@@ -135,11 +151,13 @@ $$
 N_{acc} \;=\; 1 \;+\; (K-1)(1-h)
 $$
 
-where $K$ = walk depth, $h$ = PWC hit rate on upper-level entries, and the leaf read (the "1") is always taken. Because upper-level reuse is extreme, $h$ is high and hot regions resolve in ~1 access instead of $K$ — which is *why* a small 16–64-entry PWC earns a dedicated structure, and why it is kept separate from the TLB rather than folded into it: the two cache different things (interior pointers versus leaf translations) with different reuse.
+where $K$ = walk depth, $h$ = PWC hit rate on upper-level entries, and the leaf read (the "1") is always taken. The derivation is a plain expectation: the leaf is never cached here (1 access, certain), and each of the remaining $K-1$ upper levels is read only when the PWC misses it (probability $1-h$ each), giving $1+(K-1)(1-h)$. The two limits check out — $h=0$ recovers the full $K$-access walk, $h=1$ collapses it to the single leaf read. Because upper-level reuse is extreme, $h$ is high and hot regions resolve in ~1 access instead of $K$ — which is *why* a small 16–64-entry PWC earns a dedicated structure, and why it is kept separate from the TLB rather than folded into it: the two cache different things (interior pointers versus leaf translations) with different reuse. *Worked number:* a 4-level tree with $h=0.9$ gives $N_{acc}=1+(4-1)(0.1)=1.3$ accesses per walk instead of 4, a $3\times$ shorter dependent chain; since walk latency is $N_{acc}\times t_{mem}$, the warm-walk cost falls from ${\sim}4\times10=40$ cyc toward ${\sim}1.3\times10=13$ cyc. The PWC is thus the **walk-latency reducer** that makes both deep trees (§5.3) and nested walks (§5.5) affordable — it converts the $K$ (or 24) dependent reads into ~1–2 whenever the upper tree is hot, which by locality it almost always is.
 
 ### 5.3 Walk depth versus address-space width
 
 Each level added to the tree buys a $512\times$ larger virtual address space (9 more VPN bits) at the cost of exactly **one more access on the dependent chain**. That is the whole scaling law of paging, and it is why the industry ladders VA width in discrete steps rather than adopting one giant flat table — a flat Sv39 table would need $2^{27}$ PTEs = 1 GB *per process*, whereas the radix tree allocates interior nodes only for regions that are actually mapped, so a sparse address space costs almost nothing.
+
+The space argument deserves the full derivation, because it is *the* reason paging is a tree and not an array. A **flat** (single-level) table must store one PTE for every page the VA can name — $2^{\,(\text{VA bits}-\log_2 S_{page})}$ of them — mapped or not. For Sv39 that is $2^{39-12}=2^{27}$ PTEs $\times\,8$ B $= 1$ GB, resident per process, almost all zeros. A **radix** table instead allocates a sub-table only when some entry beneath it is present, so its size tracks the *mapped* set, not the address space: a process mapping $M$ pages needs $M$ leaf PTEs ($8M$ bytes, packed 512 to a 4 KB leaf table $\Rightarrow\lceil M/512\rceil$ leaf pages if contiguous), plus $O(\#\text{separated regions})$ interior pages to reach them. *Worked number:* a typical sparse process — 8 MB resident ($M=2048$ pages) scattered across text, data, heap, and stack in four separated regions — needs $\lceil 2048/512\rceil=4$ leaf tables (16 KB of leaf PTEs), up to ~4 level-1 tables, and 1 root, so on the order of **9 page-table pages ≈ 36 KB** — against the flat **1 GB**, a $\sim\!2.9\times10^{4}\times$ reduction. The mechanism is exact: radix size $\propto$ mapped memory, flat size $\propto$ address space. Widen the VA to 57 bits (Sv39→Sv57, two more levels) and the flat table explodes by $512^2$ to **256 TB per process** — absurd — while the radix table grows by only two interior pages per mapped region. Sparsity, not compression, is what makes a 128 PB address space representable at all.
 
 | Scheme | Levels | VA width | VA space | Walk depth |
 |---|---|---|---|---|
@@ -168,7 +186,13 @@ $$
 N_{nested} \;=\; (D_g+1)(D_h+1) - 1
 $$
 
-where $D_g, D_h$ = guest and host walk depths. For two 4-level trees this is $5\times5-1 = \mathbf{24}$ dependent memory accesses for a single translation — an order of magnitude worse than a native miss. This is why virtualization historically carried a heavy TLB-miss tax, why server cores invest in **nested TLBs and large page-walk caches** to short-circuit the 2-D walk, and why hypervisors lean on superpages (§7) to enlarge reach. The same reasoning covers *remote* page tables: on a NUMA or CXL-attached system the PTEs may live across an interconnect, adding link latency to each dependent read, so the OS co-locates page-table pages with the data they map — again, keep the dependent chain short.
+where $D_g, D_h$ = guest and host walk depths. The count is a 2-D grid, and deriving it shows *why* the blow-up is multiplicative. The guest walk must resolve $D_g+1$ guest-physical addresses — the guest table base, plus the pointer read out of each of its $D_g$ levels (the last being the guest-physical address of the data). **Each** of those gPAs is only a *guest*-physical address the hardware cannot dereference, so each costs a full $D_h$-access host walk to become a real host-physical address: $(D_g+1)D_h$ host accesses in all. Add the $D_g$ guest-PTE reads themselves and
+
+$$
+N_{nested}=(D_g+1)D_h+D_g=(D_g+1)(D_h+1)-1,
+$$
+
+the two forms identical since $(D_g+1)(D_h+1)-1=(D_g+1)D_h+(D_g+1)-1=(D_g+1)D_h+D_g$. Each dimension *multiplies* the other — there is no adding your way out. For two 4-level trees this is $(4{+}1)(4{+}1)-1 = 5\times5-1 = \mathbf{24}$ dependent memory accesses for a single translation — an order of magnitude worse than a native miss. This is why virtualization historically carried a heavy TLB-miss tax, why server cores invest in **nested TLBs and large page-walk caches** to short-circuit the 2-D walk, and why hypervisors lean on superpages (§7) to enlarge reach. The same reasoning covers *remote* page tables: on a NUMA or CXL-attached system the PTEs may live across an interconnect, adding link latency to each dependent read, so the OS co-locates page-table pages with the data they map — again, keep the dependent chain short.
 
 ---
 
@@ -203,11 +227,16 @@ $$
 \boxed{\,C \le W\times P\,}
 $$
 
-where $C$ = cache capacity, $W$ = associativity, $L$ = line size, $P$ = page size. The interpretation is the entire design lever: **a VIPT L1 cache can grow only by adding associativity or enlarging the page** — capacity beyond $W\times P$ pushes index bits up into the VPN, which translation changes, breaking the scheme. (The precise test is on bit *positions*, so the bound is met exactly at $C=W\times P$; a 32 KB / 8-way / 64 B cache with 4 KB pages sits right on the line, index bits [11:5].)
+where $C$ = cache capacity, $W$ = associativity, $L$ = line size, $P$ = page size. The interpretation is the entire design lever: **a VIPT L1 cache can grow only by adding associativity or enlarging the page** — capacity beyond $W\times P$ pushes index bits up into the VPN, which translation changes, breaking the scheme. (The precise test is on bit *positions*, so the bound is met exactly at $C=W\times P$; a 32 KB / 8-way / 64 B cache with 4 KB pages sits right on the line, index bits [11:6] atop the [5:0] block offset.) The *geometric* derivation of $C\le W\times P$ from the index/offset split is owned by [Cache_Microarchitecture §1.5](01_Cache_Microarchitecture.md) — this page does not re-derive it; §6 here owns the complementary half, the **overlap-and-aliasing mechanism** that ceiling exists to police (§6.3).
 
 ### 6.3 The synonym problem, and how real cores dodge the ceiling
 
-If the index *does* spill into the VPN, two virtual addresses mapping to the same physical frame can differ in those spilled bits and therefore index **different sets** — the same physical line cached in two places, an **alias/synonym**. A write to one is invisible to the other: silent incoherence. Three fixes exist, and the vendor table shows every core choosing among them explicitly:
+Two dual aliasing hazards haunt any virtually-indexed cache, and naming them precisely is the point of owning the mechanism here:
+
+- A **homonym** is *one virtual address, many physical addresses* — the same VA names different frames in different address spaces (every process reuses low virtual addresses). A virtually-*tagged* cache would return the previous space's data on a hit; a VIPT cache does **not**, because the tag it compares is *physical*: the homonym indexes the same set but its physical tag differs, so the compare cleanly misses. Physical tagging *inherently* defeats homonyms — the first reason VIPT tags physically, not virtually. (The residual case, a stale entry surviving a context switch, is retired by the ASID/flush machinery of §4, not by the index.)
+- A **synonym** (alias) is the dual — *many virtual addresses, one physical address* — and it is the hazard physical tagging does **not** catch, because the aliases share the *same* physical tag and only their *set* can differ. Two virtual pages mapping one frame necessarily share the page offset (translation preserves it), so if every index bit lies inside that offset ($C\le W\times P$) they select the *same* set and coincide as a single line — no synonym is even possible. The hazard appears only when the index spills $a=\log_2\frac{C}{WP}$ bits above the offset into the VPN.
+
+When it does spill ($a>0\Leftrightarrow C>W\times P$), two virtual addresses mapping the same physical frame can differ in those $a$ bits and therefore land in one of $2^{a}$ different sets — the same physical line cached in up to $2^a$ places. A write to one copy is invisible to the others: silent incoherence. Three fixes exist, and the vendor table shows every core choosing among them explicitly:
 
 - **Raise associativity** to keep $C\le W\times P$ — Intel Golden Cove runs a 48 KB L1D at 12-way so its index still fits a 4 KB page.
 - **Enlarge the page** to widen the offset — Apple's 16 KB base page is directly motivated by VIPT: a 128 KB, 8-way L1D needs 8 index bits, which fit a 14-bit (16 KB) offset but not a 12-bit (4 KB) one.
@@ -217,7 +246,7 @@ If the index *does* spill into the VPN, two virtual addresses mapping to the sam
 |---|---|:---:|---|:---:|---|
 | Intel Golden Cove | 48 KB | 12-way | 4 KB | Yes (exact) | high associativity |
 | Apple M1 Firestorm | 128 KB | 8-way | 16 KB | Yes (exact) | large page |
-| RISC-V BOOM v3 | 32 KB | 8-way | 4 KB | Yes (exact) | index [11:5] fits |
+| RISC-V BOOM v3 | 32 KB | 8-way | 4 KB | Yes (exact) | index [11:6] fits |
 | ARM Cortex-A78 | 64 KB | 4-way | 4 KB | No | OS page coloring |
 
 Every one of these is $C\le W\times P$ made concrete — the constraint is not academic, it sets the associativity of essentially every high-performance L1 data cache in the industry.
@@ -234,11 +263,12 @@ TLB reach, $R_{TLB}=N_{entries}\times S_{page}$, has two factors, and §3 showed
 | 64 × 2 MB | 128 MB |
 | 64 × 1 GB | 64 GB |
 
-A workload striding through 500 MB thrashes a 4 KB-only DTLB (256 KB reach, a miss on nearly every new page) but sits comfortably inside a 2 MB-page TLB — the miss rate collapses. Superpages also *shorten the walk* (a 2 MB leaf is found one level early, a 1 GB leaf two levels early) and shrink page-table memory (one PTE instead of 512 or $512^2$). So why not map everything huge? Because reach is bought with **fragmentation and rigidity**:
+The multiplier is exact, straight from the radix geometry: each level indexes $\log_2 512 = 9$ VPN bits, so promoting a leaf up one level folds those 9 bits into the page offset — the page grows $\times2^9=512$ and, at fixed $N_{entries}$, so does reach (a level-2 leaf → 2 MB, $\times512$; a level-1 leaf → 1 GB, $\times512^2$). The **same** promotion shortens the walk: a leaf found at radix level $j$ ends the pointer-chase there, costing $j$ dependent accesses instead of the full $K$ — an Sv39 base walk is $K=3$, a 2 MB leaf resolves in 2, a 1 GB leaf in 1 — and it shrinks page-table memory, one superpage PTE replacing $512$ or $512^2$ base PTEs. So a superpage is a *triple* win — reach, walk length, table size. *Worked number:* a workload striding through 500 MB thrashes a 4 KB-only DTLB (256 KB reach → a miss on nearly every new page, $m_{TLB}\approx1-256\text{ KB}/500\text{ MB}\approx99.95\%$ by the §3.2 coverage rule) but at 2 MB its 250-page footprint fits inside a 512-entry STLB (1 GB reach) and the miss rate collapses to the cold-start floor. Why not, then, map everything huge? Because reach is bought with **fragmentation and rigidity**:
 
 - **Internal fragmentation** — the allocation granularity is now the page: a 2 MB page backing a 100 KB object wastes ~1.9 MB. Waste is bounded by $S_{page}-\text{used}$, negligible for 4 KB and severe for 1 GB.
 - **Physical contiguity and alignment** — a superpage demands a naturally-aligned, physically-contiguous run of frames; under memory fragmentation the OS may be unable to find one, forcing a fallback to base pages.
 - **Coarser everything else** — protection, dirty-tracking, and copy-on-write now act at superpage granularity, so a single byte written to a 2 MB copy-on-write page copies the whole 2 MB, and page-fault handling (zeroing a 2 MB page ~1 ms vs. ~2 µs for 4 KB) lengthens in proportion.
+- **TLB partitioning** — a set-associative TLB cannot pick a set without knowing the page size, because the offset/index boundary *is* $\log_2 S_{page}$, and that boundary moves with the page size. Multi-size support therefore forces either a small **fully-associative** array (few superpage slots, since §3.1's linear delay caps its size) or **separate per-size sub-TLBs that are statically partitioned** — capacity handed to 2 MB entries is stolen from 4 KB entries and cannot be repurposed at runtime, so a workload whose page-size mix differs from the hardware's split leaves part of the TLB idle. Superpage reach thus competes with base-page reach for the same silicon; it is not free even measured in entries.
 
 **Transparent huge pages (THP)** are the OS's attempt to get the reach without the manual trade: a kernel daemon watches for contiguous, fully-populated runs of base pages and *promotes* them to a superpage in the background, demoting on fragmentation or sparse use. It captures most of the reach benefit while keeping 4 KB granularity where sparsity or fine-grained protection demands it — the pragmatic middle of the reach-versus-fragmentation curve.
 
@@ -285,10 +315,15 @@ The through-line is the same as ASIDs: the cheapest invalidate is the one you ca
 | L2 STLB hit latency | 2–5 cycles | sequential after L1 miss (§3.2) |
 | Page walk, PTEs cached | 20–40 cycles | $K$ dependent L2/L3 reads (§5.1) |
 | Page walk, PTEs in DRAM | 100–300 cycles | ~100 ns per dependent read (§5.1) |
+| Translation AMAT adder | $m_{walk}\,K\,t_{mem}$ | walk cost × miss rate (§1.1) |
 | Page fault | $10^6$–$10^7$ cycles | disk/SSD I/O + OS (§1) |
 | Page-walk cache | 16–64 entries | caches non-leaf PTEs only (§5.2) |
+| Page-walk cache effect | $N_{acc}=1{+}(K{-}1)(1{-}h)$ | ~1–2 accesses when upper tree hot (§5.2) |
+| Flat vs radix table (Sv39) | 1 GB vs ~tens of KB | size ∝ address space vs mapped pages (§5.3) |
 | Base / superpage sizes (Sv39) | 4 KB / 2 MB / 1 GB | leaf at level 3 / 2 / 1 (§5.3, §7) |
 | TLB reach (64 × 4 KB) | 256 KB | $N_{entries}\times S_{page}$ (§3.2, §7) |
+| TLB miss rate (footprint > reach) | $\approx 1-R_{TLB}/S_{WS}$ | coverage argument (§3.2) |
+| Superpage reach multiplier | ×512 per level | 9 VPN bits folded into offset (§7) |
 | ASID width | 16 bits | 65,536 spaces before recycle (§4) |
 | Nested 2-D walk (4+4 level) | 24 accesses | $(D_g{+}1)(D_h{+}1){-}1$ (§5.5) |
 | VIPT ceiling | $C \le W\times P$ | index must fit the page offset (§6.2) |
@@ -300,7 +335,7 @@ The through-line is the same as ASIDs: the cheapest invalidate is the one you ca
 
 ## Cross-references
 
-- **Down the stack (what this is built from):** [Memory](03_Memory.md) (the SRAM/CAM cells behind the TLB and the DRAM the walk reads), [Cache_Microarchitecture](01_Cache_Microarchitecture.md) (set-associative indexing and the physical tag compare VIPT overlaps), [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the associative match delay of §3.1).
+- **Down the stack (what this is built from):** [Memory](03_Memory.md) (the SRAM/CAM cells behind the TLB and the DRAM the walk reads), [Cache_Microarchitecture](01_Cache_Microarchitecture.md) (set-associative indexing and the physical tag compare VIPT overlaps; its §1.5 owns the *geometric* derivation of the VIPT ceiling $C\le W\times P$, while §6 here owns the overlap-and-aliasing *mechanism* — synonyms and homonyms — that ceiling exists to police), [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the associative match delay of §3.1).
 - **Up the stack (what builds on it):** [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the AGU/LSQ that issue the virtual addresses translated here, and the load-use path VIPT protects), [DDR_Controller](04_DDR_Controller.md) & [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) (carry the physical addresses translation produces), [Xiangshan_CPU_Design](../02_CPU/05_Xiangshan_CPU_Design.md) (a complete MMU + page-walk cache in an open OoO core).
 - **Adjacent / prerequisite:** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) (the pipeline and memory hierarchy this sits in), [RISC_V_ISA](../02_CPU/02_RISC_V_ISA.md) (Sv39/48/57, `satp`, `SFENCE.VMA`, and the page-fault trap of §8).
 

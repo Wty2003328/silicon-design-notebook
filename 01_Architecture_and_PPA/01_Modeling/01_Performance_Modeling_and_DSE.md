@@ -57,16 +57,34 @@ $$
 T_{\text{program}} \;=\; \underbrace{IC}_{\text{ISA + compiler}} \;\times\; \underbrace{\text{CPI}}_{\text{microarchitecture}} \;\times\; \underbrace{t_{\text{cyc}}}_{\text{µarch + circuit + process}}
 $$
 
-where $IC$ = dynamic instruction count, $\text{CPI}$ = average cycles per instruction, $t_{\text{cyc}} = 1/f$ = clock period. Its value is *separation of concerns*: three factors owned by three different actors, and the architect owns the middle one outright and shares the third. It also warns you that the three are coupled — a deeper pipeline cuts $t_{\text{cyc}}$ but raises CPI (more mispredict exposure), so **you optimize the product, never one factor** (§2.4, §6).
+where $IC$ = dynamic instruction count, $\text{CPI}$ = average cycles per instruction, $t_{\text{cyc}} = 1/f$ = clock period.
+
+**Where it comes from — a counting identity, not a model.** Execution time is cycles times seconds-per-cycle, $T = C_{\text{tot}}\cdot t_{\text{cyc}}$, and the cycle count is the sum over the $IC$ dynamically-retired instructions of the cycles each is charged, $C_{\text{tot}} = \sum_{j=1}^{IC} c_j$. *Define* CPI as the average of that charge, $\text{CPI}\equiv C_{\text{tot}}/IC$; then $C_{\text{tot}}=IC\cdot\text{CPI}$ by construction and $T=IC\cdot\text{CPI}\cdot t_{\text{cyc}}$ follows with **no approximation**. The content is not the algebra but the *factoring*: the three factors are set by three nearly-disjoint actors, so each can be attacked independently — that is what turns a tautology into a design tool.
+
+Its value is *separation of concerns*: three factors owned by three different actors, and the architect owns the middle one outright and shares the third. It also warns you that the three are coupled — a deeper pipeline cuts $t_{\text{cyc}}$ but raises CPI (more mispredict exposure), so **you optimize the product, never one factor** (§2.4, §6).
 
 The architect's factor, CPI, then decomposes **additively** into a base rate plus one stall term per hazard source:
 
 $$\text{CPI} = \text{CPI}_{\text{base}} + \underbrace{m_{\text{L1}}\,p_{\text{L1}} + m_{\text{L2}}\,p_{\text{L2}} + m_{\text{mem}}\,p_{\text{mem}}}_{\text{memory}} + \underbrace{b\,(1-a)\,p_{\text{mispred}}}_{\text{branch}} + \dots$$
 
-where $m_x$ = misses per instruction at level $x$, $p_x$ = penalty cycles at level $x$, $b$ = branch fraction, $a$ = predictor accuracy. This is the **CPI stack**, and its two gifts are the reason it is the workhorse of the whole page:
+where $m_x$ = misses per instruction at level $x$, $p_x$ = penalty cycles at level $x$, $b$ = branch fraction, $a$ = predictor accuracy.
+
+**Where the additive form comes from — linearity of expectation.** Treat a uniformly-random retired instruction as a draw and write the cycles it is charged as $c = c_0 + \sum_i \mathbb 1[E_i]\,p_i$, where $E_i$ is the event "hazard $i$ fires on this instruction" and $p_i$ its penalty. Average over all $IC$ instructions and apply **linearity of expectation** — $\mathbb E[\sum_i X_i]=\sum_i \mathbb E[X_i]$, which holds *whether or not the $E_i$ are independent*:
+
+$$\text{CPI}=\mathbb E[c]=\mathbb E[c_0]+\sum_i \mathbb E\!\big[\mathbb 1[E_i]\big]\,p_i=\text{CPI}_{\text{base}}+\sum_i f_i\,p_i,\qquad f_i \equiv \Pr[E_i],$$
+
+so every stack term is a **frequency × penalty** product ($f_i$ = events of class $i$ per instruction, $p_i$ = its penalty). The independence-free step is the load-bearing one: cache misses and branch mispredicts *are* correlated, yet their expected stall contributions still *add* — which is exactly what licenses the stacked bar chart. The one thing linearity does *not* excuse is using the wrong $p_i$: the identity is exact only when each $p_i$ is the **actually-exposed** penalty, not the raw latency (the OoO caveat below).
+
+This is the **CPI stack**, and its two gifts are the reason it is the workhorse of the whole page:
 
 1. **Additive → attributable.** Each term is a bar in a stacked chart. The tallest bar *is* the bottleneck, named and quantified. If memory-CPI swamps branch-CPI, a fancier predictor is wasted silicon no matter how elegant — spend the area on the cache or the prefetcher. Every activity counter that feeds a power model comes from this same decomposition, which is why [Full_Chip_Modeling §1.5](02_Full_Chip_Modeling.md) drives McPAT straight off the CPI-stack counters.
 2. **Actionable → marginal reasoning.** Because the terms add, the *marginal* value of any lever is the reduction in its own term. You spend where $\partial \text{CPI}/\partial(\text{area})$ is largest — never uniformly.
+
+**Worked number — decomposing a CPI.** Take an OoO core with stall-free $\text{CPI}_{\text{base}}=0.30$ and per-instruction event rates: $m_{\text{L1}}=0.02$ L1 misses that reach L2 (incremental penalty $p_{\text{L1}}=10$ cyc), $m_{\text{mem}}=0.005$ L2 misses that reach DRAM ($p_{\text{mem}}=200$ cyc), and branches $b=0.20$ at accuracy $a=0.95$ ($p_{\text{mispred}}=15$ cyc). Penalties are billed *incrementally to the next level*, so a miss all the way to DRAM pays $10+200$ and nothing is double-counted:
+
+$$\text{CPI}=0.30+\underbrace{0.02\cdot10}_{0.20}+\underbrace{0.005\cdot200}_{1.00}+\underbrace{0.20\cdot0.05\cdot15}_{0.15}=1.65\ \Rightarrow\ \text{IPC}=0.61.$$
+
+The bars — DRAM $1.00$ (61%), base $0.30$ (18%), L1 $0.20$ (12%), branch $0.15$ (9%) — say memory dominates, and the *marginal-value* rule (gift 2) reads straight off them. Halving the mispredict rate attacks the 9% bar and saves $0.075$ CPI ($\approx4.5\%$); a prefetcher that turns one-quarter of the DRAM misses into L2 hits saves $\tfrac14\cdot0.005\cdot200=0.25$ CPI ($\approx15\%$). Same silicon budget, ~3× the return — chosen by the decomposition, not by taste. But $1.65$ is the *fully-exposed upper bound*; the next paragraph is why an OoO core's real CPI is lower.
 
 **The theoretical catch that separates a novice from an architect:** the additive stack assumes each stall is *fully exposed*, which is true for an in-order or blocking machine but **wrong for out-of-order execution**. An OoO core overlaps independent misses (memory-level parallelism, MLP) and hides stalls under other work, so the *exposed* penalty is far below the *raw* latency:
 
@@ -76,11 +94,31 @@ $$
 
 where $N_e$ = events of type $e$ per instruction, $p_e^{\text{raw}}$ = full latency, $\text{MLP}_e$ = independent events of that type overlapped in the window. The additive stack with raw latencies is therefore an **upper bound** on stall CPI; multiplying MPKI by raw DRAM latency systematically *over*-counts, sometimes absurdly (the CPI goes negative — §8). This single subtlety is why the honest analytical model carries an overlap factor, and why the cycle-approximate rung exists: to *measure* the MLP the closed form can only estimate. (The mechanistic/interval model that makes this rigorous is [Analytical_Models](../07_Simulators/07_Analytical_Models.md).)
 
+*Worked number, continued — the overlap correction.* Give the core above $\text{MLP}_{\text{mem}}=4$ (four independent DRAM misses outstanding in the window on average). The exposed DRAM term falls to $1.00/4=0.25$ and the stack becomes $0.30+0.20+0.25+0.15=0.90$ (IPC $1.11$) — the *same misses*, with $0.75$ CPI of them hidden under other work. The raw stack over-stated CPI by $1.65/0.90-1\approx83\%$; multiply MPKI by *raw* latency and you are off by nearly $2\times$ in the direction that makes memory look unfixable. This is the quantitative face of the caveat, and the exact trap §8 walks into.
+
 ### 2.2 Amdahl and the parallel ceiling
 
 $$\text{Speedup} = \frac{1}{(1-p) + p/N}$$
 
-where $p$ = parallelizable fraction of the work, $N$ = number of parallel units. The serial fraction $1-p$ caps everything: at $p=0.9$, infinite cores give only $10\times$. Amdahl is *why* accelerators co-design the algorithm, not just the hardware — you attack the serial residue, because no amount of $N$ will. It is the pure-parallelism ceiling; the real multicore curve is lower still once shared-resource **contention** is added as a growing term $C(N)$ (the Universal Scalability Law), which is developed where contention lives — [Full_Chip_Modeling §2.2](02_Full_Chip_Modeling.md) and [Analytical_Models](../07_Simulators/07_Analytical_Models.md).
+where $p$ = parallelizable fraction of the work, $N$ = number of parallel units.
+
+**Derivation.** Normalize single-unit runtime to $1$ and split it into a serial part $1-p$ and a perfectly-parallel part $p$. On $N$ units the serial part is unchanged and the parallel part shrinks to $p/N$ (perfect division — the optimistic case), so $T(N)=(1-p)+p/N$ and $S(N)=T(1)/T(N)=1/[(1-p)+p/N]$. As $N\to\infty$ the parallel term vanishes and $S\to 1/(1-p)$: the serial residue alone sets the ceiling.
+
+**Why the last few percent of serial code dominate — the sensitivity.** Differentiate the ceiling $S_\infty(p)=1/(1-p)$:
+
+$$\frac{dS_\infty}{dp}=\frac{1}{(1-p)^2}=S_\infty^{\,2}.$$
+
+The marginal return on parallelizing more code grows as the *square* of the speedup already achieved. At $p=0.5$ ($S_\infty=2$) a $+0.01$ in $p$ buys $\approx0.04$; at $p=0.99$ ($S_\infty=100$) the same $+0.01$ buys $\approx100$ — a $2500\times$ heavier lever. Equivalently, in the serial fraction $s=1-p$ the ceiling is $S_\infty=1/s$ with $dS_\infty/ds=-1/s^2$, so **halving the serial residue doubles the ceiling**. That divergence as $s\to0$ is the rigorous reason optimization effort migrates to the last slivers of serial code.
+
+**Gustafson — the scaled-speedup counterpoint.** Amdahl fixes the *problem size*; Gustafson observes that bigger machines run bigger problems (weak scaling), with the serial part roughly constant in absolute time while the parallel part grows with $N$. If a run on $N$ units spends fraction $\sigma=1-p$ serial and $p$ parallel of its *own* wall-time, the same work serialized would take $\sigma+pN$, a **scaled speedup**
+
+$$S_{\text{scaled}}=(1-p)+pN,$$
+
+*linear in $N$, uncapped*. Same $p$, opposite verdict — because the two answer different questions: Amdahl "how much faster is *this fixed job*?", Gustafson "how much more work in the *same time*?". Neither is wrong; you choose by whether your problem size is pinned (strong scaling → Amdahl) or grows with the machine (weak scaling → Gustafson).
+
+**Worked number.** At $p=0.95$: Amdahl ceiling $1/0.05=20\times$. Finite $N$: $N=16\Rightarrow 1/(0.05+0.95/16)=9.1\times$; $N=64\Rightarrow 1/(0.05+0.01484)=15.4\times$ (already 77% of the $\infty$-core ceiling); $N=256\Rightarrow18.6\times$ — quadrupling 64→256 cores adds only $1.2\times$. Sensitivity: pushing $p$ from $0.95$ to $0.99$ lifts the ceiling $20\to100\times$ — the last 4% of serialization *quintuples* the ceiling, the $S^2$ law in the flesh. Gustafson on the same $p=0.95,\,N=64$ gives $0.05+0.95\cdot64=60.9\times$ — the weak-scaling number data-parallel training actually rides.
+
+The serial fraction $1-p$ caps everything: at $p=0.9$, infinite cores give only $10\times$. Amdahl is *why* accelerators co-design the algorithm, not just the hardware — you attack the serial residue, because no amount of $N$ will. It is the pure-parallelism ceiling; the real multicore curve is lower still once shared-resource **contention** is added as a growing term $C(N)$ (the Universal Scalability Law), which is developed where contention lives — [Full_Chip_Modeling §2.2](02_Full_Chip_Modeling.md) and [Analytical_Models](../07_Simulators/07_Analytical_Models.md).
 
 ### 2.3 Roofline — compute-bound or memory-bound, before you size anything
 
@@ -88,19 +126,31 @@ A kernel of **arithmetic intensity** $I$ (useful FLOPs per byte moved) on a mach
 
 $$P_{\text{attainable}} \;=\; \min\!\big(\pi,\ \beta \cdot I\big)$$
 
-Two roofs: a flat **compute roof** $\pi$ and a slanted **memory roof** $\beta I$. They cross at the **ridge point**
+**Derivation — a two-resource concurrency bound.** A kernel performs $F$ useful FLOPs while moving $Q$ bytes, so $I=F/Q$. Two subsystems run *concurrently*: compute clears FLOPs at peak $\pi$, taking $t_{\text{cmp}}=F/\pi$ if it were the only limit; memory delivers bytes at peak $\beta$, taking $t_{\text{mem}}=Q/\beta$. On a machine that overlaps them (prefetch / double-buffer) the runtime cannot beat the busier resource, $t\ge\max(F/\pi,\,Q/\beta)$ — a critical-path lower bound, since neither subsystem exceeds its own peak. Hence
+
+$$P=\frac{F}{t}\le\frac{F}{\max(F/\pi,\ Q/\beta)}=\min\!\Big(\pi,\ \tfrac{F}{Q}\beta\Big)=\min(\pi,\ I\beta).$$
+
+Two roofs fall out: a flat **compute roof** $\pi$ and a slanted **memory roof** $\beta I$. They cross at the **ridge point**
 
 $$I^\star = \pi / \beta \quad\text{(FLOP/byte)},$$
 
+**Why $I$ is the single decisive parameter.** Note what survived the algebra: once the machine is fixed ($\pi,\beta$), the bound depends on the kernel through the *one scalar* $I$ — not $F$ and $Q$ separately. An entire kernel collapses to a point on a 1-D intensity axis, and its fate is one comparison, $I \lessgtr I^\star$. Moving the ridge is a machine decision: doubling $\beta$ slides $I^\star$ **left** (rescuing memory-bound kernels linearly), doubling $\pi$ slides it **right**.
+
 which partitions all kernels: $I < I^\star$ ⇒ **memory-bound** (you are on the slanted roof; more FLOPS buys nothing — raise $I$ by fusion/blocking, or raise $\beta$); $I > I^\star$ ⇒ **compute-bound** (raise $\pi$ or utilization). Roofline is a *ceiling*, not a prediction — real performance sits below it whenever latency is not hidden (insufficient MLP/occupancy, §2.1, §9.1) — but it tells you *which knob is even live* before you spend a transistor. It is the AI-era PPA lens, applied **per kernel** for throughput machines (§9.3, §10.3).
+
+**Worked number.** On a $\pi=60$ TFLOP/s, $\beta=2$ TB/s part, $I^\star=60/2=30$ FLOP/byte. A fused vector update $y\leftarrow ax+y$ moves 3 fp32 words (read $x$, read $y$, write $y$ $=12$ B) per 2 FLOPs, so $I=2/12=0.17$ FLOP/byte — far **left** of the ridge, deeply memory-bound: attainable $=I\beta=0.17\times2000=0.33$ TFLOP/s, only $0.56\%$ of the $60$ TFLOP/s peak. Its FLOP units sit idle; only $\beta$ (or fusion to raise $I$) helps. A GEMM tile at $I=40>30$ sits **right**: attainable $=\pi=60$ TFLOP/s, bandwidth irrelevant — spend on MAC utilization. One machine, two kernels, opposite live knobs, named before a transistor moved. (The full throughput-machine roofline — with the divergence / coalescing / occupancy factors that pull a kernel *below* the roof, and the H100-class $I^\star\!\approx\!295$ — is [GPU_Architecture §7](../05_GPU/01_GPU_Architecture.md).)
 
 ### 2.4 Worked mini-example — issue width vs frequency (DSE in one decision)
 
-A 4-wide core at 3 GHz vs. a 2-wide core at 4 GHz (the shorter pipeline that bought the clock also raised mispredict exposure, hurting IPC). Suppose the 4-wide sustains IPC 1.8, the 2-wide IPC 1.2:
+A 4-wide core at 3 GHz vs. a 2-wide core at 4 GHz (the *deeper* pipeline that bought the higher clock also lengthened the mispredict penalty in cycles, raising exposure and hurting IPC). Suppose the 4-wide sustains IPC 1.8, the 2-wide IPC 1.2:
 
 - 4-wide: $1.8 \times 3 = 5.4$ BIPS (billion instructions/s). 2-wide: $1.2 \times 4 = 4.8$ BIPS.
 
-Raw throughput favors the 4-wide — but this is a trap, because the *decision variable is not BIPS*. Power scales as $\sim W\!\cdot\! f\!\cdot\! V^2$ and the 4-wide needs more area (superscalar structures grow super-linearly, [OoO_Execution §4.3](../02_CPU/03_OoO_Execution.md)). The architect compares **BIPS/W and BIPS/mm²**, not BIPS — because power and area are *budgeted*, and the winner is the point on the Pareto frontier (§5) that meets the binding constraint. This one example is the whole method in miniature: the iron law sets the objective, and PPA efficiency (§6) — not raw performance — decides.
+Raw throughput favors the 4-wide — but this is a trap, because the *decision variable is not BIPS*. Turn the abstract "compare BIPS/W" into arithmetic (power figures illustrative). Dynamic power tracks $C f V^2$: the 4-wide switches more capacitance per cycle (wider datapath, larger RF and wakeup, ports growing $\sim W^2$, [OoO_Execution §4.3](../02_CPU/03_OoO_Execution.md)), while the 2-wide pays a *higher* $V$ to reach 4 GHz. Say the 4-wide draws $6$ W, the 2-wide $3.5$ W:
+
+- 4-wide: $5.4/6 = 0.90$ BIPS/W. 2-wide: $4.8/3.5 = 1.37$ BIPS/W.
+
+The efficiency ranking **inverts** the raw-BIPS ranking: the narrower core does 11% less work but 52% more work-per-watt. So under a power budget (mobile, a dark-silicon-limited many-core) the 2-wide wins; under a single-thread-latency goal with power to spare (desktop) the 4-wide wins. **Both are Pareto-optimal (§5); the binding constraint (§6) — not raw BIPS — selects.** This one example is the whole method in miniature: the iron law sets the objective, and PPA efficiency (§6) — not raw performance — decides.
 
 ---
 
@@ -113,7 +163,7 @@ Conceptually a timing simulator makes the CPI stack **executable**: instead of e
 The two facts an architect must carry from this rung (both derived in depth in [Simulation_Methodology](../07_Simulators/01_Simulation_Methodology.md), not repeated here):
 
 - **A simulated number is only as trustworthy as its provenance.** Which rung produced it, and was it *validated and calibrated* against a reference? An uncalibrated architectural model can be 2× off; a calibrated one ~20–30% (§8). Always ask the provenance before believing the digit.
-- **You never run the whole workload.** A trillion-instruction SPEC run at 10⁴× slowdown is months of wall-clock, so the reported number is the product of a **sampling** methodology (SimPoint phase clustering, SMARTS statistical sampling) plus **warm-up** — and most simulation *mistakes* live in that methodology, not in the model. This is exactly why cheap analytical pruning (§5) precedes expensive simulation.
+- **You never run the whole workload.** A trillion-instruction SPEC run at 10⁴× slowdown is months of wall-clock, so the reported number is the product of a **sampling** methodology (SimPoint phase clustering, SMARTS statistical sampling) plus **warm-up** — and most simulation *mistakes* live in that methodology, not in the model. The statistical-sampling side has a *provable* error bar: by the central limit theorem the standard error of a CPI estimated from $n$ randomly-chosen sample intervals falls as $\sigma/\sqrt n$, so hitting a target $\pm\varepsilon$ needs only $n\propto(\sigma/\varepsilon)^2$ intervals — a few thousand out of billions, i.e. the $\sim\!1\%$ coverage of §7, with a *computable* confidence rather than a hope. This is exactly why cheap analytical pruning (§5) precedes expensive simulation.
 
 The tool that instantiates this rung for CPUs is **gem5** (configurable in-order/O3 CPU models, classic/Ruby memory); its configuration and validation are covered in [gem5](../07_Simulators/02_gem5.md). We deliberately do **not** reproduce its config knobs here — the modeling *decision* (when to climb, and what the rung buys) is the concept; the tool syntax is a lookup.
 
@@ -148,7 +198,9 @@ and it forces the entire recipe — you buy coverage by making evaluations cheap
 
 1. **Prune analytically.** Kill obviously-dominated points at ~zero cost with the §2 kernels (a config that is memory-bound *and* has a small cache cannot win). This removes most of $\mathcal{S}$ before any simulation.
 2. **Cycle-simulate the survivors.** Spend the expensive rung only where the analytical model could not resolve the ranking.
-3. **Guide the sampling.** When even the survivor set is too large, a **surrogate** (Bayesian optimization / ML model of the PPA surface) is fit to a handful of samples and used to pick the next most-informative point — sample-efficient search over an expensive black box.
+3. **Guide the sampling.** When even the survivor set is too large, a **surrogate** (Bayesian optimization / ML model of the PPA surface) is fit to a handful of samples and used to pick the next most-informative point — sample-efficient search over an expensive black box. The surrogate is *forced*, not decorative: the objective is a black box with no gradient and each query costs hours, so you can neither do calculus on it nor afford a grid. It works by exploiting the one property the PPA surface has — **smoothness**: neighbouring configs have similar PPA, so a model (a Gaussian process or gradient-boosted tree) fit to $\mathcal O(\text{tens})$ points predicts the rest with calibrated uncertainty, and an acquisition function (expected improvement) spends each next expensive evaluation where it most reduces uncertainty about the optimum. Convergence in tens rather than thousands is dimensional: if only a few knobs dominate (low *effective* dimension) the sample count tracks that, not $\prod_k n_k$. Bayesian optimization routinely locates a near-optimal point of a $10^4$–$10^6$ space in $\sim\!30$–$50$ evaluations — a $10^2$–$10^4\times$ saving over grid search.
+
+**Worked number — why brute force is off the table.** Eight knobs at four settings is $|\mathcal S|=4^8=65{,}536$ points. At cycle-accurate fidelity — say $4$ CPU-hours per point (a few hundred million sampled instructions) — one workload is $2.6\times10^5$ CPU-hours $\approx 30$ CPU-years; a realistic $\sim\!20$-workload suite is $\sim\!600$ CPU-years, months of wall-clock even on a large cluster. The §2 analytical kernels evaluate a point in $\sim\!1$ ms, so the *entire* space costs $65{,}536$ ms $\approx 66$ s — over seven orders of magnitude cheaper (the ladder gap of §1 made concrete). That single ratio is the whole argument for the funnel: prune $65{,}536\to$ a few hundred survivors analytically for free, then spend the $4$-hour rung only on those — turning $600$ CPU-years into a few CPU-days.
 
 The output is not a single answer but a **Pareto frontier**: the set of points where no other point is better in *all* of performance, power, and area simultaneously (no point *dominates* them). The architect then picks by the **binding constraint** — "minimum power that still meets 5.4 BIPS," or "max perf under 2 W and 10 mm²."
 
@@ -187,6 +239,26 @@ Performance, power, and area are not three independent dials; they are **coupled
 
 The deep point: because power and area are *budgeted*, the true objective is almost never raw performance but **performance per watt** and **performance per mm²** — a memory-bound design that doubles FLOPS at 2× power moved *backward*. And the architect's allocation rule is the CPI-stack/roofline rule from §2: **spend each mm² and each mW where the decomposition says the bottleneck is, never uniformly.** DSE (§5) formalizes this as picking a Pareto point; §2–§4 are the models that place a candidate on the surface.
 
+**Why a frontier, not a point — the dominance argument.** Point $A$ *dominates* $B$ if $A$ is no worse on every axis (perf, power, area) and strictly better on at least one; the **Pareto frontier** is the set of non-dominated points. Two facts pin the optimum to it. (i) *Any* positive-weight scalarization $\min\big(w_1\,\text{power}+w_2\,\text{area}-w_3\,\text{perf}\big)$ with all $w_i>0$ is minimized at a Pareto point — were its optimizer dominated, the dominating point would score strictly better, a contradiction. (ii) Conversely, for a convex frontier every Pareto point is the optimum of *some* weight vector — the supporting hyperplane / KKT stationarity at that point. So "choose weights, then optimize" and "find the frontier, then pick by the binding constraint" are duals: you optimize *on* the frontier because it is exactly the set of points that can be optimal for *some* preference, and your constraint ("min power at $\ge5.4$ BIPS") is that preference written as a bound.
+
+**The physics under the frontier — the energy–delay trade.** The frontier is carved by two opposing dependences on supply voltage $V$. Dynamic energy per operation is the charge–discharge of the switched capacitance,
+
+$$E \;=\; \alpha\,C\,V^2 \qquad(\text{energy}\propto V^2),$$
+
+where $C$ = switched capacitance, $\alpha$ = activity factor. Gate delay is set by drive current; with a first-order velocity-saturated on-current $I_{\text{on}}\approx k(V-V_t)$ charging the node through a swing $\sim V$,
+
+$$t_d \;=\; \frac{C\,V}{I_{\text{on}}} \;\approx\; \frac{C\,V}{k(V-V_t)} \;\;\Longrightarrow\;\; f\propto\frac{V-V_t}{V},$$
+
+where $V_t$ = threshold voltage — so delay falls as $\sim 1/(V-V_t)$: cheap speed when $V\gg V_t$, diverging as $V\to V_t$ (the sub-threshold wall). This also *proves* the table's $P\sim f^3$ claim: on the DVFS curve $V\approx V_t + f\cdot\text{const}$, so for $V\gg V_t$, $V\propto f$ and $P=CfV^2\propto f\cdot f^2=f^3$ — why the last increment of clock is punishingly expensive.
+
+**The provable sweet spot.** Combine both into the energy–delay product and minimize over $V$:
+
+$$\text{EDP}=E\cdot t_d\propto V^2\cdot\frac{V}{V-V_t}=\frac{V^3}{V-V_t}, \qquad \frac{d}{dV}\frac{V^3}{V-V_t}=\frac{V^2\,(2V-3V_t)}{(V-V_t)^2}=0 \;\;\Longrightarrow\;\; V^\star=\tfrac{3}{2}V_t.$$
+
+The EDP-optimal supply sits at $1.5\,V_t$ — the near-threshold point. Weighting delay more (minimizing $E\cdot t_d^{\,2}\propto V^4/(V-V_t)^2$) shifts the optimum to $V=2V_t$; weighting energy more pushes it toward $V_t$. That whole family of optima *is* the DVFS frontier, swept by the single knob $V$.
+
+**Worked number.** With $V_t=0.3$ V the EDP optimum is $V^\star=0.45$ V. Against a nominal $V=0.9$ V: energy scales $(0.9/0.45)^2=4\times$ *up*, while delay scales $\frac{0.9/(0.9-0.3)}{0.45/(0.45-0.3)}=\frac{1.5}{3.0}=\tfrac12$, i.e. the near-threshold gate is $2\times$ *slower* but $4\times$ *cheaper* per op — a net EDP win of $\frac{1.215}{0.6075}=2.0\times$ at $0.45$ V. This is why energy-first blocks (and idle/near-idle logic) drop toward near-threshold while latency-first blocks stay at nominal — two ends of the same frontier. (The device physics and the leakage floor that eventually caps this descent are [Power_Fundamentals](../../02_Power_and_Low_Power/01_Power_Fundamentals.md).)
+
 ---
 
 ## 7. Numbers to memorize
@@ -201,11 +273,19 @@ The deep point: because power and area are *budgeted*, the true objective is alm
 | gem5 O3 speed | ~0.1–1 MIPS | why sampling exists (§3) |
 | SimPoint coverage | ~1% of instrs simulated | bounded-error extrapolation (§3) |
 | Amdahl at $p=0.9$ | 10× ceiling | serial fraction dominates (§2.2) |
+| Amdahl sensitivity | $dS_\infty/dp = 1/(1-p)^2 = S_\infty^2$ | last % of serial code dominates (§2.2) |
+| Gustafson scaled speedup | $(1-p)+pN$ (linear, uncapped) | weak scaling vs Amdahl (§2.2) |
 | Superscalar IPC reality | ~1–2 sustained (general code) | width has diminishing returns (§2.4, §6) |
+| CPI stack | $\text{CPI}_0+\sum_i f_i\,p_i$ | additive: frequency × penalty per event (§2.1) |
+| Roofline attainable | $\min(\pi,\ I\beta)$ | ceiling from two overlapped resources (§2.3) |
 | Roofline ridge point | $I^\star=\pi/\beta$ | compute- vs memory-bound split (§2.3) |
 | TLM-LT use | boots OS pre-RTL | early SW on a virtual platform (§4) |
 | Systolic fill/drain | $K/(K{+}2D)$ amortization | small reductions waste the array (§10.1) |
 | DSE space size | $\prod_k n_k$ (exponential in knobs) | why you prune + sample (§5) |
+| Bayesian-opt sample cost | ~30–50 evals for a $10^4$–$10^6$ space | surrogate beats grid $10^2$–$10^4\times$ (§5) |
+| Energy–delay of a gate | $E\propto V^2$, $t_d\propto 1/(V-V_t)$ | the DVFS frontier's physics (§6) |
+| EDP-optimal supply | $V^\star\approx 1.5\,V_t$ (near-threshold) | energy-first sweet spot (§6) |
+| DVFS power law | $P\sim f^3$ (when $V\propto f$) | last clock increment is dear (§6) |
 
 **Memory hierarchy latencies** (the $p_x$ behind the CPI stack): register ~1 cycle · L1 ~4 · L2 ~10–15 · L3 ~30–50 · **DRAM ~100–300 cycles** — the term that dominates memory-CPI and drives the roofline for most modern workloads.
 
@@ -217,7 +297,11 @@ The deep point: because power and area are *budgeted*, the true objective is alm
 
 *Naive solution.* The 5 fewer misses/1000-instr now hit L2 instead of memory, saving $(200-12)=188$ cyc each → $\Delta\text{CPI} = \tfrac{5}{1000}\times 188 = 0.94$ cyc/instr. But base CPI is only $1/1.5 = 0.67$, so "new CPI $= 0.67 - 0.94 < 0$" — **impossible.**
 
+*Why it is provably wrong, not merely imprecise.* The observed CPI at 1 MB is $1/1.5=0.667$, and that number *already includes* whatever memory stalls the OoO core failed to hide. A claimed saving of $0.94$ exceeds the entire measured CPI — impossible, because you cannot remove more cycles than the machine spends, and only a fraction of $0.667$ is memory-stall at all. The bug is an internal inconsistency: the *baseline* $0.667$ reflects heavy miss overlap (MLP), but the *delta* was computed with **raw** 200-cycle latency, as if the newly-avoided misses had been fully exposed. Mixing an overlap-aware baseline with an overlap-blind delta must produce nonsense.
+
 *The lesson (this is §2.1's caveat in the flesh).* The contradiction proves the additive stack with *raw* latency over-counts: on an OoO core those misses were **partly overlapped** (MLP), so the *exposed* penalty was far below 188 cycles — you cannot recover cycles the machine never actually lost. The correct move is to plug the MPKI change into the CPI stack **with a realistic overlap/MLP factor** (or, better, re-run the cycle model, which measures the overlap instead of guessing it), then judge the gain on **BIPS/W and BIPS/mm²** against the Pareto frontier (§5–§6). If the re-run shows >~3–5% performance for +1.5 mm²/+60 mW, it likely earns its place. The takeaway an architect keeps: **never multiply MPKI by raw latency on an out-of-order machine.**
+
+*The corrected number.* Give the core an illustrative $\text{MLP}_{\text{mem}}=6$ (six DRAM misses overlapped in the window — plausible for 8–16 MSHRs at imperfect overlap). Each avoided miss then exposed only $\approx188/6\approx31$ cyc, so $\Delta\text{CPI}=\tfrac{5}{1000}\times31=0.157$: CPI $0.667\to0.510$, IPC $1.5\to1.96$ (+31%) — a real but *finite* gain, not the impossible one. Now judge PPA, not cycles. At $3$ GHz that is BIPS $4.5\to5.88$; against an illustrative $20$ mm² / $4$ W core the change is $+1.5$ mm² ($+7.5\%$) and $+60$ mW ($+1.5\%$), so BIPS/W rises $1.125\to1.45$ ($+29\%$) and BIPS/mm² $0.225\to0.273$ ($+21\%$). Both efficiency metrics improve, so the extra megabyte earns its place *here*. Had the true MLP been higher (the misses already mostly hidden), the perf gain would fall under the $\sim\!3$–$5\%$ that justifies $+1.5$ mm², and the area would belong elsewhere by the marginal-value rule (§2.1). The verdict is set by the overlap factor the cycle model *measures* and the naive stack can only guess.
 
 ---
 
@@ -235,6 +319,8 @@ $$\text{occupancy} = \frac{\min\!\left(\underbrace{\tfrac{\text{regs}_{\max}}{32
 
 $$\text{warps} \;\gtrsim\; L \times \lambda \quad\text{(operations in flight = throughput × latency)}.$$
 
+(The distribution-free derivation of Little's law — the area under the in-flight-count curve counted two ways — and the *fill factor* $\phi=\min(1,\,W_{\text{res}}/W_{\text{needed}})$ that turns an occupancy shortfall into *exposed* latency now live in full at [GPU_Architecture §1, §7](../05_GPU/01_GPU_Architecture.md); this section keeps only the modeling formulation.)
+
 Too few warps → the SM stalls with no ready work even though peak FLOPS is untouched (latency-bound, not compute-bound). The lever is register/shared-memory pressure, not clock. Crucially, occupancy is a *ceiling on latency-hiding, not throughput itself*: past the point where warps cover the latency, more occupancy buys nothing — you are then set by which side of the roofline knee (§2.3, §9.3) you are on.
 
 ### 9.2 Memory coalescing
@@ -243,7 +329,7 @@ DRAM/L2 sees **memory transactions**, not threads. When a warp's 32 threads touc
 
 ### 9.3 Per-kernel roofline
 
-Apply roofline (§2.3) **per kernel**, with $I$ = FLOPs / bytes computed *after* coalescing and cache effects. A GEMM (general matrix multiply) kernel sits near the compute roof; an element-wise or LayerNorm kernel sits far left (memory-bound) — they need *opposite* optimizations, which is why you never roofline "the GPU," you roofline each kernel. The model tells you which knob is live (occupancy vs intensity vs bandwidth) before you touch a line of CUDA. This is the same knee that, at chip scale, makes adding SMs past $N^\star = B_{HBM}/\text{demand}$ pure waste ([Full_Chip_Modeling §3.3](02_Full_Chip_Modeling.md)).
+Apply roofline (§2.3) **per kernel**, with $I$ = FLOPs / bytes computed *after* coalescing and cache effects. A GEMM (general matrix multiply) kernel sits near the compute roof; an element-wise or LayerNorm kernel sits far left (memory-bound) — they need *opposite* optimizations, which is why you never roofline "the GPU," you roofline each kernel. The model tells you which knob is live (occupancy vs intensity vs bandwidth) before you touch a line of CUDA. The full below-roof decomposition — attainable $=\phi\cdot\min(\eta_{\text{SIMT}}\pi,\ \varepsilon\,\beta I)$, separating occupancy $\phi$, SIMT/divergence $\eta_{\text{SIMT}}$, and coalescing $\varepsilon$ as independent multipliers — is derived on [GPU_Architecture §7](../05_GPU/01_GPU_Architecture.md); here it is enough that the roofline *names the live knob*. This is the same knee that, at chip scale, makes adding SMs past $N^\star = B_{HBM}/\text{demand}$ pure waste ([Full_Chip_Modeling §3.3](02_Full_Chip_Modeling.md)).
 
 ### 9.4 Worked example — occupancy-bound vs memory-bound
 
@@ -269,7 +355,7 @@ The $2D$ is a first-order stand-in (an exact wavefront gives $(D{-}1)+(D{-}1)=2D
 
 $$U = \frac{M\,N\,K}{D^2 \times \text{cycles}_{\text{total}}} \;=\; \frac{1}{\underbrace{\left\lceil M/D\right\rceil D / M \cdot \left\lceil N/D\right\rceil D / N}_{\text{edge-tile quantization}}}\times\underbrace{\frac{K}{K+2D}}_{\text{fill/drain amortization}}$$
 
-**Edge quantization** (small/odd $M,N$ don't fill the array — pad waste) and **fill/drain** (small $K$ can't amortize the $2D$ latency) both push toward large, array-aligned tiles. This is the single formula the hardware and simulator pages both build on.
+**Edge quantization** (small/odd $M,N$ don't fill the array — pad waste) and **fill/drain** (small $K$ can't amortize the $2D$ latency) both push toward large, array-aligned tiles. This is the single formula the hardware and simulator pages both build on. The wavefront derivation of the $2D$ ramp (fill $D{-}1$ + drain $D{-}1$) and the proof that steady state is *provably peak* — the live set is the whole $D^2$ grid and there are only $D^2$ multipliers — are [NPU_Accelerators §2](../06_NPU/01_NPU_Accelerators.md).
 
 ### 10.2 Dataflow taxonomy — mostly an energy lever
 
@@ -281,11 +367,11 @@ $$U = \frac{M\,N\,K}{D^2 \times \text{cycles}_{\text{total}}} \;=\; \frac{1}{\un
 | **Output-stationary (OS)** | partial sums accumulate in place | psum reuse (no read-modify-write to SRAM) | deep reduction — large $K$ amortized in-place |
 | **Row-stationary (RS)** | a 1-D conv row mapped into a PE (Eyeriss) | balances weight/act/psum reuse | CNNs, low data-movement energy |
 
-The dataflow changes *cycles* only modestly (via utilization) but changes *energy* substantially (via which memory level absorbs the accesses, and $e_{\text{DRAM}}\gg e_{\text{SRAM}}\gg e_{\text{RF}}$). Eyeriss's row-stationary was 1.4×–2.5× more energy-efficient than the alternatives on AlexNet — a scoped, workload-specific result, not a global optimum. This is *why* dataflow selection is driven by an analytical *energy* model, with cycles as the confirmation.
+The dataflow changes *cycles* only modestly (via utilization) but changes *energy* substantially (via which memory level absorbs the accesses, and $e_{\text{DRAM}}\gg e_{\text{SRAM}}\gg e_{\text{RF}}$). Eyeriss's row-stationary was 1.4×–2.5× more energy-efficient than the alternatives on AlexNet — a scoped, workload-specific result, not a global optimum. This is *why* dataflow selection is driven by an analytical *energy* model, with cycles as the confirmation. The access-counting derivation behind that claim — the DRAM re-fetch multipliers $R_A,R_B,R_C$, their floor $R\ge1$ (equality iff the reuse dimension is resident on-chip), and the $\sim\!200{:}1$ DRAM:RF energy ladder that makes the DRAM term dominate — is [NPU_Accelerators §3](../06_NPU/01_NPU_Accelerators.md).
 
 ### 10.3 Tiling and the three bottleneck classes
 
-The mapper picks tile sizes ($T_m,T_n,T_k$) so each tile's operands fit in SRAM, then orders the loop nest. The **roofline still rules**, per operator, with three architecture-specific bottleneck classes:
+The mapper picks tile sizes ($T_m,T_n,T_k$) so each tile's operands fit in SRAM, then orders the loop nest. (The scratchpad-sizing bound — double-buffering forces $S_{\text{buf}}\ge2\times$ a tile's footprint, and the tile must clear the ridge $I^\star=\pi/\beta$ to keep the array fed — and the AM-GM proof that *cube* tiles $T_m{=}T_n{=}T_k$ maximize arithmetic intensity for any SRAM budget are [NPU_Accelerators §4](../06_NPU/01_NPU_Accelerators.md).) The **roofline still rules**, per operator, with three architecture-specific bottleneck classes:
 
 - **SA-bound** — the GEMM saturates the MAC array; you are at the compute roof. *Fix:* bigger array, more SAs, higher $U$.
 - **VU-bound** — softmax / LayerNorm / activation on the vector unit is the critical path (common in attention). *Fix:* more VU lanes, fuse into the GEMM epilogue.
@@ -396,7 +482,7 @@ NeuSim also exposes knobs the static roofline cannot see — **power gating** an
 
 - **Down the stack (what these models are built from):** [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) (the iron law and pipeline the CPI stack decomposes), [Memory](../03_Memory/03_Memory.md) & [DDR_Controller](../03_Memory/04_DDR_Controller.md) (the $p_{\text{mem}}$ latencies and bandwidth roofs), [OoO_Execution](../02_CPU/03_OoO_Execution.md) (the window-sizing that sets MLP and the $\sim W^2$ issue cost behind §2.4/§6).
 - **Sideways (the machinery this page defers to):** [Simulation_Methodology](../07_Simulators/01_Simulation_Methodology.md) (how the lower rungs actually work — event engine, sampling, validation), [gem5](../07_Simulators/02_gem5.md) / [GPU_Simulators](../07_Simulators/04_GPU_Simulators.md) / [Accelerator_and_NPU_Simulators](../07_Simulators/05_Accelerator_and_NPU_Simulators.md) (per-tool detail), [Analytical_Models](../07_Simulators/07_Analytical_Models.md) (roofline/interval/Little's-law/USL formalized), [Full_Chip_Modeling](02_Full_Chip_Modeling.md) (composing leaves into a chip; contention, DVFS, thermal, tool map).
-- **Up the stack (what consumes this page):** [RTL_Design_Methodology](../../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) (implements the committed µarch spec), [Gate_Level_Sim_and_Emulation](../../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) (validates the perf model against real workloads), [Power_Fundamentals](../../02_Power_and_Low_Power/01_Power_Fundamentals.md) & [Block_Activity_and_Power](../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the power half of PPA), [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (the throughput/dataflow hardware §9–§10 model).
+- **Up the stack (what consumes this page):** [RTL_Design_Methodology](../../03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) (implements the committed µarch spec), [Gate_Level_Sim_and_Emulation](../../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) (validates the perf model against real workloads), [Power_Fundamentals](../../02_Power_and_Low_Power/01_Power_Fundamentals.md) & [Block_Activity_and_Power](../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the power half of PPA), [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) (the throughput/dataflow hardware §9–§10 model — and now the *full* derivations §9/§10 only formulate: Little's-law + occupancy fill-factor and the below-roof $\phi\cdot\min(\eta_{\text{SIMT}}\pi,\varepsilon\beta I)$ on the GPU page, the wavefront fill/drain, dataflow access-counting, and AM-GM cube-tiling on the NPU page).
 
 ---
 

@@ -52,6 +52,14 @@ The picture already contains §6's answer: the CPU→DDR path wants maximum band
 
 Before any channel structure, one primitive underlies all of AMBA (and most on-chip streaming interfaces): the **VALID/READY handshake**. A transfer happens on a rising clock edge **iff both `VALID` (source has data) and `READY` (sink can accept) are high**. That is the entire mechanism. Its importance is easiest to see by asking what the naive alternative costs.
 
+**Deriving the two wires from first principles.** Flow control must convey two *independent* facts, and each is privately owned: only the source knows whether it currently has data to give, and only the sink knows whether it currently has room to take. Two independent binary conditions cannot be carried on fewer than two bits of wire state — one driven by each party — because a single shared line could not distinguish "I have data" from "I have room," and the two conditions would alias. Name them `VALID` (source → sink, "data present") and `READY` (sink → source, "space available"). A transfer is legal exactly when *both* hold, so the transfer predicate is their **conjunction**, sampled synchronously:
+
+$$
+\text{transfer at clock edge } k \iff \text{VALID}_k \wedge \text{READY}_k.
+$$
+
+Two bits, one AND, is therefore the *minimal sufficient* flow-control primitive — and every richer property (elasticity, backpressure, clock-domain crossing) is a consequence of this one conjunction. That the rule is an AND rather than, say, "move on `VALID` alone" is precisely what lets the sink refuse without loss: a beat offered but not accepted is simply re-offered on the next edge, so no data is created or destroyed by a stall. The two-wire cost is also why the handshake is *cheap enough to put on every channel and every pipeline stage* — the property that makes the whole fabric uniform (§3).
+
 **Why not a fixed-timing contract?** The obvious protocol is a *timing contract*: "master asserts request in cycle 0; slave guarantees data in cycle $N$." It works for exactly one slave. It fails the moment you have:
 
 - **Variable latency.** A cache hit and a DRAM miss differ by 100× ; a fixed $N$ cannot describe both. Real slaves have data-dependent latency.
@@ -60,16 +68,29 @@ Before any channel structure, one primitive underlies all of AMBA (and most on-c
 
 VALID/READY replaces **when** with **whether**: the data moves on *any* cycle both sides agree, and latency becomes a *runtime* property rather than a *protocol constant*. This single move is what makes the fabric **elastic** — an arbitrary number of buffer/register stages can be inserted transparently, because each stage just re-handshakes. Backpressure and clock-domain crossing (§8) are then free consequences, not bolt-ons.
 
-**The one asymmetry rule — and why it prevents deadlock.** The handshake is symmetric except for a single constraint:
+**The one asymmetry rule — a combinational-loop proof.** The handshake is symmetric except for a single constraint, and that constraint is *forced by correctness*, not a stylistic choice:
 
 - **`VALID` must not depend on `READY`.** The source commits — it raises `VALID` when it has data, regardless of the sink.
 - **`READY` *may* depend on `VALID`.** The sink is allowed to look before it leaps.
 
-If *both* sides waited for the other ("I'll assert VALID once I see READY" / "I'll assert READY once I see VALID"), neither ever moves — a circular wait, i.e. deadlock. Breaking the symmetry on one side is the minimal fix, and it is why the spec fixes the *source* as the committing party. The companion rule — once `VALID` is asserted, the source holds it and the payload stable until the handshake completes — is what lets the sink take its time without the data evaporating.
+To see why one arc *must* be cut, suppose it were not — let both signals be combinational functions of the other, evaluated within the same cycle:
+
+$$
+\text{VALID} = f(\text{READY}), \qquad \text{READY} = g(\text{VALID}) \;\;\Longrightarrow\;\; \text{VALID} = f\!\big(g(\text{VALID})\big).
+$$
+
+That is a combinational cycle with no register in it, and such a loop has no well-defined synchronous value. Two cases exhaust the behaviour, and *both* are failures:
+
+- **Deadlock (even number of inversions in the loop).** With the natural non-inverting policy — "I assert `VALID` once I see `READY`" and "I assert `READY` once I see `VALID`" — the state `VALID = READY = 0` is a fixed point: both-low is self-consistent, so the pair can sit idle *forever* even though the source has data and the sink has room. A spurious stable state that violates **liveness** (progress is possible but never forced).
+- **Oscillation (odd number of inversions).** If the loop contains an odd inversion — e.g. a source that *drops* `VALID` the instant it sees `READY` ($f=\neg$) — then $\text{VALID} = \neg\,\text{VALID}$ has *no* fixed point at all; in real gates the node rings at the loop delay, a glitch generator that violates **safety**.
+
+The minimal repair is to break exactly one arc — make one signal unconditional — which removes the cycle and leaves a well-posed synchronous update. The spec breaks the *source's* arc (`VALID` ⊥ `READY`) rather than the sink's for a definite reason: the source is the party that already *knows* whether it has data, so committing costs it nothing, whereas letting `READY` remain free to depend on `VALID` is what allows the sink to gate acceptance on real buffer space (the register slice, below). The companion **stability rule** — once `VALID` is asserted, the source holds it and the payload constant until the handshake completes — closes the last hole: it guarantees the offered beat cannot evaporate while the sink deliberates, so "the sink may take its time" never costs a lost transfer.
 
 **Backpressure.** `READY` low is the sink saying *"not yet."* It propagates upstream: a stalled consumer deasserts `READY`, its producer's buffer fills and it deasserts *its* `READY`, and the stall ripples back to the origin with no data lost. This is the same producer/consumer discipline as a pipeline stall ([CPU_Architecture](../02_CPU/01_CPU_Architecture.md)) — a bus is just a very long, buffered pipeline.
 
-**The elastic-buffer knee.** A `READY` that is combinational from `VALID` gives zero added latency but threads a timing path straight through the sink; registering `READY` breaks that path at the cost of a cycle. The canonical resolution is the **skid buffer / register slice**: a 2-entry elastic buffer that registers both directions *and* sustains full throughput (it absorbs exactly the one beat in flight when the downstream deasserts). Deasserting `READY` whenever your output is `VALID` is the naive half-throughput alternative — 50% duty under any stall. The register slice is the atom of every AXI pipeline stage and every CDC bridge (§8).
+**The elastic-buffer knee — why a register slice costs exactly one cycle and needs exactly two entries.** A `READY` that is combinational from `VALID` adds zero latency but threads a long timing path straight through the sink — often, once you chain fabric stages, the critical path of the whole interconnect. Registering `READY` breaks that path, but the flop makes the producer see the consumer's stall *one cycle late*, and that one cycle of blindness is the crux. In the cycle after the consumer deasserts, the producer — not yet informed — launches one more beat. To avoid dropping it the stage must be able to hold **two** beats: the one it is currently presenting, plus the one "skid" beat that arrives during the blind cycle. Hence the canonical **skid buffer / register slice** is a *2*-entry elastic buffer — the *minimum* structure that simultaneously registers both directions (one cycle of added latency, timing closed) **and** sustains 100% throughput (the second slot catches the in-flight beat, so no bubble is ever inserted by a transient stall).
+
+Formally, let $r$ be the round-trip in cycles for backpressure to propagate from consumer to producer and take effect; a naive single register makes $r=1$, so up to $r=1$ beats can be in flight when `READY` drops, and the buffer depth must be $\ge r+1 = 2$ to lose none. One entry forces the naive fallback — deassert `READY` whenever the output is already `VALID` — which stalls every other cycle, a **50% duty** ceiling under any sustained backpressure. So the register slice is the atom of every AXI pipeline stage and every CDC bridge (§8): it converts "one more fabric hop" from a timing-closure crisis into a fixed *one-cycle* latency add at *zero* bandwidth cost — the exact property that lets the elasticity of this handshake scale to arbitrarily long, deeply pipelined fabrics.
 
 ---
 
@@ -91,6 +112,14 @@ Read this as *five concerns that have independent timing, so they get independen
 - **Address runs ahead of data.** Because AW/AR handshake independently of W/R, the master can pour addresses into the fabric before any data returns — the precondition for outstanding transactions (§4).
 - **Write completion is decoupled.** The separate B channel lets a master fire a write and pick up its acknowledgment later, rather than stalling the data path waiting for a status code.
 
+**The bus-utilization argument — quantifying the gain over a shared phase.** Put a number on what each coupling costs. Model every transaction as a dead latency $L$ (address accepted → first data beat returned) followed by $n$ data beats, and measure utilization $\eta$ = fraction of cycles the *data* wires actually move data.
+
+- **One shared address+data phase, one transaction at a time** (the naive limit): the bus is held for the whole $1 + L + n$ and can start nothing else, so $\eta = \dfrac{n}{1 + L + n}$ — for a single-beat access ($n{=}1$) to an $L{=}40$ slave, a dismal $1/42 \approx 2.4\%$.
+- **Shared but address-pipelined** (AHB, §6): the address of transfer $i{+}1$ overlaps the data of transfer $i$, erasing the standalone address cycle — so a *fast* slave reaches the advertised $\eta \to 1$. But AHB is still *single-outstanding* and *half-duplex*: the dead time $L$ is exposed on every access, so a high-latency slave collapses to $\eta = \dfrac{n}{L+n} = 16/56 \approx 29\%$ at $n{=}16,\,L{=}40$, and a read and a write can never occupy the bus in the same cycle.
+- **Five decoupled channels** (AXI): because AR/AW handshake independently of R/W, the address channel issues the *next* transaction's address *during* the current data phase — so $L$ is paid once and amortized across many outstanding transactions (§4), driving $\eta \to 1$ regardless of $L$. And because read data (R) and write data (W) are physically separate wires, a read and a write proceed *in the same cycle* — full duplex.
+
+Multiplying the two independent wins, AXI extracts up to $\underbrace{\tfrac{L+n}{n}}_{\text{latency hiding}} \times \underbrace{2}_{\text{duplex}}$ the sustained bandwidth of the pipelined-shared bus on a high-latency mixed workload — here $\tfrac{56}{16}\times 2 \approx 7\times$. The decisive feature is that the latency-hiding factor is $(L+n)/n$, so **the advantage grows with $L$**: negligible for a 1-cycle SRAM, large for 40–100-cycle DRAM. The five channels are the structural *enabler*; §4's outstanding transactions are the *mechanism* that cashes the $L\to$hidden limit — and this latency-scaling is exactly why the tiered family (§6) exists rather than one universal protocol.
+
 The essential state to remember is the *set of five channels and what decouples from what* — not the ~40 signals inside them. Each channel is "just" a VALID/READY stream (§2) with a payload; that uniformity is why the whole protocol pipelines, buffers, and bridges with one mechanism.
 
 ```mermaid
@@ -111,20 +140,35 @@ flowchart LR
 
 This is the section that makes AXI *fast*, and it is the same idea as everything in [OoO_Execution](../02_CPU/03_OoO_Execution.md) — applied to a wire.
 
-**Why outstanding transactions exist (Little's law).** A slave (DRAM especially) answers with latency $L$. If the master issues one transaction, waits for its data, then issues the next, the channel sits idle for $L$ every time and throughput collapses. To keep a fabric of bandwidth $B$ busy across latency $L$, you must keep
+**Why outstanding transactions exist (Little's law).** A slave (DRAM especially) answers with latency $L$. If the master issues one transaction, waits for its data, then issues the next, the data channel sits idle for $L$ every time and throughput collapses. How many transactions must be *in flight at once* to hide $L$ is answered exactly by **Little's law** — in steady state the population in a system equals arrival rate times residence time:
 
 $$
-N_{\text{inflight}} \;\ge\; B \times L
+N \;=\; \lambda \times L_{\text{full}},
 $$
 
-bytes in flight — the **bandwidth–delay product**. Because AW/AR handshake independently of R/W (§3), the master *can* launch many addresses before any data returns; the number it is allowed to have unfinished is its **outstanding depth**. This is precisely the OoO core keeping many loads in flight against DRAM, and precisely a non-blocking cache's MSHRs. The efficiency of a single stream is
+where $\lambda$ = completion throughput (transactions/cycle) and $L_{\text{full}}$ = a transaction's total time in flight (issue → completion). The bottleneck resource is the data channel: it retires one transaction's worth of data every $t$ cycles, where $t$ = beats per transaction (= burst length), so throughput *saturates* at $\lambda_{\max} = 1/t$. A transaction holds a tracking slot from address-issue until its last data beat, i.e. for $L_{\text{full}} = L + t$ ($L$ dead + $t$ streaming). Setting $\lambda = \lambda_{\max}$ gives the outstanding depth that just saturates the slave:
 
 $$
-\eta \;=\; \frac{N \cdot B_{\text{beat}}}{N \cdot B_{\text{beat}} + L}, \qquad
-\text{where } N=\text{outstanding transactions},\ B_{\text{beat}}=\text{bytes moved per transaction},\ L=\text{round-trip latency in beats.}
+\boxed{\,N_{\text{out}} \;=\; \Big\lceil \frac{L_{\text{full}}}{t} \Big\rceil \;=\; \Big\lceil \frac{L}{t} \Big\rceil + 1\,}
+\qquad
+\text{where } L=\text{dead latency (addr→first data)},\ t=\text{beats per transaction}.
 $$
 
-To reach efficiency $\eta$ you need $N \gtrsim \tfrac{\eta}{1-\eta}\cdot\tfrac{L}{B_{\text{beat}}}$; hitting 90% costs $N \approx 9L/B_{\text{beat}}$. This is the knee: outstanding depth is bought until $\eta$ flattens, then stopped, because each additional in-flight transaction costs tracking state and buffering (§8).
+Read it as "$\lceil L/t\rceil$ transactions to blanket the dead latency, plus the one currently streaming." Equivalently, in bytes you must keep $B\times L$ **bytes in flight** — the classic **bandwidth–delay product** ($B$ = byte bandwidth). Because AW/AR handshake independently of R/W (§3), the master *can* launch those addresses before any data returns; the count it is allowed to leave unfinished is its **outstanding depth**. This is precisely the OoO core keeping many loads in flight against DRAM, and precisely a non-blocking cache's MSHRs.
+
+Below saturation the data-channel utilization ramps linearly with depth and then clamps at $N_{\text{out}}$ — a hard knee, not an asymptote:
+
+$$
+\eta(N) \;=\; \min\!\Big(\frac{N\,t}{\,L+t\,},\ 1\Big),
+$$
+
+so each added in-flight transaction buys $t/(L{+}t)$ of peak until the pipe fills at $N_{\text{out}}$, after which more outstanding buys **nothing**. (This continuous-issue result — a pipelined slave streaming back-to-back responses — is the correct model; a *stop-and-wait* master that drains a whole batch before issuing the next would instead see the strictly worse $\eta = Nt/(Nt+L)$, which never reaches 100% at finite $N$ and is not how a bandwidth-seeking AXI master behaves.) Depth is therefore sized to the bandwidth–delay product of the *slowest* slave the port talks to and stopped there, since beyond $N_{\text{out}}$ every extra slot is tracking state and buffering (§8) with zero return.
+
+*Worked number — hide a 40-cycle memory slave.* A read burst of $t=16$ beats to an $L=40$-cycle slave needs $N_{\text{out}} = \lceil 40/16\rceil + 1 = 3 + 1 = 4$ outstanding to keep the data channel full. The ramp is $N{=}1 \Rightarrow \eta = 16/56 = 29\%$; $N{=}2 \Rightarrow 57\%$; $N{=}3 \Rightarrow 86\%$ (the three that blanket the dead time); $N{=}4 \Rightarrow 100\%$. The depth tracks the bandwidth–delay product, not the slave's raw speed — the same reason an OoO ROB is sized to $\sim\!\text{IPC}\times L_{\text{miss}}$.
+
+*Worked number — why single-beat traffic is hopeless, and why bursts rescue it.* Drop to single-beat accesses ($t=1$) against the same $L=40$: now $N_{\text{out}} = \lceil 40/1\rceil + 1 = 41$ outstanding transactions to saturate. A master that can track only a handful cannot hide DRAM latency one beat at a time. Raising the burst to $t=16$ collapses the requirement to $4$ — a $\sim\!10\times$ cut in tracking state. **Bursts (§5) and outstanding depth (§4) are one lever seen twice:** a longer burst raises $t$, so $N_{\text{out}}\propto L/t$ falls, which is why real fabrics burst *and* keep a modest outstanding depth rather than tracking hundreds of tiny transactions.
+
+*The cost of too few slots or IDs.* If the master's outstanding-tracking buffer holds only $N_{\max} < N_{\text{out}}$ transactions, throughput is capped at $\eta(N_{\max}) = N_{\max}\,t/(L{+}t)$: two slots against a need of four leave the DDR port at $32/56 \approx 57\%$ no matter how fast the DRAM is. Worse, if all outstanding transactions share **one ID** (next paragraph), the per-ID ordering rule forces in-order completion, so a single slow response *head-of-line blocks* everything queued behind it — the concurrency the outstanding slots paid for is thrown away unless distinct IDs let the fast responses pass (quantified in §7).
 
 **Why IDs, and why they enable *out-of-order* completion.** Once many transactions are outstanding, a fast slave (SRAM) may be ready before a slow one (DRAM) issued earlier. Forcing strict return order would let the slow response *head-of-line block* the fast one — throwing away the concurrency you just paid for. AXI tags every transaction with an **ID** and defines ordering *per ID*:
 
@@ -153,6 +197,25 @@ $$
 
 A single-beat access ($n{=}1$) wastes half its cycles on address overhead; a long burst ($n{=}16$) runs at ~94% of the raw wire bandwidth. This is *the* reason DMA and cache traffic use long bursts and register accesses do not — random single-word accesses cannot amortize the address and live near 50% efficiency.
 
+**Deriving the amortization curve.** Charge each transaction a fixed overhead of $o$ "wasted" beats — the address handshake, the arbitration cycle to win the channel, and, at the DRAM, the row-activate/precharge command setup — *independent of how much data follows*. Writing $B$ for the useful beats (the $n$ above) and $o$ for that overhead (the $c$ above), a burst delivers $B$ data beats out of $B + o$ occupied beats:
+
+$$
+\eta_{\text{burst}} \;=\; \frac{B}{B + o}\ \text{of peak,}\qquad
+\text{where } B=\text{data beats per burst},\ o=\text{fixed overhead beats amortized over the burst}
+$$
+
+— the universal fixed-cost-per-batch law (identical in shape to amortizing a function prologue over a loop body, or a DRAM row-open over a row of column reads). Its *curvature* is the whole story: the marginal value of one more beat is $\partial\eta/\partial B = o/(B+o)^2$, which falls as $1/B^2$, so the first few beats recover almost all the loss and beyond a point extra length is nearly-free bandwidth. With a minimal $o=1$: $B{=}1 \Rightarrow \tfrac12 = 50\%$, $B{=}4 \Rightarrow \tfrac45 = 80\%$, $B{=}16 \Rightarrow \tfrac{16}{17} = 94\%$, $B{=}64 \Rightarrow 98.5\%$, $B{=}256 \Rightarrow 99.6\%$ — a $16\times$ longer burst ($16\to256$) buys only the last $\sim\!6\%$.
+
+**On AXI the overhead is not stolen data cycles — a subtlety worth stating.** Because AR/AW are *separate channels* from R/W (§3), an address handshake does not literally consume a data-channel cycle as it does on a shared bus. On AXI the burst payoff instead appears as (i) *outstanding-depth relief* — a longer burst raises the issue interval $t$, so $N_{\text{out}}=\lceil L/t\rceil{+}1$ falls (§4), letting a modest tracking buffer saturate the pipe; (ii) *address/arbitration headroom* — one address feeding $B$ beats leaves the AR channel $1/B$ utilized, so arbitration jitter cannot starve the data stream; and (iii) *DRAM command amortization* — the row-open is spread over $B$ column reads ([DDR_Controller](../03_Memory/04_DDR_Controller.md)). The $B/(B+o)$ curve is the same; $o$ is merely relabeled from "address cycles" to "per-transaction overhead."
+
+**Why not always burst to the maximum — the latency/fairness cost.** A burst is *non-preemptible*: once a slave begins streaming $B$ beats it holds the data channel for $B$ cycles, so a competing master — however urgent — waits. Under round-robin arbitration across $M$ masters each running length-$B$ bursts, the worst-case wait a master suffers before its turn is
+
+$$
+t_{\text{wait}}^{\max} \;\approx\; (M-1)\,B \ \text{cycles},
+$$
+
+which grows *linearly in the very $B$ that improved bandwidth*. Concretely, $M{=}4$ masters at $B{=}256$ beats inflict up to $3\times256 = 768$ cycles ($\sim\!3.8\,\mu$s at 200 MHz) of head-of-line latency on a latency-sensitive peer — intolerable for, say, a display controller's real-time fetch (§9 QoS). This is the bandwidth-vs-tail-latency knee: long bursts win throughput and lose fairness, so fabrics cap burst length, and lean on QoS (§9) and interleaving to bound the tail. The **4 KB boundary** (§4) sets a hard ceiling too: at a 128-bit data width (16 B/beat), $256\ \text{beats}\times 16\ \text{B} = 4096\ \text{B}$ — a maximal AXI4 burst *exactly* fills one 4 KB page, and at wider buses the 4 KB rule, not `AxLEN`, becomes the binding limit (a 512-bit bus tops out at $4096/64 = 64$ beats).
+
 Three burst *kinds* exist as points on a use-case space (the address arithmetic is not worth memorizing):
 - **INCR** — addresses increment; the workhorse for sequential block moves.
 - **WRAP** — addresses increment then wrap to an aligned boundary; this is **critical-word-first cache-line fill** — start at the word the CPU stalled on so it can resume immediately, then wrap to fill the rest of the line ([Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md)).
@@ -175,6 +238,17 @@ Why does AMBA ship *three* protocols instead of one? Because a single design poi
 | Relative slave complexity | ~hundreds of gates | moderate | thousands of gates + reorder |
 | Optimized for | **area / power** | moderate BW, simplicity | **throughput / concurrency** |
 | Use | UART, GPIO, config regs | on-chip SRAM, DMA (legacy) | DDR, GPU, CPU cluster |
+
+**Quantified positioning — the trade is one axis, and it is $L$.** The three tiers span roughly two orders of magnitude in both throughput and cost, and the axes move together:
+
+| | APB | AHB(-Lite) | AXI |
+|---|---|---|---|
+| Sustained throughput | $\le\tfrac12$ beat/cyc (2-cycle transfer) | $\to 1$ beat/cyc (fast slave); $\to \tfrac{n}{L+n}$ (slow) | $\to 1$ beat/cyc/channel, $\times 2$ duplex, $\times$ width |
+| Latency hiding | none ($L$ fully exposed) | none (single-outstanding) | full ($N_{\text{out}}$ hides $L$, §4) |
+| Slave complexity | $\sim$ few hundred gates | $\sim$ few $\times10^3$ gates | $\sim 10^4$ gates + reorder buffers |
+| Energy per transfer | lowest (no pipeline, no tracking) | low | highest (channels + tracking leak even idle) |
+
+The positioning rule drops straight out of §3's latency-scaling result: AXI's benefit over AHB is the factor $\approx \tfrac{L+n}{n}\times 2$ (latency-hiding $\times$ duplex), which is **large only when $L$ is large**. So AXI earns its $\sim\!30\times$ slave-gate cost exactly on high-$L$, bandwidth-critical edges — DDR at $L\sim100$ gives $\tfrac{116}{16}\approx 7\times$ from latency hiding alone, up to $\sim\!14\times$ with duplex — and is pure waste on a low-$L$ register ($L\sim1 \Rightarrow$ gain $\approx 1$). APB sits at the opposite corner: its 2-cycle transfer caps throughput at $\tfrac12$ beat/cycle, but a leaf peripheral moving a few bytes per boot never notices, and the few-hundred-gate slave is what lets 50–100 of them share one bridge. AHB is the middle — $\sim\!1$ beat/cycle for cheap, no latency hiding — which is why it survives only as AHB-Lite on low-$L$ on-chip SRAM/ROM. **The family is one trade surface; each tier is the cost-minimal point for its edge's $L$ and bandwidth.**
 
 **APB — optimize for simplicity, because the traffic is trivial.** A UART or a GPIO or a config register is touched rarely and moves a handful of bytes. Spending AXI's five channels, ID tracking, and reorder logic on it is pure waste — of area, of leakage power, and of verification effort. APB is deliberately minimal: one channel, no pipeline, no burst, no outstanding, a two-phase (SETUP → ACCESS) transfer that costs 2 cycles. The quantitative argument is decisive: a chip may have 50–100 leaf peripherals; giving each a full-AXI port would multiply the interconnect's gate count and verification surface by that count, whereas hanging them all off **one** AXI-to-APB bridge (§8) spends AXI complexity *once* and APB's few-hundred-gate cost per leaf. That 50–100× saving on structures that never needed bandwidth is why APB is not going away.
 
@@ -200,7 +274,25 @@ Because endpoints only see the protocol (§1), the *transport* is free to be wha
 | Crossbar | $\min(M,S)$ | $O(M\times S)$ | ~8–16 ports | area/wiring grow **quadratically** in port count |
 | NoC (mesh) | many | $O(N)$ | 100s of nodes | — (see [Network_on_Chip](03_Network_on_Chip.md)) |
 
-The crossbar's $O(M\times S)$ area is the knee: it gives full concurrency (any master to any free slave in parallel) but its cost explodes past ~8–16 ports, which is exactly where a packet-switched **NoC** — routers, links, $O(N)$ area, many concurrent flows — takes over (ARM CMN-600/700 meshes in Neoverse; §13). The fabric changed; not one endpoint did.
+The crossbar's $O(M\times S)$ area is the knee: it gives full concurrency (any master to any free slave in parallel) but its cost explodes past ~8–16 ports, which is exactly where a packet-switched **NoC** — routers, links, $O(N)$ area, many concurrent flows — takes over (ARM CMN-600/700 meshes in Neoverse, [Network_on_Chip](03_Network_on_Chip.md)). The fabric changed; not one endpoint did.
+
+**Deriving the crossbar's $O(M\times S)$ area.** A crossbar must let *any* master reach *any* slave, and let disjoint master→slave pairs transfer *simultaneously*. Concurrency forbids sharing one datapath, so realize it as one $M$-to-1 multiplexer at each slave input (any of $M$ masters may drive it) plus one $S$-to-1 multiplexer on each master's return path — $S$ muxes of $M$ inputs plus $M$ muxes of $S$ inputs, i.e. $2MS$ selectors — and the data wires form an $M\times S$ grid of crosspoints, each carrying a $w$-bit bus. Both switch logic and wiring therefore scale as
+
+$$
+A_{\text{crossbar}} \;=\; \Theta(M \times S \times w),\qquad
+\text{where } M=\#\text{masters},\ S=\#\text{slaves},\ w=\text{bus width}.
+$$
+
+Contrast the shared bus: one wire set with $M$ drivers and $S$ taps, $A=\Theta((M{+}S)\,w)$ — linear, but only *one* transfer at a time. The crossbar buys full concurrency (up to $\min(M,S)$ simultaneous transfers — no more, since each slave serves one master and each master drives one slave per cycle) at a *quadratic* area price. That quadratic is the knee: doubling ports quadruples the crossbar. *Worked number:* $8\times8 = 64$ crosspoints, $16\times16 = 256$, $32\times32 = 1024$ — a $4\times$ port growth ($8\to32$) is a $16\times$ area growth, which no floorplan absorbs, so past ~8–16 ports the $\Theta(N)$ NoC wins.
+
+**The arbitration fairness/latency trade.** When $k$ masters contend for one slave, the arbiter picks an order, and the policy is a direct fairness-vs-latency choice:
+- **Round-robin** guarantees a *bounded* wait — at most $(k-1)$ turns — but gives every master equal priority, so a latency-critical master cannot jump the queue; with length-$B$ bursts its worst-case wait is $(k-1)B$ cycles.
+- **Fixed-priority** gives the top master near-zero latency but *unbounded* wait (starvation) for the lowest — acceptable only if high-priority traffic is bounded.
+- **Weighted / QoS** (§9) interpolates: bandwidth shares proportional to weights, with per-transaction urgency injected.
+
+The trade is fundamental: because a single contended slave *serializes* its masters, you cannot give every master both minimum latency and a fair share at once — you can only choose *who waits*. *Worked number:* $k{=}4$ masters, $B{=}16$-beat bursts, round-robin → a master waits up to $3\times16 = 48$ cycles (240 ns @ 200 MHz); fixed-priority cuts the top master to $\sim\!0$ but can starve the bottom indefinitely under sustained load.
+
+**Head-of-line blocking without enough IDs.** The outstanding machinery of §4 delivers concurrency *only* if independent transactions can pass each other. A stream that reuses **one ID** is, by the per-ID ordering rule, a single FIFO: a response stuck behind a slow one cannot be overtaken, even to a different slave. Quantify it — a master interleaves reads to a fast SRAM ($L_f=4$) and a slow DRAM ($L_s=40$) through one ID; because completion must follow issue order, a DRAM read issued first pins a following SRAM read behind it for the full $L_s$, so a pair that *could* have overlapped in $\max(L_f,L_s)=40$ cycles instead takes $L_s+L_f=44$ and serializes on every such pair, collapsing the ordered stream's throughput toward $1/(L_s+L_f)$ transactions/cycle. Giving the two destinations **distinct IDs** lets the fast response return first, so the stream overlaps and runs at §4's bandwidth-delay-product limit. The number of IDs a master needs is thus set by the number of *independent latency classes* it wants in flight at once; too few re-serializes the very concurrency the outstanding depth paid for — which is also why the fabric must widen IDs with master bits (below), so two masters' reused IDs cannot alias into one false ordering chain.
 
 Two invariants any fabric must uphold, both derived from correctness rather than performance:
 - **Address decode + a default slave.** The fabric routes by decoding the address; an access to an *unmapped* region must be steered to a **default slave** that returns an error, because the alternative — no slave responds, `READY`/`VALID` never complete — hangs the master forever. "Someone must always answer, even if only to say no" is a liveness requirement, not an optimization.
@@ -253,8 +345,10 @@ A shared fabric needs more than data movement — it needs *policy*. AXI carries
 | AHB throughput | **~1 transfer/cycle** (pipelined) | address/data overlap (§6) |
 | AXI raw bandwidth | $\text{width}\times f/8$ | e.g. 64 b @ 200 MHz = **1.6 GB/s** (§10) |
 | Data-bus widths | 32 / 64 / 128 / 256 / 512 / 1024 b | width is the first bandwidth lever (§6) |
-| Burst efficiency | $n/(n{+}c)$ | 1 beat ≈ 50%, 16 beats ≈ **94%** (§5) |
-| Outstanding for ~90% $\eta$ | $N \approx 9L/B_{\text{beat}}$ | BW-delay product, Little's law (§4) |
+| Burst efficiency | $B/(B{+}o)$ | 1 beat ≈ 50%, 16 ≈ **94%**, 256 ≈ 99.6% (§5) |
+| Outstanding to saturate a slave | $N_{\text{out}}=\lceil L/t\rceil{+}1$ | BW-delay product / Little's law (§4) |
+| AXI-over-AHB bandwidth gain | $\sim\tfrac{L+n}{n}\times 2$ | latency-hiding × duplex; grows with $L$ (§3, §6) |
+| Round-robin worst-case wait | $(k{-}1)B$ cycles | fairness vs latency at one slave (§7) |
 | Burst address boundary | **4 KB** (never crossed) | one page → one slave/region (§4) |
 | Max burst length | **256** beats (AXI4), 16 (AXI3) | `AxLEN` is 8 bits in AXI4 (§5) |
 | Read ordering | same ID in-order, **diff ID reorderable** | ID = completion tag / dependence chain (§4) |
@@ -265,13 +359,13 @@ A shared fabric needs more than data movement — it needs *policy*. AXI carries
 | CDC crossing | Gray-code pointer + **2-flop** sync | one-bit-change + MTBF (§8) |
 | QoS field | **4 bits**, 0–15 | arbitration priority (§9) |
 
-**Bandwidth-hiding intuition (why outstanding is mandatory for DRAM):** at a 40-cycle DDR read latency, a single-outstanding 16-beat burst runs at ~29% of peak; 4 outstanding ≈ 55%; 8 outstanding ≈ 76%; enough to cover the BW-delay product ≈ 100%. The address channel must run far ahead of the data — the bus form of MLP.
+**Bandwidth-hiding intuition (why outstanding is mandatory for DRAM):** at a 40-cycle DDR read latency with 16-beat bursts, $\eta = \min(Nt/(L{+}t),1)$ gives 1 outstanding ≈ 29% of peak, 2 ≈ 57%, 3 ≈ 86%, and $N_{\text{out}}=\lceil 40/16\rceil{+}1 = 4$ ≈ 100% — a *hard* knee, not an asymptote. The address channel must run far ahead of the data — the bus form of MLP.
 
 ---
 
 ## 11. Worked problems
 
-**1 — Size the outstanding depth for a DDR port (Little's law).** A 64-bit AXI port at 200 MHz (5 ns/cycle) feeds a DDR controller with ~40-cycle read latency; bursts are 16 beats (16 cycles of data, 128 bytes). One burst in flight yields $\eta = 16/(16+40) = 29\%$. To cover the latency you need the data phase to fill the pipeline: $N \gtrsim L/n = 40/16 \approx 2.5$, so **3 outstanding** reaches ~55% and **~4** approaches full bandwidth. The number tracks the BW-delay product, not the slave's speed — the same reason an OoO ROB is sized to $\text{IPC}\times L_{\text{miss}}/\text{MLP}$ (§4, [OoO_Execution](../02_CPU/03_OoO_Execution.md)).
+**1 — Size the outstanding depth for a DDR port (Little's law).** A 64-bit AXI port at 200 MHz (5 ns/cycle) feeds a DDR controller with ~40-cycle read latency; bursts are 16 beats (16 cycles of data, 128 bytes). One burst in flight yields $\eta = 16/(16+40) = 29\%$. Little's law sizes the depth: $N_{\text{out}} = \lceil L/t\rceil + 1 = \lceil 40/16\rceil + 1 = 4$ — three bursts to blanket the 40-cycle dead time, one more streaming — so the utilization ramp is 29% ($N{=}1$) → 57% (2) → 86% (3) → 100% (4). The depth tracks the BW-delay product, not the slave's raw speed — the same reason an OoO ROB is sized to $\sim\!\text{IPC}\times L_{\text{miss}}$ (§4, [OoO_Execution](../02_CPU/03_OoO_Execution.md)).
 
 **2 — Burst vs single-beat bandwidth.** On the same 1.6 GB/s port, a stream of *single*-beat transactions pays one address cycle per data cycle: $\eta = 1/(1+1) = 50\%$ → 800 MB/s. Switching to INCR16 amortizes that address over 16 beats: $\eta = 16/17 = 94\%$ → ~1.5 GB/s. **Long bursts, not a faster clock, recover the missing half** — which is why DMA and cache traffic burst and register accesses (which cannot) live at ~50%.
 

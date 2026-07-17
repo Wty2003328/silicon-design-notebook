@@ -41,6 +41,13 @@ $$
 
 The lesson is in the *split*, not the product. Nanhu's **IPC is already ~80 % of A76** — the microarchitecture is competitive. The gap is almost entirely the **0.43 frequency factor**, which is a 28 nm-vs-7 nm process story, not an architecture story. This single decomposition explains the entire evolution to come: since the IPC deficit is small, later generations rationally spend their budget on **frequency** (advanced nodes, and a scheduler kept small enough to clock high, §5.3) and on the *last few points* of IPC (memory-level parallelism and branch accuracy, §5–§7), and **not** on more width — which would attack the factor that is already near parity.
 
+**Quantifying the lever — the split *is* the roadmap.** Because $\text{Perf}$ is a *product*, the marginal return on improving one ratio is set by the level of the *other* ($\partial\text{Perf}/\partial r_f=r_{\text{IPC}}$ and conversely, where $r_f,r_{\text{IPC}}$ are the frequency and IPC ratios to A76), so budget flows to whichever ratio is lower — here $r_f=0.43$, far below $r_{\text{IPC}}=0.80$. Move one factor at a time off the Nanhu point (product $0.34$):
+
+- *All-in on width/IPC*: push $r_{\text{IPC}}$ from $0.80$ to a heroic $0.95$ at fixed clock → product $0.34\to0.41$, **+19 %**, every point bought with quadratic scheduler/PRF area (§2, §5.3).
+- *All-in on the node*: hold $r_{\text{IPC}}=0.80$ and lift $r_f$ from $0.43$ (28 nm) to $0.71$ (an advanced-node $\sim\!2$ GHz vs A76's 2.8 GHz) → product $0.34\to0.80\times0.71=\mathbf{0.57}$, **+65 %, with no microarchitecture change at all.**
+
+A 65 %-vs-19 % split of return is not close, and it decides four generations of spending. This is the iron law ([Performance_Modeling_and_DSE §2.1](../01_Modeling/01_Performance_Modeling_and_DSE.md)) used as a compass: optimize the product, and the product points at the smaller factor — frequency.
+
 ### 1.2 The generations we will track
 
 | Codename | Gen | ROB | Interconnect | The bet this generation makes |
@@ -51,6 +58,28 @@ The lesson is in the *split*, not the product. Nanhu's **IPC is already ~80 % of
 | **Kunminghu v2** | 3.5 (2024) | 256 | CHI-B/C | Buy the *last* MLP + accuracy: wider IQ/LSQ, 6-table TAGE, stash coherence. |
 
 Each is a clean iteration — same ISA (RV64GCB, +V from Kunminghu), same 6-wide shape, but the window, predictor, and memory system move. Unless noted, figures below are **Nanhu with Kunminghu deltas called out**, because the deltas *are* the lesson.
+
+### 1.3 The agile loop, quantified — why the numbers can move at all
+
+The first three constraints name a target; the fourth — *open + agile, in Chisel, correctness-first* — is what makes hitting it **affordable**, and it deserves to be stated as a productivity argument rather than a virtue. The design-space walk this whole page narrates (§8) is governed by the DSE budget inequality ([Performance_Modeling_and_DSE §5](../01_Modeling/01_Performance_Modeling_and_DSE.md)):
+
+$$
+\underbrace{|\text{configs tried}|}_{\text{coverage}}\times\underbrace{c_{\text{eval}}}_{\text{cost per config}} \;\le\; \text{budget},
+$$
+
+where $c_{\text{eval}}$ = the wall-clock (and engineer) cost of resolving one design point to a *trustworthy* number. Agile methodology is a direct attack on $c_{\text{eval}}$ on two fronts.
+
+**Chisel collapses the *instantiate* cost.** Because every window size is a Scala parameter, changing the ROB from 192 to 256 is a generate-and-recompile, not a hand re-pipelining of RTL — the cost of *trying* a point drops from a partial redesign (person-months) to a build (hours). This is exactly what turns §5's sizing formulas from paper exercises into things a real team *sweeps*: ROB, IQ, LQ/SQ, MSHR, and TAGE-table counts are all generator parameters, so the diminishing-returns knees of the OoO and Cache pages get found by measurement, not asserted a priori.
+
+**DiffTest collapses the *verify* cost — by a log factor.** [DiffTest](https://github.com/OpenXiangShan/difftest) runs the core in lock-step against the NEMU reference model, comparing architectural state at every committed instruction. Its value is *bug localization*. A divergence that first shows a symptom at dynamic instruction $M$ (a hung boot after $M\sim10^{9}$ instructions) costs, under end-of-run checking, an $O(\log M)$ bisection over the trace to isolate — $\sim\!\log_2 10^{9}\approx 30$ re-runs. Instruction-lockstep checking flags the *exact* diverging instruction the cycle after it retires, cutting those $\sim\!30$ debug iterations to $\mathbf{1}$:
+
+$$
+\text{debug iterations to localize a divergence} \;:\quad O(\log M)\ \longrightarrow\ O(1).
+$$
+
+That $\log M$ is why "correctness first" is not a tax but an *enabler*: a co-simulated core that boots Linux is reached cheaply, so the first generation (Yanqihu) can spend its budget on being *correct* without forfeiting years — and every later generation inherits a harness that makes each swept config trustworthy at near-zero marginal cost.
+
+**The payoff is the cadence.** Collapsing $c_{\text{eval}}$ lets coverage rise inside a fixed budget, and the visible result is a **~annual tape-out cadence** (Yanqihu 2020 → Nanhu 2021–22 → Kunminghu 2023 → v2 2024) where a from-scratch commercial core re-tunes its window *once* per 3–5-year program. Xiangshan re-decides the §5 sizes **three times** in that window (192→256 ROB, 4→6 TAGE tables, 16→24 MSHRs) because the agile loop made re-deciding cheap. Read §8's trajectory as this inequality running on silicon: cheap evaluations bought the coverage.
 
 ---
 
@@ -74,6 +103,15 @@ $$
 
 where $b$ = branch density, $t$ = taken fraction. On integer code a machine wider than ~8 buys almost nothing unless it can predict past multiple taken branches per cycle. So 6-wide sits just below that knee, and **width is the one knob that stays frozen across all four generations** — because it is past the point of return, and every transistor spent widening would be better spent on the frequency factor (§1.1) that is actually behind.
 
+**Width, quantified — why lanes 7–8 are dead weight, and why it attacks the wrong factor.** Put a number on "buys almost nothing." Model the position of the first taken branch as geometric with per-instruction taken probability $p=b\,t=0.2\times0.6=0.12$ ([Branch §7.2](04_Branch_Prediction_Deep_Dive.md)); a decoder of width $w$ then delivers $\mathbb{E}[\min(w,L)]=\sum_{k=1}^{w}(1-p)^{k-1}=\dfrac{1-(1-p)^{w}}{p}$ useful instructions before the block truncates, where $L$ = run length to the first taken branch. So
+
+$$
+\text{lanes 1–6 deliver } \frac{1-0.88^{6}}{0.12}=\frac{0.536}{0.12}\approx 4.47,\qquad
+\text{lanes 7–8 add } (1-p)^6+(1-p)^7=0.88^6+0.88^7\approx 0.87,
+$$
+
+i.e. going $6\to8$-wide lifts effective decode only $4.47\to5.34$ — **+19 %** — because on integer code a taken branch has already truncated the block more than half the time before lane 7 ever fires ($0.88^6\approx0.46$). Now price the other side: the wakeup–select CAM cost is $\propto S\,W^2$ ([OoO §4.3](03_OoO_Execution.md)), so $6\to8$ multiplies scheduler compare-and-broadcast work by $(8/6)^2=1.78$ — **+78 %** — *and* lengthens the wires inside the single-cycle recurrence, forcing a clock give-back. Fold both into the iron law $\text{Perf}=\text{IPC}\times f$: a +19 % IPC that costs even a 12 % frequency give-back nets $1.19\times0.88=1.05$ — a rounding error — while spending 78 % more scheduler area *and* attacking the frequency factor §1.1 just showed is the *entire* deficit. Width past 6 is not merely low-return here; it is **negative**. That is why the knob is welded shut for four generations while every other number moves.
+
 The teaching point: the two irreversible macro-decisions were made *once*, correctly, against the target — and the entire subsequent evolution happens in the *sizes* of structures, never in depth or width. That is what a mature design-space walk looks like ([Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md)): freeze the expensive axes early, iterate on the cheap ones.
 
 ---
@@ -88,6 +126,13 @@ Fetch must produce a next-PC every cycle, but the predictor's best answer takes 
 **What an FTQ entry must remember — derived, not dumped.** An FTQ entry is not a signal list; it holds exactly what its two jobs demand. Job one, *drive fetch*: the block's start PC and fall-through address. Job two — the subtle one — *train and recover the predictor when this block finally resolves*: the entry therefore carries the prediction metadata (which TAGE table provided, the RAS top-of-stack pointer). Read that metadata not as fields but as **the predictor's undo-and-train log**: when the branch resolves correct it updates the providers named here; when it resolves wrong, the redirect and the RAS restoration both read from here. Everything in an FTQ entry is one of those two jobs.
 
 **Fetch is wider than decode, and that is deliberate.** Xiangshan fetches up to **8 instructions (32 B, a half cache line) per cycle** but decodes only 6. Fetching wider than you decode looks wasteful until you recall the fetch-width wall: taken branches truncate blocks *below* the nominal width, so over-fetching keeps the 6-wide decoder fed on the cycles a block runs short. The 8-vs-6 asymmetry is the §2 fetch-width math made concrete in silicon.
+
+**How deep is ~48, derived — Little's law twice over.** The FTQ depth is not arbitrary; it is fixed by the two jobs an entry does, each a Little's-law occupancy ($N=\lambda W$, the same identity that sizes the ROB — [Branch §7.1](04_Branch_Prediction_Deep_Dive.md)). An FTQ entry is born at prediction and freed only when its block's branches have all resolved/committed (it holds the undo-and-train metadata until then), so its residency is a full predict-to-commit lifetime, and two demands stack:
+
+1. **Cover the in-flight window.** Every fetch block with an instruction still in the pipe needs a live FTQ entry. Feeding an $N_{ROB}=192$ window at $\sim\!6.5$ useful instructions per block (the truncated run of §2) makes the resident block count $N_{\text{blk}}\approx N_{ROB}/6.5\approx 30$ — Little's law with the block's predict-to-commit lifetime as $W$.
+2. **Run ahead to prefetch.** On top of that, the BPU must sprint far enough in front of fetch that a target line is *requested* before fetch arrives: $D_{\text{ahead}}\gtrsim L_{\text{miss}}/t_{\text{cyc}}$ blocks. Hiding an L2 hit ($\sim\!13$ cyc) at $\sim\!1$ block/cyc is $\sim\!13$–18 blocks; a deeper L3-ward miss wants more.
+
+Add them: $30+\sim\!18\approx\mathbf{48}$. The two terms are the FTQ's two payoffs made quantitative — the ~30 is the window-coverage that lets prediction *not stall* the back end, the ~18 is the runahead that makes the FTQ a free I-prefetcher. A server-class, front-end-bound footprint (§7) pushes the second term up, which is exactly why decoupled front ends run *deep* queues rather than the handful of entries a latency-hiding buffer alone would need.
 
 ---
 
@@ -105,6 +150,16 @@ This is the same TAGE-SC-L + ITTAGE family that ships in Intel P-cores and SiFiv
 
 **The evolution is the lesson: half a percent is worth a generation's effort.** Nanhu runs ~4 tagged TAGE tables at ~97 % accuracy; Kunminghu v2 grows to **6 tables and ~97.5 %**. That sounds trivial until you price it through the tax. Accuracy enters $m$ linearly, and on a 6-wide core the tax multiplies by $W$; a drop from 3.0 % to ~2.5 % mispredicts, at $P\approx 7$, is worth more realized IPC than most of the window growth elsewhere on this page — which is *why* geometric reach (grows in the table *count*, [Branch §4.2](04_Branch_Prediction_Deep_Dive.md)) is the lever the team keeps pulling, despite each new table costing storage and lookup power. It echoes the [OoO worked problem](03_OoO_Execution.md) that "prediction, not width, is the first lever," and here you can see a real team spend accordingly.
 
+**The accuracy the pipe demands — a worked target.** Why is 97 %→97.5 % worth a generation? Because the *required* accuracy is fixed by the machine's own depth×width, and Xiangshan can compute its target. From the [Branch §0.2](04_Branch_Prediction_Deep_Dive.md) floor, holding the branch tax to a fraction $\tau$ of ideal CPI needs
+
+$$
+p_{\text{miss}}^\star \;\le\; \frac{\tau}{f_{\text{br}}\,W\,P}, \qquad f_{\text{br}}=0.2,\ W=6,\ P\approx7\ (\text{the short pipe of §2}),
+$$
+
+where $p_{\text{miss}}^\star$ = tolerable per-branch mispredict rate and $\tau$ = allowed tax-to-ideal ratio. For $\tau=0.1$ (surrender $\sim\!9$ % of peak): $p_{\text{miss}}^\star\le 0.1/(0.2\cdot6\cdot7)=0.0119$ → **≥98.8 % accuracy** to be "on budget." Nanhu's 97 % ($m=0.03$) *misses* that bar — its realized fraction is $1/(1+W f_{\text{br}} m P)=1/(1+6\cdot0.2\cdot0.03\cdot7)=1/1.252=80$ %, i.e. a fifth of the machine surrendered — which is precisely the pressure driving the predictor investment. **And the short pipe is what makes 97 % survivable at all:** run the *same* 97 % predictor on a 5 GHz-class 17-stage pipe ($P\approx17$) and the tax balloons to $6\cdot0.2\cdot0.03\cdot17=0.61$, realized $1/1.61=62$ % — a 38-point loss. Xiangshan's $P\approx7$ roughly *halves* the accuracy pressure of a deep core, which is why a first-gen open core can ship an immature predictor and still land at 80 % of peak (§2's "a short pipe forgives an immature predictor," now a number).
+
+**Why the table *count* is the lever — the $\rho^2$ tax, checked against silicon.** Cutting the mispredict rate costs storage quadratically: $S\propto p_{\text{miss}}^{-2}$ ([Branch §0.2](04_Branch_Prediction_Deep_Dive.md)). Nanhu → Kunminghu-v2 moves accuracy $97.0\%\to97.5\%$, i.e. $m:0.030\to0.025$, a reduction factor $\rho=0.030/0.025=1.2$, so theory predicts $\rho^2=1.44\times$ predictor storage. The team grew the tagged tables **4→6**, i.e. $1.5\times$ — within rounding of the $1.44\times$ the model demands. The generational table-count bump is not stylistic; it is the $\rho^2$ price of the last half-percent, spent exactly where the theory says it must be, and because geometric reach grows in table *count* each new table both lengthens history *and* pays that $\rho^2$ — which is why "add a table" is the move that keeps recurring.
+
 ---
 
 ## 5. The out-of-order window: three structures, three different theory curves
@@ -119,9 +174,20 @@ $$
 \underbrace{\text{IPC}\times\frac{L_{miss}}{\text{MLP}}}_{\text{miss shadow (push up)}} \;\lesssim\; N_{ROB} \;\lesssim\; \underbrace{\frac{1000}{\text{MPKI}}}_{\text{branch horizon (push down)}}
 $$
 
-where $L_{miss}$ = miss latency, MLP = independent misses overlapped, MPKI = mispredicts per 1000 instructions. The **branch horizon** is the ceiling: past it, the far end of the ROB holds instructions that will on average be squashed before they commit. Nanhu's ~3 % mispredict rate gives MPKI $\approx 0.2\times 30 \approx 6$, so $N_{useful}\approx 1000/6 \approx 170$ — and **192 sits right at that horizon**, exactly where theory says growth stops paying for this predictor. The **miss shadow** sets the floor: with an A76-class memory system (L2 at 10–15 cycles, not a 100 ns server DRAM window), $L_{miss}$ and the useful MLP are modest, so the floor sits below the horizon and the two meet in the ~200 range — which is precisely why Xiangshan lands at 192–256 and **not** at Golden Cove's 512. That 512 is the *server* answer to the same equation (huge $L_{miss}$, high MLP demand); Xiangshan's target simply puts the knee somewhere else.
+where $L_{miss}$ = miss latency, MLP = independent misses overlapped, MPKI = mispredicts per 1000 instructions. The **branch horizon** is the ceiling: past it, the far end of the ROB holds instructions that will on average be squashed before they commit. Nanhu's ~3 % per-branch mispredict rate gives $\text{MPKI}=1000\,b\,m=1000\times0.2\times0.03=6$ (branch density $b\approx0.2$, mispredict rate $m\approx0.03$), so $N_{useful}\approx 1000/6 \approx 167$ — and **192 sits right at that horizon**, exactly where theory says growth stops paying for this predictor. The **miss shadow** sets the floor: with an A76-class memory system (L2 at 10–15 cycles, not a 100 ns server DRAM window), $L_{miss}$ and the useful MLP are modest, so the floor sits below the horizon and the two meet in the ~200 range — which is precisely why Xiangshan lands at 192–256 and **not** at Golden Cove's 512. That 512 is the *server* answer to the same equation (huge $L_{miss}$, high MLP demand); Xiangshan's target simply puts the knee somewhere else.
+
+**The floor, worked — and why it is not 600.** Take the miss-shadow floor literally. To hide a *single isolated* DRAM miss ($L_{miss}\approx200$ cyc) at the target $\text{IPC}\approx3$ needs, by Little's law with $\text{MLP}=1$, $N_{ROB}\gtrsim3\times200=600$ entries — unbuildable, and more than $3\times$ Nanhu's 192 (the [OoO §3.2](03_OoO_Execution.md) verdict: *you cannot outlast an isolated DRAM miss by window depth*). Xiangshan does not try. Its floor is the *MLP-amortized* shadow: overlap $\text{MLP}\approx4$ independent misses and the requirement collapses to $N_{ROB}\gtrsim\text{IPC}\times L_{miss}/\text{MLP}=3\times200/4=\mathbf{150}$. With the branch horizon at $\sim\!167$ (above), the floor ($\sim\!150$) sits just under it, and the two bracket the **192** the core ships. The reading is exact: 192 is about the smallest window that both hides a 4-way-overlapped DRAM shadow *and* stays inside the speculation horizon this predictor sustains. (Illustrative $\text{MLP}$ and $L_{miss}$; the *structure* — floor just below horizon — is what pins the ~200 landing.)
 
 The **Nanhu→Kunminghu bump, 192→256**, is then legible: it is the team spending window on **MLP** as the improved predictor (§4) pushed the branch horizon out far enough to justify a deeper speculative window. You buy ROB depth *after* you buy predictor accuracy, never before — the horizon has to move first.
+
+**Why the horizon must move first — the diminishing return, computed.** The mean run-length $1/q$ is only the ceiling; the *useful occupancy* of an $N$-deep ROB is the geometric sum $E[\text{useful}]=(1-(1-q)^{N})/q$ with $q=\text{MPKI}/1000$ (the survival-of-younger-entries derivation, [OoO §3.2](03_OoO_Execution.md)). Evaluate it at both predictors:
+
+| Predictor | $q$ | $E[\text{useful}]$ @ $N{=}192$ | @ $N{=}256$ | 192→256 return |
+|---|---|---|---|---|
+| Nanhu (97 %, MPKI 6) | 0.006 | 114 | 131 | **+15 %** |
+| Improved (97.5 %, MPKI 5) | 0.005 | 124 | 145 | **+17 %** |
+
+The marginal entry at $N{=}256$ commits with probability $e^{-qN}$: at the old $q=0.006$ that is $e^{-1.54}=0.21$, at the improved $q=0.005$ it is $e^{-1.28}=0.28$ — the predictor upgrade **raises the value of the 256th slot by a third** *before a single ROB entry is added*. That is the quantified form of "buy accuracy first": deepening 192→256 under the old predictor climbs toward a 167-entry ceiling and returns +15 %; doing it *after* the predictor pushes the ceiling to 200 returns +17 % against a horizon that no longer caps it. The far entries are worthless until the horizon moves — so it moves first.
 
 ### 5.2 PRF: 128 INT / 96 FP — the under-provisioning gamble, taken aggressively
 
@@ -132,6 +198,8 @@ The physical register file has a hard floor: to guarantee rename never stalls fo
 
 So 128 is matched to typical occupancy $\times f$, while 192 is matched to the peak. Xiangshan takes this bet **aggressively** (128 is below even the expected-demand estimate $32 + f\cdot N_{ROB}$ for a full 192-ROB) because the PRF is a heavily multiported RAM whose area *and* access time grow quadratically with port count, and that access time sits on the load-use critical path — the exact thing a 28 nm core chasing frequency cannot afford to lengthen ([OoO §2.3](03_OoO_Execution.md)). The core consciously accepts occasional rename stalls to keep the PRF small and fast. Recovery uses **RAT checkpoints** snapshotted at each branch (one-cycle restore, [OoO §2.5](03_OoO_Execution.md)) rather than a slow ROB-walk — the high-performance choice, paid for with ~32–48 checkpoints for in-flight branches.
 
+**How often does the gamble actually cost? — the free-list drain, worked.** Quantify the "occasional" stall. With $N_{phys}=128$ INT and $N_{arch}=32$, there are $128-32=96$ tags free to hand to speculative writers. Rename stalls only when in-flight register-writers reach 96, i.e. when ROB occupancy $O$ satisfies $f\cdot O\ge 96$ at write fraction $f\approx0.65$ — that is $O\ge 96/0.65\approx\mathbf{148}$, or **77 % of the 192-entry ROB full of register-writers**. On steady-state code the occupancy sits far below 148 (dispatch and commit roughly balance), so the free list rarely drains and the bet pays. The elegant part is *when* it doesn't: the ROB only climbs toward 148–192 in a **deep miss shadow**, exactly when the head is stalled on a DRAM miss and the machine is already memory-bound — so the rename bubble the small PRF induces lands *inside* a stall the core is eating anyway, at near-zero marginal cost. That is why Xiangshan can under-provision the PRF *below* its $\sim\!157$-entry expected demand ($32+0.65\times192$): the stalls it causes are hidden under the very miss shadows that filled the window. The PRF is sized for the common-case *body*; the rare tail where it binds is already latency-bound on memory. (Reported 128/96; the robust claim is the inequality $N_{phys}<N_{arch}+f\,N_{ROB}$ — under-provisioned by construction.)
+
 ### 5.3 Issue queues: distributed and small, because the scheduler sets the clock
 
 The scheduler is the one structure whose latency *is* a lower bound on the cycle time: the wakeup→select→issue loop for back-to-back dependent instructions is a **single-cycle recurrence that cannot be pipelined away**, and its cost grows roughly as $N\times S\times N_{cdb}$ — the "$N^2$" scheduler wall ([OoO §4.3](03_OoO_Execution.md)). For a frequency-sensitive core this dictates the two defining choices:
@@ -140,6 +208,8 @@ The scheduler is the one structure whose latency *is* a lower bound on the cycle
 - **Small, and tag-only.** The queues hold *tags, not values* — readiness, not data — so entries stay a handful of bits and the queue can be both fast and only as deep as the recurrence allows.
 
 The **Kunminghu v2 delta — Int IQ 32→40, FP 16→24** — is the team cautiously enlarging the scheduling window once the advanced-node timing headroom made a slightly larger $N$ affordable, buying a wider view of ready instructions without breaking the loop. Note it grows the queues by ~25 %, not 2×: the recurrence punishes large $N$ hard, so even a confident team steps this knob gently.
+
+**Why the step is gentle — the recurrence delay, quantified.** The wakeup→select loop must close in one cycle, and its delay rises with queue size roughly as the CAM match-line plus tag-broadcast wire, $\sim\!\sqrt{N}$ ([OoO §4.3](03_OoO_Execution.md); the same $\sqrt{\cdot}$ array law the Cache page applies to SRAM capacity). Xiangshan's *modest* frequency target helps: a 2 GHz cycle is $\sim\!500$ ps, $\sim\!30$ FO4 at an advanced-node $\sim\!17$ ps FO4, versus a 5 GHz core's $\sim\!13$ FO4 — real headroom to spend on a bigger scheduler. But the loop is unpipelinable, so the headroom is finite and the growth must be priced. Int IQ $32\to40$ ($\times1.25$ in $N$) lengthens the recurrence delay by $\sqrt{40/32}=\sqrt{1.25}=1.118$ — **+12 % wakeup delay** — which fits inside the slack a new process node returns, and no more. A $2\times$ queue would be $\sqrt2=1.41$, a +41 % hit no node upgrade absorbs — hence 25 %, not 2×. The distributed split (Int/FP/Mem/AGU) is the other half of the same budget: four queues of $\sim\!N/4$ each keep every $\sqrt{N}$ short, buying frequency at the fragmentation cost §5.3 already judged acceptable for a frequency-bound target.
 
 ---
 
@@ -157,7 +227,11 @@ $$
 
 Nanhu's $64+48 = 112$ against a 192-ROB is a ratio of ~0.58 — comfortably above the ~0.4 memory fraction, so memory ops rarely block dispatch even when they bunch. The revealing fact is that **Kunminghu v2 grows LQ 64→80 and SQ 48→64 while the 256-ROB holds** — preserving that ~0.56 ratio. The whole window scales *coherently*; you do not deepen the ROB without widening the memory queues that feed it, or the narrowest stage silently caps the MLP you paid for.
 
+**Per-type, via the same Little's law.** Split the window fraction by op type ([OoO §5](03_OoO_Execution.md)): with load fraction $f_{ld}\approx0.22$ and store fraction $f_{st}\approx0.13$, the bare in-flight demand against a 192-ROB is $N_{LQ}\gtrsim f_{ld}N_{ROB}\approx0.22\times192\approx42$ loads and $N_{SQ}\gtrsim f_{st}N_{ROB}\approx0.13\times192\approx25$ stores. Nanhu ships **64 / 48** — $1.5\times$ and $1.9\times$ those floors. The headroom is not slack: loads and stores *cluster* (a copy loop is nearly all memory ops, transiently $f_{mem}\!\to\!1$), and the SQ carries the extra duty of holding *committed* stores through their cache-drain latency, so its residency $\bar T_{res}$ exceeds a load's and Little's law returns a richer count — the same reason Zen 4 runs 64 SQ against a bare $\sim\!48$ ([OoO §5](03_OoO_Execution.md)). The v2 growth to **80 / 64** simply re-applies the formula at $N_{ROB}=256$: $0.22\times256\approx56$ and $0.13\times256\approx33$, times the same clustering headroom.
+
 **The clearest "buy MLP" move on the page.** Kunminghu v2 grows LQ, SQ, **and** L2 MSHRs 16→24 *together*. That is not three tweaks; it is one decision, because memory-level parallelism is a chain — LQ slot → SQ slot → D-cache MSHR → L2 MSHR — and the MSHR count *is* the level's MLP ceiling ([Cache §3.2](../03_Memory/01_Cache_Microarchitecture.md)). On a memory-bound SPEC target, overlapping more independent misses is where the last IPC lives, so the team widens the *entire* chain in lockstep. Widening any one stage alone would have bought nothing.
+
+**The MSHR count is a Little's law, worked.** Why 16→24 L2 MSHRs, specifically? The MSHR file is a queue of outstanding misses, so $N_{MSHR}\ge\lambda_{miss}\times L_{miss}$ ([Cache §3.2](../03_Memory/01_Cache_Microarchitecture.md)) — and read the other way, $N_{MSHR}$ *is* the level's MLP ceiling, the most independent misses whose latencies overlap. To cut an $L_{miss}\approx200$-cyc DRAM penalty (from L2's vantage) to an exposed $\sim\!12$ cyc, the demanded overlap is $\text{MLP}=200/12\approx17$, so an L2 tracking **24** has just enough ceiling to reach it with margin, while **16** caps exposure at $200/16=12.5$ cyc — but only if the window can *supply* the misses. It can: a 256-ROB at $f_{mem}\approx0.35$ holds $\sim\!90$ in-flight memory ops, whose independent-miss subset on memory-bound SPEC is comfortably in the teens. So 16→24 is the MSHR ceiling lifted to match the MLP the *enlarged* 256-window now exposes — and it is why LQ ($64\to80$), SQ ($48\to64$), ROB ($192\to256$), and L2 MSHR ($16\to24$) all grow $\sim\!1.3\times$ together: MLP is a chain, and a chain is only as wide as its narrowest link.
 
 ---
 
@@ -177,6 +251,14 @@ one bit past the 12-bit page offset. That single overhang is why a **VIPT** cach
 
 **Prefetching: the other way to shrink the miss shadow.** Prefetching converts misses to hits before they stall ([Cache §7](../03_Memory/01_Cache_Microarchitecture.md)) — the same MLP goal as a bigger ROB, attacked from the memory side, which makes window growth and prefetching **substitutes for one objective**. Xiangshan buys both, and escalates the prefetcher each generation: Nanhu stream+stride → Kunminghu adds **BOP** (Best-Offset Prefetching, which learns the offset that maximizes L2 hit rate) → v2 adds a per-page stride detector. A team that already spent on the window still spends on prefetch, because they hit the same MLP ceiling from two directions.
 
+**What the hierarchy buys — a target-AMAT number.** Compose the levels with the recursive AMAT ([Cache §1.2](../03_Memory/01_Cache_Microarchitecture.md)), $\text{AMAT}=t_{L1}+m_{L1}(t_{L2}+m_{L2}(t_{L3}+m_{L3}t_{DRAM}))$, using Xiangshan's latencies and *illustrative* SPEC-class local miss rates ($t_{L1}{=}3,\,m_{L1}{=}0.04$; $t_{L2}{=}13,\,m_{L2}{=}0.35$; $t_{L3}{=}35,\,m_{L3}{=}0.4$; $t_{DRAM}{=}200$ cyc):
+
+$$
+\text{AMAT}=3+0.04\big(13+0.35\,(35+0.4\times200)\big)=3+0.04\,(13+0.35\times115)=3+0.04\times53.25\approx\mathbf{5.1}\ \text{cyc.}
+$$
+
+The hierarchy has defanged a 200-cycle DRAM into a ~5-cycle average — and the reason the L1 is **64 KB, not 32 KB** falls out of the same equation: on the reuse-distance curve ([Cache §1.3](../03_Memory/01_Cache_Microarchitecture.md)) doubling L1 capacity drops $m_{L1}$ (say $0.06\to0.04$), and because $m_{L1}$ multiplies *every* term below it, that one factor cuts the miss half of AMAT by a third — worth more than any downstream tweak. Now close the loop with §5.1: the *global* rate reaching DRAM is $m_{L1}m_{L2}m_{L3}=0.04\times0.35\times0.4=0.0056$, so the residual DRAM exposure is $0.0056\times200\approx1.1$ cyc per access — and it is exactly this residual, spread over the memory-op stream, that the 192–256 ROB and the 16→24 MSHRs (§6) exist to overlap. Cache sizing and window sizing are one problem: the hierarchy sets how deep the miss shadow is, and the window is built to hide precisely what the hierarchy leaves. (Miss rates illustrative; the ~5-cycle AMAT and the sub-1 % global DRAM rate are the structural facts.)
+
 ---
 
 ## 8. Reading the evolution as a trade-off trajectory
@@ -194,6 +276,8 @@ Two meta-lessons fall out, and they are the reason to study the trajectory rathe
 
 1. **Width and depth never move; every generation spends on MLP and prediction.** Those are the levers with slope left — the miss shadow and the branch horizon still have room, while width is past the fetch-width knee (§2) and depth is fixed by the frequency target. This is the concrete shape of a design-space walk: freeze the axes that are past their knee, and pour the budget into the ones that still return ([Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md)).
 2. **The strategy is exactly what §1.1's decomposition predicted.** Because the IPC gap to A76 was already small (~0.8) and the gap was *frequency*, the team chases frequency through process nodes and a scheduler kept deliberately small to clock high (§5.3), and closes the residual IPC through MLP and accuracy — never through the width that would attack the factor already near parity. Reading the numbers, you are watching a rational response to where the gap actually lives.
+
+3. **Every spend is *coherent* and *cheap to try* — the two enablers.** The Kunminghu-v2 numbers move *together* by nearly one factor — ROB $192\to256$ ($1.33\times$), SQ $48\to64$ ($1.33\times$), LQ $64\to80$ ($1.25\times$), L2 MSHR $16\to24$ ($1.5\times$), TAGE $4\to6$ tables ($1.5\times$) — because MLP and accuracy are *chains* (§6, §4) whose weakest link caps the rest, so a generation lifts the whole chain or wastes the effort. And it can afford to, three times over, only because §1.3's agile loop drove the cost of *trying* a chain-width down to a recompile-plus-DiffTest. The trajectory is the DSE budget inequality ([Performance_Modeling_and_DSE §5](../01_Modeling/01_Performance_Modeling_and_DSE.md)) running on real silicon: cheap, trustworthy evaluations bought the coverage to find these knees by measurement rather than argument.
 
 That is the whole value of an open core: not the block diagram, but the chance to see a real team resolve the sibling pages' models into numbers, discover the diminishing returns, and re-spend accordingly — three times, in public.
 
@@ -220,6 +304,24 @@ That is the whole value of an open core: not the block diagram, but the chance t
 | Frequency | 1.0–1.5 GHz (28 nm) | 1.8–2.0+ GHz (adv. node) | the real gap to A76 (§1.1) |
 | SPEC CPU2006 IPC | 2.5–3.0 (~80 % of A76) | 3.5+ (target) | window + prediction + MLP (§5–§7) |
 
+**Derived design-point checks (the theory each real number sits on):**
+
+| Quantity | Value | Derivation (section) |
+|---|---|---|
+| Perf split to A76: IPC vs frequency lever | +19 % (all-IPC) vs +65 % (all-node) | iron-law compass (§1.1) |
+| DiffTest debug localization | $O(\log M)\to O(1)$ iterations | lock-step co-sim (§1.3) |
+| Width $6\to8$: IPC gain vs wakeup cost | +19 % IPC vs +78 % CAM ($W^2$) | fetch-wall + $O(W^2)$ (§2) |
+| FTQ depth ≈ window-blocks + runahead | $\sim\!30+\sim\!18\approx48$ | Little's law ×2 (§3) |
+| Required accuracy $p_{\text{miss}}^\star=\tau/(f_{\text{br}}WP)$ | ≥98.8 % @ $W{=}6,P{=}7,\tau{=}0.1$ | branch-tax floor (§4) |
+| Realized peak @ 97 %: short vs deep pipe | 80 % ($P{=}7$) vs 62 % ($P{=}17$) | short pipe forgives predictor (§4) |
+| Predictor storage tax, 97→97.5 % | $\rho^2=1.44\times$ ≈ the 4→6 tables ($1.5\times$) | $S\propto p_{\text{miss}}^{-2}$ (§4) |
+| ROB floor: isolated-miss vs MLP-4 | 600 (unbuildable) vs 150 | miss shadow (§5.1) |
+| $E[\text{useful}]$ of 192-ROB @ MPKI 6 / 5 | 114 / 124 (256-ROB: 131 / 145) | branch-horizon geometric sum (§5.1) |
+| PRF free-list drain threshold | ROB $\ge$ 77 % full of writers | under-provision gamble (§5.2) |
+| IQ $32\to40$ recurrence-delay cost | $\sqrt{1.25}=+12\%$ (vs $2\times$: +41 %) | wakeup $\sqrt N$ (§5.3) |
+| Full-hierarchy AMAT | ≈ 5.1 cyc (against 200-cyc DRAM) | recursive AMAT (§7) |
+| Coherent window scaling (v2) | ROB/LQ/SQ/MSHR/TAGE all $\sim\!1.3\times$ | MLP/accuracy chain (§6, §8) |
+
 **Memory latencies that set the knees:** L1 3–4 cyc · L2 10–15 · DRAM 100–300 — the $L_{miss}$ that drives the §5.1 ROB floor and the §6 MSHR count.
 
 ---
@@ -227,6 +329,7 @@ That is the whole value of an open core: not the block diagram, but the chance t
 ## 10. Cross-references
 
 - **Down the stack (the models this page instantiates):** [OoO_Execution](03_OoO_Execution.md) (the ROB/IQ/PRF/LSQ derivations and sizing knees §5–§6 make concrete), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md) (the TAGE, FTQ, and $W\times P$-tax theory behind §2–§4), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) (AMAT, MSHR/MLP, and inclusion behind §6–§7).
+- **The exact derivation each § instantiates:** the [OoO §3.2](03_OoO_Execution.md) Little's-law ROB and geometric branch-horizon (§5.1), the [OoO §2.3](03_OoO_Execution.md) $N_{arch}+N_{ROB}$ PRF floor (§5.2), the [OoO §4.3](03_OoO_Execution.md) $S\,W^2$ wakeup recurrence (§2, §5.3), the [OoO §5](03_OoO_Execution.md) LQ/SQ window fractions (§6), the [Branch §0.2](04_Branch_Prediction_Deep_Dive.md) $p_{\text{miss}}^\star\propto1/(WP)$ accuracy floor and $S\propto p_{\text{miss}}^{-2}$ storage tax (§4), the [Branch §7.1–7.2](04_Branch_Prediction_Deep_Dive.md) FTQ Little's law and fetch-width wall (§2–§3), the [Cache §1.2](../03_Memory/01_Cache_Microarchitecture.md) recursive AMAT and [§3.2](../03_Memory/01_Cache_Microarchitecture.md) MSHR Little's law (§6–§7), and the [Performance_Modeling_and_DSE §5](../01_Modeling/01_Performance_Modeling_and_DSE.md) DSE budget inequality the agile trajectory runs on (§1.3, §8).
 - **Up / adjacent (what this core plugs into):** [ACE_and_CHI](../04_Interconnect/02_ACE_and_CHI.md) (the coherence trade-off behind the TileLink→CHI move, §7), [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) (TileLink and SoC integration), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the iTLB/dTLB in the fetch and load paths), [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) (the design-space walk §8 reads as a trajectory).
 - **Prerequisite:** [RISC_V_ISA](02_RISC_V_ISA.md) (the RV64GCB(V) namespace being renamed and the trap model at commit), [CPU_Architecture](01_CPU_Architecture.md) (the pipeline-depth/frequency trade of §2).
 

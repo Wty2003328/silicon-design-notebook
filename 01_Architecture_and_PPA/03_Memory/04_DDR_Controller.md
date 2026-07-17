@@ -61,6 +61,26 @@ Which transition a new request triggers — and therefore its cost — depends e
 | **Row empty** (closed) | no row open | ACT → READ | $t_{RCD}+t_{CL}$ (~28 ns) |
 | **Row conflict** | a *different* row is open | PRE → ACT → READ | $t_{RP}+t_{RCD}+t_{CL}$ (~42 ns) |
 
+**Deriving the three latencies from the FSM.** Each case is just the sum of the timing gaps the bank must traverse on its walk from its *current* state to *data-on-the-bus* — there is nothing to memorize once you read the path off the state diagram. Write $t_{CAS}\equiv t_{CL}$ (CAS latency — the column-command-to-data delay) and trace each walk:
+
+- **Row hit** — the bank is already in `Active` with the wanted row latched, so the controller issues `READ` at once and pays only the column pipeline: $L_{\text{hit}}=t_{CAS}$.
+- **Row empty** — the bank is `Idle`; the walk is `Idle` →(`ACT`)→ `Activating` →(wait $t_{RCD}$)→ `Active` →(`READ`)→ data, i.e. the sense delay *then* the column delay: $L_{\text{empty}}=t_{RCD}+t_{CAS}$.
+- **Row conflict** — the bank is `Active` on the *wrong* row, so you must first `PRE` it back to `Idle` (cost $t_{RP}$) before the row-empty walk can even begin: $L_{\text{conflict}}=t_{RP}+t_{RCD}+t_{CAS}$.
+
+The three costs **nest**: each harder case prepends exactly one more mandatory transition ($+t_{RCD}$ to open a closed bank, then a further $+t_{RP}$ to first close a wrong one), so they emerge in the ratio $1:2:3$ whenever the three guards are comparable — and in JEDEC parts they are, because $t_{RP}\approx t_{RCD}\approx t_{CAS}$. *Worked number* (representative DDR5 timings $t_{RCD}=t_{RP}=t_{CAS}\approx 14$ ns; the ns values barely move across DDR5 speed bins — only the *cycle counts* grow to hold them roughly fixed):
+
+$$
+L_{\text{hit}}=14\ \text{ns}, \qquad L_{\text{empty}}=14+14=28\ \text{ns}, \qquad L_{\text{conflict}}=14+14+14=42\ \text{ns} \;\;\Longrightarrow\;\; 1:2:3 .
+$$
+
+**The activate-to-activate floor is a *rate* limit, not part of these latencies.** The conflict cost above charges only $t_{RP}$ for the close, which silently assumes the wrong row had already been open long enough to finish its destructive-read *restore* — that $t_{RAS}$ (§3) has elapsed since its `ACT`. That same assumption couples the cases to a throughput ceiling: one bank cannot begin two activations closer together than
+
+$$
+t_{RC}=t_{RAS}+t_{RP}\quad(\text{restore-then-precharge, same bank}),
+$$
+
+because the row must stay open $\ge t_{RAS}$ before `PRE` and the `PRE` itself costs $t_{RP}$. So while a conflict's *latency to first data* is $t_{RP}+t_{RCD}+t_{CAS}\approx 42$ ns, the *sustained rate* of new rows on one bank is one per $t_{RC}=t_{RAS}+t_{RP}\approx 32+14=46$ ns — the number §7.2 turns into the "one bank delivers ~5% of the data bus" result, and the reason bank-level parallelism (§7.2) is mandatory rather than optional. (Only if a row were closed *immediately* after opening — before $t_{RAS}$ — would the conflict latency swell to $t_{RAS}+t_{RP}+t_{RCD}+t_{CAS}$; a competent scheduler never precharges a just-activated row, so the $\le 3\times$ bound holds in practice.)
+
 Everything else on this page is a lever on the ratio of these three cases. A hit is ~3× faster than a conflict, so the row-*hit rate* is the single number the scheduler (§5), the page policy (§4), and the address mapping (§4.3) all exist to maximize — and the *conflict* rate is what the achieved-bandwidth model (§7) pays for. There is no bit-field table to memorize here; those three cases *are* the controller's reason for being.
 
 ---
@@ -121,7 +141,9 @@ where $t_{RP}\approx t_{RCD}$ in every JEDEC part, so $h^{\star}\approx 0.5$. **
 
 Because $h$ varies per bank and over time, modern controllers **predict** it: an *access-count* scheme keeps the row open only while consecutive hits keep arriving and closes after the first miss; a *timeout* scheme closes a row that has gone unaccessed for $N$ cycles, reclaiming $t_{RP}$ during the lull. This is the same confidence-counter idea as branch prediction, applied to spatial locality.
 
-The predictor only sees the traffic it is *given*, and **address mapping decides that traffic** — it is the locality-vs-parallelism knob, and the one place the old bit-field dumps hid a genuine trade-off. Which physical-address bits select the column, row, bank, and channel determines whether consecutive cache lines land in the *same row* (maximizing row-buffer hits, good for streaming and open-page) or *spread across banks and channels* (maximizing bank parallelism, good for random traffic and for hiding $t_{RC}$, §7). You cannot have both from one mapping: low-order bits to the bank give parallelism at the cost of locality; low-order bits to the column give locality at the cost of parallelism. XOR-based hashing of bank bits with row bits is the common compromise — it scatters pathological strides that would otherwise pound one bank while preserving in-row sequentiality. The concrete bit assignment is a per-platform tuning parameter; the *trade* is the concept.
+The predictor only sees the traffic it is *given*, and **address mapping decides that traffic** — it is the locality-vs-parallelism knob, and the one place the old bit-field dumps hid a genuine trade-off. Which physical-address bits select the column, row, bank, and channel determines whether consecutive cache lines land in the *same row* (maximizing row-buffer hits, good for streaming and open-page) or *spread across banks and channels* (maximizing bank parallelism, good for random traffic and for hiding $t_{RC}$, §7). You cannot have both from one mapping: low-order bits to the bank give parallelism at the cost of locality; low-order bits to the column give locality at the cost of parallelism. XOR-based hashing of bank bits with row bits is the common compromise — it scatters pathological strides that would otherwise pound one bank while preserving in-row sequentiality.
+
+Quantitatively, the mapping chooses *where on the §2.2 cost curve the traffic lands*. Put the bank/channel-selecting bits **low** (just above the cache-line offset) and consecutive lines stripe across banks: a sequential burst then activates many banks at once, driving the in-flight bank count toward the $\lceil t_{RC}/t_{\text{burst}}\rceil\approx 19$ needed to hide $t_{RC}$ (§7.2) — but consecutive lines no longer share a row, so the row-hit rate $h$ collapses and open-page (§4.2) loses its bet. Put those bits **high** and a whole 8 KB row (128 lines) maps to one bank before the address advances to the next: $h\to 1$ on a stream (open-page wins — §7.2's "128 hits per `ACT`") but any burst pounds a *single* bank at the $\eta_{1\text{bank}}\approx 5\%$ ceiling. The two knobs are in direct opposition — one mapping cannot maximize both $h$ *and* the bank count — so every scheme is a chosen point between the **streaming corner** ($h\!\uparrow$, parallelism$\downarrow$) and the **random corner** (parallelism$\uparrow$, $h\!\downarrow$), which is exactly why the XOR hash targets the *middle* (some of each) rather than either extreme. The concrete bit assignment is a per-platform tuning parameter; the *trade* is the concept.
 
 ---
 
@@ -140,6 +162,22 @@ Reorder to exploit the open row. **First-Ready, First-Come-First-Served (FR-FCFS
 
 The benefit of promoting a row hit over an older conflict is the case-cost gap from §2.2 — about $t_{RP}+t_{RCD}\approx 28$ ns of service time saved per promotion — and the only cost is *aging* the deferred request. Age as the tiebreaker bounds that unfairness, and a **starvation cap** (force-promote any request older than a threshold) bounds the worst case, converting a potentially unbounded wait into a guaranteed one. FR-FCFS is therefore a hill-climb on row-buffer locality with fairness bolted on as a guardrail — the resolution of the locality-vs-fairness trade, not an arbitrary priority list. It has been the default since Rixner et al. (2000); fairness-first variants (stall-time-fair, TCM) reweight the age term for multi-core QoS but keep the row-hit-first core.
 
+**Why reordering pays, quantified.** Collapse the two cases into one number. If a stream presents a row-hit fraction $h$ to a bank, its mean access latency is the hit/miss weighted average
+
+$$
+\bar L(h)=h\,t_{CAS}+(1-h)\,\big(t_{RP}+t_{RCD}+t_{CAS}\big),
+$$
+
+where the miss branch is billed at the *conflict* cost because under open-page (§4) a miss means a different row is latched. This is linear in $h$ with slope $-(t_{RP}+t_{RCD})$, so **every point of row-hit rate is worth $t_{RP}+t_{RCD}\approx 28$ ns of average service time** — exactly the per-promotion saving above, now integrated over the stream. Since a bank's throughput is $1/\bar L$, lifting $h$ lifts delivered bandwidth by the same factor.
+
+The scheduler's leverage is that $h$ is not a fixed property of the workload — it is the *realized* hit rate, and ordering sets it. At any instant a bank holds one open row; among its queued requests, some target that row (would-be hits) and some do not. Serve a non-hit first and you `PRE` the row out from under every queued hit, **demoting them all to conflicts** — which is precisely what in-arrival-order FCFS does. FR-FCFS instead drains all ready hits to the open row *before* closing it, converting the queue's *available* spatial locality into *realized* hits. So FR-FCFS does not merely save 28 ns on one request; it raises the whole stream's effective $h$ toward the locality actually present in the scheduling window. *Worked number* (DDR5 $t_{CAS}=14$, $t_{RP}=t_{RCD}=14$ ns, so conflict $=42$ ns): a workload whose realized hit rate reordering lifts from $20\%$ to $60\%$ sees
+
+$$
+\bar L(0.20)=0.2(14)+0.8(42)=36.4\ \text{ns}, \qquad \bar L(0.60)=0.6(14)+0.4(42)=25.2\ \text{ns},
+$$
+
+a $36.4/25.2=\mathbf{1.44\times}$ gain in per-bank throughput (a 31% latency cut) from the *ordering alone*, with no change to the DRAM. That is why every real controller starts from FR-FCFS rather than FCFS, and why the fairness guardrail (age tiebreak + starvation cap) is bolted *around* a row-hit-first core rather than replacing it.
+
 Two mechanisms ride on top, each amortizing a fixed cost:
 
 - **Write batching** amortizes bus turnaround (§3). Because every read↔write switch costs several ns of dead bus, the controller *accumulates* writes in a buffer and drains them in bursts — reads run until the write buffer crosses a high-water mark (~75%), then writes drain to a low-water mark, cutting turnarounds to ~one per batch. Reads are latency-critical and writes are not (the store already retired), so this asymmetry is nearly free.
@@ -157,7 +195,19 @@ $$
 t_{REFI}=\frac{t_{REFW}}{8192}=\frac{64\text{ ms}}{8192}\approx 7.8\ \mu s, \qquad \rho_{ref}=\frac{t_{RFC}}{t_{REFI}}
 $$
 
-where $t_{REFI}$ = average interval between refreshes, $t_{RFC}$ = time a refresh occupies the device, and $\rho_{ref}$ = the bandwidth it steals. $t_{RFC}$ **grows with density** — more rows are refreshed per command — so refresh is a tax that worsens every generation: ~350 ns (8 Gb) → ~550 ns (16 Gb) DDR4, i.e. 4.5% → 7% of all bandwidth, and it *doubles again* on a hot die where $t_{REFW}$ halves. Refresh is why raw DRAM density does not translate to usable bandwidth for free.
+where $t_{REFI}$ = average interval between refreshes, $t_{RFC}$ = time a refresh occupies the device, and $\rho_{ref}$ = the bandwidth it steals.
+
+**Why the tax is set by density, not by how you chunk it.** Read $\rho_{ref}$ off a conservation identity rather than off the two datasheet symbols. In one retention window $t_{REFW}$, every row of the rank must be rewritten exactly once; if the rank has $R$ rows and refreshing one row's worth of cells occupies the device core for a fixed $\tau_{\text{row}}$, then the device is busy refreshing for $R\,\tau_{\text{row}}$ out of every $t_{REFW}$:
+
+$$
+\rho_{ref}=\frac{R\,\tau_{\text{row}}}{t_{REFW}}=\frac{t_{RFC}}{t_{REFI}},
+$$
+
+the last equality because $t_{RFC}=(\text{rows per REF})\cdot\tau_{\text{row}}$ and $t_{REFI}=t_{REFW}\big/(R/\text{rows per REF})$, so "rows per REF" cancels. **The overhead is $R\,\tau_{\text{row}}/t_{REFW}$ no matter how finely you slice the refreshes**: issuing twice as many REF commands (DDR5's move — $t_{REFI}\approx 3.9\ \mu s$, i.e. 16 384 REF per 64 ms vs DDR4's 8 192) halves *both* $t_{RFC}$ and $t_{REFI}$ and leaves $\rho_{ref}$ untouched. What actually moves $\rho_{ref}$ is $R$, the rows per rank — which is why refresh is fundamentally a **density** tax: double the capacity at a fixed retention window and you double the fraction of time the rank is dark. DDR5's finer chunking only *bounds $t_{RFC}$* so a single command does not stall the channel for half a microsecond; it cannot cut the density-driven $\rho_{ref}$, which is exactly why DDR5 *also* added same-bank refresh (below).
+
+*Worked numbers.* DDR4-3200, 16 Gb: $\rho_{ref}=t_{RFC}/t_{REFI}=550/7800=7.0\%$. DDR5, 16 Gb (REFab $t_{RFC}\approx 295$ ns, $t_{REFI}=3.9\ \mu s$): $\rho_{ref}=295/3900=7.6\%$ — *higher* than DDR4 at equal density despite the doubled refresh rate, the density trend in the flesh. Heat the die past 85 °C so $t_{REFI}$ halves to $1.95\ \mu s$ and it jumps to $295/1950=15\%$: at high density and temperature, refresh alone eats a *sixth* of the channel. Same-bank refresh (DDR5 SBR, below) is the response — it shrinks the *system-visible* stall by keeping most bank groups live, even though the aggregate $R\,\tau_{\text{row}}$ is unchanged.
+
+Framed the other way, $t_{RFC}$ **grows with density** — more rows are refreshed per command — so refresh is a tax that worsens every generation: ~350 ns (8 Gb) → ~550 ns (16 Gb) DDR4, i.e. 4.5% → 7% of all bandwidth, and it *doubles again* on a hot die where $t_{REFW}$ halves. Refresh is why raw DRAM density does not translate to usable bandwidth for free.
 
 The controller has two forms of relief, both exploiting slack:
 
@@ -175,8 +225,10 @@ In the scheduler (§5), refresh is simply the highest-priority "request" once it
 Peak bandwidth is trivial and almost never seen:
 
 $$
-BW_{peak}=\text{data rate}\times\text{bus width}=3200\ \text{MT/s}\times 8\ \text{B}=25.6\ \text{GB/s}\ \ (\text{DDR4-3200})
+BW_{peak}=N_{ch}\times W\times r
 $$
+
+where $N_{ch}$ = independent channels, $W$ = data-bus width in bytes, and $r$ = data rate in transfers/s — a plain *count of wires × toggle rate*, which is why it is a fiction: it assumes the data bus carries burst payload on every single beat, which it never does. Per 64-bit channel ($W=8$ B): DDR4-3200 gives $1\times 8\times 3200\ \text{MT/s}=25.6$ GB/s; a **DDR5-6400 channel** gives $1\times 8\times 6400\ \text{MT/s}=51.2$ GB/s, delivered as two independent 32-bit subchannels of $8/2\times 6400=25.6$ GB/s each (§9.1).
 
 Achieved bandwidth is peak multiplied by every efficiency the device physics costs you:
 
@@ -200,7 +252,9 @@ $$
 N_{banks}\gtrsim \frac{t_{RC}}{t_{burst}}\approx\frac{49}{2.5}\approx 20
 $$
 
-This is **Little's law for the memory system** — the same bandwidth-delay-product argument that sizes an OoO ROB ([OoO_Execution §3.2](../02_CPU/03_OoO_Execution.md)), with $t_{RC}$ playing the role of miss latency and banks playing the role of MLP. It explains the bank counts directly: DDR4 provides 16 banks per rank and DDR5 provides 32 (two subchannels × 16) precisely so that random, miss-heavy traffic has enough independent banks to approach peak. Streaming traffic needs *no* such parallelism — one open row serves 128 consecutive cache-line hits (8 KB / 64 B), so one ACT amortizes over 128 bursts and $\eta_{row}\to 1$. **Two regimes, two mechanisms:** locality (row hits) carries streaming, parallelism (banks) carries random — and the achieved-bandwidth loss is whatever the address mapping (§4.3) and scheduler (§5) fail to extract of either.
+This is **Little's law for the memory system** — the same bandwidth-delay-product argument that sizes an OoO ROB ([OoO_Execution §3.2](../02_CPU/03_OoO_Execution.md)), with $t_{RC}$ playing the role of miss latency and banks playing the role of MLP. It explains the bank counts directly: DDR4 provides 16 banks per rank and DDR5 provides 32 (two subchannels × 16) precisely so that random, miss-heavy traffic has enough independent banks to approach peak.
+
+Formally this **is** Little's law $L=\lambda W$. Treat each bank as a server that a new-row access occupies for $W=t_{RC}$, and demand a completion rate $\lambda=1/t_{\text{burst}}$ (one burst must leave the data bus every $t_{\text{burst}}$ to keep it saturated). Then the number of activations that must be *simultaneously in flight* is $L=\lambda W=t_{RC}/t_{\text{burst}}$, and since each in-flight activation sits in a distinct bank, that $L$ *is* the bank count; rounding up for the partial bank, $N_{\text{banks}}=\lceil t_{RC}/t_{\text{burst}}\rceil$. *Worked number (DDR5-6400).* BL16 on a 32-bit subchannel delivers a 64 B line in $8\,t_{CK}=8\times 0.3125=2.5$ ns — DDR5 doubled *both* the data rate and the burst length, so $t_{\text{burst}}$ lands at the same 2.5 ns as DDR4-3200's BL8 — while $t_{RC}\approx 46$ ns, giving $N_{\text{banks}}=\lceil 46/2.5\rceil=\mathbf{19}$ banks to saturate one subchannel's bus. DDR5 supplies 16 banks per subchannel: just short on *pure* random traffic, closed by the row-locality that lets one activation feed several bursts (lowering the effective $\lambda$), and doubled in aggregate by the two independent subchannel schedulers (§9.1). DDR4's single 16-bank domain against the same ~20 requirement is why it tops out near 40–50% on random streams (Problem 1). Streaming traffic needs *no* such parallelism — one open row serves 128 consecutive cache-line hits (8 KB / 64 B), so one ACT amortizes over 128 bursts and $\eta_{row}\to 1$. **Two regimes, two mechanisms:** locality (row hits) carries streaming, parallelism (banks) carries random — and the achieved-bandwidth loss is whatever the address mapping (§4.3) and scheduler (§5) fail to extract of either.
 
 ### 7.3 Latency under load: why the datasheet number is not the latency
 
@@ -253,20 +307,24 @@ Load-bearing values for DDR4-3200 and DDR5-5600, with the reason each matters. T
 | Peak BW per channel | 25.6 GB/s | 44.8 GB/s | data rate × width; ceiling only (§7) |
 | Bus width | 64 (+8 ECC) | 2×32 (+8 ECC each) | DDR5 splits into 2 subchannels (§9.1) |
 | Banks per channel | 16 | 32 | bank parallelism to hide $t_{RC}$ (§7.2) |
+| $t_{\text{burst}}$ (one 64 B line) | 2.5 ns (BL8) | ~2.5–2.9 ns (BL16) | bus-busy time per access; $N_{\text{bank}}$ denominator (§7.2) |
+| Banks to saturate bus (random) | ~20 = ⌈49/2.5⌉ | ~17–19 = ⌈46/$t_{\text{burst}}$⌉ | Little's law $\lceil t_{RC}/t_{\text{burst}}\rceil$; bin-dependent (§7.2) |
 | $t_{RCD}$ | ~14 | ~14 | open-row cost; barely scales (§3) |
 | $t_{RP}$ | ~14 | ~14 | close-row cost; sets $h^{\star}\approx0.5$ (§4.2) |
 | $t_{RAS}$ | ~35 | ~32 | restore deadline (§3) |
 | $t_{RC}=t_{RAS}+t_{RP}$ | ~49 | ~46 | **bank cycle → forces ~20 banks (§7.2)** |
 | $t_{CL}$ | ~14 | ~11–16 | data-return latency, not throughput (§3) |
-| $t_{RFC}$ (8/16 Gb) | 350 / 550 | 290 / 450 | refresh occupancy; grows with density (§6) |
-| $t_{REFI}$ | 7.8 µs | 7.8 µs | 64 ms / 8192; halves when hot (§6) |
+| $t_{RFC}$ (8/16 Gb) | 350 / 550 | 195 / 295 | refresh occupancy; grows with density (§6) |
+| $t_{REFI}$ | 7.8 µs | 3.9 µs | DDR4 = 64 ms/8192; DDR5 doubles REF freq (÷16384); halves when hot (§6) |
 | $t_{FAW}$ | ~30 | ~21 | 4-ACT power-droop window (§3) |
 | Burst → bytes | BL8 → 64 B | BL8/16 → 64/128 B | one cache line per burst (§9.1) |
 | Row size | 8 KB (128 lines) | 8 KB | 128 consecutive hits when streaming (§7.2) |
-| Refresh overhead (8/16 Gb) | 4.5% / 7% | ~3.7% / ~6% | $t_{RFC}/t_{REFI}$; doubles when hot (§6) |
+| Refresh overhead (8/16 Gb) | 4.5% / 7% | ~5.0% / ~7.6% | $t_{RFC}/t_{REFI}$; DDR5 *higher* → drives SBR; doubles when hot (§6) |
 | Row-buffer hit rate | 30–60% | 30–60% | workload-dependent; $h^{\star}\approx50\%$ (§4) |
 | Achieved efficiency | 40–60% of peak | 40–60% | product of §7 losses |
 | Loaded latency | ~80–150 ns | ~80–150 ns | queueing, not datasheet (§7.3) |
+
+**Speed-bin note:** the ns timings above are ~invariant across DDR5 bins (only cycle counts grow to hold them fixed), so a faster **DDR5-6400** channel keeps these latencies while peaking at $8\ \text{B}\times 6400\ \text{MT/s}=51.2$ GB/s. Throughout, $t_{CAS}\equiv t_{CL}$ (CAS latency).
 
 **The one to internalize:** row hit ≈ $t_{CL}$, row empty ≈ $t_{RCD}+t_{CL}$, row conflict ≈ $t_{RP}+t_{RCD}+t_{CL}$ — roughly **1 : 2 : 3** in cost. Every other number on this page is in service of shifting traffic toward the "1".
 
@@ -280,13 +338,17 @@ Load-bearing values for DDR4-3200 and DDR5-5600, with the reason each matters. T
 
 **3 — Loaded vs. unloaded latency (§7.3).** Unloaded service is ~$t_{RCD}+t_{CL}\approx28$ ns. Drive the channel to $\rho=0.85$ utilization and the $M/M/1$ sojourn time is $28/(1-0.85)\approx187$ ns — matching the "100–300 cycle" DRAM latency the OoO ROB is sized for. Halving the offered load to $\rho=0.6$ drops it to $28/0.4=70$ ns. This is the quantitative memory wall: the *same* DRAM delivers 70 ns or 187 ns depending only on how hard it is pushed, which is why bandwidth headroom and latency are the same design variable.
 
+**4 — Achieved bandwidth of a DDR5-6400 channel (§7.1).** Peak $=N_{ch}\times W\times r=1\times 8\ \text{B}\times 6400\ \text{MT/s}=51.2$ GB/s. At a 50% row-hit rate, $\eta_{row}=0.5$ (Problem 1's logic: mean access $0.5(14)+0.5(42)=28$ ns vs. hit-only 14 ns → $14/28=0.5$). With DDR5 16 Gb refresh $\rho_{ref}=7.6\%$ (Problem 5), turnaround $\rho_{turn}\approx3\%$, and $t_{FAW}/t_{RRD}$ residual $\eta_{bank}\approx0.97$: $BW_{ach}=51.2\times0.50\times0.924\times0.97\times0.97\approx \mathbf{22.3}$ GB/s — **~44% of peak**, delivered as two 25.6 GB/s subchannels each running ~44%. $\eta_{row}$ is again the dominant loss; refresh is now *second* (7.6%, up from DDR4's 4.5%), the direct motive for DDR5 same-bank refresh.
+
+**5 — Refresh as a density-and-temperature tax (§6).** $\rho_{ref}=t_{RFC}/t_{REFI}$. DDR5 16 Gb at normal temp: $295/3900=7.6\%$. Move to 32 Gb ($t_{RFC}\approx455$ ns): $455/3900=11.7\%$ — density *alone* pushes past a tenth of the channel, because $\rho_{ref}\propto R$ (rows/rank) at fixed retention window. Now heat the die past 85 °C so $t_{REFI}$ halves to 1.95 µs: the 16 Gb part jumps to $295/1950=15\%$ and the 32 Gb part to $\approx23\%$. This is why high-density server DIMMs *must* use same-bank / fine-granularity refresh — all-bank refresh would idle up to a quarter of a hot, dense channel.
+
 ---
 
 ## Cross-references
 
 - **Down the stack (what this controller is built on):** [Memory](03_Memory.md) — the 1T1C cell, charge sharing, sense amplifier, and refresh physics that §2–§3 treat as timing constants; [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) — the signal integrity and power-grid droop that $t_{RCD}$, $t_{RP}$, and $t_{FAW}$ protect (§3).
 - **Up the stack (what builds on it):** [DRAM_Simulators](../07_Simulators/03_DRAM_Simulators.md) — the same bank FSM, JEDEC guards, FR-FCFS, and queueing model as an *executable* cycle-level tool (its §8 formalizes §7.3 here); [Cache_Microarchitecture](01_Cache_Microarchitecture.md) — the row buffer as a one-entry cache and the 64 B line that sets burst granularity (§9.1); [OoO_Execution](../02_CPU/03_OoO_Execution.md) — the ROB/MLP window sized against the *loaded* DRAM latency of §7.3; [AHB_AXI_APB](../04_Interconnect/01_AHB_AXI_APB.md) — the AXI/CHI interface and `AxQOS` the requestors and §5.2 QoS ride on; [CPU_Architecture](../02_CPU/01_CPU_Architecture.md) — where this latency becomes a pipeline stall.
-- **Adjacent:** [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) — where these bandwidth/latency models feed design-space exploration; [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) — the GDDR/HBM and LPDDR5X variants of the same controller under different bandwidth/energy objectives (§9.2).
+- **Adjacent:** [Performance_Modeling_and_DSE](../01_Modeling/01_Performance_Modeling_and_DSE.md) — where these bandwidth/latency models feed design-space exploration (its §11.1 uses this page's $t_{RC}$ as the *small-transfer latency floor* that caps the linear-bandwidth roofline, and its Little's-law occupancy argument is the compute-side twin of §7.2's bank-parallelism count); [GPU_Architecture](../05_GPU/01_GPU_Architecture.md) & [NPU_Accelerators](../06_NPU/01_NPU_Accelerators.md) — the GDDR/HBM and LPDDR5X variants of the same controller under different bandwidth/energy objectives (§9.2).
 
 ---
 
