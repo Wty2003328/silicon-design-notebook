@@ -74,7 +74,7 @@ flowchart TD
 The three feedback loops carry all the interesting control:
 
 - **CDB → IQ (wakeup).** A completing instruction broadcasts its result *tag*; waiting consumers watching that tag become ready. This loop closes in **one cycle** for dependent instructions and, as §4.3 shows, sets the clock period.
-- **Commit → RAT / free list (retire).** Retirement publishes a speculative mapping as architectural and reclaims the physical register it displaced (§2.4).
+- **Commit → RAT (register alias table) / free list (retire).** Retirement publishes a speculative mapping as architectural and reclaims the physical register it displaced (§2.4).
 - **Commit → Fetch (recovery).** A mispredict or fault flushes the shadow and redirects the front end (§2.5, §6).
 
 Everything downstream of rename is a snoop on the CDB; everything at commit is a publication of what the shadow computed. Hold those two facts and the datapath reads as one mechanism, not seven.
@@ -122,7 +122,7 @@ $$
 \boxed{\,N_{phys} \;\ge\; N_{arch} + N_{ROB}\,}
 $$
 
-where $N_{arch}$ = architectural registers (32 for RV64I), $N_{ROB}$ = reorder-buffer depth, $N_{phys}$ = physical registers. Below this floor the free list can drain while the ROB still has empty slots: dispatch stalls with instruction bandwidth to spare — an *artificial* ILP ceiling created purely by under-naming.
+where $N_{arch}$ = architectural registers (32 for RV64I), $N_{ROB}$ = reorder-buffer depth, $N_{phys}$ = physical registers. Below this floor the free list can drain while the ROB still has empty slots: dispatch stalls with instruction bandwidth to spare — an *artificial* ILP (instruction-level parallelism) ceiling created purely by under-naming.
 
 **Free-list dynamics.** The floor also drops straight out of a conservation argument on the free list — the pool of tags neither held by the committed architectural map nor by an in-flight writer. Its occupancy is
 
@@ -298,7 +298,7 @@ $$
 C_{wakeup} \;=\; N \times S \times N_{cdb}\ \ \text{tag compares per cycle}
 $$
 
-  This is a CAM, and both the compare count and the *wire length* grow with $N$: driving a tag across $N$ entries and OR-reducing the match lines is $O(N)$ logic on wires that lengthen with the array. *Worked count:* a 128-entry queue with $S=2$ sources and $N_{cdb}=8$ result buses performs $128\times2\times8 = 2048$ tag comparisons **every cycle**; at a 7-bit physical tag that is ~14 000 bit-comparators toggling per cycle, each gated by a match line that must precharge and conditionally discharge inside the single wakeup phase.
+  This is a CAM (content-addressable memory), and both the compare count and the *wire length* grow with $N$: driving a tag across $N$ entries and OR-reducing the match lines is $O(N)$ logic on wires that lengthen with the array. *Worked count:* a 128-entry queue with $S=2$ sources and $N_{cdb}=8$ result buses performs $128\times2\times8 = 2048$ tag comparisons **every cycle**; at a 7-bit physical tag that is ~14 000 bit-comparators toggling per cycle, each gated by a match line that must precharge and conditionally discharge inside the single wakeup phase.
 - **Select is a priority arbitration.** From up to $N$ ready entries, pick $W$ oldest that have an available port — an $O(\log N)$ tree whose wires also lengthen with $N$.
 
 The sting is that a more aggressive machine scales **both** $N$ (deeper window) **and** $N_{cdb}$ (more result buses, $\propto W$), so wakeup work grows roughly as $W^2$ — the "$N^2$" scheduler cost that folklore attaches to issue logic. Make the coupling explicit. A balanced machine sizes its window to feed its width — enough in-flight instructions to keep $W$ ports busy across the average dependence spacing — so $N\propto W$; and it provisions one result bus per issue port, $N_{cdb}\propto W$. Substituting into $C_{wakeup}=N\,S\,N_{cdb}$:
@@ -345,7 +345,7 @@ where $E_{cam} \approx 1\text{–}5$ fJ per 7-bit tag compare in 7 nm. Plug in a
 
 The deeper question the LSQ answers is *why memory needs a dedicated ordered structure at all* when registers make do with renaming, the IQ, and the ROB. The answer is a difference in when names bind.
 
-A register dependence is knowable at **rename**: the register names are right there in the instruction encoding, so the hardware can wire producer to consumer before either executes. A memory dependence is not: whether a load aliases an older store depends on their *addresses*, which are unknown until each has passed through the AGU at **execute**. Memory is a second, **late-binding** name space that cannot be renamed away — so the machine cannot build the dependence graph up front; it must *discover* dependences dynamically as addresses resolve. That one fact forces the whole structure:
+A register dependence is knowable at **rename**: the register names are right there in the instruction encoding, so the hardware can wire producer to consumer before either executes. A memory dependence is not: whether a load aliases an older store depends on their *addresses*, which are unknown until each has passed through the AGU (address-generation unit) at **execute**. Memory is a second, **late-binding** name space that cannot be renamed away — so the machine cannot build the dependence graph up front; it must *discover* dependences dynamically as addresses resolve. That one fact forces the whole structure:
 
 - **Program order must be explicit**, because "does this load alias an *older* store?" is meaningless without recorded age — so loads and stores sit in age-ordered queues (LQ and SQ), not an unordered pool like the IQ.
 - **Address and data hide behind *known* flags**, because they arrive at different times (address from the AGU, store data possibly later) and disambiguation may only compare fields that have actually resolved.
@@ -505,7 +505,7 @@ This makes exception handling **lazy**, which is the key idea. A fault is detect
 
 Even with perfect branch prediction and infinite issue width, **true (RAW) dependences** bound extractable ILP — a load that misses to L2 stalls every instruction that consumes its result. Value prediction is the one proposed mechanism that attacks this floor directly: guess the result before it is computed and let dependents execute speculatively, verifying when the real value arrives.
 
-Predictors trade accuracy for table area: **last-value** (~50–60 %, a few KB), **stride** (~70–80 %, catches loop induction and array walks), and **context/FCM** (~80–95 %, large history-indexed tables, cold-start-sensitive); a stride+FCM hybrid reaches ~90–95 % on SPEC INT at 16–32 KB — an L1 way's worth of storage. Each prediction carries a **confidence** counter so only high-confidence guesses speculate; recovery mirrors branch misprediction (flush from the mispredicted instruction, restore from checkpoint). The catch is frequency: even filtered, **5–20 %** of value predictions are wrong versus ~1–5 % of branches, and each costs a full flush, so aggregate recovery cost is higher — which is why proposals restrict prediction to the highest-impact instructions (loads, chain-heads).
+Predictors trade accuracy for table area: **last-value** (~50–60 %, a few KB), **stride** (~70–80 %, catches loop induction and array walks), and **context/FCM (finite-context method)** (~80–95 %, large history-indexed tables, cold-start-sensitive); a stride+FCM hybrid reaches ~90–95 % on SPEC INT at 16–32 KB — an L1 way's worth of storage. Each prediction carries a **confidence** counter so only high-confidence guesses speculate; recovery mirrors branch misprediction (flush from the mispredicted instruction, restore from checkpoint). The catch is frequency: even filtered, **5–20 %** of value predictions are wrong versus ~1–5 % of branches, and each costs a full flush, so aggregate recovery cost is higher — which is why proposals restrict prediction to the highest-impact instructions (loads, chain-heads).
 
 As of 2025 **no shipping commercial core deploys value prediction**: studies show 5–15 % IPC on integer code but <2 % on FP/SIMD (already data-parallel), and the table area, recovery complexity, and power have not yet justified it. It remains the canonical illustration that OoO extracts *parallelism from a fixed dependence graph* — and that the graph itself is the last wall.
 

@@ -1,6 +1,6 @@
 # CPU Architecture — The Pipelined Machine and Its Contract
 
-> **Prerequisites:** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and the gate-delay budget a stage must fit), [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the ALU that sits in EX).
+> **Prerequisites:** [CMOS_Fundamentals](../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 (fan-out-of-4) unit and the gate-delay budget a stage must fit), [Logic_Building_Blocks](../../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../../00_Fundamentals/03_Adders_and_Multipliers.md) (the ALU that sits in EX).
 > **Hands off to:** [RISC_V_ISA](02_RISC_V_ISA.md), [OoO_Execution](03_OoO_Execution.md), [Branch_Prediction_Deep_Dive](04_Branch_Prediction_Deep_Dive.md), [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md).
 
 ---
@@ -11,7 +11,7 @@ Almost everything in a scalar CPU is a consequence of one decision: **overlap th
 
 This page derives that machine from its purpose. We start from *why overlap raises throughput* and let the theory (ideal CPI, the frequency-versus-depth trade-off, the diminishing return of deeper pipes) tell us how far to push it. From the overlap itself we derive the three hazard classes and price each one. We present forwarding not as a table of bypass multiplexers but as the answer to a single timing gap. Then we place the pipelined core in the system it actually lives in — a memory hierarchy it must hide, a coherence invariant it must preserve, a consistency contract it must honour, sibling threads it can share with, and a speculation side-channel it must not leak through. For each we ask the same question: *what invariant does this thing maintain or break, and why must it exist?*
 
-The deep dives — dynamic scheduling, the ROB and LSQ, TAGE prediction, cache and TLB internals — live on the sibling pages this one hands off to. Here we build the foundation they relax.
+The deep dives — dynamic scheduling, the ROB (reorder buffer) and LSQ (load-store queue), TAGE (TAgged GEometric-history-length predictor) prediction, cache and TLB (translation lookaside buffer) internals — live on the sibling pages this one hands off to. Here we build the foundation they relax.
 
 ---
 
@@ -221,7 +221,7 @@ The in-order scalar pipe has a hard performance floor. Its CPI cannot drop below
 
 ### 5.1 The width limit — why $w$-wide buys strictly less than $w\times$
 
-Widening fetch/decode/issue to $w$ lifts the ideal ceiling from IPC 1 to IPC $w$: you cannot retire what you never decoded, so $\text{IPC} \le w$ is a hard bound (ideal CPI $\ge 1/w$). Two forces hold the *sustained* IPC well under that ceiling, and they pull in opposite directions on cost versus benefit.
+Widening fetch/decode/issue to $w$ lifts the ideal ceiling from IPC (instructions per cycle) 1 to IPC $w$: you cannot retire what you never decoded, so $\text{IPC} \le w$ is a hard bound (ideal CPI $\ge 1/w$). Two forces hold the *sustained* IPC well under that ceiling, and they pull in opposite directions on cost versus benefit.
 
 **The benefit saturates at the code's ILP (a counting bound).** To issue $w$ instructions in one cycle the window must hold $w$ that are mutually independent *and* operand-ready. If a $W$-entry window contains dependency chains of average height $h$, at most $\approx W/h$ instructions are simultaneously dataflow-ready, so
 

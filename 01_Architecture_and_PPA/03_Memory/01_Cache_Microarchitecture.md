@@ -13,7 +13,7 @@ Everything on this page is organized by one equation — **average memory access
 
 $$\text{AMAT} = t_{hit} + m \times t_{penalty}$$
 
-Associativity and the hit-path circuit hold down $t_{hit}$; replacement and prefetch hold down the miss rate $m$; the MSHR and non-blocking machinery hold down the *effective* $t_{penalty}$ by overlapping misses; the hierarchy turns $t_{penalty}$ itself into a smaller, nested AMAT; write policy and coherence keep all of it correct while spending the least bandwidth. Read the page as a campaign against three terms, not a catalogue of structures. Where the OoO page derived structures from a *dataflow* contract, this page derives them from an *arithmetic* one: **minimize AMAT subject to area, power, and a one-cycle timing budget.** By the end you should be able to whiteboard a set-associative controller and, more importantly, say *which knob moves which term and where each one stops paying*.
+Associativity and the hit-path circuit hold down $t_{hit}$; replacement and prefetch hold down the miss rate $m$; the MSHR (miss-status holding register) and non-blocking machinery hold down the *effective* $t_{penalty}$ by overlapping misses; the hierarchy turns $t_{penalty}$ itself into a smaller, nested AMAT; write policy and coherence keep all of it correct while spending the least bandwidth. Read the page as a campaign against three terms, not a catalogue of structures. Where the OoO page derived structures from a *dataflow* contract, this page derives them from an *arithmetic* one: **minimize AMAT subject to area, power, and a one-cycle timing budget.** By the end you should be able to whiteboard a set-associative controller and, more importantly, say *which knob moves which term and where each one stops paying*.
 
 ---
 
@@ -66,7 +66,7 @@ $m$ is not one thing. Decomposing it names *which* mechanism can move it:
 - **Capacity** — the working set exceeds the cache; only a bigger cache (or a smaller working set) helps. Associativity and replacement cannot.
 - **Conflict** — the working set *fits* but too many hot lines map to one set and evict each other. This is the miss that **associativity** (§2) and **victim caches** (§6.3) exist to kill, and the only C that a placement change can remove.
 
-**Making the split precise — reuse distance.** The three C's are not fuzzy categories; they are defined by one measurable quantity. For a reference to line $X$, its **reuse (stack) distance** $d$ is *one plus the number of distinct lines touched since $X$ was last referenced* — equivalently, $X$'s depth in a fully-associative LRU stack (MRU $=1$). By LRU's stack property (§5.2) a fully-associative cache of $C$ lines holds exactly the $C$ most-recently-used distinct lines, so
+**Making the split precise — reuse distance.** The three C's are not fuzzy categories; they are defined by one measurable quantity. For a reference to line $X$, its **reuse (stack) distance** $d$ is *one plus the number of distinct lines touched since $X$ was last referenced* — equivalently, $X$'s depth in a fully-associative LRU (least-recently-used) stack (MRU (most-recently-used) $=1$). By LRU's stack property (§5.2) a fully-associative cache of $C$ lines holds exactly the $C$ most-recently-used distinct lines, so
 
 $$\text{a reference hits in a fully-associative LRU cache of size } C \iff d \le C.$$
 
@@ -251,9 +251,9 @@ A small **write buffer** (4–16 entries at L1) hides the downstream write laten
 
 Associativity creates a choice it cannot dodge: when a miss lands in a set whose $N$ ways are all valid, exactly one resident line must be evicted. The *optimal* choice (Belady's MIN) evicts the line whose next reference is **furthest in the future** — but the future is unknown, so **every real policy is a predictor of re-reference distance built from past behaviour.** Each policy is defined precisely by the state it keeps to make that prediction and the cost of updating that state on *every hit*. Read them as points on one curve — **prediction accuracy vs state-and-update cost**:
 
-- **Recency (LRU / PLRU)** bets the least-recently-used line has the most distant reuse. Exact LRU must store a total order of the ways — $\lceil\log_2 N!\rceil$ bits per set, rewritten on every access ($5$ bits at 4-way, **45 bits at 16-way** — why exact LRU dies past 8-way). PLRU approximates the order with a binary tree in $N-1$ bits, trading a little accuracy for a lot less state. The kept state *is* the recency order.
+- **Recency (LRU / PLRU (pseudo-LRU))** bets the least-recently-used line has the most distant reuse. Exact LRU must store a total order of the ways — $\lceil\log_2 N!\rceil$ bits per set, rewritten on every access ($5$ bits at 4-way, **45 bits at 16-way** — why exact LRU dies past 8-way). PLRU approximates the order with a binary tree in $N-1$ bits, trading a little accuracy for a lot less state. The kept state *is* the recency order.
 - **Insertion age (FIFO)** keeps just a set pointer ($\lceil\log_2 N\rceil$ bits) and ignores hits entirely — cheapest, but it cannot tell a hot line from a cold one and is exposed to **Belady's anomaly** (more ways can *raise* its miss rate).
-- **Re-reference prediction (RRIP / SHiP)** keeps a small $M$-bit counter per line estimating *how soon* it will be reused, not merely the order. New lines are inserted as "distant" so a one-touch streaming line can be evicted first and kept from flushing the working set — the **scan resistance** that pure recency lacks. SHiP sharpens the insertion guess with a PC-indexed history of which fetches turned out reusable.
+- **Re-reference prediction (RRIP / SHiP (Signature-based Hit Predictor))** keeps a small $M$-bit counter per line estimating *how soon* it will be reused, not merely the order. New lines are inserted as "distant" so a one-touch streaming line can be evicted first and kept from flushing the working set — the **scan resistance** that pure recency lacks. SHiP sharpens the insertion guess with a PC-indexed history of which fetches turned out reusable.
 - **None (Random)** keeps zero state. It wins only because it never *systematically* evicts the next-needed line, so it sidesteps the exact pathology that wrecks LRU below.
 
 ### 5.1 Why recency thrashes, and why distance prediction survives
@@ -267,7 +267,7 @@ The failure mode that motivates everything past LRU is cyclic access to a workin
 | A | A E D C | miss, **evict B** |
 | B | B A E D | miss, **evict C** |
 
-Every subsequent access misses — **0 % hit rate after warm-up**, the worst possible outcome for data that *fits* to within one line. FIFO thrashes identically. **Random** breaks the cycle statistically (it sometimes spares the soon-needed line, ~40–50 % hits here), and **RRIP** does it deterministically: a scanned-once line ages to "evict me" while a re-referenced line resets to "keep," so the working set survives. This is the whole reason scan-resistant policies exist, and why they buy **5–15 % lower miss rate than LRU on mixed streaming-plus-reuse workloads** (BRRIP reaches 10–20 % on large LLCs). On clean LRU-friendly locality the policies converge — the extra state earns nothing — which is exactly the accuracy-vs-cost trade the list above predicts.
+Every subsequent access misses — **0 % hit rate after warm-up**, the worst possible outcome for data that *fits* to within one line. FIFO thrashes identically. **Random** breaks the cycle statistically (it sometimes spares the soon-needed line, ~40–50 % hits here), and **RRIP** does it deterministically: a scanned-once line ages to "evict me" while a re-referenced line resets to "keep," so the working set survives. This is the whole reason scan-resistant policies exist, and why they buy **5–15 % lower miss rate than LRU on mixed streaming-plus-reuse workloads** (BRRIP reaches 10–20 % on large LLCs (last-level cache)). On clean LRU-friendly locality the policies converge — the extra state earns nothing — which is exactly the accuracy-vs-cost trade the list above predicts.
 
 | Policy | State per 4-way set | Anti-thrash / scan-resistant | HW cost |
 |---|---|---|---|
@@ -392,8 +392,8 @@ The first two attack dynamic energy (fewer arrays read per hit), the last two at
 
 A shared L3 creates a **noisy-neighbour** problem: a streaming workload (an LLM inference server, a `memcpy`-heavy job) can evict a co-runner's working set through ordinary conflict misses and degrade it 20–50 %. Partitioning restores isolation, and the two shipping mechanisms sit at different points on a **granularity-vs-utilization** trade:
 
-- **Intel CAT** assigns each class-of-service a bitmask of L3 **ways** it may allocate into. Simple and cheap, but way-granular: a class gets $k/N$ of the cache in whole-way steps whether or not its working set fits, so capacity can be stranded.
-- **ARM MPAM** partitions by **fraction/bytes** per partition ID (up to 256), tracks occupancy in hardware, and extends the same mechanism to **DRAM bandwidth**. Finer control and unified with bandwidth, at more implementation cost.
+- **Intel CAT** (Cache Allocation Technology) assigns each class-of-service a bitmask of L3 **ways** it may allocate into. Simple and cheap, but way-granular: a class gets $k/N$ of the cache in whole-way steps whether or not its working set fits, so capacity can be stranded.
+- **ARM MPAM** (Memory-system resource Partitioning And Monitoring) partitions by **fraction/bytes** per partition ID (up to 256), tracks occupancy in hardware, and extends the same mechanism to **DRAM bandwidth**. Finer control and unified with bandwidth, at more implementation cost.
 
 The trade is isolation granularity against overall utilization — coarse way-partitioning wastes capacity when allocations misfit; fine partitioning tracks occupancy at the cost of more control hardware. Both matter increasingly for cloud and edge AI, where a large-working-set model shares an LLC with latency-sensitive services.
 

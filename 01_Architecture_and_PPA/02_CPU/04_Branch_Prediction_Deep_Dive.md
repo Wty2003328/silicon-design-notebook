@@ -1,7 +1,7 @@
 # Branch Prediction — the Speculative Front End
 
 > **Prerequisites:** [CPU_Architecture](01_CPU_Architecture.md) (the pipeline and its fetch stage, hazards), [OoO_Execution](03_OoO_Execution.md) (speculative execution and the misprediction-recovery flush path, its §2.5 and §6).
-> **Hands off to:** [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) & [Memory](../03_Memory/03_Memory.md) (the I-cache the front end drives), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the iTLB in the fetch path), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open core built around TAGE-SC-L + ITTAGE).
+> **Hands off to:** [Cache_Microarchitecture](../03_Memory/01_Cache_Microarchitecture.md) & [Memory](../03_Memory/03_Memory.md) (the I-cache the front end drives), [TLB_and_Virtual_Memory](../03_Memory/02_TLB_and_Virtual_Memory.md) (the iTLB (instruction TLB) in the fetch path), [Xiangshan_CPU_Design](05_Xiangshan_CPU_Design.md) (a complete open core built around TAGE-SC-L + ITTAGE).
 
 ---
 
@@ -115,9 +115,9 @@ To advance, fetch needs one thing: the **next-PC**. Producing it from the curren
 
 The organizing idea of the whole front end is one sentence: **every predictor is a speculative cache of a fact the pipeline will only confirm later, pulled forward to the one cycle fetch can use it.** They are separate structures because the facts have different *natures*, and that nature dictates what each must remember:
 
-- "Is this PC a branch, and (for a direct branch) where does it statically go" is a property of the **PC** — cache it by PC. → BTB.
+- "Is this PC a branch, and (for a direct branch) where does it statically go" is a property of the **PC** — cache it by PC. → BTB (branch target buffer).
 - "Is it taken this time" is a property of **dynamic bias and recent history**, not of the PC alone. → direction predictor.
-- "Where does this return go" is a property of **call context**, and is *not* a function of the branch PC at all. → RAS.
+- "Where does this return go" is a property of **call context**, and is *not* a function of the branch PC at all. → RAS (return address stack).
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
@@ -375,7 +375,7 @@ MPKI roughly **halves per ~4× storage** through the TAGE regime, then flattens 
 - gshare, MPKI $\approx 10$: peak realized $= 1/(1+6\cdot0.010\cdot14)=54\%$.
 - TAGE, MPKI $\approx 3$: peak realized $= 1/(1+6\cdot0.003\cdot14)=80\%$.
 
-Moving gshare → TAGE recovers **~26 points of peak IPC** — about $1.5\times$ on branchy integer code — for ~14 KB of extra tables. *That* is what the tag bits and the multi-table lookup are worth, and why every high-performance core pays for them. The cost side is real and bounded: $M$ parallel tagged lookups plus the geometric history folds each cycle (a shallow XOR tree, ~2–3 FO4), which is why TAGE lives behind the FTQ (§7) where its latency is off the per-cycle fetch critical path rather than on it.
+Moving gshare → TAGE recovers **~26 points of peak IPC** — about $1.5\times$ on branchy integer code — for ~14 KB of extra tables. *That* is what the tag bits and the multi-table lookup are worth, and why every high-performance core pays for them. The cost side is real and bounded: $M$ parallel tagged lookups plus the geometric history folds each cycle (a shallow XOR tree, ~2–3 FO4 (fan-out-of-4)), which is why TAGE lives behind the FTQ (§7) where its latency is off the per-cycle fetch critical path rather than on it.
 
 ### 4.4 SC and L: correcting the residue
 
@@ -403,7 +403,7 @@ $$
 
 and because each per-bit term is linear in $h_i\in\{\pm1\}$, the rule is *exactly* $y=w_0+\sum_i w_i h_i$ thresholded at 0. So the perceptron is not a loose "neuron" analogy but the closed-form optimal predictor *of a conditional-independence world*: $w_0$ is the prior log-odds (per-branch bias, cleanly separated), $w_i$ the learned correlation strength and sign of the branch $i$ steps back. The update rule — on misprediction or low confidence, $w_i \mathrel{+}= t\cdot h_i$ with $t=\pm1$ the true outcome — is stochastic gradient descent on this objective, pushing each weight toward the bits that co-occurred with taken.
 
-**The scaling win: linear, not exponential, in history.** One weight vector is $N{+}1$ small integers. A PHT/gshare that conditions on the same $N$ bits *exactly* — representing an arbitrary Boolean function of them — needs $2^N$ counters, one per pattern. So
+**The scaling win: linear, not exponential, in history.** One weight vector is $N{+}1$ small integers. A PHT (pattern-history table)/gshare that conditions on the same $N$ bits *exactly* — representing an arbitrary Boolean function of them — needs $2^N$ counters, one per pattern. So
 
 $$
 S_{\text{perceptron}}=O(N)\qquad\text{vs}\qquad S_{\text{PHT}}=O(2^{N}),

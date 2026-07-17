@@ -11,7 +11,7 @@ On-chip communication is a shared resource, and every way of sharing it is one p
 
 > You scale on-chip bandwidth not by making the shared wire faster, but by cutting it into many short wires and scheduling packets across them — buying $O(N)$ cost and a bisection you can *choose* by topology, at the price of latency (hops) and three new correctness problems.
 
-Those three problems are the three design axes, and every real fabric — Arm's CMN mesh in Neoverse servers, the hashed rings in GPUs, the 2-D mesh that *is* the compute fabric in Tenstorrent/Cerebras AI chips, die-to-die extensions over UCIe — is a point in this space:
+Those three problems are the three design axes, and every real fabric — Arm's CMN (Coherent Mesh Network) mesh in Neoverse servers, the hashed rings in GPUs, the 2-D mesh that *is* the compute fabric in Tenstorrent/Cerebras AI chips, die-to-die extensions over UCIe (Universal Chiplet Interconnect Express) — is a point in this space:
 
 - **Topology** — how routers connect. Sets diameter (the latency floor) and bisection bandwidth (the throughput ceiling) at a wire cost (§1–2).
 - **Flow control** — how the scarce buffers and links are shared *losslessly* when packets arrive faster than they drain (§3).
@@ -99,7 +99,7 @@ Read the table as a trade, not a menu: the ring minimizes degree and dies on lat
 - **Torus** — wraparound edges halve diameter ($k$ vs $2(k{-}1)$) and double bisection ($2k$) at the same degree 4, but the wrap wires span the whole die. The cure is **folding** (interleave nodes so every link, wrap included, is length-2), which is why a torus is a layout decision as much as a topology one.
 - **Ring** — the degree-2 floor. Diameter $N/2$ means latency grows linearly, so rings serve small counts or become a *tier* of a hierarchy (Apple's fabric, GPU L2 rings, peripheral sub-fabrics bridged into a mesh).
 
-**Concentration and hierarchy.** Real SoCs never ship "one flat mesh." They attach $c$ agents per router (**concentration** — amortizes router cost and shortens $\bar{h}$) and *mix* fabrics: a coherent CHI mesh for CPU/LLC/memory, rings or crossbars for peripheral clusters bridged in, and wide point-to-point paths for DMA-heavy accelerators. The topology table is the vocabulary; the product is a composition.
+**Concentration and hierarchy.** Real SoCs (system-on-chip) never ship "one flat mesh." They attach $c$ agents per router (**concentration** — amortizes router cost and shortens $\bar{h}$) and *mix* fabrics: a coherent CHI mesh for CPU/LLC/memory, rings or crossbars for peripheral clusters bridged in, and wide point-to-point paths for DMA (direct memory access)-heavy accelerators. The topology table is the vocabulary; the product is a composition.
 
 ---
 
@@ -263,8 +263,8 @@ Server and infrastructure SoCs (Arm Neoverse CMN-600/700/S3-class meshes; Gravit
 
 - **Node types.** **RN-F** (fully-coherent requesters — CPU clusters), **HN-F** (home nodes — a slice of the system-level cache + snoop filter/directory + point of coherence), **SN-F** (subordinate memory controllers), plus RN-I / HN-I for IO.
 - **Address hash-interleave across HN-Fs** — every physical address maps by hash to one home node, spreading coherence load uniformly so no single directory becomes a bottleneck (the same trick as GPU L2-slice and DRAM-channel hashing — [GPU_Architecture](../05_GPU/01_GPU_Architecture.md), [DDR_Controller](../03_Memory/04_DDR_Controller.md)).
-- **A coherent read.** RN-F →(REQ VN)→ the address's HN-F → snoop-filter lookup → data from the SLC slice, *or* a snoop to an owning RN-F (SNP VN), *or* a fetch from SN-F; data can return **direct-to-requester (DCT/DMT)**, skipping the home hop on the return path to cut latency.
-- **QoS.** Per-source priority fields, age-based escalation at routers, and injection-point regulator counters (rate-limit a runaway accelerator before it floods the mesh).
+- **A coherent read.** RN-F →(REQ VN)→ the address's HN-F → snoop-filter lookup → data from the SLC slice, *or* a snoop to an owning RN-F (SNP VN), *or* a fetch from SN-F; data can return **direct-to-requester (DCT/DMT (direct memory transfer))**, skipping the home hop on the return path to cut latency.
+- **QoS (quality of service).** Per-source priority fields, age-based escalation at routers, and injection-point regulator counters (rate-limit a runaway accelerator before it floods the mesh).
 
 **AI-accelerator NoCs differ in kind.** Tenstorrent/Cerebras-class fabrics are software-scheduled, **multicast-capable** (one weight tile → a whole row of cores), bandwidth-optimized over latency, and often *not* hardware-coherent — the NoC *is* the dataflow fabric, with explicit DMA as the programming model rather than a coherence protocol. Same topology math (§2), opposite correctness contract.
 
@@ -277,7 +277,7 @@ The fabric's parameters are ultimately *wire* statements:
 - **Link pipelining.** A 1–2 mm mesh link routes in ~1 cycle at SoC clocks; longer or cross-die links need pipeline flops (adding hops of latency) or **elastic buffers** (pipeline flops with backpressure = a distributed FIFO).
 - **CDC.** Multi-clock SoCs put async FIFOs at NIU boundaries or run the fabric on one mesochronous grid ([Async_Design_and_CDC](../../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)).
 - **Width / serialization.** 512-bit flits near memory; narrow regions serialize (1 flit = 2–4 phits), trading bandwidth for routing-congestion relief.
-- **Die-to-die.** UCIe / proprietary D2D PHYs carry the *same* flit protocol across chiplets (CHI-C2C, AXI-over-D2D) — the NoC becomes a package-scale network at ~5–20 ns and a serdes-class PHY per crossing ([IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md)).
+- **Die-to-die.** UCIe / proprietary D2D PHYs (physical-layer interface) carry the *same* flit protocol across chiplets (CHI-C2C, AXI-over-D2D) — the NoC becomes a package-scale network at ~5–20 ns and a serdes (serializer/deserializer)-class PHY per crossing ([IC_Packaging](../../07_Manufacturing_and_Bringup/02_IC_Packaging.md)).
 - **Floorplan coupling.** Router placement *is* tile placement, and a mesh's $k\,b$ bisection is also a *routing-resource* claim — those bisection wires must physically exist across the die middle ([Physical_Design](../../05_Backend_Physical_Design/01_Physical_Design.md)). §2's bisection-wire argument is a floorplan constraint, not just a graph metric.
 
 ---
