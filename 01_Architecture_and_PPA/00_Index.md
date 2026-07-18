@@ -4,7 +4,7 @@
 > single instruction, multiple threads (SIMT); high-bandwidth memory (HBM); double data rate (DDR); network on chip (NoC); Advanced Microcontroller Bus Architecture (AMBA);
 > tera operations per second (TOPS); input/output (I/O).
 
-Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names. It contains **46 substantive chapters in 28 focused subdomains**.
+Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names. It contains **53 substantive chapters in 28 focused subdomains**.
 
 > **New to computer architecture?** Begin with [Architecture Primer — A First Map of the Machine](05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md). It explains the basic ideas, units, and abbreviations assumed by the later books.
 
@@ -37,9 +37,9 @@ flowchart LR
 
 | Book | Subdomains | Chapters | What it owns |
 |---|---:|---:|---|
-| [CPU Architecture](01_CPU_Architecture/00_Index.md) | 8 | 18 | CPU contract, frontend/backend, cache/VM, coherence, case studies, CPU simulation |
-| [GPU Architecture](02_GPU_Architecture/00_Index.md) | 4 | 6 | SIMT core, GPU memory/HBM, multi-GPU scale-up, GPU simulation |
-| [NPU Architecture](03_NPU_Architecture/00_Index.md) | 4 | 6 | tensor dataflows, mapping/memory, host integration, NPU simulation |
+| [CPU Architecture](01_CPU_Architecture/00_Index.md) | 8 | 20 | CPU contract, prediction/speculation, out-of-order scheduling/replay, cache/VM, coherence, case studies, simulation |
+| [GPU Architecture](02_GPU_Architecture/00_Index.md) | 4 | 8 | SIMT core, operand delivery, independent-thread/asynchronous pipelines, memory/HBM, scale-up, simulation |
+| [NPU Architecture](03_NPU_Architecture/00_Index.md) | 4 | 9 | dense/Transformer/sparse dataflows, mapping, decoupled access/execute, host integration, simulation |
 | [SoC and Chiplet Architecture](04_SoC_and_Chiplet_Architecture/00_Index.md) | 6 | 8 | system composition, DDR, AMBA protocols, NoC, I/O policy, chiplets |
 | [Architecture Foundations and Methods](05_Architecture_Foundations_and_Methods/00_Index.md) | 6 | 8 | primer, performance/PPA, memory structures, simulation method/tool selection |
 

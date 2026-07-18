@@ -1,6 +1,6 @@
 # Central Processing Unit (CPU) Architecture › Frontend and Prediction
 
-> **Abbreviation key — skim now and return as needed:** branch target buffer (BTB); program counter (PC).
+> **Abbreviation key — skim now and return as needed:** branch target buffer (BTB); program counter (PC); reorder buffer (ROB); memory dependence predictor (MDP).
 
 **Plain-language purpose:** Explain how a CPU chooses the next instruction address and turns instruction bytes into a steady stream of internal operations before it knows which control path is correct.
 
@@ -13,11 +13,14 @@
 | branch target buffer (BTB) | remembers target addresses of previously seen branches |
 | micro-operation (µop) | internal operation produced by decoding an instruction |
 | redirect | replacement fetch address after a prediction or exception changes |
+| speculation | early work performed under a prediction and validated before retirement |
+| transient side effect | microarchitectural change that may survive after wrong-path work is squashed |
 
 ## Reading order
 
 1. [Branch Prediction](01_Branch_Prediction_Deep_Dive.md) — direction, target, return, confidence, and recovery cost.
 2. [Fetch, Decode, and µop Delivery](02_Fetch_Decode_and_Uop_Delivery.md) — byte supply, alignment, decode width, queues, and sustained delivery.
+3. [Speculative Execution](03_Speculative_Execution.md) — the shared predict–validate–recover contract across control, memory, latency, translation, value, and runahead speculation.
 
 **Comes from:** [Core Foundations](../01_Core_Foundations/00_Index.md).
 **Hands off to:** [Out-of-Order Backend](../03_Out_of_Order_Backend/00_Index.md).

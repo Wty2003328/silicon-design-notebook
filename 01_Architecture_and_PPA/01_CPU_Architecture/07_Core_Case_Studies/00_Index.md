@@ -15,7 +15,7 @@
 
 ## Reading order
 
-1. [Xiangshan CPU Design](01_Xiangshan_CPU_Design.md) — RISC-V frontend, out-of-order window, load-store unit, cache, coherence, and generation-to-generation tradeoffs.
+1. [XiangShan Kunminghu](01_Xiangshan_CPU_Design.md) — current documented configuration, multi-stage frontend speculation, snapshots, distributed issue, speculative wakeup, memory-dependence prediction, load replay, and redirect arbitration.
 
 Read the mechanism chapters before using the case study as evidence.
 

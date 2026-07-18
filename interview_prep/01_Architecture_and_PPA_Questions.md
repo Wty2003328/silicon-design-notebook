@@ -1580,272 +1580,222 @@ significantly -- and why superpages are critical for data-intensive workloads.
 
 ---
 
-## Xiangshan (香山) — Open-Source RISC-V OoO Processor Case Study
+## XiangShan Kunminghu — Current Speculative-Microarchitecture Case Study
 
-*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/01_CPU_Architecture/07_Core_Case_Studies/01_Xiangshan_CPU_Design.md)*
+*From [XiangShan Kunminghu](../01_Architecture_and_PPA/01_CPU_Architecture/07_Core_Case_Studies/01_Xiangshan_CPU_Design.md). Figures below come from the official Kunminghu V2 typical configuration and the evolving Kunminghu V3 design documentation; they are not inferred product comparisons.*
 
-### Problem 1: Pipeline Mispredict Recovery Path
+### Problem 1: Reorder Buffer or Rename-History Buffer?
 
-**Question:** Draw the Xiangshan pipeline showing a branch mispredict recovery
-path. How many cycles are lost?
+**Question:** The documented typical configuration has a 160-entry reorder
+buffer (ROB) and a 256-entry rename-history buffer, called the rename allocation
+buffer (RAB). Why are these not two names for the same structure? What wrong
+conclusion follows from saying that the core has a “256-entry ROB”?
 
-**Solution:**
+**Solution:** The two queues preserve different invariants.
 
-Consider a conditional branch at ROB index 40 that is predicted taken but
-resolves as not-taken in the execute stage.
+- The **ROB** is ordered like the original program. It records completion,
+  exception, redirect, and retirement information so that instructions may
+  execute out of order but become architecturally visible in order.
+- The **RAB** records changes made by register renaming. A rename maps an
+  architectural register name, such as integer register `x10`, to a physical
+  register that actually holds the speculative value. On commit or recovery,
+  those mapping changes must be finalized or undone.
 
-```text
-Cycle:    1    2    3    4    5    6    7    8    9    10
-Branch:  IF0  IF1  DEC  REN  DSP  ISS  EX   --   --   --
-           (predicted taken, target=0x2000)
-                                 Wrong instructions from 0x2000 flow in:
-Wrong:         IF0  IF1  DEC  REN  DSP  ISS  ...
-                                 |                    Mispredict detected
-                                 v                    at cycle 7 (EX stage)
-Recovery:                      flush  flush  flush  redirect
-                                                 BPU<-correct PC
-Correct:                                     IF0  IF1  DEC  ...
-```
+An instruction needs a ROB position even when it does not create a destination
+register. A fused or compressed ROB entry may also describe work at a different
+granularity than a rename-history entry. The capacities therefore need not be
+equal.
 
-**Cycles lost:**
-
-1. Cycle 7: Mispredict detected in EX stage.
-2. Cycle 8: Signal propagated to BPU (branch prediction unit) and FTQ (fetch target queue).
-3. Cycle 9: Frontend redirected; correct PC sent to I-Cache.
-4. Cycle 10: First correct instruction enters IF0.
-5. Cycle 11: First correct instruction enters IF1.
-6. Cycle 12: First correct instruction enters Decode.
-
-The branch itself occupied the pipeline from cycle 1 through cycle 7 (7
-cycles). The first correct instruction enters decode at cycle 12. The branch
-would have been followed by the correct next instruction at cycle 5 (if no
-mispredict). Therefore:
+Calling the 256-entry RAB a ROB overstates the documented completion window by
 
 $$
-\text{Cycles lost} = 12 - 5 = 7 \text{ cycles (within the 6--8 range)}
+\frac{256-160}{160}=60\%.
 $$
 
-The exact penalty depends on whether the correct-path instruction was already
-in the fetch pipeline (sometimes 6 cycles if the redirect is fast).
+That error then corrupts estimates of memory-level parallelism, branch exposure,
+and the number of completed-but-not-retired operations. The current typical
+configuration should instead be read as a 160-entry in-order retirement window
+with a deeper 256-entry history mechanism supporting rename bookkeeping and
+recovery.
+
+The width numbers also describe different bottlenecks: decode and rename accept
+up to six instructions per cycle, while retirement can commit up to eight. An
+eight-wide commit path can drain a completed backlog faster than the frontend
+can create it, but it does not make execution or retirement always eight-wide;
+an old cache miss or exception still blocks younger entries.
 
 ---
 
-### Problem 2: L1 D-Cache SRAM Sizing
+### Problem 2: Multi-Stage Prediction, Override, and Redirect Cost
 
-**Question:** Size the L1 D-cache: 64 KB, 8-way set-associative, 64 B line,
-16 MSHRs. Compute total SRAM including tag store, data store, and MSHR storage.
+**Question:** Why does a modern XiangShan frontend make several predictions for
+the same fetch stream, and how should an architect model the documented typical
+13-cycle branch-misprediction penalty without inventing a fixed pipeline trace?
 
-**Solution:**
+**Solution:** A branch prediction unit (BPU) must choose between speed and
+accuracy. A small, fast predictor can produce an early next address; larger
+tagged-history components take longer but can override that first answer before
+too much work is consumed. The fetch target queue (FTQ) carries the chosen fetch
+blocks, prediction metadata, and history information needed by instruction
+fetch, later prediction stages, and recovery.
 
-**Data Store:**
+There are therefore two kinds of correction:
 
-$$
-\text{Sets} = \frac{64 \times 1024}{8 \times 64} = 128 \text{ sets}
-$$
+1. A **later predictor override** replaces an earlier, lower-confidence answer.
+   It wastes some frontend work but need not wait for the branch to execute.
+2. An **execution redirect** occurs when the branch instruction computes that
+   all predictions were wrong. Younger operations must be invalidated, the
+   speculative history and rename state must be restored, and fetching restarts
+   from the resolved target.
 
-Each data line is 64 B = 512 bits. Total data SRAM:
+The published 13-cycle value is a configuration-level latency to use in a
+performance model, not proof that every redirect follows one immutable list of
+13 named registers. Exact paths vary with prediction stage, redirect source,
+cache/TLB state, and whether useful target bytes are already available.
 
-$$
-128 \times 8 \times 512 = 524{,}288 \text{ bits} = 64 \text{ KB}
-$$
-
-**Tag Store:**
-
-Physical address space is 56 bits (Sv39/Sv48). Offset = 6 bits. Index = 7 bits.
-Tag bits per line:
-
-$$
-\text{Tag bits} = 56 - 7 - 6 = 43 \text{ bits}
-$$
-
-Add 1 valid bit + 1 dirty bit per line = 45 bits per entry. Total tag SRAM:
-
-$$
-128 \times 8 \times 45 = 46{,}080 \text{ bits} \approx 5.6 \text{ KB}
-$$
-
-**MSHR Storage:**
-
-Each MSHR stores:
-- Physical block address (tag): 43 bits
-- Valid bit: 1 bit
-- Owned bit: 1 bit
-- 8 byte-enable bits (for partial writes): 8 bits
-- Destination register / ROB index: ~10 bits
-- Per-word valid bits (16 words per line): 16 bits
-
-Total per MSHR: approximately $43 + 1 + 1 + 8 + 10 + 16 = 79$ bits, round to
-~80 bits.
-
-For 16 MSHRs:
+For example, with eight branch mispredictions per thousand retired instructions
+(MPKI = 8), the first-order CPI contribution is
 
 $$
-16 \times 80 = 1{,}280 \text{ bits} \approx 160 \text{ B}
+\Delta\text{CPI}_{branch}=\frac{8}{1000}\times13=0.104.
 $$
 
-**PLRU State:** 7 bits per set (for 8-way PLRU):
+If the otherwise ideal four-instruction-per-cycle machine has CPI $=0.25$, this
+single term raises CPI to $0.354$ and lowers the idealized throughput to about
+$1/0.354=2.82$ instructions/cycle. This explains why a slightly slower but more
+accurate later predictor can be profitable: avoiding redirects may recover more
+cycles than the extra prediction stage costs.
 
-$$
-128 \times 7 = 896 \text{ bits} \approx 112 \text{ B}
-$$
-
-**Grand Total:**
-
-$$
-\text{Total SRAM} = 64 \text{ KB} + 5.6 \text{ KB} + 0.16 \text{ KB} + 0.11 \text{ KB} \approx 69.9 \text{ KB}
-$$
-
-The overhead beyond data storage is approximately $\frac{5.6 + 0.27}{64} \approx 9.2\%$.
+A complete recovery answer must name four state classes: the correct next fetch
+address, branch-history state, the rename map/free-list state, and all younger
+queue entries or side effects that must be killed. Flushing decoded instructions
+alone is not sufficient.
 
 ---
 
-### Problem 3: Store Forwarding Logic Design
+### Problem 3: Speculative Wakeup Needs Cancellation
 
-**Question:** A load at LQ (load queue)[8] has address `0x1000`. The store queue contains
-SQ[5] = `0x1000` (4 bytes, data = `0xDEADBEEF`) and SQ[6] = `0x1004` (4 bytes,
-data = `0xCAFEBABE`). Which store matches? How is data forwarded?
+**Question:** A dependent integer operation is woken as though its producer will
+finish in three cycles. The producer then discovers that it must replay. What
+must the issue machinery do, and why is a ready bit alone insufficient?
 
-**Solution:**
+**Solution:** **Wakeup** is the event that tells waiting issue-queue entries that
+an input operand will be available. Waiting for the value to write the physical
+register file is safe but adds latency. A high-performance scheduler can instead
+send an early, speculative wakeup based on the producer's expected latency and
+place the consumer so it meets the bypassed result.
 
-The load searches the SQ for stores that are **older** (lower SQ index) and have
-overlapping addresses. The search finds the **most recent** (highest-index)
-matching store.
+That optimization creates a new correctness obligation. If the producer is
+delayed by a cache event, structural conflict, exception, or replay, the early
+promise is false. The scheduler must cancel or revoke the consumer before it
+uses an unavailable or stale operand. Depending on timing, the consumer may be
+removed from select, blocked at operand capture, or itself replayed.
 
-**Address comparison:**
+The issue entry consequently needs more than “ready/not ready.” It needs enough
+identity and timing information to answer:
 
-- SQ[5]: addr = `0x1000`, size = 4B $\to$ range [`0x1000`, `0x1003`]
-- SQ[6]: addr = `0x1004`, size = 4B $\to$ range [`0x1004`, `0x1007`]
+- Which producer tag caused this operand to wake?
+- Was the wakeup final or speculative?
+- Has a cancellation for the same producer/age reached this entry?
+- Did the consumer already leave the queue, and if so, where can it be stopped
+  or replayed?
 
-The load is at address `0x1000` (4-byte load), covering bytes
-`0x1000`--`0x1003`.
+Suppose the producer is selected in cycle 0, promises a result for cycle 3, and
+wakes a consumer in cycle 1 so that the consumer can be selected in cycle 2.
+If the producer reports failure in cycle 2, a same-cycle or higher-priority
+cancellation must prevent the consumer from reading the bypass in cycle 3. A
+cancel that arrives in cycle 4 is too late unless a downstream validity check
+detects the bad operand and replays the consumer.
 
-- SQ[5] covers bytes `0x1000`--`0x1003`: **MATCH** with load.
-- SQ[6] covers bytes `0x1004`--`0x1007`: **NO MATCH** with load.
-
-**Forwarding:**
-
-SQ[5] is the most recent store matching the load's address. The load receives
-data = `0xDEADBEEF` directly from SQ[5]'s data field, **without accessing the
-D-cache**.
-
-**Forwarding path (hardware):**
-
-1. Load address broadcast to all SQ entries.
-2. Each SQ entry compares: `load_addr[31:3] == sq_addr[31:3]` (for aligned
-   8-byte blocks) with byte-enable masking.
-3. Priority encoder selects the **highest-index matching** entry.
-4. Data mux selects the matching SQ entry's data.
-5. Result delivered to the load's writeback path.
-
-**Edge case:** If no SQ entry matches, the load reads from the D-cache normally.
-
----
-
-### Problem 4: Rename Table Checkpoint Overhead
-
-**Question:** Xiangshan is 6-wide with a 192-entry ROB. There are 32
-architectural integer registers and 128 physical registers. How many bits per
-checkpoint? How many checkpoints can fit in 4 KB of SRAM?
-
-**Solution:**
-
-**Bits per checkpoint (integer RAT only):**
-
-Each of the 32 architectural registers maps to a physical register. Each
-physical register index requires:
-
-$$
-\lceil \log_2 128 \rceil = 7 \text{ bits}
-$$
-
-Total bits per checkpoint:
-
-$$
-32 \times 7 = 224 \text{ bits} = 28 \text{ bytes}
-$$
-
-**Including FP (floating-point) RAT (32 arch regs, 96 phys regs):**
-
-$$
-\lceil \log_2 96 \rceil = 7 \text{ bits}
-$$
-
-FP checkpoint: $32 \times 7 = 224$ bits = 28 bytes.
-
-**Total per checkpoint:** $28 + 28 = 56$ bytes.
-
-**Number of checkpoints in 4 KB:**
-
-$$
-\frac{4 \times 1024}{56} = \frac{4096}{56} \approx 73.1
-$$
-
-So approximately **73 checkpoints** fit in 4 KB. In practice, Xiangshan uses
-32--48 checkpoints, well within this budget.
-
-**Additional overhead:** Each checkpoint also needs metadata (valid bit, ROB
-index of the branch, etc.), roughly 10--15 bits per checkpoint. This adds
-negligible overhead (~130 bytes for 73 checkpoints).
+Verification should deliberately inject variable-latency completions and
+writeback-port conflicts. The core property is: no operation may execute or
+retire using an operand whose producing event was cancelled, even when wakeup,
+cancel, select, redirect, and queue compaction coincide.
 
 ---
 
-### Problem 5: Performance Gap Analysis
+### Problem 4: Memory Dependence Prediction and Selective Replay
 
-**Question:** Xiangshan Nanhu achieves IPC (instructions per cycle) = 2.8 at 1.2 GHz. ARM Cortex-A76
-achieves IPC = 3.5 at 2.8 GHz. Both run SPEC CPU2006. What is the performance
-gap in SPECscore?
+**Question:** A younger load is ready, but one older store has not computed its
+address. Why might Kunminghu issue the load anyway? What happens if the guess is
+wrong, and from where can a correct load value be forwarded?
 
-**Solution:**
+**Solution:** Loads and stores are ordered by the program before all their
+addresses are known. Always waiting for every older store is safe but destroys
+memory-level parallelism. A memory-dependence predictor (MDP) estimates whether
+the load depends on an unresolved older store. A predicted-independent load may
+issue early; a predicted-dependent load waits for the relevant store.
 
-SPECscore is proportional to the product of IPC and frequency (assuming the same
-binary can run on both, which is an approximation since they use different ISAs (instruction set architectures)):
+If an older store later resolves to an overlapping byte address, the early load
+violated ordering. The machine must invalidate the bad load result and replay
+the load plus any dependent work that consumed it. Replay is not merely a
+performance retry: it is the mechanism that converts an aggressive prediction
+back into architecturally correct execution.
+
+When the address is known, the newest matching older value has priority. The
+documented load pipeline can obtain data from the store queue (SQ), the store
+buffer, or the data cache, with the younger-in-program but still older-than-load
+store queue match taking priority over older committed copies. Byte masks matter:
+a four-byte store at `0x1000` fully covers a four-byte load at `0x1000`, but does
+not cover bytes beginning at `0x1004`; partial overlap may require merge or
+replay rather than one simple word mux.
+
+The architect must separate at least four replay causes because their remedies
+differ:
+
+- dependence-prediction failure: train the MDP;
+- cache or translation miss: wait for data or address translation;
+- bank/port conflict: reschedule after the structural resource frees;
+- forwarding-data-not-ready: wait for the matching store's bytes.
+
+A useful metric set therefore includes load replays by cause, false dependence
+stalls, true violations, replayed dependent operations, and useful memory-level
+parallelism. One aggregate “load replay rate” hides whether predictor policy,
+cache capacity, or physical ports are responsible.
+
+---
+
+### Problem 5: Four Snapshots Plus RAB Walk
+
+**Question:** Current control-block documentation describes four rename
+snapshots and a fallback walk through rename history. Why not snapshot every
+branch? If recovery must undo 61 rename-history entries at six entries per
+cycle, what is the lower bound on the walk after restoring the nearest snapshot?
+
+**Solution:** A complete snapshot can restore the rename map quickly, but every
+additional snapshot costs storage, write bandwidth, selection logic, and
+verification state. A large out-of-order core can have far more unresolved
+branches than it is practical to snapshot individually. Kunminghu therefore
+uses a small number of snapshots, created at selected branch and periodic
+points, and combines them with the RAB history.
+
+Recovery works conceptually as follows:
+
+1. Select the newest valid snapshot no younger than the redirect point.
+2. Restore the coarse rename state captured there.
+3. Walk the RAB between that snapshot and the exact recovery boundary, applying
+   or undoing mappings as required.
+4. Reclaim physical registers allocated only on the wrong path.
+5. Invalidate younger ROB, issue, load/store, and frontend state.
+
+At six history entries per cycle, 61 entries require at least
 
 $$
-\text{Score} \propto \text{IPC} \times \text{Frequency}
+\left\lceil\frac{61}{6}\right\rceil=11\text{ cycles}
 $$
 
-**Nanhu performance:**
+of walk bandwidth. This is a lower bound: arbitration, bank conflicts, or
+coordination with free-list repair can add cycles. A closer snapshot reduces
+the walk but consumes more snapshot capacity; a farther snapshot saves storage
+but lengthens recovery. That is the real architecture tradeoff.
 
-$$
-P_{\text{Nanhu}} = 2.8 \times 1.2 = 3.36 \text{ (arbitrary units)}
-$$
-
-**A76 performance:**
-
-$$
-P_{\text{A76}} = 3.5 \times 2.8 = 9.8 \text{ (arbitrary units)}
-$$
-
-**Performance ratio:**
-
-$$
-\frac{P_{\text{Nanhu}}}{P_{\text{A76}}} = \frac{3.36}{9.8} \approx 0.343
-$$
-
-**Gap decomposition:**
-
-| Factor | Contribution | Calculation |
-|---|---|---|
-| IPC gap | $2.8 / 3.5 = 0.80$ | 20% IPC shortfall |
-| Frequency gap | $1.2 / 2.8 = 0.429$ | 57% frequency shortfall |
-| Combined | $0.80 \times 0.429 = 0.343$ | 65.7% total gap |
-
-**Analysis:** The dominant factor is the frequency gap (driven by the 28nm vs.
-7nm process node). The IPC gap of 20% is attributable to:
-- Less aggressive branch prediction (smaller TAGE tables)
-- Smaller ROB (192 vs. A76's ~128--256, depending on configuration)
-- Fewer execution units in some categories
-- Less mature memory disambiguation
-
-If Xiangshan Kunminghu achieves IPC = 3.5 at 2.0 GHz on a comparable process
-node:
-
-$$
-\frac{3.5 \times 2.0}{3.5 \times 2.8} = \frac{7.0}{9.8} \approx 0.714
-$$
-
-This would close the gap to approximately 29%, making Xiangshan competitive for
-many server workloads.
+The important interview distinction is that **frontend redirect latency** and
+**complete backend-state repair latency** are related but not always identical.
+Fetching may restart once enough state is known, while bookkeeping continues,
+provided allocation cannot reuse a physical register whose ownership is still
+ambiguous. Assertions should prove that every restored architectural register
+maps to the youngest surviving producer and that no wrong-path physical register
+remains live or is freed twice.
 
 ---
 
@@ -2109,3 +2059,87 @@ replay is useful when this feedback is demonstrably weak or the trace includes a
 validated dependency/timing model. Otherwise couple endpoints, caches, protocol
 controllers, and network timing, then validate queue occupancies and tail latency
 as well as average throughput.
+
+### Advanced Microarchitecture Audit Additions
+
+#### Q22: What must every speculative CPU mechanism define?
+
+*From [Speculative Execution](../01_Architecture_and_PPA/01_CPU_Architecture/02_Frontend_and_Prediction/03_Speculative_Execution.md)*
+
+**Answer:** Name the prediction, the dependent work it authorizes, the state that
+may change, the validation event, and the recovery boundary. Then prove that no
+irreversible side effect occurs before validation. Performance accounting must
+include accuracy, coverage, useful lead time, recovery cost, and wrong-path
+resource pollution. Security analysis must also track transient cache, TLB,
+predictor, and contention effects because squashing architectural registers does
+not erase every observable microarchitectural change.
+
+#### Q23: Why does speculative wakeup require a cancel path?
+
+*From [Advanced Scheduling, Wakeup, and Replay](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md)*
+
+**Answer:** Early wakeup schedules a consumer from the producer's expected
+latency before completion is certain. If the producer replays, misses, or loses a
+writeback port, the promise is false. Cancellation must block the consumer before
+operand use, or a downstream validity check must replay it. Verify producer
+identity, age, generation, same-cycle wake/cancel priority, queue compaction, and
+redirect interaction; a single ready bit cannot represent those cases safely.
+
+#### Q24: Why can a GPU register file be the bottleneck even when arithmetic units are idle?
+
+*From [Operand Collectors, Register Files, and Scoreboards](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/03_Operand_Collectors_Register_Files_and_Scoreboards.md)*
+
+**Answer:** A warp instruction may demand many lane operands at once, but a large
+multi-banked register file cannot provide every combination without conflicts or
+prohibitive ports. The scoreboard establishes dependency readiness; operand
+collectors reserve destinations and gather source banks over several cycles.
+Bank conflicts, collector occupancy, dispatch-port pressure, or writeback
+collisions can therefore starve otherwise free pipelines. Measure operand-bank
+conflicts and collector/dispatch stalls, not only functional-unit utilization.
+
+#### Q25: What can deadlock a warp-specialized asynchronous GPU pipeline?
+
+*From [Independent-Thread Scheduling and Asynchronous Pipelines](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md)*
+
+**Answer:** Producer warps may wait for free shared-memory buffers while consumer
+warps wait for transaction barriers that only those producers can signal;
+divergent participation or a missing arrival count can make the cycle permanent.
+Assign buffer ownership and generations, define acquire/commit/wait/release order,
+reserve enough scheduler and register resources for every role, and prove that
+each wait has an enabled producer. Independent thread scheduling makes implicit
+warp lockstep unsafe as a synchronization assumption.
+
+#### Q26: Why should an NPU treat attention prefill and decode as different workloads?
+
+*From [Transformer and Attention Engine Microarchitecture](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md)*
+
+**Answer:** Prefill processes many query tokens and exposes large matrix
+multiplications with reuse; autoregressive decode usually has one or a few new
+queries but reads a growing key/value (KV) cache, making bandwidth, latency, and
+small-shape utilization dominant. A balanced design needs matrix units plus
+vector/reduction hardware for normalization and online softmax, tiled SRAM that
+avoids materializing the full score matrix, and a KV layout/prefetch policy
+evaluated separately for the two phases.
+
+#### Q27: What is the hardware break-even test for dynamic sparsity or mixture of experts?
+
+*From [Dynamic Sparsity, MoE, and Irregular Execution](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md)*
+
+**Answer:** Saved dense MAC and data-movement time must exceed index/metadata
+traffic, decode and matching, compaction, load imbalance, network exchange, and
+dense-fallback overhead. For mixture of experts (MoE), measure routed tokens per
+expert, capacity overflow, expert-weight residency, all-to-all traffic, and tail
+expert time. Average sparsity or average expert load is insufficient because the
+slowest partition determines completion.
+
+#### Q28: How does decoupled access/execute become a small out-of-order machine?
+
+*From [Decoupled Access/Execute and Scratchpad Scheduling](../01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md)*
+
+**Answer:** Descriptor engines issue address generation and DMA independently
+from compute, while an event scoreboard starts commands once their data and
+resources are ready. That overlaps transfers and execution but requires explicit
+scratchpad-buffer lifetime, generation tags, bank/port reservations, translation
+context, completion ordering, and backpressure. Check the event-dependency graph
+for cycles and ensure a late response from an old buffer generation cannot make a
+new command ready.

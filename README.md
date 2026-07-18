@@ -32,7 +32,7 @@ hardware_design_notebook/
 ├── Chip_Design_Flow_Overview.md   the master narrative: spec -> silicon
 ├── Index.md                       full page index and reading paths
 ├── 00_Fundamentals/               device physics, logic, arithmetic, SystemC/TLM (5 pages)
-├── 01_Architecture_and_PPA/       5 chip-architecture books, 28 subdomains, 46 chapters
+├── 01_Architecture_and_PPA/       5 chip-architecture books, 28 subdomains, 53 chapters
 ├── 02_Power_and_Low_Power/        power physics, intent (UPF), reduction, signoff (5 pages)
 ├── 03_Frontend_RTL_and_Verification/   RTL coding, clocks/CDC, UVM, formal, coverage (13 pages)
 ├── 04_Synthesis/                  RTL -> gates + SDC constraints (2 pages)
@@ -42,7 +42,7 @@ hardware_design_notebook/
 └── interview_prep/                per-folder interview Q&A (00-07) + RTL coding canon + numeric bank
 ```
 
-Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as CPU, GPU, NPU, SoC/chiplet, and shared-method books; chip-specific topics live with the architecture that owns their design decisions. Total: **79 flow pages + 10 interview-prep banks**.
+Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as CPU, GPU, NPU, SoC/chiplet, and shared-method books; chip-specific topics live with the architecture that owns their design decisions. Total: **86 flow pages + 10 interview-prep banks**.
 
 See [Index.md](Index.md) for the full page-by-page index with coverage summaries.
 

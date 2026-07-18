@@ -13,12 +13,15 @@
 | reorder buffer (ROB) | holds speculative instructions until they can retire in order |
 | load-store queue (LSQ) | tracks unfinished memory operations and their ordering |
 | precise state | architectural state corresponds to one exact instruction boundary |
+| speculative wakeup | predicts when a producer will finish so a dependent can issue early |
+| selective replay | re-executes affected work without flushing every younger instruction |
 
 ## Reading order
 
 1. [Out-of-Order Execution](01_OoO_Execution.md) — rename, scheduling, execution, and window sizing.
 2. [Load-Store Unit and Memory Ordering](02_Load_Store_Unit_and_Memory_Ordering.md) — address speculation, forwarding, violations, and replay.
 3. [Retirement, Recovery, and Precise State](03_Retirement_Recovery_and_Precise_State.md) — commit, exceptions, branch recovery, and stale-response safety.
+4. [Advanced Scheduling, Wakeup, and Replay](04_Advanced_Scheduling_Wakeup_and_Replay.md) — distributed issue, speculative wakeup, cancellation, operand delivery, ROB compression, and snapshot recovery.
 
 **Hands off to:** [Cache Hierarchy](../04_Cache_Hierarchy/00_Index.md) and [Coherence and Consistency](../06_Coherence_and_Consistency/00_Index.md).
 

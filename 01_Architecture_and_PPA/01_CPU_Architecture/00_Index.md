@@ -25,8 +25,8 @@ flowchart LR
 | Order | Subdomain | Chapters | Question answered |
 |---:|---|---:|---|
 | 1 | [Core Foundations](01_Core_Foundations/00_Index.md) | 3 | What contract does a CPU implement, and where does parallel work come from? |
-| 2 | [Frontend and Prediction](02_Frontend_and_Prediction/00_Index.md) | 2 | How are useful instructions delivered before their control path is known? |
-| 3 | [Out-of-Order Backend](03_Out_of_Order_Backend/00_Index.md) | 3 | How does the core execute early but still commit in order? |
+| 2 | [Frontend and Prediction](02_Frontend_and_Prediction/00_Index.md) | 3 | How are instructions predicted, delivered, validated, and recovered? |
+| 3 | [Out-of-Order Backend](03_Out_of_Order_Backend/00_Index.md) | 4 | How does the core schedule and replay early work while still committing in order? |
 | 4 | [Cache Hierarchy](04_Cache_Hierarchy/00_Index.md) | 2 | How does the CPU turn locality into low average access time? |
 | 5 | [Virtual Memory](05_Virtual_Memory/00_Index.md) | 2 | How are software addresses translated and protected? |
 | 6 | [Coherence and Consistency](06_Coherence_and_Consistency/00_Index.md) | 3 | How do CPU cores share memory without observing illegal values? |
@@ -37,9 +37,10 @@ flowchart LR
 
 1. [CPU Architecture](01_Core_Foundations/01_CPU_Architecture.md) for the whole-machine map.
 2. [RISC-V ISA](01_Core_Foundations/02_RISC_V_ISA.md) for the software-visible contract.
-3. [Fetch and Decode](02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md) and [Out-of-Order Execution](03_Out_of_Order_Backend/01_OoO_Execution.md).
-4. [Cache Microarchitecture](04_Cache_Hierarchy/01_Cache_Microarchitecture.md), then [TLB and Virtual Memory](05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
-5. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
+3. [Fetch and Decode](02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md), [Speculative Execution](02_Frontend_and_Prediction/03_Speculative_Execution.md), and [Out-of-Order Execution](03_Out_of_Order_Backend/01_OoO_Execution.md).
+4. [Advanced Scheduling, Wakeup, and Replay](03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md) when the baseline pipeline is clear.
+5. [Cache Microarchitecture](04_Cache_Hierarchy/01_Cache_Microarchitecture.md), then [TLB and Virtual Memory](05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
+6. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
 
 **Hands off to:** [SoC and Chiplet Architecture](../04_SoC_and_Chiplet_Architecture/00_Index.md) when requests leave the CPU-owned coherent subsystem.
 

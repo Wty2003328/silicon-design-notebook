@@ -276,8 +276,8 @@ Fusion saves a 64 MiB intermediate write and read (128 MiB), but combined live s
 
 ## Cross-references
 
-- **Compute/dataflow:** [NPU Accelerators](../01_Compute_Dataflows/01_NPU_Accelerators.md), [Systolic, Spatial, and Vector Dataflows](../01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md).
-- **Compression/system:** [Sparsity, Quantization, and Compression](02_Sparsity_Quantization_and_Compression.md), [Host Interface, Memory Visibility, and Scheduling](../03_System_Integration/01_Host_Interface_Memory_Visibility_and_Scheduling.md).
+- **Compute/dataflow:** [NPU Accelerators](../01_Compute_Dataflows/01_NPU_Accelerators.md), [Systolic, Spatial, and Vector Dataflows](../01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md), [Transformer and Attention Engine Microarchitecture](../01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md).
+- **Compression/scheduling/system:** [Sparsity, Quantization, and Compression](02_Sparsity_Quantization_and_Compression.md), [Decoupled Access/Execute and Scratchpad Scheduling](03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md), [Host Interface, Memory Visibility, and Scheduling](../03_System_Integration/01_Host_Interface_Memory_Visibility_and_Scheduling.md).
 - **Memory/modeling:** [HBM](../../02_GPU_Architecture/02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md), [Accelerator and NPU Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md).
 
 ## References

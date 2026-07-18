@@ -9,7 +9,7 @@
 > reliability, availability, and serviceability (RAS); program counter (PC); complementary metal-oxide-semiconductor (CMOS); fan-out-of-four (FO4); floating point (FP);
 > exclusive OR (XOR); kilobyte (KB).
 
-> **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (the pipeline and its fetch stage, hazards), [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (speculative execution and the misprediction-recovery flush path, its §2.5 and §6).
+> **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (the pipeline and its fetch stage, hazards), [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (rename and the ROB), and [Speculative_Execution](03_Speculative_Execution.md) (the full predict–validate–recover lifecycle).
 > **Hands off to:** [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) & [Memory](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (the I-cache the front end drives), [TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (the iTLB (instruction TLB) in the fetch path), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a complete open core built around TAGE-SC-L + ITTAGE).
 
 ---
@@ -291,7 +291,7 @@ TAGE resolves both at once. That is the next section, and it is the heart of the
 
 ## 4. TAGE: letting each branch pick its own history length
 
-TAGE (TAgged GEometric history length, Seznec & Michaud 2006) has been the dominant direction predictor in academia and industry since it swept the Championship Branch Prediction contests, and it ships — as TAGE-SC-L — in Intel P-cores, SiFive P870, and the open-source Xiangshan Nanhu. It is best understood not as "gshare with more tables" but as the direct answer to §3.3's two problems.
+TAGE (TAgged GEometric history length, Seznec & Michaud 2006) has been a dominant high-performance direction-predictor family since the Championship Branch Prediction contests. TAGE-SC-L is a competition-grade extension, while current public XiangShan Kunminghu documentation names a TAGE plus Statistical Corrector (TAGE-SC) implementation. Treat exact commercial predictor compositions as vendor-specific unless the vendor documents them. TAGE is best understood not as "gshare with more tables" but as the direct answer to §3.3's two problems.
 
 ### 4.1 The move, and the two obligations it forces
 
@@ -398,7 +398,7 @@ Moving gshare → TAGE recovers **~26 points of peak IPC** — about $1.5\times$
 
 ### 5.1 Indirect targets: ITTAGE
 
-Indirect branches (virtual dispatch, switch tables, function pointers) have a target that *varies at runtime*, so a BTB storing one target per PC mispredicts them whenever a site has multiple targets (~75–85 % accuracy). But the target is usually *history-selected*, not random — the same call site tends to reach the same target under the same recent history. **ITTAGE** (Seznec 2014) reuses TAGE's exact tagged-geometric structure but stores a **target PC** per entry instead of a direction bit: the longest matching history selects the target. It lifts indirect accuracy to **~95 %** on SPEC INT and ships in Xiangshan Nanhu (4 tagged components). It is the cleanest evidence that TAGE is a *general* mechanism for "predict a fact from the longest reliable history," not a direction-only trick.
+Indirect branches (virtual dispatch, switch tables, function pointers) have a target that *varies at runtime*, so a BTB storing one target per PC mispredicts them whenever a site has multiple targets. But the target is usually *history-selected*, not random — the same call site tends to reach the same target under the same recent history. **ITTAGE** reuses TAGE's tagged-geometric structure but stores a **target PC** per entry instead of a direction bit: the longest matching history selects the target. Current Kunminghu V2 documentation describes five tagged ITTAGE tables. It is clean evidence that TAGE is a *general* mechanism for “predict a fact from the longest reliable history,” not a direction-only trick.
 
 ### 5.2 Perceptron: the other great branch, and why it mostly lost — but not entirely
 
@@ -495,17 +495,17 @@ where $b$ = branch density ($\approx0.2$), $t$ = taken fraction ($\approx0.6$). 
 
 The mainstream high-performance cores make the same bet — a near-perfect predictor is the price of deep, wide execution (§0.1) — and differ mainly in predictor family and front-end depth. This parallels the OoO page's Golden Cove vs Zen 4 comparison, from the front-end side.
 
-| Feature | Intel Golden Cove (2021) | AMD Zen 4 (2022) | Xiangshan Nanhu (open) |
+| Feature | Intel Golden Cove (2021) | AMD Zen 4 (2022) | XiangShan Kunminghu V2/V3 docs (open) |
 |---|---|---|---|
-| Direction predictor | TAGE-SC-L family | hashed-perceptron + TAGE | TAGE-SC-L |
-| Direction accuracy | ~99 % | ~98.5 % | ~99 % |
-| Indirect | dedicated indirect + BTB | dedicated indirect | ITTAGE (4 comp.) |
+| Direction predictor | publicly inferred TAGE-family | publicly inferred perceptron/TAGE-family | documented TAGE-SC |
+| Direction accuracy | workload/configuration dependent | workload/configuration dependent | not fixed by the public module specification |
+| Indirect | dedicated indirect + BTB | dedicated indirect | documented ITTAGE; V2 guide lists five tagged tables |
 | BTB | large, multi-level (~L1 + few-K L2) | multi-level (L0/L1/L2, ~8–10 K) | multi-level + FTQ |
-| RAS | shadow / checkpointed | checkpointed | checkpointed |
+| RAS | implementation not fully public | implementation not fully public | documented speculative/committed persistent design |
 | Front end | decoupled, deep FTQ, multi-branch fetch | decoupled, op-cache fed | decoupled BPU + FTQ |
-| Mispredict penalty | ~17 cycles (deep) | ~13 cycles | ~11–13 cycles |
+| Mispredict penalty | microbenchmark dependent | microbenchmark dependent | 13 cycles in the typical V2 configuration table |
 
-Every row is §0–§7 in silicon: the TAGE/perceptron split of §5.2 (Intel/SiFive/Xiangshan lean TAGE, AMD leans perceptron-family), the multi-level BTB of §2.2, the checkpointed/shadow RAS of §6, and the decoupled FTQ front end of §7. Golden Cove's deeper pipe raises $P$, so it invests proportionally more in $m$ (accuracy) to keep §0.1's $W\times P$ tax bounded; Xiangshan is the one you can read end-to-end, composing TAGE-SC-L + ITTAGE + RAS behind an FTQ ([Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md)).
+The commercial columns are intentionally cautious because exact predictor composition and accuracy are not contractual product specifications. XiangShan is the one column that can be read module by module: uFTB, FTB, TAGE-SC, ITTAGE, and a persistent RAS feed a decoupled FTQ, with explicit speculative history and redirect recovery ([Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md)).
 
 ---
 
@@ -556,7 +556,7 @@ Every row is §0–§7 in silicon: the TAGE/perceptron split of §5.2 (Intel/SiF
 ## Cross-references
 
 - **Down the stack (what this is built from):** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (the pipeline and fetch stage whose bubble this eliminates; the resolution depth that sets $P$), [CMOS_Fundamentals](../../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and SRAM access-time scaling behind §2.2's capacity–latency knee and §4.3's fold delay).
-- **Up / adjacent (what builds on it):** [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the speculative back end this front end feeds; its §6 misprediction limiter and §2.5 checkpoint recovery are the other half of every model here), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) & [Memory](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (the I-cache the FTQ drives and prefetches), [TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (the iTLB in the fetch path), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a complete open core: TAGE-SC-L + ITTAGE + RAS behind an FTQ), [Performance_Modeling_and_DSE](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) (where the CPI/penalty models here feed design-space exploration).
+- **Up / adjacent (what builds on it):** [Speculative_Execution](03_Speculative_Execution.md) (history checkpoints, validation, transient state, and recovery beyond the predictor), [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the backend this front end feeds), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) & [Memory](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (the I-cache the FTQ drives and prefetches), [TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (the iTLB in the fetch path), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a current open implementation with TAGE-SC, ITTAGE, persistent RAS, and FTQ), [Performance_Modeling_and_DSE](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) (where CPI/penalty models feed design-space exploration).
 - **The theory this page leans on:** the §0.1 tax is the branch term of the CPI stack ([Performance_Modeling_and_DSE §2.1](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md)); the §7.1 FTQ depth is Little's law (occupancy = rate × latency) applied to prefetch distance, the same identity that sizes the OoO window and GPU occupancy ([Performance_Modeling_and_DSE §9.1](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md)); and TAGE's Bayes-risk floor (§4.2) is the branch-stream analogue of the roofline ceiling — the irreducible limit a real design sits below.
 
 ---
@@ -571,4 +571,4 @@ Every row is §0–§7 in silicon: the TAGE/perceptron split of §5.2 (Intel/SiF
 6. McFarling, S., "Combining Branch Predictors," *DEC WRL TN-36*, 1993. gshare and the tournament idea — §3.2, §5.2.
 7. Kessler, R.E., "The Alpha 21264 Microprocessor," *IEEE Micro*, 19(2), 1999. Tournament predictor and speculative RAS repair — §5.2, §6.
 8. Yeh, T.-Y. and Patt, Y.N., "Two-Level Adaptive Branch Prediction," *MICRO-24*, 1991. The GHR and correlation — §3.2.
-9. Xiangshan Team, "Xiangshan Nanhu Microarchitecture Manual," 2022. TAGE-SC-L + ITTAGE + decoupled FTQ front end in open-source RISC-V — §8.
+9. XiangShan Team, “Kunminghu BPU, FTQ, and RAS Design Documents,” current public documentation — [BPU](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/BPU/), [FTQ](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/FTQ/), [RAS](https://docs.xiangshan.cc/projects/design/en/latest/frontend/BPU/RAS/).

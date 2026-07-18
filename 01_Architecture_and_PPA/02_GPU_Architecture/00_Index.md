@@ -20,14 +20,14 @@ flowchart LR
 
 | Order | Subdomain | Chapters | What it owns |
 |---:|---|---:|---|
-| 1 | [Core Architecture](01_Core_Architecture/00_Index.md) | 2 | single-instruction, multiple-thread execution, scheduling, divergence, occupancy |
+| 1 | [Core Architecture](01_Core_Architecture/00_Index.md) | 4 | SIMT execution, scheduling, operand delivery, independent threads, asynchronous pipelines |
 | 2 | [Memory System](02_Memory_System/00_Index.md) | 2 | coalescing, shared memory, caches, translation, partitions, HBM |
 | 3 | [Scale-Up](03_Scale_Up/00_Index.md) | 1 | peer memory, topology, collectives, placement, communication overlap |
 | 4 | [GPU Simulation](04_Simulation/00_Index.md) | 1 | execution/trace models for GPU timing and memory behavior |
 
 ## Reading order
 
-[GPU Architecture](01_Core_Architecture/01_GPU_Architecture.md) → [SIMT Scheduling](01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md) → [GPU Memory](02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md) → [HBM](02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md) → [Multi-GPU](03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md).
+[GPU Architecture](01_Core_Architecture/01_GPU_Architecture.md) → [SIMT Scheduling](01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md) → [Operand Delivery](01_Core_Architecture/03_Operand_Collectors_Register_Files_and_Scoreboards.md) → [Independent Threads and Asynchronous Pipelines](01_Core_Architecture/04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md) → [GPU Memory](02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md) → [HBM](02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md) → [Multi-GPU](03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md).
 
 **Hands off to:** [SoC and Chiplet Architecture](../04_SoC_and_Chiplet_Architecture/00_Index.md) for shared on-chip fabrics and die/package composition.
 
