@@ -4,7 +4,7 @@
 > single instruction, multiple threads (SIMT); high-bandwidth memory (HBM); double data rate (DDR); network on chip (NoC); Advanced Microcontroller Bus Architecture (AMBA);
 > tera operations per second (TOPS); input/output (I/O).
 
-Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names. It contains **53 substantive chapters in 28 focused subdomains**.
+Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names. It contains **54 substantive chapters in 28 focused subdomains**.
 
 > **New to computer architecture?** Begin with [Architecture Primer — A First Map of the Machine](05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md). It explains the basic ideas, units, and abbreviations assumed by the later books.
 
@@ -41,7 +41,7 @@ flowchart LR
 | [GPU Architecture](02_GPU_Architecture/00_Index.md) | 4 | 8 | SIMT core, operand delivery, independent-thread/asynchronous pipelines, memory/HBM, scale-up, simulation |
 | [NPU Architecture](03_NPU_Architecture/00_Index.md) | 4 | 9 | dense/Transformer/sparse dataflows, mapping, decoupled access/execute, host integration, simulation |
 | [SoC and Chiplet Architecture](04_SoC_and_Chiplet_Architecture/00_Index.md) | 6 | 8 | system composition, DDR, AMBA protocols, NoC, I/O policy, chiplets |
-| [Architecture Foundations and Methods](05_Architecture_Foundations_and_Methods/00_Index.md) | 6 | 8 | primer, performance/PPA, memory structures, simulation method/tool selection |
+| [Architecture Foundations and Methods](05_Architecture_Foundations_and_Methods/00_Index.md) | 6 | 9 | primer, performance/PPA, memory structures, benchmark-to-results simulation workflow, tool selection |
 
 ## Folder tree
 
@@ -91,7 +91,7 @@ flowchart LR
 | Understand a GPU below CUDA | [GPU core](02_GPU_Architecture/01_Core_Architecture/00_Index.md) → [GPU memory](02_GPU_Architecture/02_Memory_System/00_Index.md) → [scale-up](02_GPU_Architecture/03_Scale_Up/00_Index.md) |
 | Understand an NPU below TOPS | [NPU compute](03_NPU_Architecture/01_Compute_Dataflows/00_Index.md) → [mapping/memory](03_NPU_Architecture/02_Mapping_and_Memory/00_Index.md) → [integration](03_NPU_Architecture/03_System_Integration/00_Index.md) |
 | Compose a complete chip | one compute architecture → [SoC system modeling](04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md) → [memory](04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) → [NoC](04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/00_Index.md) |
-| Evaluate a design honestly | [workloads/performance](05_Architecture_Foundations_and_Methods/02_Performance_Analysis/00_Index.md) → [PPA uncertainty](05_Architecture_Foundations_and_Methods/03_PPA_Estimation/00_Index.md) → [simulation methodology](05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md) |
+| Evaluate a design honestly | [workloads/performance](05_Architecture_Foundations_and_Methods/02_Performance_Analysis/00_Index.md) → [PPA uncertainty](05_Architecture_Foundations_and_Methods/03_PPA_Estimation/00_Index.md) → [simulation methodology](05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md) → [benchmark-to-results workflow](05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) |
 
 ---
 

@@ -2143,3 +2143,58 @@ scratchpad-buffer lifetime, generation tags, bank/port reservations, translation
 context, completion ordering, and backpressure. Check the event-dependency graph
 for cycles and ensure a late response from an old buffer generation cannot make a
 new command ready.
+
+#### Q29: Trace one CPU benchmark from C source to a reported gem5 IPC.
+
+*From [Benchmark to Results](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) and [gem5](../01_Architecture_and_PPA/01_CPU_Architecture/08_Simulation/01_gem5.md)*
+
+**Answer:** Freeze source/input/compiler/flags/ISA/ABI/libraries; cross-compile to
+a target ELF; inspect its header, loadable segments, and disassembly. The source
+becomes instructions, while the input dataset remains data loaded into simulated
+memory and changes branches, loop counts, and addresses. The loader maps ELF
+segments and initializes PC/stack. Fetch/decode creates static instruction
+descriptions and one dynamic record per execution; the timing CPU renames,
+schedules, executes, accesses memory, recovers, and retires those records while
+component models accumulate primitive counters. Fast-forward, warm state, reset
+statistics, run the ROI, dump, verify exit/output, then calculate
+$\text{IPC}=N_{retired}/C$. Preserve the binary/config/log because source alone
+does not identify the simulated instruction stream.
+
+#### Q30: Why must every memory or network trace name its capture point?
+
+*From [Benchmark to Results](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) and [DRAM Simulators](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/06_Simulation/01_DRAM_Simulators.md)*
+
+**Answer:** A CPU load/store trace contains virtual operations before translation
+and caches; an L1-miss trace omits hits but includes lower-level traffic; an
+LLC-miss/writeback trace approximates controller demand; a DRAM command trace is
+already scheduled. Feeding the wrong level invents or removes traffic and may
+use virtual bits for physical bank mapping. Also distinguish address order from
+arrival time: a fixed trace can compare memory policy under fixed offered load,
+but cannot reproduce closed-loop throttling when a slower memory delays future
+requests.
+
+#### Q31: What must happen between a PyTorch model and an NPU cycle result?
+
+*From [Accelerator and NPU Simulators](../01_Architecture_and_PPA/03_NPU_Architecture/04_Simulation/01_Accelerator_and_NPU_Simulators.md)*
+
+**Answer:** Export a fixed-shape/precision graph such as ONNX; record exporter and
+opset; run shape inference, folding, canonicalization, fusion, layout,
+quantization, and partitioning; report unsupported/fallback nodes. Lower each
+modeled node to convolution/GEMM/vector/reduction dimensions, then generate the
+tool's topology/problem file and a legal mapping onto array/memory resources.
+The simulator derives access counts or cycle events and composes operators along
+dependencies/shared resources. Validate model output and operator coverage before
+quoting cycles, utilization, or energy; a hand-written convolution CSV is not by
+itself a full-model simulation.
+
+#### Q32: How should sampled simulator results be combined?
+
+*From [Benchmark to Results](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md)*
+
+**Answer:** For phase weights $w_i$, calculate
+$\widehat{\mathrm{CPI}}=\sum_i w_i\mathrm{CPI}_i$ and then invert for IPC; do
+not average sample IPC blindly. Equivalently aggregate consistently weighted
+instructions and cycles. Calculate each benchmark's speedup from equivalent work
+and use the geometric mean for a suite of ratios, while retaining per-benchmark
+results and confidence intervals. Warm-up bias is systematic and is not removed
+by more samples.

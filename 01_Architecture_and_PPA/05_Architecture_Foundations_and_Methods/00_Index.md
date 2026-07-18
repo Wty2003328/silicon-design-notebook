@@ -26,7 +26,7 @@ flowchart LR
 | 2 | [Performance Analysis](02_Performance_Analysis/00_Index.md) | 2 | Which workloads matter, and which design performs better? |
 | 3 | [PPA Estimation](03_PPA_Estimation/00_Index.md) | 1 | What power, performance, and area range is credible before RTL? |
 | 4 | [Hardware Structures](04_Hardware_Structures/00_Index.md) | 1 | What circuit structures store architecture state? |
-| 5 | [Simulation Methodology](05_Simulation_Methodology/00_Index.md) | 2 | Which abstraction can answer the question without misleading us? |
+| 5 | [Simulation Methodology](05_Simulation_Methodology/00_Index.md) | 3 | How does source become a simulator artifact, dynamic events, raw counters, and a defensible result? |
 | 6 | [Tool Landscape](06_Tool_Landscape/00_Index.md) | 1 | Which specialized simulator family should we investigate? |
 
 ## How to use this book

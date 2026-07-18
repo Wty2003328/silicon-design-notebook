@@ -302,7 +302,7 @@ The mature stance: quote simulated numbers with their provenance and error class
 
 - **Down the stack:** [Performance_Modeling_and_DSE](../02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) (analytical kernels + the NeuSim worked example), [OoO_Execution](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (the structures an O3 timing model tracks), [Memory](../04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) / [DDR_Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (what DRAM simulators encode).
 - **Up the stack:** [Full_Chip_Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) (composing leaf models into a chip; the full tool/fidelity ladder and the perf→power→thermal loop).
-- **Sibling pages (this folder):** per-tool deep dives — [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md) (the event engine + O3 cost model of §3/§6 made concrete), [DRAM_Simulators](../../04_SoC_and_Chiplet_Architecture/06_Simulation/01_DRAM_Simulators.md) (the banks/scheduler realizing §7's bandwidth-as-output), [GPU_Simulators](../../02_GPU_Architecture/04_Simulation/01_GPU_Simulators.md), [Accelerator_and_NPU_Simulators](../../03_NPU_Architecture/04_Simulation/01_Accelerator_and_NPU_Simulators.md), [Other_Architecture_Simulators](../06_Tool_Landscape/01_Other_Architecture_Simulators.md), and [Analytical_Models](02_Analytical_Models.md) (the closed-form dual of §6's interval model). Folder [index](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md).
+- **Sibling and tool pages:** [Benchmark to Results](03_Benchmark_to_Results_End_to_End.md) follows source/graph through compiler, assembly/operators, loading, dynamic work, timing events, counters, and final formulas; [Analytical Models](02_Analytical_Models.md) is the closed-form dual. Per-tool deep dives: [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md), [DRAM Simulators](../../04_SoC_and_Chiplet_Architecture/06_Simulation/01_DRAM_Simulators.md), [GPU Simulators](../../02_GPU_Architecture/04_Simulation/01_GPU_Simulators.md), [Accelerator and NPU Simulators](../../03_NPU_Architecture/04_Simulation/01_Accelerator_and_NPU_Simulators.md), and [Other Architecture Simulators](../06_Tool_Landscape/01_Other_Architecture_Simulators.md).
 
 ---
 
@@ -317,4 +317,4 @@ The mature stance: quote simulated numbers with their provenance and error class
 
 ---
 
-⬅ [Simulators Index](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md) · [Architecture Book Contents](../../00_Index.md) · next ➡ [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md)
+← [Simulation Methodology index](00_Index.md) · next → [Analytical Models](02_Analytical_Models.md)

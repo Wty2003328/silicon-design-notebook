@@ -2,7 +2,7 @@
 
 > **First-time reader orientation:** A network-on-chip model tracks packets, router queues, links, and flow control. A coherence model tracks cache permissions, outstanding transactions, and races. Coupling matters because congestion delays coherence messages, delayed messages change cache and CPU behavior, and that feedback changes later traffic; a fixed trace may miss the loop.
 
-> **Abbreviation key — skim now and return as needed:** central processing unit (CPU); register-transfer level (RTL); instructions per cycle (IPC); miss status holding register (MSHR); virtual channel (VC);
+> **Abbreviation key — skim now and return as needed:** central processing unit (CPU); register-transfer level (RTL); instructions per cycle (IPC); miss status holding register (MSHR); transient buffer entry (TBE); network interface (NI); virtual channel (VC);
 > quality of service (QoS); service-level objective (SLO).
 
 > **Prerequisites:** [Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md), [Cache Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md), [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md), and [Routing, Flow Control, and Deadlock](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md).
@@ -139,6 +139,33 @@ In a coupled model:
 5. protocol state consumes/generates responses;
 6. response frees resources and wakes core;
 7. core timing changes subsequent requests.
+
+This list begins after compilation and execution have already done important work. The end-to-end chain is:
+
+~~~text
+benchmark source -> target binary -> dynamic load/store -> translated physical address
+-> cache lookup -> coherence transaction -> protocol message(s)
+-> network packet(s) -> flits -> router/link events
+-> destination protocol transition -> response flits -> cache fill -> core wakeup
+~~~
+
+The dynamic instruction supplies operation type, byte mask, program age and virtual address. Translation supplies the physical block used for directory/home selection. Cache state decides whether any coherence transaction exists. The protocol may amplify one miss into several messages—for example request, forwarded snoop, data response and acknowledgements. Packetization then divides each message by link/flit width:
+
+$$
+N_{flit}(m)=\left\lceil\frac{B_{header}+B_{payload}(m)}{B_{flit}}\right\rceil.
+$$
+
+For every flit, the network model records injection, virtual-channel allocation, switch traversal, link traversal, stalls and ejection. The protocol controller consumes the reassembled message, changes stable/transient state, and may generate new messages. The core sees completion only after the correct response returns and the cache/MSHR installs it. Thus one instruction's observed miss latency is the sum of local controller delay, all message paths, remote service and queueing—but their overlap is determined by event timing, not by adding average hop latencies afterward.
+
+Keep raw layers separate when calculating results:
+
+- **instruction level:** committed instructions, stall cycles, IPC;
+- **transaction level:** shared-read requests (often named `GETS`), ownership/modified requests (often `GETM`), upgrades, writebacks, invalidations, and retries;
+- **message level:** request, response, data, and acknowledgment bytes;
+- **network level:** packets, flits, hops, blocked cycles, link/VC occupancy;
+- **latency level:** injection-to-ejection network latency versus issue-to-fill coherence miss latency.
+
+Average packet latency cannot be substituted for cache-miss latency: a miss may wait before injection, require multiple dependent packets, and wait again at the destination. [Benchmark to Results](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) defines the earlier compiler/loader/ROI stages.
 
 Avoid zero-time combinational cycles across components. Define event ordering or clock phases so same-cycle credit/message/response behavior is deterministic and matches intended hardware.
 

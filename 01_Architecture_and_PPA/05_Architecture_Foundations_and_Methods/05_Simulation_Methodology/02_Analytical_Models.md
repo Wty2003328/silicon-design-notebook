@@ -256,3 +256,7 @@ The failure mode in both directions is real: **trusting an analytical *ceiling* 
 - J. D. C. Little, "A Proof for the Queuing Formula $L=\lambda W$," *Operations Research*, 1961; L. Kleinrock, *Queueing Systems*, 1975 (M/M/1, M/G/1 Pollaczek–Khinchine).
 - M. S. B. Altaf, D. A. Wood, "LogCA: A High-Level Performance Model for Hardware Accelerators," *ISCA*, 2017 — [PDF](https://research.cs.wisc.edu/multifacet/papers/isca17_logca.pdf).
 - A. Alexandrov et al., "LogGP: Incorporating Long Messages into the LogP Model," *SPAA*, 1995; D. Culler et al., "LogP: Towards a Realistic Model of Parallel Computation," *PPoPP*, 1993.
+
+---
+
+← [Simulation Methodology](01_Simulation_Methodology.md) · [Methodology index](00_Index.md) · next → [Benchmark to Results](03_Benchmark_to_Results_End_to_End.md)

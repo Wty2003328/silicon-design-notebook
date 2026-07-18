@@ -6,7 +6,7 @@
 > design-space exploration (DSE); reorder buffer (ROB); register file (RF); static random-access memory (SRAM); dynamic random-access memory (DRAM);
 > high-bandwidth memory (HBM); double data rate (DDR); network on chip (NoC); direct memory access (DMA); first come, first served (FCFS);
 > dynamic voltage and frequency scaling (DVFS); processing element (PE); multiply-accumulate (MAC); general matrix multiplication (GEMM); output stationary (OS);
-> artificial intelligence (AI); tensor processing unit (TPU); compute-in-memory (CIM); million instructions per second (MIPS); service-level objective (SLO);
+> artificial intelligence (AI); Open Neural Network Exchange (ONNX); intermediate representation (IR); integer 8-bit (INT8); 8-bit floating point (FP8); key-value (KV) cache; comma-separated values (CSV); tensor processing unit (TPU); compute-in-memory (CIM); million instructions per second (MIPS); service-level objective (SLO);
 > kilobyte (KB); gigabyte (GB); terabyte (TB); gigahertz (GHz).
 
 > **Prerequisites:** [Simulation_Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md) (the paradigm/fidelity vocabulary this page instantiates for accelerators), [Performance_Modeling_and_DSE §9–11](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) (systolic-array cycle model, dataflow taxonomy, the NeuSim worked example this page extends).
@@ -57,6 +57,99 @@ The rule mirrors the CPU rule ("use the fastest model that distinguishes the cho
 - **Planning a datacenter NPU, an LLM (large language model) serving deployment, or a multi-tenant chip?** Operator-level — the questions are whole-graph (parallelism strategy, batch, KV-cache traffic), multi-chip (collectives over the interconnect), and system (power, carbon, SLO), none of which a single-layer model sees. This is the [NeuSim §11](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) rung.
 
 **These are complementary, not competing.** A realistic flow uses Timeloop to pick the mapping, SCALE-Sim to check the mapping's real stall behavior on the chosen array/SRAM, and an operator-level tool to roll the per-layer results into a graph- and pod-level PPA number.
+
+### 1.1 From a framework benchmark to the simulator's workload
+
+For the shared compiler/artifact/ROI/statistics chain, see [Benchmark to Results](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md). NPU simulators usually enter **above assembly**, so the important audit is how the model graph becomes operator and tensor descriptors.
+
+#### Stage A — freeze model semantics and input shapes
+
+A PyTorch, TensorFlow, or JAX benchmark is executable framework code. It may contain Python control, data-dependent shapes, preprocessing, custom operators, and training-only behavior. Exporting inference to ONNX serializes a more constrained artifact:
+
+- a directed graph of operator nodes;
+- tensor inputs/outputs with element types and shapes;
+- constant initializers such as trained weights;
+- node attributes such as stride, padding, axes, or transpose flags;
+- operator-set versions defining semantics.
+
+The exported graph is not automatically identical to the source module. Training nodes may disappear; Python control may be specialized for example inputs; dynamic dimensions may remain symbolic; custom operators may be opaque. Record framework/exporter/opset versions, input shapes, batch/sequence length, precision, model weights, and preprocessing. An accelerator result without those is not a reproducible workload.
+
+#### Stage B — graph optimization changes the operator list
+
+Before architecture simulation, a compiler/frontend typically performs shape inference and graph passes:
+
+1. **constant folding** evaluates subgraphs that depend only on weights/constants;
+2. **dead-node elimination** removes outputs never consumed;
+3. **canonicalization/decomposition** converts unsupported high-level nodes into supported primitives;
+4. **fusion** combines patterns such as matrix multiply + bias + activation;
+5. **layout selection** chooses tensor dimension order and inserts/removes transposes;
+6. **quantization** selects INT8/FP8/etc., scale metadata, accumulator width, and conversion nodes;
+7. **partitioning** assigns nodes to matrix, vector, CPU fallback, or multiple NPU cores.
+
+Each pass changes performance inputs. Fusion may eliminate an intermediate DRAM write/read; decomposition may expose several launches; layout conversion adds real bytes; fallback nodes may dominate latency even though the NPU simulator ignores them. Preserve a before/after node list and a **coverage report**:
+
+$$
+\text{coverage}_{ops}=\frac{\text{operations modeled on NPU}}{\text{operations in optimized graph}},\qquad
+\text{coverage}_{time}=\frac{\text{reference time of modeled nodes}}{\text{whole reference time}}.
+$$
+
+Operation-count coverage can be misleading when one unsupported normalization or data-transfer node controls the critical path, so time coverage is preferable when a reference run exists.
+
+#### Stage C — operators become loop bounds
+
+Architecture tools do not simulate a node name; they need dimensions and data movement. A frontend lowers each node:
+
+- `MatMul(A[M,K], B[K,N])` → GEMM $(M,N,K)$ and datatype;
+- convolution → $(N,C,K,P,Q,R,S)$ plus stride/dilation/padding, or an equivalent GEMM;
+- attention → query/key/value (Q/K/V) projection GEMMs, score GEMM, mask/softmax reductions, value GEMM, output projection, and KV-cache bytes;
+- elementwise/reduction → vector length, input/output bytes, reduction axes, and special-function work.
+
+For a GEMM, useful work is usually reported as $M N K$ MACs or $2MNK$ arithmetic operations. State the convention. Tensor bytes require layout and precision:
+
+$$
+B_A=MKb_A,\qquad B_B=KNb_B,\qquad B_C=MNb_C,
+$$
+
+before tiling/reuse. A tool that receives only $(M,N,K)$ cannot infer surrounding transpose, quantization, softmax, or host-to-device work.
+
+#### Stage D — the tool-specific input is generated
+
+The same lowered operator reaches different tools through different files:
+
+- **SCALE-Sim:** architecture configuration plus a topology CSV containing convolution dimensions or a GEMM CSV containing $M,N,K$. It is already a layer list; SCALE-Sim does not parse PyTorch source or ONNX itself.
+- **Timeloop:** a tensor-algebra problem shape, architecture/storage hierarchy, component energy information, mapping constraints, and either a candidate mapping or mapper search directives.
+- **MAESTRO:** layer dimensions plus data-centric mapping directives such as spatial/temporal maps and clusters.
+- **ONNXim:** consumes an ONNX graph and maps supported nodes into its multi-core NPU/system model, retaining more graph-level scheduling context.
+- **NeuSim-style operator model:** consumes per-operator shapes/parallelism and system parameters, then composes operator results across a graph/deployment.
+
+Calling all of these “running the model” hides different coverage. The run manifest should name the exact intermediate artifact and conversion script.
+
+#### Stage E — mapping becomes events or counts
+
+For each operator, a mapping selects tile sizes, loop order, spatial unrolling, double buffers, memory levels, and dataflow. Then:
+
+- Timeloop/MAESTRO count accesses/reuse and apply analytical performance/energy rules;
+- SCALE-Sim time-steps systolic demand and produces compute, SRAM and DRAM traces;
+- a coupled model feeds those requests to NoC/DRAM event models and lets stalls emerge;
+- an operator-level model places the resulting latency/traffic on a graph dependency schedule.
+
+SCALE-Sim's output separation is especially instructive. A run can emit `COMPUTE_REPORT.csv` (cycles, stalls and utilization), `BANDWIDTH_REPORT.csv` (average and maximum SRAM/DRAM bandwidth), `DETAILED_ACCESS_REPORT.csv` (per-layer access and access-cycle totals), and `TIME_REPORT.csv` (modeled layer time in microseconds from the selected hardware-specific linear model), plus optional cycle-by-cycle SRAM/DRAM access traces. These files answer different questions: compute cycles are the direct architectural result, while `TIME_REPORT.csv` is a calibrated conversion that also depends on the configured `TimeLinearModel`. Neither is the wall-clock time spent running the simulator on the host computer; measure that separately if simulation speed matters. Final layer time must come from one consistent timing mode; do not add an analytical bandwidth penalty to compute cycles that already include Ramulator stalls.
+
+#### Stage F — graph time is a dependency schedule, not always a sum
+
+For a strictly sequential inference graph,
+
+$$
+T_{graph}=\sum_o(T_{compute,o}+T_{transfer,o}+T_{launch,o}).
+$$
+
+With fusion, pipeline parallelism, asynchronous DMA, or multiple engines, operators overlap. The correct time is the length of the critical path through resource/dependency events:
+
+$$
+T_{graph}=\max_{p\in\text{dependency paths}}\sum_{o\in p}T_o
+$$
+
+after adding serialization edges for shared matrix engines, DMA channels, SRAM banks, NoC links, and DRAM. Merely summing per-layer isolated latencies is pessimistic when overlap is legal and optimistic when shared-resource contention was omitted.
 
 ---
 

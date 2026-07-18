@@ -7,7 +7,7 @@
 > single instruction, multiple data (SIMD); single instruction, multiple threads (SIMT); static random-access memory (SRAM); dynamic random-access memory (DRAM); high-bandwidth memory (HBM);
 > first in, first out (FIFO); level-one cache (L1); level-two cache (L2); network on chip (NoC); first come, first served (FCFS);
 > dynamic voltage and frequency scaling (DVFS); general matrix multiplication (GEMM); general-purpose computing on graphics processing units (GPGPU); Parallel Thread Execution (PTX); NVIDIA native machine instructions (SASS);
-> program counter (PC); streaming multiprocessor (SM); artificial intelligence (AI); floating point (FP); fused multiply-add (FMA);
+> program counter (PC); streaming multiprocessor (SM); CUDA binary (cubin); CUDA fat binary (fatbin); NVIDIA binary-instrumentation tool (NVBit); Open Computing Language (OpenCL); comma-separated values (CSV); artificial intelligence (AI); floating point (FP); fused multiply-add (FMA);
 > floating-point operation (FLOP); read after write (RAW); write after write (WAW); initiation interval (II); region of interest (ROI);
 > gigabyte (GB); terabyte (TB); gigahertz (GHz).
 
@@ -200,7 +200,62 @@ and the committed SASS instruction/address stream is very nearly the *entire* st
 
 The stat pipeline, end to end, and *how each number is computed* ([Simulation_Methodology §5](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md)):
 
-**Execution-driven (GPGPU-Sim).** `nvcc` compiles CUDA/OpenCL to PTX+SASS in the fat binary → GPGPU-Sim extracts PTX (or `cuobjdump`'s SASS, optionally converted to PTXPlus) → a **functional** pass executes threads to produce correct state and the dynamic instruction stream → that same stream drives the **timing** pass, accumulating cycles through the §2–3 model.
+For the shared source/compiler/ROI/counter concepts, see [Benchmark to Results](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md). GPU simulation adds a split CPU/GPU compilation path and a warp-level dynamic stream.
+
+### 6.1 What `nvcc` produces
+
+A CUDA `.cu` translation unit contains ordinary host C++ plus device functions and kernels. The compiler driver logically performs two compilations:
+
+~~~text
+CUDA source
+├─ host path -> host C++/object -> CPU executable
+└─ device path -> PTX virtual ISA -> ptxas -> target cubin/SASS
+                                      └──────┬──────┘
+                         PTX + one/more cubins -> fat binary embedded in host object
+~~~
+
+At launch, the CUDA runtime/driver selects a compatible cubin for the real GPU; if only compatible PTX is available, it may just-in-time compile PTX to a target cubin. Consequently, record the CUDA toolkit, `-arch`/`-code` targets, optimization/fast-math flags, libraries, and driver used for trace capture. They determine final instruction scheduling, register allocation, spills, and numerical operations.
+
+The host executable is still part of the benchmark. It allocates/copies memory, sets kernel arguments, launches grids, synchronizes streams, and checks results. Most GPU timing studies model only kernels and treat host/runtime overhead separately. A report must state whether end-to-end time includes transfers and launch/synchronization or only device cycles.
+
+### 6.2 Execution-driven PTX path
+
+In GPGPU-Sim's execution-driven path, the CUDA/OpenCL runtime calls are redirected into the simulator. It extracts PTX from the application artifact and creates the grid, thread blocks, threads, registers, parameters, and memory spaces described by the launch.
+
+The functional frontend interprets PTX for every scalar thread. It computes register values, branch outcomes, effective addresses, barriers, atomics, and program output. Threads are grouped into warps for timing. When lanes diverge, one dynamic warp instruction carries an active mask identifying participating lanes. A memory instruction carries the per-lane addresses produced by functional execution; the coalescer converts them into cache-sector or memory transactions.
+
+The timing model then answers when the already-defined operation can issue and finish. It allocates blocks to SMs subject to register/shared-memory/slot limits, chooses eligible warps, checks scoreboard dependencies and pipeline ports, advances caches/interconnect/DRAM, and returns memory responses. Functional values determine *what* runs; timing state determines *when* it runs.
+
+PTX is not final machine assembly. The model must approximate how PTX maps to machine operations, and it cannot exactly reproduce undocumented SASS scheduling/register allocation. Use this mode when functional feedback matters or a hardware trace is unavailable, and label its ISA boundary.
+
+### 6.3 Trace-driven SASS path
+
+Accel-Sim's NVBit tracer runs the compiled application on a real NVIDIA GPU and records the dynamic SASS stream. The trace set includes a kernel list and per-kernel instruction records sufficient for the frontend to reconstruct opcode class, PC, active mask, register operands, memory addresses/widths, and control/synchronization behavior needed by the timing model.
+
+The trace is already **dynamic**: a static instruction in a loop appears once per executed warp iteration. It is also already target-compiled: register allocation, spills, SASS instruction selection, and the path observed during capture are present. Trace generation therefore requires a real compatible GPU, correct input dataset, and completed/correct hardware run.
+
+The SASS frontend reads records in program order per warp and admits them only when the simulated warp can progress. It does not preserve the capture GPU's issue timestamps; the modeled scheduler, caches, interconnect and HBM generate new timing under the selected configuration. This is why one trace can compare timing configurations. However, atomics, spin loops, or races whose dynamic path changes with timing require special handling or execution-driven validation—the trace has frozen the capture outcome.
+
+The official framework makes the stages visible: build the benchmark/data, run the NVBit hardware tracer, point `run_simulations.py` at the trace directory and a named GPU configuration, then use `get_stats.py` to extract selected counters into a table such as `stats.csv`. Preserve the complete per-kernel simulator logs as the raw evidence; the CSV is a derived summary whose column definitions and extraction command belong in the run manifest. Keep the trace hash and capture device/toolchain beside the simulated configuration.
+
+### 6.4 Kernel launch becomes cycle events
+
+Before cycle 0 of a kernel, the model knows grid dimensions, block dimensions, registers/thread, shared memory/block, and instruction/trace metadata. It then:
+
+1. allocates as many blocks to each SM as resource limits allow;
+2. creates resident warps and initializes their PCs/reconvergence state;
+3. each cycle, marks warps eligible only when operands, barriers and prior memory operations permit;
+4. scheduler(s) issue warp instructions into compatible pipelines;
+5. memory instructions coalesce lane requests, then allocate cache/MSHR/interconnect/DRAM resources;
+6. completions clear scoreboard dependencies and make later instructions eligible;
+7. completed blocks release resources so waiting blocks can launch;
+8. the kernel ends after all blocks complete and pending modeled work drains.
+
+Stall counters are predicates sampled at these gates: no eligible warp, scoreboard dependency, pipeline full, operand-collector conflict, MSHR full, interconnect backpressure, DRAM queueing, or barrier wait. They explain cycles; they are not compiler annotations.
+
+### 6.5 Raw outputs and reduction
+
+**Execution-driven (GPGPU-Sim).** `nvcc` compiles CUDA device code—or a supported OpenCL toolchain supplies its corresponding device artifact—into PTX and, when requested, target SASS in a fat binary → GPGPU-Sim extracts PTX (or `cuobjdump`'s SASS, optionally converted to PTXPlus) → a **functional** pass executes threads to produce correct state and the dynamic instruction stream → that same stream drives the **timing** pass, accumulating cycles through the §2–3 model.
 
 **Trace-driven (Accel-Sim).** NVBit records the SASS trace on real hardware → the trace front-end feeds warp-instructions into GPGPU-Sim 4.0's timing model → cycles accumulate identically.
 

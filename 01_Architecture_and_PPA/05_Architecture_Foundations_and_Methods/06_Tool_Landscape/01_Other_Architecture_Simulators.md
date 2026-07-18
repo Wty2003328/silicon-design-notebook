@@ -9,7 +9,7 @@
 > processing element (PE); multiply-accumulate (MAC); deep neural network (DNN); program counter (PC); operating system (OS);
 > compute-in-memory (CIM); million instructions per second (MIPS); parallel discrete-event simulation (PDES); megahertz (MHz); gigahertz (GHz).
 
-> **Prerequisites:** [Simulation_Methodology](../05_Simulation_Methodology/01_Simulation_Methodology.md) (the paradigm vocabulary — functional/timing/physical, the fidelity ladder, the discrete-event engine, trace- vs execution-driven — that every tool below instantiates).
+> **Prerequisites:** [Simulation Methodology](../05_Simulation_Methodology/01_Simulation_Methodology.md) for paradigm vocabulary and [Benchmark to Results](../05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) for the source/graph → artifact → dynamic work → events → counters chain that every tool below enters at a different boundary.
 > **Hands off to:** [Full_Chip_Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) (composing these into a chip/system model with the perf→power→thermal loop and the tool map).
 
 ---

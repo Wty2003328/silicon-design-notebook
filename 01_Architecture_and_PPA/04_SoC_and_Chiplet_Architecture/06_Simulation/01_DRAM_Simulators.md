@@ -3,7 +3,7 @@
 > **First-time reader orientation:** A DRAM simulator applies memory command timing rules to queued requests, tracks banks and open rows, and estimates latency or bandwidth. Some tools also estimate power. A fixed trace can evaluate controller policies, but it cannot reproduce feedback in which a slower memory fills CPU queues and changes the future request stream.
 
 > **Abbreviation key — skim now and return as needed:** central processing unit (CPU); graphics processing unit (GPU); instructions per cycle (IPC); out-of-order (OoO); reorder buffer (ROB);
-> high-bandwidth memory (HBM); double data rate (DDR); level-two cache (L2); network on chip (NoC); first come, first served (FCFS);
+> high-bandwidth memory (HBM); double data rate (DDR); level-two cache (L2); last-level cache (LLC); translation lookaside buffer (TLB); virtual address (VA); physical address (PA); network on chip (NoC); first come, first served (FCFS);
 > reliability, availability, and serviceability (RAS); finite-state machine (FSM); exclusive OR (XOR); input/output (I/O); kilobyte (KB);
 > gigabyte (GB).
 
@@ -171,10 +171,52 @@ Ramulator 2.0 makes the scheduler (and refresh manager, and RowHammer mitigation
 
 A timing model needs a request stream. There are two ways to feed a DRAM simulator, and for DRAM the *addresses and their arrival times* are the faithful stimulus, so trace-driven is sound here in a way it is **not** for a core ([Simulation_Methodology §4](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md)):
 
-- **Trace-driven (standalone).** A trace of `(cycle, R/W, physical address)` — usually already filtered through the last-level cache — is replayed into the controller. Fast, repeatable, and correct for memory-system studies because the DRAM does not feed back into which addresses exist. This is USIMM's only mode and every tool's default.
+- **Trace-driven (standalone).** A trace of `(cycle, read/write, physical address)` — usually already filtered through the last-level cache — is replayed into the controller. It is fast and repeatable for comparing memory policies under a fixed offered stream, but it does not by itself reproduce core throttling when memory timing changes. This is USIMM's primary stimulus style and every standalone tool supports it.
 - **CPU-coupled (execution-driven).** The DRAM model is a *backend* to a core simulator, and the loop closes: a load's latency stalls the core, which changes *when* the next request arrives, which changes contention. **This feedback is why memory latency and core IPC cannot be studied independently under load.** Ramulator plugs into gem5 and ships a simple built-in out-of-order core (a small [ROB](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) model) to generate realistic timing without a full CPU sim; DRAMSim3 integrates as the memory backend for **gem5, SST, and zSim**; both are the DRAM tier behind the [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md) memory system.
 
-The rule from the methodology page holds exactly: trace-driven is sound *because* the DRAM channel does not feed back into the instruction path — only into *timing*, which a trace with timestamps already carries.
+### 7.1 Where a real DRAM request trace comes from
+
+The full path begins much earlier than the DRAM tool:
+
+~~~text
+compiled load/store instruction
+  -> dynamic effective virtual address
+  -> TLB/page-table translation
+  -> physical address
+  -> L1 access
+  -> private/shared lower-cache access
+  -> LLC miss, writeback, prefetch, or coherence request
+  -> memory-controller request trace
+~~~
+
+A trace captured before the cache hierarchy contains far more requests than DRAM will see. Feeding every CPU load/store directly into Ramulator invents traffic, loses writeback/coherence behavior, and can overstate bandwidth demand by orders of magnitude. A standalone DRAM trace should normally contain requests at the memory-controller boundary: physical block address, read/write type, source/core identity if needed, and an arrival cycle or inter-arrival gap.
+
+Virtual addresses are insufficient unless the trace player reproduces address translation, because DRAM channel/bank/row mapping uses physical bits. Likewise, a read trace alone misses dirty evictions and write-drain phases; a demand-only trace misses prefetch traffic. Record the producer, trace point, cache configuration, address mapping, time unit, line/request size, and whether requests already include coherence and DMA agents.
+
+### 7.2 What standalone replay does each cycle
+
+At trace time $a_i$, the frontend offers request $i$ to the controller. If the finite request queue cannot accept it, the driver must define whether it retries and stalls later arrivals, buffers outside the modeled controller, or drops the request; dropping is almost never correct. Once accepted:
+
+1. address mapping splits the physical address into channel/rank/bank-group/bank/row/column;
+2. the request enters a read or write queue;
+3. the scheduler searches for a request whose next command is legal now;
+4. issuing the command changes bank/row state and future timing guards;
+5. read/write data-bus events and completion callbacks are scheduled;
+6. completion time $d_i$ is recorded and the queue entry is freed.
+
+The raw outputs are accepted/completed requests, queue occupancy over time, command counts, row hits/conflicts, bank/channel utilization, and each $d_i-a_i$. Bandwidth and latency in §8 are reductions of those primitives.
+
+### 7.3 The exact trace-driven validity boundary
+
+A committed address sequence is often stable for a single-thread deterministic program, so trace replay is excellent for comparing DRAM standards, address mappings, schedulers, refresh, or RowHammer policies under the **same offered request stream**. But arrival timestamps are not automatically faithful after memory timing changes: a slower memory fills core/cache queues, which delays future misses. A fixed trace cannot reproduce that closed-loop throttling.
+
+Therefore:
+
+- use standalone traces for memory-service behavior and controlled offered-load comparisons;
+- use a dependency-aware/core wrapper for approximate system slowdown;
+- couple to a CPU/GPU/NPU model when the claim is application execution time, IPC, synchronization, or queue-feedback behavior.
+
+The rule is narrower than “DRAM never changes the instruction path”: the address *order* may remain valid while injection *time* does not. State which one the experiment assumes fixed.
 
 ---
 
