@@ -209,7 +209,7 @@ These three costs shape how real SoCs sequence a frequency change such as DVFS. 
                  power-mgmt controller (sel)
 ```
 
-Switching fast→slow: (1) glitch-free-switch the CPU onto the ring oscillator (a safe intermediate, always running); (2) with the fast PLL now idle, reprogram and relock it to the new frequency; (3) glitch-free-switch back. The voltage/frequency ordering is fixed by which combination is *safe to occupy*: raising speed, raise **voltage first** then frequency; lowering speed, drop **frequency first** then voltage — because $V_{low}+f_{high}$ is a setup-violating corner and the transition must never pass through it. (DVFS control policy and the $V$–$f$ operating points live in [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md).)
+Switching fast→slow: (1) glitch-free-switch the CPU onto the ring oscillator (a safe intermediate, always running); (2) with the fast PLL now idle, reprogram and relock it to the new frequency; (3) glitch-free-switch back. The voltage/frequency ordering is fixed by which combination is *safe to occupy*: raising speed, raise **voltage first** then frequency; lowering speed, drop **frequency first** then voltage — because $V_{low}+f_{high}$ is a setup-violating corner and the transition must never pass through it. (DVFS control policy and the $V$–$f$ operating points live in [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md).)
 
 ---
 
@@ -234,7 +234,7 @@ The naive version, `gated = clk & en`, has the identical §6.1 disease. If `en` 
 | DVFS frequency step | **Divide / switch** (§7) | changes $f$, not just activity |
 | Skip work on invalid-data cycles | **Gate** | the enable is a per-cycle data-valid condition |
 
-The clean division of labour: **gating removes cycles (activity $\alpha$); division and muxing change the rate ($f$).** Power *policy* — where enables come from, retention, isolating gated or powered-off domains — is developed in [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md); the point here is only that the ICG cell obeys the same "switch while low" law as everything else on this page. (A related hazard: a clock-mux input from a *powered-off* domain floats and can inject exactly the spurious edges of §1, so such inputs are clamped by isolation cells fed from the always-on supply — a power-intent detail deferred to that same page.)
+The clean division of labour: **gating removes cycles (activity $\alpha$); division and muxing change the rate ($f$).** Power *policy* — where enables come from, retention, isolating gated or powered-off domains — is developed in [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md); the point here is only that the ICG cell obeys the same "switch while low" law as everything else on this page. (A related hazard: a clock-mux input from a *powered-off* domain floats and can inject exactly the spurious edges of §1, so such inputs are clamped by isolation cells fed from the always-on supply — a power-intent detail deferred to that same page.)
 
 ---
 
@@ -261,7 +261,7 @@ The clean division of labour: **gating removes cycles (activity $\alpha$); divis
 ## Cross-references
 
 - **Down the stack (what this is built from):** [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) — the flip-flop and its setup/hold/clk-to-Q (§4.2), metastability (§4.4), *why a combinational clock mux glitches* (§2.3), and the combinational hazards (§8) that §1 turns into the enemy; [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) — the buffer as a band-limited element that may filter *or* pass a runt (§1).
-- **Up / adjacent (what completes or consumes this):** [PLL_DLL_and_Clock_Distribution](05_PLL_DLL_and_Clock_Distribution.md) — where clean clocks are *generated* (the PLL alternative to the dividers of §5) and *distributed*; [Async_Design_and_CDC](06_Async_Design_and_CDC.md) — metastability and the two-FF synchronizer the glitch-free mux reuses (§6); [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) — clock-gating *policy*, DVFS operating points, and isolation of off domains (§7–§8).
+- **Up / adjacent (what completes or consumes this):** [PLL_DLL_and_Clock_Distribution](05_PLL_DLL_and_Clock_Distribution.md) — where clean clocks are *generated* (the PLL alternative to the dividers of §5) and *distributed*; [Async_Design_and_CDC](06_Async_Design_and_CDC.md) — metastability and the two-FF synchronizer the glitch-free mux reuses (§6); [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) — clock-gating *policy*, DVFS operating points, and isolation of off domains (§7–§8).
 - **Signoff:** [STA](../06_Signoff/01_STA.md) — `create_generated_clock` for every divider (§3, STA §10.2), min-pulse-width checks (§1), and clock-gating checks on the ICG enable (§8, STA §15).
 
 ---

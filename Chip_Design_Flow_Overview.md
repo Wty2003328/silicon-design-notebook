@@ -48,7 +48,7 @@ flowchart TD
 
 Two cross-cutting concerns ride alongside every stage and therefore live in their own track:
 
-- **[02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md)** — power is *specified* at architecture, *intended* in RTL (UPF — Unified Power Format), *implemented* at synthesis/backend, and *signed off* at the end. The track is kept together so you can see the whole story.
+- **[02 · Power & Low-Power](02_Power_and_Low_Power/00_Index.md)** — power is budgeted from workloads, partitioned into power/voltage/clock domains, captured in UPF or CPF, implemented at synthesis/backend, and verified through signoff. The track is kept together so you can see the whole story.
 - **[00 · Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md)** — device physics, logic, and arithmetic the other stages assume.
 
 ---
@@ -61,7 +61,7 @@ The flow is a chain of **producer → artifact → consumer** contracts. Knowing
 |---|---|---|---|
 | Spec → Architecture | PPA budget, workload traces | the numbers are real, not aspirational | perf target needs a cache the area budget can't fit |
 | Architecture → RTL | µarch spec, block diagram, interface defs | pipeline depth, latencies, bus widths are fixed | RTL "improves" a structure and breaks the perf model |
-| RTL → Synthesis | RTL + **SDC constraints** + UPF | RTL is lint-clean, CDC-clean, synthesizable | latch inferred from an incomplete `case`; combinational loop |
+| RTL → Synthesis | RTL + **SDC constraints** + power intent (UPF/CPF) | RTL is lint-clean, CDC-clean, synthesizable; power intent is structurally clean | latch inferred from an incomplete `case`; unmatched isolation/retention strategy |
 | Synthesis → Backend | gate netlist + SDC + **scan-inserted** DFT | netlist is logically equal to RTL; constraints are real | missing false-path → backend chases an impossible path |
 | Backend → Signoff | placed-and-routed DB + parasitics (SPEF) | legal placement, routed, CTS built | unconstrained clock-gating check fails at signoff |
 | Signoff → Manufacturing | **GDSII** + signoff reports | timing/power/DRC/LVS clean, test patterns exist | antenna/DRC waiver that the fab rejects |
@@ -95,7 +95,7 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 |---|---|---|
 | **00 · Fundamentals** | the physics/logic everything assumes | [CMOS](00_Fundamentals/01_CMOS_Fundamentals.md), [Logic blocks](00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md), [Floating point](00_Fundamentals/04_Floating_Point.md) |
 | **01 · Architecture + PPA** | choose a CPU, GPU, or NPU organization; compose the SoC/chiplets; model performance and power/area | [CPU book and methods](01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md), [GPU book and methods](01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md), [NPU book and methods](01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md), [SoC/chiplet book and methods](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md). Each book introduces its own terms, workloads, design-space exploration, physical costs, and simulation evidence. |
-| **02 · Power & Low-Power** | the cross-cutting power track | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md), [Reduction Techniques](02_Power_and_Low_Power/03_Power_Reduction_Techniques.md), [UPF Intent](02_Power_and_Low_Power/04_UPF_Power_Intent.md), [Power Signoff](02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) |
+| **02 · Power & Low-Power** | the cross-cutting power track | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md), [Domain Architecture](02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md), [Reduction Techniques](02_Power_and_Low_Power/04_Power_Reduction_Techniques.md), [UPF/CPF Flow](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md), [Power Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) |
 | **03 · Frontend RTL + Verification** | write synthesizable RTL; verify it | [RTL Design Methodology](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md), [Data types](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md), [Async/CDC](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM](03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Lint/CDC/RDC signoff](03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md), [GLS & Emulation](03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md), [Verification Planning](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md), [Formal](03_Frontend_RTL_and_Verification/12_Formal_Verification.md) |
 | **04 · Synthesis** | RTL → gates under constraints | [Synthesis & Optimization](04_Synthesis/01_Synthesis_and_Optimization.md), [SDC Constraints](04_Synthesis/02_Constraints_SDC.md) |
 | **05 · Backend (Physical Design)** | gates → layout | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md), [Signal Integrity](05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) |
@@ -112,7 +112,7 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 | Mask-set cost (leading node) | ~$10–40M (3nm-class) | why first silicon must work |
 | Tapeout-to-first-silicon | ~8–14 weeks | the fab turnaround |
 | Two ECO kinds | functional (spare cells) vs timing (resize/buffer) | what backend can fix without RTL |
-| Hand-off artifacts | RTL+SDC+UPF → netlist → GDSII | the three lowerings |
+| Hand-off artifacts | RTL + SDC + UPF/CPF → netlist → GDSII | the three lowerings |
 | Signoff corners | × PVT × RC × mode (MCMM) | combinatorial blow-up of checks |
 
 ---
@@ -126,5 +126,5 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 ---
 
 ## Cross-references
-- Power as a cross-cutting track: [02 · Power & Low-Power](02_Power_and_Low_Power/01_Power_Fundamentals.md).
+- Power as a cross-cutting track: [02 · Power & Low-Power](02_Power_and_Low_Power/00_Index.md).
 - The systems analogue (the AI-datacenter "flow") lives in the companion AI-infra notebook.

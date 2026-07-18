@@ -83,12 +83,12 @@ Energy/task ∝ $CV^2$ (f cancels for fixed work): $(0.55/0.75)^2 = 0.54$ → **
 
 **P3 — clock gating.** Clock tree = 30% of block dynamic power; gating achieves 85% idle coverage on a block idle 60% of the time. Saving?
 
-Clock-tree saving = 0.30 × 0.60 × 0.85 ≈ 15.3% of block dynamic power; plus downstream flop-internal clock power and killed datapath toggles (often another ~5–10%). Cheapest power knob in the book — and why ICG (Integrated Clock Gating) insertion is automatic in synthesis ([Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)).
+Clock-tree saving = 0.30 × 0.60 × 0.85 ≈ 15.3% of block dynamic power; plus downstream flop-internal clock power and killed datapath toggles (often another ~5–10%). Cheapest power knob in the book — and why ICG (Integrated Clock Gating) insertion is automatic in synthesis ([Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md)).
 
 ### 3.2 Snap answers
 
 - **Power gating vs clock gating:** clock gating kills dynamic only (state retained, instant wake); power gating kills leakage too (state lost or retention flops; µs-scale wake, rush-current management, isolation cells on outputs).
-- **Why isolation cells?** Floating outputs from an off domain drive X/crowbar current into on domains — clamp at the boundary ([UPF_Power_Intent](../02_Power_and_Low_Power/04_UPF_Power_Intent.md)).
+- **Why isolation cells?** Floating outputs from an off domain drive X/crowbar current into on domains — clamp at the boundary ([UPF/CPF Power Intent](../02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md)).
 - **Level shifters:** any signal crossing voltage domains; missing LS = silent timing/functional hazard, caught only by UPF (Unified Power Format)-aware checks.
 - **Where does leakage go at low Vt (threshold voltage) / high temp?** Subthreshold leakage ∝ $e^{-V_t/nkT}$ — exponential in both; hence multi-Vt mixing (LVT only on critical paths) as a standard closure move.
 
@@ -204,5 +204,5 @@ The grading axis is identical in all four: **clarify constraints → block diagr
 ## Cross-references
 
 - Live-coding companion: [RTL_Coding_Questions](08_RTL_Coding_Questions.md).
-- Per-domain depth: [STA](../06_Signoff/01_STA.md), [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md), [Cache_Microarchitecture](../01_Architecture_and_PPA/01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Formal_Verification](../03_Frontend_RTL_and_Verification/12_Formal_Verification.md).
+- Per-domain depth: [STA](../06_Signoff/01_STA.md), [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md), [Cache_Microarchitecture](../01_Architecture_and_PPA/01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Formal_Verification](../03_Frontend_RTL_and_Verification/12_Formal_Verification.md).
 - AI-systems counterpart (*Common Interview Questions*, *System Design Interview*): companion AI-infra notebook.

@@ -115,7 +115,7 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ## Low Power Design -- The Complete Interview Bible
 
-*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)*
+*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md)*
 
 ### Q1: Derive P = alpha * C * V^2 * f from first principles.
 
@@ -293,7 +293,7 @@ captured on watchdog reset.
 
 ## Power Analysis and Signoff for Digital IC / ASIC Design
 
-*From [Power_Analysis_and_Signoff.md](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md)*
+*From [Power_Analysis_and_Signoff.md](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md)*
 
 ### Q1: "Walk me through the complete power signoff flow for a tape-out."
 
@@ -433,7 +433,7 @@ captured on watchdog reset.
 
 ## Power Reduction Techniques for Digital IC / ASIC Design
 
-*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)*
+*From [Power_Reduction_Techniques.md](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md)*
 
 ### Q1: "A block has 5000 FFs, clock freq 1GHz, Vdd=0.8V, C_clk per FF = 8fF. Calculate power savings with 75% clock gating efficiency."
 
@@ -554,9 +554,47 @@ Note: 1% ULVT cells contribute 28% of total leakage current!
 
 ---
 
-## UPF (Unified Power Format) Power Intent Specification
+## Low-Power Architecture and Domain Partitioning
 
-*From [UPF_Power_Intent.md](../02_Power_and_Low_Power/04_UPF_Power_Intent.md)*
+*From [Low-Power Architecture and Domain Partitioning](../02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md)*
+
+### Q1: "Distinguish power, voltage, and clock domains. Must their boundaries align?"
+
+**A:** A power domain groups logic with one on/retention/off fate. A voltage domain groups logic that shares a voltage or operating-performance-point schedule. A clock domain groups sequential logic with a defined synchronous clock relationship. They are independent axes and need not align one-to-one. For example, four independently power-gated CPU cores can share one voltage rail and one synchronous clock source while using four clock-gating branches. Align boundaries when it reduces cost, but preserve only the independent control that has workload value.
+
+### Q2: "How do you decide whether a block deserves its own power domain?"
+
+**A:** Start from use-case residency distributions, not RTL hierarchy. The benefit is leakage reclaimed while the block is truly off. Subtract transition energy, retention/AON leakage, switch and isolation overhead, wake-latency cost, interface quiescence cost, physical fragmentation, and verification states. A good boundary combines long independent idle intervals, meaningful leakage, a small interface cut, defined state reconstruction, simple dependencies, and a feasible physical voltage area. If no product mode uses the independence, merge it.
+
+### Q3: "Can several power domains share one voltage domain? Give a real design reason."
+
+**A:** Yes. Per-core power gating may let idle CPU cores turn off independently while all active cores share one regulator and DVFS point. Separate power domains capture independent idle residency; one voltage domain avoids four regulators, extra rails, level shifters, and many voltage-state combinations. Power fate and voltage schedule are different decisions.
+
+### Q4: "What information belongs in a domain-boundary matrix?"
+
+**A:** For every source-to-sink connection record source/sink power, voltage, clock, and reset domains; legal availability/voltage combinations; isolation direction and safe clamp; level-shifter direction/range; CDC/RDC protocol; retained or reconstructed state; AON power requirements; outstanding-transaction quiescence; cell location policy; and transition assertions. This prevents teams from checking power, voltage, and clocks independently while missing the composed protocol.
+
+### Q5: "Why is isolation insufficient when powering down a DMA engine?"
+
+**A:** Isolation makes an electrically invalid output safe after shutdown; it does not complete or cancel transactions already accepted by memory or the interconnect. The PMU must first stop new requests, drain or abort outstanding transactions using a defined protocol, checkpoint any required state, then isolate and remove power. Otherwise the system can hang waiting for a response or later observe a duplicated/partial operation even though every pin was correctly clamped.
+
+### Q6: "What belongs in the always-on domain, and why should it remain small?"
+
+**A:** It needs the PMU, wake detectors, reset/power-good conditioning, required timers/real-time clock, isolation/switch/save/restore controls, AON repeaters, and the complete path that carries a wake event. It remains small because every AON gate leaks in the deepest state and can never benefit from power gating. The design rule is minimal but complete: no optional datapath, but no missing segment of the wake/sequencing path.
+
+### Q7: "How do DVFS and clock domains interact during an operating-point transition?"
+
+**A:** Voltage determines the maximum safe frequency, so the controller coordinates a voltage domain with its clock domain(s). Scale down by reducing frequency before voltage. Scale up by raising voltage, waiting for the regulator/power-good condition, and only then increasing frequency. Interfaces must remain correct if neighboring domains use different OPPs, and STA must cover each legal source/sink voltage-frequency combination.
+
+### Q8: "What artifacts should be frozen before the UPF or CPF file becomes implementation input?"
+
+**A:** Use-case/mode table with residency and wake limits; instance-to-power/voltage/clock/reset-domain map; dependency graph and AON root; supply/regulator/OPP table; retained-state policy; legal state and transition graph; boundary matrix; PMU entry/exit sequence including timeouts; preliminary floorplan/switch feasibility; quantitative benefit/cost per independent domain; and verification coverage plan. UPF/CPF records these decisions—it should not invent them.
+
+---
+
+## UPF/CPF Power-Intent Specification and Flow
+
+*From [UPF/CPF Power-Intent Flow](../02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md)*
 
 ### Q1: "What is UPF and why can't you capture power intent in RTL?"
 
@@ -627,4 +665,12 @@ set_retention CPU_RET \
 ```
 
 Only the specified registers are replaced with retention variants. The other 90% remain standard flip-flops and lose state when powered off. After power-up, the retained registers have their saved values; the non-retained registers must be re-initialized (via reset or software). This saves ~90% of the retention area and always-on leakage overhead compared to retaining all FFs. The trade-off is longer wake-up time (need to re-initialize the non-retained state).
+
+### Q16: "Compare UPF and CPF. Would you maintain both as golden files?"
+
+**A:** UPF is the Unified Power Format standardized as active IEEE 1801; CPF is the Common Power Format published through the Si2 Low Power Coalition and remains in established flows. Both describe domains, supplies/modes, isolation, level shifting, retention, and switching, but their abstraction and command models are not line-by-line interchangeable. Choose the format/version qualified across the project's tools, IP, and foundry flow. Never hand-maintain two golden files: govern one, derive the other if required, then compare domain membership, supplies/states, special-cell scopes/counts, transition behavior, power-aware simulation, and equivalence.
+
+### Q17: "Walk through the end-to-end power-intent flow and name the exit criterion at each stage."
+
+**A:** (1) Architecture freezes domains, supplies, modes, boundary matrix, retained state, and sequences. (2) Intent authoring declares them; exit on clean syntax/semantics and complete scope/connectivity reports. (3) Power-aware RTL simulation corrupts off logic and exercises every legal transition; exit on assertions and state/transition coverage. (4) Synthesis inserts/maps isolation, level shifters, retention, AON, and switch structures; exit with zero unexplained unmapped strategies. (5) Low-power equivalence proves source+intent against netlist+intent. (6) P&R realizes voltage areas, power grids, switches, special-cell placement, and AON routing; exit on rail/placement/connectivity checks. (7) Post-route MMMC STA and structural/power-aware checks cover all legal modes. (8) Signoff closes power, IR drop, electromigration, and thermal results with full artifact/version provenance.
 

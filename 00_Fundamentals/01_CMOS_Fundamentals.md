@@ -178,7 +178,7 @@ $$
 \boxed{\,P_{dyn}=\alpha\,C_L\,V_{DD}^2\,f\,}
 $$
 
-where $\alpha$ = **activity factor** (average power-consuming transitions per cycle, typically 0.05–0.15 for random logic), $f$ = clock frequency. The quadratic $V_{DD}^2$ is the single most important lever in low-power design and the reason every technique downstream — clock gating, voltage scaling, $V_{DD}$ islands ([Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)) — attacks one of $\alpha$, $C$, $V_{DD}$, or $f$.
+where $\alpha$ = **activity factor** (average power-consuming transitions per cycle, typically 0.05–0.15 for random logic), $f$ = clock frequency. The quadratic $V_{DD}^2$ is the single most important lever in low-power design and the reason every technique downstream — clock gating, voltage scaling, $V_{DD}$ islands ([Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md)) — attacks one of $\alpha$, $C$, $V_{DD}$, or $f$.
 
 ### 4.3 The other two powers: short-circuit and leakage
 
@@ -437,7 +437,7 @@ $$
 - **Junction / band-to-band ($\sim$5–10%)** — reverse-biased source/drain diode leakage plus BTBT at high doping.
 - **GIDL ($\sim$5–10%)** — band-to-band tunnelling in the gate-drain overlap, worse at high $V_{DD}$.
 
-The takeaway: leakage is governed by the *same* $S$ and $V_{th}$ that govern speed, so it is not a separate problem but the other face of the §1.3 trade — and it is why $V_{th}$ flavours, power gating, and body bias exist at all ([Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md)).
+The takeaway: leakage is governed by the *same* $S$ and $V_{th}$ that govern speed, so it is not a separate problem but the other face of the §1.3 trade — and it is why $V_{th}$ flavours, power gating, and body bias exist at all ([Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md)).
 
 ---
 
@@ -471,7 +471,7 @@ The takeaway: leakage is governed by the *same* $S$ and $V_{th}$ that govern spe
 ## Cross-references
 
 - **Down the stack (what this is built on):** semiconductor device physics and the [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (how the FinFET/GAA devices of §8 and the wells of §6 are actually formed). This page is otherwise the floor of the notebook.
-- **Up the stack (what builds on it):** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (gates, the TG latch/flip-flop of §5.2, built from these transistors); [Adders_and_Multipliers](03_Adders_and_Multipliers.md) & [Floating_Point](04_Floating_Point.md) (the carry trees whose delay is measured in the FO4 of §4.1); [CPU_Architecture](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) & [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (the FO4 gate-delay budget and dynamic CAM cells that set pipeline and wakeup timing); [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (CPU SRAM/CAM macros, ports, ECC, timing, and uncertainty); [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md) & [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) (the $\alpha CV^2f$ and leakage of §4/§13 scaled to an SoC).
+- **Up the stack (what builds on it):** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (gates, the TG latch/flip-flop of §5.2, built from these transistors); [Adders_and_Multipliers](03_Adders_and_Multipliers.md) & [Floating_Point](04_Floating_Point.md) (the carry trees whose delay is measured in the FO4 of §4.1); [CPU_Architecture](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) & [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (the FO4 gate-delay budget and dynamic CAM cells that set pipeline and wakeup timing); [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (CPU SRAM/CAM macros, ports, ECC, timing, and uncertainty); [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md) & [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) (the $\alpha CV^2f$ and leakage of §4/§13 scaled to an SoC).
 - **Adjacent / signoff:** [STA](../06_Signoff/01_STA.md) (the corners and OCV derates of §9.2 in timing signoff); [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (repeater insertion and the wire RC of §10/§8.4); [Signal_Integrity](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the I/O termination and reflections of §5.4); [DDR_Controller](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) & [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (the off-chip I/O families of §5.4).
 
 ---

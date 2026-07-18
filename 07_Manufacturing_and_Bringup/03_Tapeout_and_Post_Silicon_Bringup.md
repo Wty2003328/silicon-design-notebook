@@ -1,7 +1,7 @@
 # Tape-out and Post-Silicon Bring-up — when an incomplete proof meets reality
 
 > **Stage:** 07 · Manufacturing & Bring-up — the end of the flow: GDSII (Graphic Data System II) hand-off, mask making, first silicon, and the lab work that turns a die into a validated product.
-> **Prerequisites:** all of signoff ([STA](../06_Signoff/01_STA.md), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md), [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md)), [Fabrication_Process](01_Fabrication_Process.md), [IC_Packaging](02_IC_Packaging.md).
+> **Prerequisites:** all of signoff ([STA](../06_Signoff/01_STA.md), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md), [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md)), [Fabrication_Process](01_Fabrication_Process.md), [IC_Packaging](02_IC_Packaging.md).
 > **Hands off to:** production ramp / next-spin ECO.
 
 ---
@@ -21,7 +21,7 @@ Every prior stage of the flow exists to earn one decision: *press the tape-out b
 | Signoff item | Owner | Must be | Bounds the risk that… |
 |---|---|---|---|
 | Timing ([STA](../06_Signoff/01_STA.md), MCMM) | STA | clean across all corners/modes | a path is too slow/fast in some PVT corner |
-| Power ([Power_Analysis](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md)) | power | IR/EM/avg/peak within budget | the grid droops or wears out under load |
+| Power ([Power_Analysis](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md)) | power | IR/EM/avg/peak within budget | the grid droops or wears out under load |
 | Physical ([DRC/LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md)) | PV | DRC/LVS/antenna clean | the layout is unmanufacturable or ≠ the netlist |
 | Function (verification) | DV | coverage closed, regression green | the logic itself is wrong |
 | Test ([DFT/ATPG](../06_Signoff/02_DFT_and_ATPG.md)) | DFT | patterns generated, coverage met | defective dies can't be screened — *or debugged* |
@@ -39,7 +39,7 @@ If verification and signoff were exhaustive, first silicon would always work and
 
 1. **Coverage / state-space limits.** A design's reachable state space is exponential in its flop count; constrained-random verification (see [Verification_Planning_and_Coverage_Closure](../03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md)) *samples* it. If a functional-coverage model has $C$ bins and closure exercised all of them, escapes still live in the space *between* the bins — the interactions no one thought to bin. The residual-bug count falls with verification effort but has a long tail: the last bugs sit in rare corners whose discovery time grows like the coupon-collector tail $\sim C\ln C$, so there is always a horizon past which more simulation is uneconomic and you tape out with known residual risk.
 
-2. **Un-modeled or under-modeled physics.** STA signs off against a delay model; real silicon has a specific cross-coupling, a supply droop under one pathological switching pattern, a temperature-inversion corner, or an analog non-ideality the digital abstraction flattened. These pass signoff because the *model* was optimistic, not because the design was checked and found safe. This is the class [SI](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) and [power-integrity](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) work hardest to shrink.
+2. **Un-modeled or under-modeled physics.** STA signs off against a delay model; real silicon has a specific cross-coupling, a supply droop under one pathological switching pattern, a temperature-inversion corner, or an analog non-ideality the digital abstraction flattened. These pass signoff because the *model* was optimistic, not because the design was checked and found safe. This is the class [SI](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) and [power-integrity](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) work hardest to shrink.
 
 3. **Real-workload-only states.** Some states are reachable only after billions of cycles, or only when real software / real analog inputs / real link partners are present. Software simulation runs at $\sim10$–$10^3$ cycles/s; a bug that first appears at $10^{11}$ cycles is unreachable there. **Emulation and FPGA prototyping** (see [Gate_Level_Sim_and_Emulation](../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md)) exist precisely to buy $10^6\times$ more cycles and close much of this channel before tape-out — but even they miss the analog and full-system-integration corners, which is why bring-up exists.
 
@@ -119,7 +119,7 @@ The recurring lesson is that **observability is a pre-silicon decision that only
 
 Characterization sweeps voltage against frequency (and temperature) and plots pass/fail — a **shmoo plot**. Its value is that the *shape of the boundary* names the failure mechanism, turning a two-axis sweep into a diagnosis:
 
-- A **diagonal $V$–$f$ boundary** is a **setup / speed path**: max frequency tracks gate delay, which improves with voltage, so the pass edge follows the delay–voltage curve $f_{\max}(V)\propto \dfrac{(V-V_{\text{th}})^{\alpha}}{V}$ (with $\alpha\approx1.3$; see [Power_Reduction_Techniques](../02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) and [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md)). Raising $V$ buys speed.
+- A **diagonal $V$–$f$ boundary** is a **setup / speed path**: max frequency tracks gate delay, which improves with voltage, so the pass edge follows the delay–voltage curve $f_{\max}(V)\propto \dfrac{(V-V_{\text{th}})^{\alpha}}{V}$ (with $\alpha\approx1.3$; see [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) and [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md)). Raising $V$ buys speed.
 - A **vertical wall independent of $f$** is a **functional $V_{\min}$** limit — usually SRAM read/write or retention margin — where more voltage helps but more time does not.
 - A **failure region that worsens at high $V$ or low $f$** points at a **hold / min-delay** problem, since hold has no clock-period term and is aggravated by fast (high-$V$) data.
 
@@ -152,7 +152,7 @@ Once silicon is functional and characterized, the product moves to volume, where
 
 ## Cross-references
 
-- **Up the stack (what tape-out gates on):** [STA](../06_Signoff/01_STA.md), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md), [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md).
+- **Up the stack (what tape-out gates on):** [STA](../06_Signoff/01_STA.md), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md), [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md).
 - **The escape gap (what lets bugs through):** [Verification_Planning_and_Coverage_Closure](../03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md), [Gate_Level_Sim_and_Emulation](../03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md).
 - **The physics the lab measures:** [Fabrication_Process](01_Fabrication_Process.md) (variation, yield), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $V$–$f$ curve), [IC_Packaging](02_IC_Packaging.md) (thermal/power delivery).
 - **The flow map:** [Chip_Design_Flow_Overview](../Chip_Design_Flow_Overview.md).

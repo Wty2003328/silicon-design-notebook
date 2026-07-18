@@ -6,7 +6,7 @@
 >
 > **Organized by the chip design flow.** The folders are numbered `00 → 07` in flow order — early PPA/architecture, frontend RTL + verification, synthesis, backend, signoff, manufacturing. Power is kept together as a cross-cutting track (02). Pages inside each folder are numbered in reading order, and every folder has its own `00_Index`. **Start with the [Chip Design Flow Overview](Chip_Design_Flow_Overview.md)** — it maps every stage, hand-off, and iteration loop.
 >
-> **90 flow pages** (+10 interview-prep banks).
+> **91 flow pages** (+10 interview-prep banks).
 
 ---
 
@@ -44,15 +44,16 @@ New readers should enter through the method chapter for the architecture they wa
 ---
 
 ## [02 · Power and Low-Power](02_Power_and_Low_Power/00_Index.md)
-*Cross-cutting track: power is specified early, intended in RTL, implemented in synth/backend, signed off at the end.*
+*Cross-cutting track: power is budgeted from workloads, partitioned at architecture, captured as power intent, implemented in synthesis/backend, and verified through signoff.*
 
 | Page | Coverage |
 |------|----------|
 | [01 · Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md) | switching/short-circuit/leakage physics, leakage-by-node breakdown, scaling/Dennard, sub-threshold swing |
 | [02 · Block Activity and Power](02_Power_and_Low_Power/02_Block_Activity_and_Power.md) | per-block/per-mode modeling, RTL power, glitch, emulation power, on-die telemetry |
-| [03 · Power Reduction Techniques](02_Power_and_Low_Power/03_Power_Reduction_Techniques.md) | low-power flow, clock gating, DVFS, power gating + retention, multi-Vt, body biasing, operand isolation |
-| [04 · UPF Power Intent](02_Power_and_Low_Power/04_UPF_Power_Intent.md) | IEEE 1801, domains, retention, isolation, level shifters, switches, PST |
-| [05 · Power Analysis and Signoff](02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) | PrimeTime PX/Voltus flows, activity annotation, IR/EM, glitch, peak/di-dt, thermal, backside power |
+| [03 · Low-Power Architecture and Domain Partitioning](02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md) | power/voltage/clock/reset-domain strategy, AON design, boundary composition, architecture handoff |
+| [04 · Power Reduction Techniques](02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) | clock gating, DVFS, power gating + retention, multi-$V_t$, body biasing, operand isolation |
+| [05 · UPF/CPF Power-Intent Flow](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md) | IEEE 1801 and CPF, supplies, isolation, level shifting, retention, PST, RTL-to-signoff flow |
+| [06 · Power Analysis and Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) | PrimeTime PX/Voltus flows, activity annotation, IR/EM, glitch, peak/di-dt, thermal, backside power |
 
 ---
 
@@ -127,7 +128,7 @@ Per-folder Q&A consolidated out of the topic pages above, plus two cross-cutting
 |------|----------|
 | [00 — Fundamentals Questions](interview_prep/00_Fundamentals_Questions.md) | CMOS/logic/adders/FP interview Q&A moved out of 00_Fundamentals/ |
 | [01 — Architecture and PPA Questions](interview_prep/01_Architecture_and_PPA_Questions.md) | CPU/cache/memory/NoC/bus interview Q&A moved out of 01_Architecture_and_PPA/ |
-| [02 — Power and Low-Power Questions](interview_prep/02_Power_and_Low_Power_Questions.md) | power/UPF/DVFS interview Q&A + low-power scenario drills |
+| [02 — Power and Low-Power Questions](interview_prep/02_Power_and_Low_Power_Questions.md) | domain partitioning, reduction, UPF/CPF, DVFS, and signoff interview drills |
 | [03 — Frontend RTL and Verification Questions](interview_prep/03_Frontend_RTL_and_Verification_Questions.md) | RTL/UVM/CDC/formal interview Q&A moved out of 03_Frontend_RTL_and_Verification/ |
 | [04 — Synthesis Questions](interview_prep/04_Synthesis_Questions.md) | synthesis/SDC interview Q&A moved out of 04_Synthesis/ |
 | [05 — Backend Physical Design Questions](interview_prep/05_Backend_Physical_Design_Questions.md) | PnR/SI interview Q&A moved out of 05_Backend_Physical_Design/ |

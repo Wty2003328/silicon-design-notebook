@@ -186,7 +186,7 @@ flowchart LR
 
 Physical verification runs on the **full-chip merged GDSII** — standard-cell blocks, hard IP, memories, analog, I/O, seal ring, all flattened together — because the killer interactions live at *boundaries* no block-level run ever saw: a memory abutting logic, an analog block's wells near digital fill, top-level routing crossing IP. It must return **clean or fully waived**; an unwaived DRC or LVS error blocks the [tape-out](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) hand-off, full stop.
 
-Its place among the signoffs is defined by what it *uniquely* owns. [STA](01_STA.md) proves fast-enough, [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) proves the grid holds, [DFT_and_ATPG](02_DFT_and_ATPG.md) proves testability — all reasoning over an *abstracted* model (a timing graph, a netlist, a fault list). Only PV reasons over the **actual polygons that become masks**, and only PV can catch the two failure modes of §0. That is why it is almost always the last thing standing between "design done" and "send to fab."
+Its place among the signoffs is defined by what it *uniquely* owns. [STA](01_STA.md) proves fast-enough, [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) proves the grid holds, [DFT_and_ATPG](02_DFT_and_ATPG.md) proves testability — all reasoning over an *abstracted* model (a timing graph, a netlist, a fault list). Only PV reasons over the **actual polygons that become masks**, and only PV can catch the two failure modes of §0. That is why it is almost always the last thing standing between "design done" and "send to fab."
 
 ---
 
@@ -214,7 +214,7 @@ Its place among the signoffs is defined by what it *uniquely* owns. [STA](01_STA
 
 - **Down the stack (what PV checks, and where the rules come from):** [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (the placed-and-routed polygons that must obey the deck; §5.2 gives multi-patterning/coloring from the routing side), [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (litho §3 / etch §4 / CMP §7 — the physics each rule encodes), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) §5 (the antenna *mechanism* whose *check* this page owns).
 - **Up the stack (what depends on a clean PV):** [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) (GDSII → masks → silicon; the finality that makes PV the last gate).
-- **Sibling signoffs (the other proofs, over abstracted models):** [STA](01_STA.md) (timing), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (IR / EM / grid), [DFT_and_ATPG](02_DFT_and_ATPG.md) (testability).
+- **Sibling signoffs (the other proofs, over abstracted models):** [STA](01_STA.md) (timing), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (IR / EM / grid), [DFT_and_ATPG](02_DFT_and_ATPG.md) (testability).
 
 ---
 

@@ -1,6 +1,6 @@
 # IC Packaging — The Four Jobs, and Why Advanced Packaging Became a Performance Lever
 
-> **Prerequisites:** [Fabrication_Process](01_Fabrication_Process.md) (the wafer this operates on, the reticle limit, and the Poisson yield law $Y=e^{-AD_0}$ this page turns into a packaging argument), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (RLC parasitics, IR/EM, the PnR-side power grid), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (target impedance and PDN pass/fail — this page owns the *package half* of that network).
+> **Prerequisites:** [Fabrication_Process](01_Fabrication_Process.md) (the wafer this operates on, the reticle limit, and the Poisson yield law $Y=e^{-AD_0}$ this page turns into a packaging argument), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (RLC parasitics, IR/EM, the PnR-side power grid), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (target impedance and PDN pass/fail — this page owns the *package half* of that network).
 > **Hands off to:** [Tapeout_and_Post_Silicon_Bringup](03_Tapeout_and_Post_Silicon_Bringup.md) (the assembled part becomes a validated product), [GPU PPA and Physical Implementation](../01_Architecture_and_PPA/02_GPU_Architecture/00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md) (the HBM/controller/PHY/package cost in a GPU), [Network_on_Chip](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (the on-chip fabric that UCIe extends across the package).
 
 ---
@@ -121,7 +121,7 @@ $$
 Z_{target} = \frac{\Delta V_{allowed}}{I_{max}}
 $$
 
-*across the whole band* from DC to the die's switching frequency, with each decap tier holding down its octave range. Sizing and pass/fail for all of this live in [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md), and the PnR-side grid/decap/EM mechanisms in [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md). The **packaging** point is that the bump / TSV / plane network *is* the low-frequency half of that PDN, and its $R$ and $L$ are fixed by how many parallel connections the package geometry allows — another reason area-array beats peripheral.
+*across the whole band* from DC to the die's switching frequency, with each decap tier holding down its octave range. Sizing and pass/fail for all of this live in [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md), and the PnR-side grid/decap/EM mechanisms in [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md). The **packaging** point is that the bump / TSV / plane network *is* the low-frequency half of that PDN, and its $R$ and $L$ are fixed by how many parallel connections the package geometry allows — another reason area-array beats peripheral.
 
 ---
 
@@ -295,7 +295,7 @@ The link layer (training, CRC/retry, credit-based flow control) rides on the sam
 
 ## Cross-references
 
-- **Down the stack (what packaging is built on):** [Fabrication_Process](01_Fabrication_Process.md) (the wafer, the reticle limit, and the Poisson yield law $Y=e^{-AD_0}$ whose exponential tail §5 turns into the chiplet argument), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the RLC parasitics, EM, and PnR-side power grid the bump/TSV network extends), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (target impedance and PDN signoff — §3 is the package half of that network).
+- **Down the stack (what packaging is built on):** [Fabrication_Process](01_Fabrication_Process.md) (the wafer, the reticle limit, and the Poisson yield law $Y=e^{-AD_0}$ whose exponential tail §5 turns into the chiplet argument), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the RLC parasitics, EM, and PnR-side power grid the bump/TSV network extends), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (target impedance and PDN signoff — §3 is the package half of that network).
 - **Up the stack (what builds on it):** [Tapeout_and_Post_Silicon_Bringup](03_Tapeout_and_Post_Silicon_Bringup.md) (the assembled part enters lab bring-up), [GPU PPA and Physical Implementation](../01_Architecture_and_PPA/02_GPU_Architecture/00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md) (the HBM/controller/PHY/package cost in a GPU), [Network_on_Chip](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (the fabric UCIe extends across the package, §9).
 
 ---

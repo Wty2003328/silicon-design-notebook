@@ -1,7 +1,7 @@
 # Signal Integrity and Reliability — when wires stop being ideal and transistors stop being eternal
 
 > **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $I_D$/$V_{th}$ model and delay-vs-$V_{DD}$ law §4, noise margins and the regenerative property §3, wire RC / Elmore delay §10, temperature inversion §9), [Physical_Design](01_Physical_Design.md) (the routing, power grid, and via structures this page stresses).
-> **Hands off to:** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (owns the *power-integrity signoff criteria* — target impedance, IR/EM/decap pass–fail; this page owns the PnR-side *mechanisms and fixing levers*), [STA](../06_Signoff/01_STA.md) (folds crosstalk delta-delay and end-of-life aging margin into timing), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (runs the antenna DRC of §6).
+> **Hands off to:** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (owns the *power-integrity signoff criteria* — target impedance, IR/EM/decap pass–fail; this page owns the PnR-side *mechanisms and fixing levers*), [STA](../06_Signoff/01_STA.md) (folds crosstalk delta-delay and end-of-life aging margin into timing), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (runs the antenna DRC of §6).
 
 ---
 
@@ -128,7 +128,7 @@ You cannot double-space everything — density would collapse — so the design 
 
 ## 2. IR drop / power integrity: when the supply stops being ideal
 
-> **Scope:** the PnR mechanism and fixing levers. The impedance-domain model (target impedance, package–die anti-resonance), the pass–fail signoff criteria, and full IR/decap budgeting live in [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) — cross-linked, not re-derived here.
+> **Scope:** the PnR mechanism and fixing levers. The impedance-domain model (target impedance, package–die anti-resonance), the pass–fail signoff criteria, and full IR/decap budgeting live in [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) — cross-linked, not re-derived here.
 
 The idealization: every cell sees a fixed $V_{DD}$. The reality: the supply reaches each cell through a resistive-and-inductive grid, and the current the logic draws makes the local rail droop.
 
@@ -184,7 +184,7 @@ Widening a wire to meet $J_{max}$ consumes tracks and creates routing congestion
 
 ### 3.4 Self-heating folds thermal back in
 
-At advanced nodes a wire heats *itself*: $\Delta T_{sh} = I^2 R\,R_{th}$, and the low-$k$ dielectrics that reduce coupling capacitance conduct heat poorly (~0.15 W/m·K vs ~1.4 for SiO₂), so Joule heat generated in the wire cannot escape. $\Delta T_{sh}$ of 10–30 °C is common on heavily loaded lines, and because Black's law is exponential in $T$, EM signoff must use the **self-heated** temperature, not ambient. (Chip-level thermal budgeting, throttling, and runaway math live in [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md).)
+At advanced nodes a wire heats *itself*: $\Delta T_{sh} = I^2 R\,R_{th}$, and the low-$k$ dielectrics that reduce coupling capacitance conduct heat poorly (~0.15 W/m·K vs ~1.4 for SiO₂), so Joule heat generated in the wire cannot escape. $\Delta T_{sh}$ of 10–30 °C is common on heavily loaded lines, and because Black's law is exponential in $T$, EM signoff must use the **self-heated** temperature, not ambient. (Chip-level thermal budgeting, throttling, and runaway math live in [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md).)
 
 ---
 
@@ -260,7 +260,7 @@ The minimal signoff checklist that follows from the table:
 - **Aging** — NBTI/PBTI margin in timing via aged libraries; HCI checked on always-on, high-toggle paths.
 - **Antenna** — every gate's antenna ratio within process limits, fixed by jumpers or diodes.
 
-The power-integrity half of this (IR, dynamic droop, decap, grid EM) shares its criteria with [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md); the device-level wear-out (TDDB, ESD, latch-up) is owned by [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md). This page owns the *interconnect and physical-design* view: coupling, the grid as a resistive network, metal wear-out, and the process-antenna rule.
+The power-integrity half of this (IR, dynamic droop, decap, grid EM) shares its criteria with [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md); the device-level wear-out (TDDB, ESD, latch-up) is owned by [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md). This page owns the *interconnect and physical-design* view: coupling, the grid as a resistive network, metal wear-out, and the process-antenna rule.
 
 ---
 
@@ -292,7 +292,7 @@ The power-integrity half of this (IR, dynamic droop, decap, grid EM) shares its 
 ## Cross-references
 
 - **Down the stack (the physics this rests on):** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $I_D$/$V_{th}$ device model behind aging, the noise margins §1.3 tests against, wire RC/Elmore behind glitch decay, temperature inversion, and the device wear-out — TDDB, ESD, latch-up — this page cross-links rather than re-derives).
-- **Up the stack (what consumes these results):** [STA](../06_Signoff/01_STA.md) (folds crosstalk delta-delay and end-of-life aging margin into slack via SI-aware and OCV/derated timing), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (owns the power-integrity *criteria* — target impedance, IR/EM/decap pass–fail — that §2 feeds), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (runs the antenna and metal-density DRC of §5).
+- **Up the stack (what consumes these results):** [STA](../06_Signoff/01_STA.md) (folds crosstalk delta-delay and end-of-life aging margin into slack via SI-aware and OCV/derated timing), [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (owns the power-integrity *criteria* — target impedance, IR/EM/decap pass–fail — that §2 feeds), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (runs the antenna and metal-density DRC of §5).
 - **Adjacent / prerequisite:** [Physical_Design](01_Physical_Design.md) (the routing, power grid, via stacks, and NDR/shield resources every mitigation on this page spends), [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (the plasma steps that create the antenna effect and the BEOL stack that sets $C_c$).
 
 ---

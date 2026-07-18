@@ -1,7 +1,7 @@
 # Static Timing Analysis — Proving Timing Without Simulating Vectors
 
 > **Prerequisites:** [Constraints_SDC](../04_Synthesis/02_Constraints_SDC.md) (the clock, I/O, and exception constraints STA consumes), [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) (where clocks, jitter, and insertion delay come from), CMOS fundamentals (the FO4 delay yardstick).
-> **Hands off to:** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (IR-drop → cell-delay coupling), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (crosstalk delta-delay), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (clock-tree synthesis, timing ECO).
+> **Hands off to:** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (IR-drop → cell-delay coupling), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (crosstalk delta-delay), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (clock-tree synthesis, timing ECO).
 
 ---
 
@@ -154,7 +154,7 @@ Skew $t_{skew}=t_{ci,C}-t_{ci,L}$ entered setup with a $+$ and hold with a $-$. 
 
 ### 4.2 Jitter, uncertainty, and the ideal→propagated transition
 
-**Jitter** is cycle-to-cycle movement of the clock edge (PLL phase noise, supply-droop-induced delay modulation from [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md)). STA cannot know the instantaneous edge, so it folds jitter — plus design margin — into **clock uncertainty** $t_{unc}$, subtracted from both setup and hold budgets (that is the $t_{unc}$ term in §3). Before the clock tree exists (**pre-CTS**), the clock is *ideal*: its latency is a single `set_clock_latency` number and uncertainty also absorbs an *estimate* of the not-yet-built skew. After CTS (**post-CTS**), `set_propagated_clock` switches to the real per-flop arrival times, skew becomes explicit per path, and uncertainty shrinks to jitter + a thin margin. **Insertion delay** — the source-to-flop clock latency itself — matters less for its magnitude than for how much of it is *shared*, which is the next point.
+**Jitter** is cycle-to-cycle movement of the clock edge (PLL phase noise, supply-droop-induced delay modulation from [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md)). STA cannot know the instantaneous edge, so it folds jitter — plus design margin — into **clock uncertainty** $t_{unc}$, subtracted from both setup and hold budgets (that is the $t_{unc}$ term in §3). Before the clock tree exists (**pre-CTS**), the clock is *ideal*: its latency is a single `set_clock_latency` number and uncertainty also absorbs an *estimate* of the not-yet-built skew. After CTS (**post-CTS**), `set_propagated_clock` switches to the real per-flop arrival times, skew becomes explicit per path, and uncertainty shrinks to jitter + a thin margin. **Insertion delay** — the source-to-flop clock latency itself — matters less for its magnitude than for how much of it is *shared*, which is the next point.
 
 ### 4.3 CPPR: don't derate the shared clock against itself
 
@@ -323,7 +323,7 @@ Signoff is the discipline of running the analysis above across the full scenario
 ## Cross-references
 
 - **Down the stack (what STA is built from):** [Constraints_SDC](../04_Synthesis/02_Constraints_SDC.md) (clocks, I/O delays, and the false-path/multicycle exceptions STA consumes in §6), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (clock-tree synthesis STA inherits in §4/§7, parasitic RC extraction behind the §2 delay model, timing ECOs), [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) (clock generation, jitter, and insertion delay feeding §4).
-- **Up the stack (what STA feeds and depends on):** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/05_Power_Analysis_and_Signoff.md) (IR-drop → cell-delay coupling that widens the §5 margins), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (crosstalk delta-delay folded into §7 signoff).
+- **Up the stack (what STA feeds and depends on):** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (IR-drop → cell-delay coupling that widens the §5 margins), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (crosstalk delta-delay folded into §7 signoff).
 - **Adjacent:** DFT/scan mode is one of the MCMM *modes* of §5.2; the ROB/pipeline that these flops implement is upstream in the architecture stack.
 
 ---

@@ -33,7 +33,7 @@ hardware_design_notebook/
 ├── Index.md                       full page index and reading paths
 ├── 00_Fundamentals/               device physics, logic, arithmetic, SystemC/TLM (5 pages)
 ├── 01_Architecture_and_PPA/       4 chip-architecture books, 26 subdomains, 57 chapters
-├── 02_Power_and_Low_Power/        power physics, intent (UPF), reduction, signoff (5 pages)
+├── 02_Power_and_Low_Power/        power physics, domain architecture, reduction, UPF/CPF, signoff (6 pages)
 ├── 03_Frontend_RTL_and_Verification/   RTL coding, clocks/CDC, UVM, formal, coverage (13 pages)
 ├── 04_Synthesis/                  RTL -> gates + SDC constraints (2 pages)
 ├── 05_Backend_Physical_Design/    gates -> layout, signal integrity (2 pages)
@@ -42,7 +42,7 @@ hardware_design_notebook/
 └── interview_prep/                per-folder interview Q&A (00-07) + RTL coding canon + numeric bank
 ```
 
-Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as four self-contained CPU, GPU, NPU, and SoC/chiplet books. Each book owns its workload definition, performance modeling, design-space exploration, physical implementation, PPA estimation, simulation workflow, and evidence standards. Total: **90 flow pages + 10 interview-prep banks**.
+Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as four self-contained CPU, GPU, NPU, and SoC/chiplet books. Each book owns its workload definition, performance modeling, design-space exploration, physical implementation, PPA estimation, simulation workflow, and evidence standards. Total: **91 flow pages + 10 interview-prep banks**.
 
 See [Index.md](Index.md) for the full page-by-page index with coverage summaries.
 
