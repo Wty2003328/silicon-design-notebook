@@ -259,7 +259,7 @@ One GPU compute is 800 ms. Fixed communication/synchronization is 60 ms. At eigh
 
 - **Single-device roots:** [GPU Architecture](../01_Core_Architecture/01_GPU_Architecture.md), [GPU Memory System](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md), [HBM](../02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md).
 - **Fabric:** [Chiplets, CXL, and Die-to-Die](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md), [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md).
-- **Modeling:** [Full-Chip Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md), [Performance Modeling and DSE](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md).
+- **Modeling:** [Full-Chip Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md), [Performance Modeling and DSE](../00_Design_Methodology/01_GPU_Workloads_Performance_and_DSE.md).
 
 ## References
 

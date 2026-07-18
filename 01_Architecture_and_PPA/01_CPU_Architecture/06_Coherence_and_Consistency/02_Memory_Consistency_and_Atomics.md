@@ -253,4 +253,4 @@ A release operation waits for six older stores. Four are already globally ordere
 
 ---
 
-**Navigation:** [Coherence and Consistency index](00_Index.md) · [Memory index](../../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/00_Index.md)
+**Navigation:** [Coherence and Consistency index](00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)

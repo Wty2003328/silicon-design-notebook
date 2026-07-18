@@ -543,9 +543,9 @@ Break it by reserving response capacity and making responses an escape class tha
 ## Cross-references
 
 - **Contract above this chapter:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) §8–§9 (SWMR, data-value, and memory consistency), [RISC_V_ISA](../01_Core_Foundations/02_RISC_V_ISA.md) (RVWMO, fences, and atomics).
-- **Structures inside the controller:** [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (MSHRs, writeback buffers, inclusion, replacement), [Memory](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (the static random-access memory (SRAM) and content-addressable memory (CAM) arrays that hold tags, directories, and transaction tables).
+- **Structures inside the controller:** [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (MSHRs, writeback buffers, inclusion, replacement), [Memory](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (the static random-access memory (SRAM) and content-addressable memory (CAM) arrays that hold tags, directories, and transaction tables).
 - **Transport below the protocol:** [ACE_and_CHI](03_ACE_and_CHI.md) (ACE/CHI messages and home nodes), [Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (mesh latency, virtual channels, and deadlock).
-- **Executable and verifiable forms:** [gem5](../08_Simulation/01_gem5.md) §4 (Ruby/SLICC stable and transient states), [Simulation_Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md) (validation and error budgets), [Formal_Verification](../../../03_Frontend_RTL_and_Verification/12_Formal_Verification.md) (safety/liveness properties).
+- **Executable and verifiable forms:** [gem5](../08_Simulation/01_gem5.md) §4 (Ruby/SLICC stable and transient states), [CPU simulation methodology](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md) (validation and error budgets), [Formal_Verification](../../../03_Frontend_RTL_and_Verification/12_Formal_Verification.md) (safety/liveness properties).
 - **System clients:** [GPU_Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md), [NPU_Accelerators](../../03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md), and [DDR_Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (coherent accelerators and the final memory authority).
 
 ---
@@ -561,4 +561,4 @@ Break it by reserving response capacity and making responses an escape class tha
 
 ---
 
-⬅ prev [DDR Memory Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) · [Memory Index](../../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/00_Index.md) · [Architecture Book Contents](../../00_Index.md) · next ➡ [Interconnect](../../04_SoC_and_Chiplet_Architecture/00_Index.md)
+⬅ prev [DDR Memory Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) · [Memory Index](../00_Design_Methodology/00_Index.md) · [Architecture Book Contents](../../00_Index.md) · next ➡ [Interconnect](../../04_SoC_and_Chiplet_Architecture/00_Index.md)

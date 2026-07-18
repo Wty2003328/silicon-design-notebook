@@ -284,4 +284,4 @@ Bandwidth may be tolerable, but dependent latency and shared-cache pollution can
 
 ---
 
-**Navigation:** [Virtual Memory index](00_Index.md) · [Memory index](../../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/00_Index.md)
+**Navigation:** [Virtual Memory index](00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)

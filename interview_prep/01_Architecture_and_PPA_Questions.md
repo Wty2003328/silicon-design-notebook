@@ -6,15 +6,14 @@ Consolidated interview questions, answers, and worked problems from every page i
 
 | Book | Interview scope |
 |---|---|
-| [Central processing unit (CPU) architecture](../01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md) | instruction-set contract, pipeline, prediction, out-of-order execution, cache hierarchy, virtual memory, coherence, consistency, and CPU simulation |
-| [Graphics processing unit (GPU) architecture](../01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md) | single instruction, multiple threads execution, occupancy, coalescing, high-bandwidth memory, scale-up, and GPU simulation |
-| [Neural processing unit (NPU) architecture](../01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md) | spatial dataflows, tiling, data movement, numeric compression, host integration, and accelerator simulation |
-| [System-on-chip (SoC) and chiplet architecture](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md) | full-chip composition, shared memory, transaction protocols, on-chip networks, service policy, input/output, and die-to-die links |
-| [Architecture foundations and methods](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/00_Index.md) | vocabulary, workloads, modeling, PPA uncertainty, physical memory structures, and simulation methodology |
+| [Central processing unit (CPU) architecture](../01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md) | CPU workload characterization, design-space exploration, physical/PPA analysis, source-to-instruction simulation, pipeline, prediction, out-of-order execution, cache hierarchy, virtual memory, coherence, and consistency |
+| [Graphics processing unit (GPU) architecture](../01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md) | GPU kernel modeling, occupancy/roofline analysis, register-file and memory PPA, CUDA-to-warp simulation, single instruction, multiple threads execution, coalescing, high-bandwidth memory, and scale-up |
+| [Neural processing unit (NPU) architecture](../01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md) | model-graph workloads, mapping exploration, array/scratchpad PPA, graph-to-cycle simulation, spatial dataflows, tiling, data movement, numeric compression, and host integration |
+| [System-on-chip (SoC) and chiplet architecture](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md) | concurrent use-case modeling, chip/package PPA, system simulation, full-chip composition, shared memory, transaction protocols, on-chip networks, service policy, input/output, and die-to-die links |
 
 ## Start here — foundational architecture questions
 
-*From [Architecture_Primer_and_Glossary.md](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md)*
+*From [CPU Workloads, Performance Modeling, and Design-Space Exploration](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md)*
 
 ### Problem 1: Architecture, ISA, Microarchitecture, and Implementation
 
@@ -1191,7 +1190,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Memory Architecture and Design — Senior Engineer Level
 
-*From [Memory.md](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md)*
+*From [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md)*
 
 ### Q1: Derive the read stability condition for a 6T SRAM cell.
 
@@ -1810,7 +1809,7 @@ name the measurement that would change the decision.
 
 #### Q1: How do you know a sampled workload preserves architecture decisions?
 
-*From [Workload Characterization and Sampling](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/02_Performance_Analysis/02_Workload_Characterization_and_Sampling.md)*
+*From [CPU Workloads, Performance Modeling, and Design-Space Exploration](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md)*
 
 **Answer:** Do not validate sampling only by average IPC. Cluster intervals using
 architecture-relevant features such as instruction mix, branch MPKI, cache MPKI,
@@ -1822,7 +1821,7 @@ the sample is not yet adequate for that decision.
 
 #### Q2: How should an architect present an early PPA estimate?
 
-*From [Early PPA Estimation and Uncertainty](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/03_PPA_Estimation/01_Early_PPA_Estimation_and_Uncertainty.md)*
+*From the architecture-owned PPA chapters: [CPU](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md), [GPU](../01_Architecture_and_PPA/02_GPU_Architecture/00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md), [NPU](../01_Architecture_and_PPA/03_NPU_Architecture/00_Design_Methodology/02_NPU_PPA_and_Physical_Implementation.md), and [SoC/chiplet](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md)*
 
 **Answer:** Report a calibrated range with explicit assumptions, not a precise
 point. Separate logic, memory, interconnect, clock, and physical overhead; scale
@@ -2046,7 +2045,7 @@ doorbell is observed. Define ownership, fences, IOMMU invalidation, fault replay
 and cancellation behavior explicitly. Coherence supplies a visibility mechanism,
 but it does not by itself define the command protocol's ordering contract.
 
-### Simulation Methodology
+### Architecture-Owned Simulation Methodology
 
 #### Q21: Why can a trace-driven NoC or coherence study give the wrong answer?
 
@@ -2146,7 +2145,7 @@ new command ready.
 
 #### Q29: Trace one CPU benchmark from C source to a reported gem5 IPC.
 
-*From [Benchmark to Results](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) and [gem5](../01_Architecture_and_PPA/01_CPU_Architecture/08_Simulation/01_gem5.md)*
+*From [CPU Simulation Methodology and Evidence](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md) and [gem5](../01_Architecture_and_PPA/01_CPU_Architecture/08_Simulation/01_gem5.md)*
 
 **Answer:** Freeze source/input/compiler/flags/ISA/ABI/libraries; cross-compile to
 a target ELF; inspect its header, loadable segments, and disassembly. The source
@@ -2162,7 +2161,7 @@ does not identify the simulated instruction stream.
 
 #### Q30: Why must every memory or network trace name its capture point?
 
-*From [Benchmark to Results](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) and [DRAM Simulators](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/06_Simulation/01_DRAM_Simulators.md)*
+*From [SoC and Chiplet Simulation Methodology and Evidence](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) and [DRAM Simulators](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/06_Simulation/01_DRAM_Simulators.md)*
 
 **Answer:** A CPU load/store trace contains virtual operations before translation
 and caches; an L1-miss trace omits hits but includes lower-level traffic; an
@@ -2175,7 +2174,7 @@ requests.
 
 #### Q31: What must happen between a PyTorch model and an NPU cycle result?
 
-*From [Accelerator and NPU Simulators](../01_Architecture_and_PPA/03_NPU_Architecture/04_Simulation/01_Accelerator_and_NPU_Simulators.md)*
+*From [NPU Simulation Methodology and Evidence](../01_Architecture_and_PPA/03_NPU_Architecture/00_Design_Methodology/03_NPU_Simulation_Methodology_and_Evidence.md) and [Accelerator and NPU Simulators](../01_Architecture_and_PPA/03_NPU_Architecture/04_Simulation/01_Accelerator_and_NPU_Simulators.md)*
 
 **Answer:** Export a fixed-shape/precision graph such as ONNX; record exporter and
 opset; run shape inference, folding, canonicalization, fusion, layout,
@@ -2189,7 +2188,7 @@ itself a full-model simulation.
 
 #### Q32: How should sampled simulator results be combined?
 
-*From [Benchmark to Results](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md)*
+*From [CPU Simulation Methodology and Evidence](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md)*
 
 **Answer:** For phase weights $w_i$, calculate
 $\widehat{\mathrm{CPI}}=\sum_i w_i\mathrm{CPI}_i$ and then invert for IPC; do

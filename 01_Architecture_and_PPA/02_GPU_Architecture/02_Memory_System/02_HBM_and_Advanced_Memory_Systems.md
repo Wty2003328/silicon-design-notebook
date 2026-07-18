@@ -8,7 +8,7 @@
 > reliability, availability, and serviceability (RAS); program counter (PC); exclusive OR (XOR); non-uniform memory access (NUMA); service-level objective (SLO);
 > physical-layer interface (PHY); gigabyte (GB); terabyte (TB); gibibyte (GiB).
 
-> **Prerequisites:** [DDR Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (banks, timing, scheduling, refresh), [Memory Arrays and Technologies](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md), and [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md).
+> **Prerequisites:** [DDR Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (banks, timing, scheduling, refresh), [Memory Arrays and Technologies](../00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md), and [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md).
 > **Hands off to:** [GPU Memory System](01_Coalescing_Caches_and_Shared_Memory.md), [NPU Tensor Tiling](../../03_NPU_Architecture/02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md), and package/thermal design.
 
 ---
@@ -251,7 +251,7 @@ Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way, ignorin
 
 ## Cross-references
 
-- **DRAM mechanics:** [DDR Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md), [Memory Arrays and Technologies](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md).
+- **DRAM mechanics:** [DDR Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md), [Memory Arrays and Technologies](../00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md).
 - **Consumers:** [GPU Memory System](01_Coalescing_Caches_and_Shared_Memory.md), [Tensor Tiling and Data Movement](../../03_NPU_Architecture/02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md).
 - **Package/fabric:** [Chiplets, CXL, and Die-to-Die](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md), [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 
@@ -265,4 +265,4 @@ Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way, ignorin
 
 ---
 
-**Navigation:** [Main Memory index](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) · [Memory index](../../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/00_Index.md)
+**Navigation:** [Main Memory index](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)

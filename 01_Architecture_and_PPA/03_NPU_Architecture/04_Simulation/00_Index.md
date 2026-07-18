@@ -18,10 +18,10 @@
 
 ## Reading order
 
-1. Read the shared [Benchmark-to-Results Workflow](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md).
+1. Read the NPU-specific [Graph-to-Results Workflow](../00_Design_Methodology/03_NPU_Simulation_Methodology_and_Evidence.md).
 2. [Accelerator and NPU Simulators](01_Accelerator_and_NPU_Simulators.md) — framework/ONNX graph → optimized operator list → loop/GEMM dimensions → mapping → cycles/access counts/energy in SCALE-Sim, Timeloop, Accelergy, MAESTRO, NeuSim, and ONNXim.
 
-**Prerequisite:** [Shared Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md).
+**Prerequisite:** [NPU Simulation Methodology and Evidence](../00_Design_Methodology/03_NPU_Simulation_Methodology_and_Evidence.md).
 
 ---
 

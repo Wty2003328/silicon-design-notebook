@@ -6,7 +6,7 @@
 
 A system on chip composes CPU, GPU, NPU, memory controllers, peripherals, and shared communication into one product. A chiplet design extends that composition across multiple silicon dies in one package. This book owns the structures whose behavior is defined by multiple agents rather than one processor family.
 
-> **First-time reader:** Read the [Architecture Primer](../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md), then at least one compute-architecture overview. A bus, network, or memory controller only makes sense once you know what requests its endpoints generate.
+> **First-time reader:** Read [SoC and Chiplet Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_SoC_Chiplet_Workloads_Performance_and_DSE.md), then at least one compute-architecture overview. A bus, network, or memory controller only makes sense once you know what requests its endpoints generate.
 
 ~~~mermaid
 flowchart LR
@@ -25,6 +25,7 @@ flowchart LR
 
 | Order | Subdomain | Chapters | What it owns |
 |---:|---|---:|---|
+| 0 | [SoC/Chiplet Design Methodology](00_Design_Methodology/00_Index.md) | 3 | concurrent use-case contracts, shared-resource DSE, chip/package PPA, and composed simulation evidence |
 | 1 | [System Modeling](01_System_Modeling/00_Index.md) | 1 | composing block behavior, contention, power, thermal limits |
 | 2 | [Shared Memory](02_Shared_Memory/00_Index.md) | 1 | DDR commands, scheduling, refresh, errors, delivered bandwidth |
 | 3 | [Transaction Protocols](03_Transaction_Protocols/00_Index.md) | 1 | APB/AHB/AXI channels, handshakes, IDs, bursts, bridges |
@@ -38,4 +39,4 @@ CPU cache coherence remains in [CPU Architecture](../01_CPU_Architecture/06_Cohe
 
 ---
 
-← [NPU Architecture](../03_NPU_Architecture/00_Index.md) · [Architecture book](../00_Index.md) · [Foundations and Methods](../05_Architecture_Foundations_and_Methods/00_Index.md) →
+← [NPU Architecture](../03_NPU_Architecture/00_Index.md) · [Architecture book](../00_Index.md) · [SoC/Chiplet Design Methodology](00_Design_Methodology/00_Index.md)

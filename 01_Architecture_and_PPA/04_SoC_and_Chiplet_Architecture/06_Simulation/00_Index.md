@@ -17,10 +17,10 @@
 
 ## Reading order
 
-1. Read the shared [Benchmark-to-Results Workflow](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md).
+1. Read the SoC/chiplet-specific [source-to-result workflow](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md).
 2. [DRAM Simulators](01_DRAM_Simulators.md) — dynamic load/store → translation/caches → physical controller request → DRAM commands → latency/bandwidth/power in Ramulator, DRAMSim3, DRAMPower, and USIMM.
 
-**Prerequisite:** [DDR Controller](../02_Shared_Memory/01_DDR_Controller.md) and [Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md).
+**Prerequisite:** [DDR Controller](../02_Shared_Memory/01_DDR_Controller.md) and [Simulation Methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md).
 
 ---
 

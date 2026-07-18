@@ -5,7 +5,7 @@
 
 A CPU is a general-purpose, latency-oriented machine that must preserve a software-visible instruction contract while internally predicting, reordering, caching, and overlapping work. This book follows one instruction from fetch to retirement, then follows its memory access through translation, cache, coherence, and the system fabric.
 
-> **First-time reader:** Read the [Architecture Primer](../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md) first if terms such as pipeline, cache line, virtual address, or outstanding request are new.
+> **First-time reader:** Read [CPU Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md) first if terms such as pipeline, cache line, virtual address, or outstanding request are new.
 
 ~~~mermaid
 flowchart LR
@@ -24,6 +24,7 @@ flowchart LR
 
 | Order | Subdomain | Chapters | Question answered |
 |---:|---|---:|---|
+| 0 | [CPU Design Methodology](00_Design_Methodology/00_Index.md) | 3 | Which workloads matter, what bottleneck is active, what does it cost physically, and what evidence supports the result? |
 | 1 | [Core Foundations](01_Core_Foundations/00_Index.md) | 3 | What contract does a CPU implement, and where does parallel work come from? |
 | 2 | [Frontend and Prediction](02_Frontend_and_Prediction/00_Index.md) | 3 | How are instructions predicted, delivered, validated, and recovered? |
 | 3 | [Out-of-Order Backend](03_Out_of_Order_Backend/00_Index.md) | 4 | How does the core schedule and replay early work while still committing in order? |
@@ -35,12 +36,13 @@ flowchart LR
 
 ## Beginner reading order
 
-1. [CPU Architecture](01_Core_Foundations/01_CPU_Architecture.md) for the whole-machine map.
-2. [RISC-V ISA](01_Core_Foundations/02_RISC_V_ISA.md) for the software-visible contract.
-3. [Fetch and Decode](02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md), [Speculative Execution](02_Frontend_and_Prediction/03_Speculative_Execution.md), and [Out-of-Order Execution](03_Out_of_Order_Backend/01_OoO_Execution.md).
-4. [Advanced Scheduling, Wakeup, and Replay](03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md) when the baseline pipeline is clear.
-5. [Cache Microarchitecture](04_Cache_Hierarchy/01_Cache_Microarchitecture.md), then [TLB and Virtual Memory](05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
-6. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
+1. [CPU Design Methodology](00_Design_Methodology/00_Index.md) for CPU terminology, workloads, performance equations, physical costs, and evidence.
+2. [CPU Architecture](01_Core_Foundations/01_CPU_Architecture.md) for the whole-machine map.
+3. [RISC-V ISA](01_Core_Foundations/02_RISC_V_ISA.md) for the software-visible contract.
+4. [Fetch and Decode](02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md), [Speculative Execution](02_Frontend_and_Prediction/03_Speculative_Execution.md), and [Out-of-Order Execution](03_Out_of_Order_Backend/01_OoO_Execution.md).
+5. [Advanced Scheduling, Wakeup, and Replay](03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md) when the baseline pipeline is clear.
+6. [Cache Microarchitecture](04_Cache_Hierarchy/01_Cache_Microarchitecture.md), then [TLB and Virtual Memory](05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
+7. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
 
 **Hands off to:** [SoC and Chiplet Architecture](../04_SoC_and_Chiplet_Architecture/00_Index.md) when requests leave the CPU-owned coherent subsystem.
 

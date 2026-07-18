@@ -254,7 +254,7 @@ Counters should separate `not ready`, `no execution port`, `PRF bank conflict`, 
 - [Speculative Execution](../02_Frontend_and_Prediction/03_Speculative_Execution.md) supplies the predict–validate–recover framework.
 - [Load-Store Unit](02_Load_Store_Unit_and_Memory_Ordering.md) covers address comparison, forwarding, and memory ordering.
 - [XiangShan](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) connects the abstractions to named open modules.
-- [Performance Modeling](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) turns queue and replay counters into design-space choices.
+- [Performance Modeling](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md) turns queue and replay counters into design-space choices.
 
 ## References
 

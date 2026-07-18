@@ -12,7 +12,7 @@
 > megabyte (MB); gigabyte (GB); terabyte (TB).
 
 > **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (pipeline, memory hierarchy), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (set-associative indexing, tag compare), [RISC_V_ISA](../01_Core_Foundations/02_RISC_V_ISA.md) (Sv39, `satp`, `SFENCE.VMA`).
-> **Hands off to:** [Memory](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (the DRAM the walk reads), [AHB_AXI_APB](../../04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) (buses carrying physical addresses), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a complete MMU in an open core).
+> **Hands off to:** [Memory](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (the DRAM the walk reads), [AHB_AXI_APB](../../04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) (buses carrying physical addresses), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a complete MMU in an open core).
 
 ---
 
@@ -361,7 +361,7 @@ The through-line is the same as ASIDs: the cheapest invalidate is the one you ca
 
 ## Cross-references
 
-- **Down the stack (what this is built from):** [Memory](../../05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (the SRAM/CAM cells behind the TLB and the DRAM the walk reads), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (set-associative indexing and the physical tag compare VIPT overlaps; its §1.5 owns the *geometric* derivation of the VIPT ceiling $C\le W\times P$, while §6 here owns the overlap-and-aliasing *mechanism* — synonyms and homonyms — that ceiling exists to police), [CMOS_Fundamentals](../../../00_Fundamentals/01_CMOS_Fundamentals.md) (the associative match delay of §3.1).
+- **Down the stack (what this is built from):** [Memory](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (the SRAM/CAM cells behind the TLB and the DRAM the walk reads), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (set-associative indexing and the physical tag compare VIPT overlaps; its §1.5 owns the *geometric* derivation of the VIPT ceiling $C\le W\times P$, while §6 here owns the overlap-and-aliasing *mechanism* — synonyms and homonyms — that ceiling exists to police), [CMOS_Fundamentals](../../../00_Fundamentals/01_CMOS_Fundamentals.md) (the associative match delay of §3.1).
 - **Up the stack (what builds on it):** [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the AGU/LSQ that issue the virtual addresses translated here, and the load-use path VIPT protects), [DDR_Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) & [AHB_AXI_APB](../../04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) (carry the physical addresses translation produces), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a complete MMU + page-walk cache in an open OoO core).
 - **Adjacent / prerequisite:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (the pipeline and memory hierarchy this sits in), [RISC_V_ISA](../01_Core_Foundations/02_RISC_V_ISA.md) (Sv39/48/57, `satp`, `SFENCE.VMA`, and the page-fault trap of §8).
 

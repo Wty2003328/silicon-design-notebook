@@ -6,7 +6,7 @@
 > level-one cache (L1); level-two cache (L2); last-level cache (LLC); network on chip (NoC); direct memory access (DMA);
 > least recently used (LRU); program counter (PC); service-level objective (SLO); kibibyte (KiB).
 
-> **Prerequisites:** [Cache Microarchitecture](01_Cache_Microarchitecture.md) (AMAT, MSHRs, hierarchy, replacement overview), [Workload Characterization](../../05_Architecture_Foundations_and_Methods/02_Performance_Analysis/02_Workload_Characterization_and_Sampling.md), and [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md).
+> **Prerequisites:** [Cache Microarchitecture](01_Cache_Microarchitecture.md) (AMAT, MSHRs, hierarchy, replacement overview), [Workload Characterization](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md), and [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md).
 > **Hands off to:** [Cache Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md) for distributed ownership, [DDR Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) for last-level misses, and [QoS, Ordering, and I/O Coherence](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md) for end-to-end enforcement.
 
 ---
@@ -273,4 +273,4 @@ At four ways, core A loses 30 misses by receiving a fifth way; B loses 8. A util
 
 ---
 
-**Navigation:** [Cache Hierarchy index](00_Index.md) · [Memory index](../../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/00_Index.md)
+**Navigation:** [Cache Hierarchy index](00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)

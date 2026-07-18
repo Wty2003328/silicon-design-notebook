@@ -4,7 +4,7 @@
 
 An NPU accelerates neural-network tensor operations by placing many arithmetic units beside explicitly managed local memory. Its useful performance depends as much on mapping and data movement as on the number of multiply-accumulate units.
 
-> **First-time reader:** Begin with the [Architecture Primer](../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md). The compute chapter introduces tensors, processing elements, multiply-accumulate operations, and dataflow before using their abbreviations.
+> **First-time reader:** Begin with [NPU Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md). The compute chapter introduces tensors, processing elements, multiply-accumulate operations, and dataflow before using their abbreviations.
 
 ~~~mermaid
 flowchart LR
@@ -20,6 +20,7 @@ flowchart LR
 
 | Order | Subdomain | Chapters | What it owns |
 |---:|---|---:|---|
+| 0 | [NPU Design Methodology](00_Design_Methodology/00_Index.md) | 3 | graph/shape workload contracts, mapping/DSE, accelerator physical costs, and framework-to-results evidence |
 | 1 | [Compute Dataflows](01_Compute_Dataflows/00_Index.md) | 4 | arrays, attention engines, Transformer prefill/decode, sparsity, MoE, irregular execution |
 | 2 | [Mapping and Memory](02_Mapping_and_Memory/00_Index.md) | 3 | tiling, compression, descriptor DMA, scratchpad lifetime, event-driven scheduling |
 | 3 | [System Integration](03_System_Integration/00_Index.md) | 1 | host queues, direct memory access, address translation, scheduling, errors |
@@ -27,7 +28,7 @@ flowchart LR
 
 ## Reading order
 
-[NPU Accelerators](01_Compute_Dataflows/01_NPU_Accelerators.md) → [Dataflows](01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) → [Transformer and Attention Engines](01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md) → [Dynamic Sparsity and MoE](01_Compute_Dataflows/04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md) → [Tensor Tiling](02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md) → [Sparsity and Quantization](02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) → [Decoupled Access–Execute](02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md) → [System Integration](03_System_Integration/01_Host_Interface_Memory_Visibility_and_Scheduling.md).
+[NPU Design Methodology](00_Design_Methodology/00_Index.md) → [NPU Accelerators](01_Compute_Dataflows/01_NPU_Accelerators.md) → [Dataflows](01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) → [Transformer and Attention Engines](01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md) → [Dynamic Sparsity and MoE](01_Compute_Dataflows/04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md) → [Tensor Tiling](02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md) → [Sparsity and Quantization](02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) → [Decoupled Access–Execute](02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md) → [System Integration](03_System_Integration/01_Host_Interface_Memory_Visibility_and_Scheduling.md).
 
 **Hands off to:** [SoC and Chiplet Architecture](../04_SoC_and_Chiplet_Architecture/00_Index.md) when the NPU becomes one agent in a larger chip.
 

@@ -20,7 +20,7 @@
 2. [RISC-V Instruction Set Architecture](02_RISC_V_ISA.md) — modular software-visible contract and implementation consequences.
 3. [SMT, SIMD, and Vector Execution](03_SMT_SIMD_and_Vector_Execution.md) — thread and data parallelism choices.
 
-**Comes from:** [Architecture Primer](../../05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md).
+**Comes from:** [Architecture Primer](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md).
 **Hands off to:** [Frontend](../02_Frontend_and_Prediction/00_Index.md) and [Out-of-Order Backend](../03_Out_of_Order_Backend/00_Index.md).
 
 ---

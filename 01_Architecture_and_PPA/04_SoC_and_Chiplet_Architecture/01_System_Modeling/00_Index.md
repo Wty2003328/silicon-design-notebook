@@ -18,7 +18,7 @@
 
 1. [Full-Chip Power and Performance Modeling](01_Full_Chip_Modeling.md).
 
-**Comes from:** one or more CPU/GPU/NPU architecture books plus [performance/PPA methods](../../05_Architecture_Foundations_and_Methods/00_Index.md).
+**Comes from:** one or more CPU/GPU/NPU architecture books plus [performance/PPA methods](../00_Design_Methodology/00_Index.md).
 
 ---
 

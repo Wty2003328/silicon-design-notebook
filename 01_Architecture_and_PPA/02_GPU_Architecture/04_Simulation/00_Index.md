@@ -18,10 +18,10 @@
 
 ## Reading order
 
-1. Read the shared [Benchmark-to-Results Workflow](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md).
+1. Read the GPU-specific [CUDA-to-Results Workflow](../00_Design_Methodology/03_GPU_Simulation_Methodology_and_Evidence.md).
 2. [GPU Simulators](01_GPU_Simulators.md) — CUDA source → PTX/cubin/SASS → grid/warps or NVBit trace → timing events → validation and statistics in GPGPU-Sim/Accel-Sim.
 
-**Prerequisite:** [Shared Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md).
+**Prerequisite:** [GPU Simulation Methodology and Evidence](../00_Design_Methodology/03_GPU_Simulation_Methodology_and_Evidence.md).
 
 ---
 

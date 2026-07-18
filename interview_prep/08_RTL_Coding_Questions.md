@@ -177,7 +177,7 @@ module afifo #(parameter W=32, A=4)
 endmodule
 ```
 
-**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers — never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early — lose bandwidth, never corrupt); depth must be 2^A for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. Full derivation in [Memory](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) / [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC, async FIFO).
+**Follow-ups (know all):** why gray (one bit flips → synchronizer sees old or new value, both valid pointers—never a phantom); why pessimism is safe (synced pointer lags → full asserts early, empty asserts early—lose bandwidth, never corrupt); depth must be $2^A$ for gray wrap; resets must be coordinated (both sides reset before traffic); DFT/STA: set false-path/max-delay (skew) constraints on the gray buses. The full clock-domain-crossing (CDC) and asynchronous-FIFO derivation is in [Async Design and CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md).
 
 ---
 
@@ -409,5 +409,5 @@ What senior interviewers actually score:
 ## Cross-references
 
 - Building blocks: [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md).
-- Deep dives behind problems: [Memory](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md) (FIFOs/SRAM), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC), [Network_on_Chip](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (arbiter in context).
+- Deep dives behind problems: [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (SRAM/CAM cells, arrays, ports, and ECC), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC and FIFOs), [Network_on_Chip](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (arbiter in context).
 - Companion: [Hardware_Interview_Questions](09_Hardware_Interview_Questions.md) (concept Q&A + timing/power math); the AI-systems counterpart (*System Design Interview*) lives in the companion AI-infra notebook.

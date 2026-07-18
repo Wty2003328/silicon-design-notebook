@@ -190,7 +190,7 @@ Everything else in the block is combinational logic and wires, whose power the e
 
 ## 7. The fidelity ladder: architectural → RTL → gate → SPICE
 
-Because activity gets more real and structure gets more detailed as a design firms up, power estimation is a ladder you descend over the project, trading runtime for fidelity — the same speed↔accuracy ladder as [performance modeling](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md#1-the-modeling-fidelity-ladder). Each rung needs both a *structural* model (what is instantiated) and an *activity* source (this whole page).
+Because activity gets more real and structure gets more detailed as a design firms up, power estimation is a ladder you descend over the project, trading runtime for fidelity—the same choice made when selecting the [SoC/chiplet simulation boundary](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md#0-choose-the-model-boundary-from-the-system-claim). Each rung needs both a *structural* model (what is instantiated) and an *activity* source (this whole page).
 
 | Level | Example | Accuracy | Speed | Activity source |
 |---|---|---|---|---|
@@ -234,7 +234,7 @@ The mechanics of the activity files themselves — SAIF's backward/forward annot
 
 - **Down the stack (the physics these estimates rest on):** [CMOS_Fundamentals §4](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $\tfrac12 CV^2$ dissipated per transition and the leakage that sets the static term), [Power_Fundamentals](01_Power_Fundamentals.md) (the switching-power derivation §2, the short-circuit-current taxonomy §2.1, and the total-power equation this page supplies the $\alpha$ for).
 - **Up the stack (what consumes the estimate):** [Power_Analysis_and_Signoff](05_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics and the peak-activity vectors that drive dynamic IR-drop signoff), [Power_Reduction_Techniques](03_Power_Reduction_Techniques.md) (clock gating, operand isolation, and path balancing — what you *do* about the high-$\alpha$ nets and glitches this page finds), [Full_Chip_Modeling](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) (composes per-block $\alpha C V^2 f$ into a chip with contention and DVFS layers).
-- **Adjacent:** [Performance_Modeling_and_DSE](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/02_Performance_Analysis/01_Performance_Modeling_and_DSE.md) (the same fidelity ladder, and the event counts / utilization an architectural power model turns into $\alpha$).
+- **Adjacent:** [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) defines the fidelity ladder and evidence chain whose event counts/utilization an architectural power model turns into $\alpha$.
 
 ---
 

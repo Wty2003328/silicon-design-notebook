@@ -18,11 +18,11 @@
 
 ## Reading order
 
-1. Read the shared [Benchmark-to-Results Workflow](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) for source → compiler/assembly → ELF → loader → dynamic instructions → events → counters.
+1. Read the CPU-specific [source-to-result workflow](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md) for source → compiler/assembly → ELF → loader → dynamic instructions → events → counters.
 2. [gem5](01_gem5.md) — concrete target build, ELF loading, StaticInst/dynamic records, CPU models, full-system mode, checkpoints, Ruby memory, statistics, and calibration.
 3. [NoC and Coherence Simulation](02_NoC_and_Coherence_Simulation.md) — load/store → cache transaction → coherence messages → packets/flits → completion, plus liveness and tail latency.
 
-**Prerequisite:** [Shared Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md).
+**Prerequisite:** [CPU Simulation Methodology and Evidence](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md).
 
 ---
 

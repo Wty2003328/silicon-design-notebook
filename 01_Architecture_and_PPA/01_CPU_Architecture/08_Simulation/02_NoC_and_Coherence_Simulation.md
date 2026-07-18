@@ -5,7 +5,7 @@
 > **Abbreviation key — skim now and return as needed:** central processing unit (CPU); register-transfer level (RTL); instructions per cycle (IPC); miss status holding register (MSHR); transient buffer entry (TBE); network interface (NI); virtual channel (VC);
 > quality of service (QoS); service-level objective (SLO).
 
-> **Prerequisites:** [Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md), [Cache Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md), [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md), and [Routing, Flow Control, and Deadlock](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md).
+> **Prerequisites:** [Simulation Methodology](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md), [Cache Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md), [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md), and [Routing, Flow Control, and Deadlock](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md).
 > **Hands off to:** gem5/Ruby/Garnet configurations, stand-alone NoC experiments, protocol verification, and full-system performance studies.
 
 ---
@@ -165,7 +165,7 @@ Keep raw layers separate when calculating results:
 - **network level:** packets, flits, hops, blocked cycles, link/VC occupancy;
 - **latency level:** injection-to-ejection network latency versus issue-to-fill coherence miss latency.
 
-Average packet latency cannot be substituted for cache-miss latency: a miss may wait before injection, require multiple dependent packets, and wait again at the destination. [Benchmark to Results](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/03_Benchmark_to_Results_End_to_End.md) defines the earlier compiler/loader/ROI stages.
+Average packet latency cannot be substituted for cache-miss latency: a miss may wait before injection, require multiple dependent packets, and wait again at the destination. [CPU source-to-result workflow](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md) defines the earlier compiler/loader/ROI stages.
 
 Avoid zero-time combinational cycles across components. Define event ordering or clock phases so same-cycle credit/message/response behavior is deterministic and matches intended hardware.
 
@@ -305,7 +305,7 @@ A trace injects a miss every 20 cycles. A narrower NoC raises miss latency and w
 
 ## Cross-references
 
-- **Method/tool:** [Simulation Methodology](../../05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/01_Simulation_Methodology.md), [gem5](01_gem5.md), [Other Architecture Simulators](../../05_Architecture_Foundations_and_Methods/06_Tool_Landscape/01_Other_Architecture_Simulators.md).
+- **Method/tool:** [Simulation Methodology](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md), [gem5](01_gem5.md), [Other Architecture Simulators](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md).
 - **Subjects:** [Cache Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md), [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md), [Routing, Flow Control, and Deadlock](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md).
 
 ## References
