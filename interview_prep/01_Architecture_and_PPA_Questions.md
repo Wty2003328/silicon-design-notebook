@@ -1,12 +1,44 @@
-# 01 — Architecture and PPA: Interview Questions
+# 01 — Architecture and Power, Performance, and Area (PPA): Interview Questions
 
-Consolidated interview Q&A and worked problems from every page in `01_Architecture_and_PPA/`, moved here to keep topic pages focused on concepts. Each section links back to its source page for full context.
+Consolidated interview questions, answers, and worked problems from every page in `01_Architecture_and_PPA/`, moved here to keep topic pages focused on concepts. Each section links back to its source page for full context.
+
+## How this bank maps to the architecture books
+
+| Book | Interview scope |
+|---|---|
+| [Central processing unit (CPU) architecture](../01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md) | instruction-set contract, pipeline, prediction, out-of-order execution, cache hierarchy, virtual memory, coherence, consistency, and CPU simulation |
+| [Graphics processing unit (GPU) architecture](../01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md) | single instruction, multiple threads execution, occupancy, coalescing, high-bandwidth memory, scale-up, and GPU simulation |
+| [Neural processing unit (NPU) architecture](../01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md) | spatial dataflows, tiling, data movement, numeric compression, host integration, and accelerator simulation |
+| [System-on-chip (SoC) and chiplet architecture](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md) | full-chip composition, shared memory, transaction protocols, on-chip networks, service policy, input/output, and die-to-die links |
+| [Architecture foundations and methods](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/00_Index.md) | vocabulary, workloads, modeling, PPA uncertainty, physical memory structures, and simulation methodology |
+
+## Start here — foundational architecture questions
+
+*From [Architecture_Primer_and_Glossary.md](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md)*
+
+### Problem 1: Architecture, ISA, Microarchitecture, and Implementation
+
+**Question:** Explain the difference among architecture, instruction set architecture (ISA), microarchitecture, and implementation. Why does the distinction matter?
+
+**Answer:** Architecture is the broad organization and externally important behavior of a system. The ISA is the part of a CPU’s contract visible to software: instructions, registers, exceptions, privilege, and memory-order rules. Microarchitecture is the hidden organization used to realize that contract—for example, pipeline depth, predictor design, queue sizes, and cache policy. Implementation turns that organization into register-transfer level logic, gates, wires, memories, clocks, and a physical layout. Two CPUs may run the same ISA while using very different pipelines and fabrication technologies. The distinction prevents a performance choice from being mistaken for a software guarantee.
+
+### Problem 2: Latency and Throughput
+
+**Question:** A four-stage pipeline takes four cycles to produce one result but accepts a new operation every cycle. What are its latency and steady-state throughput?
+
+**Answer:** The latency is four cycles because one operation crosses four stages before completing. After the pipeline fills, its throughput is one result per cycle because four different operations occupy the stages at once. This is why a deeper pipeline can improve throughput without making one operation finish sooner; it can even increase the operation’s latency if additional registers or recovery penalties are added.
+
+### Problem 3: Queues and Backpressure
+
+**Question:** Why does an architecture need both queues and backpressure between blocks?
+
+**Answer:** A queue temporarily absorbs a rate mismatch: an upstream producer can continue briefly while a downstream consumer is busy. The queue is finite, so the consumer must eventually signal that it cannot accept more work. That reverse signal is backpressure. Without a queue, every short delay immediately stalls the producer. Without backpressure, a full queue would overflow and lose or corrupt a transaction. Queue depth therefore changes tolerance to bursts, while backpressure preserves correctness when the burst lasts longer than the available storage.
 
 ---
 
 ## ACE and CHI -- AMBA Coherence Extensions Beyond AXI
 
-*From [ACE_and_CHI.md](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/02_ACE_and_CHI.md)*
+*From [ACE_and_CHI.md](../01_Architecture_and_PPA/01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md)*
 
 ### Problem 1: ACE Transaction Sequence
 
@@ -205,7 +237,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ## AMBA Bus Protocols: APB, AHB, and AXI -- The Complete Interview Bible
 
-*From [AHB_AXI_APB.md](../01_Architecture_and_PPA/04_Interconnect/01_Protocols/01_AHB_AXI_APB.md)*
+*From [AHB_AXI_APB.md](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md)*
 
 ### Q1: What are the main differences between APB, AHB, and AXI?
 
@@ -291,7 +323,7 @@ Enforced in hardware, so a Non-secure master cannot bypass the TZC by software m
 
 ## Branch Prediction -- Deep Dive for CPU Designers
 
-*From [Branch_Prediction_Deep_Dive.md](../01_Architecture_and_PPA/02_CPU/02_Frontend_and_Prediction/01_Branch_Prediction_Deep_Dive.md)*
+*From [Branch_Prediction_Deep_Dive.md](../01_Architecture_and_PPA/01_CPU_Architecture/02_Frontend_and_Prediction/01_Branch_Prediction_Deep_Dive.md)*
 
 ### Problem 1: gshare Index Computation and Prediction
 
@@ -619,7 +651,7 @@ history window.
 
 ## CPU Architecture -- The Complete Interview Bible
 
-*From [CPU_Architecture.md](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/01_CPU_Architecture.md)*
+*From [CPU_Architecture.md](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md)*
 
 ### Q1: Describe the 5 pipeline stages in detail. What happens at each stage?
 
@@ -705,7 +737,7 @@ history window.
 
 ## Cache Microarchitecture — Controller Design and Performance
 
-*From [Cache_Microarchitecture.md](../01_Architecture_and_PPA/03_Memory/01_Cache_Hierarchy/01_Cache_Microarchitecture.md)*
+*From [Cache_Microarchitecture.md](../01_Architecture_and_PPA/01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md)*
 
 ### Problem 1: Design a 4-Way 32 KB L1 D-Cache
 
@@ -888,7 +920,7 @@ limited by memory bandwidth.
 
 ### Problem 5: MESI Protocol Trace
 
-*From [Cache_Coherence.md](../01_Architecture_and_PPA/03_Memory/03_Coherence_and_Consistency/01_Cache_Coherence.md) and [CPU_Architecture §8](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/01_CPU_Architecture.md).*
+*From [Cache_Coherence.md](../01_Architecture_and_PPA/01_CPU_Architecture/06_Coherence_and_Consistency/01_Cache_Coherence.md) and [CPU_Architecture §8](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md).*
 
 **Given:** 4-core system with MESI, shared bus. Line X initially not cached anywhere.
 
@@ -942,7 +974,7 @@ The sharer vector alone is 9.375% of the 32 MiB data store. Owner, protocol stat
 
 ## DDR Memory Controller -- From Protocol to Scheduler
 
-*From [DDR_Controller.md](../01_Architecture_and_PPA/03_Memory/05_Main_Memory/01_DDR_Controller.md)*
+*From [DDR_Controller.md](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md)*
 
 ### Problem 1: Peak and Effective Bandwidth
 
@@ -1159,7 +1191,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Memory Architecture and Design — Senior Engineer Level
 
-*From [Memory.md](../01_Architecture_and_PPA/03_Memory/04_Memory_Technologies/01_Memory_Arrays_and_Technologies.md)*
+*From [Memory.md](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/04_Hardware_Structures/01_Memory_Arrays_and_Technologies.md)*
 
 ### Q1: Derive the read stability condition for a 6T SRAM cell.
 
@@ -1225,7 +1257,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## Network-on-Chip (NoC) — Topology, Routing, Flow Control, Router Microarchitecture
 
-*From [Network_on_Chip.md](../01_Architecture_and_PPA/04_Interconnect/02_Network_on_Chip/01_Network_on_Chip.md)*
+*From [Network_on_Chip.md](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md)*
 
 - **"Why a NoC over a bus/crossbar?"** → bandwidth scales with bisection not constant; $O(N^2)$ crossbar area/wire-delay avoided; links are short repeatable wires that close timing; modularity (tile + DFT (design for test) + CDC per hop).
 - **"Wormhole vs cut-through?"** → buffer flits not packets (area), but blocked packets span routers → HoL (head-of-line) blocking & deadlock pressure; VCs (virtual channels) mitigate.
@@ -1237,7 +1269,7 @@ Step 3: Schedule accounting for bank conflicts
 
 ## TLB and Virtual Memory -- Hardware Microarchitecture
 
-*From [TLB_and_Virtual_Memory.md](../01_Architecture_and_PPA/03_Memory/02_Virtual_Memory/01_TLB_and_Virtual_Memory.md)*
+*From [TLB_and_Virtual_Memory.md](../01_Architecture_and_PPA/01_CPU_Architecture/05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)*
 
 ### Problem 1: Design a 64-Entry 4-Way DTLB for RV64 Sv39
 
@@ -1550,7 +1582,7 @@ significantly -- and why superpages are critical for data-intensive workloads.
 
 ## Xiangshan (香山) — Open-Source RISC-V OoO Processor Case Study
 
-*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/02_CPU/04_Core_Case_Studies/01_Xiangshan_CPU_Design.md)*
+*From [Xiangshan_CPU_Design.md](../01_Architecture_and_PPA/01_CPU_Architecture/07_Core_Case_Studies/01_Xiangshan_CPU_Design.md)*
 
 ### Problem 1: Pipeline Mispredict Recovery Path
 
@@ -1828,7 +1860,7 @@ name the measurement that would change the decision.
 
 #### Q1: How do you know a sampled workload preserves architecture decisions?
 
-*From [Workload Characterization and Sampling](../01_Architecture_and_PPA/01_Modeling/01_Performance_Analysis/02_Workload_Characterization_and_Sampling.md)*
+*From [Workload Characterization and Sampling](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/02_Performance_Analysis/02_Workload_Characterization_and_Sampling.md)*
 
 **Answer:** Do not validate sampling only by average IPC. Cluster intervals using
 architecture-relevant features such as instruction mix, branch MPKI, cache MPKI,
@@ -1840,7 +1872,7 @@ the sample is not yet adequate for that decision.
 
 #### Q2: How should an architect present an early PPA estimate?
 
-*From [Early PPA Estimation and Uncertainty](../01_Architecture_and_PPA/01_Modeling/02_System_and_PPA/02_Early_PPA_Estimation_and_Uncertainty.md)*
+*From [Early PPA Estimation and Uncertainty](../01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/03_PPA_Estimation/01_Early_PPA_Estimation_and_Uncertainty.md)*
 
 **Answer:** Report a calibrated range with explicit assumptions, not a precise
 point. Separate logic, memory, interconnect, clock, and physical overhead; scale
@@ -1854,7 +1886,7 @@ actual design regression.
 
 #### Q3: When does adding an SMT thread or wider vector unit fail to improve throughput?
 
-*From [SMT, SIMD, and Vector Execution](../01_Architecture_and_PPA/02_CPU/01_Core_Foundations/03_SMT_SIMD_and_Vector_Execution.md)*
+*From [SMT, SIMD, and Vector Execution](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/03_SMT_SIMD_and_Vector_Execution.md)*
 
 **Answer:** Both mechanisms improve utilization only when unused execution and
 memory capacity exists. SMT can instead amplify frontend, rename, ROB, cache,
@@ -1866,7 +1898,7 @@ latency-critical progress collapses.
 
 #### Q4: A four-wide backend retires only two instructions per cycle. How do you prove the frontend is responsible?
 
-*From [Fetch, Decode, and µop Delivery](../01_Architecture_and_PPA/02_CPU/02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md)*
+*From [Fetch, Decode, and µop Delivery](../01_Architecture_and_PPA/01_CPU_Architecture/02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md)*
 
 **Answer:** Build a loss accounting chain from requested fetch slots to useful
 µops entering rename: I-cache and ITLB misses, taken-branch bubbles, alignment
@@ -1877,7 +1909,7 @@ is fetch bytes, prediction redirection, or queue refill latency.
 
 #### Q5: What makes a load/store unit correct under speculative execution?
 
-*From [Load/Store Unit and Memory Ordering](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md)*
+*From [Load/Store Unit and Memory Ordering](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md)*
 
 **Answer:** A load must receive the youngest older overlapping store bytes, or
 cache data only after all relevant older store addresses are known. Forwarding is
@@ -1889,7 +1921,7 @@ and coherence invalidations.
 
 #### Q6: How do retirement and recovery preserve precise architectural state?
 
-*From [Retirement, Recovery, and Precise State](../01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md)*
+*From [Retirement, Recovery, and Precise State](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md)*
 
 **Answer:** Execution may finish out of order, but retirement commits in program
 order. An exception becomes visible only when its instruction reaches the ROB
@@ -1903,7 +1935,7 @@ and response path obeys the same kill boundary.
 
 #### Q7: How do you decide whether a prefetcher is helping the system rather than its local cache?
 
-*From [Prefetching, Replacement, and QoS](../01_Architecture_and_PPA/03_Memory/01_Cache_Hierarchy/02_Prefetching_Replacement_and_QoS.md)*
+*From [Prefetching, Replacement, and QoS](../01_Architecture_and_PPA/01_CPU_Architecture/04_Cache_Hierarchy/02_Prefetching_Replacement_and_QoS.md)*
 
 **Answer:** Accuracy alone is insufficient. Measure coverage, timeliness,
 pollution, useless evictions, MSHR occupancy, downstream bandwidth, row-buffer
@@ -1914,7 +1946,7 @@ not the prefetching core's hit rate in isolation.
 
 #### Q8: Why is IOMMU invalidation harder than a CPU TLB flush?
 
-*From [Page Walkers, IOMMUs, and Virtualization](../01_Architecture_and_PPA/03_Memory/02_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md)*
+*From [Page Walkers, IOMMUs, and Virtualization](../01_Architecture_and_PPA/01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md)*
 
 **Answer:** Translation state may exist in device TLBs, an IOMMU, shared
 page-walk caches, and nested guest/host translation structures, with DMA already
@@ -1926,7 +1958,7 @@ failure.
 
 #### Q9: Can a coherent machine still produce an unintuitive store-buffering result?
 
-*From [Memory Consistency and Atomics](../01_Architecture_and_PPA/03_Memory/03_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md)*
+*From [Memory Consistency and Atomics](../01_Architecture_and_PPA/01_CPU_Architecture/06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md)*
 
 **Answer:** Yes. Coherence orders writes to each individual cache line; a memory
 consistency model constrains ordering across different addresses and between
@@ -1937,7 +1969,7 @@ indivisible read-modify-write behavior and a well-defined ordering strength.
 
 #### Q10: Why can an HBM system deliver far less than its pin bandwidth?
 
-*From [HBM and Advanced Memory Systems](../01_Architecture_and_PPA/03_Memory/05_Main_Memory/02_HBM_and_Advanced_Memory_Systems.md)*
+*From [HBM and Advanced Memory Systems](../01_Architecture_and_PPA/02_GPU_Architecture/02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md)*
 
 **Answer:** Peak bandwidth assumes enough independent, well-mapped, long,
 balanced transfers to keep all channels busy. Low memory-level parallelism,
@@ -1951,7 +1983,7 @@ request count.
 
 #### Q11: How do you establish that a wormhole NoC is deadlock-free?
 
-*From [Routing, Flow Control, and Deadlock](../01_Architecture_and_PPA/04_Interconnect/02_Network_on_Chip/02_Routing_Flow_Control_and_Deadlock.md)*
+*From [Routing, Flow Control, and Deadlock](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md)*
 
 **Answer:** Construct the channel-dependency graph induced by every legal route
 and protocol dependency. A cycle means packets can hold one channel while waiting
@@ -1962,7 +1994,7 @@ coherence-message dependencies, then verify liveness under finite backpressure.
 
 #### Q12: What is required to turn a QoS priority field into a latency guarantee?
 
-*From [QoS, Ordering, and I/O Coherence](../01_Architecture_and_PPA/04_Interconnect/03_System_Fabrics/01_QoS_Ordering_and_IO_Coherence.md)*
+*From [QoS, Ordering, and I/O Coherence](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md)*
 
 **Answer:** Every contended stage—source queue, NoC, bridge, memory controller,
 and return path—needs a compatible admission and arbitration policy. Bound burst
@@ -1974,7 +2006,7 @@ hint.
 
 #### Q13: What determines a good chiplet partition?
 
-*From [Chiplets, CXL, and Die-to-Die](../01_Architecture_and_PPA/04_Interconnect/03_System_Fabrics/02_Chiplets_CXL_and_Die_to_Die.md)*
+*From [Chiplets, CXL, and Die-to-Die](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md)*
 
 **Answer:** Trade reticle and yield benefits, node reuse, and product modularity
 against die-to-die latency, energy per bit, package routing, bandwidth demand,
@@ -1987,7 +2019,7 @@ protocol can tolerate their latency and failure modes.
 
 #### Q14: Why is high GPU occupancy neither necessary nor sufficient for high performance?
 
-*From [SIMT Scheduling and Occupancy](../01_Architecture_and_PPA/05_GPU/01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md)*
+*From [SIMT Scheduling and Occupancy](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md)*
 
 **Answer:** Occupancy counts resident warps, not warps eligible to issue. More
 residency hides latency only until the scheduler has enough independent ready
@@ -1998,7 +2030,7 @@ register spills, and achieved memory bandwidth while sweeping block size.
 
 #### Q15: How can a fully coalesced GPU access still perform badly?
 
-*From [Coalescing, Caches, and Shared Memory](../01_Architecture_and_PPA/05_GPU/02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md)*
+*From [Coalescing, Caches, and Shared Memory](../01_Architecture_and_PPA/02_GPU_Architecture/02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md)*
 
 **Answer:** Coalescing minimizes memory transactions for an instruction, but
 performance can still be limited by poor locality, partition camping, insufficient
@@ -2009,7 +2041,7 @@ transactions per warp, replay causes, bank conflicts, and useful reuse.
 
 #### Q16: Derive the communication volume of ring all-reduce and name its real bottleneck.
 
-*From [Multi-GPU Interconnect and Execution](../01_Architecture_and_PPA/05_GPU/03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md)*
+*From [Multi-GPU Interconnect and Execution](../01_Architecture_and_PPA/02_GPU_Architecture/03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md)*
 
 **Answer:** For message size $M$ on $N$ GPUs, reduce-scatter and all-gather each
 take $N-1$ steps moving $M/N$ per GPU, so each GPU sends and receives
@@ -2022,7 +2054,7 @@ determine effective rather than nominal bandwidth.
 
 #### Q17: What causes a systolic array to have low utilization?
 
-*From [Systolic, Spatial, and Vector Dataflows](../01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md)*
+*From [Systolic, Spatial, and Vector Dataflows](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md)*
 
 **Answer:** Edge tiles, dimensions smaller than the array, pipeline fill and
 drain, data dependencies, sparsity imbalance, and memory starvation leave PEs
@@ -2033,7 +2065,7 @@ losses before proposing a larger array.
 
 #### Q18: How do you choose an NPU tile shape?
 
-*From [Tensor Tiling and Data Movement](../01_Architecture_and_PPA/06_NPU/02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md)*
+*From [Tensor Tiling and Data Movement](../01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md)*
 
 **Answer:** The input, weight, partial-sum, double-buffer, alignment, and metadata
 footprints must fit the assigned SRAM banks while supplying enough parallel work
@@ -2044,7 +2076,7 @@ and rank them using measured cycles and traffic at every level.
 
 #### Q19: When does sparse execution lose to dense execution?
 
-*From [Sparsity, Quantization, and Compression](../01_Architecture_and_PPA/06_NPU/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md)*
+*From [Sparsity, Quantization, and Compression](../01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md)*
 
 **Answer:** Sparse execution wins only when skipped MACs and reduced data movement
 exceed metadata, decode, indexing, load imbalance, fragmentation, and control
@@ -2055,7 +2087,7 @@ accumulator width, conversion traffic, accuracy loss, and fallback layers.
 
 #### Q20: What must be ordered when a coherent NPU signals completion?
 
-*From [Host Interface, Coherence, and Scheduling](../01_Architecture_and_PPA/06_NPU/03_System_Integration/01_Host_Interface_Coherence_and_Scheduling.md)*
+*From [Host Interface, Memory Visibility, and Scheduling](../01_Architecture_and_PPA/03_NPU_Architecture/03_System_Integration/01_Host_Interface_Memory_Visibility_and_Scheduling.md)*
 
 **Answer:** Descriptor fetches must observe the producer's writes; data reads must
 use the intended translation and protection context; result writes and any cache
@@ -2068,7 +2100,7 @@ but it does not by itself define the command protocol's ordering contract.
 
 #### Q21: Why can a trace-driven NoC or coherence study give the wrong answer?
 
-*From [NoC and Coherence Simulation](../01_Architecture_and_PPA/07_Simulators/03_Memory_and_Interconnect/02_NoC_and_Coherence_Simulation.md)*
+*From [NoC and Coherence Simulation](../01_Architecture_and_PPA/01_CPU_Architecture/08_Simulation/02_NoC_and_Coherence_Simulation.md)*
 
 **Answer:** A fixed trace removes feedback: in the real system, congestion delays
 misses, delayed misses reduce or reshape injection, backpressure changes MSHR and

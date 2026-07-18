@@ -6,7 +6,7 @@
 >
 > **Organized by the chip design flow.** The folders are numbered `00 → 07` in flow order — early PPA/architecture, frontend RTL + verification, synthesis, backend, signoff, manufacturing. Power is kept together as a cross-cutting track (02). Pages inside each folder are numbered in reading order, and every folder has its own `00_Index`. **Start with the [Chip Design Flow Overview](Chip_Design_Flow_Overview.md)** — it maps every stage, hand-off, and iteration loop.
 >
-> **47 flow pages** (+10 interview-prep banks).
+> **79 flow pages** (+10 interview-prep banks).
 
 ---
 
@@ -30,35 +30,17 @@ The spine: spec → architecture → RTL → synthesis → backend → signoff �
 ---
 
 ## [01 · Architecture and PPA](01_Architecture_and_PPA/00_Index.md)
-*Explore the microarchitecture; model performance; budget power and area — before RTL. The book now contains **45 chapters in 25 focused subdomains**, each with its own scope and reading order.*
+*Explore each chip architecture as a coherent book, then model performance and power, performance, and area (PPA) before register-transfer level (RTL) implementation. The section contains **46 chapters in 28 focused subdomains**.*
 
-| Part | Subdomain | Coverage |
-|------|-----------|----------|
-| Modeling | [Performance Analysis](01_Architecture_and_PPA/01_Modeling/01_Performance_Analysis/00_Index.md) | workload characterization, sampling, analytical/cycle models and DSE |
-| Modeling | [System and PPA](01_Architecture_and_PPA/01_Modeling/02_System_and_PPA/00_Index.md) | full-chip composition, early PPA calibration and uncertainty |
-| CPU | [Core Foundations](01_Architecture_and_PPA/02_CPU/01_Core_Foundations/00_Index.md) | pipeline/ISA plus SMT, SIMD and vectors |
-| CPU | [Frontend and Prediction](01_Architecture_and_PPA/02_CPU/02_Frontend_and_Prediction/00_Index.md) | branch/target prediction through fetch, decode and µop delivery |
-| CPU | [Out-of-Order Backend](01_Architecture_and_PPA/02_CPU/03_Out_of_Order_Backend/00_Index.md) | rename/schedule, LSU ordering and precise retirement/recovery |
-| CPU | [Core Case Studies](01_Architecture_and_PPA/02_CPU/04_Core_Case_Studies/00_Index.md) | real open-core design decisions |
-| Memory | [Cache Hierarchy](01_Architecture_and_PPA/03_Memory/01_Cache_Hierarchy/00_Index.md) | nonblocking caches, prefetch, replacement and QoS |
-| Memory | [Virtual Memory](01_Architecture_and_PPA/03_Memory/02_Virtual_Memory/00_Index.md) | TLBs, walkers, IOMMUs, ATS/PRI and nested translation |
-| Memory | [Coherence and Consistency](01_Architecture_and_PPA/03_Memory/03_Coherence_and_Consistency/00_Index.md) | distributed permissions, weak ordering, fences and atomics |
-| Memory | [Memory Technologies](01_Architecture_and_PPA/03_Memory/04_Memory_Technologies/00_Index.md) | SRAM/DRAM/register-file/CAM/ECC structures |
-| Memory | [Main Memory](01_Architecture_and_PPA/03_Memory/05_Main_Memory/00_Index.md) | DDR and HBM controller/system design |
-| Interconnect | [Protocols](01_Architecture_and_PPA/04_Interconnect/01_Protocols/00_Index.md) | AXI/AHB/APB and ACE/CHI endpoint semantics |
-| Interconnect | [Network on Chip](01_Architecture_and_PPA/04_Interconnect/02_Network_on_Chip/00_Index.md) | topology/router timing plus flow-control/deadlock proofs |
-| Interconnect | [System Fabrics](01_Architecture_and_PPA/04_Interconnect/03_System_Fabrics/00_Index.md) | QoS/order/I/O coherence and UCIe/CXL chiplets |
-| GPU | [Core Architecture](01_Architecture_and_PPA/05_GPU/01_Core_Architecture/00_Index.md) | SIMT scheduling, scoreboards and occupancy |
-| GPU | [Memory System](01_Architecture_and_PPA/05_GPU/02_Memory_System/00_Index.md) | coalescing, shared memory, caches, translation and HBM |
-| GPU | [Scale-Up](01_Architecture_and_PPA/05_GPU/03_Scale_Up/00_Index.md) | peer memory, collectives and topology-aware multi-GPU execution |
-| NPU | [Compute Dataflows](01_Architecture_and_PPA/06_NPU/01_Compute_Dataflows/00_Index.md) | systolic/spatial/vector mappings and utilization |
-| NPU | [Mapping and Memory](01_Architecture_and_PPA/06_NPU/02_Mapping_and_Memory/00_Index.md) | tensor tiling, movement, sparsity, quantization and compression |
-| NPU | [System Integration](01_Architecture_and_PPA/06_NPU/03_System_Integration/00_Index.md) | command queues, DMA/IOMMU, coherence, scheduling and RAS |
-| Simulators | [Methodology](01_Architecture_and_PPA/07_Simulators/01_Methodology/00_Index.md) | experiment design, analytical bounds, calibration and validation |
-| Simulators | [CPU and System](01_Architecture_and_PPA/07_Simulators/02_CPU_and_System/00_Index.md) | execution-driven CPU/full-system simulation |
-| Simulators | [Memory and Interconnect](01_Architecture_and_PPA/07_Simulators/03_Memory_and_Interconnect/00_Index.md) | DRAM plus coupled NoC/coherence simulation |
-| Simulators | [Accelerator Simulation](01_Architecture_and_PPA/07_Simulators/04_Accelerator_Simulation/00_Index.md) | GPU and NPU timing/mapping/energy tools |
-| Simulators | [Specialized Simulators](01_Architecture_and_PPA/07_Simulators/05_Specialized_Simulators/00_Index.md) | manycore, CIM, datacenter, chiplet and ecosystem tools |
+New readers should start with the [Architecture Primer](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/01_Reader_Foundations/01_Architecture_Primer_and_Glossary.md). It defines the basic machine, common units, and recurring abbreviations.
+
+| Architecture book | Subdomains and ownership |
+|---|---|
+| [CPU Architecture](01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md) | [Core foundations](01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/00_Index.md) → [frontend](01_Architecture_and_PPA/01_CPU_Architecture/02_Frontend_and_Prediction/00_Index.md) → [out-of-order backend](01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/00_Index.md) → [cache hierarchy](01_Architecture_and_PPA/01_CPU_Architecture/04_Cache_Hierarchy/00_Index.md) → [virtual memory](01_Architecture_and_PPA/01_CPU_Architecture/05_Virtual_Memory/00_Index.md) → [coherence and consistency](01_Architecture_and_PPA/01_CPU_Architecture/06_Coherence_and_Consistency/00_Index.md) → [case studies](01_Architecture_and_PPA/01_CPU_Architecture/07_Core_Case_Studies/00_Index.md) → [simulation](01_Architecture_and_PPA/01_CPU_Architecture/08_Simulation/00_Index.md). Cache coherence belongs here because CPU cores create and enforce the shared-memory contract. |
+| [GPU Architecture](01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md) | [Core architecture](01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/00_Index.md) → [GPU memory and high-bandwidth memory](01_Architecture_and_PPA/02_GPU_Architecture/02_Memory_System/00_Index.md) → [multi-GPU scale-up](01_Architecture_and_PPA/02_GPU_Architecture/03_Scale_Up/00_Index.md) → [GPU simulation](01_Architecture_and_PPA/02_GPU_Architecture/04_Simulation/00_Index.md). |
+| [NPU Architecture](01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md) | [Compute dataflows](01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/00_Index.md) → [mapping and memory](01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/00_Index.md) → [host integration](01_Architecture_and_PPA/03_NPU_Architecture/03_System_Integration/00_Index.md) → [accelerator simulation](01_Architecture_and_PPA/03_NPU_Architecture/04_Simulation/00_Index.md). |
+| [SoC and Chiplet Architecture](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md) | [Full-chip modeling](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md) → [shared DDR memory](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) → [transaction protocols](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/00_Index.md) → [on-chip networks](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/00_Index.md) → [I/O and chiplets](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/00_Index.md) → [DRAM simulation](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/06_Simulation/00_Index.md). These are whole-chip composition decisions rather than detached “interconnect” topics. |
+| [Architecture Foundations and Methods](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/00_Index.md) | [Reader foundations](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/01_Reader_Foundations/00_Index.md), [performance analysis](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/02_Performance_Analysis/00_Index.md), [PPA estimation](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/03_PPA_Estimation/00_Index.md), [hardware structures](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/04_Hardware_Structures/00_Index.md), [simulation methodology](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/05_Simulation_Methodology/00_Index.md), and [tool selection](01_Architecture_and_PPA/05_Architecture_Foundations_and_Methods/06_Tool_Landscape/00_Index.md). Only genuinely reusable methods live here. |
 
 ---
 
