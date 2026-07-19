@@ -1,5 +1,17 @@
 # Dynamic Sparsity, Mixture-of-Experts, and Irregular NPU Execution
 
+```mermaid
+flowchart LR
+    IN["dense activations / tokens"] --> DET["zero / block / router detection"]
+    DET --> META["indices / masks / expert assignments"]
+    META --> PACK["compact + bucket + load-balance"]
+    PACK --> MOVE["gather / all-to-all / scratchpad placement"]
+    MOVE --> EXEC["sparse tensor / vector / expert execution"]
+    EXEC --> MERGE["scatter / reduce / restore order"]
+    MERGE --> OUT["dense logical output"]
+    DET -. "dense fallback if overhead wins" .-> EXEC
+```
+
 > **First-time reader orientation:** Dense tensor hardware assumes every processing element receives useful work at a predictable time. Sparse models and mixture-of-experts (MoE) models break that assumption: useful values appear at irregular positions, and different tokens choose different expert networks. The advanced microarchitecture is the machinery that finds, routes, balances, and retires this data-dependent work.
 
 > **Abbreviation key — skim now and return as needed:** neural processing unit (NPU); deep neural network (DNN); large language model (LLM); mixture of experts (MoE); processing element (PE); general matrix multiplication (GEMM); general matrix-vector multiplication (GEMV); sparse matrix–dense matrix multiplication (SpMM); sampled dense–dense matrix multiplication (SDDMM); compressed sparse row (CSR); compressed sparse column (CSC); multiply-accumulate (MAC); network on chip (NoC); high-bandwidth memory (HBM); static random-access memory (SRAM); first in, first out (FIFO); operations per byte (Op/B).

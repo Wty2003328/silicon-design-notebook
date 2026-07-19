@@ -1,5 +1,17 @@
 # NPU Serving-Engine, Scheduler, and State Implementation Blueprint
 
+```mermaid
+flowchart LR
+    REQ["request phase + dynamic shape"] --> PROF["profile/guard + executable dispatch"]
+    PROF --> ADM["capacity + command/event + KV admission"]
+    ADM --> BATCH["shape bucket + phase scheduling"]
+    BATCH --> BIND["tensor/KV bindings + workspace + dependencies"]
+    BIND --> INV["runtime invocation + DMA/commands"]
+    INV --> DONE["generation check + state publish"]
+    DONE --> NEXT["fallback / next token / output"]
+    NEXT -. "next scheduler epoch" .-> REQ
+```
+
 > **Abbreviation key:** neural processing unit (NPU); artificial intelligence (AI); key-value (KV) cache; service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); direct memory access (DMA); mixture of experts (MoE).
 
 ## 0. Purpose and design ideology

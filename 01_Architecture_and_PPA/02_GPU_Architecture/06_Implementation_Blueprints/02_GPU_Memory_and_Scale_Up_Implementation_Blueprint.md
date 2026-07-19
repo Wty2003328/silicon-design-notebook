@@ -1,5 +1,18 @@
 # GPU Memory and Scale-Up Implementation Blueprint
 
+```mermaid
+flowchart LR
+    LANE["per-lane addresses + masks"] --> COAL["coalescer: line/sector transactions"]
+    COAL --> L1["shared memory / L1 / translation"]
+    L1 --> NOC["NoC to L2 slice"]
+    NOC --> L2["L2 + atomics + miss state"]
+    L2 --> HBM["partitioned HBM controllers"]
+    L2 --> PEER["peer memory / scale-up links"]
+    PEER --> COLL["collectives + remote state"]
+    HBM --> RET["transaction returns scattered to lanes"]
+    COLL --> RET
+```
+
 > **Abbreviation key:** graphics processing unit (GPU); streaming multiprocessor (SM); high-bandwidth memory (HBM); level-one/level-two cache (L1/L2); network on chip (NoC); translation lookaside buffer (TLB); error-correcting code (ECC); input/output memory management unit (IOMMU).
 
 ## 0. Purpose and design ideology

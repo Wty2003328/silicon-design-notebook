@@ -1,5 +1,20 @@
 # SystemVerilog Assertions and Coverage — Observability and Completeness
 
+```mermaid
+flowchart LR
+    REQ["requirement"] --> PROP["temporal property / assertion"]
+    REQ --> PLAN["coverage model"]
+    STIM["directed + constrained-random stimulus"] --> DUT["design behavior"]
+    DUT --> PROP
+    DUT --> COV["functional + code coverage"]
+    PROP --> FAIL["counterexample / debug"]
+    PLAN --> COV
+    FAIL --> FIX["design or property fix"]
+    COV --> GAP["unhit requirement / stimulus gap"]
+    GAP --> STIM
+    FIX --> DUT
+```
+
 > **Prerequisites:** [Data_Types_and_Basics](02_Data_Types_and_Basics.md) and [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the language, the 4-state `x`, and the event scheduler these mechanisms sample), [OOP_and_Randomization](08_OOP_and_Randomization.md) (the constrained-random stimulus that fills functional coverage).
 > **Hands off to:** [UVM_Methodology](10_UVM_Methodology.md) (the testbench that orchestrates checkers and collectors), [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) (the closure loop that consumes coverage), [Formal_Verification](12_Formal_Verification.md) (where an assertion becomes a proof target instead of a monitor).
 

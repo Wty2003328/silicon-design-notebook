@@ -1,5 +1,17 @@
 # CPU Integration, Verification, and Bring-up Blueprint
 
+```mermaid
+flowchart LR
+    CFG["single-source configuration"] --> INT["core + cache + fabric + debug/power integration"]
+    INT --> STATIC["lint / CDC-RDC / formal / protocol checks"]
+    STATIC --> SIM["block + cluster + reference-trace simulation"]
+    SIM --> SW["ISA / litmus / OS / workload software"]
+    SW --> EMU["emulation / FPGA prototype"]
+    EMU --> PHY["synthesis / floorplan / PPA feedback"]
+    PHY --> SI["first-silicon gated bring-up"]
+    SI -. "first divergence and counters" .-> INT
+```
+
 > **Abbreviation key:** central processing unit (CPU); instruction set architecture (ISA); instructions per cycle (IPC); field-programmable gate array (FPGA); power, performance, and area (PPA); error-correcting code (ECC).
 
 ## 0. From correct blocks to a usable CPU

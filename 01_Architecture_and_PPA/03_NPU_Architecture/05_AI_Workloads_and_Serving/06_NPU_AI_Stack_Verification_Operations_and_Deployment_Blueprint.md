@@ -1,5 +1,17 @@
 # NPU AI-Stack Verification, Operations, and Deployment Blueprint
 
+```mermaid
+flowchart LR
+    IR["source graph → transformed IR"] --> CMD["target-command functional model"]
+    CMD --> DEV["device arithmetic + memory scoreboard"]
+    DEV --> SERVE["request / profile / KV / multi-NPU validation"]
+    SERVE --> QUAL["quality + capacity qualification"]
+    QUAL --> CAN["executable/firmware canary"]
+    CAN --> PROD["serving + telemetry"]
+    PROD --> DRAIN["drain / epoch reset / rollback"]
+    PROD -. "first divergence" .-> IR
+```
+
 > **Abbreviation key:** neural processing unit (NPU); artificial intelligence (AI); intermediate representation (IR); key-value (KV) cache; service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); direct memory access (DMA); error-correcting code (ECC).
 
 ## 0. Purpose and design ideology

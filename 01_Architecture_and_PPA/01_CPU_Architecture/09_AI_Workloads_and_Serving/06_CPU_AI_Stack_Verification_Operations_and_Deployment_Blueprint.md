@@ -1,5 +1,22 @@
 # CPU AI-Stack Verification, Operations, and Deployment Blueprint
 
+```mermaid
+stateDiagram-v2
+    [*] --> Registered
+    Registered --> Verified
+    Verified --> Staged
+    Staged --> Loading
+    Loading --> Warming
+    Warming --> Canary
+    Canary --> Serving: quality + SLO gates pass
+    Canary --> RolledBack: regression or fault
+    Serving --> Draining: replacement or retirement
+    Draining --> Retired
+    Serving --> RolledBack: incident
+    RolledBack --> [*]
+    Retired --> [*]
+```
+
 > **Abbreviation key:** central processing unit (CPU); artificial intelligence (AI); service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); continuous integration/continuous deployment (CI/CD); non-uniform memory access (NUMA); personally identifiable information (PII).
 
 ## 0. Purpose and design ideology

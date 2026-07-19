@@ -1,5 +1,19 @@
 # Power Reduction Techniques — Matching the Lever to the Term
 
+```mermaid
+flowchart TD
+    P["power problem"] --> DYN["dynamic: alpha C V² f"]
+    P --> LEAK["leakage"]
+    P --> PEAK["peak current / thermal"]
+    DYN --> CG["clock gating: reduce activity"]
+    DYN --> OI["operand isolation / data gating"]
+    DYN --> DVFS["DVFS: reduce V and f"]
+    LEAK --> PG["power gating"]
+    LEAK --> MVT["multi-Vt / body bias"]
+    PEAK --> SEQ["stagger wakeup + activity shaping"]
+    PG --> RET["retention + isolation + state restore"]
+```
+
 > **Prerequisites:** [Power Fundamentals](01_Power_Fundamentals.md) (the $P=\alpha C V_{DD}^2 f + V_{DD}I_{leak}$ equation, energy-per-op, and the leakage physics), [Low-Power Architecture](03_Low_Power_Architecture_and_Domain_Partitioning.md) (why the design has these power, voltage, and clock boundaries), [CMOS Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (MOSFET operation, transmission gates, latch structures), [STA](../06_Signoff/01_STA.md) (setup/hold and time-borrowing).
 > **Hands off to:** [UPF/CPF Power Intent](05_UPF_and_CPF_Power_Intent.md) (the language that *encodes* the domains, isolation, retention, and level-shifting this page *designs*), [Power Analysis and Signoff](06_Power_Analysis_and_Signoff.md) (measuring what these techniques claim to save), [Block Activity and Power](02_Block_Activity_and_Power.md) (where the activity factors come from).
 

@@ -1,5 +1,16 @@
 # NPU Workloads, Performance Modeling, and Design-Space Exploration
 
+```mermaid
+flowchart LR
+    MODEL["models + shape/precision/sparsity distributions"] --> OPS["operator and tensor-traffic census"]
+    OPS --> BOUND["array / vector / scratchpad / DMA / memory bounds"]
+    BOUND --> KNOB["array shape / banks / buffers / NoC / command features"]
+    KNOB --> MAP["compiler tiling + dataflow + scheduling"]
+    MAP --> EVAL["cycle / energy / area simulation"]
+    EVAL --> PARETO["latency / throughput / energy / area / quality frontier"]
+    PARETO -. "mapping sensitivity" .-> OPS
+```
+
 > **First-time reader orientation:** A neural processing unit (NPU) accelerates tensor operators by mapping loop nests onto repeated compute and a hierarchy of local/on-chip/off-chip memories. Peak operations per second says how many arithmetic units exist; realized performance depends on shapes, edge utilization, tiling, reuse, vector/normalization work, sparsity, communication, and graph dependencies.
 
 > **Abbreviation key — skim now and return as needed:** neural processing unit (NPU); processing element (PE); multiply-accumulate (MAC); general matrix multiplication (GEMM); operations per second (OPS); tera operations per second (TOPS); high-bandwidth memory (HBM); static random-access memory (SRAM); direct memory access (DMA); network on chip (NoC); key-value (KV) cache; mixture of experts (MoE); design-space exploration (DSE); power, performance, and area (PPA); quality of service (QoS); service-level objective (SLO).

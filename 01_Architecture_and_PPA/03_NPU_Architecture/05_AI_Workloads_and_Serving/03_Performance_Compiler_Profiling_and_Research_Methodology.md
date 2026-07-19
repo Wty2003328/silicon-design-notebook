@@ -1,5 +1,16 @@
 # Neural Processing Unit Performance, Compiler, Profiling, and Research Methodology
 
+```mermaid
+flowchart LR
+    WL["graph / shapes / precision / sparsity"] --> MAP["actual compiler mapping + executable"]
+    MAP --> WORK["useful/padded operations + bytes + lifetimes"]
+    WORK --> BND["array / vector / bank / DMA / memory / communication bounds"]
+    BND --> TRACE["command / event / DMA / array trace"]
+    TRACE --> CNT["counter hierarchy + serving timeline"]
+    CNT --> RES["residual and bottleneck attribution"]
+    RES --> EXP["ablation / sensitivity / validation"]
+```
+
 > **First-time reader orientation:** Performance analysis is a chain of evidence, not a single utilization number. Start with useful model work, derive legal lower bounds from compute, memory, communication, and dependencies, inspect what the compiler actually emitted, measure the runtime and hardware events that occurred, and validate each attribution with controlled experiments. A counter explains only the events it counts; it does not automatically identify the root cause.
 
 > **Abbreviation key — skim now and return as needed:** neural processing unit (NPU); central processing unit (CPU); graphics processing unit (GPU); large language model (LLM); machine learning (ML); processing element (PE); multiply-accumulate (MAC); general matrix multiplication (GEMM); operations per second (OPS); floating-point operations per second (FLOP/s); tera operations per second (TOPS); high-bandwidth memory (HBM); static random-access memory (SRAM); dynamic random-access memory (DRAM); direct memory access (DMA); network on chip (NoC); intermediate representation (IR); application programming interface (API); register-transfer level (RTL); time to first token (TTFT); time per output token (TPOT); inter-token latency (ITL); service-level objective (SLO); quality of service (QoS); key–value (KV); mixture of experts (MoE); design-space exploration (DSE).

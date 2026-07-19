@@ -10,7 +10,7 @@ This notebook was split out of the combined "Silicon to Serving" project — see
 
 ## Getting Started
 
-- **Obsidian (recommended):** open this folder as a vault — cross-references and Mermaid diagrams render natively.
+- **Obsidian (recommended):** open this folder as a vault — cross-references, zoomable Mermaid diagrams, and WaveDrom timing diagrams render with the included plugin configuration.
 - **GitHub:** every page renders directly in the GitHub preview (Mermaid supported).
 - **Any markdown viewer:** standard markdown with relative links throughout.
 
@@ -21,7 +21,8 @@ Start at [Index.md](Index.md) or [Chip_Design_Flow_Overview.md](Chip_Design_Flow
 To view this notebook exactly as intended, the following Obsidian configuration is recommended:
 
 1. **Mermaid Zoom Plugin (Architecture Diagrams)** — install the [mermaid-zoom](https://github.com/xiaozhuang0433/mermaid-zoom) community plugin so dense architecture diagrams open in a full-screen, scrollable modal.
-2. **Custom CSS snippet** for code/LaTeX wrapping — included in this vault's `.obsidian/snippets/`.
+2. **WaveDrom Plugin (Timing Diagrams)** — install the `obsidian-wavedrom` community plugin so fenced `wavedrom` blocks render clock, handshake, reset, protocol, and memory-command timing.
+3. **Custom CSS snippet** for diagram scaling and code/LaTeX wrapping — included in this vault's `.obsidian/snippets/`.
 
 ## Structure
 
@@ -53,7 +54,8 @@ Substantive pages follow the [Research-Depth and Evidence Standard](Research_Dep
 
 - **Section 0: Why this page exists** — one-paragraph framing of what problem this page solves
 - **Numbered sections** — deep technical content with derivations, not summaries
-- **Mermaid diagrams** — architecture, dataflow, cause-effect chains
+- **Mermaid diagrams** — ownership, architecture, dataflow, state, cause-effect, and experiment loops; use Mermaid Zoom for dense figures
+- **WaveDrom diagrams** — cycle-level clocks, latches/flip-flops, reset, clock-domain crossing, handshakes, protocols, and memory timing
 - **Numbers to memorize** — tables of constants that come up in interviews
 - **Worked problems** — interview-style problems with full solutions
 - **Cross-references** — links to prerequisite and downstream pages

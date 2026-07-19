@@ -1,5 +1,16 @@
 # GPU Workloads, Performance Modeling, and Design-Space Exploration
 
+```mermaid
+flowchart LR
+    WL["kernel / graph / serving workload"] --> SHAPE["thread, tensor, memory, communication shapes"]
+    SHAPE --> MODEL["occupancy + roofline + latency-hiding + topology models"]
+    MODEL --> KNOB["SM count / lanes / tensor units / cache / HBM / links"]
+    KNOB --> MAP["compiler and runtime mapping"]
+    MAP --> EVAL["simulation + measured counters + PPA"]
+    EVAL --> PARETO["throughput / latency / energy / area frontier"]
+    PARETO -. "workload sensitivity" .-> SHAPE
+```
+
 > **First-time reader orientation:** A GPU converts many threads into groups called warps, issues one instruction for active lanes of a warp, and relies on many resident warps to hide latency. Performance is therefore governed by active lanes, eligible warps, execution pipelines, memory coalescing, cache/high-bandwidth-memory traffic, and host/device orchestration—not by core count or peak floating-point operations alone.
 
 > **Abbreviation key — skim now and return as needed:** graphics processing unit (GPU); central processing unit (CPU); single instruction, multiple threads (SIMT); streaming multiprocessor (SM); thread block (block); high-bandwidth memory (HBM); level-one/level-two cache (L1/L2); instructions per cycle (IPC); floating-point operation (FLOP); floating-point 16-bit (FP16); brain floating-point 16-bit (BF16); general matrix multiplication (GEMM); design-space exploration (DSE); power, performance, and area (PPA); quality of service (QoS); direct memory access (DMA); region of interest (ROI).

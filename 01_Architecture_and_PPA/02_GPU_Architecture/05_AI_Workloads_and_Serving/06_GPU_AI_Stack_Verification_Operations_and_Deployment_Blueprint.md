@@ -1,5 +1,17 @@
 # GPU AI-Stack Verification, Operations, and Deployment Blueprint
 
+```mermaid
+flowchart LR
+    ART["model / IR / plan / kernel artifacts"] --> SEM["semantic + numerical validation"]
+    SEM --> CONC["stream / allocation / graph concurrency tests"]
+    CONC --> DIST["multi-GPU + transfer fault tests"]
+    DIST --> PERF["kernel / graph / open-loop serving qualification"]
+    PERF --> CAN["worker warm-up + canary"]
+    CAN --> SERVE["serving + telemetry"]
+    SERVE --> DRAIN["drain / migrate / rollback"]
+    SERVE -. "incident snapshot" .-> CONC
+```
+
 > **Abbreviation key:** graphics processing unit (GPU); artificial intelligence (AI); key-value (KV) cache; service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); high-bandwidth memory (HBM); continuous integration/continuous deployment (CI/CD).
 
 ## 0. Purpose and design ideology

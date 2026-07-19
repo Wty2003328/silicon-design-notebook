@@ -1,5 +1,19 @@
 # GPU Power, Performance, Area, and Physical Implementation
 
+```mermaid
+flowchart TD
+    ARCH["GPU parameters"] --> SM["replicated SM clusters"]
+    ARCH --> L2["L2 slices + NoC"]
+    ARCH --> PHY["HBM / high-speed PHYs"]
+    SM --> HOT["register files / operand networks / tensor arrays / clocks"]
+    L2 --> WIRE["banking / global wiring / partition placement"]
+    PHY --> EDGE["die-edge + package constraints"]
+    HOT --> CLOSE["timing / power / thermal / area closure"]
+    WIRE --> CLOSE
+    EDGE --> CLOSE
+    CLOSE -. "frequency and latency feedback" .-> ARCH
+```
+
 > **First-time reader orientation:** GPU throughput comes from replication, but replication magnifies every physical cost. A small increase in registers per thread can reduce occupancy; a wider tensor pipeline multiplies operand bandwidth; adding SMs raises NoC, cache, HBM, clock, and power-delivery demand. This chapter prices those couplings.
 
 > **Abbreviation key — skim now and return as needed:** streaming multiprocessor (SM); single instruction, multiple threads (SIMT); register file (RF); static random-access memory (SRAM); high-bandwidth memory (HBM); level-one/level-two cache (L1/L2); load-store unit (LSU); multiply-accumulate (MAC); tensor core; network on chip (NoC); error-correcting code (ECC); dynamic voltage and frequency scaling (DVFS); power, performance, and area (PPA); process, voltage, and temperature (PVT); thermal design power (TDP).

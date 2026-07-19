@@ -1,5 +1,17 @@
 # Floating Point — The Range/Precision Trade and Its Hardware
 
+```mermaid
+flowchart LR
+    IN["encoded operands"] --> UN["unpack sign / exponent / significand"]
+    UN --> SPEC["classify zero / subnormal / inf / NaN"]
+    SPEC --> ALIGN["compare exponents + align"]
+    ALIGN --> OP["add / multiply / fused operation"]
+    OP --> NORM["normalize + leading-zero detect"]
+    NORM --> RND["guard / round / sticky + rounding mode"]
+    RND --> EX["exception flags + overflow/underflow"]
+    EX --> PACK["pack result format"]
+```
+
 > **Prerequisites:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (the mantissa $p\times p$ multiplier, the final CPA, and the SRT/Goldschmidt recurrences this page reuses), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (barrel shifter, leading-zero count, priority encoder), [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the area→energy argument behind §6).
 > **Hands off to:** [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) and [GPU_Architecture](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) (where these formats become MAC density and TOPS), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §7 (the FPU/FMA/divide latency menu the scheduler reasons about).
 

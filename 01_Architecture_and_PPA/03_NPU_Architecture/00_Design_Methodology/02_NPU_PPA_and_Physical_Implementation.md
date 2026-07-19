@@ -1,5 +1,18 @@
 # NPU Power, Performance, Area, and Physical Implementation
 
+```mermaid
+flowchart TD
+    CFG["NPU architecture + mapping"] --> ARR["MAC/tensor arrays + accumulator"]
+    CFG --> MEM["scratchpads / weight buffers / DMA"]
+    CFG --> NET["distribution / reduction / NoC"]
+    ARR --> FLOOR["floorplan + local wiring + clock"]
+    MEM --> FLOOR
+    NET --> FLOOR
+    FLOOR --> CLOSE["frequency / area / power / IR / thermal closure"]
+    CLOSE --> COST["energy per useful operation and delivered throughput"]
+    COST -. "compiler and architecture feedback" .-> CFG
+```
+
 > **First-time reader orientation:** NPU arithmetic arrays are regular, but their physical efficiency is controlled by operand movement, SRAM banking, interconnect, accumulator/reduction width, precision support, clocking, and utilization. Data movement often costs more energy than the MAC itself; unused peak TOPS still consumes area and leakage.
 
 > **Abbreviation key — skim now and return as needed:** neural processing unit (NPU); processing element (PE); multiply-accumulate (MAC); static random-access memory (SRAM); high-bandwidth memory (HBM); dynamic random-access memory (DRAM); direct memory access (DMA); network on chip (NoC); register file (RF); compute-in-memory (CIM); non-volatile memory (NVM); error-correcting code (ECC); power, performance, and area (PPA); process, voltage, and temperature (PVT); dynamic voltage and frequency scaling (DVFS).

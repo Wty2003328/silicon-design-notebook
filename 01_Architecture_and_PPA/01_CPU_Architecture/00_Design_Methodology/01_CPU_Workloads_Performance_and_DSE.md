@@ -1,5 +1,16 @@
 # CPU Workloads, Performance Modeling, and Design-Space Exploration
 
+```mermaid
+flowchart LR
+    PROD["product use cases + software"] --> CENSUS["instruction / branch / memory / vector workload census"]
+    CENSUS --> MET["latency / throughput / power / area objectives"]
+    MET --> MODEL["IPC / AMAT / queue / roofline models"]
+    MODEL --> KNOBS["widths / windows / predictors / caches / cores"]
+    KNOBS --> EVAL["simulation + PPA estimation"]
+    EVAL --> PARETO["Pareto frontier + sensitivity"]
+    PARETO -. "refine assumptions" .-> CENSUS
+```
+
 > **First-time reader orientation:** A CPU is not “fast” in the abstract. It runs a particular instruction stream produced by a compiler, exposes several kinds of parallelism, and waits on branch, dependency, cache, translation, coherence, and operating-system events. This chapter shows how to describe that workload, turn it into equations and counters, and decide which CPU structures deserve more detailed study.
 
 > **Abbreviation key — skim now and return as needed:** instruction set architecture (ISA); application binary interface (ABI); instructions per cycle (IPC); cycles per instruction (CPI); instruction-level parallelism (ILP); memory-level parallelism (MLP); thread-level parallelism (TLP); simultaneous multithreading (SMT); single instruction, multiple data (SIMD); region of interest (ROI); misses per thousand instructions (MPKI); translation lookaside buffer (TLB); last-level cache (LLC); reorder buffer (ROB); load-store queue (LSQ); branch-prediction unit (BPU); power, performance, and area (PPA); design-space exploration (DSE); quality of service (QoS); service-level objective (SLO).

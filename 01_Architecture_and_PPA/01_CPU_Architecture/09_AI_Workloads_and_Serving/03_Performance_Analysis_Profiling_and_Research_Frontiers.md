@@ -1,5 +1,16 @@
 # Central Processing Unit AI Performance Analysis, Profiling, and Research Frontiers
 
+```mermaid
+flowchart LR
+    WL["model / phase / shape / batch"] --> COUNT["operations + bytes by hierarchy"]
+    COUNT --> BOUND["roofline / latency / queue / capacity bounds"]
+    BOUND --> TRACE["service + operator + generated-code trace"]
+    TRACE --> PMU["core / cache / TLB / uncore counters"]
+    PMU --> CAUSE["compute / bandwidth / latency / software cause"]
+    CAUSE --> TEST["controlled perturbation + ablation"]
+    TEST --> CONC["validated conclusion + research frontier"]
+```
+
 > **First-time reader orientation:** Performance analysis asks which resource limits useful work and how the evidence proves it. Peak operations per second are only one bound. A production request may instead be limited by memory capacity, bandwidth, one dependent cache miss, software overhead, queueing, or a latency objective that forbids large batches.
 
 > **Abbreviation key — skim now and return as needed:** central processing unit (CPU); artificial intelligence (AI); large language model (LLM); floating-point operations (FLOPs); operations per second (OPS); bfloat16 (BF16); integer 8-bit (INT8); not a number (NaN); last-level cache (LLC); non-uniform memory access (NUMA); translation lookaside buffer (TLB); instruction TLB (ITLB); hit-modified cache-to-cache response (HITM); performance monitoring unit (PMU); instructions per cycle (IPC); time to first token (TTFT); time per output token (TPOT); service-level objective (SLO); quality of service (QoS); key-value (KV); mixture of experts (MoE); mean time between failures (MTBF); dynamic voltage and frequency scaling (DVFS).

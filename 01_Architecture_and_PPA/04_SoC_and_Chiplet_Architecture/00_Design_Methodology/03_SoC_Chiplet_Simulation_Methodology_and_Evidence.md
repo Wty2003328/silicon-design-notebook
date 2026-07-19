@@ -8,6 +8,21 @@
 
 ---
 
+```mermaid
+flowchart LR
+    SW["Applications, OS, drivers, and command streams"] --> AG["CPU/GPU/NPU and device-agent models"]
+    AG --> TXN["Coherent and noncoherent transactions"]
+    TXN --> NOC["NoC packets, arbitration, credits, and queues"]
+    NOC --> MEM["Caches, controllers, DRAM, I/O, and chiplet links"]
+    MEM --> EVT["Timed completions, interrupts, retries, and power-state events"]
+    EVT --> AG
+    EVT --> CTR["Counters and event traces"]
+    CTR --> MET["Latency, bandwidth, fairness, energy, and utilization"]
+    MET --> VAL["Conservation checks and hardware/model validation"]
+```
+
+This feedback path is the simulation: a delayed memory or link completion changes when the modeled agent can issue later work, so final results must be reduced from causally ordered events rather than independent component estimates.
+
 ## 0. Choose the model boundary from the system claim
 
 | Claim | Required boundary |

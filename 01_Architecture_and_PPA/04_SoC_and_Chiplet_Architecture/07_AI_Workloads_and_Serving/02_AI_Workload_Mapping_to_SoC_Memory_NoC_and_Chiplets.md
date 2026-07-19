@@ -8,6 +8,21 @@
 
 ---
 
+```mermaid
+flowchart LR
+    OP["AI operators and serving stages"] --> T["Tensor traffic contract"]
+    T --> L["Registers, local SRAM/cache, shared cache, HBM/DRAM"]
+    T --> N["NoC classes: unicast, multicast, reduction, state movement"]
+    T --> P["Tensor, pipeline, expert, and data parallel communication"]
+    L --> C["Capacity and bandwidth limits"]
+    N --> C
+    P --> CUT["Chiplet and device boundaries"]
+    CUT --> C
+    C --> PLACE["Topology-aware placement, QoS, and scheduling"]
+```
+
+The same arithmetic graph can produce radically different systems because tensor lifetime, locality, collective communication, and placement decide which memory or interconnect roof is exposed.
+
 ## 0. Start with a tensor-traffic contract
 
 For every operator or serving stage, write a contract:

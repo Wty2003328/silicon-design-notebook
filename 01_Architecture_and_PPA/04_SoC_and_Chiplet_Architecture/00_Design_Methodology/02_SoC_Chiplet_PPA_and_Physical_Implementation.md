@@ -6,6 +6,18 @@
 
 ---
 
+```mermaid
+flowchart TD
+    B["Blocks, SRAM, NoC, controllers, and PHYs"] --> F["Die and chiplet floorplans"]
+    F --> PKG["Package routes, bumps, interposers, and memory placement"]
+    PKG --> PDN["Power delivery, clocks, voltage domains, and thermals"]
+    PDN --> C["Timing, power, area, reliability, yield, and cost closure"]
+    C -->|"violations and calibrated estimates"| B
+    C --> R["Tapeout resource ledger and implementation constraints"]
+```
+
+The physical hierarchy is coupled: package reach changes PHY power, floorplan distance changes NoC timing, and the resulting power density changes clock and thermal feasibility.
+
 ## 0. Build a chip-and-package resource ledger
 
 Inventory:

@@ -8,6 +8,19 @@
 
 ---
 
+```mermaid
+flowchart TD
+    R["Request trace and SLO contract"] --> CAP["Weight, KV-cache, workspace, and buffer capacity"]
+    CAP --> LB["Compute, bandwidth, and communication lower bounds"]
+    LB --> Q["Queueing, batching, placement, and scheduler timeline"]
+    Q --> OBS["Device, memory, NoC, network, and service observables"]
+    OBS --> ROOT["Counter-to-cause diagnosis and conservation checks"]
+    ROOT --> EXP["Controlled ablations and calibrated simulation"]
+    EXP --> RES["TTFT, TPOT, throughput, energy, cost, and uncertainty"]
+```
+
+An end-to-end result is defensible only when its request definition, capacity feasibility, causal timeline, and hardware/software observables agree.
+
 ## 0. Define the metric contract before collecting numbers
 
 For generative serving:

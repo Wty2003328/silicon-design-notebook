@@ -2,6 +2,19 @@
 
 > **Abbreviation key:** system on chip (SoC); network on chip (NoC); virtual channel (VC); quality of service (QoS); input/output (I/O); input-output memory management unit (IOMMU); Compute Express Link (CXL); Universal Chiplet Interconnect Express (UCIe); forward error correction (FEC); physical interface (PHY).
 
+```mermaid
+flowchart LR
+    E["Protocol endpoint"] --> NI["Packetization, ordering, and credit admission"]
+    NI --> VC["Virtual network and VC selection"]
+    VC --> R["Route, switch allocation, and router pipeline"]
+    R --> LINK["On-die link or die-to-die PHY"]
+    LINK --> DST["Destination reassembly and response"]
+    Q["QoS: admission, reservation, and arbitration"] --> NI
+    Q --> R
+    P["Progress rules: dependency graph and escape path"] --> VC
+    P --> R
+```
+
 ## 0. Purpose and design ideology
 
 A network on chip (NoC) transports transactions among endpoints while chiplet and I/O links extend transport across different clock, power, trust, and failure domains. The design ideology is **make progress structural and performance policy explicit**. Correctness must not depend on average traffic being low; quality of service (QoS) must not be a priority bit with no admission or bandwidth model.

@@ -89,6 +89,17 @@ always @(posedge clk_dst or negedge rst_n)
     else        sync <= {sync[0], data_async};   // data_sync = sync[1]
 ```
 
+```wavedrom
+{ "signal": [
+  { "name": "clk_dst",    "wave": "p........." },
+  { "name": "data_async", "wave": "0.1....0.." },
+  { "name": "ff1_q",      "wave": "0..x.1...0" },
+  { "name": "ff2_q",      "wave": "0.....1..." }
+], "head": { "text": "Two-flop synchronizer: only FF1 may enter the unresolved interval" } }
+```
+
+The `x` interval is conceptual, not a promise that digital simulation will reproduce analog metastability. The architectural rule is that no functional logic observes `ff1_q`; `ff2_q` exposes a settled value after the added destination-clock latency.
+
 The first flop absorbs the violation and drives *nothing but the second flop*. That isolation is the point: it hands FF1 an almost-full period to settle, and it prevents a metastable node from fanning out into combinational logic where it could be interpreted differently by different gates. The `ASYNC_REG`/`dont_touch` attributes real tools require simply forbid the optimizer from inserting logic or distance between the two flops.
 
 **Why each added flop multiplies MTBF by $e^{T_{clk}/\tau}$.** For an $N$-stage synchronizer the resolution budget is

@@ -68,6 +68,18 @@ $$
 \text{transfer at clock edge } k \iff \text{VALID}_k \wedge \text{READY}_k.
 $$
 
+```wavedrom
+{ "signal": [
+  { "name": "ACLK",     "wave": "p......." },
+  { "name": "VALID",    "wave": "0.1....0" },
+  { "name": "READY",    "wave": "0...1..0" },
+  { "name": "PAYLOAD",  "wave": "x.3....x", "data": ["beat A"] },
+  { "name": "TRANSFER", "wave": "0...1..0" }
+], "head": { "text": "VALID stays asserted and payload stays stable while READY applies backpressure" } }
+```
+
+The beat transfers only at the clock edge where both controls are high. Before that edge the sink is stalling, so the source must retain the same payload; after the edge the source may retire it or present the next beat.
+
 Two bits, one AND, is therefore the *minimal sufficient* flow-control primitive — and every richer property (elasticity, backpressure, clock-domain crossing) is a consequence of this one conjunction. That the rule is an AND rather than, say, "move on `VALID` alone" is precisely what lets the sink refuse without loss: a beat offered but not accepted is simply re-offered on the next edge, so no data is created or destroyed by a stall. The two-wire cost is also why the handshake is *cheap enough to put on every channel and every pipeline stage* — the property that makes the whole fabric uniform (§3).
 
 **Why not a fixed-timing contract?** The obvious protocol is a *timing contract*: "master asserts request in cycle 0; slave guarantees data in cycle $N$." It works for exactly one slave. It fails the moment you have:

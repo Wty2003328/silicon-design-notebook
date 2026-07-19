@@ -1,5 +1,17 @@
 # Block Activity and Power — Estimating the One Term You Can't Read Off the Schematic
 
+```mermaid
+flowchart LR
+    WL["workload + operating mode"] --> SIM["RTL / gate simulation or emulation"]
+    SIM --> ACT["toggle + probability activity"]
+    ACT --> MAP["map activity to clocks / nets / cells / memories"]
+    LIB["library capacitance + internal/leakage tables"] --> CALC["power calculation"]
+    MAP --> CALC
+    CALC --> SPLIT["dynamic / internal / clock / memory / leakage"]
+    SPLIT --> HOT["block and time-window hot spots"]
+    HOT --> FIX["architecture / RTL / physical optimization"]
+```
+
 > **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) §4 (the $\tfrac12 CV^2$ dissipated per transition, the three powers), [Power_Fundamentals](01_Power_Fundamentals.md) (the total-power equation and the system budget these estimates feed).
 > **Hands off to:** [Low-Power Architecture](03_Low_Power_Architecture_and_Domain_Partitioning.md) (using per-mode activity/residency to choose domain boundaries), [Power Reduction Techniques](04_Power_Reduction_Techniques.md) (what to do about a high-activity net), [Power Analysis and Signoff](06_Power_Analysis_and_Signoff.md) (SAIF/VCD annotation mechanics and IR-drop signoff), [Full-Chip Modeling](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) (composing block power into a chip).
 

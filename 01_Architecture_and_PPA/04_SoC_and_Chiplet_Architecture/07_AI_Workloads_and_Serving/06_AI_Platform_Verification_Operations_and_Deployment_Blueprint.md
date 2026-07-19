@@ -2,6 +2,18 @@
 
 > **Abbreviation key:** artificial intelligence (AI); central processing unit (CPU); graphics processing unit (GPU); neural processing unit (NPU); service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); key-value (KV) cache; error-correcting code (ECC); continuous integration/continuous deployment (CI/CD).
 
+```mermaid
+flowchart LR
+    A["Model, compiler, firmware, driver, and topology artifacts"] --> V["Compatibility and contract validation"]
+    V --> T["Device, composition, load, and fault-injection tests"]
+    T --> C["Capacity, SLO, resilience, and security qualification"]
+    C --> CAN["Canary deployment"]
+    CAN --> SERVE["Serve with end-to-end observability"]
+    SERVE -->|"healthy"| ROLL["Progressive rollout"]
+    SERVE -->|"regression or fault"| RB["Drain, rollback, and restore state"]
+    RB --> V
+```
+
 ## 0. Purpose and design ideology
 
 This chapter validates and operates the heterogeneous AI platform as one system. The design ideology is **prove local semantics, then composition, then failure recovery under realistic load**. A device-only benchmark cannot validate placement, storage, networking, state transfer, routing, control reconciliation, or fleet rollout.

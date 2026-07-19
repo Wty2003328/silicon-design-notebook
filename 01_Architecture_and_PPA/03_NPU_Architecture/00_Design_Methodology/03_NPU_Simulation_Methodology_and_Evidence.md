@@ -1,5 +1,17 @@
 # NPU Simulation Methodology and Evidence — From Framework Graph to Final Results
 
+```mermaid
+flowchart LR
+    FW["framework model + inputs"] --> EXP["export / graph capture"]
+    EXP --> OPT["shape / fusion / layout / quantization / partition"]
+    OPT --> MAP["tile / dataflow / buffer / DMA-event schedule"]
+    MAP --> CMD["target executable + commands"]
+    CMD --> SIM["array / vector / scratchpad / NoC / memory events"]
+    SIM --> RAW["cycles / operations / bytes / stalls / energy events"]
+    RAW --> MET["operator / graph / serving results"]
+    MET --> VAL["functional + counter + hardware calibration"]
+```
+
 > **First-time reader orientation:** Most NPU architecture simulators do not execute assembly. They consume a graph, layer/operator descriptions, tensor loop bounds, mappings, or command traces. Before any cycle is simulated, graph export, optimization, fusion, layout, precision, sparsity, partitioning, and lowering have already decided much of the workload.
 
 > **Abbreviation key — skim now and return as needed:** Open Neural Network Exchange (ONNX); intermediate representation (IR); operator set (opset); general matrix multiplication (GEMM); processing element (PE); multiply-accumulate (MAC); static random-access memory (SRAM); dynamic random-access memory (DRAM); high-bandwidth memory (HBM); direct memory access (DMA); network on chip (NoC); comma-separated values (CSV); power, performance, and area (PPA).

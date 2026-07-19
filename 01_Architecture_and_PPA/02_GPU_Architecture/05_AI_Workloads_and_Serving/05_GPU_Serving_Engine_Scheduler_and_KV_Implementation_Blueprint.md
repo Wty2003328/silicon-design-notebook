@@ -1,5 +1,17 @@
 # GPU Serving-Engine, Scheduler, and KV-State Implementation Blueprint
 
+```mermaid
+flowchart LR
+    ARR["arrivals + completions + cancellations"] --> ADM["admission + capacity reserve"]
+    ADM --> SEL["decode budget + prefill chunks"]
+    SEL --> BATCH["compatible batch / plan / parallel group"]
+    BATCH --> RSV["atomic KV + workspace + slot + collective reservation"]
+    RSV --> GPU["GPU graph / kernels / collectives"]
+    GPU --> COMMIT["generation check + KV/logit commit"]
+    COMMIT --> OUT["sampling + response streaming"]
+    COMMIT -. "next iteration" .-> ARR
+```
+
 > **Abbreviation key:** graphics processing unit (GPU); artificial intelligence (AI); key-value (KV) cache; service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); high-bandwidth memory (HBM); remote direct memory access (RDMA); mixture of experts (MoE).
 
 ## 0. Purpose and design ideology

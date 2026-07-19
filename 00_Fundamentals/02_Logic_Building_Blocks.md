@@ -1,7 +1,7 @@
 # Logic building blocks — from Boolean function to timed silicon
 
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the transistor, inverter VTC and noise margins, RC delay and the FO4 unit, device-level logic families).
-> **Hands off to:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (carry/prefix trees built from these gates), [CPU_Architecture](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) (pipelines of these registers), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (synchronizers, Gray FIFO pointers, MTBF budgeting), [STA](../06_Signoff/01_STA.md) (setup/hold signoff, time borrowing), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (glitch-free clock switching).
+> **Hands off to:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (carry/prefix trees built from these gates), [CPU_Architecture](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) (pipelines of these registers), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (synchronizers, Gray first-in/first-out (FIFO) pointers, and mean-time-between-failures (MTBF) budgeting), [static timing analysis (STA)](../06_Signoff/01_STA.md) (setup/hold signoff, time borrowing), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (glitch-free clock switching).
 
 ---
 
@@ -170,32 +170,153 @@ where $g$ = "greater so far" and $e$ = "equal so far", is structurally the carry
 
 Everything so far is a memoryless function of the present inputs. The one thing combinational logic cannot do is *remember* — and a synchronous machine must carry state from one cycle to the next. This section derives the storage element from that single requirement.
 
+```mermaid
+flowchart TD
+    BI["bistable feedback"] --> SR["set–reset latch"]
+    SR --> GSR["gated set–reset latch"]
+    GSR --> DL["D latch: illegal set–reset combination removed"]
+    DL --> MS["two opposite-phase latches"]
+    MS --> DFF["edge-triggered D flip-flop"]
+    DFF --> EN["enable: input multiplexer or clock gate"]
+    DFF --> RST["synchronous/asynchronous reset or set"]
+    DFF --> SCAN["scan flip-flop: test mux + state element"]
+    DFF --> FUNC["D, toggle, JK, or set–reset behavior via input logic"]
+    DL --> PULSE["pulsed latch"]
+    BI --> SAFF["sense-amplifier and dynamic flip-flop families"]
+```
+
 ### 4.1 Why storage needs feedback, and why an edge needs two latches
 
-To hold a bit with no input, you need a circuit with two stable states — a **bistable** — and the only way to get bistability from inverters is positive feedback: two cross-coupled inverters latch either 0 or 1 and hold it. Add a way to write it (a transmission gate on the loop) and you have a **D-latch**: when the clock enables the TG the loop opens and $Q$ follows $D$ (**transparent**); when it disables, feedback closes and the value holds (**opaque**). A transmission gate is used, not a bare pass transistor, precisely because it passes both 0 and 1 full-swing (§1.4).
+To hold a bit with no input, you need a circuit with two stable states — a **bistable** — and the only way to get bistability from inverters is positive feedback: two cross-coupled inverters latch either 0 or 1 and hold it. Add a way to write it (a **transmission gate (TG)** on the loop) and you have a **D latch**: when the clock enables the TG the loop opens and $Q$ follows $D$ (**transparent**); when it disables, feedback closes and the value holds (**opaque**). A transmission gate is used, not a bare pass transistor, precisely because it passes both 0 and 1 full-swing (§1.4).
+
+#### 4.1.1 The SR latch: the primitive bistable with explicit set and reset
+
+The simplest controllable bistable is the **set–reset (SR) latch**. Two cross-coupled NOR gates form an active-high version. Driving $S=1$ forces $Q=1$; driving $R=1$ forces $Q=0$; with both low, feedback holds the prior value.
+
+| $S$ | $R$ | $Q_{next}$ | Meaning |
+|---:|---:|---|---|
+| 0 | 0 | $Q$ | hold |
+| 1 | 0 | 1 | set |
+| 0 | 1 | 0 | reset |
+| 1 | 1 | invalid/indeterminate after release | both outputs forced low; release race chooses the state |
+
+The NAND implementation is the polarity dual: inputs are active-low $\overline S,\overline R$, hold is 11, and 00 is forbidden. “Forbidden” is not merely a truth-table convention. Asserting set and reset together destroys complementary $Q/\overline Q$; releasing them together creates a race and can enter metastability. SR latches therefore appear inside controlled cells and asynchronous set/reset paths, but ordinary datapaths expose a D input instead.
+
+#### 4.1.2 Gated SR and D latches
+
+A gated SR latch qualifies $S$ and $R$ with an enable. Derive the D latch by choosing $S=E D$ and $R=E\overline D$: set and reset can never assert together. Its characteristic equation is
+
+$$Q_{next}=E D+\overline E Q.$$
+
+When $E=1$, the latch is transparent and $Q$ follows $D$ after propagation delay. When $E=0$, the feedback term holds $Q$. This is also how a synchronous enable is implemented around an edge flip-flop: a mux selects $D_{new}$ when enabled and old $Q$ otherwise.
+
+```wavedrom
+{ "signal": [
+  { "name": "E (latch enable)", "wave": "0.1...0..1...0." },
+  { "name": "D",                "wave": "0..1.0.1..0...." },
+  { "name": "Q",                "wave": "0..1.0...10...." }
+], "head": { "text": "D latch: Q tracks D only while E is high, then holds" } }
+```
+
+The waveform contains the essential distinction: a latch samples a *window*, not an edge. Any legal D transition inside the transparent window propagates to Q. The close of that window creates setup/hold constraints.
 
 But transparency is a hazard in a clocked pipeline: while a latch is open, a change on $D$ races straight through $Q$ and onward into the next stage — state could ripple through many stages in one clock phase, and timing becomes unanalyzable. What we actually want is to capture $D$ at an *instant* — the clock edge — and be opaque otherwise. No single level-sensitive latch can do that. The construction that can is **two latches in series on opposite clock phases** (master–slave):
 
-```text
-        CLK = 0                              CLK = 1
-   D →[ Master ]→ x →[ Slave ]→ Q       D →[ Master ]→ x →[ Slave ]→ Q
-       transparent     opaque                opaque       transparent
-       (samples D)    (holds Q)             (holds x)     (drives x→Q)
+```mermaid
+flowchart LR
+    D["D"] --> M["master latch\ntransparent when CLK=0"]
+    M --> X["internal sampled node"]
+    X --> S["slave latch\ntransparent when CLK=1"]
+    S --> Q["Q"]
+    CLK["CLK / inverted CLK"] -. "opposite phases; never transparent together" .-> M
+    CLK -.-> S
 ```
 
-At no instant is there a transparent path from $D$ to $Q$: whichever latch is open, the other is closed. The value is sampled by the master during one phase and handed to the slave at the edge — an **edge-triggered flip-flop**. That is the whole reason a flip-flop is two latches: *edge behaviour is the elimination of a transparent path*, and it costs exactly one extra storage stage.
+At no instant is there a transparent path from $D$ to $Q$: whichever latch is open, the other is closed. The value is sampled by the master during one phase and handed to the slave at the edge — an **edge-triggered D flip-flop (DFF)**. That is the whole reason a flip-flop is two latches: *edge behaviour is the elimination of a transparent path*, and it costs exactly one extra storage stage.
 
 ### 4.2 Setup, hold, and clk-to-Q — read off the master–slave internals
 
 The three timing parameters are not axioms; they are the master latch's write window and the slave's read delay:
 
-- **Setup $t_{su}$** — $D$ must be stable *before* the edge because the master's internal node needs time to charge through its TG to a valid level before that TG shuts. Miss it and the captured level is marginal (and may go metastable, §4.4).
+- **Setup $t_{su}$** — $D$ must be stable *before* the edge because the master's internal node needs time to charge through its TG to a valid level before that TG shuts. Miss it and the captured level is marginal (and may go metastable, §4.8).
 - **Hold $t_{h}$** — $D$ must stay stable *after* the edge because the master TG has finite turn-off slew; while it still conducts, a new $D$ can corrupt the just-captured value.
 - **Clock-to-Q $t_{cq}$** — after the edge the slave TG opens and drives $Q$; $t_{cq}$ is that turn-on plus the slave inverter plus output load.
 
 These feed the synchronous constraints — setup $t_{cq}+t_{logic}+t_{su}\le T_{clk}-t_{skew}$ and hold $t_{cq}+t_{logic}\ge t_{h}+t_{skew}$ — whose full slack accounting is signoff's job ([STA](../06_Signoff/01_STA.md) §3). Note that **negative setup or hold** is normal in modern cells (sense-amp or pulsed designs whose sampling window straddles the edge), which is why the numbers below can be small or negative and why negative $t_h$ effectively adds slack.
 
-### 4.3 The latch/flip-flop trade-off: area, power, and time borrowing
+```wavedrom
+{ "signal": [
+  { "name": "CLK", "wave": "p......." },
+  { "name": "D",   "wave": "0..1..0." },
+  { "name": "Q",   "wave": "0...1..0" }
+], "head": { "text": "Positive-edge DFF: D is sampled at an edge; Q changes after clock-to-Q" } }
+```
+
+The diagram is qualitative: the forbidden aperture extends $t_{su}$ before and $t_h$ after each active edge, and Q moves only after $t_{cq}$. A library timing model supplies the exact, slew/load-dependent values.
+
+### 4.3 Functional flip-flop families: D, T, JK, and SR
+
+“D flip-flop” describes the next-state function $Q^+=D$. Other named flip-flops describe different input functions; in a modern standard-cell flow they are commonly synthesized as a DFF plus combinational logic unless a dedicated cell is smaller or faster.
+
+| Type | Inputs | Characteristic equation | Key behavior | Typical use |
+|---|---|---|---|---|
+| D | $D$ | $Q^+=D$ | copy input | registers, pipelines, state machines |
+| T | $T$ | $Q^+=T\oplus Q$ | hold at 0, toggle at 1 | counters, divide-by-two |
+| JK | $J,K$ | $Q^+=J\overline Q+\overline KQ$ | 00 hold, 10 set, 01 reset, 11 toggle | historical universal FF; counters/control |
+| SR | $S,R$ | $Q^+=S+\overline RQ$ for legal inputs | set/reset/hold; $S=R=1$ illegal | explicit control and latch internals |
+
+The JK flip-flop was invented to remove the SR forbidden case: $J=K=1$ toggles. A level-sensitive JK latch can **race around**—toggle repeatedly while the clock level is active—so a JK implementation must be edge-triggered or master–slave. The T flip-flop is simply JK with $J=K=T$, or a DFF with $D=T\oplus Q$.
+
+For state-machine synthesis, the excitation table answers “what input produces the requested transition?”
+
+| $Q\rightarrow Q^+$ | D | T | JK ($J,K$) | SR ($S,R$) |
+|---|---:|---:|---|---|
+| $0\rightarrow0$ | 0 | 0 | $0,X$ | $0,X$ |
+| $0\rightarrow1$ | 1 | 1 | $1,X$ | $1,0$ |
+| $1\rightarrow0$ | 0 | 1 | $X,1$ | $0,1$ |
+| $1\rightarrow1$ | 1 | 0 | $X,0$ | $X,0$ |
+
+$X$ means “don’t care,” not an unknown hardware value. D is dominant in RTL because the next-state expression maps directly and avoids feedback-dependent excitation minimization; T/JK remain valuable reasoning models for counters.
+
+### 4.4 Circuit topologies: how an edge-triggered cell is physically built
+
+Different circuit families implement the same architectural DFF contract but move the power/timing/robustness point:
+
+| Topology | Mechanism | Strength | Cost/risk |
+|---|---|---|---|
+| transmission-gate master–slave | two static latches on opposite phases | full swing, robust, easy characterization | clock capacitance and ~two-latch area |
+| C²MOS (clocked complementary metal–oxide–semiconductor) | clocked pull-up/pull-down stages | race-free under complementary clocks, compact | clock overlap/skew sensitivity |
+| true single-phase clock (TSPC) | dynamic stages driven by one clock | fewer clock devices, high speed | leakage, charge sharing, min-frequency limit |
+| pulse-triggered latch | narrow pulse opens one latch | lower area/clock power, time borrowing | pulse width/distribution and hold risk |
+| sense-amplifier flip-flop | differential input sensed/regenerated near edge | very fast, small/negative setup | higher clock/data power, differential front end |
+| dual-edge flip-flop | captures rising and falling edges | same data rate at half clock frequency | complex duty-cycle/two-edge timing and larger cell |
+
+The correct topology depends on clock load, activity, required edge rate, low-voltage robustness, hold margin, and library methodology. The architectural contract alone does not reveal clock power or metastability behavior.
+
+### 4.5 Enable, synchronous/asynchronous reset, set, and retention
+
+**Enable** can be a D-input feedback mux, $D_{ff}=E D+\overline E Q$, or a clock-gating cell shared by many flops. The mux toggles the clock tree every cycle but gives per-register control. Clock gating saves clock power across a bank but requires a glitch-free integrated clock-gating latch, test enable, and a gating setup/hold check.
+
+**Synchronous reset** is sampled on the active edge and participates in the D path. It is timing-friendly and glitch-resistant but cannot clear state when the clock is stopped. **Asynchronous reset/set** directly forces the storage node independent of clock, useful for safe power-up and clock-off states, but assertion and especially deassertion are asynchronous events. Recovery and removal are the reset analogues of setup and hold: deassert too near an edge and different flops can leave reset on different cycles or go metastable. A common policy is **asynchronous assert, synchronous deassert** through a reset synchronizer in each clock domain.
+
+```wavedrom
+{ "signal": [
+  { "name": "CLK",     "wave": "p........." },
+  { "name": "reset_n", "wave": "0..1......" },
+  { "name": "D",       "wave": "1........." },
+  { "name": "Q",       "wave": "0....1...." }
+], "head": { "text": "Asynchronous assert, synchronous release: Q stays reset until a safe clock edge" } }
+```
+
+Reset every control bit whose unknown value could cause unsafe activity; consider leaving wide datapath/pipeline registers unreset and qualify them with reset valid bits. Resetting thousands of data flops adds routing, area, clock/reset recovery constraints, and power. **Retention flops** add a separately powered shadow state and save/restore controls across power gating; their power-state protocol is owned by [Low-Power Architecture](../02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md).
+
+### 4.6 Scan flip-flops and design-for-test consequences
+
+A scan DFF inserts a mux before D: functional data when `scan_enable=0`, serial `scan_in` when 1. Chains connect Q to the next scan input so test equipment can shift in an internal state, capture one or more functional cycles, then shift the response out. Required fields are functional D, scan input/output, scan enable, clock/reset behavior, and sometimes test-mode clock-gate override.
+
+Scan makes sequential logic controllable/observable for automatic test pattern generation, but adds input delay, area, routing, and switching power. Scan reorder after placement reduces wire; lockup latches bridge opposite clock edges or large skew; compression reduces pins and shift cycles. Detailed fault/test methodology belongs to [DFT and ATPG](../06_Signoff/02_DFT_and_ATPG.md), but the storage-cell choice must reserve the test path from the start.
+
+### 4.7 The latch/flip-flop trade-off: area, power, and time borrowing
 
 Given the flip-flop is two latches, why does anyone still pipeline with bare latches? Because the extra stage costs area, power, and flexibility:
 
@@ -214,7 +335,7 @@ $$
 
 so unbalanced logic that would fail a rigid flip-flop boundary can close between latches. The cost is exactly the transparency the flip-flop was built to avoid: harder timing closure and worse hold exposure. High-frequency custom datapaths use latches and **pulsed latches** for the area/power/borrowing win; control logic and most synthesized RTL use flip-flops for the simple single-edge model. A pulsed latch — a latch clocked by a narrow pulse — is the middle ground: near-latch area, edge-like use, at the price of a delicate pulse generator.
 
-### 4.4 Metastability: the third equilibrium and MTBF
+### 4.8 Metastability: the third equilibrium and MTBF
 
 The cross-coupled pair has a *third* equilibrium besides 0 and 1: the balance point at $\approx V_{dd}/2$. It is unstable, but a setup/hold violation can leave the node there, and only circuit noise nudges it off. Linearizing around that point,
 
@@ -235,6 +356,52 @@ where $t_r$ = time allowed to resolve, $T_0$ = width of the aperture around the 
 ## 5. Registers and register files: composing the primitives
 
 Group the flip-flop and it becomes the workhorse sequential block. A **register** is $N$ flip-flops on one clock (optionally with an enable driven by a clock-gate, §2.3). A **shift register** wires each $Q$ to the next $D$ — serial↔parallel conversion and delay lines. A **register file** is where §2–§4 compose into one structure: an array of registers, a **decoder** (§3.1) per port turning an address into a wordline, and a read **mux/bitline** (§2) per port selecting the addressed row. Its cost is dominated by **ports**, not depth: each added read/write port threads another word- and bit-line through *every* cell, so cell area grows as $\sim P^2$ and access time with it — the identical quadratic-port wall that caps issue width in an OoO core ([OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §2.3). This is why register files bank and cluster rather than pile on ports, and why "just add a port" is never cheap.
+
+```mermaid
+flowchart LR
+    FF["flip-flop / latch"] --> REG["parallel register"]
+    REG --> SHIFT["shift register\nserial and parallel modes"]
+    REG --> CNT["counter\nbinary / modulo-N / up-down"]
+    SHIFT --> RING["ring / Johnson counter"]
+    SHIFT --> LFSR["linear-feedback shift register\npseudo-random sequence generator"]
+    REG --> RF["register file"]
+    DEC["address decoder"] --> RF
+    RF --> MUX["read mux / bitlines"]
+```
+
+### 5.1 Register and shift-register modes
+
+| Structure | Input/output mode | Per-edge behavior | Use |
+|---|---|---|---|
+| PIPO (parallel-in/parallel-out) | parallel in, parallel out | load or hold an entire word | pipeline/state register |
+| SISO (serial-in/serial-out) | serial in, serial out | shift one bit between stages | delay, serialization |
+| SIPO (serial-in/parallel-out) | serial in, parallel out | shift then observe all stages | serial receiver/deserializer |
+| PISO (parallel-in/serial-out) | parallel in, serial out | load word, then shift | serializer/test output |
+| bidirectional/universal | parallel load plus left/right shift | mux selects hold/load/shift directions | datapath alignment and scan-like movement |
+
+The input mux selects hold, load, shift-left, or shift-right for every stage. Arithmetic right shift differs only at the incoming most-significant bit: replicate sign instead of zero. A barrel shifter replaces $N$ repeated shift cycles with $\log_2N$ mux stages; it is combinational and belongs to the same selection-tree cost model as §2.
+
+### 5.2 Counter families and their design trade-offs
+
+An **asynchronous or ripple counter** clocks each T/toggle stage from the previous Q. It is compact, but transitions ripple through $O(N)$ clock-to-Q delays and intermediate codes glitch; use it only for relaxed-frequency division where downstream logic does not sample the ripple. A **synchronous binary counter** clocks every bit together and computes toggle enable $T_i=\prod_{k<i}Q_k$. Naively that enable has growing fan-in; a prefix/carry tree or incrementer makes delay $O(\log N)$.
+
+An up/down counter selects carry versus borrow propagation. A modulo-$M$ counter returns to zero at $M-1$; if $M$ is not a power of two, decoding terminal count adds logic and illegal states require recovery. A saturating counter stops at its maximum/minimum and is common in predictors because wraparound would invert confidence.
+
+| Counter | State sequence | Advantage | Limitation/use |
+|---|---|---|---|
+| binary | $0\ldots2^N-1$ | compact encoding | many simultaneous bit toggles |
+| Gray | adjacent codes differ by one bit | safe observation across domains | arithmetic/terminal decode needs conversion |
+| one-hot ring | one bit circulates through $N$ flops | trivial decode, one-hot phase | needs initialized legal state; $N$ flops for $N$ states |
+| Johnson/twisted ring | inverted tail feeds head | $2N$ easily decoded phases | illegal-state recovery |
+| linear-feedback shift register (LFSR) | XOR feedback sequence | long pseudo-random sequence with little logic | excludes all-zero state; not cryptographically secure |
+
+For an $N$-bit maximal-length LFSR, a primitive feedback polynomial yields period $2^N-1$. Fibonacci form computes one XOR feedback and shifts it; Galois form distributes XORs along the register, usually shortening the critical path. LFSRs generate pseudo-random binary sequences, scrambler patterns, built-in self-test signatures, and randomized replacement choices. The polynomial, shift convention, seed, and bit ordering are part of the interface—mismatching any one produces a different sequence.
+
+### 5.3 Multiport register files and bypass
+
+A register-file write port contains address decoder, write data/bitlines, byte/bit enables, and write driver. A read port contains wordline selection, bitlines/sense or mux tree, and output register/bypass. Multiple simultaneous writes to one address require a priority/error contract. A same-cycle read/write collision must define read-old, read-new through bypass, or unspecified behavior.
+
+Flop-based small register files implement each read as a mux and are fast/flexible but scale poorly. Compiled SRAM/register-file macros use dense custom cells and bitlines but have fixed ports, latency, and collision modes. Banking reduces cell ports by steering addresses, but bank conflicts become an architectural stall/replay. Replication adds read ports cheaply only when writes broadcast to every copy.
 
 ---
 
@@ -316,11 +483,11 @@ where $B$ = burst length and $r_{wr},r_{rd}$ = effective write/read rates (throu
 | Ripple vs tree | $O(N)$ vs $O(\log N)$ | every wide block is a tree (§1.3) |
 | Setup / hold (DFF, N5) | 15–60 / 5–40 ps | max freq / min-delay path (§4.2) |
 | Clk-to-Q (DFF, N5) | 20–40 ps | pipeline stage overhead (§4.2) |
-| DFF vs latch area | ~2× (two latches vs one) | area/power/borrowing trade (§4.3) |
-| Latch time-borrow limit | ≤ one half-cycle | unbalanced-pipeline slack (§4.3) |
-| Metastability $\tau$ (N5) | 8–12 ps | MTBF exponent (§4.4) |
-| MTBF scaling | $\propto e^{\,t_r/\tau}$ | +1 sync flop ⇒ ×$e^{T/\tau}$ (§4.4) |
-| 2-FF synchronizer MTBF | >10⁴ years | adequate for most CDC (§4.4) |
+| DFF vs latch area | ~2× (two latches vs one) | area/power/borrowing trade (§4.7) |
+| Latch time-borrow limit | ≤ one half-cycle | unbalanced-pipeline slack (§4.7) |
+| Metastability $\tau$ (N5) | 8–12 ps | MTBF exponent (§4.8) |
+| MTBF scaling | $\propto e^{\,t_r/\tau}$ | +1 sync flop ⇒ ×$e^{T/\tau}$ (§4.8) |
+| 2-FF synchronizer MTBF | >10⁴ years | adequate for most CDC (§4.8) |
 | One-hot vs binary crossover | ~20–32 states | FF count vs decode depth (§6.2) |
 | Gray code | adjacent values differ by 1 bit | safe async sampling (§7) |
 | 2:1 mux transistors | 4 (TG) / 6 (gate) | area benchmark (§2.2) |
@@ -333,7 +500,7 @@ where $B$ = burst length and $r_{wr},r_{rd}$ = effective write/read rates (throu
 
 - **Down the stack (what these blocks are built from):** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) — the transistor, inverter VTC, noise margins, RC delay and FO4, and the device-level static/pass/TG/dynamic families behind §1.4.
 - **Same layer (blocks composed into datapaths):** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (carry/prefix trees — the §1.3 tree argument and the §3.3 comparator in full), [Floating_Point](04_Floating_Point.md) (the LZA/LZC normalization of §3.2).
-- **Up the stack (what builds on these blocks):** [CPU_Architecture](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) (pipelines of these registers and the setup/hold budget of §4.2), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (register files and the $P^2$ port wall of §5, the FO4 cycle budget of §1.2), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (metastability budgeting, Gray pointers, async FIFO of §4.4/§7/§9), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (the glitch-free clock mux of §2.3), [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) (ICG / clock gating), [STA](../06_Signoff/01_STA.md) (setup/hold and time-borrowing signoff of §4.2–4.3).
+- **Up the stack (what builds on these blocks):** [CPU_Architecture](../01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) (pipelines of these registers and the setup/hold budget of §4.2), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (register files and the $P^2$ port wall of §5, the FO4 cycle budget of §1.2), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (metastability budgeting, Gray pointers, async FIFO of §4.8/§7/§9), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) (the glitch-free clock mux of §2.3), [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) (ICG / clock gating), [STA](../06_Signoff/01_STA.md) (setup/hold and time-borrowing signoff of §4.2 and §4.7).
 
 ---
 
@@ -343,4 +510,4 @@ where $B$ = burst length and $r_{wr},r_{rd}$ = effective write/read rates (throu
 2. Weste, N., Harris, D., *CMOS VLSI Design*, 4th ed., Addison-Wesley, 2010. Logic families, sequential elements, FO4.
 3. Rabaey, J., Chandrakasan, A., Nikolić, B., *Digital Integrated Circuits*, 2nd ed., Prentice Hall, 2003. Dynamic/domino logic, charge sharing, keepers (§1.4).
 4. Eichelberger, E.B., "Hazard detection in combinational and sequential switching circuits," *IBM J. Res. Dev.*, 1965. The static→dynamic hazard theorem of §8.
-5. Ginosar, R., "Metastability and Synchronizers: A Tutorial," *IEEE Design & Test*, 2011. The MTBF derivation of §4.4.
+5. Ginosar, R., "Metastability and Synchronizers: A Tutorial," *IEEE Design & Test*, 2011. The MTBF derivation of §4.8.

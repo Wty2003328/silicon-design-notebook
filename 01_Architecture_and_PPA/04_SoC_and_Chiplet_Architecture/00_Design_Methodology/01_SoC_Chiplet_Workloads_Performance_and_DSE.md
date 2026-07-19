@@ -6,6 +6,19 @@
 
 ---
 
+```mermaid
+flowchart LR
+    U["Concurrent product use cases"] --> A["Agents, dependencies, and traffic"]
+    A --> M["Compute, queueing, NoC, memory, and I/O models"]
+    M --> K["Architecture knobs: topology, capacity, QoS, clocks, chiplet cuts"]
+    K --> S["Simulation plus PPA and thermal estimates"]
+    S --> O["Latency, throughput, fairness, energy, area, and cost"]
+    O --> P["Feasible Pareto frontier"]
+    P -->|"refine assumptions"| U
+```
+
+The loop is intentionally system-wide: a local acceleration is useful only if the resulting traffic, contention, power, and tail-latency point remains feasible.
+
 ## 0. Build use-case contracts, not independent benchmark lists
 
 A use case must identify:

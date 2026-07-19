@@ -1,5 +1,16 @@
 # CPU Power, Performance, Area, and Physical Implementation
 
+```mermaid
+flowchart LR
+    UARCH["CPU microarchitecture parameters"] --> STRUCT["queues / CAMs / register files / caches / bypass"]
+    STRUCT --> RTL["RTL + memory macros"]
+    RTL --> SYN["synthesis timing / area / power"]
+    SYN --> FLOOR["floorplan + placement + clock/wire estimates"]
+    FLOOR --> CLOSE["timing / congestion / IR / thermal closure"]
+    CLOSE --> PERF["updated cycle latency + frequency + energy"]
+    PERF -. "architecture feedback" .-> UARCH
+```
+
 > **First-time reader orientation:** A CPU block diagram hides the structures that determine silicon cost. A larger reorder buffer is an array plus age/ready logic, a wider issue machine multiplies register-file and bypass ports, and a larger cache changes wire delay and hit latency. This chapter turns CPU features into a physical resource ledger and an uncertainty-aware PPA estimate.
 
 > **Abbreviation key — skim now and return as needed:** power, performance, and area (PPA); reorder buffer (ROB); issue queue (IQ); load-store queue (LSQ); physical register file (PRF); register-transfer level (RTL); static random-access memory (SRAM); content-addressable memory (CAM); error-correcting code (ECC); arithmetic logic unit (ALU); branch-prediction unit (BPU); translation lookaside buffer (TLB); miss-status holding register (MSHR); last-level cache (LLC); dynamic voltage and frequency scaling (DVFS); process, voltage, and temperature (PVT); voltage threshold (Vth); standard deviation ($\sigma$).

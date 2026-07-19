@@ -1,5 +1,21 @@
 # Signal Integrity and Reliability — when wires stop being ideal and transistors stop being eternal
 
+```mermaid
+flowchart TD
+    PHYS["layout + switching activity"] --> XT["coupling capacitance / crosstalk"]
+    PHYS --> IR["power-grid resistance / IR drop"]
+    PHYS --> EM["current density / electromigration"]
+    PHYS --> TH["self-heating / thermal gradient"]
+    PHYS --> AGE["BTI / HCI / aging"]
+    XT --> TIM["delay / noise / false switching"]
+    IR --> TIM
+    TH --> TIM
+    EM --> LIFE["lifetime / open or short risk"]
+    AGE --> LIFE
+    TIM --> ECO["spacing / shielding / buffering / grid / placement ECO"]
+    LIFE --> ECO
+```
+
 > **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $I_D$/$V_{th}$ model and delay-vs-$V_{DD}$ law §4, noise margins and the regenerative property §3, wire RC / Elmore delay §10, temperature inversion §9), [Physical_Design](01_Physical_Design.md) (the routing, power grid, and via structures this page stresses).
 > **Hands off to:** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (owns the *power-integrity signoff criteria* — target impedance, IR/EM/decap pass–fail; this page owns the PnR-side *mechanisms and fixing levers*), [STA](../06_Signoff/01_STA.md) (folds crosstalk delta-delay and end-of-life aging margin into timing), [Physical_Verification_DRC_LVS](../06_Signoff/03_Physical_Verification_DRC_LVS.md) (runs the antenna DRC of §6).
 

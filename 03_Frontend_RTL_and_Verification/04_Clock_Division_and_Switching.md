@@ -1,5 +1,27 @@
 # Clock Division and Glitch-Free Clock Switching
 
+```mermaid
+flowchart LR
+    SRC["source clock"] --> DIV["counter / toggle / fractional divider"]
+    DIV --> DUTY["period and duty-cycle formation"]
+    A["clock A"] --> GFA["enable held while A is inactive"]
+    B["clock B"] --> GFB["enable held while B is inactive"]
+    GFA --> OR["glitch-free merge"]
+    GFB --> OR
+    SEL["synchronized select + break-before-make"] --> GFA
+    SEL --> GFB
+    OR --> OUT["selected clock"]
+```
+
+```wavedrom
+{ "signal": [
+  { "name": "clk_in",  "wave": "p........." },
+  { "name": "div2",    "wave": "0.1.0.1.0." },
+  { "name": "select_B", "wave": "0....1...." },
+  { "name": "clk_out", "wave": "p....0.p..." }
+], "head": { "text": "Divider and glitch-free switch: selection changes only through an inactive interval" } }
+```
+
 > **Prerequisites:** [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) (the flip-flop and its setup/hold/clk-to-Q §4.2, metastability §4.4, and *why a combinational clock mux glitches* §2.3), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the buffer as a real, band-limited gate).
 > **Hands off to:** [PLL_DLL_and_Clock_Distribution](05_PLL_DLL_and_Clock_Distribution.md) (how clean clocks are *generated* and *distributed* — the PLL alternative to dividers), [Async_Design_and_CDC](06_Async_Design_and_CDC.md) (metastability and the two-FF synchronizer this page reuses), [STA](../06_Signoff/01_STA.md) (`create_generated_clock`, min-pulse-width and clock-gating checks that sign off everything here).
 

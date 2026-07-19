@@ -1,5 +1,27 @@
 # Static Timing Analysis — Proving Timing Without Simulating Vectors
 
+```mermaid
+flowchart LR
+    START["launch clock + startpoint"] --> CQ["clock-to-Q / input delay"]
+    CQ --> DATA["cell + net delay through sensitizable path"]
+    DATA --> END["endpoint setup or hold check"]
+    CAP["capture clock + uncertainty + skew"] --> REQ["required arrival time"]
+    END --> ARR["data arrival time"]
+    ARR --> SLACK["slack = required - arrival"]
+    REQ --> SLACK
+    CONS["SDC modes / exceptions / corners"] --> START
+    CONS --> REQ
+```
+
+```wavedrom
+{ "signal": [
+  { "name": "launch_clk", "wave": "p......." },
+  { "name": "data",       "wave": "0..1...." },
+  { "name": "capture_clk", "wave": "0.p....." },
+  { "name": "captured_Q", "wave": "0....1.." }
+], "head": { "text": "Setup analysis: launched data must settle before the capture aperture" } }
+```
+
 > **Prerequisites:** [Constraints_SDC](../04_Synthesis/02_Constraints_SDC.md) (the clock, I/O, and exception constraints STA consumes), [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) (where clocks, jitter, and insertion delay come from), CMOS fundamentals (the FO4 delay yardstick).
 > **Hands off to:** [Power_Analysis_and_Signoff](../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) (IR-drop → cell-delay coupling), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (crosstalk delta-delay), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (clock-tree synthesis, timing ECO).
 

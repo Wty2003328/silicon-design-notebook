@@ -1,5 +1,18 @@
 # CMOS Fundamentals and Device Physics — Concept-First Deep Dive
 
+```mermaid
+flowchart LR
+    MAT["doping + oxide + geometry"] --> MOS["MOS capacitor and transistor"]
+    MOS --> IV["I-V regions + threshold + leakage"]
+    IV --> INV["CMOS inverter VTC"]
+    INV --> NM["noise margin + gain"]
+    INV --> RC["capacitance + RC delay"]
+    RC --> GATE["NAND / NOR / pass / transmission gate"]
+    GATE --> SRAM["bistable storage + SRAM"]
+    MOS --> SCALE["FinFET / GAA scaling"]
+    SCALE --> PPA["speed / power / area / reliability"]
+```
+
 > **Prerequisites:** basic semiconductor physics (the pn junction, the MOS capacitor, drift/diffusion). This is the bottom of the notebook — everything else is built on the device and the switching energy derived here.
 > **Hands off to:** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (gates, latches, flip-flops built from these transistors), [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md) (the $\alpha CV^2f$ this page derives, scaled to a whole SoC), [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (turns the bit cell into CPU arrays and ports), [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (how the FinFET/GAA of §8 is actually built).
 

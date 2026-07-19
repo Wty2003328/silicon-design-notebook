@@ -1,5 +1,19 @@
 # Hardware Design — Index (chip-design-flow order)
 
+```mermaid
+flowchart LR
+    F["fundamentals\ndevices + logic + arithmetic"] --> A["architecture + PPA\nCPU / GPU / NPU / SoC"]
+    A --> LP["power architecture\ndomains + intent"]
+    A --> RTL["RTL + verification"]
+    LP --> RTL
+    RTL --> SYN["synthesis + constraints"]
+    SYN --> PD["physical design"]
+    PD --> SO["timing / DFT / physical signoff"]
+    SO --> FAB["fabrication + packaging"]
+    FAB --> BU["post-silicon bring-up"]
+    BU -. "measure and refine" .-> A
+```
+
 > A research-depth technical notebook for digital IC design, CPU/GPU/NPU and AI-system architecture, and verification.
 > Target roles: architecture research, RTL design, physical design, STA/signoff, DFT, verification, and performance modeling.
 > Style: newcomer-accessible definitions + deep theory + implementation-reconstructable detail + measurable evidence + worked research reasoning.

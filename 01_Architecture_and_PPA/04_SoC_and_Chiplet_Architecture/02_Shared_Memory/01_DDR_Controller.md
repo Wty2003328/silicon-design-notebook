@@ -99,6 +99,16 @@ Everything else on this page is a lever on the ratio of these three cases. A hit
 
 A datasheet lists dozens of `t`-parameters; memorizing them teaches nothing. Every one is a guard that says *"a physical event must finish before the next command is safe,"* and there are only a few distinct physical events. Learn the events and the parameters follow — and, crucially, so does *which knob moves which number*.
 
+```wavedrom
+{ "signal": [
+  { "name": "CK",  "wave": "p..........." },
+  { "name": "CMD", "wave": "x3..4.....5x", "data": ["ACT", "READ", "PRE"] },
+  { "name": "DQ",  "wave": "x.......3..x", "data": ["read burst"] }
+], "head": { "text": "Qualitative row read: ACT → tRCD → READ → CL → DQ burst → PRE" } }
+```
+
+The empty command slots are enforced delays, not idle work the controller may freely reclaim: `ACT` must precede `READ` by at least $t_{RCD}$, data follows `READ` after column latency (CL), and `PRE` is legal only after restoration and bus-related constraints permit closing the row. The waveform is qualitative; the exact cycle counts come from the selected memory speed bin and command mode.
+
 - **$t_{RCD}$ (ACT → column) protects the sense.** The wordline must rise, the whole row must charge-share onto the bitlines, and the sense amps must regeneratively resolve that ~tens-of-mV signal to a readable rail. You cannot read a column before the amps have latched. This is the irreducible "open a row" latency; it is set by cell/bitline capacitance and amp gain, and it barely improves generation to generation (~14 ns for a decade).
 - **$t_{RAS}$ (ACT → PRE minimum) protects the *restore*.** Because the read was destructive, the sense amps must *write full charge back* into the cells before the row closes. Precharge before restore completes and the cells are left half-charged → silent retention failure. $t_{RAS}$ is the restore deadline (~32–35 ns).
 - **$t_{RP}$ (PRE → next ACT) protects the *reference*.** PRECHARGE equalizes both bitlines back to exactly $V_{dd}/2$ and disconnects the amps, so the *next* row's tiny charge-share signal is measured against a clean reference. Precharge too fast and a bitline offset corrupts the next sense.

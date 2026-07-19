@@ -1,5 +1,18 @@
 # SystemVerilog Data Types — Modeling the Wire and the Unknown
 
+```mermaid
+flowchart TD
+    INTENT["hardware intent"] --> STATE["2-state or 4-state semantics"]
+    STATE --> NET["net: resolved connection"]
+    STATE --> VAR["variable: procedural storage/value"]
+    VAR --> PACK["packed vectors / structs / unions"]
+    VAR --> UNPACK["unpacked arrays / queues / associative arrays"]
+    PACK --> CAST["width / signedness / casting"]
+    UNPACK --> SYN["synthesizable subset or testbench-only"]
+    CAST --> SYN
+    SYN --> CHECK["lint + simulation + synthesis agreement"]
+```
+
 > **Stage:** 03 · Frontend RTL (register-transfer level). The language's *type system* — not a syntax reference, but *why* a hardware description language needs value and storage abstractions a software type system never does, and how getting them wrong turns into silicon bugs.
 > **Prerequisites:** [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the transmission gate; a driven vs floating node), [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) (mux, latch inference). **Hands off to:** [RTL_Design_Methodology](01_RTL_Design_Methodology.md) (the discipline of using these types), [Procedural_Processes_and_IPC](03_Procedural_Processes_and_IPC.md) (the scheduler that assigns them), [OOP_and_Randomization](08_OOP_and_Randomization.md) (class types).
 

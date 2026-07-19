@@ -1,5 +1,17 @@
 # Datapath Arithmetic — The Carry Chain and How to Beat It
 
+```mermaid
+flowchart TD
+    ADD["N-bit addition"] --> RIP["ripple carry\nO(N) latency"]
+    ADD --> CLA["carry lookahead / carry select"]
+    CLA --> PRE["parallel-prefix tree\nO(log N) latency"]
+    MUL["multiplication"] --> PP["partial-product generation\nBooth recoding"]
+    PP --> RED["carry-save reduction\nWallace / Dadda"]
+    RED --> CPA["final carry-propagate adder"]
+    PRE --> CPA
+    CPA --> OUT["sum / product"]
+```
+
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, series-stack fan-in limits, wire RC), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (MUX, XOR, comparator).
 > **Hands off to:** [Floating_Point](04_Floating_Point.md) (the final CPA + rounding this feeds; SRT/Goldschmidt division), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — these circuits *are* that menu), [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) (MAC arrays, approximate arithmetic).
 

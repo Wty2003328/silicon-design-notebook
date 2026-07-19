@@ -1,5 +1,18 @@
 # NPU Scratchpad, DMA, Runtime, and Serving Implementation Blueprint
 
+```mermaid
+flowchart LR
+    HOST["host queue + protected descriptor"] --> DEP["dependency/event scheduler"]
+    DEP --> DMA["address generation + IOMMU + DMA"]
+    DMA --> SP0["scratchpad buffer phase 0"]
+    DMA --> SP1["scratchpad buffer phase 1"]
+    SP0 --> COMP["array / vector / reduction"]
+    SP1 --> COMP
+    COMP --> EVT["completion event + ownership swap"]
+    EVT --> OUT["output DMA / request state"]
+    EVT -. "next double-buffer phase" .-> DEP
+```
+
 > **Abbreviation key:** neural processing unit (NPU); artificial intelligence (AI); direct memory access (DMA); static random-access memory (SRAM); network on chip (NoC); input-output memory management unit (IOMMU); key-value (KV) cache; mixture of experts (MoE); service-level objective (SLO).
 
 ## 0. Purpose and design ideology

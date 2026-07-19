@@ -1,5 +1,18 @@
 # CPU Simulation Methodology and Evidence — From Source to Defensible Results
 
+```mermaid
+flowchart LR
+    SRC["source + input dataset"] --> COMP["compiler / linker / libraries"]
+    COMP --> ELF["target executable + disassembly"]
+    ELF --> LOAD["loader: memory / PC / stack / OS state"]
+    LOAD --> FUNC["functional instruction execution"]
+    FUNC --> TIM["pipeline / cache / coherence / memory timing"]
+    TIM --> RAW["events + counters + traces"]
+    RAW --> AGG["ROI / warm-up / formulas / statistics"]
+    AGG --> VAL["validate output + intermediate observables"]
+    VAL --> CLAIM["result with error boundary"]
+```
+
 > **First-time reader orientation:** A CPU simulator does not turn C source directly into a performance number. A compiler creates a target executable; a loader creates architectural state; functional execution creates dynamic instructions and addresses; timing models schedule those operations through CPU and memory resources; counters are reduced into metrics; validation determines what the result can support.
 
 > **Abbreviation key — skim now and return as needed:** executable and linkable format (ELF); instruction set architecture (ISA); application binary interface (ABI); intermediate representation (IR); program counter (PC); operating system (OS); syscall emulation (SE); full-system simulation (FS); region of interest (ROI); instructions per cycle (IPC); cycles per instruction (CPI); misses per thousand instructions (MPKI); translation lookaside buffer (TLB); miss-status holding register (MSHR); reorder buffer (ROB); network on chip (NoC); dynamic random-access memory (DRAM); register-transfer level (RTL); hardware performance counter (HPC).

@@ -1,5 +1,17 @@
 # GPU Simulation Methodology and Evidence — From CUDA to Validated Kernel Results
 
+```mermaid
+flowchart LR
+    SRC["framework / CUDA-like source + inputs"] --> COMP["graph + kernel compilation"]
+    COMP --> ISA["target ISA / code object + resource metadata"]
+    ISA --> FUNC["functional threads / warps / addresses"]
+    FUNC --> TIM["scheduler / pipeline / coalescer / cache / HBM timing"]
+    TIM --> SCALE["NoC / multi-GPU / collective timing"]
+    SCALE --> RAW["instructions / transactions / stalls / cycles"]
+    RAW --> MET["kernel + service metrics"]
+    MET --> VAL["hardware counter and output validation"]
+```
+
 > **First-time reader orientation:** GPU simulation has two programs and several instruction forms. Host CPU code allocates memory, transfers data, launches kernels, and synchronizes. Device code is represented as virtual PTX and target machine SASS. An execution-driven simulator interprets a device representation; a trace-driven simulator replays the SASS path captured on real hardware. The artifact boundary determines what can change in simulation.
 
 > **Abbreviation key — skim now and return as needed:** CUDA programming platform; parallel thread execution (PTX); CUDA binary (cubin); CUDA fat binary (fatbin); NVIDIA native GPU machine representation (SASS); NVIDIA binary instrumentation tool (NVBit); streaming multiprocessor (SM); single instruction, multiple threads (SIMT); program counter (PC); high-bandwidth memory (HBM); region of interest (ROI); instructions per cycle (IPC); comma-separated values (CSV); power, performance, and area (PPA).

@@ -1,5 +1,17 @@
 # Research-Depth and Evidence Standard
 
+```mermaid
+flowchart LR
+    W["workload + requirements"] --> C["contract + ownership"]
+    C --> M["causal mechanism + state"]
+    M --> T["theory + assumptions + bounds"]
+    T --> I["implementation + trade-offs"]
+    I --> O["observables + experiment"]
+    O --> V["validation + uncertainty"]
+    V --> D["defensible conclusion"]
+    D -. "failure or new hypothesis" .-> W
+```
+
 This notebook serves two readers at once:
 
 1. a first-time reader who needs every unfamiliar concept and abbreviation introduced before it is used; and
@@ -84,6 +96,16 @@ A chapter that claims implementation depth must let a reader reconstruct a defen
 11. **Bring-up and evolution:** a minimum viable implementation, staged feature-enablement order, debug escape hatches, compatibility/versioning rules, and a path to scale the design.
 
 The practical test is whether a reader can produce three reviewable documents from the chapter: a block diagram with ownership boundaries, a state-and-interface specification with invariants, and a verification/bring-up plan. If essential choices remain hidden behind phrases such as “the scheduler handles it” or “the cache returns the data,” the chapter is not implementation-reconstructable.
+
+### 1.10 Visual-explanation contract
+
+Use a diagram when spatial, causal, ownership, state, or temporal relationships are harder to reconstruct from prose. Every diagram must teach a specific relationship and agree with the adjacent equations, terminology, and mechanism description.
+
+- Use **Mermaid** for hierarchy, ownership, data/control flow, dependency graphs, state machines, feedback loops, and experiment pipelines.
+- Use **WaveDrom** for sampled timing: clocks, latch transparency, flip-flop capture, setup/hold, reset release, clock-domain crossings, ready/valid or credit handshakes, protocol phases, and memory commands.
+- Introduce the symbols, signals, and abbreviations in adjacent prose. Say whether a timing diagram is cycle-accurate, qualitative, or deliberately omits analog behavior.
+- Show backpressure, error/recovery, or feedback arcs when they change the mechanism; a one-way happy-path diagram is insufficient when those paths determine correctness.
+- Do not add a decorative figure that merely repeats a nearby list. A useful figure lets the reader predict an event, identify state ownership, or derive a design/verification artifact.
 
 ---
 

@@ -1,5 +1,17 @@
 # NPU Verification, Performance, and Bring-up Blueprint
 
+```mermaid
+flowchart LR
+    FW["framework reference"] --> IR["lowered-graph reference"]
+    IR --> CMD["command functional model"]
+    CMD --> BIT["bit-accurate array/vector model"]
+    BIT --> RTL["RTL / emulation / silicon"]
+    RTL --> CNT["commands / bytes / utilization / cycles"]
+    CNT --> CAL["simulator calibration + performance bounds"]
+    CAL --> GATE["staged device and serving bring-up"]
+    GATE -. "first mismatch" .-> IR
+```
+
 > **Abbreviation key:** neural processing unit (NPU); register-transfer level (RTL); direct memory access (DMA); network on chip (NoC); power, performance, and area (PPA); error-correcting code (ECC); key-value (KV) cache; mixture of experts (MoE); service-level objective (SLO); tera operations per second per watt (TOPS/W).
 
 ## 0. Purpose

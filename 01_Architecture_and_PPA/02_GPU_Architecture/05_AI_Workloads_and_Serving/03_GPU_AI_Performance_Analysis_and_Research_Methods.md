@@ -1,5 +1,16 @@
 # GPU Artificial-Intelligence Performance Analysis, Profiling, and Research Methods
 
+```mermaid
+flowchart LR
+    Q["falsifiable service/kernel question"] --> LEDGER["latency + operations + bytes ledger"]
+    LEDGER --> ROOF["multi-level roofline + occupancy + communication bounds"]
+    ROOF --> PROF["service timeline → kernel profile → counters"]
+    PROF --> DIAG["active bottleneck and interference"]
+    DIAG --> ABL["shape / batch / clock / topology ablation"]
+    ABL --> VAL["validated model + uncertainty"]
+    VAL --> R["research conclusion and losing cases"]
+```
+
 > **First-time reader orientation:** Performance analysis is causal inference about a machine: change one mechanism, observe the result, and rule out alternative explanations. Begin with end-to-end service objectives, descend through timelines and kernels to hardware counters, then validate a model that predicts both the baseline and controlled perturbations. A profiler counter is evidence, not a diagnosis by itself.
 
 > **Abbreviation key:** graphics processing unit (GPU); streaming multiprocessor (SM); high-bandwidth memory (HBM); level-one/level-two cache (L1/L2); large language model (LLM); time to first token (TTFT); time per output token (TPOT); inter-token latency (ITL); service-level objective (SLO); instructions per cycle (IPC); floating-point operations per second (FLOP/s); operation (OP); general matrix multiplication (GEMM); key-value (KV); mixture of experts (MoE); tensor/expert parallelism (TP/EP); network interface controller (NIC); mean absolute percentage error (MAPE); confidence interval (CI); region of interest (ROI); design-space exploration (DSE); power, performance, and area (PPA).

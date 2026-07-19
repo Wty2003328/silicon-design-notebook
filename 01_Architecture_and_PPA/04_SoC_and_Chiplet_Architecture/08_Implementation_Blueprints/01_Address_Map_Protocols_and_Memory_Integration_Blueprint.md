@@ -2,6 +2,19 @@
 
 > **Abbreviation key:** system on chip (SoC); central processing unit (CPU); graphics processing unit (GPU); neural processing unit (NPU); intellectual property (IP); Advanced eXtensible Interface (AXI); Advanced High-performance Bus (AHB); Advanced Peripheral Bus (APB); double data rate (DDR); dynamic random-access memory (DRAM); error-correcting code (ECC); physical interface (PHY); first-in, first-out queue (FIFO); input-output memory management unit (IOMMU); input/output (I/O).
 
+```mermaid
+flowchart LR
+    I["CPU, GPU, NPU, DMA, and I/O initiators"] --> MMU["Translation, protection, and address decode"]
+    MMU --> BR["Protocol bridge and width/clock adaptation"]
+    BR --> FAB["Ordered fabric or NoC"]
+    FAB --> PER["Memory-mapped peripherals"]
+    FAB --> MC["Cache/system memory and DDR controller"]
+    MC --> DRAM["DDR PHY and DRAM banks"]
+    PER --> RESP["Response, error, and completion routing"]
+    DRAM --> RESP
+    RESP --> I
+```
+
 ## 0. Purpose and design ideology
 
 This blueprint turns a collection of CPU, GPU, NPU, memory, and peripheral blocks into one addressable and ordered machine. The design ideology is **contract first, adapters second**: decide global meaning once, then make each endpoint or bridge implement that meaning. A protocol converter that translates signal names but loses ordering, errors, or backpressure is not correct integration.
