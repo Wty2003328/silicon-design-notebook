@@ -2,7 +2,7 @@
 
 > **First-time reader orientation:** A fast central processing unit (CPU) often starts an operation before it knows that the operation is on the correct program path or that all of its inputs are safe to use. That early work is *speculative*. The result may become real only after the CPU validates the guess; otherwise the CPU must discard the work and restore an older correct state.
 
-> **Abbreviation key — skim now and return as needed:** central processing unit (CPU); instruction set architecture (ISA); out-of-order (OoO); program counter (PC); branch prediction unit (BPU); fetch target queue (FTQ); reorder buffer (ROB); register alias table (RAT); physical register file (PRF); load-store queue (LSQ); load queue (LQ); store queue (SQ); memory dependence predictor (MDP); store-set identifier table (SSIT); last fetched store table (LFST); translation lookaside buffer (TLB); miss status holding register (MSHR); instructions per cycle (IPC); misses per thousand instructions (MPKI).
+> **Abbreviation key — skim now and return as needed:** central processing unit (CPU); instruction set architecture (ISA); out-of-order (OoO); program counter (PC); branch prediction unit (BPU); fetch target queue (FTQ); reorder buffer (ROB); register alias table (RAT); physical register file (PRF); load-store unit (LSU); load-store queue (LSQ); load queue (LQ); store queue (SQ); memory dependence predictor (MDP); store-set identifier table (SSIT); last fetched store table (LFST); translation lookaside buffer (TLB); miss status holding register (MSHR); instructions per cycle (IPC); misses per thousand instructions (MPKI).
 
 > **Prerequisites:** [Branch Prediction](01_Branch_Prediction_Deep_Dive.md) for next-PC prediction, [Out-of-Order Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) for rename and the ROB, and [Retirement and Recovery](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) for precise architectural state.
 > **Hands off to:** [Advanced Scheduling, Wakeup, and Replay](../03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md) for the timing-critical implementation, [Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md) for memory ordering, and [XiangShan](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) for a current open implementation.
@@ -61,6 +61,24 @@ The key invariant is:
 > An instruction may produce tentative data early, but it may update architectural state only when every older instruction is known to permit it.
 
 The ROB normally enforces the age part of that invariant. Stores add another boundary: their address and data may be computed early, but a store must not become globally visible until it is non-speculative under the memory model.
+
+### 2.1 Confidence is an allocation policy, not merely a prediction bit
+
+A predictor may produce both a choice and a confidence estimate. Confidence determines whether the machine should consume speculative resources for that choice. Let $p_c$ be probability the prediction is correct, $B$ the latency benefit when correct, $C_r$ recovery cost when wrong, and $C_e$ energy/occupancy cost paid either way. A first expected-value model is
+
+$$
+V_{spec}=p_cB-(1-p_c)C_r-C_e.
+$$
+
+Speculate only when $V_{spec}>0$, subject to queue and security constraints. This exposes several non-obvious policies:
+
+- a high-confidence prediction may still be rejected when recovery bandwidth is saturated;
+- a low-confidence prediction may be worthwhile if recovery is local and cheap;
+- confidence should be calibrated by phase and context, not only ranked globally;
+- two individually profitable guesses may be unprofitable together because one wrong guess squashes the other's work;
+- energy and transient-state exposure can move the threshold even when IPC improves.
+
+Confidence storage also has aliasing and hysteresis. A saturating counter learns slowly after a phase change; a table shared across contexts can transfer behavior or information. Research evaluation should report calibration—for example, actual correctness of predictions assigned 90% confidence—and coverage, the fraction of eligible operations actually speculated.
 
 ## 3. Control speculation: following a predicted path
 
@@ -165,6 +183,25 @@ Two more aggressive techniques are important even when a particular core does no
 
 These techniques show the outer boundary of speculation: the machine may use wrong-path or non-committing work if the useful microarchitectural effect—usually an early memory request—outweighs its energy and recovery cost.
 
+### 7.1 Why general value prediction remains difficult
+
+Value prediction can break a true data-dependence chain rather than merely choose a control path. That makes its benefit large and its validation/recovery burden unusually strict.
+
+Predictor families include last-value prediction, stride or finite-context prediction, and computation reuse. They work on different value regularities. An implementation also needs:
+
+1. **identity:** static instruction and dynamic instance or generation;
+2. **confidence:** a threshold that avoids high-fanout low-value mistakes;
+3. **validation:** exact comparison with the non-predicted result before retirement;
+4. **dependence tracking:** which consumers observed the predicted value;
+5. **recovery:** selective re-execution or a younger-machine flush;
+6. **memory and exception rules:** predicted values cannot authorize stores, addresses, or privileged effects prematurely.
+
+If a prediction has $F$ dependent operations and each consumes execution/operand energy $e$, a misprediction adds at least $Fe$ wasted energy before queue, cache, and recovery effects. High fanout increases both potential speedup and recovery amplification. Validation latency also matters: if the real value returns before consumers can use the prediction, the mechanism adds tables and ports without shortening the critical path.
+
+Exact validation preserves architectural correctness, but microarchitectural side effects created from a predicted address or branch condition may remain observable. A design can restrict predicted values from address generation or authorization decisions, lowering risk at the cost of much of the benefit. This security/performance boundary should be part of the value-prediction contract, not an afterthought.
+
+Runahead avoids exact value prediction by marking unavailable values invalid and suppressing dependent results. Its useful output is independent memory requests. Research comparisons must count *prefetch accuracy* (fraction of runahead requests later used), *coverage* (demand misses exposed early), timeliness, memory-bandwidth pollution, and lost opportunity when runahead occupies frontend/backend resources.
+
 ## 8. Recovery granularity
 
 | Recovery method | Removes | Advantage | Cost |
@@ -191,6 +228,23 @@ A secure design therefore distinguishes **permission to execute** from **permiss
 - verify non-interference properties in addition to ISA correctness.
 
 There is no universal free defense. Delaying all speculative effects sacrifices much of the performance speculation was added to obtain, so threat model and trust boundary must be explicit architecture inputs.
+
+### 9.1 Security-aware speculation as a resource policy
+
+Treat protection context as another speculation dimension. A prediction trained in one context and consumed in another can create interference even if their architectural state is isolated. A design may tag, partition, flush, or selectively share predictor and cache state. Each choice trades capacity, warm-up, latency, and leakage.
+
+A useful policy matrix asks whether an operation may:
+
+| Stage | Same trust domain | Cross-domain or authorization unresolved |
+|---|---|---|
+| predict and fetch | commonly allowed | may require isolated predictor/history state |
+| execute arithmetic | allowed while recoverable | depends on whether operands are authorized |
+| form a memory address | normally allowed | high risk if secret-dependent |
+| allocate cache/TLB state | performance-friendly | may require delay, shadow state, or partition |
+| train shared predictor | often delayed until a trusted point | partition, sanitize, or suppress |
+| make a store/external request visible | only after architectural permission | never from an unresolved path |
+
+“Disable speculation” is rarely a precise proposal. Name the producer, consumer, side effect, validation point, and trust boundary. Then measure both the leakage channel addressed and the cost in redirect stalls, memory-level parallelism, energy, and service goodput.
 
 ## 10. XiangShan as a current open example
 
@@ -230,6 +284,8 @@ For each speculation source, verify both the prediction and every way it can be 
 
 **3 — Checkpoint capacity.** Four rename snapshots are available and branches eligible for snapshots arrive every 8 cycles. A snapshot lives for 28 cycles on average. Little's law predicts $28/8=3.5$ live snapshots, so four covers the mean with little burst headroom. The design must either throttle snapshot creation, fall back to ROB walking, or snapshot additional periodic boundaries when the queue is full.
 
+**4 — Confidence threshold.** A predicted load value saves 14 cycles when correct, costs 22 cycles to recover when wrong, and consumes an equivalent 1 cycle of energy/queue opportunity every attempt. The expected value is $14p_c-22(1-p_c)-1=36p_c-23$, so the simple threshold is $p_c>23/36\approx63.9\%$. If recovery contention doubles the wrong-prediction cost, the threshold becomes $(44+1)/(14+44)\approx77.6\%$. Confidence policy must therefore react to machine occupancy, not only static predictor accuracy.
+
 ## Numbers to remember
 
 | Quantity | Typical scale | Design meaning |
@@ -255,6 +311,8 @@ For each speculation source, verify both the prediction and every way it can be 
 3. P. Kocher et al., “Spectre Attacks: Exploiting Speculative Execution,” 2018 — [paper](https://arxiv.org/abs/1801.01203).
 4. XiangShan Team, “Kunminghu V3 Backend, FTQ, CtrlBlock, IssueQueue, and LSU Design Documents” — [documentation](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/).
 5. XiangShan Team, “Memory Dependence Prediction” — [documentation](https://docs.xiangshan.cc/zh-cn/dev/memory/mdp/mdp/).
+6. M. H. Lipasti and J. P. Shen, “Exceeding the Dataflow Limit via Value Prediction,” MICRO 1996.
+7. A. Perais and A. Seznec, “Practical Data Value Speculation for Future High-end Processors,” HPCA 2014.
 
 ---
 

@@ -216,6 +216,7 @@ The wider core is roughly performance-neutral before considering extra power/are
 
 - [CPU Architecture](../01_Core_Foundations/01_CPU_Architecture.md) instantiates the basic pipeline and iron law.
 - [Branch Prediction](../02_Frontend_and_Prediction/01_Branch_Prediction_Deep_Dive.md), [Out-of-Order Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md), and [Cache Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) provide mechanism depth for the terms above.
+- [AI Performance Analysis](../09_AI_Workloads_and_Serving/03_Performance_Analysis_Profiling_and_Research_Frontiers.md) extends roofline, byte accounting, queueing, TTFT/TPOT, and evidence to CPU AI serving.
 - [XiangShan CPU Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) is a concrete open high-performance design case.
 
 ## References

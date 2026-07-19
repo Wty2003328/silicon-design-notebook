@@ -33,6 +33,7 @@ flowchart LR
 | 6 | [Coherence and Consistency](06_Coherence_and_Consistency/00_Index.md) | 3 | How do CPU cores share memory without observing illegal values? |
 | 7 | [Core Case Studies](07_Core_Case_Studies/00_Index.md) | 1 | How do these choices compose in a real open CPU? |
 | 8 | [CPU Simulation](08_Simulation/00_Index.md) | 2 | How are CPU timing and coherence hypotheses tested? |
+| 9 | [AI Workloads and Serving](09_AI_Workloads_and_Serving/00_Index.md) | 3 | How do training and inference workloads map onto CPU execution, memory, and serving systems? |
 
 ## Beginner reading order
 
@@ -43,6 +44,7 @@ flowchart LR
 5. [Advanced Scheduling, Wakeup, and Replay](03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md) when the baseline pipeline is clear.
 6. [Cache Microarchitecture](04_Cache_Hierarchy/01_Cache_Microarchitecture.md), then [TLB and Virtual Memory](05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
 7. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
+8. [AI Workloads and Serving](09_AI_Workloads_and_Serving/00_Index.md) to connect model loading, tokenization, retrieval, tensor kernels, memory placement, and service-level objectives to the CPU mechanisms above.
 
 **Hands off to:** [SoC and Chiplet Architecture](../04_SoC_and_Chiplet_Architecture/00_Index.md) when requests leave the CPU-owned coherent subsystem.
 

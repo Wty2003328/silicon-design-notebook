@@ -1,13 +1,13 @@
-# Simultaneous Multithreading (SMT), Single Instruction Multiple Data (SIMD), and Vector Execution
+# Simultaneous Multithreading (SMT), Single Instruction Multiple Data (SIMD), Vector, and Matrix Execution
 
-> **First-time reader orientation:** These mechanisms use different sources of parallel work. Simultaneous multithreading mixes instructions from several software threads; single instruction, multiple data applies one operation to several lanes; vector execution makes the lane count and vector length part of an architectural contract. The chapter first separates those meanings before comparing hardware costs.
+> **First-time reader orientation:** These mechanisms use different sources of parallel work. Simultaneous multithreading mixes instructions from several software threads; single instruction, multiple data applies one operation to several lanes; vector execution makes vector length part of an architectural contract; matrix extensions keep two-dimensional operand and accumulator tiles near a matrix-multiply engine. The chapter first separates those meanings before comparing hardware costs.
 
 > **Abbreviation key — skim now and return as needed:** central processing unit (CPU); graphics processing unit (GPU); neural processing unit (NPU); instruction set architecture (ISA); reduced instruction set computer (RISC);
-> instruction-level parallelism (ILP); thread-level parallelism (TLP); out-of-order (OoO); translation lookaside buffer (TLB); reorder buffer (ROB);
+> instruction-level parallelism (ILP); data-level parallelism (DLP); thread-level parallelism (TLP); out-of-order (OoO); translation lookaside buffer (TLB); instruction TLB (ITLB); reorder buffer (ROB);
 > miss status holding register (MSHR); load-store queue (LSQ); issue queue (IQ); physical register file (PRF); register file (RF);
 > single instruction, multiple threads (SIMT); vector register length (VLEN); selected element width (SEW); vector register grouping multiplier (LMUL); error-correcting code (ECC);
 > quality of service (QoS); branch target buffer (BTB); program counter (PC); fused multiply-add (FMA); terabyte (TB);
-> gigahertz (GHz).
+> gigahertz (GHz); Advanced Vector Extensions (AVX); Advanced Matrix Extensions (AMX); tile matrix multiply unit (TMUL); bfloat16 (BF16); integer 8-bit (INT8); Scalable Vector Extension (SVE); Scalable Matrix Extension (SME); operating system (OS).
 
 > **Prerequisites:** [CPU Architecture](01_CPU_Architecture.md) (pipeline and superscalar concepts), [RISC-V ISA](02_RISC_V_ISA.md) §6 (vector ISA contract), and [Out-of-Order Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (window structures).
 > **Hands off to:** [GPU Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) for SIMT, [NPU Accelerators](../../03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) for spatial tensor execution, and the backend chapters for scalar scheduling and recovery.
@@ -26,10 +26,12 @@ flowchart TB
     ILP --> OoO["Superscalar OoO"]
     DLP --> SIMD["Fixed-width SIMD"]
     DLP --> Vector["Length-agnostic vector"]
+    DLP --> Matrix["Matrix / tile extension"]
     DLP --> SIMT["SIMT warps"]
     TLP --> SMT["SMT contexts share one core"]
     SIMD --> Lanes["lanes + vector RF"]
     Vector --> Lanes
+    Matrix --> Tiles["tile RF + matrix unit"]
     SMT --> Shared["shared frontend/window/caches"]
 ```
 
@@ -50,6 +52,7 @@ The distinction matters because each mechanism stores and schedules different st
 | scalar superscalar | 1 | 1 | 1 | insufficient ILP / dependencies |
 | fixed-width SIMD | 1 | 1 | fixed ISA width | short/tail vectors, shuffle cost |
 | length-agnostic vector | 1 | 1 | runtime `vl`, implementation VLEN | strip-mining overhead, lane/memory imbalance |
+| matrix/tile extension | 1 | 1 | two-dimensional tile operation | tile underfill, load/pack bandwidth, accumulator dependencies |
 | SIMT | many logical threads | warp-level issue | active lanes in warp | divergence, occupancy/resource limits |
 | SMT | 2+ independent threads | independent PCs | scalar or vector per thread | contention and unfairness |
 
@@ -129,6 +132,33 @@ At $L=16$, $E=4$ B, and $B=64$ B, the vector unit consumes one line per cycle. T
 
 Precise exceptions complicate vector loads. The implementation must identify the faulting element, avoid exposing later elements incorrectly, and support restart state such as RISC-V `vstart`. Fault-only-first operations deliberately shorten `vl` after the first fault to support vectorized pointer/string traversal.
 
+## 5.1 Matrix and tile extensions: reuse across two dimensions
+
+A vector FMA exposes one-dimensional lanes. A matrix instruction exposes a larger operation whose implementation can reuse rows and columns inside a dedicated engine. This changes the machine boundary: peak arithmetic rises only if tile loads, accumulator residency, and packed layouts feed it.
+
+Intel **AMX (Advanced Matrix Extensions)** illustrates the contract. Its original tile state contains eight configurable two-dimensional data registers, each up to 16 rows by 64 bytes (1 KiB). Software loads a tile configuration, fills tiles from memory, issues a **TMUL (tile matrix multiply unit)** operation such as BF16 or INT8 dot-product accumulation, and stores or converts the accumulator. AMX is architecturally visible state, so the OS must enable and preserve it across context changes.
+
+For a conceptual $M_t\times K_t$ tile multiplied by a $K_t\times N_t$ tile, one loaded input tile is reused across one output dimension while accumulator elements remain resident across successive $K_t$ steps. Ignoring metadata and output traffic, the tile arithmetic intensity is approximately
+
+$$
+I_{tile}\approx\frac{2M_tK_tN_t}{q_A M_tK_t+q_BK_tN_t},
+$$
+
+where $q_A$ and $q_B$ are bytes per input element. Larger $M_t,N_t$ increase reuse, but architectural tile capacity, cache supply, tail shapes, and thread-level sharing limit them.
+
+The physical pipeline must solve four loops:
+
+1. **load:** address generation, cache access, and packed tile arrival;
+2. **compute:** several independent accumulator tiles cover TMUL latency and initiation limits;
+3. **epilogue:** vector/scalar code applies bias, activation, scale, saturation, or conversion;
+4. **store:** output ownership and cache-write bandwidth complete the tile.
+
+Double buffering can overlap loading the next operands with computing the current tile, but it consumes more tile/register and cache capacity. If every TMUL waits for a tile load, published peak operations are irrelevant. If the output tile is stored and reloaded on every $K$ block, accumulator reuse was lost.
+
+Arm **SME (Scalable Matrix Extension)** takes a scalable approach with streaming execution and a two-dimensional accumulator state commonly named `ZA`. The important research comparison is not which mnemonic is shorter; it is fixed versus scalable tile shape, explicit state-management cost, supported input/accumulation types, data-movement semantics, tail behavior, and virtualization overhead. RISC-V's ratified V extension supplies length-agnostic vectors; matrix claims must name the exact implemented or proposed extension instead of implying a single ratified RISC-V matrix contract.
+
+Matrix units also interact with out-of-order scheduling. A long, multi-cycle tile operation occupies execution resources and creates accumulator dependencies; a wide scalar ROB does not create independent tile work if the microkernel uses one accumulator chain. Conversely, exposing many tile operations can pressure issue queues and load buffers. The compiler/kernel and microarchitecture must be evaluated as one schedule.
+
 ## 6. SMT: replicate identity, share expensive machinery
 
 An SMT context needs its own architectural PC/register state, privilege state, rename map or map identity, interrupt state, and predictor-history context. The core may share fetch/decode bandwidth, physical registers, ROB entries, issue queues, execution units, load/store queues, TLBs, and caches.
@@ -143,13 +173,14 @@ flowchart LR
     EU --> Commit["Per-thread in-order commit"]
 ```
 
-SMT throughput benefit follows complementarity. If one thread alone uses fraction $u_j$ of resource $j$, a second thread can fill idle capacity only where its demand does not collide. A crude upper bound for two identical threads is
+SMT throughput benefit follows complementarity. Let $C_j$ be the available capacity of resource $j$ per cycle, let $d_{0,j}$ and $d_{1,j}$ be the two threads' demand for that resource when each runs at its own single-thread unit throughput, and let $x$ be the equal throughput scale achieved by each thread while co-running. Then
 
 $$
-S_{SMT}\le\min_j\frac{C_j}{d_{0,j}+d_{1,j}},
+x\le\min_j\frac{C_j}{d_{0,j}+d_{1,j}},\qquad
+S_{SMT,aggregate}\le\min(2,2x).
 $$
 
-interpreted across fetch, rename, issue, execution ports, memory bandwidth, and queue occupancy. Two memory-bound threads can reduce single-thread performance without increasing total work much.
+The aggregate speedup is normalized to one thread's unit throughput, so two complementary half-capacity threads can reach $x=1$ and aggregate speedup two. Apply the bound across fetch, rename, issue, execution ports, memory bandwidth, and queue occupancy. It remains crude because demand changes with cache behavior and co-run interference. Two memory-bound threads can reduce single-thread performance without increasing total work much.
 
 ### 6.1 Sharing policies
 
@@ -164,7 +195,7 @@ ROB/LSQ/physical-register occupancy must be controlled together. Capping only RO
 
 ## 7. Frontend and predictor implications of SMT
 
-Fetch policies include round-robin, ICOUNT (favor the thread with fewer in-flight instructions), stall-based selection, and QoS priority. Predictor state may be shared with thread tags, partitioned, or indexed using history containing thread identity. Sharing improves capacity but creates destructive interference and security channels.
+Fetch policies include round-robin, instruction-count scheduling (ICOUNT, favor the thread with fewer in-flight instructions), stall-based selection, and QoS priority. Predictor state may be shared with thread tags, partitioned, or indexed using history containing thread identity. Sharing improves capacity but creates destructive interference and security channels.
 
 The instruction cache can hold both working sets while the ITLB, BTB, and return stack thrash. Therefore measure frontend structures separately; “SMT slows the cache” may actually be BTB or ITLB contention.
 
@@ -174,11 +205,11 @@ At retirement, each thread must preserve in-order architectural state, but aggre
 
 | Question | Vector/SIMD | SMT |
 |---|---|---|
-| software requirement | data-parallel loop | independent threads |
-| replicated state | lanes/datapaths, vector RF capacity | architectural contexts, maps/history |
+| software requirement | data-parallel loop or tiled matrix | independent threads |
+| replicated state | lanes/datapaths, vector or tile RF capacity | architectural contexts, maps/history |
 | amortized control | high | low; each thread has own stream |
 | latency tolerance | long vector operations and memory overlap | switch issue among threads |
-| main bottleneck | operand/memory bandwidth and masks | shared-structure contention |
+| main bottleneck | operand/memory bandwidth, masks, packing, and tile fill | shared-structure contention |
 | determinism | relatively predictable for regular loops | workload-pair dependent |
 | security/isolation | lane data separation | shared predictors/caches create channels |
 
@@ -190,6 +221,7 @@ The mechanisms are complementary. A server may use SMT to fill scalar bubbles an
 - Tail and mask **undisturbed** policies may require preserving old destination elements.
 - Vector peak is lane count × pipelines/lane × operations/result × frequency; utilization factors multiply it down.
 - Register-file and bypass bandwidth often dominate vector-core energy and routing.
+- Matrix/tile peak is useful only when packed tile loads and independent accumulators keep the matrix pipeline occupied.
 - SMT replicates architectural identity but shares expensive execution and memory structures.
 - SMT throughput gains are workload-pair dependent; isolation needs coordinated queue/cache/bandwidth controls.
 
@@ -219,10 +251,15 @@ At 2 GHz that is 1 TB/s of on-core operand traffic, showing why lane-local banki
 
 A 256-entry ROB gives thread 0 a cap of 192 and thread 1 a guaranteed minimum of 64. If thread 0 stalls at 120 entries, thread 1 may borrow the remainder under an elastic policy. A static 192/64 partition would strand 72 entries; a fully shared policy could let thread 0 starve thread 1. The threshold policy trades utilization for a bounded minimum.
 
+### Problem 4 — matrix tile supply
+
+A tile operation performs 32,768 operations and can start every 16 cycles, giving a compute roof of 2,048 operations/cycle. Its two operand tiles total 2 KiB, and the L1 path sustainably supplies 96 B/cycle to this kernel. Operand supply takes at least $2048/96\approx21.3$ cycles, so this schedule is load-bound before considering conflicts or the epilogue. Reusing one operand tile across two output tiles reduces new operand bytes and may move the active roof.
+
 ## Cross-references
 
 - **Scalar core:** [CPU Architecture](01_CPU_Architecture.md), [Out-of-Order Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md), [Fetch, Decode, and µop Delivery](../02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md).
 - **Vector contract:** [RISC-V ISA](02_RISC_V_ISA.md) §6 and the official RISC-V V specification.
+- **AI operator mapping:** [AI Operators on CPU Microarchitecture](../09_AI_Workloads_and_Serving/02_AI_Operators_on_CPU_Microarchitecture.md) follows dense, sparse, attention, and quantized kernels through vector and tile execution.
 - **Throughput relatives:** [GPU Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md), [SIMT Scheduling and Occupancy](../../02_GPU_Architecture/01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md), [Systolic, Spatial, and Vector Dataflows](../../03_NPU_Architecture/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md).
 
 ## References
@@ -232,6 +269,8 @@ A 256-entry ROB gives thread 0 a cap of 192 and thread 1 a guaranteed minimum of
 3. D. Tullsen, S. Eggers, and H. Levy, “Simultaneous Multithreading: Maximizing On-Chip Parallelism,” ISCA 1995.
 4. J. Smith and G. Sohi, “The Microarchitecture of Superscalar Processors,” *Proceedings of the IEEE*, 1995.
 5. Intel, *64 and IA-32 Architectures Optimization Reference Manual*.
+6. Intel, [Advanced Matrix Extensions architectural overview and intrinsic example](https://www.intel.com/content/www/us/en/developer/articles/code-sample/advanced-matrix-extensions-intrinsics-functions.html).
+7. Arm, [A-profile architecture and SME documentation](https://developer.arm.com/Architectures/A-Profile%20Architecture).
 
 ---
 

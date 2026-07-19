@@ -172,6 +172,8 @@ Preserve framework/exported/optimized graph hashes, weights/input, node and cove
 - [Accelerator and NPU Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md) compares SCALE-Sim, Timeloop, Accelergy, MAESTRO, ONNXim, and operator-level models.
 - [Tensor Tiling and Data Movement](../02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md) explains mapping legality.
 - [NPU PPA and Physical Implementation](02_NPU_PPA_and_Physical_Implementation.md) prices the generated accesses and structures.
+- [End-to-End AI Inference and Serving](../05_AI_Workloads_and_Serving/02_End_to_End_AI_Inference_and_Serving_on_NPUs.md) defines the host, queue, KV, collective, network, and tail-SLO work that must surround a device/graph model before it can make serving claims.
+- [Performance, Compiler, Profiling, and Research Methodology](../05_AI_Workloads_and_Serving/03_Performance_Compiler_Profiling_and_Research_Methodology.md) supplies the counter/trace lineage, model composition, residual analysis, and experimental controls used to validate simulator claims.
 
 ## References
 

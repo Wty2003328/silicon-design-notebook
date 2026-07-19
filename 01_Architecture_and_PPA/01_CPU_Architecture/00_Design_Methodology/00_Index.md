@@ -19,7 +19,7 @@
 2. [CPU PPA and Physical Implementation](02_CPU_PPA_and_Physical_Implementation.md) — translate predictors, windows, register files, caches, and clock targets into power, timing, and area consequences.
 3. [CPU Simulation Methodology and Evidence](03_CPU_Simulation_Methodology_and_Evidence.md) — follow source and input through an executable, dynamic instructions, timing events, raw counters, validation, and final results.
 
-Then continue to [Core Foundations](../01_Core_Foundations/00_Index.md). Later chapters return to these methods when making a specific frontend, backend, cache, translation, coherence, or simulation decision.
+Then continue to [Core Foundations](../01_Core_Foundations/00_Index.md). [AI Workloads and Serving](../09_AI_Workloads_and_Serving/00_Index.md) later applies the same workload, evidence, and physical-resource discipline to model loading, tensor operators, retrieval, and latency-constrained services. Other chapters return to these methods when making a specific frontend, backend, cache, translation, coherence, or simulation decision.
 
 ---
 

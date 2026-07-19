@@ -21,6 +21,8 @@
 1. Read the GPU-specific [CUDA-to-Results Workflow](../00_Design_Methodology/03_GPU_Simulation_Methodology_and_Evidence.md).
 2. [GPU Simulators](01_GPU_Simulators.md) — CUDA source → PTX/cubin/SASS → grid/warps or NVBit trace → timing events → validation and statistics in GPGPU-Sim/Accel-Sim.
 
+For service-level studies, connect kernel timing to the request, batching, KV-capacity, and SLO methodology in [GPU AI Performance Analysis and Research Methods](../05_AI_Workloads_and_Serving/03_GPU_AI_Performance_Analysis_and_Research_Methods.md).
+
 **Prerequisite:** [GPU Simulation Methodology and Evidence](../00_Design_Methodology/03_GPU_Simulation_Methodology_and_Evidence.md).
 
 ---

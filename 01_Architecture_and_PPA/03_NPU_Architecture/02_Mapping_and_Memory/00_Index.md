@@ -21,7 +21,7 @@
 2. [Sparsity, Quantization, and Compression](02_Sparsity_Quantization_and_Compression.md).
 3. [Decoupled Access–Execute](03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md) — descriptor DMA, multidimensional addressing, scratchpad lifetime, event scoreboards, translation, and coarse out-of-order scheduling.
 
-**Hands off to:** [System Integration](../03_System_Integration/00_Index.md).
+**Hands off to:** [System Integration](../03_System_Integration/00_Index.md), then [AI Workloads and Serving](../05_AI_Workloads_and_Serving/00_Index.md) for graph compilation, request scheduling, and end-to-end performance attribution.
 
 ---
 

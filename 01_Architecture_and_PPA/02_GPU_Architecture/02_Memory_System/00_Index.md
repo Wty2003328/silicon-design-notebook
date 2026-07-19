@@ -19,7 +19,7 @@
 1. [Coalescing, Caches, and Shared Memory](01_Coalescing_Caches_and_Shared_Memory.md).
 2. [HBM and Advanced Memory Systems](02_HBM_and_Advanced_Memory_Systems.md).
 
-**Hands off to:** [GPU Scale-Up](../03_Scale_Up/00_Index.md).
+**Hands off to:** [GPU Scale-Up](../03_Scale_Up/00_Index.md) and [AI Workloads and Serving](../05_AI_Workloads_and_Serving/00_Index.md), where HBM traffic becomes weight, activation, and KV-cache limits.
 
 ---
 

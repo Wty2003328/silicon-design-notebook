@@ -1,0 +1,175 @@
+# Research-Depth and Evidence Standard
+
+This notebook serves two readers at once:
+
+1. a first-time reader who needs every unfamiliar concept and abbreviation introduced before it is used; and
+2. a research or advanced engineering candidate who must derive performance, challenge assumptions, design experiments, and defend conclusions with evidence.
+
+“Detailed” therefore does not mean accumulating product facts. A research-depth page must connect:
+
+$$
+\text{workload} \rightarrow \text{hardware mechanism} \rightarrow
+\text{theoretical model} \rightarrow \text{observable evidence} \rightarrow
+\text{validated conclusion and trade-off}.
+$$
+
+---
+
+## 1. Required layers of a substantive technical chapter
+
+### 1.1 Orientation and vocabulary
+
+- State why the topic exists and what problem it solves.
+- Define every abbreviation and specialized term at first occurrence.
+- Distinguish nearby concepts that beginners commonly confuse.
+- State prerequisites and ownership boundaries so the reader knows what is assumed and what is deferred.
+
+### 1.2 Contract and abstraction boundary
+
+Name inputs, outputs, state, invariants, timing/ordering assumptions, failure behavior, and what the model deliberately omits. For a simulator, state which artifacts enter and how they become events. For a protocol, state what each endpoint may assume. For a microarchitecture, state the architectural behavior that must remain unchanged.
+
+### 1.3 Mechanism in causal order
+
+Explain what happens cycle by cycle, transaction by transaction, or stage by stage. Do not replace causality with a feature list. A strong mechanism section answers:
+
+- what creates an event;
+- where it waits and why;
+- what resource serves it;
+- what state changes;
+- how completion or failure is observed;
+- what downstream work becomes enabled.
+
+### 1.4 Theory and assumptions
+
+Derive the governing model and define every symbol, unit, and assumption. Include lower/upper bounds, limiting cases, and where the approximation fails. Useful models include throughput/latency laws, occupancy, roofline, queueing, working-set/capacity, communication, reliability, energy, and area/timing scaling.
+
+An equation without assumptions is not a theory section. A number substituted into an unexplained formula is not a derivation.
+
+### 1.5 Implementation consequences
+
+Connect the abstract mechanism to queues, arrays, pipelines, state machines, networks, memories, clocks, physical placement, software/runtime policy, and verification. Explain why an apparently attractive technique costs area, energy, timing margin, complexity, or generality.
+
+### 1.6 Measurement and simulation
+
+For every important conclusion, identify:
+
+- the metric and exact timestamp or counting boundary;
+- the counter, trace, waveform, or simulator output that observes it;
+- how raw events are aggregated into the reported result;
+- calibration and validation against a stronger model or real system;
+- sources of uncertainty, bias, and sampling error.
+
+### 1.7 Worked reasoning
+
+Include at least one worked example that changes a design decision. It should expose units, intermediate values, bottleneck classification, and sensitivity—not only the final answer.
+
+### 1.8 Failure modes and research questions
+
+State when the mechanism loses, what invalidates the model, how an implementation fails, and which questions remain open. Research preparation requires understanding the boundary of current knowledge, not just the accepted design.
+
+---
+
+## 2. Claim and source discipline
+
+Classify claims mentally before writing:
+
+| Claim type | Example | Evidence expectation |
+|---|---|---|
+| physical/theoretical | dynamic energy scales with switched capacitance and voltage squared | textbook or foundational paper plus derivation |
+| standard/protocol | legal transaction, command, timing, or state | current official standard/specification |
+| implementation | a named design uses a structure | official architecture guide, paper, code, or measured reverse engineering |
+| measured result | speedup, latency, bandwidth, power | reproducible experiment with workload/system/configuration |
+| projection/roadmap | future product capability or adoption | dated primary announcement, clearly labeled as projected |
+| inference | mechanism likely causes an observed result | explicit reasoning and alternative explanations |
+
+Source preference:
+
+1. standards and official specifications;
+2. peer-reviewed or clearly identified research papers;
+3. maintained source code and official technical documentation;
+4. vendor architecture/programming guides;
+5. reproducible measurements and public datasets;
+6. secondary summaries only for orientation or to locate primary evidence.
+
+Time-sensitive product, software, roadmap, and market claims must be dated and rechecked. Never convert an announcement into a shipping fact, a theoretical peak into delivered performance, or a vendor benchmark into a universal result.
+
+---
+
+## 3. Performance-result contract
+
+Every performance number must state enough context to reproduce its meaning:
+
+- workload/model, input distribution, precision, quality/accuracy target;
+- hardware topology and relevant clocks/power mode;
+- software, compiler, runtime, driver, and important configuration;
+- batch/concurrency/parallelism and memory placement;
+- metric definition and included/excluded stages;
+- warm-up, run duration, repetitions, percentile/confidence treatment;
+- baseline and whether it was tuned comparably;
+- limiting resource and evidence supporting that classification.
+
+Do not compare results if their quality, scope, workload, or metric boundary differs without explaining the normalization.
+
+---
+
+## 4. Simulator-result contract
+
+A simulator chapter must trace:
+
+1. source workload and inputs;
+2. compiler/graph transformation and executable artifact;
+3. loader/runtime initialization;
+4. dynamic instructions, operators, memory requests, packets, or events;
+5. timing/resource-contention model;
+6. warm-up, sampling, and region-of-interest policy;
+7. raw counters/events;
+8. formulas and aggregation into final metrics;
+9. calibration/validation targets;
+10. error budget and model-validity boundary.
+
+Trace-driven replay must state which feedback is broken. Analytical models must state which distributions or correlations they discard. Cycle accuracy is not automatic correctness; a detailed model with wrong inputs is still wrong.
+
+---
+
+## 5. Cross-layer AI-workload requirement
+
+AI coverage in each architecture book must be architecture-specific:
+
+- **CPU:** preprocessing, retrieval, orchestration, vector/matrix kernels, memory/NUMA behavior, accelerator feeding, and CPU-only inference.
+- **GPU:** graph/runtime-to-kernel lowering, SIMT/tensor execution, HBM/KV behavior, batching, prefill/decode, multi-GPU communication, and profiler evidence.
+- **NPU:** graph compilation, tiling/dataflow/scratchpad/DMA scheduling, precision/sparsity, dynamic/fallback behavior, serving queues, and multi-NPU execution.
+- **SoC/chiplet:** complete request/data path across CPU, accelerator, memory, NoC, chiplet links, storage, NIC, and scale-out network, including SLO/tail/failure behavior.
+
+Coverage must include both operator mapping and the complete serving or application path. A peak-TOPS/FLOPS comparison is insufficient.
+
+---
+
+## 6. Review rubric
+
+Score each dimension from 0 to 3:
+
+| Dimension | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| newcomer accessibility | unexplained jargon | partial glossary | definitions and prerequisites | concepts built progressively with contrasts/examples |
+| mechanism | feature list | qualitative sketch | causal stages and state | cycle/event detail with invariants/failures |
+| theory | absent | formula quoted | derived model with assumptions | bounds, sensitivity, limiting cases, failure region |
+| implementation | absent | components named | concrete structures/flow | PPA/timing/software/verification trade-offs |
+| evidence | unsupported | references only | counters/experiments identified | reproducible chain, validation, uncertainty |
+| worked reasoning | absent | toy arithmetic | decision-relevant example | multiple regimes/sensitivity and interpretation |
+| research readiness | summary only | common questions | open problems/trade-offs | hypotheses, experimental design, generalization limits |
+
+A substantive research-preparation chapter should reach at least level 2 in every dimension and level 3 in the dimensions central to its purpose.
+
+---
+
+## 7. Audit workflow
+
+1. Inventory pages, ownership, cross-links, and prerequisites.
+2. Identify missing mechanisms, theory, evidence, and first-use definitions.
+3. Compare coverage against representative curricula, standards, seminal papers, current primary documentation, and research questions.
+4. Expand the architecture-owned page rather than creating detached generic material.
+5. Add or update worked derivations, failure modes, counters, simulator paths, and references.
+6. Validate links, anchors, fences, terminology, counts, and stale paths.
+7. Record remaining gaps instead of hiding uncertainty.
+
+This standard is a living review contract. It applies to architecture, RTL, verification, synthesis, backend, signoff, manufacturing, bring-up, and interview material.

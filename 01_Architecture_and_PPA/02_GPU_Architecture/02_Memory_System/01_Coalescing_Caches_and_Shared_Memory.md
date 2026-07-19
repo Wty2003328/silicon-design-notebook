@@ -225,6 +225,7 @@ This is device-wide; coalescing, warp eligibility, MSHRs, network credits, and H
 - **Core scheduling:** [GPU Architecture](../01_Core_Architecture/01_GPU_Architecture.md), [SIMT Scheduling and Occupancy](../01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md).
 - **Memory foundations:** [Cache Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [HBM](02_HBM_and_Advanced_Memory_Systems.md), [Page Walkers and IOMMUs](../../01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md).
 - **Simulation/scale:** [GPU Simulators](../04_Simulation/01_GPU_Simulators.md), [Multi-GPU Interconnect and Execution](../03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md).
+- **AI use:** [AI Workload and Operator Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Operator_Mapping.md) applies coalescing, tiling, paging, and cache reuse to weights, attention, KV state, quantization, and MoE.
 
 ## References
 

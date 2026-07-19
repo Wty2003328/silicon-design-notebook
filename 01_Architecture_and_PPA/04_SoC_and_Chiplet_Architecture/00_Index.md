@@ -7,6 +7,8 @@
 A system on chip composes CPU, GPU, NPU, memory controllers, peripherals, and shared communication into one product. A chiplet design extends that composition across multiple silicon dies in one package. This book owns the structures whose behavior is defined by multiple agents rather than one processor family.
 
 > **First-time reader:** Read [SoC and Chiplet Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_SoC_Chiplet_Workloads_Performance_and_DSE.md), then at least one compute-architecture overview. A bus, network, or memory controller only makes sense once you know what requests its endpoints generate.
+>
+> **AI-serving path:** after one compute architecture, read [AI Workloads and Serving](07_AI_Workloads_and_Serving/00_Index.md) to trace model provisioning and one request across CPU, accelerator, HBM/DDR, NoC, chiplet links, NIC, and storage, then derive TTFT, TPOT, goodput, communication, capacity, and tail-latency bounds.
 
 ~~~mermaid
 flowchart LR
@@ -32,6 +34,7 @@ flowchart LR
 | 4 | [On-Chip Networks](04_On_Chip_Networks/00_Index.md) | 2 | topology, routers, routing, flow control, deadlock/liveness |
 | 5 | [I/O and Chiplets](05_IO_and_Chiplets/00_Index.md) | 2 | end-to-end QoS/order, device visibility, CXL/UCIe partitioning |
 | 6 | [SoC Memory Simulation](06_Simulation/00_Index.md) | 1 | executable DRAM timing, scheduling, and power models |
+| 7 | [AI Workloads and Serving](07_AI_Workloads_and_Serving/00_Index.md) | 3 | end-to-end inference path, workload-to-memory/NoC/chiplet mapping, SLO-constrained performance research |
 
 ## Ownership boundary
 

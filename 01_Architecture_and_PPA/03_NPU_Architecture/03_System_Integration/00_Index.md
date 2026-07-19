@@ -19,7 +19,7 @@
 
 1. [Host Interface, Memory Visibility, and Scheduling](01_Host_Interface_Memory_Visibility_and_Scheduling.md) — how the NPU participates as a client without relocating CPU coherence protocol design into this book.
 
-**Hands off to:** drivers, runtimes, firmware, register-transfer level command processors, and verification.
+**Hands off to:** [End-to-End AI Inference and Serving on NPUs](../05_AI_Workloads_and_Serving/02_End_to_End_AI_Inference_and_Serving_on_NPUs.md) for model loading, admission, batching, KV lifetime, prefill/decode, collectives, disaggregation, tail latency, and the way serving software uses these mechanisms; then to drivers, runtimes, firmware, register-transfer level command processors, and verification.
 
 ---
 

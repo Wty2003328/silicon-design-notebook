@@ -23,7 +23,7 @@
 3. [Transformer and Attention Engines](03_Transformer_and_Attention_Engine_Microarchitecture.md) — prefill/decode shapes, online softmax, KV cache, heterogeneous engines, and token scheduling.
 4. [Dynamic Sparsity, MoE, and Irregular Execution](04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md) — metadata decode, matching, load balance, token routing, expert queues, and dense fallback.
 
-**Hands off to:** [Mapping and Memory](../02_Mapping_and_Memory/00_Index.md).
+**Hands off to:** [Mapping and Memory](../02_Mapping_and_Memory/00_Index.md), then [AI Workload and Graph Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Graph_Mapping_to_NPUs.md) for complete model/operator coverage and compiler lowering.
 
 ---
 

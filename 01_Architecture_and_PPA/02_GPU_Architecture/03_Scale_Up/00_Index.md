@@ -16,6 +16,8 @@
 
 1. [Multi-GPU Interconnect and Execution](01_Multi_GPU_Interconnect_and_Execution.md) — links, rings/trees, placement, remote memory, failures, counters.
 
+**Hands off to:** [AI Workloads and Serving](../05_AI_Workloads_and_Serving/00_Index.md) for tensor/expert parallelism, MoE all-to-all, KV transfer, and disaggregated inference.
+
 ---
 
 [GPU Architecture](../00_Index.md) · [Architecture book](../../00_Index.md)

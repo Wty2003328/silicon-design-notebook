@@ -234,6 +234,8 @@ Counters should separate TMA queue full, barrier wait, tensor queue full, SMEM b
 
 - [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md) explains the scoreboard and RF underneath these mechanisms.
 - [GPU Memory System](../02_Memory_System/00_Index.md) follows TMA and DSM traffic through caches and high-bandwidth memory.
+- [AI Workload and Operator Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Operator_Mapping.md) shows how GEMM and attention kernels use producer/consumer warps, asynchronous tiles, and matrix pipelines.
+- [End-to-End GPU AI Inference and Serving](../05_AI_Workloads_and_Serving/02_End_to_End_GPU_AI_Inference_and_Serving.md) connects persistent execution and dynamic work queues to continuous batching and MoE serving.
 - [NPU Transformer and Attention Engines](../../03_NPU_Architecture/01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md) shows how similar producer–consumer pipelines appear in dedicated accelerators.
 - [NPU Decoupled Access–Execute](../../03_NPU_Architecture/02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md) generalizes descriptors, scratchpad phases, and event tokens.
 

@@ -251,6 +251,8 @@ Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way, ignorin
 
 ## Cross-references
 
+- [AI Workload and Operator Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Operator_Mapping.md) derives weight, activation, and KV traffic; [End-to-End GPU AI Inference and Serving](../05_AI_Workloads_and_Serving/02_End_to_End_GPU_AI_Inference_and_Serving.md) turns HBM capacity/bandwidth into admission, batching, and TPOT constraints.
+
 - **DRAM mechanics:** [DDR Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md), [Memory Arrays and Technologies](../00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md).
 - **Consumers:** [GPU Memory System](01_Coalescing_Caches_and_Shared_Memory.md), [Tensor Tiling and Data Movement](../../03_NPU_Architecture/02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md).
 - **Package/fabric:** [Chiplets, CXL, and Die-to-Die](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md), [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).

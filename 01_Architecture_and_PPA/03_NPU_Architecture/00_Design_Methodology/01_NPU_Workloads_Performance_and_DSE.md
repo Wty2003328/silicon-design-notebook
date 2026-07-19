@@ -229,6 +229,8 @@ For $M=128$, the larger array uses one wave while the smaller needs two, so it c
 - [NPU Accelerators](../01_Compute_Dataflows/01_NPU_Accelerators.md) and [Systolic, Spatial, and Vector Dataflows](../01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md).
 - [Tensor Tiling and Data Movement](../02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md).
 - [Dynamic Sparsity and MoE](../01_Compute_Dataflows/04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md).
+- [AI Workload and Graph Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Graph_Mapping_to_NPUs.md) follows real model artifacts through compiler lowering, fusion, tiling, sharding, and fallbacks.
+- [Performance, Compiler, Profiling, and Research Methodology](../05_AI_Workloads_and_Serving/03_Performance_Compiler_Profiling_and_Research_Methodology.md) turns these bounds into a traceable counter/simulator/experiment workflow.
 
 ## References
 

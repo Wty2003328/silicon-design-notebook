@@ -21,6 +21,8 @@
 
 Then continue to [Compute Dataflows](../01_Compute_Dataflows/00_Index.md).
 
+After the mechanism chapters, use [AI Workloads and Serving](../05_AI_Workloads_and_Serving/00_Index.md) to connect the model compiler, deployment path, online scheduler, multi-NPU system, profiling evidence, and research methodology.
+
 ---
 
 ← [NPU book index](../00_Index.md) · next → [NPU Workloads, Performance Modeling, and DSE](01_NPU_Workloads_Performance_and_DSE.md)

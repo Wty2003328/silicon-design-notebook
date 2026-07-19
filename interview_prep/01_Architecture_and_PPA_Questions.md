@@ -6,10 +6,10 @@ Consolidated interview questions, answers, and worked problems from every page i
 
 | Book | Interview scope |
 |---|---|
-| [Central processing unit (CPU) architecture](../01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md) | CPU workload characterization, design-space exploration, physical/PPA analysis, source-to-instruction simulation, pipeline, prediction, out-of-order execution, cache hierarchy, virtual memory, coherence, and consistency |
-| [Graphics processing unit (GPU) architecture](../01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md) | GPU kernel modeling, occupancy/roofline analysis, register-file and memory PPA, CUDA-to-warp simulation, single instruction, multiple threads execution, coalescing, high-bandwidth memory, and scale-up |
-| [Neural processing unit (NPU) architecture](../01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md) | model-graph workloads, mapping exploration, array/scratchpad PPA, graph-to-cycle simulation, spatial dataflows, tiling, data movement, numeric compression, and host integration |
-| [System-on-chip (SoC) and chiplet architecture](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md) | concurrent use-case modeling, chip/package PPA, system simulation, full-chip composition, shared memory, transaction protocols, on-chip networks, service policy, input/output, and die-to-die links |
+| [Central processing unit (CPU) architecture](../01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md) | CPU workload characterization, design-space exploration, physical/PPA analysis, source-to-instruction simulation, pipeline, speculation/out-of-order execution, vector/matrix units, cache/virtual memory/coherence, and CPU/heterogeneous AI serving |
+| [Graphics processing unit (GPU) architecture](../01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md) | GPU kernel modeling, occupancy/roofline analysis, register-file and memory PPA, CUDA-to-warp simulation, SIMT/matrix execution, coalescing/HBM, scale-up, AI operator mapping, and end-to-end serving |
+| [Neural processing unit (NPU) architecture](../01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md) | model-graph/compiler mapping, array/scratchpad PPA, graph-to-cycle simulation, spatial dataflows, tiling, sparsity/quantization, host integration, complete AI serving, and performance research methodology |
+| [System-on-chip (SoC) and chiplet architecture](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md) | concurrent use-case modeling, chip/package PPA, full-chip simulation, memory/NoC/I/O/chiplet composition, heterogeneous AI serving, goodput/queueing, and cross-device evidence |
 
 ## Start here — foundational architecture questions
 
@@ -2197,3 +2197,83 @@ instructions and cycles. Calculate each benchmark's speedup from equivalent work
 and use the geometric mean for a suite of ratios, while retaining per-benchmark
 results and confidence intervals. Warm-up bias is systematic and is not removed
 by more samples.
+
+---
+
+## AI Workloads on CPU, GPU, NPU, and SoC — Research-Position Questions
+
+#### Q33: Trace one LLM request from arrival to the final token and name the architecture owner of each stage.
+
+*From [SoC AI Workloads and Serving](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/07_AI_Workloads_and_Serving/00_Index.md)*
+
+**Answer:** The CPU/network path terminates the request, validates it, tokenizes or preprocesses it, performs retrieval/orchestration, and enters admission/batch queues. Storage and host I/O load checkpoint shards; IOMMU/DMA/PCIe or another fabric places weights in device memory. The runtime selects an execution plan and submits kernels/collectives. GPU/NPU resources execute prefill, write prompt KV, then execute the recurrent decode loop; HBM and KV allocation persist state. The SoC/fabric owns NoC, memory-controller, chiplet, scale-up, NIC/RDMA, and disaggregated KV transfers. Sampling/detokenization/streaming completes the response. Every arrow is a queue, ownership, translation, or synchronization boundary and needs a timestamp or counter.
+
+#### Q34: Why are prefill and decode different architecture workloads?
+
+**Answer:** Prefill processes many prompt positions in parallel, creating large matrix-matrix shapes with better weight reuse and usually higher arithmetic intensity; it writes the initial KV and mainly determines TTFT. Decode has a time dependency between tokens, so one sequence advances one position per iteration; at small batch it repeatedly streams weights and historical KV with narrow matrix shapes, commonly stressing HBM bandwidth/capacity and TPOT. Batching improves decode reuse but lengthens iterations and consumes KV capacity. Their different shapes, latency metrics, and parallelism motivate chunking or separate resource placement.
+
+#### Q35: Derive KV-cache capacity and explain what the formula leaves out.
+
+**Answer:** For $L$ layers, $H_{kv}$ key/value heads, head dimension $D_h$, element size $s$ bytes, and request lengths $S_r$,
+$$M_{KV}=2LH_{kv}D_hs\sum_rS_r.$$
+The two is key plus value. The formula omits allocator metadata, page/block internal fragmentation, prefix sharing, copy-on-write branches, speculative buffers, alignment, communication/migration copies, runtime/workspace reservations, and safety margin. Grouped-/multi-query attention changes $H_{kv}$; quantization changes $s$ plus scale/metadata and can add decode work.
+
+#### Q36: Why can increasing batch size raise tokens/s while violating the serving objective?
+
+**Answer:** More sequences reuse weights, improve matrix/tensor-unit shapes, and amortize launch/collective latency, raising aggregate tokens/s. But each iteration takes longer, requests wait to form or join batches, KV/workspace grows, and one long or contended item can raise tail latency. Capacity should therefore be reported as goodput under TTFT/TPOT/quality SLOs, not maximum unconstrained throughput. Sweep batch/scheduler policy against a fixed open-loop arrival trace and report latency distributions.
+
+#### Q37: Apply a hierarchical roofline to one attention kernel.
+
+**Answer:** Count useful operations $O$ and bytes $Q_j$ at registers, scratchpad/shared memory, cache, NoC, HBM, and any device fabric. For each level $I_j=O/Q_j$ and
+$$P\le\min(P_{compute},B_1I_1,\ldots,B_nI_n).$$
+Tiling may make HBM intensity high while creating excessive NoC partial-sum or scratchpad-bank traffic. Use delivered bandwidth for the real access pattern and verify predicted bytes against counters. Capacity is checked first: spilling KV/workspace to a lower tier changes which roof exists.
+
+#### Q38: What roles can a CPU play in AI serving, and when is the CPU itself the bottleneck?
+
+**Answer:** Network termination, parsing, tokenization/media preprocessing, retrieval, scheduling, runtime submission, memory management, sampling/detokenization, failure handling, and sometimes vector/matrix inference. It bottlenecks with small/fast models, poor NUMA placement, serial tokenization/sampling, many short kernel launches/completions, allocator/lock contention, page faults, or insufficient PCIe/NIC feeding. Diagnose with correlated host/runtime/device timelines; low accelerator utilization alone does not prove inadequate accelerator work.
+
+#### Q39: How do dense GEMM, decode GEMV, embeddings, and MoE map differently to hardware?
+
+**Answer:** Dense GEMM exposes regular tiles and reuse, favoring tensor/systolic units and scratchpads. Decode GEMV/narrow GEMM has little weight reuse at low batch and often follows HBM bandwidth. Embeddings are data-dependent gathers with random latency, TLB/cache/CXL/DDR pressure, and possible near-memory reduction. MoE adds router work, sparse selected expert GEMMs, skewed capacity, and all-to-all dispatch/return; the hottest expert and network tail matter more than mean utilization.
+
+#### Q40: Derive the ring all-reduce traffic and identify when latency dominates.
+
+**Answer:** A reduce-scatter plus all-gather ring transfers
+$$V=2\frac{N-1}{N}M$$
+bytes per participant for payload $M$, using $2(N-1)$ steps. A first-order time is $T\approx2(N-1)\alpha+\beta V$ plus queue/protocol/contention. Fixed per-step latency $\alpha$ dominates small messages and large $N$; bandwidth term $\beta V$ dominates large payloads. Topology, link duplex, concurrent collectives, and exposed versus overlapped time must be measured.
+
+#### Q41: When does prefill/decode disaggregation improve performance?
+
+**Answer:** It can remove phase interference and independently choose resources and parallelism for TTFT-sensitive prefill and TPOT-sensitive decode. It wins only when saved interference/allocation cost exceeds KV handoff, extra queues, memory, coordination, and failure cost. The KV lower bound is $T_{KV}\ge T_{setup}+L+M_{KV,prompt}/B_{eff}$. Compare SLO goodput curves at realistic load and topology; one unloaded latency does not establish the break-even.
+
+#### Q42: Why is isolation or a fast copy insufficient for KV handoff correctness?
+
+**Answer:** The producer must finish all kernels and collectives, finalize layout/block metadata and a version, establish permissions, and publish completion before the decoder reads. Ownership transfer must define cancellation, retries, failure, and exactly-once reclamation to avoid partial reads, use-after-free, or double-free. This is a distributed-memory consistency protocol; byte-transfer bandwidth is only one component.
+
+#### Q43: How do you determine whether a chiplet boundary is good for an AI workload?
+
+**Answer:** Use tensor lifetime and traffic traces. Compare yield, process specialization, reuse, and portfolio benefits against link energy per bit times crossing bytes, serialization/PHY latency, PHY area/power, package cost, thermal constraints, protocol/clock/error overhead, and verification. Keep high-reuse producer-storage-consumer loops local. Evaluate whether the boundary carries streaming messages, explicit DMA, memory, or coherence semantics; richer semantics simplify sharing but add traffic, state, and ordering.
+
+#### Q44: Give a strong-scaling model for an AI layer and explain the saturation point.
+
+**Answer:**
+$$T(N)\ge T_s+\max\left(\frac{C}{NP_{eff}},T_c(N),T_i(N)\right),$$
+where $T_s$ is serial/host work, $C$ compute, $T_c$ communication, and $T_i$ imbalance. This `max` is the safe resource lower bound when parallel terms may overlap. If a dependency trace proves that $T_{c,exposed}$ and $T_{i,exposed}$ are non-overlapped critical-path penalties, use $T(N)\ge T_s+C/(NP_{eff})+T_{c,exposed}+T_{i,exposed}$. More devices help until the shrinking compute term crosses communication, serial work, or imbalance. Report $E(N)=T(1)/(NT(N))$ for the same workload and SLO, and distinguish strong from weak scaling.
+
+#### Q45: How would you prove that decode is HBM-bound rather than compute-bound?
+
+**Answer:** Derive expected weight/KV/activation bytes and operations for the observed batch/context; place the point below the HBM roof; measure HBM bytes/bandwidth and compute-unit issue/stall counters; show iteration time tracks bytes/effective bandwidth; then run controlled ablations—raise batch/weight reuse, change precision/bytes, vary HBM clock if permitted, or improve cache/KV locality. A causal claim needs model, counters, and an intervention that moves the predicted term.
+
+#### Q46: How should a simulator model continuous batching?
+
+**Answer:** Use a closed-loop discrete-event model when completion times affect future batch membership, KV allocation, admission, or routing. Each request carries lengths, state, and deadline; each iteration selects work from current queues, obtains service time from calibrated shape/phase curves or a device model, updates KV and completions, then triggers the next scheduling decision. Replaying a fixed batch trace across architectures breaks feedback and can preserve batches that the slower or faster architecture would never form.
+
+#### Q47: What makes an AI architecture benchmark research-quality?
+
+**Answer:** Fixed model/workload distributions, precision and quality target; exact hardware/topology/software/runtime configuration; open- versus closed-loop arrivals; scheduler/parallelism/KV settings; metric boundaries and SLO; warm-up/steady-state/cold-start separation; sufficient samples and tail/confidence treatment; tuned fair baseline; per-stage traces/counters; conservation checks; ablations; power/energy scope; and a reproducibility manifest. Peak TOPS or one average latency fails this contract.
+
+#### Q48: Explain why speculative-decoding acceptance rate alone does not predict speedup.
+
+**Answer:** With average accepted proposals $E[A]$, proposal length $k$, draft cost $T_d$, verification cost $T_v(k)$, and ordinary target step $T_t$, an idealized speedup is
+$$S\approx\frac{(E[A]+1)T_t}{T_d+T_v(k)}.$$
+But batching, verification shape efficiency, draft/target placement, extra KV state, rollback, memory bandwidth, scheduler fairness, and rejected work alter all terms. Measure useful accepted tokens per target-equivalent cost under the same SLO and output quality.
