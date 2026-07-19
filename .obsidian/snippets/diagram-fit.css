@@ -10,8 +10,27 @@
 }
 .markdown-rendered .mermaid svg,
 .markdown-source-view .mermaid svg {
+  width: 100% !important;       /* narrow top-to-bottom graphs remain readable */
   max-width: 100% !important;
   height: auto !important;    /* preserve aspect ratio when width is capped */
+}
+
+/* TikZJax / CircuiTikZ: center the generated SVG and cap it at the note width.
+   Authors still control the internal scale; this rule prevents accidental clipping. */
+.markdown-rendered .block-language-tikz,
+.markdown-source-view .block-language-tikz,
+.markdown-rendered .tikzjax,
+.markdown-source-view .tikzjax {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+.markdown-rendered .block-language-tikz svg,
+.markdown-source-view .block-language-tikz svg,
+.markdown-rendered .tikzjax svg,
+.markdown-source-view .tikzjax svg {
+  max-width: 100% !important;
+  height: auto !important;
 }
 
 /* WaveDrom timing diagrams: same treatment */
@@ -29,4 +48,6 @@
 
 /* Give big diagrams a little breathing room */
 .markdown-rendered .mermaid,
-.block-language-wavedrom { margin: 0.4em 0 0.8em; }
+.block-language-wavedrom,
+.block-language-tikz,
+.tikzjax { margin: 0.4em 0 0.8em; }

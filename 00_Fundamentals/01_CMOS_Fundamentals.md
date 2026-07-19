@@ -1,7 +1,7 @@
 # CMOS Fundamentals and Device Physics — Concept-First Deep Dive
 
 ```mermaid
-flowchart LR
+flowchart TD
     MAT["doping + oxide + geometry"] --> MOS["MOS capacitor and transistor"]
     MOS --> IV["I-V regions + threshold + leakage"]
     IV --> INV["CMOS inverter VTC"]
@@ -56,7 +56,7 @@ Pure silicon is **intrinsic**. **Doping** deliberately replaces a tiny fraction 
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[thick]
+\begin{circuitikz}[thick,scale=0.9,transform shape]
   \draw[fill=gray!25] (-1.2,2.2) rectangle (5.2,2.8);
   \node at (2.0,2.5) {conductive gate $G$};
   \draw[fill=blue!12] (-1.2,1.85) rectangle (5.2,2.2);
@@ -154,7 +154,7 @@ The electrical schematic makes the complementary mechanism explicit. The p-chann
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \draw (0,3) node[vcc]{$V_{DD}$}
         (0,2.4) node[pmos,anchor=S](P){}
         (P.S) -- (0,3)
@@ -166,7 +166,7 @@ The electrical schematic makes the complementary mechanism explicit. The p-chann
         (N.G) -- (-1.2,0.6)
         (-1.2,0.6) -- (-1.2,2.4)
         (-1.2,1.5) -- (-2.0,1.5) node[left]{$A$};
-  \draw (Y) -- (1.2,1.5) node[right]{$Y=\overline A$};
+  \draw (Y) -- (1.2,1.5) node[right]{$Y$};
   \draw (0.55,1.5) to[C,l_=$C_L$] (0.55,0) node[ground]{};
 \end{circuitikz}
 \end{document}
@@ -257,7 +257,7 @@ Model the switching device as an effective resistance discharging the load:
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \draw (0,2.4) node[vcc]{$V_{DD}$} to[R,l=$R_p$] (0,1.2) coordinate(UP)
         (UP) -- (1.0,1.2) node[right]{$Y$}
         (1.0,1.2) to[C,l=$C_L$] (1.0,0) node[ground]{};
@@ -489,7 +489,7 @@ At the logic level, the four storage transistors are two cross-coupled CMOS inve
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[not port] (IL) at (0,1.5) {};
   \node[not port,xscale=-1] (IR) at (4,1.5) {};
   \draw (IL.out) -- (2.0,1.5) coordinate(Q) -- (IR.in);

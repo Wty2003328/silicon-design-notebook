@@ -1,15 +1,26 @@
 # Floating Point — The Range/Precision Trade and Its Hardware
 
-```mermaid
-flowchart LR
-    IN["encoded operands"] --> UN["unpack sign / exponent / significand"]
-    UN --> SPEC["classify zero / subnormal / inf / NaN"]
-    SPEC --> ALIGN["compare exponents + align"]
-    ALIGN --> OP["add / multiply / fused operation"]
-    OP --> NORM["normalize + leading-zero detect"]
-    NORM --> RND["guard / round / sticky + rounding mode"]
-    RND --> EX["exception flags + overflow/underflow"]
-    EX --> PACK["pack result format"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.78,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.05cm,align=center}}
+  \node[blk] (UN) at (1.5,1.5) {unpack sign / exponent\\and significand};
+  \node[blk] (SP) at (5.0,1.5) {classify zero / subnormal\\infinity / NaN};
+  \node[blk] (AL) at (8.5,1.5) {compare exponents\\and align};
+  \draw[->] (-1.0,1.5) node[left]{encoded operands} -- (UN);
+  \draw[->] (UN) -- (SP); \draw[->] (SP) -- (AL);
+  \draw[->] (AL) -- ++(1.4,0) node[right,align=left]{continued below:\\aligned operands};
+
+  \node[blk] (OP) at (1.5,-1.6) {add / multiply /\\fused operation};
+  \node[blk] (NO) at (5.0,-1.6) {normalize +\\leading-zero detect};
+  \node[blk] (RN) at (8.5,-1.6) {GRS + rounding\\mode};
+  \node[blk] (PK) at (12.0,-1.6) {flags, overflow /\\underflow, pack};
+  \draw[->] (-1.0,-1.6) node[left,align=right]{from alignment\\above} -- (OP);
+  \draw[->] (OP) -- (NO); \draw[->] (NO) -- (RN); \draw[->] (RN) -- (PK);
+  \draw[->] (PK) -- ++(1.0,0) node[right]{encoded result};
+\end{circuitikz}
+\end{document}
 ```
 
 > **Prerequisites:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (the mantissa $p\times p$ multiplier, the final CPA, and the SRT/Goldschmidt recurrences this page reuses), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (barrel shifter, leading-zero count, priority encoder), [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the area→energy argument behind §6).
@@ -30,7 +41,7 @@ This page derives IEEE-754 and the modern AI formats (TF32, FP16, BF16, FP8, MXF
 ### 0.1 The mechanism evolves by repairing one failure at a time
 
 ```mermaid
-flowchart LR
+flowchart TD
     FX["fixed point: uniform spacing"] -->|"cannot cover tiny and huge values with one short word"| EX["sign × significand × 2^exponent"]
     EX -->|"normalized leading 1 is redundant"| HB["hidden leading bit"]
     HB -->|"hard gap between minimum normal and zero"| SUB["subnormals / gradual underflow"]
@@ -297,22 +308,23 @@ The concrete adder pipeline is therefore a composition of hardware already deriv
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[>=latex,thick]
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
   \tikzset{fpblock/.style={draw,rounded corners,minimum width=2.15cm,minimum height=1.05cm,align=center}}
-  \node[fpblock] (un) at (0,0) {classify\\and unpack};
-  \node[fpblock] (cmp) at (3.0,0) {exponent\\compare};
-  \node[fpblock] (shr) at (6.0,0) {right barrel\\shift + sticky};
-  \node[fpblock] (add) at (9.0,0) {add/subtract\\significands};
-  \node[fpblock] (lzd) at (12.0,0) {leading-zero\\detect + shift};
-  \node[fpblock] (rnd) at (15.0,0) {GRS decision\\+ increment};
-  \node[fpblock] (pack) at (18.0,0) {flags\\and pack};
+  \node[fpblock] (un) at (0,1.5) {classify\\and unpack};
+  \node[fpblock] (cmp) at (3.0,1.5) {exponent\\compare};
+  \node[fpblock] (shr) at (6.0,1.5) {right barrel\\shift + sticky};
+  \node[fpblock] (add) at (9.0,1.5) {add/subtract\\significands};
+  \node[fpblock] (lzd) at (0,-1.5) {leading-zero\\detect + shift};
+  \node[fpblock] (rnd) at (3.0,-1.5) {GRS decision\\+ increment};
+  \node[fpblock] (pack) at (6.0,-1.5) {flags\\and pack};
   \draw[->] (un) -- node[above]{fields} (cmp);
   \draw[->] (cmp) -- node[above]{$\Delta e$} (shr);
   \draw[->] (shr) -- node[above]{aligned} (add);
-  \draw[->] (add) -- node[above]{raw sum} (lzd);
+  \draw[->] (add) -- ++(1.1,0) node[right,align=left]{raw sum\\continued below};
+  \draw[->] (-1.1,-1.5) node[left,align=right]{from add\\above} -- (lzd);
   \draw[->] (lzd) -- node[above]{normalized + GRS} (rnd);
   \draw[->] (rnd) -- node[above]{rounded} (pack);
-  \draw[->] (un.south) -- ++(0,-1) -| node[pos=0.25,below]{signs and special-case class} (pack.south);
+  \draw[->] (un.south) -- ++(0,-0.45) -- ++(-1.2,0) -- ++(0,-3.0) -| node[pos=0.25,below]{signs and special-case class} (pack.south);
 \end{circuitikz}
 \end{document}
 ```
@@ -341,7 +353,7 @@ This figure is a **hardware ownership map**, not a promise that each box is exac
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[>=latex,thick]
+\begin{circuitikz}[american,thick,scale=0.8,transform shape]
   \tikzset{fpblock/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.95cm,align=center}}
   \node[fpblock] (mul0) at (0,1.4) {$p\times p$\\multiplier};
   \node[fpblock] (r0) at (3.0,1.4) {normalize\\and round};

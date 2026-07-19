@@ -44,16 +44,31 @@ Every circuit block must:
 6. state what the schematic abstracts away—parasitics, device sizing, body connections, analog slopes, or library-cell internals;
 7. have a text explanation sufficient to retain meaning if a renderer is temporarily unavailable.
 
+### 3.1 Obsidian-safe layout contract
+
+Use one visual grammar across the vault:
+
+- Keep the drawn bounding box at or below **12.5 cm wide** and about **6.5 cm high**. A long pipeline must fold into two rows with a clearly marked continuation instead of shrinking labels or overflowing the note.
+- Start circuit environments with `american, thick, scale=0.9, transform shape` unless a device-level vertical stack needs its natural size.
+- Place ordinary data inputs on the left and outputs on the right. Bring selects, clocks, enables, resets, and wordlines from below; place supplies above and grounds below.
+- Leave at least **1.2 cm** between neighboring gate bodies and at least **0.8 cm** between parallel wires. Feedback may wrap above or below the forward path, but must not cross a label or masquerade as an unconnected wire.
+- Put only the terminal name (`Y`, `Q`, `sum`, `grant`) at a schematic output. Put long Boolean equations in the paragraph or display equation beside the figure, not on a wire that expands the canvas.
+- Use `node[circ]{}` at every functional fan-out or feedback junction. A crossing without a dot is not a connection.
+- Prefer a small repeated-cell drawing plus an ellipsis/bracket over showing dozens of identical cells. The prose must state the replication count and index direction.
+- Use rectangular TikZ blocks only for owned hardware structures such as a decoder, mux stage, register bank, or priority cell. Use CircuiTikZ gate/device symbols wherever the figure claims gate- or transistor-level connectivity.
+
+After changing a figure, inspect it in Obsidian reading view at the normal note width. Reject it if any label overlaps a wire, a complementary mark is ambiguous, the reader must scroll horizontally, or the signal direction reverses without an explicit continuation arrow.
+
 Minimal plugin/render test:
 
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[and port] (g) at (0,0) {};
   \draw (g.in 1) -- ++(-0.8,0) node[left] {$A$};
   \draw (g.in 2) -- ++(-0.8,0) node[left] {$B$};
-  \draw (g.out) -- ++(0.8,0) node[right] {$Y=A\cdot B$};
+  \draw (g.out) -- ++(0.8,0) node[right] {$Y$};
 \end{circuitikz}
 \end{document}
 ```

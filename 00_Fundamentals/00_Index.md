@@ -3,7 +3,7 @@
 This folder builds the smallest mechanisms used everywhere else in the notebook. It does not assume that a term is already familiar: a first occurrence introduces the full name, the contract, and the reason the mechanism exists. Read in numeric order for the complete construction path; follow the focused routes below when returning for one design task.
 
 ```mermaid
-flowchart LR
+flowchart TD
     MOS["MOS transistor controls a conducting path"] --> CMOS["complementary CMOS restores logic levels"]
     CMOS --> GATE["gates compose Boolean functions"]
     GATE --> STATE["feedback + timing stores state"]

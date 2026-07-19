@@ -22,7 +22,7 @@ The goal is that you finish able to reason about *why* a block is built the way 
 Digital structures are easiest to remember when each one is introduced as the repair for a specific failure of the previous one:
 
 ```mermaid
-flowchart LR
+flowchart TD
     F["Boolean function\nno memory"] --> G["gates and cost model"]
     G --> M["multiplexer\nselect one value"]
     M --> D["decoder / encoder\nselect one location"]
@@ -61,15 +61,38 @@ A logic value is an abstraction over a voltage range, not the voltage itself. Ga
 
 **Universal** means that one gate family plus wiring can express every Boolean function. NAND demonstrates the construction:
 
-```mermaid
-flowchart LR
-    A["A"] --> NINV["NAND(A,A)"] --> NOTA["A̅"]
-    A --> NAB["NAND(A,B)"]
-    B["B"] --> NAB
-    NAB --> N2["NAND(X,X)"] --> ANDAB["A·B"]
-    NOTA --> NORBYNAND["NAND(A̅,B̅)"]
-    B --> NB["NAND(B,B)"] --> NORBYNAND
-    NORBYNAND --> ORAB["A+B"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \node[nand port] (NI) at (2.0,2.3) {};
+  \draw (-0.2,2.3) node[left]{$A$} -- (0.4,2.3) node[circ]{} |- (NI.in 1);
+  \draw (0.4,2.3) |- (NI.in 2);
+  \draw (NI.out) -- ++(0.7,0) node[right]{$\overline A$};
+
+  \node[nand port] (NAB) at (2.0,0) {};
+  \node[nand port] (NANDI) at (5.0,0) {};
+  \draw (NAB.in 1) -- ++(-0.8,0) node[left]{$A$};
+  \draw (NAB.in 2) -- ++(-0.8,0) node[left]{$B$};
+  \draw (NAB.out) -- (3.5,0) coordinate (X) node[circ]{};
+  \draw (X) |- (NANDI.in 1); \draw (X) |- (NANDI.in 2);
+  \draw (NANDI.out) -- ++(0.7,0) node[right]{$AB$};
+
+  \node[nand port] (NA) at (1.4,-2.2) {};
+  \node[nand port] (NB) at (1.4,-3.8) {};
+  \node[nand port] (NOR) at (5.0,-3.0) {};
+  \draw (-0.2,-2.2) node[left]{$A$} -- (0.2,-2.2) node[circ]{} |- (NA.in 1);
+  \draw (0.2,-2.2) |- (NA.in 2);
+  \draw (-0.2,-3.8) node[left]{$B$} -- (0.2,-3.8) node[circ]{} |- (NB.in 1);
+  \draw (0.2,-3.8) |- (NB.in 2);
+  \draw (NA.out) -- (NOR.in 1) node[midway,above]{$\overline A$};
+  \draw (NB.out) -- (NOR.in 2) node[midway,below]{$\overline B$};
+  \draw (NOR.out) -- ++(0.7,0) node[right]{$A+B$};
+  \node[align=right] at (-1.5,2.3) {NOT};
+  \node[align=right] at (-1.5,0) {AND};
+  \node[align=right] at (-1.5,-3.0) {OR};
+\end{circuitikz}
+\end{document}
 ```
 
 The last branch is De Morgan's law: $A+B=\overline{\overline A\,\overline B}$. Its dual is $AB=\overline{\overline A+\overline B}$. These transformations matter physically because a sum-of-products expression can become a NAND–NAND network and a product-of-sums expression can become NOR–NOR, changing fan-in, inversion availability, delay, and glitch paths without changing the settled truth table.
@@ -78,19 +101,31 @@ To implement an arbitrary truth table, one mechanical route is **sum of products
 
 For example, $F=AB+\overline A C$ can be read two ways:
 
-```mermaid
-flowchart LR
-    A["A"] --> INV["invert"] --> ABAR["A̅"]
-    A --> P0["AND A·B"]
-    B["B"] --> P0
-    ABAR --> P1["AND A̅·C"]
-    C["C"] --> P1
-    P0 --> OR["OR"]
-    P1 --> OR
-    OR --> F["F"]
-    B -. "D1" .-> MUX["2:1 mux selected by A"]
-    C -. "D0" .-> MUX
-    MUX --> FM["same F"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \node[not port] (I) at (0,1.2) {};
+  \node[and port] (P0) at (2.6,2.0) {};
+  \node[and port] (P1) at (2.6,0) {};
+  \node[or port] (O) at (5.4,1.0) {};
+  \draw (I.in) -- ++(-0.8,0) coordinate (A) node[circ]{} node[left]{$A$};
+  \draw (A) |- (P0.in 1);
+  \draw (I.out) -| (P1.in 1) node[pos=0.25,above]{$\overline A$};
+  \draw (P0.in 2) -- ++(-0.8,0) node[left]{$B$};
+  \draw (P1.in 2) -- ++(-0.8,0) node[left]{$C$};
+  \draw (P0.out) -- (O.in 1); \draw (P1.out) -- (O.in 2);
+  \draw (O.out) -- ++(0.6,0) node[right]{$F$};
+
+  \node[draw,rounded corners,minimum width=1.6cm,minimum height=1.5cm,align=center] (M) at (9.2,1.0) {2:1\\MUX};
+  \draw (M.west) ++(0,0.35) -- ++(-1.1,0) node[left]{$B=D_1$};
+  \draw (M.west) ++(0,-0.35) -- ++(-1.1,0) node[left]{$C=D_0$};
+  \draw (M.south) -- ++(0,-0.7) node[below]{$A$};
+  \draw (M.east) -- ++(0.7,0) node[right]{$F$};
+  \node[below] at (2.7,-1.0) {SOP gate network};
+  \node[below] at (9.2,-1.0) {Shannon form};
+\end{circuitikz}
+\end{document}
 ```
 
 The gate network says “two qualified causes”; Shannon expansion says “select $B$ when $A=1$, otherwise select $C$.” Both are correct. Their area, select load, path balance, and hazards differ, which is why §1 introduces a physical cost model and §2 derives multiplexers.
@@ -104,7 +139,7 @@ A **buffer** preserves logic polarity while increasing drive or isolating load; 
 Before comparing topologies, establish a first-order delay ruler. Logical effort estimates gate and path delay well enough to explain why small balanced stages and tapered buffers recur. It does not by itself predict wire-dominated delay, leakage, dynamic-node failure, clock power, metastability, scan cost, or placement congestion; those become additional constraints in the choice loop below.
 
 ```mermaid
-flowchart LR
+flowchart TD
     REQ["Function, load, clock, activity, robustness"] --> TOP["Choose topology\nstatic / pass / transmission-gate / dynamic"]
     TOP --> DEPTH["Choose decomposition\nflat / ripple / balanced tree / prefix"]
     DEPTH --> SIZE["Choose gate sizes and buffers\nequalize stage effort"]
@@ -217,19 +252,19 @@ The gate-level structure follows the equation directly. The inverter creates $\o
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick]
-  \node[and port] (A0) at (1.0,1.15) {};
-  \node[and port] (A1) at (1.0,-1.15) {};
-  \node[or port]  (OR) at (4.0,0) {};
-  \node[not port] (INV) at (-1.5,0.15) {};
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \node[and port] (A0) at (2.2,1.15) {};
+  \node[and port] (A1) at (2.2,-1.15) {};
+  \node[or port]  (OR) at (5.0,0) {};
+  \node[not port] (INV) at (-0.1,-2.0) {};
   \draw (A0.out) -- (OR.in 1);
   \draw (A1.out) -- (OR.in 2);
-  \draw (OR.out) -- ++(1.0,0) node[right]{$Y=\overline S D_0+S D_1$};
-  \draw (A0.in 1) -- ++(-1.1,0) node[left]{$D_0$};
-  \draw (A1.in 1) -- ++(-1.1,0) node[left]{$D_1$};
+  \draw (OR.out) -- ++(0.8,0) node[right]{$Y$};
+  \draw (A0.in 1) -- ++(-1.0,0) node[left]{$D_0$};
+  \draw (A1.in 1) -- ++(-1.0,0) node[left]{$D_1$};
   \draw (INV.out) -| (A0.in 2) node[pos=0.25,above]{$\overline S$};
-  \draw (INV.in) -- ++(-1.0,0) coordinate (S) node[circ]{};
-  \draw (S) node[left]{$S$} |- (A1.in 2);
+  \draw (INV.in) -- ++(-0.9,0) coordinate (S) node[circ]{} node[left]{$S$};
+  \draw (S) |- (A1.in 2);
 \end{circuitikz}
 \end{document}
 ```
@@ -244,16 +279,29 @@ Three orthogonal choices, all decided by §1:
 - **Circuit — TG vs AOI.** A full 2:1 transmission-gate mux uses two transmission gates—four pass devices—plus a complemented select if it is not already available and eventual restoring drive. It is compact and fast for a few levels, but series switches add resistance/capacitance and do not restore levels, so deep chains need buffers. A static and-or-invert (AOI) form restores every stage at more device/input capacitance. The selected cell depends on depth, select availability/fan-out, output load, and library characterization.
 - **Fabric — mux/LUT vs AOI cell.** The same choice at chip scale: an FPGA realizes logic as mux/LUT trees (Shannon, §2.1), while ASIC synthesis maps the same function onto AOI/NAND static cells for density and power. Same function, different atoms, different cost model.
 
-```mermaid
-flowchart LR
-    subgraph FLAT["flat 8:1 selection"]
-        FI["8 qualified data terms"] --> FOR["wide OR / compound gate"]
-    end
-    subgraph TREE["balanced 8:1 tree"]
-        T0["four 2:1 muxes"] --> T1["two 2:1 muxes"] --> T2["one 2:1 mux"]
-    end
-    FOR --> CF["small depth, high fan-in and select load"]
-    T2 --> CT["three bounded-fan-in stages, easy buffering"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum height=1.0cm,align=center}}
+  \node[left] at (-1.7,1.5) {flat};
+  \node[blk,minimum width=2.0cm] (D0) at (0,1.5) {$D[7{:}0]$};
+  \node[blk,minimum width=2.2cm] (F) at (4.0,1.5) {8:1 MUX};
+  \draw[->] (D0) -- (F); \draw[->] (F) -- ++(1.3,0) node[right]{$Y$};
+  \draw[->] (4.0,0.0) node[below]{$S[2{:}0]$} -- (F.south);
+
+  \node[left] at (-1.7,-2.0) {tree};
+  \node[blk,minimum width=2.0cm] (D1) at (0,-2.0) {$D[7{:}0]$};
+  \node[blk,minimum width=1.8cm] (T0) at (3.2,-2.0) {$4\times$ 2:1};
+  \node[blk,minimum width=1.8cm] (T1) at (6.3,-2.0) {$2\times$ 2:1};
+  \node[blk,minimum width=1.8cm] (T2) at (9.4,-2.0) {$1\times$ 2:1};
+  \draw[->] (D1) -- (T0); \draw[->] (T0) -- (T1);
+  \draw[->] (T1) -- (T2); \draw[->] (T2) -- ++(1.3,0) node[right]{$Y$};
+  \draw[->] (3.2,-3.5) node[below]{$S_0$} -- (T0.south);
+  \draw[->] (6.3,-3.5) node[below]{$S_1$} -- (T1.south);
+  \draw[->] (9.4,-3.5) node[below]{$S_2$} -- (T2.south);
+\end{circuitikz}
+\end{document}
 ```
 
 The flat form can win for a tiny selector because it avoids intermediate nodes. As $n$ grows, its wide gate and high-fan-out select become the bottleneck; the tree adds stages but bounds the electrical effort of each stage. That is the recurring evolution from “one large gate” to “hierarchy of small gates.”
@@ -281,7 +329,7 @@ WaveDrom cannot represent analog pulse width or clock slew; the short `10` segme
 Hardware constantly converts between two representations of "which one": a compact $k$-bit **binary index** and a $2^k$-bit **one-hot** select. A decoder goes index→one-hot — it is the address path of every memory, register file, and demux, turning an address into the single wordline that fires. An encoder goes one-hot→index. When more than one input is hot the inverse is ill-posed, and resolving it by rank is the **priority encoder** — which is exactly leading-zero detection.
 
 ```mermaid
-flowchart LR
+flowchart TD
     IDX["binary index"] --> DEC["decoder"] --> OH["one-hot enables"]
     OH --> ARR["registers, memory rows, ports, or issue entries"]
     REQ["possibly many asserted requests"] --> PRI["priority selection"]
@@ -300,18 +348,33 @@ An $n$-to-$2^n$ decoder asserts output $i$ iff the input equals $i$; each output
 
 For a two-bit address $A_1A_0$, the unfactored 2-to-4 decoder is already enough to expose the structure:
 
-```mermaid
-flowchart LR
-    A1["A1"] --> I1["inverter"] --> N1["A̅1"]
-    A0["A0"] --> I0["inverter"] --> N0["A̅0"]
-    N1 --> Y0["AND → Y0"]
-    N0 --> Y0
-    N1 --> Y1["AND → Y1"]
-    A0 --> Y1
-    A1 --> Y2["AND → Y2"]
-    N0 --> Y2
-    A1 --> Y3["AND → Y3"]
-    A0 --> Y3
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
+  \node[not port] (I1) at (-0.5,3.2) {};
+  \node[not port] (I0) at (-0.5,2.0) {};
+  \draw (I1.in) -- ++(-0.8,0) node[left]{$A_1$};
+  \draw (I0.in) -- ++(-0.8,0) node[left]{$A_0$};
+  \draw (I1.out) -- (1.0,3.2) node[circ]{} node[above]{$\overline A_1$};
+  \draw (I0.out) -- (2.0,2.0) node[circ]{} node[above]{$\overline A_0$};
+  \draw (-1.1,3.2) -- (-1.1,1.2) -- (3.0,1.2) node[circ]{} node[above]{$A_1$};
+  \draw (-1.1,2.0) -- (-1.1,0.2) -- (4.0,0.2) node[circ]{} node[above]{$A_0$};
+  \draw (1.0,3.2) -- (1.0,-3.2); \draw (2.0,2.0) -- (2.0,-3.2);
+  \draw (3.0,1.2) -- (3.0,-3.2); \draw (4.0,0.2) -- (4.0,-3.2);
+  \node[and port] (Y0) at (6.0,2.7) {};
+  \node[and port] (Y1) at (6.0,0.9) {};
+  \node[and port] (Y2) at (6.0,-0.9) {};
+  \node[and port] (Y3) at (6.0,-2.7) {};
+  \draw (1.0,2.95) node[circ]{} -- (Y0.in 1); \draw (2.0,2.45) node[circ]{} -- (Y0.in 2);
+  \draw (1.0,1.15) node[circ]{} -- (Y1.in 1); \draw (4.0,0.65) node[circ]{} -- (Y1.in 2);
+  \draw (3.0,-0.65) node[circ]{} -- (Y2.in 1); \draw (2.0,-1.15) node[circ]{} -- (Y2.in 2);
+  \draw (3.0,-2.45) node[circ]{} -- (Y3.in 1); \draw (4.0,-2.95) node[circ]{} -- (Y3.in 2);
+  \draw (Y0.out) -- ++(0.7,0) node[right]{$Y_0$}; \draw (Y1.out) -- ++(0.7,0) node[right]{$Y_1$};
+  \draw (Y2.out) -- ++(0.7,0) node[right]{$Y_2$}; \draw (Y3.out) -- ++(0.7,0) node[right]{$Y_3$};
+  \node[below,align=center] at (2.5,-3.4) {literal rails\\shared by all product terms};
+\end{circuitikz}
+\end{document}
 ```
 
 Exactly one output is high for every legal binary address. At larger width, repeating a full $n$-literal product for every row wastes gates and creates slow stacks; predecoding computes small shared one-hot groups, then combines one term from each group near the array.
@@ -328,14 +391,23 @@ with $w_L$ = left-block width and $w$ = total width. That is $\log_2 N$ levels �
 
 For request vector `00101000` with bit 7 highest priority, split into halves. The upper half `0010` is valid, so the lower half is ignored; inside the upper half, the `10` sub-block is valid; its leading one is global bit 5.
 
-```mermaid
-flowchart TD
-    V["request[7:0] = 00101000"] --> H["split: upper[7:4]=0010, lower[3:0]=1000"]
-    H --> UV["upper valid=1 → choose upper"]
-    H --> LV["lower valid=1 but masked by priority"]
-    UV --> P["split upper: bits[7:6]=00, bits[5:4]=10"]
-    P --> CH["right sub-block valid → local index 1"]
-    CH --> RES["global winner bit 5\none-hot 00100000"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum height=0.9cm,align=center}}
+  \node[blk,minimum width=2.4cm] (V) at (0,0) {$\mathtt{00101000}$};
+  \node[blk,minimum width=2.3cm] (U) at (3.4,1.2) {upper $\mathtt{0010}$\\valid = 1};
+  \node[blk,minimum width=2.3cm] (L) at (3.4,-1.2) {lower $\mathtt{1000}$\\valid = 1};
+  \node[blk,minimum width=2.7cm] (P) at (6.9,1.2) {priority combine\\choose upper};
+  \node[blk,minimum width=2.7cm] (S) at (10.3,1.2) {split $\mathtt{00\mid10}$\\choose $\mathtt{10}$};
+  \node[blk,minimum width=2.1cm] (R) at (10.3,-1.2) {winner bit 5\\valid = 1};
+  \draw[->] (V) -- (U); \draw[->] (V) -- (L);
+  \draw[->] (U) -- (P); \draw[->] (L) -- node[below]{masked} (P);
+  \draw[->] (P) -- (S); \draw[->] (S) -- (R);
+  \draw[->] (R) -- ++(1.4,0) node[right]{$\mathtt{00100000}$};
+\end{circuitikz}
+\end{document}
 ```
 
 The tree must return both `valid` and `index`; an all-zero input has no winner, so an index without `valid` is meaningless. A rotating or age-based arbiter adds state to this pure priority function (§3.4).
@@ -350,15 +422,22 @@ $$
 
 where $g$ means “greater in the most-significant processed portion” and $e$ means “equal in that portion.” This is structurally the carry-tree combine of a prefix adder. Comparators therefore reuse the same associative-tree design problem ([Adders and Multipliers](03_Adders_and_Multipliers.md)): choose a prefix topology that balances depth, wiring, fan-out, and physical placement.
 
-```mermaid
-flowchart LR
-    B3["bit 3: g3=A3·B̅3, e3=A3 XNOR B3"] --> C32["combine bits 3:2"]
-    B2["bit 2 pair (g2,e2)"] --> C32
-    B1["bit 1 pair (g1,e1)"] --> C10["combine bits 1:0"]
-    B0["bit 0 pair (g0,e0)"] --> C10
-    C32 --> ROOT["prefix combine"]
-    C10 --> ROOT
-    ROOT --> OUT["A>B and A=B"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \tikzset{pair/.style={draw,circle,minimum size=0.85cm},comb/.style={draw,rounded corners,minimum width=1.7cm,minimum height=0.85cm,align=center}}
+  \node[pair] (B3) at (0,2.1) {$(g_3,e_3)$}; \node[pair] (B2) at (0,0.7) {$(g_2,e_2)$};
+  \node[pair] (B1) at (0,-0.7) {$(g_1,e_1)$}; \node[pair] (B0) at (0,-2.1) {$(g_0,e_0)$};
+  \node[comb] (C32) at (3.2,1.4) {combine\\$[3{:}2]$};
+  \node[comb] (C10) at (3.2,-1.4) {combine\\$[1{:}0]$};
+  \node[comb] (ROOT) at (6.3,0) {combine\\$[3{:}0]$};
+  \draw[->] (B3) -- (C32); \draw[->] (B2) -- (C32);
+  \draw[->] (B1) -- (C10); \draw[->] (B0) -- (C10);
+  \draw[->] (C32) -- (ROOT); \draw[->] (C10) -- (ROOT);
+  \draw[->] (ROOT) -- ++(1.4,0) node[right,align=left]{$A>B=g$\\$A=B=e$};
+\end{circuitikz}
+\end{document}
 ```
 
 For $A=1010$ and $B=1001$, bits 3 and 2 are equal; bit 1 is the first mismatch and has $A_1=1,B_1=0$, so the high-to-low prefix reports greater without allowing bit 0 to overturn the decision. A linear comparator carries “equal so far” through every bit; a prefix tree computes the same associative result in logarithmic depth at more wiring/area.
@@ -367,16 +446,24 @@ For $A=1010$ and $B=1001$, bits 3 and 2 are equal; bit 1 is the first mismatch a
 
 A fixed-priority encoder is combinational: if request 7 is continuously high, lower requests can starve forever. An **arbiter** adds a grant protocol and, for fairness, state. A round-robin arbiter stores the position after the last accepted grant, rotates the request vector so the next position has highest priority, runs a fixed-priority encoder, then rotates the one-hot result back.
 
-```mermaid
-flowchart LR
-    REQ["request vector"] --> ROT["rotate by fairness pointer"]
-    PTR["last-grant + 1 pointer"] --> ROT
-    ROT --> PRI["fixed-priority encoder"]
-    PRI --> BACK["inverse rotate"]
-    BACK --> GRANT["one-hot grant"]
-    GRANT --> ACC["grant accepted?"]
-    ACC -->|"yes"| PTR
-    ACC -->|"no: retain ownership"| GRANT
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.9cm,align=center}}
+  \node[blk] (ROT) at (1.5,0) {rotate};
+  \node[blk,minimum width=2.5cm] (PRI) at (4.5,0) {fixed-priority\\encoder};
+  \node[blk] (BACK) at (7.6,0) {inverse\\rotate};
+  \node[blk] (OWN) at (10.5,0) {grant /\\owner hold};
+  \node[blk] (PTR) at (4.5,-2.2) {fairness\\pointer};
+  \draw[->] (-0.8,0) node[left]{request} -- (ROT);
+  \draw[->] (ROT) -- (PRI); \draw[->] (PRI) -- (BACK); \draw[->] (BACK) -- (OWN);
+  \draw[->] (OWN) -- ++(1.2,0) node[right]{one-hot grant};
+  \draw[->] (PTR) -| node[pos=0.25,below]{rotation amount} (ROT.south);
+  \draw[->] (OWN.south) |- node[pos=0.25,right]{accepted} (PTR.east);
+  \draw[->] (OWN.south) -- ++(0,-1.2) -| node[pos=0.25,below]{stall: retain owner} (OWN.east);
+\end{circuitikz}
+\end{document}
 ```
 
 Update the pointer on an **accepted** grant, not merely an asserted grant; otherwise backpressure can cause ownership to jump while the selected requester still expects service. Fixed priority minimizes state and can protect a real-time class. Round robin bounds starvation among continuously eligible peers but may hurt critical traffic. Weighted or deficit arbitration adds counters to represent reserved shares and burst history. Verification must assert one-hot-or-zero grant, grant implies request, stable ownership under stall, pointer update only on acceptance, and a bounded-service property under explicitly stated assumptions.
@@ -409,7 +496,7 @@ One inverter has one output for each input and therefore no memory. Connect two 
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[not port] (IA) at (0,1.0) {};
   \node[not port,rotate=180] (IB) at (3.2,-1.0) {};
   \draw (IA.out) -- (3.2,1.0) -- (3.2,-0.45) -- (IB.in);
@@ -431,7 +518,7 @@ The simplest controllable bistable is the **set–reset (SR) latch**. Two cross-
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[nor port] (NQ) at (0,1.25) {};
   \node[nor port,rotate=180] (NQB) at (3.5,-1.25) {};
   \draw (NQ.out) -- (3.5,1.25) -- (3.5,-0.70) -- (NQB.in 1);
@@ -469,14 +556,20 @@ Trace **set** causally. Starting from $Q=0,\overline Q=1$, raise $S$. The upper 
 
 The NAND implementation is the polarity dual. Its command inputs are active-low—written $\overline S$ and $\overline R$—so hold is 11, set is 01, reset is 10, and 00 is forbidden:
 
-```mermaid
-flowchart LR
-    SB["active-low set S̅"] --> NQ["NAND gate producing Q"]
-    QB["Q̅"] --> NQ
-    NQ --> Q["Q"]
-    RB["active-low reset R̅"] --> NQB["NAND gate producing Q̅"]
-    Q --> NQB
-    NQB --> QB
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \node[nand port] (NQ) at (0,1.25) {};
+  \node[nand port,rotate=180] (NQB) at (3.6,-1.25) {};
+  \draw (NQ.out) -- (3.6,1.25) coordinate (Q) node[circ]{} -- (3.6,-0.70) -- (NQB.in 1);
+  \draw (NQB.out) -- (0,-1.25) coordinate (QB) node[circ]{} -- (0,0.70) -- (NQ.in 2);
+  \draw (NQ.in 1) -- ++(-1.1,0) node[left]{$\overline S$};
+  \draw (NQB.in 2) -- ++(1.1,0) node[right]{$\overline R$};
+  \node[right] at (Q) {$Q$};
+  \node[left] at (QB) {$\overline Q$};
+\end{circuitikz}
+\end{document}
 ```
 
 For the NAND form, $Q=\overline{\overline S\,\overline Q}$ and $\overline Q=\overline{\overline R\,Q}$. The polarity changes; the regenerative storage principle does not. NAND latches are convenient where an active-low reset signal should directly force a known state.
@@ -518,16 +611,24 @@ $$
 S_g=E D,\qquad R_g=E\overline D.
 $$
 
-```mermaid
-flowchart LR
-    D["data D"] --> AS["AND: Sg = E·D"]
-    D --> INV["inverter"] --> DB["D̅"]
-    E["enable E"] --> AS
-    E --> AR["AND: Rg = E·D̅"]
-    DB --> AR
-    AS --> SR["cross-coupled SR latch"]
-    AR --> SR
-    SR --> Q["stored Q"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \node[and port] (AS) at (2.2,1.15) {};
+  \node[and port] (AR) at (2.2,-1.15) {};
+  \node[not port] (INV) at (-0.1,-1.15) {};
+  \node[draw,rounded corners,minimum width=2.1cm,minimum height=2.2cm,align=center] (SR) at (5.5,0) {cross-coupled\\SR latch};
+  \draw (-1.2,1.4) node[left]{$D$} -- (0.5,1.4) coordinate (D) node[circ]{} -- (AS.in 1);
+  \draw (D) |- (INV.in);
+  \draw (INV.out) -- (AR.in 1) node[midway,above]{$\overline D$};
+  \draw (0.7,-2.2) node[below]{$E$} -- (0.7,0.9) coordinate (E) node[circ]{} -- (AS.in 2);
+  \draw (E) |- (AR.in 2);
+  \draw (AS.out) -- node[above]{$S_g$} (SR.west |- AS.out);
+  \draw (AR.out) -- node[below]{$R_g$} (SR.west |- AR.out);
+  \draw (SR.east) -- ++(0.9,0) node[right]{$Q$};
+\end{circuitikz}
+\end{document}
 ```
 
 When enabled, $D=1$ can only set and $D=0$ can only reset; $S_gR_g=E^2D\overline D=0$, so the forbidden command is unreachable for valid binary inputs. When disabled, both gated commands are zero and feedback holds the prior value. Substitution into the SR behavior gives the D-latch characteristic equation
@@ -539,13 +640,13 @@ When $E=1$, the latch is **transparent** and $Q$ follows $D$ after propagation d
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[draw,minimum width=1.15cm,minimum height=0.75cm,align=center] (TGI) at (0,0) {TG\\$E$};
   \node[not port] (I1) at (2.2,0) {};
   \node[not port] (I2) at (4.4,0) {};
   \node[draw,minimum width=1.15cm,minimum height=0.75cm,align=center] (TGF) at (2.2,-2.0) {TG\\$\overline E$};
   \draw (TGI.west) -- ++(-1.0,0) node[left]{$D$};
-  \draw (TGI.east) -- (I1.in) node[midway,above]{$X$};
+  \draw (TGI.east) -- (I1.in) coordinate[midway] (X) node[circ]{} node[above]{$X$};
   \draw (I1.out) -- (I2.in) node[midway,above]{$Y$};
   \draw (I2.out) -- ++(1.0,0) coordinate (Q) node[right]{$Q$};
   \draw (Q) |- (TGF.east);
@@ -576,14 +677,22 @@ The waveform is qualitative and deliberately shows propagation rather than insta
 
 But transparency is a hazard in a clocked pipeline: while a latch is open, a change on $D$ races straight through $Q$ and onward into the next stage — state could ripple through many stages in one clock phase, and timing becomes unanalyzable. What we actually want is to capture $D$ at an *instant* — the clock edge — and be opaque otherwise. No single level-sensitive latch can do that. The construction that can is **two latches in series on opposite clock phases** (master–slave):
 
-```mermaid
-flowchart LR
-    D["D"] --> M["master D latch\nopen while CLK=0"]
-    M --> MN["master state M"]
-    MN --> S["slave D latch\nopen while CLK=1"]
-    S --> Q["Q"]
-    CLK["CLK"] -. "low phase" .-> M
-    CLK -. "high phase" .-> S
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \tikzset{lat/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.4cm,align=center}}
+  \node[lat] (M) at (2.0,0) {master D latch\\open for $\overline{CLK}$};
+  \node[lat] (S) at (6.0,0) {slave D latch\\open for $CLK$};
+  \node[not port] (CI) at (2.0,-2.0) {};
+  \draw[->] (-0.8,0) node[left]{$D$} -- (M);
+  \draw[->] (M) -- node[above]{$M$} (S);
+  \draw[->] (S) -- ++(1.2,0) node[right]{$Q$};
+  \draw (0.2,-2.0) node[left]{$CLK$} -- (1.0,-2.0) coordinate (C) node[circ]{} -- (CI.in);
+  \draw[->] (CI.out) -- (M.south);
+  \draw[->] (C) -- ++(0,-0.7) -| (S.south);
+\end{circuitikz}
+\end{document}
 ```
 
 During the low phase, the master tracks $D$ while the slave holds the old output. At the rising edge, the master closes and freezes its last legal input; the slave opens and transfers that frozen master value to $Q$. During the high phase, later $D$ transitions cannot reach the closed master. The next falling edge closes the slave before reopening the master. This is a positive-edge-triggered **D flip-flop (DFF)**; reversing the latch phases produces a negative-edge-triggered cell.
@@ -627,28 +736,39 @@ Setup constrains the **maximum-delay path** because data must arrive before the 
 
 “D flip-flop” describes the next-state function $Q^+=D$. Other named flip-flops describe different input functions; in a modern standard-cell flow they are commonly synthesized as a DFF plus combinational logic unless a dedicated cell is smaller or faster.
 
-```mermaid
-flowchart LR
-    subgraph DTYPE["D behavior"]
-        DIN["D"] --> DFFD["D flip-flop"]
-    end
-    subgraph TTYPE["toggle behavior"]
-        T["T"] --> XOR["XOR: Dnext = T ⊕ Q"]
-        QT["Q feedback"] --> XOR
-        XOR --> DFFT["D flip-flop"]
-    end
-    subgraph JKTYPE["JK behavior"]
-        J["J"] --> JKL["logic: Dnext = JQ̅ + K̅Q"]
-        K["K"] --> JKL
-        QJ["Q and Q̅ feedback"] --> JKL
-        JKL --> DFFJ["D flip-flop"]
-    end
-    subgraph SRTYPE["legal set–reset behavior"]
-        SS["S"] --> SRL["logic: Dnext = S + R̅Q"]
-        RR["R"] --> SRL
-        QS["Q feedback"] --> SRL
-        SRL --> DFFS["D flip-flop"]
-    end
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
+  \tikzset{ff/.style={draw,minimum width=1.5cm,minimum height=0.9cm,align=center},logic/.style={draw,rounded corners,minimum width=2.9cm,minimum height=0.9cm,align=center}}
+  \node[ff] (FD) at (6.2,2.7) {DFF};
+  \draw[->] (-0.5,2.7) node[left]{$D$} -- (FD);
+  \draw[->] (FD) -- ++(1.2,0) coordinate (QD) node[right]{$Q$};
+
+  \node[xor port] (XT) at (3.1,0.9) {};
+  \node[ff] (FT) at (6.2,0.9) {DFF};
+  \draw (XT.in 1) -- ++(-1.0,0) node[left]{$T$};
+  \draw[->] (XT.out) -- (FT);
+  \draw[->] (FT) -- ++(1.2,0) coordinate (QT) node[circ]{} node[right]{$Q$};
+  \draw (QT) -- ++(0,-0.65) -| (XT.in 2);
+
+  \node[logic] (LJ) at (3.1,-0.9) {$D=J\overline Q+\overline KQ$};
+  \node[ff] (FJ) at (6.2,-0.9) {DFF};
+  \draw[->] (-0.5,-0.65) node[left]{$J$} -- (1.65,-0.65);
+  \draw[->] (-0.5,-1.15) node[left]{$K$} -- (1.65,-1.15);
+  \draw[->] (LJ) -- (FJ);
+  \draw[->] (FJ) -- ++(1.2,0) coordinate (QJ) node[circ]{} node[right]{$Q$};
+  \draw (QJ) -- ++(0,-0.55) -| (LJ.south) node[pos=0.75,below]{$Q,\overline Q$};
+
+  \node[logic] (LS) at (3.1,-2.8) {$D=S+\overline RQ$};
+  \node[ff] (FS) at (6.2,-2.8) {DFF};
+  \draw[->] (-0.5,-2.55) node[left]{$S$} -- (1.65,-2.55);
+  \draw[->] (-0.5,-3.05) node[left]{$R$} -- (1.65,-3.05);
+  \draw[->] (LS) -- (FS);
+  \draw[->] (FS) -- ++(1.2,0) coordinate (QS) node[circ]{} node[right]{$Q$};
+  \draw (QS) -- ++(0,-0.55) -| (LS.south) node[pos=0.75,below]{$Q$};
+\end{circuitikz}
+\end{document}
 ```
 
 This view separates **storage physics** from the **next-state function**. The DFF supplies one edge-triggered state bit. Input logic computes what that bit should become. For a toggle input, “hold when $T=0$, complement when $T=1$” is exactly $Q^+=Q\oplus T$. For JK, conditional set and reset with the present state as feedback gives $Q^+=J\overline Q+\overline KQ$. The same derivation is how finite-state-machine equations eventually feed ordinary DFFs.
@@ -716,41 +836,63 @@ The correct topology depends on clock load, activity, required edge rate, low-vo
 
 The baseline DFF loads new data on every active edge. A design often needs “update only when work is valid.” There are two non-equivalent implementations:
 
-```mermaid
-flowchart LR
-    subgraph MUXEN["per-register data enable"]
-        DN["new D"] --> MX["2:1 mux"]
-        QF["old Q feedback"] --> MX
-        E["enable E"] -.-> MX
-        MX --> FF["D flip-flop"] --> QF
-    end
-    subgraph CLKENA["shared clock enable"]
-        CE["clock enable"] --> LAT["level-sensitive enable latch"]
-        TE["test enable"] --> LAT
-        LAT --> CG["clock gate"]
-        CLK["source clock"] --> CG
-        CG --> BANK["clocked register bank"]
-    end
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=1.8cm,minimum height=0.9cm,align=center}}
+  \node[blk] (MUX) at (2.0,1.5) {2:1 MUX};
+  \node[blk] (FF) at (5.0,1.5) {DFF};
+  \draw[->] (-0.5,1.75) node[left]{new $D$} -- (1.1,1.75);
+  \draw[->] (MUX) -- (FF);
+  \draw[->] (FF) -- ++(1.2,0) coordinate (Q) node[circ]{} node[right]{$Q$};
+  \draw[->] (Q) -- ++(0,0.9) -| (MUX.north) node[pos=0.75,above]{old $Q$};
+  \draw[->] (2.0,0.2) node[below]{$E$} -- (MUX.south);
+  \draw[->] (5.0,0.2) node[below]{$CLK$} -- (FF.south);
+  \node[above] at (3.5,2.7) {per-register feedback enable};
+
+  \node[blk,minimum width=2.3cm] (LAT) at (1.5,-2.0) {enable latch\\open while $CLK=0$};
+  \node[and port] (GATE) at (5.0,-2.0) {};
+  \node[blk,minimum width=2.2cm] (BANK) at (8.2,-2.0) {register\\bank};
+  \draw[->] (-1.0,-1.75) node[left]{$CE$} -- (0.35,-1.75);
+  \draw[->] (-1.0,-2.25) node[left]{test enable} -- (0.35,-2.25);
+  \draw[->] (LAT) -- node[above]{held enable} (GATE.in 1);
+  \draw (2.8,-3.2) node[below]{$CLK$} -- (3.6,-3.2) coordinate (C) node[circ]{} |- (GATE.in 2);
+  \draw[->] (C) -| (LAT.south);
+  \draw[->] (GATE.out) -- node[above]{gated clock} (BANK);
+  \node[below] at (5.0,-3.7) {shared clock enable};
+\end{circuitikz}
+\end{document}
 ```
 
 The feedback mux implements $D_{ff}=E D+\overline E Q$. It gives independent control per bit or register, but the clock tree and the DFF's internal clock devices still switch every cycle. An **integrated clock-gating (ICG) cell** latches the enable while the source clock is in its inactive phase, then gates a shared branch. It saves clock-tree and internal clock power across many registers, but control is coarser and the enable has its own gating setup/hold checks. A plain combinational AND on a clock is unsafe because a changing enable can create a runt pulse.
 
 **Synchronous reset** is sampled on the active edge and participates in the D path. It is timing-friendly and glitch-resistant but cannot clear state when the clock is stopped. **Asynchronous reset/set** directly forces the storage node independent of clock, useful for safe power-up and clock-off states, but assertion and especially deassertion are asynchronous events. Recovery and removal are the reset analogues of setup and hold: deassert too near an edge and different flops can leave reset on different cycles or go metastable. A common policy is **asynchronous assert, synchronous deassert** through a reset synchronizer in each clock domain.
 
-```mermaid
-flowchart LR
-    subgraph SYNC["synchronous reset"]
-        DS["functional D"] --> RM["reset/data mux"]
-        RS["reset"] --> RM
-        RM --> FS["ordinary DFF"]
-    end
-    subgraph ASYNC["asynchronous assertion, synchronous release"]
-        ONE["constant 1"] --> F1["DFF stage 1\nasynchronous clear"]
-        F1 --> F2["DFF stage 2\nasynchronous clear"]
-        RAW["raw reset_n"] -. "clears both immediately" .-> F1
-        RAW -.-> F2
-        F2 --> LOCAL["local reset_n"]
-    end
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.85,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.9cm,align=center}}
+  \node[blk] (RM) at (2.0,1.4) {reset/data\\MUX};
+  \node[blk] (SF) at (5.2,1.4) {ordinary DFF};
+  \draw[->] (-0.5,1.7) node[left]{functional $D$} -- (1.0,1.7);
+  \draw[->] (2.0,0.15) node[below]{reset} -- (RM.south);
+  \draw[->] (RM) -- (SF);
+  \draw[->] (SF) -- ++(1.0,0) node[right]{$Q$};
+  \node[above] at (3.6,2.2) {synchronous reset};
+
+  \node[blk] (F1) at (2.2,-2.0) {DFF 1\\async clear};
+  \node[blk] (F2) at (6.0,-2.0) {DFF 2\\async clear};
+  \draw[->] (-0.5,-2.0) node[left]{constant 1} -- (F1);
+  \draw[->] (F1) -- node[above]{may resolve} (F2);
+  \draw[->] (F2) -- ++(1.3,0) node[right]{local $reset_n$};
+  \draw (-0.5,-3.5) node[left]{raw $reset_n$} -- (1.0,-3.5) coordinate (R) node[circ]{};
+  \draw[->] (R) -| (F1.south);
+  \draw[->] (R) -- ++(0,-0.45) -| (F2.south);
+  \node[below] at (4.1,-4.1) {asynchronous assertion, synchronous release};
+\end{circuitikz}
+\end{document}
 ```
 
 ```wavedrom
@@ -771,21 +913,28 @@ Every clock domain needs its own release synchronizer; distributing one synchron
 
 A scan DFF inserts a mux before D: functional data when `scan_enable=0`, serial `scan_in` when 1. Chains connect Q to the next scan input so test equipment can shift in an internal state, capture one or more functional cycles, then shift the response out. Required fields are functional D, scan input/output, scan enable, clock/reset behavior, and sometimes test-mode clock-gate override.
 
-```mermaid
-flowchart LR
-    FD["functional D0"] --> M0["scan mux 0"]
-    SI["scan in"] --> M0
-    M0 --> F0["DFF 0"]
-    F0 --> M1["scan mux 1"]
-    FD1["functional D1"] --> M1
-    M1 --> F1["DFF 1"]
-    F1 --> M2["scan mux 2"]
-    FD2["functional D2"] --> M2
-    M2 --> F2["DFF 2"]
-    F2 --> SO["scan out"]
-    SE["scan_enable"] -. "selects serial or functional path" .-> M0
-    SE -.-> M1
-    SE -.-> M2
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.76,transform shape]
+  \tikzset{mux/.style={draw,rounded corners,minimum width=1.25cm,minimum height=1.0cm,align=center},ff/.style={draw,minimum width=1.15cm,minimum height=1.0cm,align=center}}
+  \node[mux] (M0) at (1.2,0) {2:1\\MUX}; \node[ff] (F0) at (3.0,0) {DFF 0};
+  \node[mux] (M1) at (5.0,0) {2:1\\MUX}; \node[ff] (F1) at (6.8,0) {DFF 1};
+  \node[mux] (M2) at (8.8,0) {2:1\\MUX}; \node[ff] (F2) at (10.6,0) {DFF 2};
+  \draw[->] (-0.7,0) node[left]{scan in} -- (M0);
+  \draw[->] (M0) -- (F0); \draw[->] (F0) -- (M1);
+  \draw[->] (M1) -- (F1); \draw[->] (F1) -- (M2);
+  \draw[->] (M2) -- (F2); \draw[->] (F2) -- ++(1.0,0) node[right]{scan out};
+  \draw[->] (1.2,1.7) node[above]{functional $D_0$} -- (M0.north);
+  \draw[->] (5.0,1.7) node[above]{functional $D_1$} -- (M1.north);
+  \draw[->] (8.8,1.7) node[above]{functional $D_2$} -- (M2.north);
+  \draw (-0.7,-1.7) node[left]{scan enable} -- (1.2,-1.7) coordinate (SE) node[circ]{};
+  \draw[->] (SE) -- (M0.south); \draw[->] (SE) -- (5.0,-1.7) node[circ]{} -- (M1.south);
+  \draw[->] (5.0,-1.7) -- (8.8,-1.7) node[circ]{} -- (M2.south);
+  \draw (-0.7,-2.6) node[left]{$CLK$} -- (3.0,-2.6) node[circ]{} -- (6.8,-2.6) node[circ]{} -- (10.6,-2.6);
+  \draw[->] (3.0,-2.6) -- (F0.south); \draw[->] (6.8,-2.6) -- (F1.south); \draw[->] (10.6,-2.6) -- (F2.south);
+\end{circuitikz}
+\end{document}
 ```
 
 ```wavedrom
@@ -804,14 +953,27 @@ Scan makes sequential logic controllable/observable for automatic test pattern g
 
 Power gating removes the supply from ordinary state, so a normal DFF forgets its value. A **retention flip-flop** adds a small shadow latch powered by an always-on retention supply. Before shutdown, `save` copies $Q$ into the shadow; isolation prevents the dying domain from corrupting neighbors; after the main supply is stable, `restore` copies the retained bit back before functional clocks resume.
 
-```mermaid
-flowchart LR
-    D["functional D"] --> MAIN["main flip-flop\nswitchable supply"] --> Q["Q"]
-    Q --> SAVE["save switch"] --> SHADOW["retention latch\nalways-on supply"]
-    SHADOW --> RESTORE["restore switch"] --> MAIN
-    PM["power controller"] -. "save" .-> SAVE
-    PM -. "restore" .-> RESTORE
-    PM -. "power gate + isolation sequence" .-> MAIN
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.85,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.9cm,align=center}}
+  \node[blk] (MAIN) at (3.2,1.2) {main DFF\\switchable $V_{DD}$};
+  \node[blk] (SAVE) at (6.3,1.2) {save switch};
+  \node[blk,minimum width=2.4cm] (SH) at (9.4,1.2) {shadow latch\\always-on supply};
+  \node[blk] (REST) at (6.3,-1.0) {restore switch};
+  \node[blk,minimum width=2.4cm] (PM) at (3.2,-2.6) {power controller};
+  \draw[->] (-0.4,1.2) node[left]{functional $D$} -- (MAIN);
+  \draw[->] (MAIN) -- (SAVE) node[midway,above]{$Q$};
+  \draw[->] (SAVE) -- (SH);
+  \draw[->] (SH.south) |- (REST.east);
+  \draw[->] (REST.west) -| (MAIN.south) node[pos=0.25,below]{retained bit};
+  \draw[->] (MAIN.north) -- ++(0,0.8) node[above]{$Q$ to isolation};
+  \draw[->,dashed] (PM) -- node[left]{power/isolate} (MAIN);
+  \draw[->,dashed] (PM.east) -| node[pos=0.75,right]{save} (SAVE.south);
+  \draw[->,dashed] (PM.east) -- (REST.west) node[midway,below]{restore};
+\end{circuitikz}
+\end{document}
 ```
 
 ```wavedrom
@@ -839,12 +1001,23 @@ Given the flip-flop is two latches, why does anyone still pipeline with bare lat
 
 **Why time borrowing works.** In a two-phase latch pipeline the receiving latch is still transparent for half a cycle *after* nominal launch, so a slow logic stage can finish late and still be captured — it "borrows" time from the next stage, which must then finish early. The constraint relaxes from per-stage to per-pair:
 
-```mermaid
-flowchart LR
-    LA["phase-A latch"] --> SLOW["slow logic\nuses part of next half-cycle"]
-    SLOW --> LB["phase-B latch\ntransparent during phase B"]
-    LB --> FAST["next logic\nloses the borrowed budget"]
-    FAST --> LC["next phase-A latch"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum height=1.15cm,align=center}}
+  \node[blk,minimum width=2.0cm] (LA) at (0,0) {phase-A\\latch};
+  \node[blk,minimum width=2.4cm] (SLOW) at (3.1,0) {slow logic\\borrows time};
+  \node[blk,minimum width=2.0cm] (LB) at (6.2,0) {phase-B\\latch};
+  \node[blk,minimum width=2.4cm] (FAST) at (9.3,0) {next logic\\reduced budget};
+  \node[blk,minimum width=2.0cm] (LC) at (12.4,0) {phase-A\\latch};
+  \draw[->] (LA) -- (SLOW); \draw[->] (SLOW) -- node[above]{late but legal} (LB);
+  \draw[->] (LB) -- (FAST); \draw[->] (FAST) -- (LC);
+  \draw[->] (0,-1.8) node[below]{$\phi_A$} -- (LA.south);
+  \draw[->] (6.2,-1.8) node[below]{$\phi_B$} -- (LB.south);
+  \draw[->] (12.4,-1.8) node[below]{$\phi_A$} -- (LC.south);
+\end{circuitikz}
+\end{document}
 ```
 
 ```wavedrom
@@ -879,15 +1052,25 @@ $$
 
 where $t_r$ = time allowed to resolve, $T_0$ = a characterized aperture constant, $f_{clk}$ = sampling-clock frequency, and $f_{data}$ = asynchronous transition rate.
 
-```mermaid
-flowchart LR
-    AS["asynchronous transition near sampling edge"] --> F1["first synchronizer flop\nmay enter metastability"]
-    F1 --> WAIT["resolution interval tr\nno functional fan-out"]
-    WAIT --> F2["second synchronizer flop"]
-    F2 --> SAFE["ordinary digital logic"]
-    CELL["cell τ and T0"] --> MTBF["MTBF budget"]
-    RATE["fclk and fdata"] --> MTBF
-    WAIT --> MTBF
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.85,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.2cm,minimum height=1.0cm,align=center}}
+  \node[blk] (F1) at (2.0,1.2) {DFF 1\\may metastabilize};
+  \node[blk] (F2) at (6.2,1.2) {DFF 2};
+  \node[blk] (LOG) at (9.8,1.2) {ordinary logic};
+  \draw[->] (-0.7,1.2) node[left]{asynchronous input} -- (F1);
+  \draw[->] (F1) -- node[above]{$t_r$: resolution only} (F2);
+  \draw[->] (F2) -- (LOG);
+  \node[below,align=center] at (4.1,0.55) {no functional fan-out\\from stage 1};
+  \node[blk] (PAR) at (2.0,-2.0) {cell $\tau,T_0$};
+  \node[blk] (RATE) at (5.3,-2.0) {$f_{clk},f_{data}$};
+  \node[blk,minimum width=2.8cm] (BUD) at (8.9,-2.0) {system MTBF\\budget};
+  \draw[->] (PAR) -- (BUD); \draw[->] (RATE) -- (BUD);
+  \draw[->] (4.1,0.2) -- ++(0,-1.0) -| (BUD.north) node[pos=0.25,left]{$t_r$};
+\end{circuitikz}
+\end{document}
 ```
 
 The lesson is the *shape*: mean time between failures (MTBF) is exponential in the resolution time $t_r$ and inverse-linear in the event rates. Adding a synchronizer stage usually buys almost one full clock period while preserving the destination frequency; reducing the frequency can also help by lowering $f_{clk}$ **and** increasing available resolution time, but changes throughput/latency and is rarely a local crossing fix.
@@ -917,26 +1100,31 @@ Group the flip-flop and it becomes the workhorse sequential block. A **register*
 
 The composition starts mechanically: one DFF stores one bit; $N$ DFFs sharing clock/reset store one word; a mux before each D input adds hold/load; wiring neighboring outputs into those muxes adds shift; decoding an address lets many words share read/write ports.
 
-```mermaid
-flowchart LR
-    D0["D0"] --> F0["DFF bit 0"] --> Q0["Q0"]
-    D1["D1"] --> F1["DFF bit 1"] --> Q1["Q1"]
-    D2["D2"] --> F2["DFF bit 2"] --> Q2["Q2"]
-    D3["D3"] --> F3["DFF bit 3"] --> Q3["Q3"]
-    CLK["shared clock"] -.-> F0
-    CLK -.-> F1
-    CLK -.-> F2
-    CLK -.-> F3
-    EN["shared load/enable policy"] -.-> F0
-    EN -.-> F1
-    EN -.-> F2
-    EN -.-> F3
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
+  \tikzset{ff/.style={draw,minimum width=1.8cm,minimum height=0.9cm,align=center}}
+  \node[ff] (F0) at (3.0,1.5) {DFF bit 0};
+  \node at (3.0,0) {$\vdots$};
+  \node[ff] (FN) at (3.0,-1.5) {DFF bit $N{-}1$};
+  \draw[->] (-0.4,1.5) node[left]{$D[0]$} -- (F0);
+  \draw[->] (F0) -- ++(1.4,0) node[right]{$Q[0]$};
+  \draw[->] (-0.4,-1.5) node[left]{$D[N{-}1]$} -- (FN);
+  \draw[->] (FN) -- ++(1.4,0) node[right]{$Q[N{-}1]$};
+  \draw (0.2,-2.8) node[left]{$CLK$} -- (1.0,-2.8) coordinate (C) node[circ]{};
+  \draw[->] (C) |- (F0.south); \draw[->] (C) |- (FN.south);
+  \draw (5.8,-2.8) node[right]{shared enable / load policy} -- (5.0,-2.8) coordinate (E) node[circ]{};
+  \draw[->] (E) |- (F0.south east); \draw[->] (E) |- (FN.south east);
+  \node[above] at (3.0,2.25) {$N$ repeated bit cells};
+\end{circuitikz}
+\end{document}
 ```
 
 All bits sample the same architectural event, but physical clock skew and unequal data delay still create per-bit setup/hold checks. A word is coherent only when every bit meets those checks or the interface supplies a validity/error mechanism.
 
 ```mermaid
-flowchart LR
+flowchart TD
     FF["flip-flop / latch"] --> REG["parallel register"]
     REG --> SHIFT["shift register\nserial and parallel modes"]
     REG --> CNT["counter\nbinary / modulo-N / up-down"]
@@ -973,28 +1161,43 @@ $$
 
 with a serial boundary input substituted when $i$ has no neighbor.
 
-```mermaid
-flowchart LR
-    HOLD["Qi feedback"] --> MX["4:1 mode mux"]
-    PAR["parallel Pi"] --> MX
-    LEFT["left neighbor Qi-1"] --> MX
-    RIGHT["right neighbor Qi+1"] --> MX
-    MODE["hold / load / left / right"] -.-> MX
-    MX --> FF["DFF i"] --> Q["Qi"]
-    Q --> HOLD
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.88,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.2cm,minimum height=1.5cm,align=center}}
+  \node[blk] (MUX) at (3.0,0) {4:1 mode\\MUX};
+  \node[blk,minimum width=1.5cm] (FF) at (6.3,0) {DFF $i$};
+  \draw[->] (-0.7,0.6) node[left]{$P_i$} -- (1.9,0.6);
+  \draw[->] (-0.7,0.2) node[left]{$Q_{i-1}$} -- (1.9,0.2);
+  \draw[->] (-0.7,-0.2) node[left]{$Q_{i+1}$} -- (1.9,-0.2);
+  \draw[->] (MUX) -- (FF);
+  \draw[->] (FF) -- ++(1.4,0) coordinate (Q) node[circ]{} node[right]{$Q_i$};
+  \draw[->] (Q) -- ++(0,1.2) -| (1.9,-0.6) node[pos=0.25,above]{hold feedback};
+  \draw[->] (3.0,-1.9) node[below]{mode[1:0]} -- (MUX.south);
+  \draw[->] (6.3,-1.9) node[below]{$CLK$} -- (FF.south);
+\end{circuitikz}
+\end{document}
 ```
 
 A shift register moves at most one position per active edge. If an instruction must shift by any distance in one cycle, sequential reuse is too slow. A barrel shifter instead uses one conditional mux stage per distance bit—shift by 1, then 2, then 4, and so on:
 
-```mermaid
-flowchart LR
-    IN["8-bit input"] --> S1["stage 0\nselect shift by 0 or 1"]
-    S1 --> S2["stage 1\nselect additional 0 or 2"]
-    S2 --> S4["stage 2\nselect additional 0 or 4"]
-    S4 --> OUT["8-bit result"]
-    AMT["3-bit shift amount"] -. "one bit controls each stage" .-> S1
-    AMT -.-> S2
-    AMT -.-> S4
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.84,transform shape]
+  \tikzset{stage/.style={draw,rounded corners,minimum width=2.4cm,minimum height=1.2cm,align=center}}
+  \node[stage] (S1) at (2.0,0) {8 parallel 2:1 muxes\\shift by 0 or 1};
+  \node[stage] (S2) at (5.6,0) {8 parallel 2:1 muxes\\additional 0 or 2};
+  \node[stage] (S4) at (9.2,0) {8 parallel 2:1 muxes\\additional 0 or 4};
+  \draw[->] (-0.8,0) node[left]{8-bit input} -- (S1);
+  \draw[->] (S1) -- (S2); \draw[->] (S2) -- (S4);
+  \draw[->] (S4) -- ++(1.3,0) node[right]{8-bit result};
+  \draw[->] (2.0,-1.8) node[below]{$amount[0]$} -- (S1.south);
+  \draw[->] (5.6,-1.8) node[below]{$amount[1]$} -- (S2.south);
+  \draw[->] (9.2,-1.8) node[below]{$amount[2]$} -- (S4.south);
+\end{circuitikz}
+\end{document}
 ```
 
 The barrel shifter trades $O(N\log N)$ mux wiring and a combinational $O(\log N)$ critical path for one-cycle latency. A sequential shifter uses $O(N)$ storage/mux resources but consumes up to $N-1$ cycles. The workload's shift frequency and latency requirement decide which wins.
@@ -1003,12 +1206,22 @@ The barrel shifter trades $O(N\log N)$ mux wiring and a combinational $O(\log N)
 
 Start from one toggle flip-flop with $T=1$. It changes state on every active edge, so its output frequency is $f_{clk}/2$. Cascading each output into the next stage's clock creates an **asynchronous or ripple counter**: bit 0 toggles first, its delayed output clocks bit 1, and so forth.
 
-```mermaid
-flowchart LR
-    CLK["source clock"] --> T0["TFF0\nT=1"] --> Q0["Q0"]
-    Q0 --> T1["TFF1\nT=1"] --> Q1["Q1"]
-    Q1 --> T2["TFF2\nT=1"] --> Q2["Q2"]
-    Q2 --> T3["TFF3\nT=1"] --> Q3["Q3"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.85,transform shape]
+  \tikzset{ff/.style={draw,minimum width=1.6cm,minimum height=1.1cm,align=center}}
+  \node[ff] (F0) at (1.5,0) {TFF 0\\$T=1$};
+  \node[ff] (F1) at (4.3,0) {TFF 1\\$T=1$};
+  \node[ff] (F2) at (7.1,0) {TFF 2\\$T=1$};
+  \node[ff] (F3) at (9.9,0) {TFF 3\\$T=1$};
+  \draw[->] (-1.0,0) node[left]{source clock} -- (F0);
+  \draw[->] (F0) -- node[above]{$Q_0$ clocks next stage} (F1);
+  \draw[->] (F1) -- node[above]{$Q_1$} (F2);
+  \draw[->] (F2) -- node[above]{$Q_2$} (F3);
+  \draw[->] (F3) -- ++(1.2,0) node[right]{$Q_3$};
+\end{circuitikz}
+\end{document}
 ```
 
 The compact chain divides frequency, but it is not an atomic binary-state update. During $0111\rightarrow1000$, delayed toggles expose $0110$, $0100$, and $0000$ before the final value. Any decoder watching those bits can emit a false pulse.
@@ -1030,21 +1243,24 @@ $$
 T_0=E,\qquad T_i=E\prod_{k=0}^{i-1}Q_k,\qquad Q_i^+=Q_i\oplus T_i.
 $$
 
-```mermaid
-flowchart LR
-    CLK["shared clock"] -.-> B0["bit 0 DFF"]
-    CLK -.-> B1["bit 1 DFF"]
-    CLK -.-> B2["bit 2 DFF"]
-    CLK -.-> B3["bit 3 DFF"]
-    E["enable E"] --> T0["T0=E"] --> B0
-    Q0["Q0"] --> T1["T1=E·Q0"] --> B1
-    Q0 --> T2["T2=E·Q0·Q1"]
-    Q1["Q1"] --> T2
-    T2 --> B2
-    Q0 --> T3["T3=E·Q0·Q1·Q2"]
-    Q1 --> T3
-    Q2["Q2"] --> T3
-    T3 --> B3
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.86,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.4cm,minimum height=1.15cm,align=center}}
+  \node[blk] (PRE) at (2.0,0.8) {prefix AND tree\\$T_i=E\prod_{k<i}Q_k$};
+  \node[blk] (XOR) at (5.5,0.8) {$N$ XOR gates\\$D_i=Q_i\oplus T_i$};
+  \node[blk] (BANK) at (9.0,0.8) {$N$-bit DFF bank};
+  \draw[->] (-0.8,1.1) node[left]{$E$} -- (0.8,1.1);
+  \draw[->] (-0.8,0.5) node[left]{$Q[N{-}1{:}0]$} -- (0.8,0.5);
+  \draw[->] (PRE) -- node[above]{$T[N{-}1{:}0]$} (XOR);
+  \draw[->] (XOR) -- node[above]{$D[N{-}1{:}0]$} (BANK);
+  \draw[->] (BANK) -- ++(1.2,0) coordinate (Q) node[circ]{} node[right]{$Q[N{-}1{:}0]$};
+  \draw[->] (Q) -- ++(0,1.1) -| (XOR.north) node[pos=0.25,above]{feedback};
+  \draw[->] (Q) -- ++(0,-1.2) -| (PRE.south);
+  \draw[->] (9.0,-1.6) node[below]{shared $CLK$} -- (BANK.south);
+\end{circuitikz}
+\end{document}
 ```
 
 All state bits now sample together, but the wide “all lower bits are one” logic becomes the critical path. An incrementer carry chain, carry-lookahead, or prefix tree computes the same enables with bounded fan-in and $O(\log N)$ depth. Thus counter evolution repeats the chapter's central pattern: ripple minimizes logic but exposes delay as behavior; synchronous logic hides intermediate states; prefix logic then repairs the synchronous critical path.
@@ -1061,20 +1277,34 @@ An up/down counter selects carry versus borrow propagation. A modulo-$M$ counter
 
 For an $N$-bit maximal-length LFSR, a primitive feedback polynomial yields period $2^N-1$. Fibonacci form computes one XOR feedback and shifts it; Galois form distributes XORs along the register, usually shortening the critical path. LFSRs generate pseudo-random binary sequences, scrambler patterns, built-in self-test signatures, and randomized replacement choices. The polynomial, shift convention, seed, and bit ordering are part of the interface—mismatching any one produces a different sequence.
 
-```mermaid
-flowchart LR
-    subgraph RING["4-bit ring counter"]
-        R0["Q0"] --> R1["Q1"] --> R2["Q2"] --> R3["Q3"] --> R0
-    end
-    subgraph JOHNSON["4-bit Johnson counter"]
-        J0["Q0"] --> J1["Q1"] --> J2["Q2"] --> J3["Q3"]
-        J3 --> INVJ["invert"] --> J0
-    end
-    subgraph FIB["Fibonacci LFSR example"]
-        L0["Q0"] --> L1["Q1"] --> L2["Q2"] --> L3["Q3"]
-        L3 --> XORF["XOR selected taps"] --> L0
-        L2 --> XORF
-    end
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.72,transform shape]
+  \tikzset{ff/.style={draw,minimum width=1.25cm,minimum height=0.8cm,align=center}}
+  \node[left] at (-0.2,2.6) {ring};
+  \node[ff] (R0) at (2.0,2.6) {$Q_0$}; \node[ff] (R1) at (4.2,2.6) {$Q_1$};
+  \node[ff] (R2) at (6.4,2.6) {$Q_2$}; \node[ff] (R3) at (8.6,2.6) {$Q_3$};
+  \draw[->] (R0) -- (R1); \draw[->] (R1) -- (R2); \draw[->] (R2) -- (R3);
+  \draw[->] (R3.east) -- ++(0.7,0) -- ++(0,0.8) -| (R0.north) node[pos=0.25,above]{direct feedback};
+
+  \node[left] at (-0.2,0) {Johnson};
+  \node[ff] (J0) at (2.0,0) {$Q_0$}; \node[ff] (J1) at (4.2,0) {$Q_1$};
+  \node[ff] (J2) at (6.4,0) {$Q_2$}; \node[ff] (J3) at (8.6,0) {$Q_3$};
+  \node[not port] (JI) at (11.0,0) {};
+  \draw[->] (J0) -- (J1); \draw[->] (J1) -- (J2); \draw[->] (J2) -- (J3); \draw[->] (J3) -- (JI.in);
+  \draw[->] (JI.out) -- ++(0.6,0) -- ++(0,-1.0) -| (J0.south) node[pos=0.25,below]{inverted feedback};
+
+  \node[left] at (-0.2,-2.8) {LFSR};
+  \node[xor port] (LX) at (0.8,-2.8) {};
+  \node[ff] (L0) at (3.0,-2.8) {$Q_0$}; \node[ff] (L1) at (5.2,-2.8) {$Q_1$};
+  \node[ff] (L2) at (7.4,-2.8) {$Q_2$}; \node[ff] (L3) at (9.6,-2.8) {$Q_3$};
+  \draw[->] (LX.out) -- (L0); \draw[->] (L0) -- (L1); \draw[->] (L1) -- (L2); \draw[->] (L2) -- (L3);
+  \draw[->] (L3.east) -- ++(0.6,0) -- ++(0,-1.1) -| (LX.in 1) node[pos=0.25,below]{tap $Q_3$};
+  \draw[->] (L2.south) -- ++(0,-1.9) -| (LX.in 2) node[pos=0.25,below]{tap $Q_2$};
+  \node[right] at (11.0,-2.8) {all stages share one clock};
+\end{circuitikz}
+\end{document}
 ```
 
 A ring counter must start one-hot or it may lock in all zero; a Johnson counter feeds back the inverted tail and produces $2N$ phases; an LFSR's period depends on a primitive polynomial and a nonzero seed. These are not interchangeable “special counters”: each changes state encoding to optimize decoding, switching, phase generation, or pseudo-random coverage.
@@ -1083,22 +1313,34 @@ A ring counter must start one-hot or it may lock in all zero; a Johnson counter 
 
 A register-file write port contains address decoder, write data/bitlines, byte/bit enables, and write driver. A read port contains wordline selection, bitlines/sense or mux tree, and output register/bypass. Multiple simultaneous writes to one address require a priority/error contract. A same-cycle read/write collision must define read-old, read-new through bypass, or unspecified behavior.
 
-```mermaid
-flowchart LR
-    WA["write address"] --> WDEC["write decoder"] --> ROW["one selected row"]
-    WD["write data + byte enables"] --> WDRV["write drivers"] --> ARR["word array"]
-    ROW --> ARR
-    RA0["read address 0"] --> RM0["read mux / bitlines 0"]
-    RA1["read address 1"] --> RM1["read mux / bitlines 1"]
-    ARR --> RM0 --> BP0["bypass mux 0"] --> RD0["read data 0"]
-    ARR --> RM1 --> BP1["bypass mux 1"] --> RD1["read data 1"]
-    WA --> CMP["address equality comparators"]
-    RA0 --> CMP
-    RA1 --> CMP
-    WD --> BP0
-    WD --> BP1
-    CMP -. "select read-new on collision" .-> BP0
-    CMP -.-> BP1
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.76,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.9cm,align=center}}
+  \node[blk] (WDEC) at (1.5,2.0) {write decoder};
+  \node[blk] (WDRV) at (1.5,0.5) {write drivers};
+  \node[blk,minimum width=2.5cm,minimum height=2.6cm] (ARR) at (5.0,1.25) {word array\\rows $\times$ bits\\2R1W cells};
+  \node[blk] (RM0) at (8.5,2.1) {read mux /\\bitlines 0};
+  \node[blk] (RM1) at (8.5,0.3) {read mux /\\bitlines 1};
+  \node[blk] (BP0) at (11.6,2.1) {bypass\\MUX 0};
+  \node[blk] (BP1) at (11.6,0.3) {bypass\\MUX 1};
+  \node[blk,minimum width=2.7cm] (CMP) at (6.6,-2.0) {write/read address\\comparators};
+  \draw[->] (-1.0,2.0) node[left]{write address} -- (WDEC);
+  \draw[->] (WDEC) -- node[above]{one wordline} (ARR);
+  \draw[->] (-1.0,0.5) node[left]{write data + enables} -- (WDRV);
+  \draw[->] (WDRV) -- (ARR);
+  \draw[->] (ARR) -- (RM0); \draw[->] (ARR) -- (RM1);
+  \draw[->] (RM0) -- (BP0); \draw[->] (RM1) -- (BP1);
+  \draw[->] (BP0) -- ++(1.0,0) node[right]{read data 0};
+  \draw[->] (BP1) -- ++(1.0,0) node[right]{read data 1};
+  \draw[->] (2.0,-2.0) node[left]{write/read addresses} -- (CMP);
+  \draw[->,dashed] (CMP) -| (BP0.south) node[pos=0.25,below]{collision select};
+  \draw[->,dashed] (CMP) -| (BP1.south);
+  \draw[->] (2.0,-3.2) node[left]{write data} -- ++(8.0,0) coordinate (WD) node[circ]{};
+  \draw[->] (WD) -| (BP0.south west); \draw[->] (WD) -| (BP1.south west);
+\end{circuitikz}
+\end{document}
 ```
 
 This is a two-read/one-write (2R1W) functional organization. If a read address equals the active write address, the array may naturally return old data, new data, or an analog/macro-specific result. A read-new contract therefore compares addresses and bypasses `write_data`; a read-old contract suppresses bypass and must use an array mode that guarantees the old word. “Unspecified” is legal only if every consumer is prevented from using the collision.
@@ -1130,15 +1372,24 @@ Flop-based small register files implement each read as a mux and are fast/flexib
 
 A pure function reacts only to the present input; a controller must react to *where it has been*. The minimal machine that does is a **state register plus combinational next-state/output logic**—the FSM. Its design requires a behavioral state abstraction, complete transition/output contract, encoding, timing strategy, illegal-state policy, and progress/verification argument. Encoding is one implementation choice, not the definition of the machine.
 
-```mermaid
-flowchart LR
-    X["inputs X"] --> NEXT["next-state logic\nS+ = F(S,X)"]
-    S["present state S"] --> NEXT
-    NEXT --> REG["state register"] --> S
-    S --> OUT["output logic"]
-    X --> OUT
-    OUT --> Y["outputs Y"]
-    CLK["clock/reset"] -.-> REG
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.86,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.4cm,minimum height=1.1cm,align=center}}
+  \node[blk] (NEXT) at (2.4,1.0) {next-state logic\\$S^+=F(S,X)$};
+  \node[blk] (REG) at (6.0,1.0) {state DFF bank};
+  \node[blk] (OUT) at (6.0,-1.5) {output logic\\$Y=G(S,X)$};
+  \draw[->] (-0.7,1.3) node[left]{inputs $X$} -- (1.2,1.3);
+  \draw[->] (NEXT) -- node[above]{$S^+$} (REG);
+  \draw[->] (REG) -- ++(1.3,0) coordinate (S) node[circ]{} node[right]{present $S$};
+  \draw[->] (S) -- ++(0,1.1) -| (NEXT.north) node[pos=0.25,above]{state feedback};
+  \draw[->] (S) |- (OUT.east);
+  \draw[->] (-0.7,-1.5) node[left]{inputs $X$} -- (OUT);
+  \draw[->] (OUT) -- ++(1.3,0) node[right]{outputs $Y$};
+  \draw[->] (6.0,-3.0) node[below]{clock / reset} -- (REG.south);
+\end{circuitikz}
+\end{document}
 ```
 
 The state register is ordinary DFF storage. “Designing an FSM” means defining the state abstraction, deriving $F(S,X)$, choosing whether outputs depend on state alone or state plus inputs, encoding the states into bits, and proving that every legal and illegal state has intentional behavior.
@@ -1240,13 +1491,24 @@ Verification should assert legal-state membership after the reset/recovery allow
 
 When a multi-bit binary counter increments across a carry boundary, several bits may change. A destination clock that samples during unequal wire and flip-flop delays can capture a mixture that is neither endpoint. Gray coding changes the source sequence so adjacent legal counts differ in one bit, reducing each increment to one changing signal.
 
-```mermaid
-flowchart LR
-    BIN["source binary counter"] --> GENC["registered Gray encoder\nG = B ⊕ (B >> 1)"]
-    GENC --> SYNC["one synchronizer chain per Gray bit"]
-    SYNC --> DST["destination-domain pointer compare / decode"]
-    CON["source advances one legal count per event"] -.-> GENC
-    SKEW["constrain inter-bit physical skew"] -.-> SYNC
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.82,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.1cm,align=center}}
+  \node[blk] (BIN) at (0.8,0) {source binary\\pointer DFFs};
+  \node[blk] (XOR) at (4.2,0) {registered XOR encoder\\$G=B\oplus(B\!\gg\!1)$};
+  \node[blk] (SYNC) at (7.8,0) {two DFFs\\per Gray bit};
+  \node[blk] (DST) at (11.4,0) {destination compare\\and decode};
+  \draw[->] (BIN) -- node[above]{$B$} (XOR);
+  \draw[->] (XOR) -- node[above]{registered $G$} (SYNC);
+  \draw[->] (SYNC) -- node[above]{synchronized $G$} (DST);
+  \draw[->] (-0.8,-1.8) node[left]{source clock} -| (XOR.south);
+  \draw[->] (7.8,-1.8) node[below]{destination clock} -- (SYNC.south);
+  \draw[->,dashed] (5.8,-2.8) node[left]{bounded inter-bit skew} -| (SYNC.south west);
+  \draw[->,dashed] (-0.8,1.6) node[left]{one legal increment / event} -| (BIN.north);
+\end{circuitikz}
+\end{document}
 ```
 
 Gray code alone is not a complete clock-domain-crossing solution. The source Gray word should be registered so combinational XOR glitches are not launched; every bit is synchronized into the destination domain; the protocol must tolerate missed intermediate counts; and implementation constraints must bound inter-bit skew so two successive source transitions do not arrive as one multi-bit event.
@@ -1271,18 +1533,27 @@ A combinational output is only guaranteed correct *after* it settles; in between
 
 A **static-1 hazard** is the canonical case. In $F=AB'+BC$ with $A{=}C{=}1$, toggling $B$ hands the '1' from one product term to the other, and if the term that should rise is late, $F$ momentarily dips to 0. K-map view: the two 1-cells are adjacent but covered by *different* prime implicants with no shared cover, so the transition crosses a gap. The fix is the **consensus term**: add $AC$ (the consensus of $AB'$ and $BC$), which stays 1 throughout the transition and bridges the gap — redundant for *logic*, essential for *timing*. Static-0 hazards are the POS dual (add the consensus factor); dynamic hazards (multiple transitions) occur only in multi-level circuits, and Eichelberger's theorem guarantees that eliminating all static hazards eliminates dynamic ones too.
 
-```mermaid
-flowchart LR
-    A["A"] --> P0["AND: A·B̅"]
-    B["B"] --> INV["inverter"] --> P0
-    B --> P1["AND: B·C"]
-    C["C"] --> P1
-    P0 --> OR["OR"]
-    P1 --> OR
-    OR --> F["F may glitch"]
-    A -.-> CONS["consensus AND: A·C"]
-    C -.-> CONS
-    CONS -. "hazard-cover path" .-> OR
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.83,transform shape]
+  \node[not port] (INV) at (0.0,1.0) {};
+  \node[and port] (P0) at (3.0,2.0) {};
+  \node[and port] (P1) at (3.0,0) {};
+  \node[and port] (PC) at (3.0,-2.0) {};
+  \node[or port,number inputs=3] (OR) at (7.0,0) {};
+  \draw (-1.2,2.25) node[left]{$A$} -- (0.8,2.25) coordinate (A) node[circ]{} -- (P0.in 1);
+  \draw (A) |- (PC.in 1);
+  \draw (INV.in) -- ++(-1.2,0) coordinate (B) node[circ]{} node[left]{$B$};
+  \draw (B) |- (P1.in 1);
+  \draw (INV.out) -- (P0.in 2) node[midway,above]{$\overline B$};
+  \draw (-1.2,-0.25) node[left]{$C$} -- (0.8,-0.25) coordinate (C) node[circ]{} -- (P1.in 2);
+  \draw (C) |- (PC.in 2);
+  \draw (P0.out) -- (OR.in 1); \draw (P1.out) -- (OR.in 2); \draw (PC.out) -- (OR.in 3);
+  \draw (OR.out) -- ++(1.0,0) node[right]{$F$};
+  \node[below,align=center] at (3.0,-2.7) {consensus path $AC$\\holds $F=1$ during the handoff};
+\end{circuitikz}
+\end{document}
 ```
 
 ```wavedrom
@@ -1312,7 +1583,7 @@ So hazard theory is a targeted tool for the async/clock/dynamic corners where co
 One register can decouple a producer and consumer for one beat if it also stores a **valid bit**. When empty, it may accept; when full, it must retain payload until the consumer accepts. A burst longer than one beat needs multiple entries and two independent positions: where the next push writes and where the next pop reads. That composition is a first-in, first-out queue (FIFO).
 
 ```mermaid
-flowchart LR
+flowchart TD
     PROD["producer\npush_valid + data"] --> ADM["push admission\nnot full"]
     ADM --> MEM["entry array"]
     WP["write pointer"] --> MEM
@@ -1380,7 +1651,7 @@ An asynchronous FIFO also pays for synchronized-pointer staleness and usually us
 The chapter's blocks become useful when their ownership boundaries compose. Consider a producer that may burst requests while a single-cycle-at-a-time worker has variable latency. The smallest correct unbuffered design wires producer directly to the controller; while the worker is busy, the producer must stall. Add a FIFO when burst absorption is required.
 
 ```mermaid
-flowchart LR
+flowchart TD
     P["producer\nvalid + payload"] --> ADM["ready/valid admission"]
     ADM --> FIFO["FIFO array\nwrite/read pointers + valid state"]
     FIFO --> HEAD["head payload register"]

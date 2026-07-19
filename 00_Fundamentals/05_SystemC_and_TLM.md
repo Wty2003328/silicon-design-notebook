@@ -21,7 +21,7 @@ This page derives both from first principles: the kernel as a discrete-event sim
 ### 0.1 The modeling stack evolves by removing one bottleneck at a time
 
 ```mermaid
-flowchart LR
+flowchart TD
     C["ordinary sequential C++"] -->|"cannot represent concurrent blocks or delayed consequences"| DE["event queue + simulated time"]
     DE -->|"zero-time shared mutation is order-dependent"| EU["evaluate / update / delta-cycle discipline"]
     EU -->|"pin-level events are too numerous for software workloads"| TX["memory-mapped transactions"]
@@ -397,7 +397,7 @@ The ladder is **RTL ≪ cycle-accurate ≪ AT < LT < LT+TD+DMI**, spanning ~6 or
 A SystemC virtual platform does not automatically turn an application into IPC, bandwidth, or energy. It executes a chain of models and accumulates explicitly defined observations. The full path is:
 
 ```mermaid
-flowchart LR
+flowchart TD
     SRC["source program + libraries"] --> COMP["compiler / assembler / linker"]
     COMP --> IMG["target ISA executable or boot image"]
     IMG --> LOAD["platform loader populates modeled memory and reset state"]

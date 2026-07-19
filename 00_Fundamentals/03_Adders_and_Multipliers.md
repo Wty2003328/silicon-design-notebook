@@ -1,15 +1,24 @@
 # Datapath Arithmetic — The Carry Chain and How to Beat It
 
-```mermaid
-flowchart TD
-    ADD["N-bit addition"] --> RIP["ripple carry\nO(N) latency"]
-    ADD --> CLA["carry lookahead / carry select"]
-    CLA --> PRE["parallel-prefix tree\nO(log N) latency"]
-    MUL["multiplication"] --> PP["partial-product generation\nBooth recoding"]
-    PP --> RED["carry-save reduction\nWallace / Dadda"]
-    RED --> CPA["final carry-propagate adder"]
-    PRE --> CPA
-    CPA --> OUT["sum / product"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.78,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.4cm,minimum height=1.0cm,align=center}}
+  \node[blk] (ADD) at (0,1.2) {$N$-bit addition};
+  \node[blk] (RIP) at (3.4,2.1) {ripple carry\\$O(N)$ latency};
+  \node[blk] (CLA) at (3.4,0.3) {lookahead /\\carry select};
+  \node[blk] (PRE) at (6.8,0.3) {parallel-prefix tree\\$O(\log N)$ latency};
+  \node[blk] (MUL) at (0,-2.1) {multiplication};
+  \node[blk] (PP) at (3.4,-2.1) {partial products\\Booth recoding};
+  \node[blk] (RED) at (6.8,-2.1) {carry-save reduction\\Wallace / Dadda};
+  \node[blk] (CPA) at (10.2,-0.9) {final carry-\\propagate adder};
+  \draw[->] (ADD) -- (RIP); \draw[->] (ADD) -- (CLA); \draw[->] (CLA) -- (PRE);
+  \draw[->] (MUL) -- (PP); \draw[->] (PP) -- (RED); \draw[->] (RED) -- (CPA);
+  \draw[->] (PRE) -- (CPA);
+  \draw[->] (CPA) -- ++(1.3,0) node[right]{sum / product};
+\end{circuitikz}
+\end{document}
 ```
 
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, series-stack fan-in limits, wire RC), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (MUX, XOR, comparator).
@@ -35,7 +44,7 @@ We derive each structure from the carry problem, quantify where it sits in the d
 Treat every structure as a repair to a measured carry problem:
 
 ```mermaid
-flowchart LR
+flowchart TD
     HA["half adder\nno carry-in"] --> FA["full adder\none-bit carry recurrence"]
     FA --> RCA["ripple chain\nminimum area"]
     RCA -->|"linear carry latency"| BLOCK["skip/select blocks\nshorten or speculate locally"]
@@ -70,7 +79,7 @@ The one-bit implementation exposes which logic is parallel and which path is rec
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[xor port] (X1) at (0,1.3) {};
   \node[xor port] (X2) at (2.5,1.3) {};
   \node[and port] (G) at (0,-0.7) {};
@@ -216,7 +225,7 @@ One **black prefix cell** implements exactly that operator. Both ANDs begin toge
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[and port] (AG) at (1.5,1.1) {};
   \node[or port]  (OG) at (4.0,1.6) {};
   \node[and port] (AP) at (2.7,-0.7) {};
@@ -224,10 +233,10 @@ One **black prefix cell** implements exactly that operator. Both ANDs begin toge
   \draw (AG.in 2) -- ++(-0.9,0) node[left]{$g_R$};
   \draw (OG.in 1) -- ++(-3.6,0) node[left]{$g_L$};
   \draw (AG.out) -| (OG.in 2);
-  \draw (OG.out) -- ++(0.9,0) node[right]{$G=g_L+p_Lg_R$};
+  \draw (OG.out) -- ++(0.9,0) node[right]{$G$};
   \draw (AP.in 1) -- ++(-2.1,0) node[left]{$p_L$};
   \draw (AP.in 2) -- ++(-2.1,0) node[left]{$p_R$};
-  \draw (AP.out) -- ++(2.2,0) node[right]{$P=p_Lp_R$};
+  \draw (AP.out) -- ++(0.9,0) node[right]{$P$};
 \end{circuitikz}
 \end{document}
 ```
@@ -300,13 +309,13 @@ Because no carry travels along the word, a CSA has **$O(1)$ delay independent of
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american]
+\begin{circuitikz}[american,thick,scale=0.9,transform shape]
   \node[draw,minimum width=2.2cm,minimum height=1.5cm,align=center] (FA) at (0,0) {full adder\\3:2 compressor};
   \draw (-2.0,0.5) -- (-1.1,0.5) node[left]{$x_i$};
   \draw (-2.0,0.0) -- (-1.1,0.0) node[left]{$y_i$};
   \draw (-2.0,-0.5) -- (-1.1,-0.5) node[left]{$z_i$};
-  \draw (1.1,0.4) -- (2.1,0.4) node[right]{$s_i$ at weight $2^i$};
-  \draw (1.1,-0.4) -- (2.1,-0.4) node[right]{$c_{i+1}$ at weight $2^{i+1}$};
+  \draw (1.1,0.4) -- (2.1,0.4) node[right]{$s_i$};
+  \draw (1.1,-0.4) -- (2.1,-0.4) node[right]{$c_{i+1}$};
 \end{circuitikz}
 \end{document}
 ```
