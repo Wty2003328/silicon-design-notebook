@@ -371,6 +371,7 @@ Counters:
 - Partial sums are wider than inputs and often worth keeping stationary.
 - Multicast reduces source bandwidth but not all distribution energy.
 - Dense peak TOPS does not predict irregular/elementwise/embedding performance.
+- Fast convolution cuts multiplies orthogonally to dataflow: Winograd $F(m\times m,r\times r)$ needs $(m+r-1)^2$ vs $m^2r^2$ direct — $2.25\times$ for $F(2,3)$, $4\times$ for $F(4,3)$, ceiling $r^2$ — while $1\times1$/depthwise stay direct and large filters use FFT.
 
 ## 13. Worked problems
 
@@ -392,12 +393,100 @@ Signed INT8×INT8 products summed across $K=1024$ need roughly $8+8+10=26$ bits 
 
 One activation is reused across 64 PEs. Without multicast, global buffer performs 64 reads; with one read and a distribution tree, global accesses drop 64×, though tree links/receivers still switch. The energy saving depends on global-read versus network-hop energy.
 
+## 14. Fast-convolution algorithms: Winograd and FFT
+
+Every section so far reduced the *cost of a multiply-accumulate* — where operands live, how far they move, how densely the array is packed. Fast-convolution algorithms attack a different quantity: the *number* of multiplies a convolution needs at all. This lever is orthogonal to dataflow. A Winograd or fast Fourier transform (FFT) convolution still runs on the systolic or vector engine of §2 and §4; it merely presents fewer, differently shaped multiplications wrapped in cheap, add-only transforms. Because multiplier area and energy dominate a MAC lane (§5, §8), trading multiplies for additions is usually a win — until the transforms themselves dominate.
+
+### 14.1 The minimal-filtering multiply count
+
+Let $F(m,r)$ denote producing $m$ outputs of a finite-impulse-response (FIR) filter with $r$ taps. Directly, each output is an $r$-term dot product, so $F(m,r)$ costs $mr$ multiplies. Winograd's minimal-filtering theorem gives a smaller count:
+
+$$
+\mu\big(F(m,r)\big)=m+r-1 .
+$$
+
+*Derivation.* The $m$ outputs are $m$ consecutive coefficients of the product of the degree-$(r-1)$ filter polynomial $g(x)=\sum_j g_j x^j$ and a length-$(m+r-1)$ data window. That product has degree $m+r-2$, hence $m+r-1$ coefficients. By the Cook–Toom construction a polynomial product with $m+r-1$ result coefficients is obtained by evaluating both operands at $m+r-1$ distinct nodes $\beta_0,\dots,\beta_{m+r-2}$, multiplying the evaluations pointwise, and interpolating. Evaluation and interpolation are linear in the data — additions and multiplications by constant node powers — so only the $m+r-1$ pointwise products are data-dependent multiplies. Winograd's lower bound shows $m+r-1$ is optimal over a field with enough distinct elements. $\square$
+
+In matrix form the 1-D algorithm is $Y=A^{T}\big[(Gg)\odot(B^{T}d)\big]$, where $B^{T}$ evaluates the data window, $G$ evaluates the filter, $\odot$ is the elementwise (Hadamard) product carrying the $m+r-1$ multiplies, and $A^{T}$ interpolates. Nesting the 1-D algorithm along both axes gives the 2-D layer form used in practice:
+
+$$
+U=GgG^{T},\quad V=B^{T}dB,\quad M=U\odot V,\quad Y=A^{T}MA .
+$$
+
+The Hadamard stage runs once per transform coordinate, and there are $(m+r-1)^2$ of them, so 2-D $F(m\times m,\,r\times r)$ costs $(m+r-1)^2$ multiplies against $m^2r^2$ for direct convolution ($m^2$ outputs $\times\,r^2$ taps). The reduction ratio is
+
+$$
+\rho=\frac{m^2r^2}{(m+r-1)^2}=\left(\frac{mr}{m+r-1}\right)^{2}.
+$$
+
+As $m\to\infty$ with $r$ fixed, $\rho\to r^2$ — the ceiling is the tap count (9 for a $3\times3$ filter, i.e. asymptotically one multiply per output) — but the transforms become numerically unusable long before that.
+
+### 14.2 $F(2\times2,3\times3)$ in full
+
+For the ubiquitous $3\times3$ filter with a $2\times2$ output tile, $m=2$, $r=3$, tile size $\alpha=m+r-1=4$, and the standard nodes $\{0,1,-1,\infty\}$ give
+
+$$
+B^{T}=\begin{bmatrix}1&0&-1&0\\0&1&1&0\\0&-1&1&0\\0&1&0&-1\end{bmatrix},\quad
+G=\begin{bmatrix}1&0&0\\[2pt] \tfrac12&\tfrac12&\tfrac12\\[2pt] \tfrac12&-\tfrac12&\tfrac12\\[2pt] 0&0&1\end{bmatrix},\quad
+A^{T}=\begin{bmatrix}1&1&1&0\\0&1&-1&-1\end{bmatrix}.
+$$
+
+The 1-D core computes, from $d=[d_0,d_1,d_2,d_3]$ and $g=[g_0,g_1,g_2]$,
+
+$$
+\begin{aligned}
+&m_1=(d_0-d_2)\,g_0,\quad m_2=(d_1+d_2)\tfrac{g_0+g_1+g_2}{2},\\
+&m_3=(d_2-d_1)\tfrac{g_0-g_1+g_2}{2},\quad m_4=(d_1-d_3)\,g_2,\\
+&y_0=m_1+m_2+m_3,\qquad y_1=m_2-m_3-m_4 .
+\end{aligned}
+$$
+
+Substituting collapses $y_0=d_0g_0+d_1g_1+d_2g_2$ and $y_1=d_1g_0+d_2g_1+d_3g_2$ exactly — **four** multiplies for two outputs where direct convolution needs six. The filter-domain terms $\tfrac{g_0+g_1+g_2}{2}$ etc. are the entries of $Gg$; for inference the weights are fixed, so $U=GgG^{T}$ is precomputed offline and costs nothing at run time. $B^{T}$ and $A^{T}$ hold only $\{0,\pm1\}$, so the input and inverse transforms are add/subtract only.
+
+Counting the 2-D layer: $F(2\times2,3\times3)$ needs $(m+r-1)^2=16$ multiplies per output tile versus $m^2r^2=36$ direct — the promised $36/16=2.25\times$. Widening to $F(4\times4,3\times3)$ gives $6^2=36$ versus $16\cdot9=144$, a $4\times$ reduction.
+
+### 14.3 Mapping the transform onto the array
+
+The transforms wrap the array rather than replace it. $B^{T}dB$ and $A^{T}MA$ collapse to small adder trees at the array's input and output boundaries; the Hadamard stage is where the MAC array works. At each of the $(m+r-1)^2$ transform coordinates the elementwise product across $C$ input channels and $K$ output channels is an independent $[K\times C]\cdot[C\times\text{tiles}]$ matrix multiply, so Winograd turns one convolution into $(m+r-1)^2$ smaller GEMMs, each mapped by any stationary dataflow of §3.
+
+```mermaid
+flowchart LR
+    d["input tile d\n(m+r-1) x (m+r-1)"] --> BT["input transform\nV = B^T d B (adds only)"]
+    g["filter g (static weights)"] --> Gt["filter transform\nU = G g G^T (precomputed)"]
+    BT --> HAD["per-coordinate GEMM\nM = U (Hadamard) V on MAC array"]
+    Gt --> HAD
+    HAD --> AT["inverse transform\nY = A^T M A (adds only)"]
+    AT --> y["output tile Y\nm x m"]
+```
+
+The overhead amortizes. The input transform runs once per input channel per tile (independent of $K$); the inverse runs once per output channel per tile (independent of $C$); only the Hadamard multiplies scale with $K\cdot C$. Take $K=C=64$ for one output tile: direct convolution needs $K\cdot(2\times2)\cdot(3\times3)\cdot C=36\cdot4096=147{,}456$ multiplies, Winograd needs $16\cdot K\cdot C=65{,}536$ — the same $2.25\times$, eliminating $81{,}920$ multiplies. The transforms add only additions (on the order of 32 per input tile and 24 per output tile in the Lavin–Gray factoring), a few thousand add-only operations here — negligible beside the eliminated multiplies, since a multiply costs several times an add in a MAC lane. When $C$ and $K$ collapse to $1$ (depthwise, §10), that amortization vanishes and the transforms dominate.
+
+### 14.4 FFT for large filters
+
+Winograd's small integer transforms are ideal for $3\times3$ but degrade as the tile grows. For large filters the fast Fourier transform (FFT) is the better route. The convolution theorem states that circular convolution is pointwise multiplication in the transform domain,
+
+$$
+x\circledast h=\mathrm{IDFT}\big(\mathrm{DFT}(x)\odot\mathrm{DFT}(h)\big),
+$$
+
+and an $N$-point FFT costs $O(N\log N)$ operations. Convolving a long signal with an $r$-tap filter by overlap-add — transform an $N$-sample block ($O(N\log N)$), multiply by the precomputed $H=\mathrm{DFT}(h)$ ($O(N)$), inverse-transform ($O(N\log N)$), and stitch — costs $O(\log N)$ multiplies per output sample, *independent of $r$*. Direct convolution is $O(r)$ per output, and Winograd's transform cost and error both grow with the tile $\alpha=m+r-1$, so FFT overtakes both once $r$ is large (roughly $r\gtrsim7$ for 2-D filters, and firmly for long 1-D filters). FFT needs complex arithmetic (or real-transform symmetry tricks), butterfly and bit-reversal datapaths, and a larger workspace, so for the dominant $3\times3$ it loses to Winograd's tiny transforms.
+
+### 14.5 Trade-offs and when the simple path wins
+
+- **Numerical inflation.** $B^{T}dB$ and especially the inverse $A^{T}MA$ take sums and differences that widen dynamic range; the transform matrices' condition number grows roughly geometrically with $\alpha$, amplifying rounding on the inverse. In FP16/INT8 this caps practical tiles at $F(2,3)$ and $F(4,3)$; $F(6\times6,3\times3)$ is rarely stable.
+- **Transformed-weight and halo bandwidth.** For inference the stored transformed filter inflates from $r^2=9$ to $(m+r-1)^2=16$ values ($1.78\times$), and output-tile stride $m$ makes input tiles overlap by $r-1$, re-reading halos. A weight- or activation-bandwidth-bound layer can lose what the multiply count saved.
+- **When direct/systolic wins.** A $1\times1$ convolution has $r=1$, so $\mu=m$ equals the direct count — Winograd is pure overhead, and the operation is already a GEMM for the systolic array of §2. Depthwise convolution has no channel reduction ($C=1$), so the Hadamard GEMMs are trivial and the transform overhead dominates. Both stay on the direct/systolic path.
+- **When FFT wins.** Large kernels, as above.
+
+Winograd is thus a targeted optimization for small dense spatial filters with real channel depth; it composes with the stationary dataflows of §3 and the tiling schedules of the mapping page, and its numeric widening is governed by the accumulator and format rules of §8 and the [Sparsity, Quantization, and Compression](../02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) page.
+
 ## Cross-references
 
 - **Overview/mapping:** [NPU Accelerators](01_NPU_Accelerators.md), [Tensor Tiling and Data Movement](../02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md).
 - **Advanced workloads:** [Transformer and Attention Engine Microarchitecture](03_Transformer_and_Attention_Engine_Microarchitecture.md), [Dynamic Sparsity, Mixture of Experts, and Irregular Execution](04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md).
 - **Compression and scheduling:** [Sparsity, Quantization, and Compression](../02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md), [Decoupled Access/Execute and Scratchpad Scheduling](../02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md).
 - **Relatives/simulation:** [GPU Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md), [Accelerator and NPU Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md).
+- **Fast convolution:** Winograd/FFT (§14) map onto the systolic array (§2) and the [Tensor Tiling and Data Movement](../02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md) schedules; transform numerics follow §8, [Sparsity, Quantization, and Compression](../02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md), and [Floating Point](../../../00_Fundamentals/04_Floating_Point.md).
 
 ## References
 
@@ -406,6 +495,8 @@ One activation is reused across 64 PEs. Without multicast, global buffer perform
 3. H. Kung, “Why Systolic Architectures?” *Computer*, 1982.
 4. A. Parashar et al., “Timeloop: A Systematic Approach to DNN Accelerator Evaluation,” ISPASS 2019.
 5. H. Kwon et al., “MAESTRO: A Data-Centric Approach to Understand Reuse, Performance, and Hardware Cost of DNN Mappings,” IEEE Micro 2020.
+6. S. Winograd, “Arithmetic Complexity of Computations,” SIAM, 1980.
+7. A. Lavin and S. Gray, “Fast Algorithms for Convolutional Neural Networks,” CVPR 2016.
 
 ---
 

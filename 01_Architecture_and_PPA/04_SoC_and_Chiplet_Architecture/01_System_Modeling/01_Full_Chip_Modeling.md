@@ -566,6 +566,11 @@ Order-of-magnitude anchors for back-of-envelope full-chip sanity checks. **State
 | Multicore speedup (mem-heavy) | **~4–5× on 8 cores** | Amdahl + contention $C(N)$, not 8× (§4.2) |
 | USL scalability peak | **$N^\star=\sqrt{(1-\sigma)/\kappa}$**, retrograde beyond | coherency $O(N^2)$ caps core count (§4.2) |
 | Double-buffer speedup | **$\le 2\times$**, max at $t_{comp}=t_{mem}$ | $(c{+}m)/\max(c,m)$; overlap replaces $\sum$ by $\max$ (§2.3) |
+| Cold-boot budget, DDR-training share | **~40–80%** of boot | full PHY training dominates; cache coefficients for fast resume (§7) |
+| DDR PHY training time | **~10–200 ms** | per-lane analog sweep; the one un-shortcuttable boot step (§7) |
+| Per-domain PLL lock | **~2–4 µs** | $\sim$few$/f_{bw}$, $f_{bw}\lesssim f_{ref}/10$; a boot-release milestone (§7) |
+| Physical address space | **40-bit = 1 TB** (example) | partitioned DRAM / MMIO / AON-boot / chiplet windows (§8) |
+| Hierarchical decode depth | **~3 levels, ~1–2 fabric cycles** | vs flat 1-of-thousands; + default slave for liveness (§8) |
 
 ---
 
@@ -589,11 +594,102 @@ The columns are *different tools on purpose* — the auditor's distinction of §
 
 ---
 
+## 7. Full-chip boot and power-on sequencing
+
+The loop of §3 assumes a *running* chip — clocks locked, memory valid, software resident. Reaching that state from a cold rail is a separate problem, and it is where the "operating point" question of §0 has its literal first answer: at power-on there is **no** operating point — no clock, no valid DRAM, no authenticated software — and the chip must **manufacture one deterministically or hang.**
+
+**Why this section exists.** When power is first applied, only an **always-on (AON)** island can be assumed alive; every PLL (phase-locked loop) is unlocked, external DRAM is untrained and returns garbage, and no authenticated software exists in a runnable location. The shallow model — "apply power, the CPU runs" — skips every dependency that makes that sentence true. The SoC must bootstrap itself: order the rails, wake the AON island, execute immutable code from a region reachable *before* DRAM, lock the clocks, train the memory PHY, authenticate and load firmware, and only then release the application cores — with a **defined fallback on every step**, because a boot that hangs on the first failure yields a dead chip with no diagnosis.
+
+**The milestone chain.** Boot is a *dependency graph*, not a linear script; each milestone has an entry condition, an action, success evidence, a watchdog timeout, and a fallback.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    PMIC["PMIC rail ordering<br/>power-good gates next rail"] --> AON["AON supply + clock + reset<br/>ring-osc/crystal, watchdog, fuses"]
+    AON --> ROM["boot ROM executes<br/>AON-reachable reset vector"]
+    ROM --> PLL["lock domain PLLs<br/>~2-4 us each"]
+    PLL --> DDR["train DDR PHY<br/>write-level, DQS center, Vref"]
+    DDR --> AUTH["load + authenticate firmware<br/>root-of-trust key in fuses"]
+    AUTH --> CORE["release application cores<br/>hand off to software (§3 loop)"]
+    PMIC -.->|"timeout"| FB["defined fallback:<br/>retry / recovery source / halt+log"]
+    PLL -.->|"no lock"| FB
+    DDR -.->|"train fail"| FB
+    AUTH -.->|"bad signature"| FB
+    classDef m fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef f fill:#fee2e2,stroke:#b91c1c,color:#000
+    class PMIC,AON,ROM,PLL,DDR,AUTH,CORE m
+    class FB f
+```
+
+1. **PMIC rail ordering.** A **power-management IC (PMIC)** sequences the supply rails in a fixed order — AON/IO before core before memory/PHY — respecting each regulator's dependencies and inrush limit; a rail that rises out of order can forward-bias isolation diodes or provoke latch-up. Each rail's *power-good* gates the next.
+2. **AON supply, clock, reset.** With the AON rail good, an AON clock (a ring oscillator or the raw crystal — no PLL yet) starts and AON reset releases under the async-assert/sync-deassert discipline of [the clock/reset page §7.8](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md). The AON island owns reset control, boot straps, fuses/identity, and the watchdog.
+3. **Boot ROM from an AON-reachable region.** The boot CPU leaves reset fetching from a mask **read-only memory (ROM)** — immutable, so the root of the trust chain cannot be altered — at a reset vector that must decode to an always-on target *without* DRAM or a trained fabric (a hard constraint on the address map, §8). The ROM reads straps and lifecycle/fuse state to select the boot path.
+4. **Lock the PLLs.** The ROM programs and locks the domain PLLs (~2–4 µs each, §7.6 of the clock page); PLL-lock is the release milestone for every domain that depends on that clock.
+5. **Train the DDR PHY.** The ROM or a first-stage loader runs DDR PHY training — write leveling, read-gate/DQS centering, per-bit deskew, $V_{ref}$ calibration — because cold-start interface timing is unknown and untrained reads return garbage. **This step dominates the boot budget.**
+6. **Load and authenticate firmware.** With DRAM usable, the loader copies the next firmware stage from non-volatile storage into DRAM and *authenticates* it — signature/hash verified against a root-of-trust key in fuses — **before** executing it. This is secure boot; the policy/security sidebands and identity that carry it are [AHB/AXI/APB §9](../03_Transaction_Protocols/01_AHB_AXI_APB.md).
+7. **Release the application cores.** Only after authenticated firmware is resident and the memory/interrupt/interconnect state is initialized are the application cores released from reset, handing control to software deterministically — the point at which the §3 loop takes over.
+
+**Watchdog and fallback.** Every step arms a watchdog; a missed milestone — PLL never locks, DDR training fails, a signature check fails — must reach a *defined* state: retry with relaxed parameters, fall back to a safe boot source (recovery ROM, alternate image, UART/USB download), or halt with a readable reset-cause and boot-milestone register. Never an undiagnosable hang. The [bring-up blueprint](../08_Implementation_Blueprints/03_Full_Chip_Integration_Verification_and_Bringup_Blueprint.md) models exactly this as a boot dependency graph with per-node entry/action/evidence/timeout/fallback.
+
+*Worked number — the boot budget, and why DDR training dominates.* A representative cold boot to OS handoff:
+
+| Step | Budget | Why |
+|---|---|---|
+| PMIC rail sequencing + power-good | ~1–5 ms | regulator soft-start |
+| AON clock/reset + ROM start | ~tens of µs | small, local |
+| PLL locks (parallel) | ~a few µs | $\sim$few$/f_{bw}$ (§7.6, clock page) |
+| **DDR PHY training** | **~10–200 ms** | per-lane analog sweep across every data bit |
+| Firmware copy + authenticate | ~few–tens of ms | storage BW + hash throughput |
+| Core release + OS handoff | ~ms | — |
+
+Of a ~250 ms cold boot, **DDR training alone is often 40–80%** — the one step that must sweep analog timing across every lane and cannot be shortcut. When boot latency matters (automotive freshness, fast resume), the lever is to *cache* trained coefficients in non-volatile storage and reload-and-verify them (fast path, a few ms) instead of full retraining (cold path, ~100 ms) — trading storage and a coefficient-invalidation policy across PVT (process, voltage, temperature) drift for ~100× on that step.
+
+**Trade-off — when the simpler option wins.** A chip with no external DRAM (all on-die SRAM, e.g. a microcontroller) skips step 5 entirely and boots in ~ms; a security-first system spends time on authentication depth; a fast-resume system pays storage and complexity to cache DDR coefficients. The full chain above is the price of *external DRAM plus secure boot* — implement only the steps your system actually has, but keep the watchdog/fallback on every step you do.
+
+---
+
+## 8. The global system address map and memory protection
+
+Every mechanism in this page resolves to an *address* presented to the fabric — a DMA burst in §3.1, a boot fetch in §7, a core miss in §4.2. What that address *means* is not given by physics; it is a decision, and it must be made exactly once, consistently, for every master, or the composition breaks in ways no performance number reveals.
+
+**Why this section exists.** A bus master — CPU, GPU, NPU, DMA, or I/O — issues a physical address and expects it to reach exactly one target with well-defined attributes and permissions. If two masters or two decoders disagree about which target an address reaches, or with what attributes (cacheable? secure? device-ordered?), the result is silent corruption (aliasing), a misrouted write (overlap), or a security hole (a non-secure master reaching a secure region). The chip therefore needs **one coherent view** — a single decode-and-permission source of truth — from which every master's view is *derived*. This is a correctness and security requirement, not an optimization.
+
+**Mechanism — hierarchical decode, region attributes, per-master views.**
+
+- **Hierarchical decode.** The fabric routes by decoding the address in levels — coarse (which top-level region/target), then fine (which slave/bank within it) — a small tree of comparators rather than one flat 1-of-thousands match. An access to an *unmapped* region must be steered to a **default slave** that returns an error, because the alternative — no target responds, the handshake never completes — hangs the master forever. "Someone must always answer, even to say no" is the decode-liveness requirement the [protocols page](../03_Transaction_Protocols/01_AHB_AXI_APB.md) derives.
+- **Region attributes.** Each region carries type — **device** (memory-mapped I/O: non-cacheable, non-speculatable, strongly ordered) versus **normal** memory (cacheable, bufferable, reorderable) — plus security (secure/non-secure), shareability, executability, and privilege. These attributes are part of the *map*, not the data; they travel as sideband with every transaction and decide which reorderings and coherence actions are legal.
+- **MMIO windows, aliasing, AON/boot regions.** Memory-mapped I/O (MMIO) occupies device windows; an **alias** (two addresses → one location) must be *declared* coherent or it exposes stale data (a cached alias layered over an uncached one); the AON/boot region must be reachable before most domains start — the reset vector of §7 decodes here.
+- **Per-master views.** Not every master sees the same map. A DMA engine or accelerator sees a *virtualized, permission-checked* view through a system memory-management unit — an **input/output memory-management unit (IOMMU/SMMU)** — that translates and checks each device access against a region/page table *before* it enters the fabric, so a buggy or compromised device cannot reach memory it was never granted.
+
+**Structural argument — one source of truth makes the invariants decidable.** Model the map as regions $\{(base_i,\,size_i,\,target_i,\,attr_i)\}$. Three invariants must hold, and each maps to a failure if broken: (1) **no overlap** — for $i\ne j$, $[base_i,\,base_i{+}size_i)\cap[base_j,\,base_j{+}size_j)=\varnothing$, else an address decodes to two targets (nondeterministic routing); (2) **completeness** — every address hits a region *or* the default slave, else an unmapped access hangs (liveness); (3) **permission monotonicity** — each master's reachable set is a subset of what its security level and attributes allow, checked at one point, else a security hole. These are *set-cover* properties, decidable only against a **single** table: $M$ independent per-master decoders with $M$ private copies cannot be proven mutually consistent. The single source of truth is exactly what makes the three invariants checkable, and each master's view is a *derived restriction* of it — never an independent definition.
+
+*Worked number — address partition and decode depth.* A 40-bit physical space is $2^{40}=1$ TB. A representative partition: DRAM at 0–512 GB (normal, cacheable, hashed across channels/home nodes, §4.2); a 4 GB MMIO/device window for peripherals and per-block config; a 64 MB AON/boot region (ROM + AON SRAM + fuses, reachable at reset); and chiplet/peer windows for remote memory. Decode is hierarchical: a coarse level selects among ~8–16 top-level regions (a 4-bit compare), a mid level selects the target, a fine level selects rank/bank — ~3 levels, each a small comparator, adding ~1–2 fabric cycles rather than a flat thousand-way match. On the device path the IOMMU adds, on an I/O translation-lookaside-buffer (IOTLB) miss, a page walk of several dependent memory accesses (tens–hundreds of ns) — which is why IOTLB miss queues are a shared bottleneck to partition, not a free lookup.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart LR
+    CPU["CPU / GPU misses<br/>physical address"] --> DEC["single decode + permission table<br/>one source of truth"]
+    DMA["DMA / accelerator / IO<br/>device virtual address"] --> IOM["IOMMU/SMMU<br/>translate + permission check"]
+    IOM --> DEC
+    DEC -->|"hit"| TGT["target: DRAM / MMIO / AON<br/>with region attributes"]
+    DEC -->|"unmapped"| DEF["default slave<br/>error response (liveness)"]
+    DEC -->|"permission fail"| FLT["fault / security violation"]
+    classDef n fill:#dcfce7,stroke:#15803d,color:#000
+    classDef e fill:#fee2e2,stroke:#b91c1c,color:#000
+    class CPU,DMA,IOM,DEC,TGT n
+    class DEF,FLT e
+```
+
+**Trade-off — static vs programmable decode.** A **static** (hardwired) decode is fast, tiny, and trivially verifiable, but fixes the map at tapeout — every product variant or security-region resize needs silicon. A **programmable** decode (region-table registers written at boot) supports multiple products, secure/non-secure repartitioning, and firmware-defined windows, at the cost of registers, a configure-then-**lock** protocol (the map must be locked before untrusted software runs, or it *is* the security hole), and a larger verification surface. **When the simpler option wins:** a fixed-function SoC with one configuration and no runtime repartitioning should hardwire the decode and spend nothing on programmability; reach for programmable decode only when product variants, virtualization, or dynamic security regions require it. Even in a programmable map, keep the **boot/AON regions and the default slave** static — the reset path and the "someone always answers" liveness guarantee must not depend on software that has not run yet. The full per-region table and its checks are the [Address Map, Protocols, and Memory Integration Blueprint](../08_Implementation_Blueprints/01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md); the home/address-hashing that spreads the decoded DRAM region across slices is [Network on Chip §7](../04_On_Chip_Networks/01_Network_on_Chip.md); the IOMMU/SMMU per-master path is [QoS, Ordering, and IO Coherence §7](../05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md).
+
+---
+
 ## Cross-references
 
 - **Down the stack (what this composes):** [Block_Activity_and_Power](../../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the leaf energies, McPAT/CACTI bottom-up, DPM/gating, clock-tree share), [Power_Fundamentals](../../../02_Power_and_Low_Power/01_Power_Fundamentals.md) (the $\alpha CV^2f$ charge-accounting, the alpha-power delay law, and the DVFS energy/op $\propto V^2$ derivation behind §2.4), [SoC/chiplet workload and performance methods](../00_Design_Methodology/01_SoC_Chiplet_Workloads_Performance_and_DSE.md) (the CPI stack and roofline that supply activity and the bottleneck), [06_Simulators](00_Index.md) (how every tool in §6 actually models time, memory, and energy — [SoC/chiplet analytical models](../00_Design_Methodology/01_SoC_Chiplet_Workloads_Performance_and_DSE.md) for the M/M/1–M/D/1 queueing, Little's-law, roofline, and USL duals of §2 and §4.2), [Signal_Integrity_Reliability](../../../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the PDN/IR-drop delivery loss of §1.1).
 - **Up the stack (what builds on this):** [GPU_Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) and [NPU_Accelerators](../../03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) (the µarch behind §4's power/perf roll-ups), [Power_Analysis_and_Signoff](../../../02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) and [Power_Reduction_Techniques](../../../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) (the budgeting/DVFS/gating mechanics at silicon).
 - **Adjacent / device detail:** [Memory](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) & [DDR_Controller](../02_Shared_Memory/01_DDR_Controller.md) (the DRAM timing/IDD parameters §4.2 abstracts), [Network_on_Chip](../04_On_Chip_Networks/01_Network_on_Chip.md) & [ACE_and_CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) (the NoC/coherence fabric of §4.2), [Cache_Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (the LLC whose sharing drives cluster contention), [Cache_Coherence](../../01_CPU_Architecture/06_Coherence_and_Consistency/01_Cache_Coherence.md) (the invalidation, ownership-transfer, directory, and false-sharing costs behind that contention).
+- **Boot, address map & protection (§7–§8):** [Clock, reset & power-state architecture](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) (the PLL lock and async-assert/sync-deassert reset release the boot sequence drives — §7.6–§7.8), [Full-Chip Integration, Verification, and Bring-up Blueprint](../08_Implementation_Blueprints/03_Full_Chip_Integration_Verification_and_Bringup_Blueprint.md) (the boot dependency graph and first-silicon gates), [Address Map, Protocols, and Memory Integration Blueprint](../08_Implementation_Blueprints/01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md) (the per-region table and its checks), [AHB/AXI/APB](../03_Transaction_Protocols/01_AHB_AXI_APB.md) (secure/QoS policy sidebands and the default-slave/decode liveness of §8), [QoS, Ordering, and IO Coherence](../05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md) & [Page Walkers, IOMMUs, and Virtualization](../../01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md) (the IOMMU/SMMU per-master view of §8).
 
 ---
 

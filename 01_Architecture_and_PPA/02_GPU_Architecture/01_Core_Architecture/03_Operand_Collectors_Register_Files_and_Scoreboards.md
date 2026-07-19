@@ -345,6 +345,82 @@ For performance diagnosis, walk the path in order instead of attributing every b
 
 **3 — Expected bank use.** Eight requests map independently to eight banks. $E[U]=8(1-(7/8)^8)\approx5.25$ banks, so about $8-5.25=2.75$ requests collide in the first service opportunity. Mapping and broadcast can improve this; a single-cycle eight-request design cannot assume eight useful banks merely because eight banks exist.
 
+## 12. Warp shuffle and warp/block reductions
+
+Reductions, scans, transposes, and the softmax normalization step all need lanes of one warp to read each other's live register values. Staging those exchanges through shared memory costs a store, a barrier, and a load — plus bank-conflict risk (§3 of [Coalescing, Caches, and Shared Memory](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md)) — even though the datum never has to leave the register plane. A **warp shuffle** removes the round-trip: a lane-permute network in the SM datapath lets every lane read another lane's *source register* in a single issue.
+
+### 12.1 The permute network
+
+The shuffle unit is a width-$W$ crossbar on the register read path. Each lane supplies a source-lane index; the network routes that lane's operand back in one cycle. Hardware exposes four index-generation modes so the common patterns need no explicit index arithmetic:
+
+- **indexed** — read an arbitrary lane $\sigma(i)$;
+- **xor / butterfly** — read lane $i\oplus m$ (the exclusive-OR (XOR) bit-toggle partner), the pattern reductions and scans use;
+- **up** — read lane $i-\delta$ (shift toward higher lanes);
+- **down** — read lane $i+\delta$ (shift toward lower lanes).
+
+An out-of-range or inactive source returns the requesting lane's own value, and a returned predicate flags whether the source was in range. The predicate-reduction collectives (ballot, any, all) are the one-bit case: they combine a per-lane predicate across the active mask — logical AND for *all*, logical OR for *any*, and identity for *ballot*, which returns the active mask itself.
+
+This is the register-plane generalization of the operand-broadcast path of §4. Broadcast is the degenerate shuffle in which every lane names one common source lane; the crossbar merely widens that one-source fan-out into an arbitrary lane permutation $\sigma$. It reuses §4's insight — a value already in the register file need not make a shared-memory round-trip to move between lanes — one level up from the scalar/uniform broadcast of §2 and §4.
+
+### 12.2 A warp reduction is a $\log_2 W$ butterfly
+
+Let lane $i$ hold input $v_i^{(0)}=x_i$, with $W=2^p$ lanes and a reduction operator $\oplus$ that is commutative and (in exact arithmetic) associative. The XOR-butterfly reduction iterates, for $k=0,1,\dots,p-1$,
+
+$$
+v_i^{(k+1)} \;=\; v_i^{(k)} \,\oplus\, v_{\,i\oplus 2^k}^{(k)},
+$$
+
+where $i\oplus 2^k$ toggles bit $k$ of the lane index and the right operand is delivered by one xor-mode shuffle.
+
+**Claim.** After step $k$, $v_i^{(k)}=\bigoplus_{j\in G_k(i)}x_j$, where $G_k(i)$ is the aligned block of $2^k$ lanes agreeing with $i$ in every index bit $\ge k$.
+
+*Proof (induction on $k$).* At $k=0$, $G_0(i)=\{i\}$ and $v_i^{(0)}=x_i$. Assume the claim at $k$. The two operands cover $G_k(i)$ and $G_k(i\oplus 2^k)$ — identical high bits except bit $k$, with the low $k$ bits free. Those sets are disjoint and their union is exactly the lanes agreeing with $i$ in all bits $\ge k+1$, i.e. $G_{k+1}(i)$; commutativity and associativity let the combine ignore the order in which the two halves are merged, so $v_i^{(k+1)}=\bigoplus_{j\in G_{k+1}(i)}x_j$. $\square$
+
+At $k=p$ every $G_p(i)=\{0,\dots,W-1\}$, so **every** lane holds the full reduction after exactly $p=\log_2 W$ steps. For $W=32$ that is **5** shuffle-and-combine rounds, with no shared memory and no barrier. The XOR form is an all-reduce — every lane ends with the total, which is what softmax needs when each lane then divides by the sum. If only one lane consumes the result (e.g. immediately before a single atomic), the **down** variant $v_i \leftarrow v_i \oplus v_{i+\delta}$ for $\delta=W/2,W/4,\dots,1$ leaves the total in lane 0 in the same $p$ steps.
+
+### 12.3 Block reduction: two shuffle passes and one shared word per warp
+
+A block of $T_b$ threads is $T_b/W$ warps. A whole-block reduction composes the warp primitive with a single shared-memory hop:
+
+```mermaid
+flowchart TB
+    subgraph WR["per-warp all-reduce (registers only, depth log2 W)"]
+      W0["warp 0 -> partial"]
+      W1["warp 1 -> partial"]
+      Wk["... last warp -> partial"]
+    end
+    W0 --> SM["shared memory: one word per warp (T_b/W words)"]
+    W1 --> SM
+    Wk --> SM
+    SM --> BAR["one block barrier"]
+    BAR --> FW["warp 0: final all-reduce over the partials, depth log2(T_b/W)"]
+    FW --> AT["lane 0: one global atomic per block"]
+```
+
+Only $T_b/W$ words ever touch shared memory, one barrier separates the two passes, and each block emits exactly one global atomic. The device-scope ordering that makes that atomic and the shared-memory handoff safe across blocks is the scoped consistency contract of §14 of the memory page, and the same shuffle network is what the cooperative-groups collectives and grid barrier of §13 of [Independent Threads and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md) build on.
+
+### 12.4 Worked number — traffic versus a shared-memory tree
+
+Take $T_b=1024$ ($32$ warps, $W=32$).
+
+*Hierarchical shuffle.* Phase A: 32 independent warp all-reduces, depth 5, entirely in registers — zero shared-memory words, zero barriers. Phase B: 32 partials written to shared memory (128 B, one conflict-free 32-bank transaction). One block barrier. Phase C: warp 0 reads the 32 partials (one transaction) and all-reduces them in 5 register rounds; lane 0 issues one atomic. Totals: **1 barrier, 32 live shared-memory words, 1 atomic**.
+
+*Pure shared-memory tree over the same 1024 values.* All 1024 values are first staged in shared memory, then reduced in $\log_2 1024 = 10$ rounds, each a shared-memory read-modify-write separated by a block barrier. Totals: **10 barriers**, 1024 live shared-memory words, and $O(T_b)$ word-accesses in the early rounds.
+
+So the hierarchy cuts barriers from $\log_2 T_b=10$ to $1$ and the live shared-memory footprint from $T_b=1024$ to $T_b/W=32$ words — a factor of the warp width $W$ — because all intra-warp combining stays in the register plane.
+
+### 12.5 Determinism: the tree order is part of the answer
+
+$\oplus$ is associative only in exact arithmetic. In IEEE-754 binary32 the unit in the last place (ULP) of $1.0$ is $2^{-23}$, and $2^{-24}$ is exactly half a ULP, so $1.0\oplus 2^{-24}$ rounds to $1.0$ (round-to-nearest-even, since $1.0$'s mantissa LSB is $0$). A left-to-right sum of $\{1.0,\,2^{-24},\,2^{-24}\}$ therefore yields $1.0$; but the butterfly pairs the two small lanes first, $2^{-24}\oplus2^{-24}=2^{-23}$, then $1.0\oplus2^{-23}=1+2^{-23}$ — one full ULP larger. Both orders are legal; the result's last bit depends on the reduction tree.
+
+The butterfly fixes one order per warp (deterministic given the lane assignment), but the final per-block atomics combine in completion order, which is not deterministic. Bit-exact reproducibility therefore requires replacing the global atomic with a fixed-order second pass (write per-block partials, then reduce them in a defined order); see §9 on atomic serialization in the memory page.
+
+### 12.6 Trade-off, and when shared memory still wins
+
+Shuffle wins whenever the exchange is confined to one warp's lanes and to a type the shuffle width carries directly: it spends no shared-memory capacity, no barrier, and no bank arbitration, so it both lowers latency and frees shared memory for tiles. Its limits are structural — it cannot reach across warp boundaries (a block-wide reduction still needs the one shared-memory hop above), a 64-bit or wider datum costs several shuffles, and the exchanging lanes must be converged in the same warp under the same active mask, which §2's independent-thread regrouping can change.
+
+The simpler shared-memory tree wins when the reduction spans the whole block regardless — the barrier is paid once either way — or when the operands already live in shared memory (a tile just produced by an asynchronous copy), so staging back into registers only to shuffle would add work. Choose the shuffle for warp-scoped collectives inside a larger kernel; choose the shared-memory tree when the collective *is* the block-wide step and the data is already on chip.
+
 ## Numbers to remember
 
 | Quantity | Typical scale | Why it matters |
@@ -355,6 +431,7 @@ For performance diagnosis, walk the path in order instead of attributing every b
 | collector residence | several cycles under conflict | sizes the decoupling buffer |
 | resident warps | often tens per SM | scheduler alternatives for latency hiding |
 | matrix instruction | many fused lane-level operations | makes operand staging more important than instruction count |
+| warp reduction depth | $\log_2 W=5$ steps for $W=32$ | register-only all-reduce; no shared memory, no barrier |
 
 ## Cross-references
 
@@ -362,6 +439,7 @@ For performance diagnosis, walk the path in order instead of attributing every b
 - [Independent Threads and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md) adds per-thread control, barriers, and producer–consumer specialization.
 - [Coalescing, Caches, and Shared Memory](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md) continues the memory transaction after issue.
 - [NPU Systolic and Spatial Dataflows](../../03_NPU_Architecture/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) contrasts GPU RF-fed lanes with explicit accelerator dataflow.
+- §12 (warp shuffle and reductions) underlies the cooperative-groups collectives and grid barrier of [Independent Threads and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md) §13, and its determinism depends on the scoped ordering model of [Coalescing, Caches, and Shared Memory](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md) §14.
 
 ## References
 

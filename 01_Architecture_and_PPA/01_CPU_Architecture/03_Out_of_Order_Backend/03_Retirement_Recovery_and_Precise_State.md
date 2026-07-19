@@ -214,6 +214,7 @@ where $N_e$ is event count and $\bar{u}_e$ average younger µops discarded. Two 
 - Selective replay reduces wasted work but expands correctness state dramatically.
 - Store execute, commit, and global visibility remain distinct.
 - Epoch/tag reuse must be safe against the maximum lifetime of late responses.
+- An uncorrectable-but-recoverable error is poisoned, not fatal: the precise machine-check exception fires on consumption via the §4 path, faulting one consumer rather than the machine, and a squashed speculative consumer raises nothing.
 
 ## 13. Worked problems
 
@@ -235,11 +236,72 @@ A workload has 4 branch MPKI, 20-cycle recovery, 6-wide rename, and on average 5
 
 The maximum request lifetime is 500 cycles and recovery can occur once every 20 cycles. Up to 25 epoch changes can happen while an old response exists. A 4-bit epoch wraps after 16 and is unsafe without additional transaction identity; at least 5 bits are required under that bound, with margin for uncertainty.
 
+## 14. Machine-check architecture: poison, deferred errors, and precise machine-check exceptions
+
+A hardware error — a particle strike that flips a bit in static or dynamic random-access memory (SRAM/DRAM), a worn cell, a link transmission error — has exactly three acceptable fates: it is *corrected* in place, *delivered to software precisely and contained*, or the machine stops. The unacceptable fourth fate is that a flipped bit is consumed silently and the program computes a wrong answer with no indication: **silent data corruption (SDC)**. At fleet scale a minute per-device error rate multiplied by millions of devices is a steady stream of would-be corruptions, and in safety domains one undetected flip can be catastrophic, so SDC is a first-order server and safety concern rather than a curiosity. The precise-exception machinery this page already built (§4) is the delivery vehicle: an error attached to a specific consumed value can be raised as a precise exception on the exact instruction that consumes it.
+
+### 14.1 Mechanism: error banks, correctable vs uncorrectable, poison
+
+Detection lives at each source — cache and register arrays, the memory controller, and fabric links — via parity or an error-correcting code (ECC) (see [Cache Microarchitecture §5](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) and [PPA and Physical Implementation §2.2](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md)). The machine-check architecture (MCA) gives each source a bank of status registers logging, per event: a valid bit, the error type, a **syndrome** (which check failed / which bit), the address, and an overflow bit for a second event before software drains the bank. Errors sort into three severities.
+
+**Correctable error (CE).** ECC repairs the datum in flight; hardware delivers correct data, logs the bank, and may raise a *corrected machine-check interrupt* (CMCI) so software can count and scrub. No architectural state was ever wrong, so nothing precise is required — the event is bookkeeping. A rising CE rate on one line or rank is predictive: it usually precedes an uncorrectable failure, which is why fleets offline pages or spare out ranks on a CE-rate threshold.
+
+**Uncorrectable but recoverable error (UCR).** ECC detects but cannot correct — for example a double-bit error under single-error-correct/double-error-detect (SECDED). The datum is known-bad. Rather than halt, the machine marks it **poisoned** — it tags the cache line or memory granule with a poison indicator — lets the poison travel with the data, and raises a *precise* machine-check exception (MCE) only if and when the poisoned value is actually **consumed** by an instruction. Consumption on a specific load is a precise fault on that load, delivered on exactly the §4 path: detected in execution, recorded in the load's ROB entry as pending exception metadata, and raised only when that load is the oldest instruction — older instructions commit, the load and everything younger squash, and the trap captures cause, faulting address, and architectural PC. If the poisoned line is never consumed (overwritten whole, or evicted and dropped), no exception is ever raised: containment with no fault at all.
+
+**Fatal / uncontained error (UC).** The error corrupts state that cannot be pinned to one consumer — a control structure, or an error the fabric reports as uncontainable — so there is no precise boundary to ride. This escalates to a global machine check across all cores, typically firmware-first handling and reset.
+
+### 14.2 Poison rides the precise-exception path
+
+The essential move is that the "fault" is carried by a *data value* and realized at the precise boundary of whichever instruction consumes it — the §4 discipline with the error riding a datum instead of being raised by decode or execute.
+
+```mermaid
+sequenceDiagram
+    participant MC as memory / ECC source
+    participant LSQ as load-store queue
+    participant ROB as ROB / retirement
+    participant Trap as trap vector
+    MC-->>LSQ: return data plus poison (uncorrectable)
+    LSQ->>ROB: complete load, tag entry pending-MCE
+    Note over ROB: continue speculatively; not yet an exception
+    ROB->>ROB: load becomes oldest and would retire
+    ROB->>ROB: commit older, squash load and younger
+    ROB->>Trap: raise precise MCE with cause, address, PC
+```
+
+Two invariants follow directly from the rest of this page. First, **a mis-speculated consumer raises nothing**: a load that read poison but is squashed before retirement carries its pending-MCE bit into the discarded epoch and delivers no exception — the §4/§9 rule that killed epochs cannot raise ghost exceptions applies unchanged, and the MCE fires only on a load that would architecturally retire. Second, **poison is contained to the consumer**: a single bad bit faults exactly one thread or virtual machine — which the operating system or hypervisor can terminate or repair — rather than the whole machine. Poison travels with the data — a forwarded value, or one a device wrote by direct memory access (DMA), stays flagged until someone consumes it — and byte/granule-level poison lets a load of the clean bytes of a partially-poisoned line proceed without faulting. This is what converts an SDC risk into a precise, contained, recoverable exception — the entire purpose of the architecture.
+
+### 14.3 Availability levers and a worked number
+
+Three levers raise the mean time to an uncontainable event.
+
+**Memory scrubbing.** A background engine walks memory reading and rewriting-with-correction, removing single-bit errors before a *second* bit lands in the same ECC word and makes it uncorrectable. Model single-bit upsets in a given word as Poisson at rate $r_{CE}$; a SECDED word goes uncorrectable when a second independent upset arrives within the scrub window $T_{scrub}$, so per word
+$$
+r_{UC}\approx r_{CE}\cdot(r_{CE}T_{scrub})=r_{CE}^{2}\,T_{scrub}.
+$$
+The accumulation-driven uncorrectable rate is **linear in $T_{scrub}$**: halve the scrub interval and you halve it. The cost of scrubbing memory of size $M$ with period $T_{scrub}$ is background read bandwidth $B=M/T_{scrub}$.
+
+*Worked number.* For $M=256$ GB, a 24 h scrub costs $B=256\times10^{9}/86400\approx3.0$ MB/s; a 1 h scrub costs $\approx71$ MB/s. Both are under 0.1 % of a ~100 GB/s memory system, yet the 24$\times$ shorter interval cuts accumulation-driven uncorrectables ~24$\times$. Bandwidth is not why you stop scrubbing faster — diminishing returns are: below some interval, single-event and whole-device failures (which scrubbing cannot touch) dominate $r_{UC}$, and scrub power stops being free.
+
+**Chipkill / single-device data correction (SDDC).** Spread each ECC word across many DRAM devices so that the *complete* failure of one device — the mode SECDED cannot cover, which otherwise goes straight to uncorrectable/fatal — stays correctable. SDDC removes the whole-device term from $r_{UC}$ outright, commonly the dominant term, converting far more events from fatal to corrected than scrubbing alone.
+
+**Core lockstep.** Run two cores on the same instruction stream and compare every cycle; a mismatch catches a *logic* soft error that no data ECC would see. This doubles core cost purely for detection (a third core majority-votes for correction) and is a safety lever (for example automotive) rather than a throughput one.
+
+Each tier removes a different failure term, and residual SDC is the product of the uncovered tails: parity detects, SECDED corrects singles and detects doubles, SDDC corrects a device, scrubbing suppresses accumulation. Coverage is multiplicative, which is why high-availability parts stack all of them.
+
+### 14.4 Trade-off: when the simpler option wins
+
+Precise-MCE-on-consumption is materially more logic than "halt on any detected error": poison tags in every array and along every data path, per-source banks, byte/granule poison granularity, and integration with the ROB's precise-exception and epoch machinery (§4, §9) so speculative consumers cannot raise ghost MCEs. That cost is justified only by one of three requirements — **uptime** (survive an error without resetting the machine), **containment** (a multi-tenant server must fault one guest, not the host), or **zero-SDC** (never silently consume a bad bit). Absent all three — a microcontroller or a low-RAS (reliability, availability, serviceability) part — parity-plus-reset is the right engineering: detect the error and restart, cheaper in area and verification, acceptable when a reset per detected error meets the availability target.
+
+The dual mistake is over-protecting recoverable state. An architecturally *invisible* array — a branch predictor, a prefetcher table — needs only parity and a flush/retrain on error (§5, §6), never ECC or poison, because a wrong prediction is already repaired by the recovery path. Match protection to the *consequence* of the state, as [PPA §2.2](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) argues: strong ECC and poison for architectural data, parity-and-retrain for speculative hints, and a global machine check reserved for the genuinely uncontainable, where spending logic to "precisely" deliver an error that corrupted a shared structure would be wasted.
+
+Cross-references: the precise-exception path this section reuses is §4; killed-epoch suppression of ghost faults is §9; ECC generation/checking and cache-line poison live in [Cache Microarchitecture §5](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md); array-level RAS, yield, and the protection-matches-consequence rule are in [PPA and Physical Implementation §2.2](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md); fault delivery to the operating system and the guest/host containment boundary are in [TLB and Virtual Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
+
 ## Cross-references
 
 - **Create speculative state:** [Fetch, Decode, and µop Delivery](../02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md), [Out-of-Order Execution](01_OoO_Execution.md).
 - **Memory recovery:** [Load-Store Unit and Memory Ordering](02_Load_Store_Unit_and_Memory_Ordering.md), [Memory Consistency and Atomics](../06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
 - **Verification:** [Formal Verification](../../../03_Frontend_RTL_and_Verification/12_Formal_Verification.md), [Assertions and Coverage](../../../03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md).
+- **Reliability (RAS/ECC):** §14 poison and precise MCE build on [Cache Microarchitecture §5](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (ECC, cache-line poison) and [PPA and Physical Implementation §2.2](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (array RAS, protection-matches-consequence), and deliver faults through [TLB and Virtual Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
 
 ## References
 

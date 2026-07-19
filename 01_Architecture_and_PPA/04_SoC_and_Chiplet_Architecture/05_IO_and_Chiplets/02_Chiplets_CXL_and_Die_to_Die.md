@@ -5,7 +5,8 @@
 > **Abbreviation key — skim now and return as needed:** central processing unit (CPU); graphics processing unit (GPU); static random-access memory (SRAM); dynamic random-access memory (DRAM); high-bandwidth memory (HBM);
 > virtual channel (VC); quality of service (QoS); direct memory access (DMA); AXI Coherency Extensions (ACE); Coherent Hub Interface (CHI);
 > Universal Chiplet Interconnect Express (UCIe); Peripheral Component Interconnect Express (PCIe); die-to-die (D2D); reliability, availability, and serviceability (RAS); non-uniform memory access (NUMA);
-> physical-layer interface (PHY); input/output (I/O); gigabyte (GB); kibibyte (KiB).
+> physical-layer interface (PHY); input/output (I/O); gigabyte (GB); kibibyte (KiB);
+> transaction-layer packet (TLP); through-silicon via (TSV); embedded multi-die interconnect bridge (EMIB); redistribution layer (RDL); device-to-host (D2H); host-to-device (H2D).
 
 > **Prerequisites:** [Full-Chip Modeling](../01_System_Modeling/01_Full_Chip_Modeling.md), [ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md), [Network on Chip](../04_On_Chip_Networks/01_Network_on_Chip.md), and [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 > **Hands off to:** package implementation, signal/power integrity, thermal design, and system software. This page owns partitioning and link/protocol architecture.
@@ -252,6 +253,39 @@ $$
 
 Capacity-only data may remain remote; hot latency-sensitive data may migrate or be replicated under consistency constraints.
 
+### 7.1 The three multiplexed sub-protocols: CXL.io, CXL.cache, CXL.mem
+
+CXL earns its place by carrying **three protocols on one physical link**, because one device edge has three unlike needs and neither separate links (wasted pins) nor a single tunnel (wrong latency/overhead) serves all three:
+
+| Sub-protocol | Initiator and semantics | Coherence role |
+|---|---|---|
+| **CXL.io** | PCIe-based enumeration, configuration, register access, DMA, interrupts, hot-plug | non-coherent; always present — it bootstraps and manages the device |
+| **CXL.cache** | device coherently caches host memory (device-to-host, D2H, requests; host-to-device, H2D, snoops/responses) | device is a coherent agent under the host home/directory (asymmetric — the device holds no directory) |
+| **CXL.mem** | host accesses device-attached memory (master-to-subordinate, M2S, reads/writes; subordinate-to-master, S2M, data) | device memory is subordinate; the host home resolves coherence; optional metadata + poison |
+
+**Mechanism — one link, dynamic multiplex.** A flex-bus arbitration multiplexer (ARB/MUX) interleaves .cache and .mem on a **latency-optimized fixed-format flit** with .io on the **PCIe transaction-layer packet (TLP)** format, choosing per flit. The coherent classes share a slim, fixed header to minimize per-message overhead; .io keeps the full PCIe packet because it must stay enumeration-compatible with existing software. **Why not tunnel everything over .io?** Tie it to §4's efficiency identity $BW_{eff}=N_{lane}R_{lane}\eta_{encoding}\eta_{flit}\eta_{protocol}\eta_{retry}$: a small coherent message pays a much smaller header on the .cache/.mem flit path than as a PCIe TLP. *Worked number:* a 64-byte line as a PCIe memory-write TLP carries roughly 24–30 B of header/sequence/framing → $\eta_{protocol}\approx 64/(64{+}28)\approx 70\%$; as a CXL.mem flit slot the header is a few bytes → $\eta_{protocol}\gtrsim 90\%$. That ~20-point efficiency gap on line-grained coherent traffic — exactly the "small coherence/control packets have lower efficiency" remark of §4 — is why .cache/.mem exist as distinct formats rather than riding .io.
+
+**Device types (needed for §7.2).** The sub-protocol mix defines the device class: **Type-1** = .io + .cache (an accelerator with no local memory that coherently caches host memory — e.g. a coherent network adapter); **Type-2** = .io + .cache + .mem (an accelerator *with* device-attached memory that both caches host memory and exposes its own — e.g. a GPU or FPGA); **Type-3** = .io + .mem (a pure memory expander or pool, the §8 case). **Trade-off / when the simpler option wins:** a memory expander needs only .io + .mem — adding .cache would force a coherent agent's snoop/response machinery onto a device that never caches host memory, pure waste; and a streaming accelerator that only bulk-reads host data can often use plain PCIe DMA with no .cache at all. Spend a coherent sub-protocol only where the access pattern needs its granularity.
+
+### 7.2 Host bias versus device bias for a Type-2 device
+
+**Why bias exists.** A Type-2 accelerator constantly touches its *own* attached memory during a compute kernel. If every such access must resolve host coherence — snoop the host in case it cached the line — the accelerator pays a full **off-package host round-trip to reach memory millimeters away**, precisely in the inner loop where bandwidth and latency matter most. Bias removes that cost for data the device owns.
+
+**Mechanism.** A **per-page bias bit**, tracked in a bias table (typically resident in device memory), selects where coherence for that page resolves. Under **host bias** it resolves at the host home: the host may cache the page and device accesses route through the host coherence path (CXL.mem with a host snoop) — correct while the host is producing or consuming that data. Under **device bias** it resolves *locally* at the device, which is guaranteed no host-cached copy exists, so the device reads and writes its attached memory with **no host snoop** — correct during the accelerator's compute phase. Flipping host→device requires a **barrier**: the host flushes/invalidates any cached copies of those pages before the device may assume exclusivity. **Structural argument:** this is the **off-die cousin of the Exclusive state** ([Cache Coherence](../../01_CPU_Architecture/06_Coherence_and_Consistency/01_Cache_Coherence.md)) — a line in E is guaranteed to have no other cacher and so can be written with zero bus traffic; device bias is "E-state at page granularity across the package boundary."
+
+```mermaid
+stateDiagram-v2
+    [*] --> HostBias
+    HostBias --> DeviceBias: "host flushes page; no host-cached copy remains"
+    DeviceBias --> HostBias: "host needs the page; device relinquishes exclusivity"
+    HostBias --> HostBias: "device access resolves at host home (snoop)"
+    DeviceBias --> DeviceBias: "device access resolves locally, no host snoop"
+```
+
+**Derivation — flip cost versus snoop-per-access.** Let a kernel make $N$ accesses to a device-attached page. Host bias costs $\approx N\,\Delta$, where $\Delta$ is the per-access penalty of routing through host coherence (a snoop/ownership check adds link + home latency and consumes host directory bandwidth even when pipelined). Device bias costs one flip, $L_{flip}$ (the host barrier + flush of the page), then $N\cdot 0$ local accesses. Device bias wins when
+$$N\,\Delta > L_{flip}\quad\Longleftrightarrow\quad N > \frac{L_{flip}}{\Delta},$$
+the same shape as §7's tiered-memory migration inequality $N_{reuse}(L_{remote}-L_{local})>L_{copy}+L_{coherence}+L_{mapping}$ — a bias flip is a per-page ownership migration. *Worked number:* with $L_{flip}\approx 2\,\mu\text{s}$ (barrier plus flushing ~64 lines/page across the link) and a snoop penalty $\Delta\approx 200\,\text{ns}$ avoided per access, break-even is $N>10$ accesses per page. A kernel touching a page thousands of times obviously runs device-biased; a page the host reads once or twice stays host-biased. Frequent flips reproduce coherence **ownership thrash** (the dirty-owner ping-pong of §6.1), so the driver/operating system keeps bias stable within a phase and flips only at phase boundaries. **Trade-off / when the simpler option wins:** host bias everywhere is the simplest, always-correct model (coherent, host always current) and is right when reuse is low or the data is genuinely host-shared; device bias adds explicit flush/barrier management and driver phase-tracking and repays only for the compute phase of a bandwidth-bound kernel. When reuse is uncertain, host bias wins because the flip is not amortized.
+
 ## 8. Memory pooling and sharing
 
 Pooling raises utilization by assigning memory capacity dynamically among hosts/devices. Architecture questions:
@@ -304,6 +338,18 @@ Thermal gradients affect link timing and stacked memory. Power delivery must han
 
 Feed package estimates back into architecture before freezing chiplet shapes and link counts.
 
+### 11.1 2.5D versus 3D integration: the bandwidth-density / thermal taxonomy
+
+**Why the geometry is architectural.** Section 1 partitioned the design into chiplets and §11 warned that the package constrains architecture; the *join geometry* is where that constraint bites, because it sets the achievable inter-die **bandwidth density** and the **thermal/power-delivery** envelope, which together decide which partition (§1–§2) is even viable. The architect must therefore choose between two families before assigning traffic to a cut edge.
+
+**2.5D — lateral, side-by-side.** Dies sit next to each other on a shared carrier that supplies dense lateral wiring: a **silicon interposer** (fine wires plus through-silicon vias, TSVs, down to the package; reticle-area-limited), a cheaper and coarser **organic or redistribution-layer (RDL) interposer**, or a localized **silicon bridge** (e.g. an embedded multi-die interconnect bridge, EMIB) buried only under the die-to-die gap. Links are lateral; micro-bump pitch is tens of µm; each die keeps its own back side facing the lid/heat sink.
+
+**3D — vertical, stacked.** Dies are stacked and joined by TSVs with micro-bumps, or by **hybrid bonding** (direct copper-to-copper, no solder). Vertical contact density is far higher and the vertical wire is ~µm rather than ~mm, so bandwidth per area is enormous and energy/bit is low — but a die buried in the stack must reject heat *through* its neighbors, and current for upper dies must climb through TSVs.
+
+**Derivation — bandwidth density versus thermal.** Contact density is $\rho = 1/p^2$ for pitch $p$. A 2.5D micro-bump at $p=45\,\mu\text{m}$ gives $\rho\approx(1000/45)^2\approx 4.9\times10^2/\text{mm}^2$; hybrid bonding at $p=9\,\mu\text{m}$ gives $\rho\approx(1000/9)^2\approx 1.2\times10^4/\text{mm}^2$ — about **25× denser**. At 2 Gb/s per contact that is ~124 GB/s/mm² for 2.5D versus ~3.1 TB/s/mm² for 3D, plus roughly an order-of-magnitude lower energy/bit from the shorter wire. The thermal counter-pressure is equally physical: stacking **sums power through one footprint**, and junction rise is $\Delta T = P\,\theta_{JA}$. Two dies dissipating $q$ each present $\sim 2q$ through the same sink area while the escape path is unchanged and the buried die conducts through the stack. *Worked number:* a logic die near its air-cooled limit at ~100 W/cm², stacked with a second like it, presents ~200 W/cm² through one footprint — beyond a typical ~50–100 W/cm² ceiling. **So 3D is reserved for a low-power die over a hot one** — memory-on-logic or cache-on-core (stacked last-level SRAM, e.g. 3D stacked cache) — not two maximum-power compute dies; and power delivery must push upper-die current through TSVs whose IR drop and keep-out compete with signal routing.
+
+**Trade-off / when the simpler option wins.** 2.5D gives moderate-to-high bandwidth density (HBM-on-interposer already reaches ~TB/s aggregate) with each die independently cooled, on a mature, lower-cost flow and a larger area budget (bounded by interposer reticle/stitching). 3D wins *only* where bandwidth density and energy/bit dominate **and** the thermal stack is favorable (a cool memory/cache die over hot logic). When both dies are high-power compute, or lateral links already meet the bandwidth need, or cost/yield/test dominate (stacking multiplies known-good-die yields, §2), 2.5D is the right call. The physical fabrication detail — bonding, TSV formation, underfill, warpage, and assembly test — is deferred to [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
+
 ## 12. Evaluation checklist and counters
 
 Evaluate:
@@ -329,6 +375,9 @@ Simulate protocol and traffic jointly. A link-level bandwidth test cannot reveal
 - Credit and retry storage follow bandwidth × round-trip latency.
 - Coherence across a resettable/fallible boundary needs explicit dirty-state and transaction recovery.
 - CXL memory is a NUMA/fabric tier with management, RAS, security, and contention semantics.
+- CXL multiplexes three sub-protocols on one link — .io (PCIe enumerate/config/DMA), .cache (device caches host memory), .mem (host reads device memory) — with the coherent classes on a slim flit for higher small-message efficiency (§7.1).
+- A Type-2 device's per-page bias bit is an off-die Exclusive state: device bias skips host snoops on locally-owned pages and repays its flush/barrier flip after $N>L_{flip}/\Delta$ local accesses (§7.2).
+- 3D (hybrid bonding, ~µm pitch) offers ~25× the bandwidth density and ~10× lower energy/bit of 2.5D micro-bumps, but is thermally limited to a cool-die-over-hot-die stack (§11.1).
 
 ## 14. Worked problems
 
@@ -361,6 +410,7 @@ An eight-chiplet system with eight cores/chiplet could track 64 core sharers glo
 - **Protocols and coherence:** [ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md), [Cache Coherence](../../01_CPU_Architecture/06_Coherence_and_Consistency/01_Cache_Coherence.md).
 - **Transport/package:** [Network-on-Chip Architecture](../04_On_Chip_Networks/01_Network_on_Chip.md), [Routing, Flow Control, and Deadlock](../04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md), [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 - **Memory/system:** [HBM and Advanced Memory Systems](../../02_GPU_Architecture/02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md), [Full-Chip Modeling](../01_System_Modeling/01_Full_Chip_Modeling.md).
+- **CXL bias and confidential links (§7.1–§7.2, §11.1):** [Cache Coherence](../../01_CPU_Architecture/06_Coherence_and_Consistency/01_Cache_Coherence.md) (the Exclusive state that device bias mirrors), [AHB, AXI, and APB](../03_Transaction_Protocols/01_AHB_AXI_APB.md) (§12 root of trust and memory/link encryption reused at §10), [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (2.5D/3D fabrication behind §11.1).
 
 ## References
 

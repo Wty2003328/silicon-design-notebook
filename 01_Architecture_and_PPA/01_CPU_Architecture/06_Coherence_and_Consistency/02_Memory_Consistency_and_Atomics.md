@@ -280,6 +280,7 @@ An average atomic latency is insufficient; report by line sharing and contention
 - A fence orders specified event classes; it is not synonymous with flushing caches.
 - Atomics need one serialization point plus any acquire/release ordering.
 - Language, compiler, ISA, core, and fabric must all preserve the synchronization contract.
+- Hardware transactional memory (HTM) commits a group of memory ops atomically and detects conflicts with the coherence protocol; it beats a lock only while the abort rate stays under $(o_\ell-o_x)/(o_\ell+C_a)$, and forward progress still requires a non-transactional fallback.
 
 ## 15. Worked problems
 
@@ -301,10 +302,113 @@ More cores increase queueing, not the line's service rate. Sharding counters or 
 
 A release operation waits for six older stores. Four are already globally ordered; two take 35 and 60 cycles in parallel. Incremental drain cost is about 60 cycles, not $6\times$ average store latency. The implementation should track outstanding obligations, not serialize every store anew.
 
+## 16. Hardware transactional memory and lock elision
+
+Section 9 gave a single atomic read-modify-write one serialization point. A lock generalizes that to a *region*: acquire, run a critical section, release. Hardware transactional memory (HTM) generalizes it a different way — it lets a *group* of loads and stores commit at one instant, all-or-nothing, so the region runs speculatively and pays only for the conflicts that actually occur.
+
+### 16.1 Why elide the lock at all
+
+A lock is both an overhead and a pessimism.
+
+The overhead is fixed per critical section. Acquiring the lock is itself an atomic on a shared line, so it carries the full $L_{atomic}$ of §9 — ownership, serialization, and the acquire/release ordering drains — and under sharing the lock line ping-pongs between cores. Even an *uncontended* lock costs an atomic plus two fences on a line touched only to synchronize.
+
+The pessimism is worse. A lock forbids concurrency the workload may never need. Two threads updating disjoint buckets of a hash table under one coarse lock never actually conflict, yet the lock serializes them anyway: it protects against the worst case (some pair *might* collide) and charges every case for it.
+
+HTM removes both. It runs the critical section speculatively, uses the coherence protocol to watch for a real conflict, and commits atomically if none occurred. Disjoint-bucket updates then proceed in parallel; only a genuine collision costs anything.
+
+### 16.2 Mechanism: §4's speculate/validate/recover, applied to a group
+
+A transaction is the retirement discipline of the [retirement page](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) — speculate, validate, then commit or else recover — lifted from one instruction to a *set* of memory operations that must retire together or not at all.
+
+- **Read set / write set.** The transaction records every line it reads (read set) and every line it writes (write set). Speculative stores are *buffered* — held in the store queue or written into L1 in a speculative state — and are **not** made globally visible. Speculative loads are marked (a per-line read bit, or a hashed signature over addresses).
+- **Conflict detection reuses coherence.** The conflict detector is already in the machine: the cache-coherence protocol (see [Cache Coherence](01_Cache_Coherence.md)). A remote snoop that would *invalidate* a read-set line, or *steal ownership* of a write-set line, is exactly a conflict — another agent is about to observe or clobber state this transaction depends on. This is §6's rule "coherence invalidations trigger required load validation," but the answer for a whole group is **abort**, not per-load replay.
+- **Commit.** At transaction end the machine confirms no read/write-set line was lost, then atomically flips the buffered write set to globally visible and clears the speculative marks — one serialization instant, the group's retirement boundary. Before that instant no observer sees any write; after it, all of them.
+- **Abort.** Discard the buffered write set, drop the read/write marks, restore the register checkpoint taken at transaction begin, and jump to the abort handler.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Active: begin, checkpoint regs and arm sets
+    Active --> Active: buffer stores, mark reads
+    Active --> Commit: end with no conflict, within capacity
+    Active --> Abort: conflicting snoop, capacity, or illegal op
+    Commit --> Idle: flip write set visible in one instant
+    Abort --> Active: retry if budget remains
+    Abort --> Fallback: retry budget exhausted
+    Fallback --> Idle: take real lock, run non-transactionally
+```
+
+### 16.3 The three unavoidable abort causes
+
+1. **Data conflict.** A read-set line is invalidated or a write-set line is stolen. This is the mechanism working as intended; it fires whenever two transactions — or a transaction and a plain access — genuinely race on a line.
+2. **Capacity overflow.** The speculative write set must fit its buffer (an L1 set's ways, or the speculative store-queue depth), and the tracked read set must fit its marking resource (bits or signature). Once the footprint exceeds capacity there is nowhere to hold speculative state, so the transaction aborts regardless of conflicts. This is a hard ceiling, not a probability.
+3. **Illegal / uncacheable operations.** A system call, a page fault, an uncacheable device access, an interrupt, or certain serializing register writes cannot be buffered or rolled back and force an abort. This is why no bounded HTM can promise that a given transaction ever commits.
+
+### 16.4 When HTM wins — a break-even derivation
+
+Let a critical-section body take $C$ cycles. Charge a lock $o_\ell$ per acquire+release (the atomic, the release store, the ordering drains, and — when shared — the lock-line transfer), and charge a transaction $o_x$ per begin+commit (checkpoint plus commit flip), with $o_x<o_\ell$ because there is no globally-ordered atomic on a contended line. Let $p_a$ be the per-attempt abort probability and $C_a\le C$ the work discarded on an abort.
+
+An uncontended lock costs
+$$
+E[T_\ell]=o_\ell+C.
+$$
+Retrying transactionally until success, the number of *failed* attempts is geometric with mean $p_a/(1-p_a)$; each failed attempt costs $o_x+C_a$ and the successful one costs $o_x+C$:
+$$
+E[T_x]=(o_x+C)+\frac{p_a}{1-p_a}\,(o_x+C_a).
+$$
+HTM wins when $E[T_x]<E[T_\ell]$, i.e. when the abort tax is smaller than the overhead it saves:
+$$
+\frac{p_a}{1-p_a}\,(o_x+C_a)<o_\ell-o_x.
+$$
+Writing the saving $S=o_\ell-o_x$ and the per-abort cost $D=o_x+C_a$, the break-even is $\tfrac{p_a}{1-p_a}=S/D$, so
+$$
+p_a^\star=\frac{o_\ell-o_x}{o_\ell+C_a}.
+$$
+The reading is the whole point of HTM: the abort budget $p_a^\star$ grows with the lock overhead being elided. A cheap uncontended lock ($o_\ell\!\to\!o_x$) gives $p_a^\star\!\to\!0$ — HTM must almost never abort to be worth it. An expensive contended lock (large $o_\ell$ from cross-socket line bouncing) gives a large $p_a^\star$ — HTM wins even with frequent aborts. **HTM pays off in proportion to the contention it removes.**
+
+The abort probability itself rises with conflict rate and footprint. Model remote conflicting accesses to the shared footprint as Poisson over the transaction's exposure window: with $n$ threads, footprint overlap $f=r/S$ (touched lines $r$ out of a shared set of $S$), and a conflicting-store duty factor $\rho$, the expected conflicts in one window are roughly
+$$
+\lambda\approx(n-1)\,\rho\,f\,C,\qquad p_{conf}=1-e^{-\lambda}.
+$$
+So HTM's region of advantage is $\lambda<\ln\frac{1}{1-p_a^\star}$: **short** transactions (small $C$), **narrow** footprints (small $r$), and **low** concurrency ($n$). Grow $C$ or $r$ and $\lambda$ climbs until either conflicts or the §16.3 capacity ceiling ends the party.
+
+### 16.5 Worked number
+
+Take a contended lock $o_\ell=120$, transaction overhead $o_x=25$, discarded work $C_a=50$ cycles. Then
+$$
+p_a^\star=\frac{120-25}{120+50}=\frac{95}{170}=0.56,
+$$
+so elision wins as long as under ~56 % of attempts abort. At a measured $p_a=0.20$ with $C=200$,
+$$
+E[T_\ell]=320,\qquad E[T_x]=225+\tfrac{0.20}{0.80}(75)=243.75,\qquad \text{speedup}=1.31\times.
+$$
+Now swap in a *cheap, uncontended* lock $o_\ell=30$. The break-even collapses to $p_a^\star=(30-25)/(30+50)=0.0625$ — HTM must abort under ~6 %. At the same $p_a=0.20$, $E[T_\ell]=230$ while $E[T_x]$ is unchanged at $243.75$, so the speedup is $0.94\times$, a **loss**. Same transaction, opposite verdict — decided by how much lock the elision actually removes. (The $p_a=0.20$ point corresponds to $\lambda=-\ln 0.8\approx0.22$; doubling either the thread count or $C$ drives $\lambda\to0.45$ and $p_a\to0.36$, straight through the cheap-lock break-even.)
+
+### 16.6 Lock elision and the mandatory fallback
+
+Lock *elision* is the productization: a library or the hardware *begins a transaction instead of taking the lock*, executes the region, and commits — the lock is never written in the common case, so its line never leaves shared state and disjoint critical sections run concurrently. The named implementations are Intel Transactional Synchronization Extensions (TSX), in two forms — Hardware Lock Elision (HLE) prefixes on a legacy lock, and Restricted Transactional Memory (RTM) with explicit begin/end/abort — Arm's Transactional Memory Extension (TME) with transaction start/commit/cancel, and IBM POWER's transactional-memory (TM) facility.
+
+One correctness detail is non-negotiable: **the elided region must place the lock word in its read set** and verify the lock is free at begin. If any thread takes the *real* lock — writing the lock word — that write invalidates the lock line in every eliding transaction's read set and aborts them all. That single trick preserves mutual exclusion between an eliding thread and a non-eliding one; without it, a transaction could commit while another thread holds the lock.
+
+And **forward progress requires a non-transactional fallback path.** Some transactions can never commit — a footprint that always overflows capacity, a critical section containing a system call, or a livelock of mutual aborts. After a bounded retry budget the thread stops eliding, acquires the *actual* lock, and runs non-transactionally. This guarantees progress and sets the semantics floor: correctness rests on the lock, never on the transaction succeeding. The price is the "lemming effect" — one fallback acquisition writes the lock and aborts every concurrent elider, so a burst of fallbacks can serialize the whole set; retry and back-off policy govern how often that happens.
+
+### 16.7 Trade-off — when a plain lock or a lock-free structure wins
+
+HTM turns pessimistic mutual exclusion into optimistic concurrency, so it wins on **short, narrow, low-conflict** critical sections guarded by **expensive** locks — exactly where §16.4 gives a large abort budget. A simpler option wins when:
+
+- **The lock is cheap.** If $o_\ell\lesssim o_x$ (an uncontended test-and-set that stays local), the elision overhead plus any abort tax exceeds the lock — the §16.5 cheap-lock case. Just take the lock.
+- **The section is long, wide, or does I/O.** Capacity and illegal-op aborts then dominate; every attempt aborts and falls back, so you pay transaction + abort + lock. A plain lock skips the wasted speculation.
+- **The conflict is real and frequent.** HTM does not *reduce* true conflicts; it only avoids paying for conflicts that do not happen. When threads genuinely hammer the same lines, the fix is algorithmic — shard the state, use per-bucket locks, or read-copy-update — the same lesson as §9's contended-atomic service-time bound (a hot line is a serial queue however it is accessed; cf. §15 Problem 2). A lock-free structure that keeps threads off each other's lines beats any elision of a lock they should not be sharing.
+
+Architected HTM is therefore **best-effort**: capacity and illegal aborts mean no transaction is guaranteed to commit, which is precisely why the fallback lock is mandatory. Use HTM to make the uncontended common case fast; keep a correct lock underneath for everything it cannot promise.
+
+Cross-references: [Cache Coherence](01_Cache_Coherence.md) supplies the conflict detector; [Retirement, Recovery, and Precise State](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) supplies the speculate/validate/recover machinery a transaction generalizes; §9 (atomics) is the single-operation special case; [Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md) owns the store buffering that holds speculative writes.
+
 ## Cross-references
 
 - **Permission protocol:** [Cache Coherence](01_Cache_Coherence.md), [ACE and CHI](03_ACE_and_CHI.md).
 - **Core machinery:** [Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md), [Retirement and Recovery](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md).
+- **Speculative synchronization:** §16 hardware transactional memory reuses [Cache Coherence](01_Cache_Coherence.md) as its conflict detector and the [Retirement and Recovery](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) speculate/validate/recover discipline.
 - **I/O/translation:** [Page Walkers, IOMMUs, and Virtualization](../05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md), [QoS, Ordering, and I/O Coherence](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md).
 
 ## References

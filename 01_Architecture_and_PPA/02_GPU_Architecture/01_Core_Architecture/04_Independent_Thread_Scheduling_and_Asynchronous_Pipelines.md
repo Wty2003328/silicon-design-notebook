@@ -333,6 +333,86 @@ Debug the pipeline by following one `(block, buffer, generation, tile)` identity
 
 **3 — Cluster admission.** An eight-block cluster uses one block per SM. A GPC has 16 suitable SM slots, so two clusters can reside. If unrelated work occupies one slot, only one whole cluster fits even though seven slots remain idle. This is the cluster-fragmentation trade-off behind co-scheduling guarantees.
 
+## 13. Cooperative groups and grid-wide synchronization
+
+The block barrier of §1–§2 synchronizes the threads of one block; it cannot make one block wait for another. Yet several single-kernel algorithms need exactly that grid-wide barrier: a large reduction that must combine every block's partial before a final pass, iterative solvers and graph/breadth-first sweeps that alternate a compute step with a global exchange each level, the persistent kernels of §9 that reuse resident state across many rounds, and some fused-attention variants that reduce across the grid. Splitting at each such point into separate kernel launches is always possible; this section derives when a single kernel can instead carry the barrier itself, and what the hardware must guarantee for that to be safe.
+
+### 13.1 Why the grid must be co-resident
+
+Let the grid have $G$ blocks, the GPU have $M$ streaming multiprocessors, and let the kernel's occupancy admit at most $\omega$ resident blocks per SM, where
+
+$$
+\omega=\min\!\left(\left\lfloor\frac{\text{warp slots}}{w_b}\right\rfloor,\ \left\lfloor\frac{R_{SM}}{T_b R_t}\right\rfloor,\ \left\lfloor\frac{S_{SM}}{S_b}\right\rfloor,\ \beta_{\max}\right)
+$$
+
+is the minimum over the warp-slot, register ($R_t$ per thread, $T_b$ threads per block), shared-memory ($S_b$ per block), and hardware block-slot ($\beta_{\max}$) limits — the same occupancy bound as §9 of [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md). The machine can therefore hold at most
+
+$$
+R \;=\; M\,\omega
+$$
+
+blocks at once. If $G>R$, only $R$ blocks are resident; the remaining $G-R$ wait in the launch queue for an SM slot, and a slot frees **only when a resident block exits the kernel**.
+
+Now arm a grid barrier. Every resident block reaches it and spins until all $G$ blocks have arrived. But the $G-R$ non-resident blocks cannot arrive — they were never scheduled — and the resident blocks cannot exit — they are spinning at the barrier. The two waits close a cycle:
+
+```mermaid
+flowchart LR
+    Res["R resident blocks<br/>spinning at grid barrier"] -->|"wait for arrival of"| NonRes["G-R non-resident blocks<br/>queued for an SM slot"]
+    NonRes -->|"slot frees only when a resident block exits"| Res
+```
+
+The over-subscribed grid deadlocks. Hence a grid barrier is legal only when the whole grid is co-resident,
+
+$$
+G \;\le\; R \;=\; M\,\omega,
+$$
+
+and a **cooperative launch** enforces exactly this ceiling: it refuses to launch a grid larger than the co-resident capacity computed from the kernel's own occupancy. Work beyond $R$ blocks must be folded into each block as a grid-stride loop *between* barriers, never added as more blocks.
+
+### 13.2 The global barrier handshake
+
+Given co-residency, a grid barrier is a centralized sense-reversing barrier whose "processors" are blocks and whose shared state — an arrival counter and a release flag — lives in device-scope global memory, with the L2 as the atomic and coherence point. Each episode alternates an expected sense $s\in\{0,1\}$:
+
+1. one elected thread per block performs a device-scope atomic increment of the arrival counter;
+2. if it is the $G$-th arriver, it resets the counter and writes the release flag to $s$ with a **device-scope release**, publishing every prior write of its block;
+3. otherwise it spins, reading the flag with a **device-scope acquire** until it observes $s$;
+4. a block barrier then propagates the release to all threads of the block;
+5. the next barrier episode uses sense $\lnot s$.
+
+Sense reversal is what lets a fast block that laps the others avoid mistaking the previous episode's release for the current one: because the expected value alternates, a stale flag left from episode $t$ never satisfies the wait of episode $t{+}1$. The ordering annotations are not decoration. The counter and flag are shared across SMs, so a *block*-scope release would publish the producer's writes only within its own L1 and leave them invisible to a consumer block on another SM — precisely the scope-to-cache-level mapping of §14 of [Coalescing, Caches, and Shared Memory](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md). The handshake must synchronize at device scope so the writes reach the shared L2.
+
+### 13.3 Cooperative Groups as an explicit-scope discipline
+
+**Cooperative Groups (CG)** is the software layer that names a synchronization domain as a first-class object and binds it to the hardware mechanism that can synchronize *that* domain:
+
+| Group | What it is | Underlying mechanism |
+|---|---|---|
+| tiled partition ($\le$ warp) | a static power-of-two lane group | shuffle network + active-mask collectives, §12 of [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md) |
+| coalesced group | the currently-converged lanes, renumbered $0..n{-}1$ | a handle on the ITS active mask of §2 |
+| thread block | all threads of one block | shared memory + block barrier |
+| cluster | co-scheduled blocks in a GPC | cluster-scope barrier over distributed shared memory, §8 |
+| grid | all blocks of the grid | the global handshake of §13.2 under a cooperative launch |
+
+A tile's reduce, scan, ballot, any, and all are thin wrappers over the warp primitives of §12; a coalesced group is the ITS active mask made addressable so a shuffle indexes the *group*, not the physical lane. The value of the discipline is that the synchronization scope becomes explicit in the algorithm and is matched to the cheapest sufficient mechanism — a shuffle for $\le$ warp, a shared-memory barrier for a block, a cluster barrier for co-scheduled blocks, a global counter for the grid.
+
+### 13.4 Worked number — the grid-sync ceiling
+
+Take $M=132$ SMs and a kernel whose occupancy allows $\omega=2$ resident blocks per SM. Then $R=M\omega=264$ blocks may participate in a grid barrier; at $256$ threads per block that is $67{,}584$ co-resident threads. A cooperative launch caps the grid at 264 blocks — request 265 and the launch is rejected, because by §13.1 it would deadlock. To reduce $N=10^8$ elements in one kernel, each of the 264 blocks grid-strides over $\approx N/R \approx 3.8\times10^5$ elements, the grid barrier runs once, and a final pass combines the 264 partials. If the kernel instead consumes enough shared memory to force $\omega=1$, the ceiling halves to $R=132$ and the per-block stride doubles.
+
+### 13.5 Trade-off versus multiple kernel launches
+
+Splitting the algorithm at each global sync point into separate launches gives an *implicit* grid barrier: kernel $k{+}1$ does not begin until kernel $k$'s grid has fully retired, enforced by the stream, and that retirement is itself a device/system-visible ordering point. Its costs and benefits mirror the in-kernel barrier:
+
+| | Grid barrier (single kernel) | Multiple launches |
+|---|---|---|
+| grid size | capped at $R=M\omega$ (no oversubscription) | any size; oversubscribe freely |
+| load balance | a straggler block stalls all; poor tail behavior | later waves absorb imbalance |
+| state across the barrier | registers, shared memory, warm L2 kept resident | cold restart; state re-read from global memory |
+| per-barrier cost | one global-atomic handshake, growing with block count | full kernel relaunch latency |
+| best when | many cheap iterations (solvers, BFS levels) | few sync points, large per-phase work |
+
+The simpler multiple-launch structure wins when sync points are few and each phase does enough work to amortize relaunch, when the grid must oversubscribe for load balance, or when portability without cooperative-launch guarantees matters. The grid barrier wins when iterations are numerous and cheap and keeping state resident across the barrier — the same residency argument as the persistent kernels of §9 — dominates the relaunch overhead it removes.
+
 ## Numbers to remember
 
 | Quantity | Typical scale | Why it matters |
@@ -343,6 +423,7 @@ Debug the pipeline by following one `(block, buffer, generation, tile)` identity
 | buffering | commonly 2–4 live tiles | overlaps transfer, matrix, and epilogue stages |
 | warp group | multiple cooperating warps | launch unit for advanced matrix operations |
 | asynchronous identity | slot plus phase/generation | prevents stale completion from releasing reused state |
+| grid-sync ceiling | $R=M\omega$ co-resident blocks | cooperative-launch cap; an over-subscribed grid deadlocks |
 
 ## Cross-references
 
@@ -352,6 +433,7 @@ Debug the pipeline by following one `(block, buffer, generation, tile)` identity
 - [End-to-End GPU AI Inference and Serving](../05_AI_Workloads_and_Serving/02_End_to_End_GPU_AI_Inference_and_Serving.md) connects persistent execution and dynamic work queues to continuous batching and MoE serving.
 - [NPU Transformer and Attention Engines](../../03_NPU_Architecture/01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md) shows how similar producer–consumer pipelines appear in dedicated accelerators.
 - [NPU Decoupled Access–Execute](../../03_NPU_Architecture/02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md) generalizes descriptors, scratchpad phases, and event tokens.
+- The grid barrier of §13 rests on the warp shuffle collectives of [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md) §12 and the scoped consistency model of [Coalescing, Caches, and Shared Memory](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md) §14.
 
 ## References
 

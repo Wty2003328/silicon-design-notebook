@@ -278,6 +278,64 @@ GPU context state is large: registers for thousands of threads, shared memory, b
 
 Multi-tenant designs partition SMs, time-slice contexts, or create hardware instances. Shared L2/HBM/fabric interference persists even with SM partitioning. Security requires clearing/partitioning registers, shared memory, caches, predictors, and performance state as defined.
 
+### 10.1 Multi-Instance GPU (MIG) and spatial partitioning
+
+The paragraph above lists three multi-tenant options — partition SMs, time-slice, or "create hardware instances" — but leaves the last unexplained. Derive it from what a datacenter actually needs: not only sharing, but performance *and* fault isolation with a per-tenant service-level objective (SLO).
+
+**Why time-slicing and MPS are not enough.** Preemption and context switching (§10) give *temporal* isolation — one tenant owns the whole GPU during its slice — but two failure modes survive. First, **interference through shared state**: alternating tenants pollute each other's L2 sets, translation caches, and DRAM (dynamic random-access memory) row buffers, and the Multi-Process Service (MPS) — the mechanism that runs several processes' kernels *concurrently* on the shared streaming multiprocessors — has them contend for the same L2 slices and high-bandwidth memory (HBM) channels *at the same instant*. A single bandwidth-hungry neighbor then steals L2 capacity and DRAM bandwidth from everyone, and because tail latency near memory saturation diverges (the M/M/1 knee $W_q=\lambda/(\mu(\mu-\lambda))$ of [HBM §3](../02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md)), a *well-behaved* tenant's 99th-percentile latency collapses through no fault of its own. Second, **no fault containment**: a hang, illegal access, or uncorrectable error in one context can stall or reset the whole device. MPS adds spatial *sharing* but no isolation whatsoever.
+
+**Mechanism — a static spatial partition of the datapath.** Multi-Instance GPU (MIG) carves one physical GPU into up to seven **instances**, each a self-contained small GPU. The partition follows the physical hierarchy: SMs are grouped into GPU Processing Clusters (GPCs); the L2 is sliced; and HBM sits behind several memory controllers, each owning channels. An instance is assigned *dedicated* GPCs (hence SMs), *dedicated* L2 slices, and *dedicated* memory-controller channels — so it owns a fixed fraction of both HBM capacity and HBM bandwidth — plus a separate address space and fault domain. The on-chip crossbar routes each instance's traffic only to its own slices and channels; no path exists from one instance's SMs to another's L2 or DRAM. Bandwidth and faults are therefore contained *by construction*, not by scheduling policy.
+
+```mermaid
+flowchart TB
+    XBar["work distributor + on-chip crossbar<br/>routes each instance only to its own slices"]
+    subgraph GPU["one physical GPU under MIG — static spatial partition (up to 7 instances)"]
+      direction LR
+      subgraph I0["instance 0 — isolated fault + address domain"]
+        direction TB
+        G0["GPC group 0<br/>dedicated SMs"] --> L0["dedicated L2 slices"]
+        L0 --> M0["dedicated mem-controller channels"]
+        M0 --> H0["HBM sites 0"]
+      end
+      subgraph I1["instance 1"]
+        direction TB
+        G1["GPC group 1<br/>dedicated SMs"] --> L1["dedicated L2 slices"]
+        L1 --> M1["dedicated mem-controller channels"]
+        M1 --> H1["HBM sites 1"]
+      end
+      subgraph Ik["instance k …"]
+        direction TB
+        Gk["GPC group k<br/>dedicated SMs"] --> Lk["dedicated L2 slices"]
+        Lk --> Mk["dedicated mem-controller channels"]
+        Mk --> Hk["HBM sites k"]
+      end
+    end
+    XBar --> G0
+    XBar --> G1
+    XBar --> Gk
+```
+
+Each instance owns a private GPC→L2-slice→channel→HBM path; no arc crosses an instance boundary, and *that missing arc is the isolation*. Place the three options on one axis, sharing versus isolation:
+
+| Option | Concurrency | Isolation | Cost |
+|---|---|---|---|
+| time-sliced preemption / context switch (§10) | one tenant at a time | temporal only (leaves cache/row-buffer state) | save/restore cost; no overlap |
+| MPS (spatial *sharing*) | many, concurrent on shared SMs/L2/HBM | none — full interference | a noisy neighbor steals bandwidth and can fault the device |
+| MIG (spatial *partition*) | many, concurrent on disjoint hardware | bandwidth + capacity + fault + address space | stranded idle capacity; coarse, static granularity |
+
+**Derivation — isolation versus utilization.** Let the GPU have aggregate bandwidth $B$ and $S$ SMs, split into $g$ instances with fractions $\phi_i$, $\sum_i\phi_i\le 1$ (some capacity is lost to partition overhead). Under MIG, instance $i$'s achievable bandwidth is $\phi_i B$ *regardless of its neighbors* — the guaranteed rate equals the allocated rate, so its tail latency depends only on its own load against its own $\phi_i B$. Under MPS/time-slicing the instantaneous bandwidth left to a tenant is $B-\sum_{j\ne i}d_j$ for whatever the co-runners demand $d_j$; once $\sum_j d_j>B$ the shared HBM saturates and *every* tenant's queueing latency diverges at the same knee. MIG's guarantee is thus the reservation-versus-statistical-multiplexing trade of network quality of service (QoS): it converts *statistical* capacity into *guaranteed* capacity.
+
+That guarantee is not free. A static partition cannot lend an idle instance's share to a busy one: if instance $i$ runs at utilization $u_i$, the stranded fraction is $\sum_i\phi_i(1-u_i)$, permanently unusable by neighbors. Time-slicing/MPS statistically multiplex — a busy tenant borrows idle tenants' share — so their *mean* utilization is higher, bought with the loss of any guarantee. The choice is a reservation (bounded tail, stranded capacity) against over-subscription (high mean throughput, unbounded tail under an adversarial neighbor).
+
+**Worked number — a 7-instance partition.** Take a GPU with $B=2$ TB/s aggregate HBM bandwidth, 40 GB HBM, 40 MB L2, and $S\approx 98$ SMs, split into seven equal instances. Each gets $\phi_i=1/7$: $\approx 286$ GB/s guaranteed bandwidth, $\approx 5.7$ GB HBM, $\approx 5.7$ MB L2, and 14 SMs. Now run seven tenants each needing a sustained 250 GB/s (total demand 1.75 TB/s $<$ 2 TB/s):
+
+- *Under MIG:* each has 286 GB/s dedicated; $250<286$, so every tenant meets its SLO with headroom and the tails are independent.
+- *Under MPS/shared:* let six behave (250 GB/s each) but one misbehave and stream 1.0 TB/s. Total demand $=6\times250+1000=2.5$ TB/s $>2$ TB/s → the shared HBM crosses its saturation knee, utilization $\to 1$, and $W_q$ diverges: *all seven*, including the six innocents, see tail latency spike several-fold. MIG would have capped the hog at its own 286 GB/s and protected the rest.
+
+The isolation costs utilization: if the seven instances average $u_i=60\%$ busy, MIG strands $\sum_i\phi_i(1-u_i)=40\%$ of the GPU — bandwidth and SMs that a shared scheme could have reclaimed. MIG trades up to that $\sim40\%$ mean throughput for the bounded tail and the fault domain.
+
+**Trade-off — when the simpler option wins.** Time-slicing/preemption (§10) wins when a *single* job wants the whole GPU's peak (training a large model — seven $1/7$ slices cannot run one big matrix multiply), or when priorities must change faster than MIG can reconfigure (repartitioning drains the instance, a coarse and slow operation). **MPS** wins when tenants are mutually trusting and bursty and the goal is maximum *utilization* — many small kernels from one pipeline that individually under-fill the GPU pack together and reclaim exactly the idle capacity MIG would strand, with no isolation needed. **MIG** wins when hard multi-tenant isolation, predictable per-tenant tail latency, and fault containment are the product requirement — right-sizing several small models onto one card under per-customer SLOs. The lesson mirrors occupancy one level up: a partition helps only when *isolation*, not raw throughput, is the binding constraint; if one workload can use the whole device, any static partition merely strands capacity.
+
 ## 11. Observability
 
 Per kernel/SM count:
@@ -323,6 +381,7 @@ Random tests should vary dependency latency, bank/collector backpressure, barrie
 - Latency hiding needs independent ready work and memory transactions, not only threads.
 - Divergence consumes issued lane-slots even when inactive lanes produce no useful work.
 - Scheduler policy changes memory locality, MLP, fairness, and block tail behavior.
+- Spatial partitioning (Multi-Instance GPU, MIG) converts *statistical* capacity into *guaranteed* per-instance bandwidth/SM/L2 slices and a contained fault domain; it strands the idle capacity that time-slicing or the Multi-Process Service (MPS) would reclaim, but those expose every tenant to a noisy neighbor's tail latency.
 
 ## 13. Worked problems
 
@@ -341,6 +400,7 @@ Reducing registers from 64 to 48 raises residency from 4 to 5 blocks but adds 20
 ## Cross-references
 
 - **Overview and memory:** [GPU Architecture](01_GPU_Architecture.md), [GPU Memory System](../02_Memory_System/01_Coalescing_Caches_and_Shared_Memory.md).
+- **Isolation and partitioning (§10.1):** [HBM and Advanced Memory Systems](../02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md) (the L2 slices, memory-controller channels, and saturation knee a MIG partition fences off), [Multi-GPU Interconnect and Execution](../03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md), [QoS, Ordering, and IO Coherence](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md) (reservation versus statistical multiplexing), [Page Walkers, IOMMUs, and Virtualization](../../01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md) (isolated address spaces and fault domains).
 - **Advanced core machinery:** [Operand Collectors, Register Files, and Scoreboards](03_Operand_Collectors_Register_Files_and_Scoreboards.md), [Independent-Thread Scheduling and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md).
 - **Parallelism relatives:** [SMT, SIMD, and Vector Execution](../../01_CPU_Architecture/01_Core_Foundations/03_SMT_SIMD_and_Vector_Execution.md), [Systolic, Spatial, and Vector Dataflows](../../03_NPU_Architecture/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md).
 - **Simulation:** [GPU Simulators](../04_Simulation/01_GPU_Simulators.md).

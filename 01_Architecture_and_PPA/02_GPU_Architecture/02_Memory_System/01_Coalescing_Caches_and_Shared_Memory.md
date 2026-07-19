@@ -293,6 +293,7 @@ For performance diagnosis, compare adjacent event counts: lane requests → coal
 - Shared-memory tile size trades global reuse against occupancy.
 - Device-wide outstanding demand must cover bandwidth × latency.
 - Unified virtual addressing does not imply uniform memory or universal coherence.
+- Synchronization scope sets the cache level a fence reaches: block→L1, device→L2, system→interconnect; name the smallest scope covering all participants.
 
 ## 13. Worked problems
 
@@ -314,10 +315,79 @@ $$
 
 This is device-wide; coalescing, warp eligibility, MSHRs, network credits, and HBM banks must jointly sustain it.
 
+## 14. The GPU memory consistency model (scoped, relaxed)
+
+Section 10 stated the coherence *scope* of an allocation — who may cache it and at which level — but not the *ordering contract*: given two writes by one thread, when is another thread guaranteed to see them in order? Every producer→consumer handoff, every flag spin-wait, and every lock-free structure is correct only against that contract. "The flag is set, therefore the payload is ready" is an assumption until the model makes it a theorem.
+
+### 14.1 Weak, data-race-free, and scoped
+
+The GPU model is **weak** and **data-race-free (DRF)**: a program in which every pair of conflicting accesses (same location, at least one a write) is ordered by synchronization behaves as if **sequentially consistent (SC)**; a race on ordinary memory is undefined behavior, not merely a stale read. Ordinary loads and stores are **relaxed** — the compiler and hardware may reorder them freely — so happens-before edges exist only where an *atomic* creates one. Each synchronizing atomic carries two orthogonal parameters:
+
+- an **order**: *relaxed* (atomicity only, no ordering); *acquire* on a load (no later access is hoisted above it); *release* on a store (no earlier access sinks below it); *acq_rel* on a read-modify-write; *seq_cst* (a single total order among sequentially-consistent operations);
+- a **scope**: the set of threads over which that ordering and the resulting visibility actually hold — **thread block (cooperative thread array, CTA)**, **cluster** (on parts with thread-block clusters), **device** (the whole GPU), or **system** (this GPU, peer GPUs, and the CPU).
+
+A release/acquire pair creates a happens-before edge — the producer's pre-release writes become visible to the consumer after its acquire — **only if both threads lie within the named scope**. Scope is not a hint; it bounds the guarantee. A device-scope release is invisible to a peer GPU until some *system*-scope operation carries it across.
+
+### 14.2 Scope selects the cache level the synchronization must reach
+
+Why a scope can be too small follows directly from where the participants' cached copies live. The scope names the deepest level of the hierarchy at which a release must make its prior writes visible — and to which the matching acquire must reach to re-read fresh data — before the edge holds:
+
+| Scope | Participants share | Coherence point | A release must… |
+|---|---|---|---|
+| thread block (CTA) | one SM, one L1 | L1 | order writes within that L1 only — cheapest |
+| cluster | a GPC and its distributed shared memory | cluster / L2 | reach cluster-visible state |
+| device (GPU) | all SMs, one shared L2 | L2 | push writes past the local L1 to L2; the matching acquire bypasses or invalidates a stale L1 line |
+| system | GPU(s) + CPU | interconnect / system coherence | push past L2 to the fabric (NVLink/PCIe, IOMMU/ATS) — most expensive |
+
+So the mapping is **block → L1, device → L2, system → interconnect**. A release *publishes* prior writes downward to that level; the paired acquire *invalidates or bypasses* upward to it. All threads of a block run on one SM and share its L1, which is why block scope need not touch L2 at all; two blocks on different SMs share only L2, which is why a cross-block handoff must be device scope; two GPUs share only the interconnect, which is why a cross-GPU handoff must be system scope.
+
+### 14.3 Litmus: a mis-scoped release breaks a cross-block handoff
+
+Take the message-passing (MP) test with a producer block P on SM 0 and a consumer block C on SM 1, and `data = flag = 0` initially:
+
+| Producer P (SM 0) | Consumer C (SM 1) |
+|---|---|
+| `data = 42` | `while (load(flag, acquire, S) == 0) {}` |
+| `store(flag, 1, release, S)` | `r = data` |
+
+Is `r == 42` guaranteed? It depends entirely on the scope `S`:
+
+```mermaid
+flowchart LR
+    subgraph SM0["SM 0 — block P"]
+      P["data=42; release flag"] --> L1a["L1 (P)"]
+    end
+    subgraph SM1["SM 1 — block C"]
+      L1b["L1 (C)"] --> C["acquire flag; read data"]
+    end
+    L1a -->|"device release pushes to L2"| L2["shared L2 — device coherence point"]
+    L2 -->|"device acquire re-reads from L2"| L1b
+    L2 -->|"system release pushes past L2"| IC["interconnect — peer GPU + CPU"]
+```
+
+- **`S` = block (CTA):** broken. P's release orders and publishes `data` only within SM 0's L1; it need never reach L2. C, on SM 1, has a different L1, and its acquire only orders within that L1, so it can observe `flag == 1` (if the flag happens to become device-visible) while reading a stale `data == 0`. `r` can be $0$. The synchronizing scope does not cover both participants.
+- **`S` = device (GPU):** correct. The release pushes `data` to the shared L2 and orders it before the flag; C's device-scope acquire re-reads `data` from L2, bypassing any stale L1 copy. Observing `flag == 1` now implies `data == 42`. Both blocks lie within device scope.
+- **P and C on different GPUs:** even device scope fails — a device-scope release on GPU 0 stops at GPU 0's L2 and never crosses the interconnect. The handoff must use **system** scope so the write reaches the system coherence point where GPU 1 (or the CPU) can observe it.
+
+The bug in the first case is silent: the code compiles, and on any run where `data` happens to reach L2 before C reads it, it even produces the right answer. It fails only under the timing the model explicitly refuses to forbid.
+
+### 14.4 Contrast with CPU total store order
+
+An x86 CPU runs under **total store order (TSO)**: a single global coherence domain in which all cores agree on one total order of stores, ordinary loads carry acquire-like and stores release-like semantics, and the only relaxation is a store buffered ahead of a younger load to a different address. There is **no scope parameter** — MESI-style coherence keeps every core's cache in one domain and a full fence is total. See [Memory Consistency and Atomics](../../01_CPU_Architecture/06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md) for the CPU contract and the same MP litmus without scope.
+
+The GPU relaxes TSO on two axes at once. First, ordinary accesses are *relaxed*, not TSO-ordered, so even the same-thread order between two plain stores is not guaranteed to any observer without a release. Second, synchronization is *scoped*, not global: the programmer chooses how far each edge must reach. TSO's global order is the special case "every operation is system scope with acquire/release semantics" — correct everywhere, but paying the widest fence for every access.
+
+### 14.5 Trade-off — cheaper fences and more MLP versus harder reasoning
+
+Weakness and scope are bought for performance. A block-scope release compiles to L1-level ordering and touches no L2; only a system-scope operation pays the interconnect. Because ordinary accesses carry no implied order, the memory system may keep far more requests in flight — the outstanding-demand budget $N_{out}\gtrsim BW\cdot L/Q$ of §5 stays full precisely because relaxed loads need not wait for older stores to become globally visible. The price is reasoning: an under-scoped release is a real bug that passes almost every test, because the illegal reordering is rare and timing-dependent (§14.3).
+
+The stronger, simpler choice wins in two regimes. If a handoff is provably confined to one block, block scope is *both* the cheapest and the correct answer — widening it only adds fence cost. If a handoff crosses blocks but stays on one device, device scope is the safe default, and only genuine cross-GPU or GPU↔CPU handoffs justify the expensive system scope. Reflexively using system scope everywhere is always correct and simply discards the fence-cost and MLP advantage the model exists to provide; the discipline is to name the smallest scope that covers every participant — no smaller, no larger.
+
 ## Cross-references
 
 - **Core scheduling:** [GPU Architecture](../01_Core_Architecture/01_GPU_Architecture.md), [SIMT Scheduling and Occupancy](../01_Core_Architecture/02_SIMT_Scheduling_and_Occupancy.md).
-- **Memory foundations:** [Cache Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [HBM](02_HBM_and_Advanced_Memory_Systems.md), [Page Walkers and IOMMUs](../../01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md).
+- **Memory foundations:** [Cache Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [HBM](02_HBM_and_Advanced_Memory_Systems.md), [Page Walkers and IOMMUs](../../01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md), [Memory Consistency and Atomics](../../01_CPU_Architecture/06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md) for the CPU TSO contract that §14 relaxes.
+- **Consistency users:** the grid barrier of [Independent Threads and Asynchronous Pipelines](../01_Core_Architecture/04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md) §13 and the warp/block reductions of [GPU Operand Delivery](../01_Core_Architecture/03_Operand_Collectors_Register_Files_and_Scoreboards.md) §12 depend on the scoped model of §14.
 - **Simulation/scale:** [GPU Simulators](../04_Simulation/01_GPU_Simulators.md), [Multi-GPU Interconnect and Execution](../03_Scale_Up/01_Multi_GPU_Interconnect_and_Execution.md).
 - **AI use:** [AI Workload and Operator Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Operator_Mapping.md) applies coalescing, tiling, paging, and cache reuse to weights, attention, KV state, quantization, and MoE.
 

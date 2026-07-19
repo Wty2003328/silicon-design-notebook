@@ -312,6 +312,7 @@ Counters:
 - Gating zeros saves energy but not cycles or bandwidth; skipping/compression is required for speed/traffic.
 - Sparse tile time follows the most-loaded PE without dynamic balancing.
 - Performance claims must hold at an explicit accuracy/quality target.
+- MX block formats share one 8-bit (E8M0) scale per 32 elements — MXFP8/6/4 cost 8.25/6.25/4.25 bits/element — and stochastic rounding keeps $\mathbb{E}[\operatorname{round}(x)]=x$, turning an $O(N)$ accumulation bias into an $O(\sqrt N)$ zero-mean spread.
 
 ## 14. Worked problems
 
@@ -333,10 +334,102 @@ INT4×INT4 with $K=4096$ needs roughly $4+4+12=20$ bits plus sign/guard. A 16-bi
 
 Eight PEs receive nonzero counts `[50,52,49,51,50,48,53,95]`. Lockstep tile time follows 95, so useful utilization is $448/(8\times95)=58.9\%$. Splitting/reassigning the heavy work can matter more than average 56 nonzeros/PE suggests.
 
+## 15. Microscaling (MX) block formats and stochastic rounding
+
+Section 2 introduced block floating point (BFP): a block of values shares one exponent, saving exponent storage but losing range for any outlier in the block. The Open Compute Project (OCP) Microscaling (MX) formats are the standardized, fine-grained descendant of that idea and the current sub-8-bit path in training and inference silicon. Two changes make them work where naive BFP does not: the shared scale covers a *small* block ($K=32$ elements) so an outlier pollutes only its 32-neighborhood, and each element keeps a tiny private floating-point field rather than a bare integer mantissa, so elements retain individual range inside the block. Stochastic rounding (SR), derived below, is the companion that lets these narrow formats accumulate millions of updates without the systematic drift round-to-nearest would inflict.
+
+### 15.1 Shared-microexponent blocks
+
+An MX value is two-level. A block of $K=32$ consecutive elements shares one scale $X$, stored in the E8M0 code — 8 exponent bits, no mantissa, no sign — representing the power of two $2^{X-127}$ (one code reserved for NaN). Each element $i$ carries a private low-precision float $P_i$, and the value is
+
+$$
+v_i = X\cdot P_i = 2^{\,X-127}\,P_i .
+$$
+
+The private format names the point on the size/accuracy curve:
+
+| MX format | element | element bits | private field |
+|---|---|---:|---|
+| MXFP8 | E4M3 or E5M2 | 8 | 1 sign, 4–5 exp, 2–3 mantissa |
+| MXFP6 | E3M2 or E2M3 | 6 | 1 sign, 2–3 exp, 2–3 mantissa |
+| MXFP4 | E2M1 | 4 | 1 sign, 2 exp, 1 mantissa |
+| MXINT8 | INT8 | 8 | signed integer mantissa |
+
+Only the scale is shared; the per-element exponent still gives each value its own binade inside the block, which is what separates MX from integer-mantissa BFP.
+
+Storage per element is the element width plus the amortized scale,
+
+$$
+b_{\text{eff}} = b_{\text{elem}} + \frac{b_{\text{scale}}}{K}.
+$$
+
+With $b_{\text{scale}}=8$ and $K=32$ the scale adds exactly $0.25$ bit/element: **MXFP8 costs 8.25, MXFP6 6.25, and MXFP4 4.25 bits/element**. Against FP16's 16 bits that is $1.94\times$ denser for MXFP8 and $3.76\times$ for MXFP4.
+
+The 4-bit MXFP4 element (E2M1: 1 sign, 2 exponent, 1 mantissa, exponent bias 1) enumerates to a short list:
+
+| exp field | significand | magnitudes |
+|---|---|---|
+| 00 (subnormal) | $0.m\cdot2^{0}$ | $0,\ 0.5$ |
+| 01 | $1.m\cdot2^{0}$ | $1.0,\ 1.5$ |
+| 10 | $1.m\cdot2^{1}$ | $2.0,\ 3.0$ |
+| 11 | $1.m\cdot2^{2}$ | $4.0,\ 6.0$ |
+
+so eight signed magnitudes $\{0,0.5,1,1.5,2,3,4,6\}$ (no infinities or NaN). The block spans $0.5\to6$ ($12\times$, $\approx3.6$ binades) and the shared E8M0 scale slides that window across the full $2^{-127}\dots2^{127}$ range.
+
+```mermaid
+flowchart LR
+    blk["MX block: K=32 elements<br/>micro-floats P_i"] --> DEC["decode element P_i"]
+    scale["shared scale X<br/>E8M0, one per block"] --> APPLY["v_i = 2^(X-127) * P_i"]
+    DEC --> APPLY
+    APPLY --> MUL["narrow multiply"]
+    MUL --> ACC["wide accumulate"]
+    ACC --> SR["requantize + stochastic round"]
+    SR --> out["store / next layer"]
+```
+
+### 15.2 Range and precision versus plain floating point
+
+The two-level structure decouples *coarse range* (the shared scale, one field per 32 elements) from *fine range and precision* (the private micro-float). A single scale aligns the block so its largest element sits near the top of the private format's span; every element then keeps at least $\lceil\log_2\rho_{\text{blk}}\rceil$ fewer usable mantissa bits than the leading one, where $\rho_{\text{blk}}=\max/\min$ magnitude in the block, but nothing underflows as long as $\rho_{\text{blk}}$ fits the private exponent span ($2^{2^{E_m}}$ binades).
+
+Contrast a single per-tensor scale over a tensor whose global magnitude ratio $\rho_{\text{tsr}}\gg\rho_{\text{blk}}$. Small-magnitude blocks then lose about $\log_2(\rho_{\text{tsr}}/\rho_{\text{blk}})$ mantissa bits to alignment. *Worked:* $\rho_{\text{tsr}}=2^{20}$ with per-block spread $\rho_{\text{blk}}=2^{3}$ makes the small blocks lose $\approx17$ bits of alignment — total underflow for a 3-mantissa-bit element — whereas MX re-centers every 32 elements and keeps the relative step bounded by the private mantissa everywhere. That private mantissa fixes the worst-case relative error of round-to-nearest at $2^{-(M+1)}$ (half a unit in the last place, ulp): MXFP4's single mantissa bit gives $2^{-2}=25\%$, which is why MXFP4 is used for error-tolerant tensors (weights, forward activations) with higher-precision accumulation and stochastic rounding, not everywhere.
+
+### 15.3 Stochastic rounding: unbiased low-precision accumulation
+
+Round a real $x$ lying between adjacent grid points $x_{\text{lo}}$ and $x_{\text{hi}}=x_{\text{lo}}+\Delta$, and write the residual $f=(x-x_{\text{lo}})/\Delta\in[0,1)$. Round-to-nearest (RN) maps $x$ to the closer endpoint — deterministic, and for a fixed $x$ its error has a fixed sign. Stochastic rounding (SR) rounds up with probability equal to the residual:
+
+$$
+\operatorname{round}_{\text{SR}}(x)=\begin{cases}x_{\text{hi}} & \text{with prob. } f,\\[2pt] x_{\text{lo}} & \text{with prob. } 1-f.\end{cases}
+$$
+
+Its expectation is exactly $x$:
+
+$$
+\mathbb{E}\big[\operatorname{round}_{\text{SR}}(x)\big]=(1-f)x_{\text{lo}}+f\,x_{\text{hi}}=x_{\text{lo}}+f\Delta=x,
+$$
+
+so SR is unbiased for every $x$. The removed bias reappears as bounded variance,
+
+$$
+\operatorname{Var}=(1-f)(f\Delta)^2+f\big((1-f)\Delta\big)^2=f(1-f)\Delta^2\le\frac{\Delta^2}{4}.
+$$
+
+*Why RN biases long sums.* Consider a low-precision accumulator with step $\Delta$ receiving $N$ increments each of size $\delta<\Delta/2$ — a tiny gradient step added to a comparatively large weight. Under RN, $x+\delta$ rounds back to $x$ every step: the increment is below half a ulp and is discarded each time. The accumulator never moves; the lost quantity is the whole intended change $N\delta$, with one sign — an $O(N)$ systematic bias (the "swamping" failure). Under SR each step jumps up by $\Delta$ with probability $f=\delta/\Delta$, so the expected increment is $f\Delta=\delta$ and $\mathbb{E}[S_N]=S_0+N\delta$, the correct sum; the tiny updates survive statistically. Modelling the $N$ rounding errors as independent, zero-mean, variance $\le\Delta^2/4$, the accumulated error is a random walk with standard deviation $\le(\Delta/2)\sqrt{N}$. **SR converts an $O(N)$ one-sided bias into an $O(\sqrt N)$ zero-mean spread.**
+
+*Worked number.* Take $N=10^6$ updates with $\delta=\Delta/8$ (so $f=1/8$, below half a ulp). RN freezes the accumulator: bias $=N\delta=1.25\times10^{5}\,\Delta$, one direction. SR gives $\mathbb{E}=0$ and standard deviation $\Delta\sqrt{N f(1-f)}=\Delta\sqrt{10^{6}\cdot\tfrac{7}{64}}\approx331\,\Delta$ (within the $\le(\Delta/2)\sqrt N=500\,\Delta$ bound). A $1.25\times10^5\,\Delta$ one-way loss becomes a $\pm331\,\Delta$ zero-mean fluctuation that averages out across parameters and steps.
+
+### 15.4 Trade-offs
+
+- **SR is not free.** It needs a random number generator (RNG, typically a per-lane linear-feedback shift register) and a comparator against the residual bits, and it makes results nondeterministic unless the RNG is seeded and logged. RN is cheaper and reproducible, so **inference and forward passes keep RN** — SR's variance is pure downside where values are not accumulated across many steps. SR earns its cost in training accumulation: weight update, gradient accumulation, and low-precision accumulators.
+- **Block size $K$ is a compromise.** Smaller $K$ tracks range better but raises $b_{\text{scale}}/K$ and adds decode; larger $K$ is cheaper but drifts back toward BFP's outlier problem. $K=32$ with an 8-bit scale — the $0.25$ bit/element point — is the OCP choice.
+- **Per-channel can still win.** If a tensor's range is already narrow (well-behaved activations), a single per-channel scale (§1) captures it with even less overhead than a per-32 block; MX's advantage shows up specifically with localized outliers and wide intra-tensor range, as in large-language-model activations. MXFP4's 25% relative step also makes it a weight/tolerant-tensor format, not a universal one.
+
+The block scale is decoded per group in the requantization pipeline of §10; the accumulator-width rule of §2 still applies to the wide sum before requantization; and SR belongs to the training path of §11.
+
 ## Cross-references
 
 - **Compute/mapping:** [Systolic, Spatial, and Vector Dataflows](../01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md), [Dynamic Sparsity, Mixture of Experts, and Irregular Execution](../01_Compute_Dataflows/04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md), [Tensor Tiling and Data Movement](01_Tensor_Tiling_and_Data_Movement.md), [Decoupled Access/Execute and Scratchpad Scheduling](03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md).
 - **Numerics/memory:** [Floating Point](../../../00_Fundamentals/04_Floating_Point.md), [HBM](../../02_GPU_Architecture/02_Memory_System/02_HBM_and_Advanced_Memory_Systems.md).
+- **Block formats and rounding:** MX and stochastic rounding (§15) extend block floating point (§2) and the training path (§11); numeric background in [Floating Point](../../../00_Fundamentals/04_Floating_Point.md).
 - **Simulation:** [Accelerator and NPU Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md).
 
 ## References
@@ -346,6 +439,8 @@ Eight PEs receive nonzero counts `[50,52,49,51,50,48,53,95]`. Lockstep tile time
 3. S. Han et al., “EIE: Efficient Inference Engine on Compressed Deep Neural Network,” ISCA 2016.
 4. J. Albericio et al., “Cnvlutin: Ineffectual-Neuron-Free Deep Neural Network Computing,” ISCA 2016.
 5. IEEE 754 and [Floating Point](../../../00_Fundamentals/04_Floating_Point.md) references for numerical behavior.
+6. Open Compute Project, “OCP Microscaling Formats (MX) Specification,” v1.0, 2023.
+7. S. Gupta, A. Agrawal, K. Gopalakrishnan, and P. Narayanan, “Deep Learning with Limited Numerical Precision,” ICML 2015 (stochastic rounding).
 
 ---
 

@@ -361,6 +361,7 @@ Correlate command IDs across host trace, firmware, engines, NoC, and memory. Wit
 - no context can exhaust resources reserved for mandatory progress or another guarantee.
 - every accepted command eventually completes or reports a terminal error under stated environment assumptions.
 - interrupts/events correspond exactly to completion records and are safely retryable/coalescible.
+- compute-datapath results are covered by an integrity check (residue, accumulator ECC, or ABFT checksum) in a fault domain distinct from the datapath, and a failed check cannot retire as success.
 
 ## 14. Numbers to remember
 
@@ -370,6 +371,7 @@ Correlate command IDs across host trace, firmware, engines, NoC, and memory. Wit
 - Scratchpad and partial-sum state make arbitrary preemption expensive; tile safe points are common.
 - Context/command epochs protect against late responses after reset/reuse.
 - Integration counters need one end-to-end command identity.
+- Memory ECC does not guard the compute datapath: residue mod-3 catches every single-bit MAC error, and full-checksum ABFT detects and locates any single wrong element at $O(1/D)$ overhead ($\approx1.6\%$ at $D=128$) versus $100\%$ for duplication.
 
 ## 15. Worked problems
 
@@ -391,11 +393,120 @@ A context has 8 MiB live scratchpad/partial state. At 100 GB/s save bandwidth, r
 
 Compute finishes at cycle 1000, result DMA drains at 1200, coherent visibility acknowledgement arrives at 1230. If completion semantics promise host-visible results, interrupt/event before 1230 is incorrect even though the matrix engine became idle at 1000.
 
+## 16. Compute-fabric integrity: silent data corruption and ABFT
+
+Section 10's reliability, availability, and serviceability (RAS) coverage stops at the boundary of the arithmetic. Error-correcting code (ECC) protects SRAM and DRAM; parity and translation checks protect descriptors, DMA lists, and page walks; epochs protect reused state after reset. None of that guards the multiplier–adder trees and accumulators *between* the memories. A single-event upset (SEU) — a particle strike flipping one flip-flop — landing in a partial-product register or an accumulator flop yields a wrong but plausible number that flows into the model with no error signal: a silent data corruption (SDC). A harder source is a marginal or aged lane, a "core that does not count," computing some product wrong deterministically. At fleet scale both are statistical certainties: a per-device SDC once per several months, across $10^5$–$10^6$ accelerators, is a fleet event every few minutes, and one corrupted logit can flip an inference or silently poison training weights. The compute datapath therefore needs its own integrity checks, reported and recovered through the same §10 machinery.
+
+### 16.1 Residue checking on the MAC datapath
+
+The cheapest continuous check uses the fact that residue modulo $m$ is a ring homomorphism:
+
+$$
+(a\cdot b)\bmod m=\big((a\bmod m)(b\bmod m)\big)\bmod m,\qquad
+(a+b)\bmod m=\big((a\bmod m)+(b\bmod m)\big)\bmod m .
+$$
+
+A narrow side datapath carries the mod-$m$ residues of the operands, combines them with the same multiply/add structure as the full-width multiply–accumulate (MAC), and compares the reduced result against the residue of the computed accumulator; a mismatch flags a fault. Choosing $m=3$ needs only 2-bit residues and catches **every single-bit error**: a flip at bit $k$ changes a value by $\pm2^{k}$, and $2^{k}\bmod3$ alternates $1,2,1,2,\dots$ — never $0$ — so any single flipped bit perturbs the residue. Arbitrary-magnitude errors escape only when the error is $\equiv0\bmod3$, so coverage of random corruption is about $2/3$.
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.8,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum height=0.8cm,align=center,font=\small}}
+  \node[blk,minimum width=1.5cm] (mul) at (0,1.2) {$\times$};
+  \node[blk,minimum width=1.5cm] (add) at (2.9,1.2) {$+$};
+  \node[blk,minimum width=1.6cm] (acc) at (5.6,1.2) {acc};
+  \draw[->] (-1.9,1.45) node[left]{$a$} -- ([yshift=0.16cm]mul.west);
+  \draw[->] (-1.9,0.95) node[left]{$b$} -- ([yshift=-0.16cm]mul.west);
+  \draw[->] (mul.east) -- (add.west);
+  \draw[->] (add.east) -- (acc.west);
+  \draw[->] (acc.south) -- ++(0,-0.5) -| (add.south);
+  \node[blk,minimum width=1.7cm] (rmul) at (0,-1.4) {$\times\bmod 3$};
+  \node[blk,minimum width=1.7cm] (radd) at (2.9,-1.4) {$+\bmod 3$};
+  \node[blk,minimum width=1.6cm] (rres) at (5.6,-1.4) {res};
+  \draw[->] (-1.9,-1.15) node[left]{$a\bmod 3$} -- ([yshift=0.16cm]rmul.west);
+  \draw[->] (-1.9,-1.65) node[left]{$b\bmod 3$} -- ([yshift=-0.16cm]rmul.west);
+  \draw[->] (rmul.east) -- (radd.west);
+  \draw[->] (radd.east) -- (rres.west);
+  \node[blk,minimum width=1.4cm] (mod) at (8.2,1.2) {$\bmod 3$};
+  \node[blk,minimum width=1.2cm] (cmp) at (8.2,-0.1) {$=?$};
+  \draw[->] (acc.east) -- (mod.west);
+  \draw[->] (mod.south) -- (cmp.north);
+  \draw[->] (rres.east) -| (cmp.south);
+  \draw[->] (cmp.east) -- ++(1.1,0) node[right]{error};
+\end{circuitikz}
+\end{document}
+```
+
+The checker must occupy a different fault domain than the datapath it watches; a residue lane sharing the broken multiplier fails identically (common-mode) and confirms the wrong answer.
+
+### 16.2 Algorithm-based fault tolerance for matrix tiles
+
+Residue checks are per-operation but local. Algorithm-based fault tolerance (ABFT) protects a whole matrix tile with one end-to-end invariant whose cost shrinks as the tile grows. Let $e$ be the all-ones vector. Encode the operands of $C=AB$ ($A$ is $M\times K$, $B$ is $K\times N$) with a column-checksum row on $A$ and a row-checksum column on $B$:
+
+$$
+A^{c}=\begin{bmatrix}A\\ e^{T}A\end{bmatrix},\qquad B^{r}=\begin{bmatrix}B & Be\end{bmatrix}.
+$$
+
+Then
+
+$$
+A^{c}B^{r}=\begin{bmatrix}AB & ABe\\ e^{T}AB & e^{T}ABe\end{bmatrix}
+=\begin{bmatrix}C & Ce\\ e^{T}C & e^{T}Ce\end{bmatrix}.
+$$
+
+The invariant is pure associativity: the checksum carried *through* the multiply equals the checksum taken *from* the result,
+
+$$
+(e^{T}A)B=e^{T}(AB)=e^{T}C,\qquad A(Be)=(AB)e=Ce.
+$$
+
+So the appended last row must equal the column sums of $C$, and the appended last column must equal its row sums. A single wrong element $C_{ij}$ breaks exactly one row check (row $i$) and one column check (column $j$); their intersection **locates** the fault, and with trusted checksums the correct value is recovered as (row-checksum minus the other elements of the row). ABFT thus detects, locates, and can correct any single erroneous element, and detects any pattern that changes at least one row- or column-sum — all single-bit SEUs and all single-lane faults. Only corruption engineered to preserve every checksum escapes, which is negligible for random upset.
+
+*Overhead.* For a square $D\times D$ tile ($M=N=K=D$) the product is $D^3$ MACs; the checksum border adds about $2D^2+D$ MACs plus $O(D^2)$ additions to form and verify the sums. Relative compute overhead is
+
+$$
+\frac{2D^2}{D^3}=\frac{2}{D}=O\!\left(\frac1D\right),
+$$
+
+and the storage overhead (one extra row and column) is $\approx2/D$ as well. At $D=128$ that is $1.56\%$; at $D=256$, $0.78\%$ — versus $100\%$ for dual modular redundancy (DMR). ABFT buys single-error-complete coverage of the array for 1–2% at the tile sizes NPUs actually run, a 50–100$\times$ cheaper guard than duplicating it. In fixed point the checksum equality is exact; in floating point $\sum$-then-round $\neq$ round-then-$\sum$, so the comparison needs a tolerance $\tau$ that bounds accumulated rounding without masking a real fault — a genuine tension, and a reason integer or block-floating-point tiles are easier to protect.
+
+### 16.3 Detection, sampling, and quarantine
+
+Residue and ABFT are concurrent detectors. To catch what they miss and to validate the checkers themselves, the scheduler periodically re-executes a sampled fraction $s$ of tiles on a spare lane or a second pass; the chance of catching a persistent bad lane over $t$ sampled tiles rises as $1-(1-s)^t$, so sampling is a throughput/coverage knob, not a per-tile guarantee. When any detector fires, recovery reuses §10:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Checking: tile runs with residue + ABFT
+    Checking --> Clean: all checks pass
+    Clean --> [*]
+    Checking --> Suspect: residue or ABFT mismatch
+    Suspect --> Reexec: re-run tile (same epoch) on spare lane
+    Reexec --> Transient: result now matches
+    Reexec --> Persistent: mismatch repeats
+    Transient --> Clean: log syndrome, retry
+    Persistent --> Quarantine: mark PE faulty
+    Quarantine --> Remap: map PE out, recompile mapping
+    Remap --> Report: RAS error record + SDC policy
+    Report --> [*]
+```
+
+A transient that clears on re-execution is logged and the tile retried under the same command epoch (§8, and the replay machinery of the command-42 walkthrough). A recurring failure marks the processing element (PE) faulty; the scheduler maps it out — the compute analogue of memory page retirement — while §10 writes the error record (context, tile, PE, syndrome) and, if wrong output was already published, escalates per the application binary interface's (ABI) SDC policy.
+
+### 16.4 Trade-offs
+
+- **Duplication can be simpler.** A small array, or a safety-critical part already running dual or triple modular redundancy (DMR/TMR) for certification, already has 100% coverage and gains nothing from ABFT; and for tiny tiles $O(1/D)$ is not small ($D=8\Rightarrow25\%$), so duplication may win.
+- **ABFT assumes linearity.** It guards general matrix multiplication (GEMM) and convolution cleanly but not the nonlinear activation and normalization units, which fall back to residue, range checks, or sampled re-execution.
+- **Each layer is partial.** The residue lane adds a comparator to the timing path and covers only $\sim2/3$ of arbitrary errors; accumulator ECC covers retention upsets but not the arithmetic that fills the flops; sampling covers only statistically. The mechanisms are complementary, and the right mix depends on tile size, numeric format, and the fleet-level SDC budget.
+
+This integrity layer extends the RAS and reset path of §10 (it reports through the same error records and epochs) and protects the MAC array of the [Systolic, Spatial, and Vector Dataflows](../01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) page, where the checksum row and column fall naturally on the array's boundary PEs.
+
 ## Cross-references
 
 - **Accelerator internals:** [NPU Accelerators](../01_Compute_Dataflows/01_NPU_Accelerators.md), [Tensor Tiling and Data Movement](../02_Mapping_and_Memory/01_Tensor_Tiling_and_Data_Movement.md).
 - **Translation/coherence/fabric:** [Page Walkers and IOMMUs](../../01_CPU_Architecture/05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md), [Cache Coherence](../../01_CPU_Architecture/06_Coherence_and_Consistency/01_Cache_Coherence.md), [QoS, Ordering, and I/O Coherence](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md).
 - **System modeling:** [Full-Chip Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md), [Accelerator and NPU Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md).
+- **Compute integrity:** SDC and ABFT (§16) extend the RAS/reset path of §10 and guard the array of the [Systolic, Spatial, and Vector Dataflows](../01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) page (§2, §5 there).
 
 ## References
 
@@ -404,6 +515,8 @@ Compute finishes at cycle 1000, result DMA drains at 1200, coherent visibility a
 3. PCI-SIG, PCI Express ATS/PRI/PASID specifications.
 4. N. Jouppi et al., “In-Datacenter Performance Analysis of a Tensor Processing Unit,” ISCA 2017.
 5. Compute Express Link Consortium specifications for coherent accelerator and memory attachment.
+6. K.-H. Huang and J. A. Abraham, “Algorithm-Based Fault Tolerance for Matrix Operations,” IEEE Trans. Computers, 1984.
+7. H. D. Dixit et al., “Silent Data Corruptions at Scale,” 2021; P. H. Hochschild et al., “Cores That Don't Count,” HotOS 2021.
 
 ---
 
