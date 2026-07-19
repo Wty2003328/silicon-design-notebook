@@ -14,7 +14,7 @@ This notebook was split out of the combined "Silicon to Serving" project — see
 - **GitHub:** every page renders directly in the GitHub preview (Mermaid supported).
 - **Any markdown viewer:** standard markdown with relative links throughout.
 
-Start at [Index.md](Index.md) or [Chip_Design_Flow_Overview.md](Chip_Design_Flow_Overview.md). Authors and reviewers should also use the [Research-Depth and Evidence Standard](Research_Depth_and_Evidence_Standard.md), which defines the required chain from workload to mechanism, theory, measurable evidence, validation, and research questions.
+Start at [Index.md](Index.md) or [Chip_Design_Flow_Overview.md](Chip_Design_Flow_Overview.md). Authors and reviewers should also use the [Research-Depth and Evidence Standard](Research_Depth_and_Evidence_Standard.md), which defines the required chain from workload to mechanism, theory, measurable evidence, validation, research questions, and an implementation-reconstruction contract.
 
 ## Dependencies & Setup
 
@@ -33,7 +33,7 @@ hardware_design_notebook/
 ├── Index.md                       full page index and reading paths
 ├── Research_Depth_and_Evidence_Standard.md   notebook-wide technical quality rubric
 ├── 00_Fundamentals/               device physics, logic, arithmetic, SystemC/TLM (5 pages)
-├── 01_Architecture_and_PPA/       4 chip-architecture books, 30 subdomains, 69 chapters
+├── 01_Architecture_and_PPA/       4 chip-architecture books, 34 subdomains, 81 chapters
 ├── 02_Power_and_Low_Power/        power physics, domain architecture, reduction, UPF/CPF, signoff (6 pages)
 ├── 03_Frontend_RTL_and_Verification/   RTL coding, clocks/CDC, UVM, formal, coverage (13 pages)
 ├── 04_Synthesis/                  RTL -> gates + SDC constraints (2 pages)
@@ -43,7 +43,7 @@ hardware_design_notebook/
 └── interview_prep/                per-folder interview Q&A (00-07) + RTL coding canon + numeric bank
 ```
 
-Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as four self-contained CPU, GPU, NPU, and SoC/chiplet books. Each book owns its workload definition, AI-workload mapping and serving analysis, performance modeling, design-space exploration, physical implementation, PPA estimation, simulation workflow, and evidence standards. Total: **103 flow pages + 10 interview-prep banks**.
+Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as four self-contained CPU, GPU, NPU, and SoC/chiplet books. Each book owns its workload definition, AI-workload mapping and serving analysis, performance modeling, design-space exploration, physical implementation, PPA estimation, simulation workflow, evidence standards, and implementation blueprints. Total: **115 flow pages + 10 interview-prep banks**.
 
 See [Index.md](Index.md) for the full page-by-page index with coverage summaries.
 
@@ -58,6 +58,7 @@ Substantive pages follow the [Research-Depth and Evidence Standard](Research_Dep
 - **Worked problems** — interview-style problems with full solutions
 - **Cross-references** — links to prerequisite and downstream pages
 - **Evidence and research boundary** — counters/traces, validation, assumptions, failure modes, and open problems
+- **Implementation reconstruction** — contracts, owned state, interfaces, sizing, policies, invariants, physical effects, verification, and staged bring-up sufficient to derive an original design specification
 
 ## History
 

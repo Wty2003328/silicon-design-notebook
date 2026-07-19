@@ -67,6 +67,24 @@ Include at least one worked example that changes a design decision. It should ex
 
 State when the mechanism loses, what invalidates the model, how an implementation fails, and which questions remain open. Research preparation requires understanding the boundary of current knowledge, not just the accepted design.
 
+### 1.9 Implementation-reconstruction contract
+
+A chapter that claims implementation depth must let a reader reconstruct a defensible block specification without copying an existing design. Source code is not required, but naming components is not enough. The chapter must provide the following artifacts in prose, diagrams, tables, or equations:
+
+1. **Requirements and external contract:** supported operations, legal inputs, outputs, ordering, precision, exceptions, privilege/security behavior, and explicit non-goals.
+2. **Ownership decomposition:** which block owns every piece of state and which behavior belongs to an upstream or downstream block.
+3. **State schema:** the fields stored in each queue, table, cache entry, descriptor, checkpoint, or protocol state, including allocation and reclamation conditions.
+4. **Interface protocol:** request/response payloads, identity tags, ready/valid or credit behavior, backpressure, retry, cancellation, reset, and clock/power-domain assumptions.
+5. **Causal control flow:** the normal path and exceptional paths, including arbitration, hazards, replay, flush, timeout, fault, and recovery.
+6. **Resource and sizing model:** bandwidth, latency, capacity, associativity, queue depth, banking, port count, metadata cost, and at least one calculation connecting workload demand to a design choice.
+7. **Policy choices:** the replacement, scheduling, routing, prediction, admission, or quality-of-service policy; alternatives; why one was selected; and workloads for which that choice loses.
+8. **Invariants and progress:** properties that must never be violated, plus the mechanism that prevents deadlock, livelock, starvation, data loss, duplication, or imprecise state.
+9. **Physical consequences:** critical paths, high-fanout structures, placement-locality needs, power/activity sources, clocking, and where pipelining changes visible behavior.
+10. **Observability and verification:** counters, traces, assertions, reference models, directed corner cases, constrained-random tests, coverage targets, and performance-calibration experiments.
+11. **Bring-up and evolution:** a minimum viable implementation, staged feature-enablement order, debug escape hatches, compatibility/versioning rules, and a path to scale the design.
+
+The practical test is whether a reader can produce three reviewable documents from the chapter: a block diagram with ownership boundaries, a state-and-interface specification with invariants, and a verification/bring-up plan. If essential choices remain hidden behind phrases such as “the scheduler handles it” or “the cache returns the data,” the chapter is not implementation-reconstructable.
+
 ---
 
 ## 2. Claim and source discipline
@@ -154,6 +172,7 @@ Score each dimension from 0 to 3:
 | mechanism | feature list | qualitative sketch | causal stages and state | cycle/event detail with invariants/failures |
 | theory | absent | formula quoted | derived model with assumptions | bounds, sensitivity, limiting cases, failure region |
 | implementation | absent | components named | concrete structures/flow | PPA/timing/software/verification trade-offs |
+| reconstructability | no build path | block list only | contracts, state, interfaces, and sizing | complete policy/invariant/verification/bring-up specification |
 | evidence | unsupported | references only | counters/experiments identified | reproducible chain, validation, uncertainty |
 | worked reasoning | absent | toy arithmetic | decision-relevant example | multiple regimes/sensitivity and interpretation |
 | research readiness | summary only | common questions | open problems/trade-offs | hypotheses, experimental design, generalization limits |
@@ -165,11 +184,14 @@ A substantive research-preparation chapter should reach at least level 2 in ever
 ## 7. Audit workflow
 
 1. Inventory pages, ownership, cross-links, and prerequisites.
-2. Identify missing mechanisms, theory, evidence, and first-use definitions.
-3. Compare coverage against representative curricula, standards, seminal papers, current primary documentation, and research questions.
-4. Expand the architecture-owned page rather than creating detached generic material.
-5. Add or update worked derivations, failure modes, counters, simulator paths, and references.
-6. Validate links, anchors, fences, terminology, counts, and stale paths.
-7. Record remaining gaps instead of hiding uncertainty.
+2. Build a layer ledger: for each layer, record its contract, state owner, interfaces, policies, invariants, physical cost, evidence, and build/verification gate.
+3. Walk at least one request, instruction, transaction, tensor tile, or packet through every layer. Record where it can wait, be transformed, be retried, fail, or be observed.
+4. Identify missing mechanisms, theory, evidence, implementation choices, and first-use definitions.
+5. Compare coverage against representative curricula, standards, seminal papers, current primary documentation, and research questions.
+6. Expand the architecture-owned page rather than creating detached generic material.
+7. Add or update worked derivations, failure modes, counters, simulator paths, implementation stages, and references.
+8. Try to reconstruct a block diagram, interface/state specification, sizing worksheet, and verification plan from the text; log every decision that still requires guessing.
+9. Validate links, anchors, fences, terminology, counts, and stale paths.
+10. Record remaining gaps instead of hiding uncertainty.
 
 This standard is a living review contract. It applies to architecture, RTL, verification, synthesis, backend, signoff, manufacturing, bring-up, and interview material.

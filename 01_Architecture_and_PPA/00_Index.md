@@ -4,9 +4,9 @@
 > single instruction, multiple threads (SIMT); high-bandwidth memory (HBM); double data rate (DDR); network on chip (NoC); Advanced Microcontroller Bus Architecture (AMBA);
 > tera operations per second (TOPS); input/output (I/O).
 
-Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names or a shared-method book. It contains **69 substantive chapters in 30 focused subdomains**.
+Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names or a shared-method book. It contains **81 substantive chapters in 34 focused subdomains**.
 
-Every research claim should follow the notebook-wide [Research-Depth and Evidence Standard](../Research_Depth_and_Evidence_Standard.md): define terminology and boundaries, derive the mechanism and assumptions, connect it to measurable evidence, validate intermediate observables, and state failure conditions and open questions.
+Every research claim should follow the notebook-wide [Research-Depth and Evidence Standard](../Research_Depth_and_Evidence_Standard.md): define terminology and boundaries, derive the mechanism and assumptions, connect it to measurable evidence, validate intermediate observables, and state failure conditions and open questions. Its implementation-reconstruction contract additionally requires enough state, interface, sizing, policy, invariant, physical, verification, and bring-up detail to derive an original block specification without copying code.
 
 > **New to computer architecture?** Choose the processor/system you want to understand and begin with its architecture-owned methodology: [CPU](01_CPU_Architecture/00_Design_Methodology/00_Index.md), [GPU](02_GPU_Architecture/00_Design_Methodology/00_Index.md), [NPU](03_NPU_Architecture/00_Design_Methodology/00_Index.md), or [SoC/chiplet](04_SoC_and_Chiplet_Architecture/00_Design_Methodology/00_Index.md). Each introduces terminology through that architecture's own workloads, structures, PPA constraints, and simulator flow.
 
@@ -20,6 +20,7 @@ A topic lives with the architecture whose design decisions give it meaning:
 - Shared buses, on-chip networks, DDR memory, I/O policy, and chiplets live in **SoC and Chiplet Architecture**.
 - Workload selection, performance modeling, PPA, physical structures, and simulation methodology live **inside every architecture book**, because their equations, counters, bottlenecks, input artifacts, and implementation costs change with the architecture.
 - AI operator mapping and serving analysis also live **inside every architecture book**: CPU owns host and CPU execution, GPU owns SIMT/matrix/HBM execution, NPU owns graph-to-dataflow lowering, and SoC/chiplet owns heterogeneous composition and end-to-end traffic.
+- Implementation blueprints live **inside every architecture book**. They integrate that architecture's mechanisms into buildable contracts rather than creating a detached generic methodology.
 
 ~~~mermaid
 flowchart LR
@@ -36,10 +37,10 @@ flowchart LR
 
 | Book | Subdomains | Chapters | What it owns |
 |---|---:|---:|---|
-| [CPU Architecture](01_CPU_Architecture/00_Index.md) | 10 | 26 | CPU-owned workloads/DSE/PPA/simulation method, prediction/speculation, out-of-order scheduling/replay, cache/VM, coherence, case studies, CPU and heterogeneous AI serving |
-| [GPU Architecture](02_GPU_Architecture/00_Index.md) | 6 | 14 | GPU-owned workloads/DSE/PPA/simulation method, SIMT scheduling, operand delivery, memory/HBM, scale-up, AI operator mapping and end-to-end serving |
-| [NPU Architecture](03_NPU_Architecture/00_Index.md) | 6 | 15 | NPU-owned graph/mapping/DSE/PPA/simulation method, dense/Transformer/sparse dataflows, integration, compiler-to-NPU mapping and serving |
-| [SoC and Chiplet Architecture](04_SoC_and_Chiplet_Architecture/00_Index.md) | 8 | 14 | SoC-owned use cases/DSE/PPA/simulation method, system composition, DDR, AMBA, NoC, I/O, chiplets, heterogeneous AI serving |
+| [CPU Architecture](01_CPU_Architecture/00_Index.md) | 11 | 29 | CPU-owned workloads/DSE/PPA/simulation method, prediction/speculation, out-of-order scheduling/replay, cache/VM/coherence, AI serving, and reconstructable core/memory/integration blueprints |
+| [GPU Architecture](02_GPU_Architecture/00_Index.md) | 7 | 17 | GPU-owned workloads/DSE/PPA/simulation method, SIMT/tensor execution, memory/HBM, scale-up, AI serving, and hardware/software implementation blueprints |
+| [NPU Architecture](03_NPU_Architecture/00_Index.md) | 7 | 18 | NPU-owned graph/mapping/DSE/PPA/simulation method, dense/Transformer/sparse dataflows, serving, and compiler/array/runtime implementation blueprints |
+| [SoC and Chiplet Architecture](04_SoC_and_Chiplet_Architecture/00_Index.md) | 9 | 17 | SoC-owned use cases/DSE/PPA/simulation method, system composition, DDR, protocols, NoC, I/O, chiplets, serving, and full-chip implementation blueprints |
 
 ## Folder tree
 
@@ -55,21 +56,24 @@ flowchart LR
 │   ├── 06_Coherence_and_Consistency/
 │   ├── 07_Core_Case_Studies/
 │   ├── 08_Simulation/
-│   └── 09_AI_Workloads_and_Serving/
+│   ├── 09_AI_Workloads_and_Serving/
+│   └── 10_Implementation_Blueprints/
 ├── 02_GPU_Architecture/
 │   ├── 00_Design_Methodology/
 │   ├── 01_Core_Architecture/
 │   ├── 02_Memory_System/
 │   ├── 03_Scale_Up/
 │   ├── 04_Simulation/
-│   └── 05_AI_Workloads_and_Serving/
+│   ├── 05_AI_Workloads_and_Serving/
+│   └── 06_Implementation_Blueprints/
 ├── 03_NPU_Architecture/
 │   ├── 00_Design_Methodology/
 │   ├── 01_Compute_Dataflows/
 │   ├── 02_Mapping_and_Memory/
 │   ├── 03_System_Integration/
 │   ├── 04_Simulation/
-│   └── 05_AI_Workloads_and_Serving/
+│   ├── 05_AI_Workloads_and_Serving/
+│   └── 06_Implementation_Blueprints/
 └── 04_SoC_and_Chiplet_Architecture/
     ├── 00_Design_Methodology/
     ├── 01_System_Modeling/
@@ -78,19 +82,21 @@ flowchart LR
     ├── 04_On_Chip_Networks/
     ├── 05_IO_and_Chiplets/
     ├── 06_Simulation/
-    └── 07_AI_Workloads_and_Serving/
+    ├── 07_AI_Workloads_and_Serving/
+    └── 08_Implementation_Blueprints/
 ~~~
 
 ## First-time-reader paths
 
 | Goal | Reading path |
 |---|---|
-| Learn a CPU from software to memory | [CPU methods](01_CPU_Architecture/00_Design_Methodology/00_Index.md) → [core](01_CPU_Architecture/01_Core_Foundations/00_Index.md) → [frontend](01_CPU_Architecture/02_Frontend_and_Prediction/00_Index.md) → [backend](01_CPU_Architecture/03_Out_of_Order_Backend/00_Index.md) → [cache/coherence](01_CPU_Architecture/04_Cache_Hierarchy/00_Index.md) |
-| Understand a GPU below CUDA | [GPU methods](02_GPU_Architecture/00_Design_Methodology/00_Index.md) → [GPU core](02_GPU_Architecture/01_Core_Architecture/00_Index.md) → [GPU memory](02_GPU_Architecture/02_Memory_System/00_Index.md) → [scale-up](02_GPU_Architecture/03_Scale_Up/00_Index.md) |
-| Understand an NPU below TOPS | [NPU methods](03_NPU_Architecture/00_Design_Methodology/00_Index.md) → [NPU compute](03_NPU_Architecture/01_Compute_Dataflows/00_Index.md) → [mapping/memory](03_NPU_Architecture/02_Mapping_and_Memory/00_Index.md) → [integration](03_NPU_Architecture/03_System_Integration/00_Index.md) |
-| Compose a complete chip | one compute architecture → [SoC/chiplet methods](04_SoC_and_Chiplet_Architecture/00_Design_Methodology/00_Index.md) → [system modeling](04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md) → [memory](04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) → [NoC](04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/00_Index.md) |
+| Learn a CPU from software to memory | [CPU methods](01_CPU_Architecture/00_Design_Methodology/00_Index.md) → [core](01_CPU_Architecture/01_Core_Foundations/00_Index.md) → [frontend](01_CPU_Architecture/02_Frontend_and_Prediction/00_Index.md) → [backend](01_CPU_Architecture/03_Out_of_Order_Backend/00_Index.md) → [cache/coherence](01_CPU_Architecture/04_Cache_Hierarchy/00_Index.md) → [CPU blueprints](01_CPU_Architecture/10_Implementation_Blueprints/00_Index.md) |
+| Understand a GPU below CUDA | [GPU methods](02_GPU_Architecture/00_Design_Methodology/00_Index.md) → [GPU core](02_GPU_Architecture/01_Core_Architecture/00_Index.md) → [GPU memory](02_GPU_Architecture/02_Memory_System/00_Index.md) → [scale-up](02_GPU_Architecture/03_Scale_Up/00_Index.md) → [GPU blueprints](02_GPU_Architecture/06_Implementation_Blueprints/00_Index.md) |
+| Understand an NPU below TOPS | [NPU methods](03_NPU_Architecture/00_Design_Methodology/00_Index.md) → [NPU compute](03_NPU_Architecture/01_Compute_Dataflows/00_Index.md) → [mapping/memory](03_NPU_Architecture/02_Mapping_and_Memory/00_Index.md) → [integration](03_NPU_Architecture/03_System_Integration/00_Index.md) → [NPU blueprints](03_NPU_Architecture/06_Implementation_Blueprints/00_Index.md) |
+| Compose a complete chip | one compute architecture → [SoC/chiplet methods](04_SoC_and_Chiplet_Architecture/00_Design_Methodology/00_Index.md) → [system modeling](04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md) → [memory](04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) → [NoC](04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/00_Index.md) → [SoC/chiplet blueprints](04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/00_Index.md) |
 | Evaluate a design honestly | use that architecture's `00_Design_Methodology`: workload/performance/DSE → PPA/physical implementation → simulation/evidence |
 | Analyze AI workloads by architecture | [CPU AI](01_CPU_Architecture/09_AI_Workloads_and_Serving/00_Index.md) · [GPU AI](02_GPU_Architecture/05_AI_Workloads_and_Serving/00_Index.md) · [NPU AI](03_NPU_Architecture/05_AI_Workloads_and_Serving/00_Index.md) · [SoC/chiplet AI](04_SoC_and_Chiplet_Architecture/07_AI_Workloads_and_Serving/00_Index.md) |
+| Reconstruct an implementation | [CPU blueprints](01_CPU_Architecture/10_Implementation_Blueprints/00_Index.md) · [GPU blueprints](02_GPU_Architecture/06_Implementation_Blueprints/00_Index.md) · [NPU blueprints](03_NPU_Architecture/06_Implementation_Blueprints/00_Index.md) · [SoC/chiplet blueprints](04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/00_Index.md) |
 
 ---
 

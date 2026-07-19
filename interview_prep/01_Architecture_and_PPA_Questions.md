@@ -2277,3 +2277,53 @@ where $T_s$ is serial/host work, $C$ compute, $T_c$ communication, and $T_i$ imb
 **Answer:** With average accepted proposals $E[A]$, proposal length $k$, draft cost $T_d$, verification cost $T_v(k)$, and ordinary target step $T_t$, an idealized speedup is
 $$S\approx\frac{(E[A]+1)T_t}{T_d+T_v(k)}.$$
 But batching, verification shape efficiency, draft/target placement, extra KV state, rollback, memory bandwidth, scheduler fairness, and rejected work alter all terms. Measure useful accepted tokens per target-equivalent cost under the same SLO and output quality.
+
+---
+
+## Implementation-Reconstruction Questions
+
+#### Q49: What is the minimum information needed to turn a microarchitecture description into a block specification?
+
+*From the [Research-Depth and Evidence Standard](../Research_Depth_and_Evidence_Standard.md) and the four architecture implementation-blueprint indexes.*
+
+**Answer:** Freeze requirements and external behavior; assign every state item and behavior to a block; define queue/table/descriptor fields and allocation/reclamation; specify request/response payload, identity, backpressure, ordering, reset, and cancellation; walk normal, hazard, fault, replay, and recovery paths; derive capacity/bandwidth/latency/ports; choose policies and losing cases; state safety/progress invariants; identify critical physical structures; define assertions, references, counters, tests, and coverage; and write a minimum viable build plus bring-up gates. If a reader cannot draw a block diagram, state/interface table, sizing worksheet, and verification plan without guessing, the description is not implementation-reconstructable.
+
+#### Q50: How would you stage an out-of-order CPU implementation without debugging every hard feature at once?
+
+*From [CPU Frontend and Execution-Core Implementation Blueprint](../01_Architecture_and_PPA/01_CPU_Architecture/10_Implementation_Blueprints/01_Frontend_and_Execution_Core_Implementation_Blueprint.md).*
+
+**Answer:** First build a single-issue in-order core with precise traps and a retirement trace. Add backpressured memory and a simple predictor with full flush. Introduce physical registers and a reorder buffer while issue remains ordered, then one centralized out-of-order issue queue. Add nonblocking memory and speculative load/replay only after memory tests pass. Widen/partition, add vectors or SMT one feature at a time. Preserve the same retirement reference boundary and add counters/invariants at every stage; this makes each performance feature a separately testable hypothesis.
+
+#### Q51: Why must a coherence controller specify transient states, not only MESI stable states?
+
+*From [CPU Memory, Translation, and Coherence Blueprint](../01_Architecture_and_PPA/01_CPU_Architecture/10_Implementation_Blueprints/02_Memory_Translation_and_Coherence_Implementation_Blueprint.md).*
+
+**Answer:** While data, ownership, invalidation acknowledgements, writebacks, or retries are outstanding, the controller has partial permission and protocol obligations that no stable state represents. Incoming probes, local eviction, and responses can collide during that interval. A transient state records starting state, requested final permission, expected data source, outstanding acknowledgements, and queued conflicts, enabling a complete state-event-action-next-state table. Omitting it hides races that cause two writers, stale data, dropped responses, or deadlock.
+
+#### Q52: What state is required to reconstruct a GPU warp scheduler and operand path?
+
+*From [GPU SIMT-Core and Tensor-Pipeline Blueprint](../01_Architecture_and_PPA/02_GPU_Architecture/06_Implementation_Blueprints/01_SIMT_Core_and_Tensor_Pipeline_Implementation_Blueprint.md).*
+
+**Answer:** Per warp: block/warp identity, PC, active/completed masks, reconvergence or per-thread PC state, stall reason, scoreboard dependencies, outstanding memory/tensor IDs, barrier generation, and instruction-buffer state. The scoreboard maps live producers to registers/resources. Each operand-collector entry records instruction, mask, sources, collected bits, destination, and pipeline; the banked register file defines address mapping, ports, bypass, conflicts, and writeback. Issue atomically reserves downstream state and marks dependencies; completion with matching identity writes back and clears them. Arbitration, fairness, bank conflicts, and backpressure must be explicit.
+
+#### Q53: What contracts must an NPU compiler and hardware share?
+
+*From [NPU Graph-Compiler and Execution-Array Blueprint](../01_Architecture_and_PPA/03_NPU_Architecture/06_Implementation_Blueprints/01_Graph_Compiler_and_Execution_Array_Implementation_Blueprint.md).*
+
+**Answer:** Operator/shape/layout/precision and numerical semantics; target command/descriptor fields; array/tensor shapes and dataflows; register/accumulator/scratchpad capacities and allocation granularities; bank/port bandwidth; DMA transaction and event limits; synchronization, fault, and fallback behavior; and a calibrated cost model for latency, utilization, bytes, and resource occupancy. The compiler proves legality, chooses tiles/layout/lifetimes, and emits versioned descriptors; hardware validates/adopts those decisions. Compiler-declared resource use must equal hardware admission.
+
+#### Q54: How do you prove NoC forward progress rather than assume light traffic?
+
+*From [SoC NoC, QoS, I/O, and Chiplet Blueprint](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/02_NoC_QoS_IO_and_Chiplet_Integration_Blueprint.md).*
+
+**Answer:** Construct a dependency graph whose nodes are virtual channels/buffer classes and whose edges mean holding one resource while requesting another. Remove cycles through restricted routing, separate virtual networks, ordered virtual-channel classes, or an acyclic escape path. Extend the graph through endpoints: requests, responses, probes, writebacks, and faults need reserved progress resources. Prove credit conservation and escape reachability, bound or age arbitration to prevent starvation, prevent adaptive livelock, then stress all queues full with delayed responses and errors.
+
+#### Q55: How should simulator and hardware validation be linked during bring-up?
+
+**Answer:** Run the identical binary/compiled executable, inputs, descriptors, and configuration; preserve identities from source/graph operation through instruction/command, transaction, and completion; compare functional output first, then dynamic work counts, addresses/bytes, cache/partition traffic, resource occupancy/stalls, and final cycles. Bring-up enables one layer at a time in a conservative diagnostic mode. Runtime matching alone is insufficient because compensating errors can hide an incorrect instruction stream or memory model.
+
+#### Q56: What makes a bring-up gate actionable?
+
+*From the CPU, GPU, NPU, and SoC implementation blueprints.*
+
+**Answer:** A gate has named entry conditions, one narrow capability being enabled, known input and expected trace/counter/output, instruments and safe electrical/thermal limits, timeout, pass/fail owner, failure snapshot, rollback configuration, and prerequisites for the next gate. Feature-disable controls, reduced clocks, one outstanding operation, cache bypass, or one-core/SM/array modes isolate layers. A checklist item such as “test memory” without evidence boundaries or rollback is not a bring-up plan.
