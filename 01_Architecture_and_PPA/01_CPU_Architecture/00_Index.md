@@ -35,7 +35,7 @@ flowchart LR
 | 6 | [Coherence and Consistency](06_Coherence_and_Consistency/00_Index.md) | 3 | How do CPU cores share memory without observing illegal values? |
 | 7 | [Core Case Studies](07_Core_Case_Studies/00_Index.md) | 1 | How do these choices compose in a real open CPU? |
 | 8 | [CPU Simulation](08_Simulation/00_Index.md) | 2 | How are CPU timing and coherence hypotheses tested? |
-| 9 | [AI Workloads and Serving](09_AI_Workloads_and_Serving/00_Index.md) | 3 | How do training and inference workloads map onto CPU execution, memory, and serving systems? |
+| 9 | [AI Workloads and Serving](09_AI_Workloads_and_Serving/00_Index.md) | 6 | How do training/inference map onto CPU execution and how are their compiler, runtime, scheduler, state, validation, and deployment stacks constructed? |
 | 10 | [Implementation Blueprints](10_Implementation_Blueprints/00_Index.md) | 3 | What contracts, state, interfaces, sizing, invariants, tests, and bring-up gates are required to reconstruct a CPU? |
 
 ## Beginner reading order

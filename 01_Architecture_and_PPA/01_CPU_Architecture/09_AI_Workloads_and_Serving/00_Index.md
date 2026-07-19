@@ -40,6 +40,9 @@ flowchart LR
 1. [End-to-End AI Serving on CPUs](01_End_to_End_AI_Serving_on_CPUs.md) — request lifecycle, model loading, tokenization, retrieval, scheduling, CPU-only inference, heterogeneous serving, and training support.
 2. [AI Operators on CPU Microarchitecture](02_AI_Operators_on_CPU_Microarchitecture.md) — dense and sparse matrix multiplication, convolution, attention, embeddings, MoE, normalization, sampling, matrix extensions, quantization, cache tiling, TLBs, and NUMA.
 3. [Performance Analysis, Profiling, and Research Frontiers](03_Performance_Analysis_Profiling_and_Research_Frontiers.md) — rooflines, prefill/decode models, TTFT/TPOT, queueing, batch tradeoffs, evidence collection, and research questions.
+4. [CPU AI Software-Stack Implementation Blueprint](04_CPU_AI_Software_Stack_Implementation_Blueprint.md) — model artifacts, tensor/IR schemas, compiler passes, kernel ABI/dispatch, weight packing, NUMA runtime, and accelerator adapters.
+5. [CPU Serving Runtime, Scheduler, and State Blueprint](05_CPU_Serving_Runtime_Scheduler_and_State_Implementation_Blueprint.md) — request state machine, admission, continuous batching, KV/prefix ownership, cancellation, overload, and output commit.
+6. [CPU AI-Stack Verification, Operations, and Deployment](06_CPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md) — semantic/quality/concurrency validation, telemetry, capacity, canary, drain, rollback, and incident recovery.
 
 ## Research-position competency target
 
@@ -51,6 +54,7 @@ After this section, a reader should be able to:
 - distinguish peak operations per second from attainable service goodput under TTFT and TPOT constraints;
 - design a measurement plan that separates queueing, runtime overhead, operator execution, memory placement, and interference;
 - state a falsifiable research hypothesis and the hardware/software evidence needed to test it.
+- reconstruct the CPU AI stack's artifacts, compiler/runtime objects, scheduler and state machines, validation, telemetry, deployment, and recovery contracts without relying on hidden framework behavior.
 
 **Comes from:** [Core Foundations](../01_Core_Foundations/00_Index.md), [Cache Hierarchy](../04_Cache_Hierarchy/00_Index.md), and [Virtual Memory](../05_Virtual_Memory/00_Index.md).
 **Hands off to:** [CPU Simulation](../08_Simulation/00_Index.md) when an architectural hypothesis needs controlled timing experiments.

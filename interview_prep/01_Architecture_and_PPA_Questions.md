@@ -2327,3 +2327,39 @@ But batching, verification shape efficiency, draft/target placement, extra KV st
 *From the CPU, GPU, NPU, and SoC implementation blueprints.*
 
 **Answer:** A gate has named entry conditions, one narrow capability being enabled, known input and expected trace/counter/output, instruments and safe electrical/thermal limits, timeout, pass/fail owner, failure snapshot, rollback configuration, and prerequisites for the next gate. Feature-disable controls, reduced clocks, one outstanding operation, cache bypass, or one-core/SM/array modes isolate layers. A checklist item such as “test memory” without evidence boundaries or rollback is not a bring-up plan.
+
+---
+
+## AI-Stack Implementation-Reconstruction Questions
+
+#### Q57: What artifacts and contracts connect a framework model to a device execution?
+
+**Answer:** An immutable model/tokenizer manifest identifies graph and tensor shards, schema, shapes/layouts/precision, quantization, integrity, and version. A typed IR preserves semantic operations, symbolic guards, aliases, side effects, placement, and source identity. Compiler passes record legality for partition, fusion, layout, precision, tiling, memory planning, and parallelism. A versioned executable/engine contains target requirements, profiles/guards, code or commands, constants/packed weights, resource/workspace metadata, dependencies, and source map. Runtime contexts bind generation-tagged buffers, queues/streams/events, invocation/request identity, cancellation/fault, and completion visibility. Every layer has a compatible reference and refuses unsupported version/guard combinations.
+
+#### Q58: Why must an AI compiler specify pass order, guards, and rejected transformations?
+
+**Answer:** Passes change the legality and profitability of later passes: quantization affects fusion and layout; fusion changes buffer liveness and resource pressure; layout changes kernel/tensor-unit eligibility; partitioning creates transfer/synchronization boundaries. Dynamic specialization is legal only when runtime guards dominate the generated plan. Rejection reasons—aliasing, numerical order, shape bound, register/scratchpad/workspace, conversion, target capability—distinguish a fundamental limit from missing compiler support. Without the order, pre/postconditions, guards, and diagnostics, results cannot be reproduced or attributed.
+
+#### Q59: Reconstruct one serving-scheduler epoch and explain why reservation must be atomic.
+
+**Answer:** Consume completions/faults/cancellations; update request and KV/resource state; admit feasible queued work; budget deadline-sensitive decode and prefill chunks; group compatible model/profile/precision/topology shapes; reserve batch slots, KV pages, workspace, command/event/collective state, and output credits; publish the batch; then on completion validate generations, publish outputs/KV, sample/stream, advance or finish, and release. If the scheduler allocates a batch slot or KV page but fails later to reserve workspace or a device queue, partial state leaks or another request may observe an incomplete batch. Reservation is atomic or has a complete rollback before publication.
+
+#### Q60: What makes paged KV and prefix sharing correct rather than only memory-efficient?
+
+**Answer:** Each physical block has generation, model/state-format identity, logical layer/token range, layout/precision/shard, owner or immutable prefix, readiness/last-use event, references/leases, transfer, and eviction state. A request’s versioned page table maps logical token ranges to blocks. New ranges publish only after compute completion. Shared prefix blocks are immutable; divergent tails use copy-on-write. The prefix key includes model/tokenizer/adapter, exact tokens or collision-safe identity, positional semantics, layout/precision, and sharding. Reclamation waits for all asynchronous readers/transfers, and stale batch/request generations cannot write reused blocks.
+
+#### Q61: How should a heterogeneous AI control plane represent placement?
+
+**Answer:** Desired state identifies immutable artifacts, hardware class, CPU/NUMA/device group, parallel topology, memory/KV/workspace and rollout/failure reserve, network/storage reachability, security/tenant, SLO, configuration, and update policy. Inventory represents devices and links with capability, capacity, latency/bandwidth/contention/failure domain, firmware/driver, health, and epoch. The solver first enforces hard target/capacity/topology/security/power constraints, then scores communication, locality, load, fragmentation, energy, and migration/startup. It atomically reserves the complete group, generates a versioned specification, reconciles through agents, and publishes routing readiness only after load/warm/health checks.
+
+#### Q62: Describe a correct distributed KV or state handoff.
+
+**Answer:** The destination reserves compatible capacity and returns generation-tagged handles; the source drains producers and freezes/versions the ranges; transport copies identified chunks after source-ready events; the destination validates byte counts, checksums, layout, and readiness; an ownership record commits the destination as authority; only then may destination compute and source reclamation occur after old readers finish. Before commit, failure aborts destination and source remains authoritative; after commit, recovery follows destination. Duplicate/late transfer messages are idempotently rejected by transfer generation. Enqueue completion is not destination visibility or ownership commit.
+
+#### Q63: What telemetry is necessary to diagnose an AI stack rather than merely monitor it?
+
+**Answer:** Stable identities must correlate deployment/artifact/model/configuration, request/tenant/trace, route/reservation, scheduler epoch/batch/slot generation, graph/plan/node/kernel or command, device/stream/event, allocation/KV state, collective/transfer/commit, sampling, and response chunk. Timelines decompose queue, CPU/runtime gaps, kernel/device, memory, communication, and output. Metrics include work/bytes, profiles/fallbacks, resource ownership/capacity, SLO/quality, faults/retries/waste, power/health, and rollout state. Conservation checks—admitted equals terminal plus live; tasks/commands/transfers balance; KV allocation reconciles; one state authority—validate the telemetry itself.
+
+#### Q64: How do you roll out or roll back an AI stack when requests have live state?
+
+**Answer:** Treat model/compiler/executable/runtime/configuration/state format as immutable compatible generations. New workers validate, load, form groups, warm, and canary before routing. Existing requests stay pinned to their model/plan/KV layout and group. Drain stops new assignment, completes or explicitly migrates/cancels, commits outputs, quiesces device/collective/transfer users, releases state, and revokes epochs before unload. Rollback reuses live state only if model, tokenizer, precision, sharding, and state layout are compatible or a tested converter performs an ownership commit; otherwise keep old workers through drain or terminate explicitly. Reserve capacity for version overlap and failure.

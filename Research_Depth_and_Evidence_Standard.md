@@ -160,6 +160,25 @@ AI coverage in each architecture book must be architecture-specific:
 
 Coverage must include both operator mapping and the complete serving or application path. A peak-TOPS/FLOPS comparison is insufficient.
 
+### 5.1 AI-stack implementation-reconstruction contract
+
+The implementation-reconstruction requirement applies above the chip as well as inside it. An AI chapter must make the software stack reconstructable when that stack is central to the topic. Source code is optional, but the reader must be able to derive the services, schemas, interfaces, state machines, policies, tests, and rollout plan. Cover:
+
+1. **Model and data artifacts:** checkpoint/tensor format, manifest, integrity, version, shapes/layouts/precision, tokenizer or feature schema, and compatibility.
+2. **Semantic graph and IR:** graph capture/import, intermediate-representation fields, side effects, aliasing, dynamic shapes/control flow, decomposition, and fallback boundaries.
+3. **Compiler decisions:** legality conditions and order for fusion, layout, quantization, sparsity, tiling, parallelization, kernel selection/generation, memory planning, and autotuning.
+4. **Executable contract:** code objects, engines, target/version requirements, shape profiles, constants/weights, resource metadata, relocation, and reproducible build identity.
+5. **Runtime and driver boundary:** contexts, streams/queues/events, memory allocation/registration, submission, synchronization, faults, cancellation, reset, and completion visibility.
+6. **Persistent and temporary state:** weights, activations, workspaces, key-value state, prefix cache, communication buffers, ownership, generation, lifetime, eviction, migration, and reclamation.
+7. **Request scheduler:** request schema and state machine, admission proof, batching/chunking, fairness/deadlines, preemption, overload, backpressure, and terminal states.
+8. **Distributed execution:** topology discovery, placement, parallel groups, collectives, state transfer, consistency, retry, failure membership, and recovery.
+9. **Numerical and semantic correctness:** precision/rounding, quality target, deterministic boundary, differential references, metamorphic tests, and fallback equivalence.
+10. **Observability:** stable identities across request, graph node, kernel/command, memory transfer, collective, and response; exact metrics, traces, logs, counters, and conservation checks.
+11. **Security and multi-tenancy:** authentication/authorization boundary, memory isolation, quotas, model/data confidentiality, debug access, side-channel assumptions, and zeroization.
+12. **Deployment and operations:** artifact registry, configuration schema, compatibility matrix, cold/warm start, canary, drain, rolling update, rollback, incident snapshot, capacity model, and disaster recovery.
+
+The practical review asks the reader to produce an AI-stack component diagram, artifact/interface schemas, compiler and request state machines, memory-ownership ledger, scheduler pseudocode in prose, failure matrix, validation plan, telemetry schema, and deployment runbook. Describing a sequence as “the framework compiles the model” or “the server batches requests” without these decisions does not meet the standard.
+
 ---
 
 ## 6. Review rubric
@@ -173,6 +192,7 @@ Score each dimension from 0 to 3:
 | theory | absent | formula quoted | derived model with assumptions | bounds, sensitivity, limiting cases, failure region |
 | implementation | absent | components named | concrete structures/flow | PPA/timing/software/verification trade-offs |
 | reconstructability | no build path | block list only | contracts, state, interfaces, and sizing | complete policy/invariant/verification/bring-up specification |
+| AI-stack implementation, when applicable | framework/server named | major layers listed | artifacts, IR/compiler/runtime, scheduler and state | distributed failure, telemetry, security, deployment and rollback are reconstructable |
 | evidence | unsupported | references only | counters/experiments identified | reproducible chain, validation, uncertainty |
 | worked reasoning | absent | toy arithmetic | decision-relevant example | multiple regimes/sensitivity and interpretation |
 | research readiness | summary only | common questions | open problems/trade-offs | hypotheses, experimental design, generalization limits |
@@ -185,7 +205,7 @@ A substantive research-preparation chapter should reach at least level 2 in ever
 
 1. Inventory pages, ownership, cross-links, and prerequisites.
 2. Build a layer ledger: for each layer, record its contract, state owner, interfaces, policies, invariants, physical cost, evidence, and build/verification gate.
-3. Walk at least one request, instruction, transaction, tensor tile, or packet through every layer. Record where it can wait, be transformed, be retried, fail, or be observed.
+3. Walk at least one request, model artifact, instruction, transaction, tensor tile, or packet through every layer. For an AI stack, include graph/IR transformation, executable selection, runtime submission, persistent state, serving policy, distributed handoff, and deployment generation. Record where work can wait, be transformed, be retried, fail, or be observed.
 4. Identify missing mechanisms, theory, evidence, implementation choices, and first-use definitions.
 5. Compare coverage against representative curricula, standards, seminal papers, current primary documentation, and research questions.
 6. Expand the architecture-owned page rather than creating detached generic material.

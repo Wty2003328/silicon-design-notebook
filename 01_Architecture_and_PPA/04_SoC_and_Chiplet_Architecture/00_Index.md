@@ -36,7 +36,7 @@ flowchart LR
 | 4 | [On-Chip Networks](04_On_Chip_Networks/00_Index.md) | 2 | topology, routers, routing, flow control, deadlock/liveness |
 | 5 | [I/O and Chiplets](05_IO_and_Chiplets/00_Index.md) | 2 | end-to-end QoS/order, device visibility, CXL/UCIe partitioning |
 | 6 | [SoC Memory Simulation](06_Simulation/00_Index.md) | 1 | executable DRAM timing, scheduling, and power models |
-| 7 | [AI Workloads and Serving](07_AI_Workloads_and_Serving/00_Index.md) | 3 | end-to-end inference path, workload-to-memory/NoC/chiplet mapping, SLO-constrained performance research |
+| 7 | [AI Workloads and Serving](07_AI_Workloads_and_Serving/00_Index.md) | 6 | inference/mapping/research plus heterogeneous AI control plane, distributed data/state plane, validation, operations, and deployment |
 | 8 | [Implementation Blueprints](08_Implementation_Blueprints/00_Index.md) | 3 | address/protocol/memory, NoC/QoS/I/O/chiplet, and full-chip verification/bring-up specifications |
 
 ## Ownership boundary

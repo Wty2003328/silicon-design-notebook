@@ -30,7 +30,7 @@ flowchart LR
 | 2 | [Mapping and Memory](02_Mapping_and_Memory/00_Index.md) | 3 | tiling, compression, descriptor DMA, scratchpad lifetime, event-driven scheduling |
 | 3 | [System Integration](03_System_Integration/00_Index.md) | 1 | host queues, direct memory access, address translation, scheduling, errors |
 | 4 | [NPU Simulation](04_Simulation/00_Index.md) | 1 | mapping, cycle, energy, and area models for accelerator arrays |
-| 5 | [AI Workloads and Serving](05_AI_Workloads_and_Serving/00_Index.md) | 3 | model-to-NPU compiler mapping, complete inference/serving path, multi-NPU execution, analytical performance, profiling, and research methodology |
+| 5 | [AI Workloads and Serving](05_AI_Workloads_and_Serving/00_Index.md) | 6 | mapping/serving/research plus reconstructable compiler/executable/runtime, profile scheduler/state, validation, and deployment stacks |
 | 6 | [Implementation Blueprints](06_Implementation_Blueprints/00_Index.md) | 3 | graph/compiler and array contracts, scratchpad/DMA/runtime state, verification, performance evidence, and bring-up |
 
 ## Reading order

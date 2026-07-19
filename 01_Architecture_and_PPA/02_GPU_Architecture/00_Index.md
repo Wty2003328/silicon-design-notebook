@@ -29,7 +29,7 @@ flowchart LR
 | 2 | [Memory System](02_Memory_System/00_Index.md) | 2 | coalescing, shared memory, caches, translation, partitions, HBM |
 | 3 | [Scale-Up](03_Scale_Up/00_Index.md) | 1 | peer memory, topology, collectives, placement, communication overlap |
 | 4 | [GPU Simulation](04_Simulation/00_Index.md) | 1 | execution/trace models for GPU timing and memory behavior |
-| 5 | [AI Workloads and Serving](05_AI_Workloads_and_Serving/00_Index.md) | 3 | operator-to-microarchitecture mapping, end-to-end inference, KV state, batching, SLOs, profiling, and research methods |
+| 5 | [AI Workloads and Serving](05_AI_Workloads_and_Serving/00_Index.md) | 6 | mapping/serving/research plus reconstructable framework/compiler/kernel/runtime, scheduler/KV, validation, and deployment stacks |
 | 6 | [Implementation Blueprints](06_Implementation_Blueprints/00_Index.md) | 3 | SIMT/tensor state and scheduling, memory/scale-up transactions, and the software/simulator/verification build contract |
 
 ## Reading order

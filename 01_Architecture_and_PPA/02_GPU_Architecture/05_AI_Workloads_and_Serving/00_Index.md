@@ -29,6 +29,9 @@
 1. [AI Workload and Operator Mapping](01_AI_Workload_and_Operator_Mapping.md) — derive how Transformer and other AI operators become SIMT, matrix, memory, and collective work.
 2. [End-to-End GPU AI Inference and Serving](02_End_to_End_GPU_AI_Inference_and_Serving.md) — trace weights and one request from storage through HBM, prefill, KV-cache management, decode, and response streaming.
 3. [GPU AI Performance Analysis and Research Methods](03_GPU_AI_Performance_Analysis_and_Research_Methods.md) — build roofline, capacity, communication, queueing, profiling, simulation, and evidence workflows.
+4. [GPU Framework, Compiler, Kernel, and Runtime Blueprint](04_GPU_Framework_Compiler_Kernel_and_Runtime_Implementation_Blueprint.md) — graph/IR contracts, compiler legality, kernel ABI/code generation, autotuning, memory, streams/events/graphs, and multi-GPU plans.
+5. [GPU Serving Engine, Scheduler, and KV-State Blueprint](05_GPU_Serving_Engine_Scheduler_and_KV_Implementation_Blueprint.md) — admission, iteration scheduling, paged/prefix KV, speculative state, collectives, disaggregated handoff, and failure behavior.
+6. [GPU AI-Stack Verification, Operations, and Deployment](06_GPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md) — compiler/kernel/runtime validation, telemetry, performance qualification, worker readiness, canary/drain/rollback, security, and fault recovery.
 
 ## The cross-layer contract
 
@@ -44,6 +47,8 @@ flowchart LR
 ```
 
 Every serious analysis must preserve this chain. A kernel-only speedup can disappear in launch gaps; higher throughput can violate a tail-latency SLO; more batching can exhaust KV capacity; a lower-precision matrix unit is useful only if conversion, scaling, and memory layout do not erase its benefit.
+
+The implementation completion target is stronger: a reader should be able to derive the graph/compiler/runtime artifacts, kernel and dependency contracts, request/KV state machines, multi-GPU transfer protocol, validation matrix, telemetry schema, and fleet rollout/runbook.
 
 The chapters apply the notebook-wide [Research-Depth and Evidence Standard](../../../Research_Depth_and_Evidence_Standard.md): claims connect workload → mechanism → theory/assumptions → observables → validation and failure boundary.
 

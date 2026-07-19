@@ -4,7 +4,7 @@
 > single instruction, multiple threads (SIMT); high-bandwidth memory (HBM); double data rate (DDR); network on chip (NoC); Advanced Microcontroller Bus Architecture (AMBA);
 > tera operations per second (TOPS); input/output (I/O).
 
-Architecture turns software needs into hardware structure before register-transfer level (RTL) design begins. The material is organized by the kind of chip being designed—not by detached subsystem names or a shared-method book. It contains **81 substantive chapters in 34 focused subdomains**.
+Architecture and AI-stack co-design turn software needs into hardware structure, executable work, runtime policy, and an operable service. The material is organized by the kind of chip being designed—not by detached subsystem names or a shared-method book. It contains **93 substantive chapters in 34 focused subdomains**.
 
 Every research claim should follow the notebook-wide [Research-Depth and Evidence Standard](../Research_Depth_and_Evidence_Standard.md): define terminology and boundaries, derive the mechanism and assumptions, connect it to measurable evidence, validate intermediate observables, and state failure conditions and open questions. Its implementation-reconstruction contract additionally requires enough state, interface, sizing, policy, invariant, physical, verification, and bring-up detail to derive an original block specification without copying code.
 
@@ -21,6 +21,7 @@ A topic lives with the architecture whose design decisions give it meaning:
 - Workload selection, performance modeling, PPA, physical structures, and simulation methodology live **inside every architecture book**, because their equations, counters, bottlenecks, input artifacts, and implementation costs change with the architecture.
 - AI operator mapping and serving analysis also live **inside every architecture book**: CPU owns host and CPU execution, GPU owns SIMT/matrix/HBM execution, NPU owns graph-to-dataflow lowering, and SoC/chiplet owns heterogeneous composition and end-to-end traffic.
 - Implementation blueprints live **inside every architecture book**. They integrate that architecture's mechanisms into buildable contracts rather than creating a detached generic methodology.
+- AI-stack implementation blueprints live **inside each architecture's AI subdomain**. They reconstruct framework/compiler/runtime, serving state, distributed execution, validation, observability, deployment, and operations with architecture-specific contracts.
 
 ~~~mermaid
 flowchart LR
@@ -37,10 +38,10 @@ flowchart LR
 
 | Book | Subdomains | Chapters | What it owns |
 |---|---:|---:|---|
-| [CPU Architecture](01_CPU_Architecture/00_Index.md) | 11 | 29 | CPU-owned workloads/DSE/PPA/simulation method, prediction/speculation, out-of-order scheduling/replay, cache/VM/coherence, AI serving, and reconstructable core/memory/integration blueprints |
-| [GPU Architecture](02_GPU_Architecture/00_Index.md) | 7 | 17 | GPU-owned workloads/DSE/PPA/simulation method, SIMT/tensor execution, memory/HBM, scale-up, AI serving, and hardware/software implementation blueprints |
-| [NPU Architecture](03_NPU_Architecture/00_Index.md) | 7 | 18 | NPU-owned graph/mapping/DSE/PPA/simulation method, dense/Transformer/sparse dataflows, serving, and compiler/array/runtime implementation blueprints |
-| [SoC and Chiplet Architecture](04_SoC_and_Chiplet_Architecture/00_Index.md) | 9 | 17 | SoC-owned use cases/DSE/PPA/simulation method, system composition, DDR, protocols, NoC, I/O, chiplets, serving, and full-chip implementation blueprints |
+| [CPU Architecture](01_CPU_Architecture/00_Index.md) | 11 | 32 | CPU-owned workloads/DSE/PPA/simulation, core/memory/integration blueprints, and reconstructable CPU AI compiler/runtime/serving/operations stack |
+| [GPU Architecture](02_GPU_Architecture/00_Index.md) | 7 | 20 | GPU-owned SIMT/tensor/memory/scale-up and hardware blueprints plus reconstructable framework-to-kernel, serving/KV, and deployment stack |
+| [NPU Architecture](03_NPU_Architecture/00_Index.md) | 7 | 21 | NPU-owned dataflow/mapping/integration and hardware blueprints plus reconstructable compiler/executable, serving/profile, and deployment stack |
+| [SoC and Chiplet Architecture](04_SoC_and_Chiplet_Architecture/00_Index.md) | 9 | 20 | SoC composition and full-chip blueprints plus reconstructable heterogeneous AI control plane, distributed data/state plane, and operations stack |
 
 ## Folder tree
 
@@ -97,6 +98,7 @@ flowchart LR
 | Evaluate a design honestly | use that architecture's `00_Design_Methodology`: workload/performance/DSE → PPA/physical implementation → simulation/evidence |
 | Analyze AI workloads by architecture | [CPU AI](01_CPU_Architecture/09_AI_Workloads_and_Serving/00_Index.md) · [GPU AI](02_GPU_Architecture/05_AI_Workloads_and_Serving/00_Index.md) · [NPU AI](03_NPU_Architecture/05_AI_Workloads_and_Serving/00_Index.md) · [SoC/chiplet AI](04_SoC_and_Chiplet_Architecture/07_AI_Workloads_and_Serving/00_Index.md) |
 | Reconstruct an implementation | [CPU blueprints](01_CPU_Architecture/10_Implementation_Blueprints/00_Index.md) · [GPU blueprints](02_GPU_Architecture/06_Implementation_Blueprints/00_Index.md) · [NPU blueprints](03_NPU_Architecture/06_Implementation_Blueprints/00_Index.md) · [SoC/chiplet blueprints](04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/00_Index.md) |
+| Reconstruct an AI software stack | [CPU AI stack](01_CPU_Architecture/09_AI_Workloads_and_Serving/04_CPU_AI_Software_Stack_Implementation_Blueprint.md) · [GPU AI stack](02_GPU_Architecture/05_AI_Workloads_and_Serving/04_GPU_Framework_Compiler_Kernel_and_Runtime_Implementation_Blueprint.md) · [NPU AI stack](03_NPU_Architecture/05_AI_Workloads_and_Serving/04_NPU_Compiler_Runtime_and_Executable_Implementation_Blueprint.md) · [heterogeneous AI platform](04_SoC_and_Chiplet_Architecture/07_AI_Workloads_and_Serving/04_Heterogeneous_AI_Platform_and_Control_Plane_Implementation_Blueprint.md) |
 
 ---
 
