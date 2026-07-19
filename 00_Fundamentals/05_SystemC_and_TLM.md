@@ -4,6 +4,8 @@
 > **Prerequisites:** [Procedural_Processes_and_IPC](../03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) (the SystemVerilog event scheduler / delta-cycle / NBA-region model — SystemC's evaluate–update is the same idea in a C++ library), [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (the discrete-event engine and its time-ordered invariant), C++ (templates, virtual dispatch, RAII).
 > **Hands off to:** [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (LT/AT virtual platforms in the fidelity ladder), [gem5](../01_Architecture_and_PPA/01_CPU_Architecture/08_Simulation/01_gem5.md) (the SystemC-TLM co-simulation bridge), [AHB_AXI_APB](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) & [DDR_Controller](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (the memory-mapped protocols the generic payload abstracts).
 
+**First-use vocabulary.** **SystemC** is a C++ library plus a discrete-event simulation kernel. **Electronic-system-level (ESL)** means modeling a system above register-transfer level. **Register-transfer level (RTL)** models clocked registers and combinational transfers precisely enough for logic synthesis. **Transaction-level modeling (TLM)** replaces pin toggles with operations such as “read 8 bytes at address X.” An **instruction-set simulator (ISS)** executes target-machine instructions on the host. **Direct Memory Interface (DMI)** lets a model use a validated host pointer instead of transporting every memory access. **Loosely timed (LT)** prioritizes software execution speed; **approximately timed (AT)** exposes enough phases to model arbitration and contention. **RAII** is C++ resource acquisition is initialization: object lifetime owns resource lifetime.
+
 ---
 
 ## 0. Why this page exists
@@ -15,6 +17,20 @@ You cannot boot Linux on a chip that does not exist, and you cannot afford to bo
 **TLM-2.0** solves the second-order problem: once everyone models transactions, they each invent a *different* "read/write a burst" API, and no two vendors' models connect without glue. TLM-2.0 is an **interoperability standard** layered on SystemC — a fixed transaction object (the *generic payload*), fixed **sockets**, and fixed **transport interfaces** — so that any compliant initiator can drive any compliant target. It is to system models what AXI is to on-chip wires: not the fastest possible point solution, but the one everyone can plug into.
 
 This page derives both from first principles: the kernel as a discrete-event simulator (§1–§4, connecting straight to [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md)), and TLM-2.0 as the transaction layer on top (§5–§6), ending with where each rung is the right one (§7).
+
+### 0.1 The modeling stack evolves by removing one bottleneck at a time
+
+```mermaid
+flowchart LR
+    C["ordinary sequential C++"] -->|"cannot represent concurrent blocks or delayed consequences"| DE["event queue + simulated time"]
+    DE -->|"zero-time shared mutation is order-dependent"| EU["evaluate / update / delta-cycle discipline"]
+    EU -->|"pin-level events are too numerous for software workloads"| TX["memory-mapped transactions"]
+    TX -->|"private APIs cannot compose vendor models"| GP["generic payload + sockets"]
+    GP -->|"one blocking interval hides queueing"| NB["four-phase non-blocking protocol"]
+    GP -->|"transport and synchronization dominate LT runtime"| FAST["DMI + temporal decoupling"]
+```
+
+Each step deliberately discards or constrains information. Transaction models are faster because they do **not** calculate every wire transition; LT is faster than AT because it does **not** preserve every arbitration boundary. That makes fidelity an explicit contract: before trusting a result, name which events exist in the model, what latency is annotated, what contention is represented, and what behavior is absent.
 
 ---
 
@@ -61,6 +77,21 @@ flowchart TD
 ```
 
 This is **exactly** the SystemVerilog region model of [Procedural_Processes_and_IPC](../03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md): SystemC's *evaluate* = SV's *Active* region (blocking reads/writes, RHS evaluation), SystemC's *update* = SV's *NBA* region (non-blocking `<=` commit), and the delta-cycle loop is SV's "iterate zero-delay updates to a fixed point within the time slot." An `sc_signal` write *is* a non-blocking assignment; a plain C++ member write *is* a blocking assignment. If you already know why RTL puts `<=` in the clocked block, you already know why `sc_signal` uses request-update — it is the same theorem.
+
+The smallest concrete trace is two processes, `producer` and `consumer`, joined by `sc_signal<int> x`. At time 10 ns and delta 0, `producer` reads old `x=0` and requests `x.write(1)`. The write does **not** mutate the readable value. At the update boundary the channel commits `x=1`; `value_changed_event()` then makes `consumer` runnable in delta 1 at the same 10 ns. The consumer can now read 1. No target clock tick occurred between the write and observation:
+
+```wavedrom
+{ "signal": [
+  { "name": "kernel phase", "wave": "345345.", "data": ["eval d0", "update d0", "notify d0", "eval d1", "update d1", "notify d1"] },
+  { "name": "simulated time", "wave": "3.....4", "data": ["10 ns", "next timed event"] },
+  { "name": "producer runnable", "wave": "10....." },
+  { "name": "x.read()", "wave": "3.4....", "data": ["0 old", "1 committed"] },
+  { "name": "pending x", "wave": "03.0...", "data": ["1"] },
+  { "name": "consumer runnable", "wave": "0..10.." }
+], "head": { "text": "One sc_signal write: request in evaluate, commit in update, observer wakes next delta at the same time" } }
+```
+
+The “pending x” row is simulator-owned state, not an extra hardware register. If the producer had assigned an ordinary shared C++ integer instead, the consumer might see 0 or 1 depending on process order; the request/update split is precisely the mechanism that removes that ambiguity.
 
 ### 1.3 Why evaluate–update makes zero-time logic deterministic — the derivation
 
@@ -196,6 +227,24 @@ void b_transport(tlm_generic_payload& trans, sc_time& delay);
 
 One call carries the entire transaction: the initiator fills the payload, calls `b_transport`, and on return reads the response status and (for reads) the data. The target may **consume simulated time** — it can call `wait()` inside `b_transport` to model latency — which is why `b_transport` must be invoked from an `SC_THREAD` (an `SC_METHOD` has no stack to block on, §3). The `delay` argument is the temporal-decoupling offset (§6.2): the target *adds* its latency to `delay` and returns, letting the initiator account for time without a kernel synchronization. This is **two timing points** per transaction (call = begin, return = end) folded into one call — coarse, fast, and exactly what **loosely-timed (LT)** modeling uses. It is the interface a CPU model's load/store issues, and the one that boots operating systems.
 
+#### 5.4.1 Worked LT trace: one CPU load becomes one final result
+
+Assume an ISS executes `LW x5, 0x20(x10)`, register `x10=0x8000_1000`, memory is little-endian, the address map routes `0x8000_0000–0x8fff_ffff` to DRAM, and the memory target annotates 40 ns. The simulated instruction follows this exact ownership chain:
+
+| Step | Component that owns the step | State before | Action | State after |
+|---:|---|---|---|---|
+| 1 | ISS | `PC`, decoded `LW`, `x10` | computes effective address $0x80001000+0x20$ | address `0x80001020`; destination tag `x5` |
+| 2 | CPU initiator | empty/recycled payload; 4-byte buffer | sets READ, address, pointer, length 4, streaming width 4, no byte enables, response `INCOMPLETE` | complete request object; local delay $\tau=0$ |
+| 3 | interconnect target/initiator pair | global address | decodes region and subtracts target base if the target uses local addresses | routed to DRAM, local offset `0x1020` |
+| 4 | memory target | payload and backing byte array | copies bytes `[78 56 34 12]` into the initiator buffer; adds 40 ns; sets `TLM_OK_RESPONSE` | buffer represents `0x12345678`; $\tau=40$ ns |
+| 5 | CPU initiator | returned payload | checks response, reconstructs the little-endian word, sign-extends because `LW` is signed | candidate result `0x0000000012345678` |
+| 6 | ISS commit | destination tag and candidate result | writes architectural register and advances the instruction model | `x5=0x12345678`; counters: 1 instruction, 1 load, 4 bytes |
+| 7 | time manager | local delay 40 ns | either accumulates it or calls `wait(40 ns)` | observable simulated time eventually advances by 40 ns |
+
+The final architectural result is not calculated from “40 ns.” Data correctness comes from address decode plus byte transfer; latency is a separate annotation used to update simulated time. An LT target normally does **not** determine whether another master queued ahead of this request, so the 40 ns is a configured service estimate, not an emergent contention measurement.
+
+This trace also shows where failures belong. Bad address decode produces `TLM_ADDRESS_ERROR_RESPONSE`; an unsupported byte-enable pattern produces `TLM_BYTE_ENABLE_ERROR_RESPONSE`; a target that forgets to overwrite `INCOMPLETE` violates the protocol; a stale or prematurely freed data buffer is a C++ lifetime bug; incorrect sign extension is an ISS semantic bug. Keeping these ownership boundaries explicit is what makes a platform debuggable.
+
 ### 5.5 Non-blocking transport — four phases, for arbitration-accurate timing
 
 When you need to model **contention and pipelining** — a bus arbiter, a memory controller reordering requests — one blocking call is too coarse; you need to expose the transaction's *timing points* so multiple in-flight transactions can interleave. The **non-blocking** interface does this with two methods and a **phase** argument:
@@ -229,7 +278,23 @@ sequenceDiagram
     T-->>I: TLM_COMPLETED
 ```
 
+The same protocol viewed as time rather than call stack makes the two exclusion rules visible:
+
+```wavedrom
+{ "signal": [
+  { "name": "time",        "wave": "p..........." },
+  { "name": "txn A phase", "wave": "034..56....", "data": ["BEGIN_REQ", "END_REQ", "BEGIN_RESP", "END_RESP"] },
+  { "name": "request busy", "wave": "01.0........" },
+  { "name": "response busy","wave": "0....1.0...." },
+  { "name": "txn B phase", "wave": "x..34....56.", "data": ["BEGIN_REQ", "END_REQ", "BEGIN_RESP", "END_RESP"] }
+], "head": { "text": "AT base protocol: B may begin after A's END_REQ even while A still waits for and occupies the response path" } }
+```
+
+For a base-protocol socket, do not issue a second `BEGIN_REQ` while the request exclusion rule is active, and do not begin a second response while the response exclusion rule is active. `END_REQ` releases the request channel; `END_RESP` releases the response channel. An implementation may pipeline A and B because these are separate channels, but it must retain per-payload state until that payload completes. A common design is a transaction table keyed by payload address, storing current phase, target route, timestamps, and reference count.
+
 **Why four phases, and why `END_REQ` matters.** Two timing points (LT) can only say "the transaction happened between $t_0$ and $t_1$." Four points separate the **request channel** from the **response channel**: once the target sends `END_REQ`, the request is *accepted* and the initiator may launch the *next* request while the current response is still pending — that is **pipelining/outstanding transactions**, the thing that produces bus utilization and queueing. Model an arbiter as a finite-rate server and the gap between a request's `BEGIN_REQ` and its `END_REQ` *is* the arbitration/queueing delay, emergent exactly as in [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) — no "contention formula" is written, it falls out of serializing `END_REQ` grants. Each phase call carries its own `delay`, so per-phase latencies (arbitration, request transport, target access, response transport) are annotated independently, giving the **approximately-timed (AT)** accuracy that LT throws away. The `tlm_phase` type is itself extensible, so custom protocols can add phases (e.g., a separate address/data phase) while non-extended targets still see the base four.
+
+**AT result reconstruction.** Record timestamps $t_{BR},t_{ER},t_{BP},t_{EP}$ at the four phase boundaries. Then request acceptance delay is $t_{ER}-t_{BR}$, target/queue residence is $t_{BP}-t_{ER}$, response consumption is $t_{EP}-t_{BP}$, and end-to-end latency is $t_{EP}-t_{BR}$. Count accepted bytes at `END_REQ` or completed bytes at `END_RESP`—choose one definition and use it consistently. Over a measurement window $T$, throughput is completed bytes divided by $T$; queue occupancy is the time integral of outstanding accepted requests; Little's law $L=\lambda W$ is an excellent cross-check between average occupancy $L$, completion rate $\lambda$, and average residence time $W$.
 
 ### 5.6 DMI and debug transport — the two side channels
 
@@ -283,6 +348,18 @@ The single biggest LT speed lever is **not synchronizing with the kernel on ever
 
 Mechanically: the initiator keeps a local offset $\tau$, issues `b_transport(trans, τ)`, the target adds its latency to $\tau$ and returns *without* `wait()`, and the initiator keeps going, accumulating $\tau$. When $\tau$ reaches the **global quantum** $Q$, the initiator calls `wait(τ)` once (paying the sync, advancing real simulated time by $Q$) and resets $\tau$. The `tlm_utils::tlm_quantumkeeper` encapsulates this (`inc(delay)`, `need_sync()`, `set_and_sync()`, `get_local_time()`, `reset()`); the quantum is set globally via `tlm_global_quantum::instance().set(Q)`.
 
+For example, let global kernel time be 100 ns, quantum $Q=50$ ns, and three modeled operations contribute 12 ns, 18 ns, and 25 ns. The kernel stays at 100 ns while the initiator's local notion advances:
+
+| Event | Kernel time | Local offset before | Added latency | Initiator's effective time after | Synchronize? |
+|---|---:|---:|---:|---:|---|
+| begin quantum | 100 ns | 0 ns | — | 100 ns | no |
+| transaction A returns | 100 ns | 0 ns | 12 ns | 112 ns | no |
+| transaction B returns | 100 ns | 12 ns | 18 ns | 130 ns | no |
+| transaction C returns | 100 ns | 30 ns | 25 ns | 155 ns | yes: offset crossed 50 ns |
+| `set_and_sync()` completes | 155 ns | 55 ns | — | 155 ns | offset resets to 0 |
+
+The model did not erase 55 ns; it delayed the expensive kernel handoff until three operations could share it. But another process scheduled at global 125 ns cannot affect this initiator during its run-ahead interval unless the model explicitly forces an early synchronization. Therefore a quantum must be bounded by the fastest externally visible interaction the decision cares about—not chosen only from host performance.
+
 **The speedup model.** Let $c_{\text{work}}$ be the host time to model one transaction's actual work (ISS step + DMI access) and $c_{\text{sync}}$ the host cost of one kernel synchronization. Without decoupling, each transaction pays both, so the per-transaction cost is $c_{\text{work}}+c_{\text{sync}}$. With a quantum spanning $N$ transactions, the one sync is amortized:
 
 $$
@@ -314,6 +391,61 @@ Assembling §6.1–§6.2 with the [SoC/chiplet simulation methodology](../01_Arc
 | **LT TLM + TD + DMI** | 2, amortized | ~50–1000+ MIPS | ~1–20× | seconds–minutes |
 
 The ladder is **RTL ≪ cycle-accurate ≪ AT < LT < LT+TD+DMI**, spanning ~6 orders of magnitude — the same span as the master fidelity curve, because it *is* that curve applied to system modeling. The "100–1000× over RTL" rule of thumb of [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) is the AT-to-LT band; DMI + temporal decoupling extend LT past it, which is what makes pre-silicon OS boot and overnight software regression physically possible.
+
+### 6.4 From input program to reported result: what the simulator actually calculates
+
+A SystemC virtual platform does not automatically turn an application into IPC, bandwidth, or energy. It executes a chain of models and accumulates explicitly defined observations. The full path is:
+
+```mermaid
+flowchart LR
+    SRC["source program + libraries"] --> COMP["compiler / assembler / linker"]
+    COMP --> IMG["target ISA executable or boot image"]
+    IMG --> LOAD["platform loader populates modeled memory and reset state"]
+    LOAD --> ISS["ISS fetches, decodes, and executes target instructions"]
+    ISS --> TX["loads, stores, MMIO, interrupts become TLM transactions/events"]
+    TX --> MODELS["interconnect, memory, and device models update state and annotate time"]
+    MODELS --> OBS["counters, timestamps, traces, and checkpoints"]
+    OBS --> REDUCE["warm-up exclusion + measurement formulas + confidence checks"]
+    REDUCE --> RESULT["reported result with fidelity and configuration"]
+```
+
+**Compilation is outside SystemC.** A target compiler lowers source into the target instruction-set architecture (ISA), the assembler encodes instructions, and the linker places code/data and resolves symbols. The simulator receives an ELF executable, binary image, disk image, or firmware bundle; it does not rediscover source-level operations. The loader reads executable segments into modeled memory, initializes the program counter, stack, device tree/boot arguments, and reset registers. Dynamic libraries and operating-system services are either present in the boot image or replaced by an explicit syscall-emulation layer.
+
+**Execution is owned by the ISS.** For each target instruction, the ISS fetches encoded bytes, decodes the opcode, reads architectural registers, computes the instruction semantics, and commits the architecturally visible result. Pure register arithmetic may never create a TLM transaction. A load/store computes an address and emits a generic payload as in §5.4.1. Memory-mapped I/O (MMIO) reaches a device model; the device may update registers, schedule a timed completion, perform direct-memory access (DMA), and assert an interrupt event. The ISS observes the interrupt at whatever boundary its fidelity contract defines. Thus “one simulated instruction” can be a native host function call, while one device operation may unfold across many events and transactions.
+
+**Time comes from the chosen model.** An LT ISS may add a constant instruction delay plus target latency, so it can estimate elapsed simulated time but not pipeline instructions-per-cycle (IPC). An AT interconnect can derive queueing because requests occupy modeled resources. A cycle-accurate CPU model must separately represent fetch, dependencies, issue width, cache misses, and recovery; SystemC alone supplies scheduling semantics, not those microarchitectural facts. Never report a metric whose causal mechanism was abstracted away.
+
+Define raw counters at ownership boundaries:
+
+| Quantity | Increment where | Why that point is unambiguous |
+|---|---|---|
+| retired instructions | ISS architectural commit | excludes faults/replays that never become visible |
+| completed load/store bytes | successful target completion | excludes rejected or incomplete payloads |
+| request latency | `BEGIN_REQ` to `END_REQ` | measures admission/queue wait under the chosen AT protocol |
+| end-to-end latency | issue timestamp to completion timestamp | measures the whole modeled path |
+| outstanding occupancy | increment on accepted request, decrement on completion; integrate over time | preserves the queue's actual residence time |
+| device interrupts | interrupt line/event transition plus acceptance | distinguishes generated from serviced interrupts |
+| simulated time | SystemC kernel time plus synchronized local offsets | avoids dropping temporally decoupled work |
+| host execution time | wall-clock timer around the measured run | measures simulator speed, not target performance |
+
+Then derive results with named denominators:
+
+$$
+\mathrm{MIPS}_{host}=\frac{N_{retired}}{T_{wall}\cdot10^6},\qquad
+\mathrm{target\ IPC}=\frac{N_{retired}}{T_{sim}\,f_{target}},\qquad
+\mathrm{bandwidth}=\frac{B_{completed}}{T_{sim}},
+$$
+
+$$
+\overline L=\frac{\sum_j \mathrm{latency}_j}{N_{completed}},\qquad
+\overline Q=\frac{\int_{t_0}^{t_1}q(t)\,dt}{t_1-t_0}.
+$$
+
+`MIPS_host` answers “how quickly can this simulator execute the workload?” Target IPC answers “how much target work completed per modeled cycle?” They are not interchangeable. An LT platform can have excellent host MIPS and meaningless target IPC because its pipeline is absent. Similarly, configured memory latency is an input; latency-vs-load emerging from an AT queue is an output.
+
+**Measurement procedure.** Record the exact executable hash, compiler flags, platform configuration, random seed, model revisions, quantum, time resolution, and workload arguments. Boot and initialize outside the region of interest unless boot is the workload. Warm caches and predictors only if the research question assumes steady state; otherwise preserve cold state. Start all counters at one explicit trigger, stop them at another, drain outstanding transactions if the definition requires completed work, and report both raw counts and derived quantities. Repeat nondeterministic or sampled runs and report dispersion, not just a mean.
+
+**Cross-checks before belief.** Functional output must match a known-good native or ISA reference. `INCOMPLETE` responses must be zero at the end. Completed transactions must not exceed issued transactions; outstanding count must return to zero after drain; completed bytes must agree between initiator and target; time must never decrease; every non-blocking payload must follow a legal phase path exactly once. For performance, sweep offered load: low-load latency should approach the configured no-contention path, bandwidth should saturate near modeled service capacity, and occupancy/latency/throughput should satisfy Little's law within boundary effects. Finally, perturb a parameter whose direction is known—double memory latency or halve link width—and verify the result changes for the causal reason claimed.
 
 ---
 

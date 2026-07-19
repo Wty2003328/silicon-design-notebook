@@ -15,6 +15,8 @@ flowchart LR
 > **Prerequisites:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (the mantissa $p\times p$ multiplier, the final CPA, and the SRT/Goldschmidt recurrences this page reuses), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (barrel shifter, leading-zero count, priority encoder), [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the area→energy argument behind §6).
 > **Hands off to:** [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) and [GPU_Architecture](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) (where these formats become MAC density and TOPS), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §7 (the FPU/FMA/divide latency menu the scheduler reasons about).
 
+**First-use vocabulary.** A **floating-point unit (FPU)** executes floating-point arithmetic. A **unit in the last place (ULP)** is the spacing between adjacent representable numbers near a value. **Guard, round, and sticky (GRS)** are the three summary bits used to decide rounding. **Round to nearest, ties to even (RNE)** is IEEE 754's usual rounding rule. A **fused multiply-add (FMA)** computes a product plus an addend with one final rounding. **NaN** means “not a number.” **Flush to zero (FTZ)** and **denormals are zero (DAZ)** replace tiny subnormal results or inputs with zero. A **multiply–accumulate (MAC)** repeatedly forms products and adds them into a running sum.
+
 ---
 
 ## 0. Why this page exists
@@ -24,6 +26,29 @@ A real computation spans an enormous dynamic range — a gravitational simulatio
 > **Every floating-point format is one point on the exponent-vs-mantissa allocation of a fixed bit budget. Move a bit to the exponent and you double the dynamic span; move it to the mantissa and you halve the relative error. Nothing else about a format is free to choose.**
 
 This page derives IEEE-754 and the modern AI formats (TF32, FP16, BF16, FP8, MXFP, INT8) from that trade rather than from a bit-layout table, models the rounding error the trade admits ($|fl(x)-x|\le 2^{-p}|x|$), and shows why the *hardware* cost is set almost entirely by mantissa width — the multiplier area grows as $p^2$. By the end you should be able to look at a workload, say where on the range/precision line it wants to sit and why, and predict what that costs in silicon — not recite exponent-field encodings.
+
+### 0.1 The mechanism evolves by repairing one failure at a time
+
+```mermaid
+flowchart LR
+    FX["fixed point: uniform spacing"] -->|"cannot cover tiny and huge values with one short word"| EX["sign × significand × 2^exponent"]
+    EX -->|"normalized leading 1 is redundant"| HB["hidden leading bit"]
+    HB -->|"hard gap between minimum normal and zero"| SUB["subnormals / gradual underflow"]
+    SUB -->|"most exact results lie between encodings"| GRS["GRS summaries + selected rounding mode"]
+    GRS -->|"multiply then add rounds twice"| FMA["wide fused product-add; round once"]
+    FMA -->|"per-element exponent is expensive below 8 bits"| MX["mixed precision and block scaling"]
+```
+
+This is a design argument rather than a historical timeline. At every arrow, keep the earlier contract and add the least machinery that removes its failure. That reading prevents “IEEE 754” from becoming a list of fields: the exponent exists because uniform spacing fails; the hidden bit recovers a predictable redundancy; subnormals repair an abrupt boundary; GRS bits make a finite datapath reproduce an infinitely precise rounding decision; the FMA removes an avoidable intermediate rounding; block scaling amortizes range metadata across many low-bit values.
+
+Use the same procedural checklist for every operation below:
+
+1. **Decode the contract:** format, rounding mode, exception behavior, and whether subnormals are supported.
+2. **Carry sufficient internal information:** never discard a bit that could change the final rounded answer.
+3. **Transform the exact value:** align, add or multiply, and normalize before rounding.
+4. **Round once at the architectural boundary:** use retained least-significant bit plus GRS and the selected mode.
+5. **Classify and pack:** apply special-case precedence and raise flags.
+6. **Replay adversarial cases:** exponent gaps, complete cancellation, exact ties, overflow, underflow, infinities, and NaNs.
 
 ---
 
@@ -244,6 +269,106 @@ The mechanisms follow from the format; none needs a pipeline dump.
 **Multiply** is the easy one because the format *is* multiplicative: sign $=s_a\oplus s_b$, exponent $=e_a+e_b-\text{bias}$, significand $=m_a\cdot m_b\in[1,4)$ (one possible normalize bit), then round (§4). The $p\times p$ significand multiply is the entire cost and the entire $p^2$ story of §6.
 
 **Add** is the hard one because it is *not* aligned to the format: the smaller operand must be shifted to the larger's exponent (a barrel shift — the wide, expensive stage), then added, then re-normalized (the leading-zero-count + shift that cancellation, §5, makes large). Alignment and normalization are the two costs, they trade against the exponent difference, and the dual-path adder (§5) exists to never pay both at once.
+
+### 8.1 A floating-point addition, exactly as hardware performs it
+
+Start with an intentionally easy binary example so every internal bit is visible:
+
+$$
+a=1.5=1.100_2\times2^0,\qquad b=0.375=1.100_2\times2^{-2}.
+$$
+
+Assume a toy format with four retained significand bits including the hidden 1. The datapath does not “add two floating-point words.” It turns them into aligned fixed-point integers, operates on those integers, then constructs a new floating-point word:
+
+| Step | Owned state | Operation | State after step |
+|---|---|---|---|
+| 1. classify/unpack | signs, unbiased exponents, significands | detect zero/subnormal/infinity/NaN; restore hidden bits | $m_a=1.100$, $e_a=0$; $m_b=1.100$, $e_b=-2$ |
+| 2. compare exponents | $\Delta=e_a-e_b=2$ | choose $e_a$ as working exponent | common exponent $0$ |
+| 3. align smaller | extended $m_b$ plus GRS positions | right-shift by two; OR discarded low bits into sticky | $m_b'=0.01100$ |
+| 4. add magnitudes | aligned extended significands | $1.10000+0.01100$ | $1.11100$ |
+| 5. normalize | raw sum and leading-one position | shift until result is in $[1,2)$; adjust exponent oppositely | already $1.11100\times2^0$ |
+| 6. round | retained `1.111`, $G=R=S=0$ | apply RNE equation from §4 | no increment |
+| 7. pack | sign, biased exponent, stored fraction | remove hidden 1 and encode | $1.111_2=1.875$ |
+
+The same hardware must also survive a case where alignment loses visible digits. In a four-bit significand, suppose the normalized pre-round value is `1.010 100...`: retained bits are `1.010`, so retained LSB $=0$, $G=1$, $R=0$, $S=0$. This is an **exact tie**. RNE leaves the result at `1.010` because that neighbor is even. For `1.011 100...`, the retained LSB is 1, so the identical tie increments to `1.100`; the two tie directions balance. If any later discarded bit were 1, sticky would become 1 and the case would be “above half,” not a tie.
+
+The concrete adder pipeline is therefore a composition of hardware already derived in the preceding pages:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[>=latex,thick]
+  \tikzset{fpblock/.style={draw,rounded corners,minimum width=2.15cm,minimum height=1.05cm,align=center}}
+  \node[fpblock] (un) at (0,0) {classify\\and unpack};
+  \node[fpblock] (cmp) at (3.0,0) {exponent\\compare};
+  \node[fpblock] (shr) at (6.0,0) {right barrel\\shift + sticky};
+  \node[fpblock] (add) at (9.0,0) {add/subtract\\significands};
+  \node[fpblock] (lzd) at (12.0,0) {leading-zero\\detect + shift};
+  \node[fpblock] (rnd) at (15.0,0) {GRS decision\\+ increment};
+  \node[fpblock] (pack) at (18.0,0) {flags\\and pack};
+  \draw[->] (un) -- node[above]{fields} (cmp);
+  \draw[->] (cmp) -- node[above]{$\Delta e$} (shr);
+  \draw[->] (shr) -- node[above]{aligned} (add);
+  \draw[->] (add) -- node[above]{raw sum} (lzd);
+  \draw[->] (lzd) -- node[above]{normalized + GRS} (rnd);
+  \draw[->] (rnd) -- node[above]{rounded} (pack);
+  \draw[->] (un.south) -- ++(0,-1) -| node[pos=0.25,below]{signs and special-case class} (pack.south);
+\end{circuitikz}
+\end{document}
+```
+
+This figure is a **hardware ownership map**, not a promise that each box is exactly one cycle. Pipeline registers are inserted to balance the delay of the barrel shifter, significand adder, normalization network, and round incrementer. A typical five-stage implementation might schedule the same transaction like this:
+
+```wavedrom
+{ "signal": [
+  { "name": "cycle",        "wave": "p......" },
+  { "name": "input valid",  "wave": "010...." },
+  { "name": "unpack",       "wave": "x3x....", "data": ["a,b"] },
+  { "name": "align",        "wave": "x.3x...", "data": ["delta-e=2"] },
+  { "name": "add",          "wave": "x..3x..", "data": ["1.11100"] },
+  { "name": "normalize",    "wave": "x...3x.", "data": ["shift 0"] },
+  { "name": "round / pack", "wave": "x....3x", "data": ["1.875"] },
+  { "name": "output valid", "wave": "0....10" }
+], "head": { "text": "One FP add moving through a five-stage pipeline; later independent operations may enter every cycle" } }
+```
+
+**Implementation tradeoffs.** A single path is smaller and easier to verify, but it puts a full alignment shifter and a full normalization shifter in series. A far/close dual path evaluates the likely normalization cases in parallel and multiplexes the answer, shortening the clock period at extra area and switching energy. A leading-zero anticipator predicts the cancellation shift in parallel with subtraction, accepting a possible one-bit correction to remove a serial leading-zero count. Pipeline depth improves clock frequency and throughput but increases latency, bypass complexity, exception bookkeeping, and energy in registers and clock trees.
+
+**Verification obligations.** Compare the packed result and all exception flags against a bit-exact reference model for every supported rounding mode. Bias random tests toward exponent differences near $0$, $1$, $p$, and greater than $p$; opposite-sign operands that cancel to zero or one ULP; exact-half GRS patterns; largest finite operands; the normal/subnormal boundary; both signed zeros; and every infinity/NaN combination. Also assert that a stalled pipeline preserves the operands, rounding mode, and transaction tag together—an arithmetically correct result attached to the wrong instruction is still a design failure.
+
+### 8.2 Why a fused multiply-add is physically different from “multiplier then adder”
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[>=latex,thick]
+  \tikzset{fpblock/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.95cm,align=center}}
+  \node[fpblock] (mul0) at (0,1.4) {$p\times p$\\multiplier};
+  \node[fpblock] (r0) at (3.0,1.4) {normalize\\and round};
+  \node[fpblock] (a0) at (6.0,1.4) {$p$-bit\\FP add};
+  \node[fpblock] (r1) at (9.0,1.4) {normalize\\and round};
+  \draw[->] (mul0) -- (r0);
+  \draw[->] (r0) -- node[above]{rounded product} (a0);
+  \draw[->] (a0) -- (r1);
+  \node[left] at (-1.15,1.4) {$a,b$};
+  \node[above] at (6.0,2.0) {$c$};
+  \draw[->] (6.0,2.0) -- (a0.north);
+
+  \node[fpblock] (mul1) at (0,-1.4) {$p\times p$\\multiplier};
+  \node[fpblock,minimum width=2.6cm] (wide) at (3.6,-1.4) {carry-save / wide\\product + aligned $c$};
+  \node[fpblock] (one) at (7.1,-1.4) {normalize\\and round once};
+  \draw[->] (mul1) -- node[above]{$2p$ bits} (wide);
+  \draw[->] (wide) -- (one);
+  \node[left] at (-1.15,-1.4) {$a,b$};
+  \node[above] at (3.6,-0.8) {$c$};
+  \draw[->] (3.6,-0.8) -- (wide.north);
+  \node[right,align=left] at (10.1,1.4) {separate operations:\\two roundings};
+  \node[right,align=left] at (8.4,-1.4) {fused path:\\one architectural rounding};
+\end{circuitikz}
+\end{document}
+```
+
+The upper path destroys low product bits before $c$ arrives; no later adder can reconstruct them. The lower path retains the full product, aligns $c$ to that wider internal scale, inserts it alongside the multiplier's partial-product rows in carry-save form (or into an equivalent wide adder), performs one final carry-propagate addition, then normalizes and rounds. Replicating an FMA therefore requires a wider internal format and a single rounding boundary—not merely issuing a multiply and an add in adjacent cycles.
 
 **Divide and square root** are not polynomial in the operands, so they are slow and come in two families. **Digit recurrence (SRT)** retires a couple of quotient bits per step from a redundant partial remainder — inherently serial (each step depends on the last), which is why divide is $\sim10\text{–}40$ cycles, non-pipelined, and scheduled around rather than sped up (see the divide argument in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §7 and the latency menu in [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §7). **Multiplicative (Newton–Raphson / Goldschmidt)** instead refines a reciprocal from a small seed LUT, **doubling the correct bits each iteration** — quadratic convergence, because the error obeys
 

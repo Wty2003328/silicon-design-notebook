@@ -101,11 +101,14 @@ The practical test is whether a reader can produce three reviewable documents fr
 
 Use a diagram when spatial, causal, ownership, state, or temporal relationships are harder to reconstruct from prose. Every diagram must teach a specific relationship and agree with the adjacent equations, terminology, and mechanism description.
 
+- Use **TikZJax with CircuiTikZ** for transistor, gate, latch/flip-flop, arithmetic-cell, and precise datapath schematics. Component symbols and electrical connections must remain distinguishable; generic Mermaid rectangles are not a circuit schematic.
 - Use **Mermaid** for hierarchy, ownership, data/control flow, dependency graphs, state machines, feedback loops, and experiment pipelines.
 - Use **WaveDrom** for sampled timing: clocks, latch transparency, flip-flop capture, setup/hold, reset release, clock-domain crossings, ready/valid or credit handshakes, protocol phases, and memory commands.
 - Introduce the symbols, signals, and abbreviations in adjacent prose. Say whether a timing diagram is cycle-accurate, qualitative, or deliberately omits analog behavior.
 - Show backpressure, error/recovery, or feedback arcs when they change the mechanism; a one-way happy-path diagram is insufficient when those paths determine correctness.
 - Do not add a decorative figure that merely repeats a nearby list. A useful figure lets the reader predict an event, identify state ownership, or derive a design/verification artifact.
+
+The notation decision table, plugin rationale, render test, and per-figure explanatory sequence are in [Diagram Authoring Standard](Diagram_Authoring_Standard.md).
 
 ### 1.11 Procedural mechanism and feature-evolution contract
 

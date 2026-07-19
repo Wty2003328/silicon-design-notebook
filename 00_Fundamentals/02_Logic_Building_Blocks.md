@@ -214,20 +214,27 @@ where $F|_{x_1=c}$ is the cofactor with $x_1$ fixed to $c$. At $x_1=0$ the right
 
 The gate-level structure follows the equation directly. The inverter creates $\overline S$; two product terms qualify the data inputs; the final OR joins the mutually exclusive paths:
 
-```mermaid
-flowchart LR
-    S["select S"] --> INV["inverter"]
-    INV --> SB["S̅"]
-    D0["data D0"] --> A0["AND"]
-    SB --> A0
-    D1["data D1"] --> A1["AND"]
-    S --> A1
-    A0 --> OR["OR"]
-    A1 --> OR
-    OR --> Y["Y = S̅D0 + SD1"]
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick]
+  \node[and port] (A0) at (1.0,1.15) {};
+  \node[and port] (A1) at (1.0,-1.15) {};
+  \node[or port]  (OR) at (4.0,0) {};
+  \node[not port] (INV) at (-1.5,0.15) {};
+  \draw (A0.out) -- (OR.in 1);
+  \draw (A1.out) -- (OR.in 2);
+  \draw (OR.out) -- ++(1.0,0) node[right]{$Y=\overline S D_0+S D_1$};
+  \draw (A0.in 1) -- ++(-1.1,0) node[left]{$D_0$};
+  \draw (A1.in 1) -- ++(-1.1,0) node[left]{$D_1$};
+  \draw (INV.out) -| (A0.in 2) node[pos=0.25,above]{$\overline S$};
+  \draw (INV.in) -- ++(-1.0,0) coordinate (S) node[circ]{};
+  \draw (S) node[left]{$S$} |- (A1.in 2);
+\end{circuitikz}
+\end{document}
 ```
 
-This diagram is a logical schematic, not a transistor schematic. A standard-cell implementation commonly absorbs the AND/OR/invert network into one compound cell; a transmission-gate implementation instead opens exactly one bidirectional switch between the selected input and the output.
+This is a true gate-and-wire schematic: a branch denotes the same electrical signal driving more than one gate, while a gate symbol owns the Boolean operation. A standard-cell implementation commonly absorbs the AND/OR/invert network into one compound cell; a transmission-gate implementation instead opens exactly one bidirectional switch between the selected input and the output.
 
 ### 2.2 Building an n:1 mux: tree vs flat, TG vs AOI, LUT vs cell
 
@@ -399,12 +406,18 @@ The arrows are design arguments, not a historical timeline. Each successor prese
 
 One inverter has one output for each input and therefore no memory. Connect two inverters in a loop and the output of each becomes the input of the other. The loop has two stable solutions, $(Q,\overline Q)=(1,0)$ and $(0,1)$: a small disturbance is amplified back toward one of the rails. This is a **bistable** circuit.
 
-```mermaid
-flowchart LR
-    Q["Q"] --> I1["inverter A"]
-    I1 --> QB["Q̅"]
-    QB --> I2["inverter B"]
-    I2 --> Q
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick]
+  \node[not port] (IA) at (0,1.0) {};
+  \node[not port,rotate=180] (IB) at (3.2,-1.0) {};
+  \draw (IA.out) -- (3.2,1.0) -- (3.2,-0.45) -- (IB.in);
+  \draw (IB.out) -- (0,-1.0) -- (0,0.45) -- (IA.in);
+  \node[right] at (3.2,1.0) {$\overline Q$};
+  \node[left] at (0,-1.0) {$Q$};
+\end{circuitikz}
+\end{document}
 ```
 
 The functional equations are simply $Q=\neg\overline Q$ and $\overline Q=\neg Q$. More usefully, think in voltages: the two inverter transfer curves intersect at two stable rail points and one unstable mid-rail point. Near a stable point, loop regeneration restores the value. Near the middle intersection, the circuit may take a long and unbounded analog time to choose a rail—metastability, derived in §4.11.
@@ -415,17 +428,23 @@ The structure can retain a value after power and noise settle, but it has no saf
 
 The simplest controllable bistable is the **set–reset (SR) latch**. Two cross-coupled NOR gates form an active-high version. Driving $S=1$ forces $Q=1$; driving $R=1$ forces $Q=0$; with both low, feedback holds the prior value.
 
-```mermaid
-flowchart LR
-    S["set S"] --> NQB["NOR gate producing Q̅"]
-    Q["Q"] --> NQB
-    NQB --> QB["Q̅"]
-    R["reset R"] --> NQ["NOR gate producing Q"]
-    QB --> NQ
-    NQ --> Q
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick]
+  \node[nor port] (NQ) at (0,1.25) {};
+  \node[nor port,rotate=180] (NQB) at (3.5,-1.25) {};
+  \draw (NQ.out) -- (3.5,1.25) -- (3.5,-0.70) -- (NQB.in 1);
+  \draw (NQB.out) -- (0,-1.25) -- (0,0.70) -- (NQ.in 2);
+  \draw (NQ.in 1) -- ++(-1.1,0) node[left]{$R$};
+  \draw (NQB.in 2) -- ++(1.1,0) node[right]{$S$};
+  \node[right] at (3.5,1.25) {$Q$};
+  \node[left] at (0,-1.25) {$\overline Q$};
+\end{circuitikz}
+\end{document}
 ```
 
-This is a functional gate-level view; arrows are wires and the two return arcs are the positive-feedback loop. Its coupled equations are
+The two long return wires are the positive-feedback loop. Notice that each output returns to one input of the *other* NOR; deleting either return path turns the circuit back into combinational logic and destroys memory. Its coupled equations are
 
 $$
 Q=\overline{R+\overline Q},\qquad
@@ -517,17 +536,25 @@ $$Q_{next}=E D+\overline E Q.$$
 
 When $E=1$, the latch is **transparent** and $Q$ follows $D$ after propagation delay. When $E=0$, it is **opaque** and the feedback term holds $Q$. This gate-level derivation explains the logic, but a standard-cell latch is often built more compactly with transmission gates:
 
-```mermaid
-flowchart LR
-    D["D"] --> TGI["input transmission gate\nON when E=1"]
-    TGI --> X["internal node X"]
-    X --> I1["restoring inverter 1"] --> Y["internal node Y"]
-    Y --> I2["restoring inverter 2"] --> Q["Q"]
-    Q --> TGF["feedback transmission gate\nON when E=0"]
-    TGF --> X
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick]
+  \node[draw,minimum width=1.15cm,minimum height=0.75cm,align=center] (TGI) at (0,0) {TG\\$E$};
+  \node[not port] (I1) at (2.2,0) {};
+  \node[not port] (I2) at (4.4,0) {};
+  \node[draw,minimum width=1.15cm,minimum height=0.75cm,align=center] (TGF) at (2.2,-2.0) {TG\\$\overline E$};
+  \draw (TGI.west) -- ++(-1.0,0) node[left]{$D$};
+  \draw (TGI.east) -- (I1.in) node[midway,above]{$X$};
+  \draw (I1.out) -- (I2.in) node[midway,above]{$Y$};
+  \draw (I2.out) -- ++(1.0,0) coordinate (Q) node[right]{$Q$};
+  \draw (Q) |- (TGF.east);
+  \draw (TGF.west) -| (1.1,0);
+\end{circuitikz}
+\end{document}
 ```
 
-This functional switch-level view makes the two modes explicit. In transparent mode, the input transmission gate is on and the feedback transmission gate is off, so $D\rightarrow X\rightarrow Q$. In hold mode, the input path is off and the feedback path is on, closing the two-inverter storage loop $Q\rightarrow X\rightarrow Q$. Complementary controls must be generated so the input and feedback switches do not fight. A bare statement such as “put one switch in the loop” is incomplete: a static transmission-gate latch needs a controlled input path, a complementary feedback path, and restoring inverters.
+`TG` means **transmission gate**, a parallel n-channel/p-channel switch that passes both logic levels strongly when enabled. In transparent mode, the input TG is on and the feedback TG is off, so $D\rightarrow X\rightarrow Q$. In hold mode, the input path is off and the feedback path is on, closing the two-inverter storage loop $Q\rightarrow X\rightarrow Q$. Complementary controls must be generated so the input and feedback switches do not fight. A bare statement such as “put one switch in the loop” is incomplete: a static transmission-gate latch needs a controlled input path, a complementary feedback path, and restoring inverters.
 
 | Realization | What implements write/hold | Strength | Cost or risk |
 |---|---|---|---|

@@ -14,6 +14,7 @@ flowchart TD
 
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, series-stack fan-in limits, wire RC), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (MUX, XOR, comparator).
 > **Hands off to:** [Floating_Point](04_Floating_Point.md) (the final CPA + rounding this feeds; SRT/Goldschmidt division), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (§7's ALU/MUL/DIV latency menu — these circuits *are* that menu), [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) (MAC arrays, approximate arithmetic).
+> **Abbreviation key — return as needed:** arithmetic logic unit (ALU); carry-lookahead adder (CLA); carry-propagate adder (CPA); carry-save adder (CSA); ripple-carry adder (RCA); first-in, first-out (FIFO); fan-out-of-four (FO4); multiply-accumulate (MAC); most/least-significant bit (MSB/LSB); sum of products (SOP); square-root recurrence division (SRT); power, performance, and area (PPA).
 
 ---
 
@@ -28,6 +29,23 @@ So every adder architecture in this page is one answer to a single question:
 Read the whole page through that lens and the zoo collapses into a line. Ripple **accepts** the $O(n)$ chain. Carry-skip and carry-select **cut it into blocks** and handle the block-to-block carry cleverly, buying $O(\sqrt n)$. Carry-lookahead **computes** the carries directly from a recurrence, and — once fan-in reality forces it into a hierarchy — becomes $O(\log n)$. Parallel-prefix adders make that hierarchy explicit: they recognise "compute all carries" as a **prefix-sum over an associative $(g,p)$ operator**, which has a provably $O(\log n)$-depth parallel solution, and then trade depth against fan-out against wiring. Carry-save adders **refuse to propagate at all**, keeping the result in redundant form — the trick that makes multipliers and accumulators fast, because a multiplier is just a big multi-operand addition where the carry problem appears twice (once per partial-product row, once in the final sum).
 
 We derive each structure from the carry problem, quantify where it sits in the delay/area/wiring space, and say **why real high-performance datapaths pick what they pick** (radix-4 Booth + a Dadda tree + a sparse prefix CPA, essentially every time). By the end you should be able to place any adder on the $[\,O(\log n)\text{ delay},\,O(n)\text{ area}\,]$ map and explain the constant-factor fight — fan-out and wire congestion — that decides real designs, rather than recite gate schematics.
+
+### 0.1 The feature-evolution path
+
+Treat every structure as a repair to a measured carry problem:
+
+```mermaid
+flowchart LR
+    HA["half adder\nno carry-in"] --> FA["full adder\none-bit carry recurrence"]
+    FA --> RCA["ripple chain\nminimum area"]
+    RCA -->|"linear carry latency"| BLOCK["skip/select blocks\nshorten or speculate locally"]
+    BLOCK -->|"block chain remains"| CLA["lookahead groups\ncompute carries"]
+    CLA -->|"wide fan-in is not physical"| PREFIX["bounded-fan-in prefix tree"]
+    PREFIX -->|"many operands would repeat propagation"| CSA["carry-save redundant form"]
+    CSA --> MUL["Booth + compressor tree + final prefix CPA"]
+```
+
+The procedure used below is: construct the minimum circuit, trace `0111 + 0001`, identify where its carry waits, add one mechanism, replay the same carry, then account for gates, fan-out, long wires, switching, and verification. The older circuit remains useful whenever the workload does not justify the repair.
 
 ---
 
@@ -46,6 +64,35 @@ g_i = a_i b_i \quad(\text{generate}), \qquad p_i = a_i \oplus b_i \quad(\text{pr
 $$
 
 where $g_i$ = "this bit makes a carry no matter what" (both inputs 1), $p_i$ = "this bit passes an incoming carry through" (exactly one input 1), and the third case $\bar g_i\bar p_i$ = "kill" (both 0, carry absorbed). Read the boxed recurrence as physics: a carry is *born* where something generates and *dies* at the first bit that does not propagate.
+
+The one-bit implementation exposes which logic is parallel and which path is recursive. The first XOR and first AND compute $p_i$ and $g_i$ without waiting for $c_i$; only the second XOR and the $p_i c_i$ path wait for the incoming carry:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american]
+  \node[xor port] (X1) at (0,1.3) {};
+  \node[xor port] (X2) at (2.5,1.3) {};
+  \node[and port] (G) at (0,-0.7) {};
+  \node[and port] (PC) at (2.5,-0.7) {};
+  \node[or port] (CO) at (5.0,-0.2) {};
+  \draw (X1.in 1) -- ++(-1.0,0) node[left]{$a_i$};
+  \draw (X1.in 2) -- ++(-1.0,0) node[left]{$b_i$};
+  \draw (X1.out) -- (X2.in 1) node[midway,above]{$p_i$};
+  \draw (X2.in 2) -- ++(-0.7,0) node[left]{$c_i$};
+  \draw (X2.out) -- ++(0.8,0) node[right]{$s_i$};
+  \draw (G.in 1) -- ++(-1.0,0) node[left]{$a_i$};
+  \draw (G.in 2) -- ++(-1.0,0) node[left]{$b_i$};
+  \draw (X1.out) |- (PC.in 1);
+  \draw (X2.in 2) |- (PC.in 2);
+  \draw (G.out) -| (CO.in 1) node[pos=0.25,below]{$g_i$};
+  \draw (PC.out) -- (CO.in 2);
+  \draw (CO.out) -- ++(0.8,0) node[right]{$c_{i+1}$};
+\end{circuitikz}
+\end{document}
+```
+
+A **half adder** is the smaller contract with no $c_i$: $s=a\oplus b$ and $c=ab$. Adding the second XOR, second AND, and OR promotes it to a **full adder**. This evolution matters because array multipliers still use half adders at sparse column edges, while every interior 3:2 compressor is a full adder viewed as a column reducer.
 
 **Where the difficulty lives.** The sum $s_i = p_i \oplus c_i$ is one XOR once you have the carry. All $g_i,p_i$ are computable *in parallel* in one gate level, independent of width. So the entire adder-design problem reduces to one thing: **compute the prefix carries $c_1,\dots,c_n$ fast.** Unrolling the recurrence shows why that is hard —
 
@@ -84,6 +131,31 @@ T_{\text{RCA}}(n) \approx t_{\text{pg}} + (n-1)\,t_{\text{carry}} + t_{\text{sum
 $$
 
 The $(n-1)\,t_{\text{carry}}$ term is the killer. A 32-bit RCA is $\approx 50$ gate delays $\approx 1$ ns at 28 nm — hopeless for a 2 GHz core with a 500 ps period. **That single number is why the rest of this page exists.** Ripple is $\Theta(n)$ delay for $\Theta(n)$ area: one corner of the design box, optimal on area, worst on delay. Everything below spends area to walk toward the $\Theta(\log n)$ corner.
+
+### 2.1 Worked trace: why `0111 + 0001` exercises the entire chain
+
+Use bits from least to most significant and $c_0=0$:
+
+| $i$ | $a_i$ | $b_i$ | $(g_i,p_i)$ | arriving $c_i$ | $(s_i,c_{i+1})$ | causal event |
+|---:|---:|---:|---|---:|---|---|
+| 0 | 1 | 1 | $(1,0)$ | 0 | $(0,1)$ | bit 0 generates the carry |
+| 1 | 1 | 0 | $(0,1)$ | 1 | $(0,1)$ | bit 1 propagates it |
+| 2 | 1 | 0 | $(0,1)$ | 1 | $(0,1)$ | bit 2 propagates it |
+| 3 | 0 | 0 | $(0,0)$ | 1 | $(1,0)$ | bit 3 kills it after forming the MSB sum |
+
+Every $g_i,p_i$ exists after one local gate stage, yet $s_3$ cannot settle until $c_3$ has crossed bits 0→1→2. The qualitative timing is:
+
+```wavedrom
+{ "signal": [
+  { "name": "a,b stable", "wave": "3.........", "data": ["0111 + 0001"] },
+  { "name": "c1",         "wave": "0.1......." },
+  { "name": "c2",         "wave": "0...1....." },
+  { "name": "c3",         "wave": "0.....1..." },
+  { "name": "sum valid",  "wave": "x.......3.", "data": ["1000"] }
+], "head": { "text": "Ripple carry: each dependent carry waits for the preceding full-adder path" } }
+```
+
+This vector is also a useful directed verification test: changing any middle propagate bit to a kill must stop the later carries, while changing bit 0 from generate to kill must prevent the entire wave. Random arithmetic alone can miss a broken long propagate chain because the probability of a particular long pattern falls exponentially.
 
 ---
 
@@ -138,6 +210,29 @@ $$
 $$
 
 "The combined group generates if the upper part generates, or it propagates and the lower part generates; it propagates iff both do." This operator is **associative** (a monoid, with identity $(0,1)$ = "generate nothing, propagate everything"). Associativity is the entire ballgame:
+
+One **black prefix cell** implements exactly that operator. Both ANDs begin together; the OR produces the combined generate, while the lower AND produces combined propagate:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american]
+  \node[and port] (AG) at (1.5,1.1) {};
+  \node[or port]  (OG) at (4.0,1.6) {};
+  \node[and port] (AP) at (2.7,-0.7) {};
+  \draw (AG.in 1) -- ++(-0.9,0) node[left]{$p_L$};
+  \draw (AG.in 2) -- ++(-0.9,0) node[left]{$g_R$};
+  \draw (OG.in 1) -- ++(-3.6,0) node[left]{$g_L$};
+  \draw (AG.out) -| (OG.in 2);
+  \draw (OG.out) -- ++(0.9,0) node[right]{$G=g_L+p_Lg_R$};
+  \draw (AP.in 1) -- ++(-2.1,0) node[left]{$p_L$};
+  \draw (AP.in 2) -- ++(-2.1,0) node[left]{$p_R$};
+  \draw (AP.out) -- ++(2.2,0) node[right]{$P=p_Lp_R$};
+\end{circuitikz}
+\end{document}
+```
+
+A **gray cell** omits the lower AND when only $G$ is needed. The tree is therefore not mysterious arithmetic hardware: it is repeated placement of this two-output combine cell over spans of 1, 2, 4, 8, … bits. For `0111+0001`, a four-bit tree combines `(g_1,p_1)∘(g_0,p_0)` and `(g_3,p_3)∘(g_2,p_2)` in parallel, then combines spans at the next level. The same carry that crossed three serial full adders now crosses two prefix levels. The repair costs more cells and lateral wires; §5.1 explains which tree shape pays which cost.
 
 $$
 \big[(g_a,p_a)\circ(g_b,p_b)\big]\circ(g_c,p_c) = \big(g_a+p_ag_b+p_ap_bg_c,\;p_ap_bp_c\big) = (g_a,p_a)\circ\big[(g_b,p_b)\circ(g_c,p_c)\big]
@@ -201,6 +296,22 @@ $$
 $$
 
 Because no carry travels along the word, a CSA has **$O(1)$ delay independent of width**. It converts three operands into two (a redundant sum/carry pair) every level. So to crush $n$ operands down to two:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american]
+  \node[draw,minimum width=2.2cm,minimum height=1.5cm,align=center] (FA) at (0,0) {full adder\\3:2 compressor};
+  \draw (-2.0,0.5) -- (-1.1,0.5) node[left]{$x_i$};
+  \draw (-2.0,0.0) -- (-1.1,0.0) node[left]{$y_i$};
+  \draw (-2.0,-0.5) -- (-1.1,-0.5) node[left]{$z_i$};
+  \draw (1.1,0.4) -- (2.1,0.4) node[right]{$s_i$ at weight $2^i$};
+  \draw (1.1,-0.4) -- (2.1,-0.4) node[right]{$c_{i+1}$ at weight $2^{i+1}$};
+\end{circuitikz}
+\end{document}
+```
+
+The carry wire moves **diagonally to the next column at the next reduction level**, not horizontally into the neighboring cell in the same level. That single wiring difference is why all columns compress concurrently. A correctness invariant for every column is integer-value conservation: the weighted sum of all input bits to a reduction level must equal the weighted sum of all output sum/carry bits; no timing assumption is needed to prove it.
 
 $$
 \text{levels} \approx \lceil \log_{1.5}(n/2)\rceil,\qquad \text{since each 3:2 level shrinks the count by the ratio }3{:}2
@@ -281,6 +392,8 @@ The decision is purely **required multiply throughput**:
 | Pipelined Booth+tree | $O(n^2)$ FAs | 1 per clk | $\log$-depth, $P$ stages | every-cycle products (datapath, MAC array) |
 
 Occasional multiply → spend nothing, take the cycles. Sustained one-per-cycle → pay for the pipelined tree. This is the same latency/throughput/area reasoning the scheduler sees as a unit's "latency + initiation interval" ([OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §7).
+
+For a 4-bit unsigned example, $M=0011_2=3$ and multiplier $Q=0101_2=5$. A shift-add controller examines one multiplier bit per cycle: add shifted $M$ for $Q_0=1$, skip for $Q_1=0$, add $M\ll2=12$ for $Q_2=1$, skip for $Q_3=0$. The accumulator evolves $0\rightarrow3\rightarrow3\rightarrow15\rightarrow15$. The implementation therefore needs explicit state `{accumulator, multiplicand/shift count, remaining multiplier bits, busy, done}` and an invariant after iteration $k$: the accumulator equals the contribution of the $k$ consumed multiplier bits. The pipelined tree removes those temporal states by spatially instantiating the partial products and compressors; it does not remove the arithmetic work.
 
 ---
 

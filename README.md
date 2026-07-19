@@ -20,9 +20,12 @@ Start at [Index.md](Index.md) or [Chip_Design_Flow_Overview.md](Chip_Design_Flow
 
 To view this notebook exactly as intended, the following Obsidian configuration is recommended:
 
-1. **Mermaid Zoom Plugin (Architecture Diagrams)** — install the [mermaid-zoom](https://github.com/xiaozhuang0433/mermaid-zoom) community plugin so dense architecture diagrams open in a full-screen, scrollable modal.
-2. **WaveDrom Plugin (Timing Diagrams)** — install the `obsidian-wavedrom` community plugin so fenced `wavedrom` blocks render clock, handshake, reset, protocol, and memory-command timing.
-3. **Custom CSS snippet** for diagram scaling and code/LaTeX wrapping — included in this vault's `.obsidian/snippets/`.
+1. **TikZJax + CircuiTikZ (Circuit Schematics)** — the tracked `obsidian-tikzjax` plugin renders text-authored transistor, logic-gate, storage, and arithmetic circuits.
+2. **Mermaid Zoom Plugin (Architecture Diagrams)** — install the [mermaid-zoom](https://github.com/xiaozhuang0433/mermaid-zoom) community plugin so dense architecture diagrams open in a full-screen, scrollable modal.
+3. **WaveDrom Plugin (Timing Diagrams)** — install the `obsidian-wavedrom` community plugin so fenced `wavedrom` blocks render clock, handshake, reset, protocol, and memory-command timing.
+4. **Custom CSS snippet** for diagram scaling and code/LaTeX wrapping — included in this vault's `.obsidian/snippets/`.
+
+See the [Diagram Authoring Standard](Diagram_Authoring_Standard.md) for when to use CircuiTikZ, WaveDrom, Mermaid, optional CircuitJS, or an editable draw.io SVG.
 
 ## Structure
 
@@ -55,7 +58,8 @@ Substantive pages follow the [Research-Depth and Evidence Standard](Research_Dep
 - **Section 0: Why this page exists** — one-paragraph framing of what problem this page solves
 - **Numbered sections** — deep technical content with derivations, not summaries
 - **Procedural feature evolution** — minimum baseline → concrete trace → observed failure → derived feature and enabling state/control → replay → costs, losing cases, and evidence
-- **Mermaid diagrams** — ownership, architecture, dataflow, state, cause-effect, and experiment loops; use Mermaid Zoom for dense figures
+- **CircuiTikZ diagrams** — transistor, gate, storage, and arithmetic schematics with real electrical symbols
+- **Mermaid diagrams** — ownership, architecture, dataflow, state, cause-effect, and experiment loops; never use generic rectangles as a substitute for a circuit schematic
 - **WaveDrom diagrams** — cycle-level clocks, latches/flip-flops, reset, clock-domain crossing, handshakes, protocols, and memory timing
 - **Numbers to memorize** — tables of constants that come up in interviews
 - **Worked problems** — interview-style problems with full solutions

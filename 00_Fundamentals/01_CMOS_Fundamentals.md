@@ -13,8 +13,9 @@ flowchart LR
     SCALE --> PPA["speed / power / area / reliability"]
 ```
 
-> **Prerequisites:** basic semiconductor physics (the pn junction, the MOS capacitor, drift/diffusion). This is the bottom of the notebook — everything else is built on the device and the switching energy derived here.
+> **Prerequisites:** none beyond high-school algebra. §0.1 supplies the charge, field, doping, capacitor, and p–n-junction vocabulary needed by the device equations. This is the bottom of the notebook—everything else is built on the device and switching energy derived here.
 > **Hands off to:** [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (gates, latches, flip-flops built from these transistors), [Power_Fundamentals](../02_Power_and_Low_Power/01_Power_Fundamentals.md) (the $\alpha CV^2f$ this page derives, scaled to a whole SoC), [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (turns the bit cell into CPU arrays and ports), [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (how the FinFET/GAA of §8 is actually built).
+> **Abbreviation key — return as needed:** complementary metal–oxide–semiconductor (CMOS); metal–oxide–semiconductor field-effect transistor (MOSFET); n-channel/p-channel MOSFET (NMOS/PMOS); voltage-transfer characteristic (VTC); resistor–capacitor (RC); fan-out-of-four (FO4); static random-access memory (SRAM); fin field-effect transistor (FinFET); gate-all-around (GAA); drain-induced barrier lowering (DIBL); equivalent oxide thickness (EOT); hot-carrier injection (HCI); electrostatic discharge (ESD); input/output (I/O); low-voltage CMOS (LVCMOS); stub-series-terminated logic (SSTL); pseudo-open-drain (POD); low-voltage differential signaling (LVDS); current-mode logic (CML); process, voltage, and temperature (PVT); power, performance, and area (PPA).
 
 ---
 
@@ -30,6 +31,54 @@ This page derives the digital world from device physics and then quantifies wher
 - **State** — holding a bit means fighting all of the above at once, which is the whole story of the SRAM cell (§12).
 
 By the end you should be able to *derive* why $V_{DD}$ sits at 0.7 V, why $V_{th}$ cannot scale, why Dennard scaling ended and took frequency scaling with it, why FinFETs replaced planar devices, and why a 6T SRAM cell becomes unwritable-or-unreadable at low voltage — rather than recite parameter values.
+
+### 0.1 The minimum physics bridge: from charge to a gate-controlled channel
+
+Matter contains positively charged protons and negatively charged **electrons**. In a crystalline semiconductor such as silicon, most electrons participate in bonds; a small number can move through the crystal and carry current. A missing bond electron behaves as a positively charged mobile state called a **hole**. Engineers use **conventional current** in the direction positive charge would move, which is opposite the physical drift direction of electrons. Keep that sign convention separate from the actual carrier.
+
+| Term | Plain-language contract | Why it enters a transistor |
+|---|---|---|
+| electric charge $Q$ (coulombs) | amount of positive or negative charge | a gate controls how much mobile charge exists near the surface |
+| voltage $V$ (volts) | potential-energy difference per unit charge | $V_{GS}$ creates the field that forms a channel; $V_{DS}$ drives carriers along it |
+| current $I=dQ/dt$ (amperes) | rate at which charge crosses a boundary | drain current charges or discharges the next gate's capacitance |
+| electric field $E$ (volts/metre) | spatial slope of electric potential; force per unit charge | field across the oxide attracts or repels surface carriers |
+| capacitance $C=Q/V$ (farads) | charge stored per volt between conductors separated by an insulator | the gate oxide is a capacitor; every driven wire/gate is also a load capacitor |
+| resistance $R=V/I$ (ohms) | voltage required per unit current in a conducting path | an on transistor is approximately the resistor in the $RC$ delay model |
+
+Pure silicon is **intrinsic**. **Doping** deliberately replaces a tiny fraction of its atoms:
+
+- a donor atom with one extra valence electron creates **n-type** silicon, where electrons are the majority carriers;
+- an acceptor atom one electron short creates **p-type** silicon, where holes are the majority carriers;
+- putting p-type and n-type regions together creates a **p–n junction**. Carriers initially diffuse across the boundary, leaving fixed charged dopants and a carrier-poor **depletion region**. Its built-in electric field opposes further diffusion. Forward bias lowers the barrier and conducts; reverse bias widens the depletion region and ideally blocks.
+
+“Metal–oxide–semiconductor” describes a capacitor stack: a conductive gate, a thin insulating oxide, and a semiconductor body. Because the oxide blocks direct-current flow, the gate controls the surface mainly by electric field rather than by supplying continuous current. An n-channel MOSFET places two n-type regions—source and drain—inside a p-type body:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[thick]
+  \draw[fill=gray!25] (-1.2,2.2) rectangle (5.2,2.8);
+  \node at (2.0,2.5) {conductive gate $G$};
+  \draw[fill=blue!12] (-1.2,1.85) rectangle (5.2,2.2);
+  \node[right] at (5.2,2.02) {oxide: insulator};
+  \draw[fill=orange!12] (-1.2,-0.3) rectangle (5.2,1.85);
+  \node at (2.0,0.15) {p-type silicon body $B$};
+  \draw[fill=green!25] (-0.8,0.65) rectangle (0.8,1.65);
+  \draw[fill=green!25] (3.2,0.65) rectangle (4.8,1.65);
+  \node at (0,1.15) {$n^+$ source $S$};
+  \node at (4.0,1.15) {$n^+$ drain $D$};
+  \draw[very thick,blue] (0.8,1.72) -- (3.2,1.72);
+  \node[above] at (2.0,1.72) {electron inversion channel when $V_{GS}>V_{th}$};
+  \draw[->] (2.0,3.35) -- (2.0,2.82) node[midway,right] {$+V_G$ creates field};
+  \draw[->] (3.15,1.25) -- (1.0,1.25) node[midway,below] {electron drift};
+  \draw[->] (1.0,0.85) -- (3.15,0.85) node[midway,below] {conventional $I_D$};
+\end{circuitikz}
+\end{document}
+```
+
+With $V_{GS}=0$, the two n-type islands are separated by p-type material and their p–n junctions block a source-to-drain path. A sufficiently positive gate repels holes, attracts electrons to the oxide interface, and eventually makes the surface electron-rich—**inversion**. The connected inversion layer is the channel. The gate voltage therefore creates or removes the path; the drain-to-source voltage moves charge through it. The threshold voltage $V_{th}$ is the approximate $V_{GS}$ at which strong inversion becomes useful, not an ideal on/off cliff (§1.3).
+
+This sequence is the physical implementation of “voltage-controlled switch”: oxide gives near-zero steady gate current, field creates a channel, the channel provides drain current, and that current moves charge on the next capacitance. The rest of the page quantifies how imperfectly each step behaves.
 
 ---
 
@@ -99,6 +148,40 @@ The gate is losing its grip on the channel as $L$ shrinks toward the source/drai
 ## 2. The CMOS inverter — why complementary static logic won
 
 Before CMOS, logic used a driver transistor pulling against a resistive (or always-on) load. That load **burns DC current the entire time the output is low** and can only pull the output to a divider voltage, not a clean rail. The complementary insight fixes both at once: build the pull-up from PMOS and the pull-down from NMOS driven by the *same* input, so that **in either static state exactly one network conducts and the other is a true open switch.** The result: ideally *zero* static current, rail-to-rail output ($V_{OH}=V_{DD}$, $V_{OL}=0$), and high gain in between. That is the entire reason CMOS displaced NMOS, pseudo-NMOS, and everything else — energy is spent almost only when the output *changes* (§4).
+
+The electrical schematic makes the complementary mechanism explicit. The p-channel MOSFET (PMOS) is the pull-up device and the n-channel MOSFET (NMOS) is the pull-down. Their gates share input $A$; their drains share output $Y$:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american]
+  \draw (0,3) node[vcc]{$V_{DD}$}
+        (0,2.4) node[pmos,anchor=S](P){}
+        (P.S) -- (0,3)
+        (P.D) -- (0,1.5) coordinate(Y)
+        (0,0.6) node[nmos,anchor=S,yscale=-1](N){}
+        (N.D) -- (Y)
+        (N.S) -- (0,0) node[ground]{};
+  \draw (P.G) -- (-1.2,2.4)
+        (N.G) -- (-1.2,0.6)
+        (-1.2,0.6) -- (-1.2,2.4)
+        (-1.2,1.5) -- (-2.0,1.5) node[left]{$A$};
+  \draw (Y) -- (1.2,1.5) node[right]{$Y=\overline A$};
+  \draw (0.55,1.5) to[C,l_=$C_L$] (0.55,0) node[ground]{};
+\end{circuitikz}
+\end{document}
+```
+
+This figure abstracts body connections and parasitic capacitances except the lumped load $C_L$. The causal transition is:
+
+| Phase | PMOS | NMOS | Physical event at $Y$ | Digital meaning |
+|---|---|---|---|---|
+| $A=0$ settled | on | off | PMOS has charged $C_L$ to $V_{DD}$ | restored 1 |
+| $A$ rises through the threshold region | weakening but not yet off | strengthening | both conduct briefly; $C_L$ begins to discharge and short-circuit current flows | output is in transition, not a valid Boolean sample |
+| $A=1$ settled | off | on | NMOS discharges $C_L$ to ground | restored 0 |
+| $A$ falls | turns on | turns off | the supply replenishes the charge on $C_L$ | restored 1 |
+
+The feature progression is therefore physical: a lone NMOS plus passive load can pull down but wastes static power and produces a ratio-dependent high; a complementary PMOS supplies the missing active pull-up; gain around the switching point restores noisy levels; the unavoidable load capacitance then creates delay and switching energy. Sections 3 and 4 quantify the two costs created by the repair.
 
 ### 2.1 The VTC and its five regions
 
@@ -170,6 +253,24 @@ A gate is characterised by two numbers the rest of the notebook consumes: **how 
 ### 4.1 Propagation delay and the alpha-power law
 
 Model the switching device as an effective resistance discharging the load:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american]
+  \draw (0,2.4) node[vcc]{$V_{DD}$} to[R,l=$R_p$] (0,1.2) coordinate(UP)
+        (UP) -- (1.0,1.2) node[right]{$Y$}
+        (1.0,1.2) to[C,l=$C_L$] (1.0,0) node[ground]{};
+  \node at (0.5,-0.55) {low-to-high: charge through $R_p$};
+  \draw (5.0,1.2) coordinate(DN) -- (6.0,1.2) node[right]{$Y$}
+        (6.0,1.2) to[C,l=$C_L$] (6.0,0) node[ground]{}
+        (DN) to[R,l_=$R_n$] (5.0,0) node[ground]{};
+  \node at (5.5,-0.55) {high-to-low: discharge through $R_n$};
+\end{circuitikz}
+\end{document}
+```
+
+The two RC equivalents are not extra components added to the inverter. $R_p$ and $R_n$ are effective models of the conducting transistor over the transition; $C_L$ collects receiver gates, drain diffusion, and wire capacitance. The exponential $V_Y(t)=V_{DD}(1-e^{-t/R_pC_L})$ crosses half supply after $R_pC_L\ln2\approx0.69R_pC_L$, which derives the familiar delay coefficient instead of asking the reader to memorize it.
 
 $$
 t_{pHL}\approx 0.69\,R_n C_L,\qquad t_{pLH}\approx 0.69\,R_p C_L,\qquad C_L=C_{gate}^{fanout}+C_{wire}+C_{drain}^{self}
@@ -383,6 +484,33 @@ On-chip memory needs a bit that is **fast, non-destructive to read, and self-res
 
 ### 12.1 Structure derived from three jobs
 
+At the logic level, the four storage transistors are two cross-coupled CMOS inverters and the remaining two transistors connect the internal nodes to complementary bitlines. Showing the feedback and the two access controls is more important than arranging six device glyphs into a compact foundry bitcell layout:
+
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american]
+  \node[not port] (IL) at (0,1.5) {};
+  \node[not port,xscale=-1] (IR) at (4,1.5) {};
+  \draw (IL.out) -- (2.0,1.5) coordinate(Q) -- (IR.in);
+  \draw (IR.out) -- (4.8,1.5) -- (4.8,0.4) -- (-0.8,0.4) -- (-0.8,1.5) -- (IL.in);
+  \node[above] at (Q) {$Q$};
+  \node[above] at (IR.out) {$\overline Q$};
+  \node[below] at (0,1.0) {2T inverter};
+  \node[below] at (4,1.0) {2T inverter};
+  \node[nmos,rotate=-90] (AXL) at (2.0,2.5) {};
+  \node[nmos,rotate=-90] (AXR) at (4.0,2.5) {};
+  \draw (Q) -- (AXL.S);
+  \draw (AXL.D) -- (2.0,3.3) node[above]{$BL$};
+  \draw (IR.out) -- (AXR.S);
+  \draw (AXR.D) -- (4.0,3.3) node[above]{$\overline{BL}$};
+  \draw (AXL.G) -- (AXR.G) node[midway,below]{$WL$};
+\end{circuitikz}
+\end{document}
+```
+
+The two explicit NMOS devices are the bidirectional access switches. Each inverter expands to one PMOS plus one NMOS, so the count is $2+2+1+1=6$ transistors. The schematic exposes connectivity and control; a foundry bitcell layout folds and shares diffusion to minimize area.
+
 ```text
         VDD              VDD
          |                |
@@ -401,6 +529,8 @@ On-chip memory needs a bit that is **fast, non-destructive to read, and self-res
 - **Hold** — the cross-coupled pair (M1–M4) latches the bit by feedback; the access devices are off (WL low), so the cell is an isolated bistable.
 - **Read** — precharge BL/BLB high, raise WL; the storage node holding **0** sinks current from its bitline through the access device and pull-down, developing a small $\Delta V$ that a sense amp resolves. The stored value must survive being *tapped* — this is the dangerous operation.
 - **Write** — drive the bitlines to the desired value and raise WL; the access devices must **overpower the feedback** and flip the cell.
+
+Replay one stored zero on $Q$. In hold, the left inverter's pull-down and the right inverter's pull-up reinforce $(Q,\overline Q)=(0,1)$. For read, both bitlines begin high; raising $WL$ connects $BL$ to the zero node, so current follows $BL\rightarrow$ access device $\rightarrow$ cell pull-down $\rightarrow$ ground. $BL$ falls only slightly before the sense amplifier decides, while $\overline{BL}$ remains near its precharge value. The dangerous internal event is that the same access current raises $Q$ above zero. Section 12.2 derives the cell ratio required to keep that bump below the opposite inverter's trip point. For write-one, external drivers force $BL=1$ and $\overline{BL}=0$; the access path must pull $\overline Q$ below the left inverter's trip point, after which positive feedback completes the flip. That trace explains why read wants weak access devices and write wants strong ones.
 
 ### 12.2 The central conflict: two ratios that fight over the access transistor
 
@@ -451,6 +581,21 @@ $$
 - **GIDL ($\sim$5–10%)** — band-to-band tunnelling in the gate-drain overlap, worse at high $V_{DD}$.
 
 The takeaway: leakage is governed by the *same* $S$ and $V_{th}$ that govern speed, so it is not a separate problem but the other face of the §1.3 trade — and it is why $V_{th}$ flavours, power gating, and body bias exist at all ([Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md)).
+
+### 13.1 From equations to a reproducible cell characterization
+
+The equations on this page select a topology and explain trends; a transistor-level simulator closes the implementation with foundry device models and extracted parasitics. A reproducible characterization has six stages:
+
+1. **Declare the contract.** Fix device model revision, channel lengths, fin/sheet counts or widths, supply, temperature, input slew, output capacitance, body connections, and the exact output threshold used for delay. A “fast inverter” without load and slew is not a comparable result.
+2. **Verify direct-current behavior.** Sweep the input slowly from 0 to $V_{DD}$, solve the operating point at every sample, and record the voltage-transfer characteristic (VTC), switching point, unity-gain crossings, $V_{OH}$/$V_{OL}$, and noise margins. Sweep device ratio to confirm the §2.2 movement of $V_M$. Check that no static input leaves both networks unintentionally on except in the intended transition region.
+3. **Verify transient behavior.** Drive characterized rise and fall ramps, not ideal voltage steps. Measure $t_{pLH}$ and $t_{pHL}$ from the 50% input crossing to the 50% output crossing, plus output transition times. Sweep load and input slew; the delay surface, not one nominal point, is what a static-timing library interpolates. Integrate supply current to obtain energy per transition and separate leakage by holding each input state.
+4. **Verify loading and composition.** Cascade the cell into realistic receivers or extracted wire capacitance. Repeat for fan-out-of-four and for the actual path. A schematic that is correct unloaded may violate level, delay, or dynamic-node retention once parasitics and coupling are present.
+5. **Verify corners and statistics.** Run process corners, voltage min/nom/max, and temperatures covering the product range. Then run mismatch Monte Carlo for cells whose correctness depends on ratios, especially SRAM. Corners expose global shifts; Monte Carlo exposes local device-to-device variation. Report worst case and distribution/yield, not only the typical mean.
+6. **Verify failure boundaries.** Reduce $V_{DD}$ until noise margin or timing collapses; increase slew until short-circuit current or pulse filtering violates the contract; inject the expected noise/coupling; and, for dynamic nodes, extend hold time until leakage loses the value. The boundary explains which mechanism is binding.
+
+For the 6T SRAM cell, the minimum test set is more specific: retain both values with wordline low; perform a read of stored 0 and confirm the internal zero node does not cross the opposite inverter's trip point; perform writes of 0 and 1 and confirm the selected node crosses the trip point within the wordline pulse; generate hold/read butterfly curves and extract static noise margin; sweep bitline precharge, wordline amplitude/pulse, cell ratio, pull-up ratio, supply, temperature, and mismatch. Assertions should express the causal invariants: unselected cells retain state, a read is nondestructive, an enabled write reaches the commanded complementary state, bitlines never fight longer than the allowed window, and no illegal DC path exceeds the leakage budget.
+
+Finally, compare the extracted results against the simple models here. $0.69R_{eq}C_L$ should predict the correct order and trend; dynamic energy should scale approximately with $CV^2$; subthreshold leakage should change exponentially with threshold and temperature; delay should worsen at low voltage and high load. A mismatch is not automatically a simulator error—it identifies the second-order effect the hand model omitted. That loop, from analytic expectation to detailed simulation to explained residual, is the engineering use of device theory.
 
 ---
 
