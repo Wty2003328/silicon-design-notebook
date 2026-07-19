@@ -186,20 +186,31 @@ Only the conflict term responds to $N$, and it falls roughly geometrically: the 
 
 Returning data in a single cycle forces tag lookup and data lookup to run **in parallel** on speculation: the index drives all $N$ tag SRAMs *and* all $N$ data SRAMs at once, the comparators pick the winner, and a mux steers the winning way out — the comparison result arrives just in time to select data that was already read.
 
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart TD
-    ADDR["CPU address"] --> IDX["Index"]
-    IDX --> T0["Tag SRAM (all N ways)"] --> CMP["N comparators"]
-    IDX --> D0["Data SRAM (all N ways)"]
-    CMP --> HIT["OR -> hit / miss"]
-    CMP -.->|winning way| MUX["Way-select MUX"]
-    D0 --> MUX --> OUT["Data out"]
-    HIT -->|miss| MSHR["allocate MSHR (§3)"]
-    classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef l fill:#fde68a,stroke:#b45309,color:#000
-    class T0,D0 s
-    class CMP,HIT,MUX l
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.78,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum height=0.95cm,align=center,font=\small}}
+  \draw (-3.4,0) node[left]{Index} -- (-2.6,0) coordinate (idx) node[circ]{};
+  \node[blk,minimum width=2.4cm] (tag) at (0,1.6) {Tag SRAM\\(all $N$ ways)};
+  \node[blk,minimum width=2.4cm] (dat) at (0,-1.6) {Data SRAM\\(all $N$ ways)};
+  \draw (idx) |- (tag.west);
+  \draw (idx) |- (dat.west);
+  \node[blk,minimum width=2.0cm] (cmp) at (3.7,1.6) {$N$\\comparators};
+  \draw[->] (tag.east) -- (cmp.west);
+  \draw[->] (3.7,3.5) node[above]{CPU tag} -- (cmp.north);
+  \node[or port] (orh) at (7.1,1.6) {};
+  \draw (cmp.east) -- ++(0.5,0) coordinate (m) node[above,font=\footnotesize]{$N$ match};
+  \draw (m) |- (orh.in 1);
+  \draw (m) |- (orh.in 2);
+  \draw[->] (orh.out) -- ++(0.7,0) node[right]{hit / miss};
+  \node[blk,minimum width=2.1cm] (mux) at (7.1,-1.6) {Way-select\\MUX};
+  \draw[->] (dat.east) -- (mux.west);
+  \draw[->,dashed] (cmp.south) -- (3.7,-3.2) -- (7.1,-3.2) -- (mux.south);
+  \node[font=\footnotesize] at (5.4,-3.0) {winning way (one-hot)};
+  \draw[->] (mux.east) -- ++(0.9,0) node[right]{Data out};
+\end{circuitikz}
+\end{document}
 ```
 
 The hit condition is just $\text{hit} = \bigvee_i (\text{tag}_{CPU} = \text{tag}_i)\wedge \text{valid}_i$. At 4 GHz a cycle is 250 ps and this whole chain — tag read, compare, mux — must fit inside it, which is exactly why $N$ cannot grow without bound and why the tag SRAM's smallness is precious: it resolves early enough to steer the data mux.
