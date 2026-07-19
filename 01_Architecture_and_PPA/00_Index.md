@@ -34,6 +34,33 @@ flowchart LR
     SM --> SoC["SoC + chiplet composition"]
 ~~~
 
+## One problem, four architectural responses
+
+The books are not four unrelated feature catalogs. They make different trade-offs in response to the same physical fact: computation, storage, and communication have unequal latency, bandwidth, energy, and regularity.
+
+```mermaid
+flowchart TD
+    W["workload exposes latency, bandwidth, locality, and parallelism"] --> CPU["CPU response\npredict and dynamically schedule a small number of general instruction streams"]
+    W --> GPU["GPU response\nreplicate thread state and switch among many SIMT warps to hide latency"]
+    W --> NPU["NPU response\ncompile tensor reuse and movement into spatial/vector dataflows"]
+    CPU --> SOC["SoC response\ncompose heterogeneous agents through memory, protocols, NoC, I/O, and chiplet links"]
+    GPU --> SOC
+    NPU --> SOC
+    SOC --> E["measured service\nlatency, throughput, energy, area, reliability, and cost"]
+    E -->|"observed bottleneck or failure"| W
+```
+
+Read every mechanism procedurally:
+
+1. start with its minimum correct baseline and one concrete instruction, warp, tensor tile, transaction, or request;
+2. trace named state and resources until a bottleneck or correctness failure appears;
+3. derive the invariant the repair must satisfy;
+4. add the feature together with its queues, tags, masks, pointers, checkpoints, descriptors, or protocol state;
+5. replay the same example through success and recovery;
+6. close with PPA/physical cost, workloads where it loses, counters/assertions, and validation.
+
+That sequence is required by the [procedural mechanism contract](../Research_Depth_and_Evidence_Standard.md#111-procedural-mechanism-and-feature-evolution-contract). Tables summarize the result after the derivation; they do not replace the trace.
+
 ## Four architecture books
 
 | Book | Subdomains | Chapters | What it owns |

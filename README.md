@@ -54,6 +54,7 @@ Substantive pages follow the [Research-Depth and Evidence Standard](Research_Dep
 
 - **Section 0: Why this page exists** — one-paragraph framing of what problem this page solves
 - **Numbered sections** — deep technical content with derivations, not summaries
+- **Procedural feature evolution** — minimum baseline → concrete trace → observed failure → derived feature and enabling state/control → replay → costs, losing cases, and evidence
 - **Mermaid diagrams** — ownership, architecture, dataflow, state, cause-effect, and experiment loops; use Mermaid Zoom for dense figures
 - **WaveDrom diagrams** — cycle-level clocks, latches/flip-flops, reset, clock-domain crossing, handshakes, protocols, and memory timing
 - **Numbers to memorize** — tables of constants that come up in interviews

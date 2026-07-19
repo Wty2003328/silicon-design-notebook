@@ -218,6 +218,60 @@ Therefore:
 
 The rule is narrower than “DRAM never changes the instruction path”: the address *order* may remain valid while injection *time* does not. State which one the experiment assumes fixed.
 
+### 7.4 One replay, end to end: trace line → command events → final metrics
+
+A concrete two-request replay shows where every reported number comes from. Assume a 1 GHz command clock, an accept-before-schedule frontend, $t_{RCD}=14$ cycles, $t_{CL}=14$, $t_{CCD}=4$, and a four-cycle data burst. Address-map function `M` produces:
+
+~~~text
+# arrival  op  physical-address  source  bytes
+100        R   PA0               CPU0    64    -> M(PA0)=(ch0,r0,bg0,b2,row12,col0)
+102        R   PA1               CPU0    64    -> M(PA1)=(ch0,r0,bg0,b2,row12,col8)
+~~~
+
+Bank 2 begins closed. The first line is not converted into “latency = 32” at ingestion; it becomes request record `R0={arrival=100, tuple, op, source, bytes, state=queued}`. The engine then creates and consumes events:
+
+```mermaid
+sequenceDiagram
+    participant T as "trace frontend"
+    participant Q as "request queue"
+    participant S as "scheduler + timing tables"
+    participant B as "bank/data-bus state"
+    participant M as "metric reducer"
+    T->>Q: "t=100 accept R0; decoded row12"
+    Q->>S: "R0 next command ACT"
+    S->>B: "t=100 ACT b2,row12"
+    Note over S,B: "write RD earliest=114; ACT/FAW/RAS deadlines"
+    T->>Q: "t=102 accept R1; same bank/row"
+    S->>B: "t=114 RD R0; reserve DQ [128,132)"
+    S->>B: "t=118 RD R1 after tCCD; reserve DQ [132,136)"
+    B-->>Q: "t=132 complete R0"
+    Q-->>M: "R0: arrival100, done132, 64 B"
+    B-->>Q: "t=136 complete R1"
+    Q-->>M: "R1: arrival102, done136, 64 B"
+```
+
+**From request to events.** At cycle 100 the mapper and finite queue accept `R0`. Because the bank is closed, command preparation selects `ACT`; readiness succeeds, so the event mutates `open_row[b2]=12` and writes future deadlines, notably `next_allowed[b2][RD]=114`. `R1` arrives at 102 and waits against the same state. Cycles 101–113 are not assigned arbitrary idle latency: each readiness check fails with the explicit $t_{RCD}$ guard. At 114 the scheduler issues `RD R0`, records a command event, and reserves DQ cycles 128–131. The next same-group column command is legal at 118, so `RD R1` reserves 132–135. Completion is defined here as the edge after the final beat, producing $d_0=132$ and $d_1=136$. A simulator that defines completion at first beat may emit different absolute latencies; that convention must be declared and used consistently.
+
+**From events to the final report.** The metric reducer never infers activity from peak bandwidth. It reduces the accepted/completed ledger:
+
+$$
+L_0=d_0-a_0=32\ \text{cycles},\qquad L_1=d_1-a_1=34\ \text{cycles},\qquad \bar L=33\ \text{cycles}.
+$$
+
+The run issued one `ACT` and two `RD` commands, served 128 bytes, realized one initial row miss plus one same-row request, and occupied DQ for eight cycles. If the declared measurement region is `[100,200)` at 1 GHz, achieved bandwidth is
+
+$$
+BW=\frac{128\ \text{B}}{100\ \text{cycles}/10^9}=1.28\ \text{GB/s}.
+$$
+
+Using only the 36-cycle first-arrival-to-last-completion span would report 3.56 GB/s; neither denominator is universally right, but silently choosing the busy span discards idle demand and inflates application bandwidth. Warm-up and region-of-interest (ROI) boundaries therefore belong to the metric definition. Percentiles are computed from the same $d_i-a_i$ samples, queue delay from acceptance-to-first-command timestamps, and row-hit/command/bus counters from events—not from addresses alone. DRAMPower consumes the ordered command ledger `{ACT@100,RD@114,RD@118}` plus state-residency intervals; it cannot obtain correct activate/background energy from the original two request lines without the command expansion.
+
+**Why the event feature is needed.** A fixed-latency baseline could return both reads 28 ns after arrival, but it would not know that one `ACT` serves both, that $t_{CCD}$ spaces their reads, that their bursts reserve one DQ bus, or which energy commands occurred. The timed bank state, per-command `next_allowed` deadlines, DQ reservation calendar, finite queues, scheduler state, completion event queue, and metric ledger are the minimum control/state that repairs those omissions. Add a competing bank, refresh, or write drain and the same maximum-of-deadlines mechanism extends the schedule rather than changing the metric formulas.
+
+**Replay and cost boundary.** Preserve the input trace hash and trace-point provenance; simulator/code version; complete DRAM organization/timing/address-map and scheduler/refresh configuration; queue sizes and frontend full-queue behavior; clock/unit conversion; initial bank/power state; random seed/tie-breaking; warm-up/ROI/drain rules; and the metric completion convention. A short golden event digest—accepted requests, issued commands with cycle/address tuple, completions—lets another run identify the first divergence before comparing averages. Assert request conservation, no queue overflow/drop, legal state/timing for every command, nonoverlapping DQ reservations, monotonic time, completion after all beats, and exact byte/command counter reductions.
+
+The cost is proportional to simulated time plus the scheduler's search over queued requests; coupled execution also pays the core/cache model and closes injection feedback. Full per-request logs can dwarf the simulation, so retain detailed events for debug windows and stream aggregate counters/histograms elsewhere. Trace replay wins speed and determinism but loses timing feedback when a changed memory delays future requests (§7.3); a final application-runtime claim must move to a coupled model rather than pretending a longer trace fixes that structural loss.
+
 ---
 
 ## 8. How bandwidth and latency are computed — the queueing intuition

@@ -2,7 +2,7 @@
 
 > **First-time reader orientation:** Coherence concerns copies of one address; memory consistency constrains the order in which cores may observe accesses to different addresses. An atomic operation performs a read-modify-write indivisibly for synchronization. Litmus tests are tiny concurrent programs used to expose which observations a model permits, and fences forbid selected reorderings.
 
-> **Abbreviation key — skim now and return as needed:** central processing unit (CPU); instruction set architecture (ISA); reduced instruction set computer (RISC); out-of-order (OoO); input-output memory management unit (IOMMU);
+> **Abbreviation key — skim now and return as needed:** central processing unit (CPU); instruction set architecture (ISA); reduced instruction set computer (RISC); out-of-order (OoO); reorder buffer (ROB); load-store queue (LSQ); input-output memory management unit (IOMMU);
 > quality of service (QoS); direct memory access (DMA); AXI Coherency Extensions (ACE); Coherent Hub Interface (CHI); Modified, Exclusive, Shared, Invalid (MESI).
 
 > **Prerequisites:** [Cache Coherence](01_Cache_Coherence.md) (single-writer/multiple-reader permissions), [CPU Architecture](../01_Core_Foundations/01_CPU_Architecture.md) §9, and [Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md).
@@ -35,6 +35,70 @@ Cache coherence answers who may read or write one cache line and ensures writes 
 A **litmus test** reduces the question to a few loads and stores on two or more cores, then asks whether a specific result is legal. Sequential consistency is the intuitive model in which all operations fit one total order consistent with each thread’s program order. Real architectures often allow more reordering for performance and provide fences and ordered atomic operations when software needs stronger synchronization.
 
 **Beginner checkpoint:** an atomic operation is not merely a load followed by a store. Other agents must not interleave a conflicting operation between its read and write, and its ordering strength must be defined. The event graphs below make those two obligations visible.
+
+## 0.1 From a blocking core to a weakly ordered core—one optimization at a time
+
+Use a blocking in-order memory path as the baseline. It issues the next memory operation only after the previous one reaches its required visibility point. Program order and observation order are then closely aligned, but a store miss can freeze the core for hundreds of cycles. The first repair is a **store buffer**: retire a checked store into an ordered queue and let the cache acquire ownership in the background.
+
+That repair creates a new failure. A younger load to the same address could read stale cache data while its older value waits in the store buffer. The derived requirement is store-to-load forwarding: compare the load address and byte mask against every older buffered store and select the youngest matching bytes. A partially covered load merges forwarded bytes with cache bytes only if the implementation can prove both sources belong to the same logical access epoch.
+
+Allowing a load to a *different* address to bypass the older store recovers performance, but it exposes the store-buffering outcome and therefore changes the architectural memory model. The ISA must either permit that ordering or provide an operation that closes it. A fence adds tracked obligations—not magic:
+
+```mermaid
+flowchart LR
+    B["blocking memory path"] -->|"store miss stalls retirement"| SB["ordered store buffer"]
+    SB -->|"same-address load could see stale cache data"| FWD["age + address + byte-mask forwarding"]
+    FWD -->|"different-address load can become visible first"| MM["documented relaxed ordering"]
+    MM -->|"software needs publication/order"| F["fence or acquire/release obligation tracker"]
+    F -->|"miss latency still hides independent loads"| SPEC["speculative load issue + validation + replay"]
+    SPEC -->|"hot synchronization line serializes"| AT["atomic serialization + scalable software data structure"]
+```
+
+For each load, the LSQ therefore needs an age, address-valid bit, byte mask, execution/completion state, source (forward/cache), observed coherence version or invalidation status, and replay cause. For each store, it needs age, address-valid and data-valid bits, byte mask/data, retirement state, coherence request state, and visibility/acknowledgement state. Fence state records its predecessor and successor classes and whether every required predecessor has reached the ISA-defined ordering point. The ROB prevents a replayed speculative load from becoming a committed architectural event.
+
+### Concrete trace: publish data, then a flag
+
+The producer executes `data=42; release flag=1`; the consumer executes `acquire load flag; load data`. Suppose `data` misses in the producer's cache while `flag` could hit. Without release tracking, `flag=1` can become observable first and the consumer can read old `data=0`.
+
+```wavedrom
+{ "signal": [
+  { "name": "P:data_store_retire", "wave": "01.0........" },
+  { "name": "P:data_ordered",      "wave": "0....1......" },
+  { "name": "P:release_flag",     "wave": "0.1..|.10.." },
+  { "name": "C:acquire_flag",     "wave": "0.......10." },
+  { "name": "C:data_load",        "wave": "0.........10" },
+  { "name": "C:observed_data",    "wave": "x.........=.", "data": ["42"] }
+] }
+```
+
+The release store may allocate early, but its visibility permission remains blocked while the older `data` store's obligation is outstanding. When `data` reaches the required coherence ordering point, the tracker clears that bit and permits `flag` to become visible. On the consumer, seeing the acquire value can unblock younger loads; an implementation may execute them earlier only if it retains enough state to validate and replay them before retirement.
+
+Now inject an invalidation for `data` after the consumer speculatively reads it but before the acquire is resolved. A conservative core delays the data load. An aggressive core marks the completed load as exposed to the invalidation and, if the acquire later establishes an ordering edge that makes the old observation illegal, kills the dependent instruction slice and replays from the load. The repair path must clear destination readiness, cancel or generation-tag dependent wakeups, preserve older retired state, and prevent the first value from reaching retirement or an external side effect.
+
+```mermaid
+sequenceDiagram
+    participant ROB as ROB / retirement
+    participant LSQ as LSQ + store buffer
+    participant L1 as coherent L1
+    participant H as home / ordering point
+    ROB->>LSQ: retire data=42 into store entry S0
+    LSQ->>L1: acquire write permission for data
+    ROB->>LSQ: release flag=1 with predecessor set {S0}
+    L1->>H: ownership/data transaction
+    H-->>LSQ: data store reaches required ordering point
+    LSQ->>LSQ: clear release predecessor bit
+    LSQ->>H: publish flag=1
+    H-->>LSQ: release ordered
+    LSQ-->>ROB: release may retire/complete per ISA contract
+```
+
+### Concrete trace: atomic increment under contention
+
+For `atomic_fetch_add(counter,1)`, ownership of the cache line is not enough unless one point serializes the read and write. A cache-based design obtains exclusive permission, locks or reserves the line against conflicting local operations, reads the old value, computes and installs the new value, marks the atomic's serialization point, then releases the response. A home-node atomic instead performs the operation at the directory/memory-side engine, trading requester hops for less line movement.
+
+Retry needs identity. A coherence retry or link retransmission may repeat transport, but it must not apply the increment twice. Carry a requester/transaction identifier until the response is durably matched; at the serialization engine, retain enough active or recently completed identity state to distinguish retry from new work according to the protocol. Cancellation after serialization cannot pretend the write never happened: it may suppress a requester result only under a defined fault contract, while global memory still contains the new value.
+
+The PPA and losing cases follow from the state. A wider store buffer hides longer misses but expands associative forwarding and age selection; more speculative loads increase validation bits, replay bandwidth, and wasted work; a universal full drain for every fence is simple but destroys performance; a fine-grained obligation matrix saves cycles but costs comparisons and proof complexity. Report store-buffer occupancy/full time, forwarded bytes, unknown-address stalls, violation/replay causes, fence wait broken down by obligation, atomic ownership/serialization/queue time, and invalidations that intersect speculative loads. Verify with ISA-generated litmus outcomes and microarchitectural assertions together: litmus tests prove only allowed observations, while assertions prove killed work and retries cannot leak extra architectural events.
 
 ## 1. Events and relations
 

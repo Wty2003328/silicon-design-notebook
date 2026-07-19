@@ -152,6 +152,87 @@ System-wide coherence improves programmability but makes remote latency, directo
 
 Coherence deadlock proof must include adapter queues and link VCs. A chiplet reset must not discard dirty owned data or outstanding acknowledgements silently.
 
+### 6.1 Follow one coherent read across the boundary—and recover without completing it twice
+
+Take a CPU on compute chiplet A that loads cache line `X`. `X` is absent locally, and the address-to-home map assigns its coherence home and attached memory to I/O/memory chiplet B. This one load crosses four different contracts: CPU/cache, coherence protocol, die-to-die transport, and physical link. Keeping their state and completion meanings separate is the key to a correct adapter.
+
+**1. Admit the miss before transmitting it.** The local cache allocates a miss-status entry and requester transaction tag `T37`. That entry records at least `{line X, requesting core/load, requested permission, returned-beat mask, error state}`. The coherence requester creates a `ReadShared(X, requester=A, txn=T37)` message. If the miss table, request queue, or remote-link credits are exhausted, admission backpressures the cache; it must not emit a request it cannot later match.
+
+**2. Convert protocol identity into transport identity.** Chiplet A's protocol adapter maps the coherence request class to a request virtual channel (VC), adds destination/home and ordering attributes, and packetizes it. The link layer then assigns link sequence number `S418`, consumes request-VC credit, calculates a cyclic redundancy check (CRC), and retains an exact copy in a **retry buffer**. `T37` survives end to end so the coherence response finds the cache miss. `S418` exists only between the two adjacent link adapters so a corrupted flit can be replayed. Confusing these tags leads either to duplicate cache transactions or to a retry buffer that can never retire.
+
+**3. Receive or replay at link granularity.** Chiplet B checks framing and CRC before exposing the request to its coherence engine. If the check fails, B does not create a home transaction; it requests replay of `S418`. A resends the retained bytes, not a newly constructed coherence request. If the check passes, B accepts `S418` once, suppresses any duplicate sequence, advances its receive sequence, and acknowledges it. A may then release retry-buffer entry `S418`. Separately, B returns flow-control credit when the receive-buffer slot is actually reusable. An acknowledgment retires replay state; a credit grants future storage. Combining them is possible in an encoding, but their logical invariants remain different.
+
+**4. Execute coherence at the remote home.** The B-side protocol adapter reconstructs `ReadShared(X,T37)` and allocates a home transaction entry. The directory lookup determines whether memory is authoritative or another cache owns modified data. If memory is current, the home reads it. If an owner holds dirty data, the home sends a snoop, waits for owner data and required acknowledgments, updates directory sharer/owner state, and only then forms the permitted data response. Link receipt of the request was therefore *not* architectural completion; coherence can still be waiting hundreds of cycles after `S418` was acknowledged.
+
+**5. Return data under an independent progress path.** The response/data message carries `{requester=A, txn=T37, line X, permission/state, beat number, error/poison}` on response/data VCs. B's transmit adapter repeats the credit, sequence, CRC, and retry procedure in the reverse direction. Independent request and response credit pools are a liveness feature: a flood of new reads must not consume the storage needed by the data that releases their miss entries.
+
+**6. Complete exactly once at the requester.** A verifies and accepts each return flit, reconstructs the coherence data response, and uses `T37` to update the original miss entry. Only after all required data beats and coherence conditions arrive may the cache install the line in the granted state, wake the CPU load, and free `T37`. A duplicate link flit is suppressed by link sequence state; a duplicate protocol completion is rejected because `T37` is no longer live. These are complementary defenses at different layers.
+
+```mermaid
+sequenceDiagram
+    participant CPU as "CPU/cache A"
+    participant AA as "coherence + D2D adapter A"
+    participant AB as "D2D + coherence adapter B"
+    participant H as "home/directory B"
+    participant M as "memory or dirty owner"
+    CPU->>AA: "miss X; allocate T37; ReadShared(X,T37)"
+    Note over AA: "request VC credit--; assign S418; save retry copy; CRC"
+    AA->>AB: "flit S418 containing txn T37"
+    alt "CRC/framing error"
+        AB-->>AA: "NAK/replay from S418; no coherence request created"
+        AA->>AB: "replay identical S418"
+    end
+    AB-->>AA: "link ACK S418; credit when receive slot frees"
+    AB->>H: "deliver ReadShared(X,T37) exactly once"
+    H->>M: "directory lookup; memory read or snoop dirty owner"
+    M-->>H: "data + required ownership response"
+    H-->>AB: "Data(X,T37,state,beats)"
+    Note over AB: "response/data VC credit--; new link sequence + retry copy"
+    AB->>AA: "response flits with txn T37"
+    AA-->>AB: "link ACK/credits"
+    AA->>CPU: "match T37; install line; wake load; free T37"
+```
+
+The enabling state can be reviewed as a layered ledger:
+
+| Layer/state owner | Minimum live metadata | Freed when |
+|---|---|---|
+| cache requester/miss entry | line, requester, `T37`, permission, beat mask, error | coherence data/completion conditions satisfied |
+| source coherence adapter | opcode, home/destination, ordering class, protocol VN, `T37` | protocol handoff/response contract permits |
+| D2D link transmitter | link sequence `S418`, exact flit copy, CRC, retry/ack state, VC | peer acknowledges valid receipt |
+| D2D flow control | credits and in-flight accounting per VC | receiver declares buffer reusable |
+| remote home transaction | line lock/transient directory state, requester/`T37`, snoop/ack/data masks | directory transition commits and response launches |
+| destination reassembly | packet length/flit mask, poison/error, protocol class | complete message is delivered or aborted |
+
+**Transient corruption uses replay; link-state loss uses recovery.** A CRC error leaves both adapters in the same session with retry/receive sequence state intact, so link-local replay is invisible to coherence apart from latency. A link-down event, peer reset, or lost retry/credit state is different: the receiver may no longer know whether `S418` was accepted. Blindly replaying or resetting credits can create a duplicate request or overwrite a full buffer. Recovery must be an explicit distributed state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Serving
+    Serving --> LinkReplay: "CRC error; session state intact"
+    LinkReplay --> Serving: "replayed sequence acknowledged"
+    Serving --> Quiescing: "link down / timeout / peer reset"
+    Quiescing --> Training: "stop injection; snapshot or abort in-flight state"
+    Training --> Reconcile: "lanes train/repair; exchange capabilities and epoch"
+    Reconcile --> Serving: "same epoch and replay window safely reconciled"
+    Reconcile --> ProtocolRecovery: "peer epoch changed or transport state lost"
+    ProtocolRecovery --> Serving: "old transactions resolved; credits rebuilt; routes enabled"
+```
+
+During **quiescing**, stop new injection, mark the route unavailable, and retain retry/protocol tables. During **training**, repair or down-width lanes and re-establish electrical/link framing. During **reconciliation**, exchange a session epoch, accepted-sequence/replay-window state, and fresh credit baseline. Replay is safe only if both peers prove the same session and agree which sequences were accepted. If the peer epoch changed, raise a transport abort into the coherence layer: the requester/home tables must resolve each old transaction, roll back or finish transient directory state, and reissue only under a new transaction identity after the old one cannot complete. If an unreachable chiplet may own dirty data, recovery cannot invent a clean copy; policy must preserve the owner through reset, reach it over another route, poison/isolate the affected lines, or declare a fatal containment event.
+
+**PPA and losing cases.** Retry depth follows link bandwidth × acknowledgment round trip; credit storage follows bandwidth × credit round trip; home/requester outstanding depth follows coherence bandwidth × full remote latency. These are three related but non-interchangeable windows. Deeper windows sustain throughput and tolerate bursts, but cost SRAM, leakage, sequence comparators, timers, muxing, and reset retention. More protocol VCs isolate request/response/data progress but multiply buffers and arbitration. A narrower repaired link preserves availability at reduced bandwidth and longer serialization; continuing at full injection rate merely moves congestion into adapters. Fine-grained false sharing, ownership ping-pong, or remote atomics can be latency-bound despite a link that reaches peak streaming bandwidth, so “GB/s passed” is not a sufficient partition result.
+
+**Counters, fault injection, and assertions.** Measure protocol requests/completions by class, remote-home/dirty-owner cases, request-to-first-data and full completion tails, credits and retry-buffer high-water marks, credit/ack stalls separately, CRC/sequence errors, replays and replayed bytes, duplicate suppressions, lane repair/down-width time, link epochs, quiesce/retrain/reconcile latency, aborted/reissued transactions, and outstanding dirty ownership at faults. Assert:
+
+- credits never underflow/overflow and `free + occupied + in_flight` matches declared capacity;
+- an unacknowledged sequence retains an immutable retry copy, and an accepted sequence is delivered upward at most once;
+- link ACK cannot complete `T37`; only the coherence response may free the miss entry;
+- response/data traffic has a reachable, fairly served progress path independent of request pressure;
+- a session-epoch change prevents ambiguous old replay and forces explicit protocol resolution;
+- reset/link loss cannot silently discard a dirty owner, home transient, accepted request, or completion;
+- every admitted coherent read eventually completes, reports poison/error, or enters a declared containment state under the platform's fault assumptions.
+
 ## 7. CXL: coherent and memory semantics off package
 
 Compute Express Link (CXL) layers cache/memory protocols with PCIe-based discovery/I/O. Architecturally, devices can expose:

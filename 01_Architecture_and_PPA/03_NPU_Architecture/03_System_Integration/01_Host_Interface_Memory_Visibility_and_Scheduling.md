@@ -40,6 +40,115 @@ A command queue improves throughput by allowing several operations in flight, bu
 
 **Beginner checkpoint:** draw the ownership of descriptor, input buffer, output buffer, and completion record at every phase. Then specify fences, invalidation, timeout, cancellation, and fault replay. “The device is coherent” does not define the command protocol.
 
+### Carry command 42 from publication to visible completion
+
+Use one concrete command to derive the required blocks. Context 7 submits command 42 to compute an output tile from input virtual address `I`, weight virtual address `W`, and output virtual address `O`. The descriptor also contains shapes/strides, precision, dependencies, an address for the completion record, and an error policy. The queue is a ring in memory; the host owns entries before publication and the device owns them afterward.
+
+```mermaid
+sequenceDiagram
+    participant H as Host CPU
+    participant Q as Queue memory
+    participant CP as Command processor
+    participant T as IOMMU / IOTLB
+    participant E as DMA + compute engines
+    participant M as System memory
+    H->>M: write input and weight data
+    H->>Q: write descriptor 42 fields
+    H->>H: release barrier
+    H->>Q: publish producer tail
+    H->>CP: ring doorbell
+    CP->>Q: fetch descriptor 42
+    CP->>CP: validate, tag context 7 / epoch e
+    CP->>T: translate and authorize I, W, O
+    T-->>CP: translations + permissions
+    CP->>E: issue tagged DMA and compute work
+    E->>M: read I and W
+    E->>E: execute and retire arithmetic
+    E->>M: write O
+    M-->>E: visibility / completion response
+    E->>Q: write completion 42 = success
+    E->>H: interrupt or signal event
+    H->>H: acquire barrier
+    H->>M: read O
+```
+
+Every arrow implies state that the simple matrix engine did not have:
+
+1. **Prepare, then publish.** The host writes all descriptor fields and input data while it still owns the queue entry. A release barrier orders those stores before the producer-tail update and MMIO doorbell. Without the barrier, the device can legally observe the new tail and fetch an old or partially initialized descriptor. The doorbell is merely a notification; it is not the descriptor and does not repair memory ordering.
+2. **Fetch and validate.** The command processor snapshots the ring entry, checks its version, opcode, lengths, alignment, dependency IDs, and reserved bits, then attaches `(context=7, command=42, epoch=e)` to all derived work. An *epoch* is a generation number incremented when state is aborted or reused. It lets the device discard a late response from an older incarnation of command 42.
+3. **Translate and authorize.** Descriptor fetches and every generated access to `I`, `W`, `O`, or page/block metadata carry context 7's identity. The input-output memory management unit (IOMMU) translates the device-visible virtual address and checks read/write permission. An input range that crosses a page boundary requires both pages to be translated; validating only the base address is a security bug.
+4. **Reserve before issue.** The scheduler reserves command-table, DMA-tag, scratchpad, and engine resources needed to make progress. It then expands the descriptor into input DMA, compute, and output DMA operations joined by events. Reserving scratchpad and waiting indefinitely for a DMA tag while another command holds the tags and waits for scratchpad creates circular wait; admission rules or separate progress resources must exclude this state.
+5. **Execute, then drain.** “Matrix done” means arithmetic has stopped; it does not mean `O` is visible to the CPU. Output DMA can still be buffered in the NPU, network on chip, coherent home, or memory controller. The retirement record tracks outstanding writes and waits for the response required by the command's memory contract.
+6. **Complete, then observe.** Only after the output reaches that visibility point does the device write the completion record with release ordering and signal the interrupt/event. The host observes completion with acquire ordering before reading `O`. Interrupt delivery before the completion record is safe only if the driver knows to retry; publishing success before result visibility is never safe under this contract.
+
+The ownership transitions are explicit:
+
+| Object | Before publication | After doorbell | During execution | After successful completion |
+|---|---|---|---|---|
+| descriptor slot | host may write | device reads; host must not overwrite | device retains snapshot/tag | host may reclaim after consumer-head advance |
+| input/weight buffer | host initializes | host must obey sharing contract | device reads | reusable after defined read-complete event |
+| output buffer | allocated, not valid | device owns writes | host must not consume | host owns valid result after acquire |
+| completion record | host clears/allocates | device owns update | pending | host consumes terminal status |
+| internal command entry | free | allocated to context 7, command 42, epoch e | owns resources and response count | freed only after all late-response risk is closed |
+
+### Replay command 42 through a recoverable page fault
+
+Now let translation of the second input page miss because the page is not resident. A correct design does not simply retry the whole command or hang the device. It records enough state to suspend and replay the precise access:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Fetched: descriptor 42 validated
+    Fetched --> Running: resources reserved
+    Running --> FaultPending: IOMMU reports page-not-present
+    FaultPending --> PageRequest: enqueue context/address/access type
+    PageRequest --> ReplayReady: host maps page + invalidation acknowledged
+    ReplayReady --> Running: reissue saved access with same command epoch
+    Running --> Draining: arithmetic done / writes outstanding
+    Draining --> Success: output visible
+    FaultPending --> Aborting: permission fault or policy says no replay
+    PageRequest --> Aborting: timeout, cancellation, or context teardown
+    Aborting --> Error: cancel/drain responses, publish terminal record
+    Success --> [*]
+    Error --> [*]
+```
+
+Suppose DMA request `r17` faults while earlier request `r16` has completed and later requests have not issued. The fault record stores context 7, command 42, epoch `e`, virtual page, read/write type, descriptor position, and a replay token identifying `r17`. The scheduler marks command 42 suspended, releases resources that are safe to release, but retains or checkpoints any partial sums whose earlier inputs have already executed. Other contexts continue because fault and replay queues have per-context limits.
+
+Software makes the page resident, updates the page table, and requests translation-cache invalidation. The device must wait for invalidation completion before reissuing `r17`; otherwise a stale negative or old translation can refault or access the wrong page. The replayed response updates command 42 only if both its context and epoch still match. If the host canceled command 42 during the fault, reset increments the epoch; the late response is consumed and discarded rather than written into a newly allocated command entry.
+
+A permission fault follows a different branch. It is terminal because software must not turn an unauthorized write into a replay without a new trusted submission. The device stops new issue, cancels or drains outstanding operations according to the fabric contract, prevents partial output from being reported as success, writes an error record containing the offending address/access/engine, and signals the host. Whether partially written `O` is preserved for diagnostics or zeroed is an explicit ABI policy—not an accidental result of reset timing.
+
+### How integration features evolve from failures
+
+| Minimal behavior and observed failure | Added feature | Enabling state/control | Cost and losing case |
+|---|---|---|---|
+| host writes one MMIO register per operation; CPU overhead dominates | memory-resident command ring + doorbell | producer/consumer indices, phase/wrap bit, descriptor snapshot | queue SRAM/fetch traffic and malformed-descriptor surface; unnecessary for rare commands |
+| physical addresses expose/lock memory and prevent safe sharing | IOMMU and per-context identity | IOTLB, page walker, permission/context tags, invalidation protocol | area, walk latency, translation traffic; pinned contiguous buffers are simpler |
+| translation miss aborts expensive long work | page request and precise replay | fault queue, saved request, replay token, epoch, suspend state | more live state and denial-of-service risk; not useful when all buffers are pinned |
+| CPU waits or polls after every kernel | dependency events and asynchronous completion | timeline counters, wait queues, outstanding-write retirement | wrap/order/error cases; synchronous embedded systems may not benefit |
+| one long command blocks urgent work | tile safe points or spatial partitioning | progress marker, saved command/loop state, resource quotas | state-save latency, fragmentation and scheduler complexity |
+| reset lets late fabric responses corrupt reused entries | context/command epochs and drain protocol | generation tags on every request/response, quarantine before ID reuse | tag bits/comparators and longer recovery; still mandatory when requests can outlive reset |
+| one tenant monopolizes faults, DMA, or interrupts | quotas and reserved progress resources | per-context counters, arbitration, rate limits | reduced peak pooling efficiency and policy complexity |
+
+The general design rule is to add state only when it closes a named failure. Shared virtual addressing is not “better” in isolation: it wins when demand paging or pointer-rich sharing is valuable enough to pay for walkers, invalidations, replay, and fault isolation. Arbitrary-cycle preemption is not automatically superior to tile-boundary preemption: saving megabytes of partial sums can take longer than waiting for a short tile to finish.
+
+### Counters and assertions tied to the command trace
+
+End-to-end counters should let one reconstruct command 42 without guessing: host publish-to-fetch latency; descriptor validation cycles; scheduler wait by resource; IOTLB hits/misses and page-walk time; fault queue and replay latency; DMA bytes, requests, and outstanding depth; compute start/end; output drain/visibility latency; completion-write-to-interrupt latency; abort drain time; and epoch-dropped responses. Each record must carry the same context/command identity so host, firmware, NoC, and memory traces join correctly.
+
+The trace also yields precise invariants:
+
+- the device cannot fetch past the published producer tail, and consumes each queue phase exactly once;
+- a descriptor is immutable to the device after snapshot or is protected against host modification while owned;
+- every derived memory request carries the descriptor's context and permissions; range splitting cannot escape the validated extent;
+- compute cannot consume a DMA destination before the corresponding fill event, and output DMA cannot consume an unfinished tile;
+- success completion implies zero outstanding result writes at the required visibility scope;
+- a replay occurs only after translation invalidation acknowledgement and retains command/context/epoch identity;
+- an old-epoch response cannot modify scratchpad, completion memory, counters attributed to a new command, or a reused internal entry;
+- every accepted command reaches exactly one terminal completion—success, fault, cancellation, or reset error—under the documented environment assumptions.
+
+Verification should inject delay and reordering at every arrow in the sequence, then repeat with page faults, queue wrap, cancellation, reset, duplicate interrupts, and late responses. A no-stall success test proves the arithmetic path, but almost none of the integration architecture.
+
 ## 1. Submission model
 
 Typical path:

@@ -26,6 +26,43 @@ This page derives that machine from its purpose. We start from *why overlap rais
 
 The deep dives — dynamic scheduling, the ROB (reorder buffer) and LSQ (load-store queue), TAGE (TAgged GEometric-history-length predictor) prediction, cache and TLB (translation lookaside buffer) internals — live on the sibling pages this one hands off to. Here we build the foundation they relax.
 
+### 0.1 The evolution path: every feature repairs a specific failure
+
+CPU features are easiest to remember as a sequence of failed machines. Start with a machine that completes one instruction before beginning the next. It is simple because only one instruction owns the datapath, but most hardware is idle most of the time. Pipelining fixes that utilization problem by overlapping instructions; the overlap then creates hazards that did not exist before. Each later feature is therefore both an optimization **and a new correctness obligation**:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart LR
+    A["One instruction at a time\ncorrect, long cycle, low utilization"]
+    B["Pipeline\nstage registers + valid bits"]
+    C["Forwarding + interlock\ncomparators, operand muxes, stall control"]
+    D["Branch prediction\nBTB/history state + checkpoints + redirect"]
+    E["Superscalar issue\nmultiple lanes and port arbitration"]
+    F["Out-of-order execution\nrename + IQ + ROB + recovery"]
+    G["Nonblocking memory\nLSQ + MSHRs + replay"]
+    H["Multicore shared memory\ncoherence + consistency ordering"]
+
+    A -->|"idle units; one long critical path"| B
+    B -->|"RAW, control, and resource hazards"| C
+    C -->|"next PC still arrives too late"| D
+    D -->|"scalar throughput ceiling"| E
+    E -->|"one slow older op blocks ready work"| F
+    F -->|"cache latency exceeds window tolerance"| G
+    G -->|"private cached copies can disagree"| H
+```
+
+Read every arrow with the same seven questions:
+
+1. **Baseline:** what is the smallest correct machine before the arrow?
+2. **Failure:** what event makes it slow or wrong?
+3. **Feature:** what mechanism is added?
+4. **Enabling state:** what must be remembered per instruction, register, branch, miss, or cache line?
+5. **Control/data path:** what comparisons, arbitration, muxes, broadcasts, or recovery signals use that state?
+6. **Effect and cost:** which cycles disappear, and which area, energy, latency, or new failure mode appears?
+7. **Evidence:** which counter and which assertion would prove the mechanism works?
+
+For example, a pipeline alone removes the long-cycle bottleneck but creates read-after-write (RAW) hazards. Forwarding removes most RAW stalls by adding destination-tag comparators and ALU-input muxes; its losing case is a load whose data physically arrives too late, so an interlock must still insert one bubble. The evidence is not merely higher instructions per cycle (IPC): it is a fall in `raw_stall_cycles`, a nonzero but explainable `load_use_stalls`, and an assertion that a selected bypass source is the youngest older matching producer. The rest of the page follows this construction rather than treating the blocks as independent vocabulary.
+
 ---
 
 ## 1. Pipelining: why overlap buys throughput, and how deep to go
@@ -85,6 +122,41 @@ Because up to $N$ instructions now coexist, two obligations follow directly and 
 
 1. **State per in-flight instruction.** Each stage must latch everything later stages will need — decoded controls, operands, the destination register, the PC. That is the *entire* reason pipeline registers exist; they hold the context that used to live implicitly in a single instruction's lifetime.
 2. **Hazards.** With five instructions in flight, a later one can reach a stage needing a result an earlier one has not produced (data), the fetch stage must pick a next PC before an in-flight branch resolves (control), or two instructions want one resource in one cycle (structural). §2 derives all three from overlap and prices them.
+
+The following is the minimal **implementation structure**, not just the five stage names. The wide arrows carry instruction data and decoded control. The dashed arrows are the control paths that make overlap safe.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 58, "htmlLabels": false}}}%%
+flowchart LR
+    PC["PC register"] --> IF["IF: instruction memory"]
+    IF --> IFID["IF/ID register\nPC, instruction, valid"]
+    IFID --> ID["ID: decode + register read"]
+    ID --> IDEX["ID/EX register\noperands, source/destination IDs, control, valid"]
+    IDEX --> MUX["forwarding muxes"]
+    MUX --> EX["EX: ALU / branch / address"]
+    EX --> EXMEM["EX/MEM register\nresult, store data, destination, control, valid"]
+    EXMEM --> MEM["MEM: data memory"]
+    MEM --> MEMWB["MEM/WB register\nresult, destination, write-enable, valid"]
+    MEMWB --> WB["WB: register-file write"]
+    WB --> ID
+
+    IFID -.->|"source IDs"| HAZ["hazard/interlock control"]
+    IDEX -.->|"load destination + valid"| HAZ
+    HAZ -.->|"hold PC and IF/ID; inject invalid ID/EX"| PC
+    EXMEM -.->|"destination + result"| FWD["forward compare + priority"]
+    MEMWB -.->|"destination + result"| FWD
+    IDEX -.->|"source IDs"| FWD
+    FWD -.->|"mux select"| MUX
+    EX -.->|"branch redirect; kill younger valid bits"| PC
+```
+
+A pipeline register must carry **data, control, identity, and validity** together. Data without its destination identity cannot be forwarded; a destination without `RegWrite` could create a false match; stale control from a flushed instruction could write memory. A `valid` bit turns a bubble into an ordinary pipeline entry whose side-effect enables are forced off. That gives a simple control priority at each clock edge:
+
+1. **reset or exception/mispredict recovery:** redirect the PC and clear the valid bits of all younger entries;
+2. **interlock stall:** hold the PC and IF/ID register, but write an invalid bubble into ID/EX so the older instruction continues;
+3. **normal advance:** capture each stage's output into the next register.
+
+This priority matters. If a branch redirects in the same cycle that a younger load-use hazard asks to stall, honoring the stall first would preserve wrong-path work and potentially suppress the redirect. A useful control assertion is therefore: *after a redirect, no entry younger than the redirecting instruction may remain valid on the next cycle*. This is the first appearance of the `valid/kill/age` discipline that the out-of-order ROB later generalizes to hundreds of entries.
 
 ### 1.3 How deep should the pipe be? The frequency-versus-depth trade-off
 
@@ -192,6 +264,41 @@ That is the whole idea. The signal-level realization (one comparator per source 
 *Worked number — what forwarding buys.* Suppose 40% of instructions consume the immediately-preceding result. Without forwarding, an ALU→ALU RAW waits until the producer reaches WB — 2 bubbles — so the data-hazard tax is $0.40 \times 2 = 0.80$ CPI, nearly doubling a base-1 CPI. Forwarding zeroes every ALU-producer case; only the subset whose producer is a *load* survives, at 1 bubble each. With loads ≈ 25% of those producers, the residue is $0.40 \times 0.25 \times 1 = 0.10$ CPI — exactly the $f_{\text{load-dep}}$ of §2. Forwarding turns an 0.80-CPI tax into 0.10, an **8× cut**, and what remains is precisely the causality-limited load-use case the compiler must schedule around.
 
 **Why this machinery does not survive into wide out-of-order cores.** The explicit bypass network is an all-to-all set of paths from every producing stage to every consuming input. Its cost scales as roughly $O(\text{depth} \times W^{2})$ in a $W$-wide machine — every one of $W$ consumers this cycle may need a value from any of the in-flight producers — so wires, muxes, and the timing pressure on the ALU input all explode with width and depth. Beyond a few stages and a couple of lanes it stops being tractable as fixed wiring. The out-of-order core's answer is to replace *all* explicit bypass paths with **one broadcast**: a completing instruction drives its result tag onto a common data bus that every waiting consumer snoops, waking dependents regardless of pipeline distance. That single move — turning a wiring problem into a broadcast — is developed in [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) §4.
+
+### 3.1 A complete forwarding/interlock trace
+
+Trace four instructions through the five-stage machine:
+
+```text
+I0: ADD x5, x1, x2      # produces x5 at end of EX
+I1: SUB x6, x5, x3      # consumes x5 in the next cycle
+I2: LW  x7, 0(x6)       # address consumes x6
+I3: ADD x8, x7, x4      # consumes load data too early
+```
+
+| Cycle | I0 | I1 | I2 | I3 | What the control hardware does |
+|---:|---|---|---|---|---|
+| 1 | IF | — | — | — | fetch I0 |
+| 2 | ID | IF | — | — | read I0 sources |
+| 3 | EX | ID | IF | — | I0 computes `x5` |
+| 4 | MEM | EX | ID | IF | EX/MEM→EX forwards I0's result to I1 |
+| 5 | WB | MEM | EX | ID | EX/MEM→EX forwards I1's `x6` to I2's address generator; detector sees `I2.MemRead && I2.rd == I3.rs1` |
+| 6 | — | WB | MEM | **ID held** | hold PC+IF/ID; inject an invalid EX bubble; load data appears only at the end of this cycle |
+| 7 | — | — | WB | EX | MEM/WB→EX forwards `x7` to I3 |
+| 8 | — | — | — | MEM | normal advance |
+| 9 | — | — | — | WB | architectural result appears |
+
+This trace separates three concepts that are often blurred together:
+
+- **Detection** compares source and destination identities and decides whether an operand is unavailable.
+- **Interlocking** controls time: hold the consumer and insert a bubble when no legal source exists yet.
+- **Forwarding** controls space: select the newest legal value location instead of the stale register-file copy.
+
+The ALU chains `I0→I1→I2` issue back-to-back, so forwarding removes four would-be stall cycles in this small trace. `I2→I3` still costs one cycle because the load data does not exist at I3's original EX boundary. More forwarding ports cannot fix that causality failure; an earlier data-cache return, load-value speculation, or compiler scheduling is required.
+
+**What can lose.** Every added bypass source adds a tag comparator, a wider priority encoder, and another ALU-input mux level. The mux can lengthen the EX critical path enough that a zero-bubble dependency lowers clock frequency. A high-frequency design may deliberately pipeline or prune rare bypasses and accept a bubble instead. Measure both sides: `forward_exmem_hits`, `forward_memwb_hits`, `load_use_stalls`, and cycles lost to data hazards, together with post-layout ALU-input slack and bypass switching activity.
+
+**What must be verified.** For each ALU operand, if one or more older valid pipeline entries will write the requested nonzero register, the selected operand must equal the result of the **youngest** such entry; if the selected producer is a load whose value is not ready, the consumer must not advance. Killed entries must never match, and register zero in an ISA such as RISC-V must never be forwarded as a writable destination. Those properties verify the causal rule directly; end-of-program register comparisons alone can miss a rare priority or simultaneous-flush corner.
 
 ---
 

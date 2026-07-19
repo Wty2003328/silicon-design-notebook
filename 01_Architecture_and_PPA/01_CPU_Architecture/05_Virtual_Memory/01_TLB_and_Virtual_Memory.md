@@ -24,6 +24,33 @@ The **Translation Lookaside Buffer (TLB)** is the structure that makes translati
 
 We derive each structure from the problem it solves rather than tabulating its fields: what a TLB entry must hold (from its three jobs), why the hierarchy splits into a small fast level and a large slow one, why ASIDs and the global bit exist (a tag that buys out a flush), why the walk needs its own cache, why VIPT is the only way to hide translation latency behind the cache, and why superpages trade reach against fragmentation. By the end you should be able to size a TLB from its reach, prove the VIPT (virtually-indexed, physically-tagged) capacity ceiling, and explain why a virtualized page walk can cost 24 memory accesses — not recite bit-field widths.
 
+### 0.1 The construction path: cache the answer, cache the walk, then control staleness
+
+Address translation evolves from a correct but unusably serial baseline:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
+flowchart LR
+    A["Flat physical addressing\nfast hardware; no per-process isolation"]
+    B["Page table lookup per access\nisolation/relocation; serial memory reads"]
+    C["L1 TLB\none-cycle cached translation"]
+    D["L2 shared TLB\nmore reach off the critical hit path"]
+    E["Hardware page walker + PWC\nbackground walk; cached interior pointers"]
+    F["VIPT L1 cache\ntranslate and index cache in parallel"]
+    G["ASID + targeted shootdown\navoid global flush; revoke stale mappings"]
+    H["Superpages / nested TLBs\nexpand reach and shorten deep/nested walks"]
+
+    A -->|"no protection or sparse virtual address space"| B
+    B -->|"walk before every data access"| C
+    C -->|"small one-cycle array lacks reach"| D
+    D -->|"residual miss is a dependent walk"| E
+    E -->|"TLB then cache remains serial on a hit"| F
+    F -->|"cached translations outlive page-table edits"| G
+    G -->|"large/virtualized footprints still miss"| H
+```
+
+Each feature adds a different proof obligation. The TLB must match virtual page number (VPN), address-space identifier (ASID), page size, and validity before using a physical page number (PPN). The walker must check every page-table entry (PTE), accumulate permissions, update accessed/dirty state safely, and return only to the live request that launched it. Virtually indexed, physically tagged (VIPT) access may read candidate cache ways early, but cannot release data until the physical tag and permissions match. Shootdown must establish that no processor can use the old mapping before the operating system reuses the physical frame. Translation speed and translation correctness are therefore the same pipeline viewed from fast path and revocation path.
+
 ---
 
 ## 1. Translation is a memory access before every memory access
@@ -219,6 +246,59 @@ N_{nested}=(D_g+1)D_h+D_g=(D_g+1)(D_h+1)-1,
 $$
 
 the two forms identical since $(D_g+1)(D_h+1)-1=(D_g+1)D_h+(D_g+1)-1=(D_g+1)D_h+D_g$. Each dimension *multiplies* the other — there is no adding your way out. For two 4-level trees this is $(4{+}1)(4{+}1)-1 = 5\times5-1 = \mathbf{24}$ dependent memory accesses for a single translation — an order of magnitude worse than a native miss. This is why virtualization historically carried a heavy TLB-miss tax, why server cores invest in **nested TLBs and large page-walk caches** to short-circuit the 2-D walk, and why hypervisors lean on superpages (§7) to enlarge reach. The same reasoning covers *remote* page tables: on a NUMA or CXL-attached system the PTEs may live across an interconnect, adding link latency to each dependent read, so the OS co-locates page-table pages with the data they map — again, keep the dependent chain short.
+
+### 5.6 One load through hit, walk, fault, and later shootdown
+
+Follow load `L` from address generation using the worked virtual address `0x80A102A0`, address-space identifier `ASID=7`, and access type “user read.” The first lookup is the level-one data translation lookaside buffer (**L1 DTLB**); the larger second level is the shared/secondary TLB (**STLB**). The load-store unit retains `L`'s age, destination physical register, byte mask, and recovery epoch while translation is unresolved.
+
+```mermaid
+sequenceDiagram
+    participant L as Load / LSU
+    participant T1 as L1 DTLB
+    participant T2 as L2 STLB
+    participant W as Page walker + PWC
+    participant C as Cache / memory for PTEs
+    participant O as OS / shootdown coordinator
+
+    L->>T1: lookup(ASID=7, VPN, user-read)
+    alt L1 DTLB hit
+        T1-->>L: PPN + R/W/X/U permissions; continue VIPT tag check
+    else L1 miss
+        T1->>T2: lookup(ASID=7, VPN, page-size candidates)
+        alt STLB hit
+            T2-->>T1: refill L1 entry
+            T1-->>L: translated PA + permission result
+        else STLB miss
+            T2->>W: allocate walk slot with VPN, ASID, access type, epoch
+            W->>C: read upper PTE (or hit PWC)
+            C-->>W: pointer PTE
+            W->>C: read next PTE(s), strictly dependent
+            C-->>W: leaf or invalid/reserved PTE
+            alt valid permitted leaf
+                W-->>T2: fill translation if walk generation is live
+                T2-->>T1: refill L1
+                T1-->>L: PA; resume cache access
+            else invalid, misaligned, or permission failure
+                W-->>L: record precise page-fault cause; do not fill TLB
+                L-->>O: trap only when L reaches architectural fault boundary
+            end
+        end
+    end
+    O->>O: later edit this PTE; publish new mapping/permission
+    O->>T1: invalidate VPN+ASID locally/remotely; advance generation
+    T1-->>O: acknowledgement after old entry and matching walk are unusable
+    O->>O: only now reuse old frame or expose weaker permission
+```
+
+**The hit path.** The key is not VPN alone: `(VPN, ASID, page size/global)` must match, `valid` must be set, and cached permissions must authorize this access in the current privilege mode. The PPN is concatenated with the unchanged page offset. In a VIPT L1, virtual offset bits have already selected and read the candidate set, but data release waits for this physical tag and permission result. A permission failure on a TLB hit is a fault, not a TLB miss.
+
+**The miss path.** The secondary TLB (STLB) is tried before allocating a finite walker slot. A walk slot is the translation analogue of an MSHR: it carries `(VPN, ASID, access type/privilege, current level, current table PPN, accumulated permissions, destination waiters, epoch/generation)`. Misses to the same translation can merge if their access-type checks remain distinguishable. Each returned pointer PTE determines the next request address, so one walk cannot parallelize its levels, although multiple independent walks can occupy different slots and overlap.
+
+**The fault path.** Invalid/reserved encodings, a write to a read-only leaf, user access to a supervisor-only leaf, execute denial, a misaligned superpage, or a failed accessed/dirty update terminates the walk without installing a usable entry. The load records fault cause and virtual address in its retirement record; younger execution may be squashed, but the trap becomes architectural only at the precise instruction boundary. A speculative fault must disappear if an older branch later kills the load.
+
+**The revocation path.** Suppose the operating system changes this VPN from PPN `Pold` to `Pnew` or removes write permission. Updating memory is insufficient because private TLBs and an in-flight walk may still recreate `Pold`. The initiator publishes the PTE update with required memory ordering, sends targeted invalidations to processors that may cache the `(ASID,VPN)`, advances or records a translation generation, and waits for acknowledgements. A target acknowledgement means both its old TLB entry **and any older-generation walk refill** can no longer authorize a new access. Only then may `Pold` be reassigned. This closes the subtle invalidate-versus-walk race in which a pre-shootdown walk returns after the invalidation and resurrects the stale mapping.
+
+**Timing, costs, and evidence.** Report L1-hit, STLB-hit, and walk latency separately; PWC hits by level; concurrent-walk occupancy; walker-slot-full stalls; merged translation misses; permission-fault class; A/D update traffic; and shootdown target count, acknowledgement latency, and cycles stalled. Track walk generations discarded after invalidation. Assertions should prove that every translated access has a matching live `(ASID,VPN,page-size)` entry or a fully validated current-generation walk result; no denied access reaches the data cache; a faulting walk installs no entry; and after shootdown completion no core or delayed walker can produce `Pold`. Directed tests must collide shootdown with an STLB hit, each walk level, A/D-bit update, superpage fill, context switch, and ASID reuse.
 
 ---
 

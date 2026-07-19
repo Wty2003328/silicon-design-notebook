@@ -213,6 +213,54 @@ flowchart LR
     classDef trav fill:#bbf7d0,stroke:#15803d,color:#000
 ```
 
+### 5.1 Follow one request packet: transaction state becomes hop-local state
+
+Consider a CPU cache miss expressed as a CHI read request from tile `(0,0)` to a home node at `(2,1)`. The protocol transaction already owns a transaction ID and an outstanding entry at the requester. The NoC must transport it without interpreting cache coherence. This is the precise handoff:
+
+1. **The source NIU accepts only when it can remember the transaction.** The network interface unit (NIU) decodes the protocol message, maps `REQ` to its virtual network, looks up the destination from the home/address map, allocates a packet descriptor, and copies the protocol transaction ID into the header. The descriptor records `{source, destination, VN, packet length, protocol opcode, transaction ID, ordering class}`. If no descriptor/flit-buffer entry exists, it lowers protocol `READY`; accepting and then forgetting is illegal.
+2. **Packetization turns the message into a train.** The NIU constructs a head flit carrying route and identity, zero or more body flits carrying payload, and a tail indication. If one flit is wide enough, head and tail may be the same flit. The routing header is transport metadata; the transaction ID remains end-to-end protocol metadata. They have different lifetimes.
+3. **Injection consumes one downstream credit.** The local router advertises free entries separately for each input VC. The NIU may send the head only if its selected VC's credit counter is nonzero. On send, the NIU decrements that counter immediately. It does *not* wait for the physical receiver to fill before accounting, because the flit is already in flight and has consumed the promise of one slot.
+4. **Each router repeats allocate, transfer, release.** At router R0 the head sits in an input VC. Route compute selects East; VC allocation reserves an East output VC whose class is legal for `REQ`; switch allocation grants a crossbar cycle only when the next router has credit. The transfer decrements R0's credit count for R1. When R0 later pops the input slot, it returns one credit to the upstream NIU. R1 and R2 repeat the same local rule—there is no package-wide credit counter.
+5. **Body/tail inherit, then release.** Body flits reuse the head's selected output and downstream VC, but arbitrate for the crossbar each cycle. The tail flit causes each router to release that packet's VC reservation after departure. Releasing on the head would permit interleaving two packets in one VC; never releasing on the tail would leak the VC and eventually stop the network.
+6. **The destination NIU reverses the abstraction.** It checks framing, consumes the tail, reconstructs one CHI request, and presents it to the home agent under the protocol handshake. Its local flit slot is freed—and the last hop's credit returned—only according to the receive-buffer contract. The home uses the end-to-end transaction ID to form the eventual response; the NoC route/VC state is already gone.
+
+```mermaid
+sequenceDiagram
+    participant EP as "CPU protocol endpoint"
+    participant SN as "source NIU"
+    participant R0 as "router R0"
+    participant R1 as "router R1"
+    participant DN as "destination NIU"
+    participant HN as "home node"
+    EP->>SN: "Read(addr, txn=37); allocate outstanding entry"
+    Note over SN: "map address→HN; choose REQ VN/VC; make head/body/tail"
+    SN->>R0: "head(txn=37), consume R0 credit"
+    R0-->>SN: "credit after R0 input slot drains"
+    R0->>R1: "head, consume R1 credit"
+    R1-->>R0: "credit after R1 input slot drains"
+    SN->>R0: "body/tail under remaining credits"
+    R0->>R1: "body/tail; tail releases output VC"
+    R1->>DN: "packet; consume destination credit"
+    DN-->>R1: "credit after receive slot is released"
+    DN->>HN: "reassembled Read(addr, txn=37)"
+    HN-->>EP: "response later returns on response/data VN"
+```
+
+At one router, the state that enables the trace is finite and inspectable:
+
+| State | Lifetime | Why it exists |
+|---|---|---|
+| input FIFO read/write pointers and occupancy, per VC | each buffered flit | lossless storage and backpressure |
+| head route result and output-VC reservation | head arrival → tail departure | body/tail need not recompute or interleave |
+| downstream credit counter, per output VC | persistent | proves a landing slot exists before send |
+| VC allocator owner and switch-arbiter pointer/age | allocation/grant history | exclusivity plus fairness |
+| packet/VN/poison/error metadata | packet lifetime | preserve protocol class and fault status |
+| performance timestamps, optional | packet lifetime | decompose injection, queue, hop, and ejection delay |
+
+**The trace exposes three common losing cases.** A VC depth smaller than the credit round trip creates bubbles even on an empty path. A long packet can retain an output VC while its head is blocked downstream, spreading congestion backward; more VCs relieve head-of-line blocking but do not increase raw link bandwidth. An NIU that shares request and mandatory-response buffers can form protocol deadlock even if every router route is legal (§4). Buffer depth and VC count therefore buy utilization/isolation at the direct PPA cost $ports\times VCs\times depth\times flit\_width$; wider flits reduce serialization but widen every buffer word, crossbar, link, and allocator datapath.
+
+**Instrument and assert the lifecycle, not merely link activity.** Count NIU admission stalls, per-VC credit stalls, route/VC/switch-allocation stalls, buffer high-water marks, head-to-tail residence, per-hop queueing, returned-credit latency, tail releases, and end-to-end flit hops. Assert `credit + occupied + in_flight = capacity` under the implementation's accounting convention; no send at zero credit; no overwrite/underflow; each allocated output VC has one owner; body/tail follow the head's reservation; every tail releases exactly once; and every admitted packet is eventually ejected under stated downstream/fairness assumptions. A busy-link counter alone cannot distinguish useful saturation from a leaked VC circulating no progress.
+
 **Why allocation is the hard part — bipartite matching in one cycle.** VA and SA are the same abstract problem: *match a set of requesters to a set of ≤1-capacity resources, fairly, within a single cycle.* VA matches waiting head flits to free output VCs (the scarcer resource — and where the deadlock rules of §4, e.g. escape-VC eligibility, are enforced); SA matches input VCs that *both* hold a flit and have downstream credits to crossbar output ports (the throughput-critical stage, run every cycle). Optimal bipartite matching is too slow for one clock, so routers use a **separable allocator** — two back-to-back passes of cheap per-input then per-output arbiters. The catch is that a greedy two-pass allocator *leaves feasible matches unmade* (two inputs pick one output in pass 1; one is wasted even though a second output sat idle), so matching efficiency is only **~63 %** single-pass on random traffic. *That number is $1-1/e$, derived:* with each of $N$ inputs independently requesting a uniformly-random output, a given output receives **no** request with probability $(1-\tfrac1N)^N \to e^{-1}\approx0.368$, so a fraction $1-e^{-1}\approx0.632$ of outputs are matched in one pass and the rest of the crossbar sits idle for that cycle. **iSLIP** recovers the gap by *iterating* request→grant→accept a few times per cycle, climbing toward **~100 %** at 3–4 iterations — and the reason it converges is that its round-robin grant pointers **desynchronize**: a pointer advances only *past a granted* input, so after the first iterations different outputs point at different inputs and stop colliding, filling the match in $O(\log N)$ steps. Since matching efficiency *is* delivered throughput ($\eta_{alloc}$ in §6), that gain shows up directly on the saturation curve. The concept to carry away: **the allocators, not the crossbar wires, are the router's throughput bottleneck and usually its critical path.**
 
 **Collapsing the pipeline.** A naive router is 4–5 stages per hop; production routers hide most of them off the critical path:

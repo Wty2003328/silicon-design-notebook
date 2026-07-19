@@ -37,6 +37,23 @@ flowchart LR
 
 Peak lane count describes only `X`. Sustained throughput is the minimum capacity along the whole chain.
 
+### 0.1 Why these structures appear in this order
+
+The operand path is another feature-evolution chain:
+
+```mermaid
+flowchart LR
+    A["many resident warps<br/>need zero-cost switching"] --> B["large register file"]
+    B -->|"enough true read ports are too large and power-hungry"| C["split storage into banks"]
+    C -->|"one instruction's operands can collide"| D["operand collectors + bank arbitration"]
+    D -->|"execution can finish out of order in time"| E["scoreboard + tagged writeback"]
+    E -->|"one load becomes many cache transactions"| F["pending-fragment state + replay"]
+    D -->|"frequent uniform values waste vector bandwidth"| G["broadcast / scalar RF / reuse cache"]
+    F -->|"matrix work needs much more data per instruction"| H["shared-memory staging + accumulator-local paths"]
+```
+
+Each step trades generality for feasible bandwidth. Banking replaces expensive physical ports with time-multiplexed service; collectors recover throughput by buffering around the resulting conflicts; specialized scalar, reuse, and matrix paths then avoid sending every operand through the general vector register file (VRF). A design that adds arithmetic lanes without evolving this path merely builds idle arithmetic.
+
 ## 1. Warp state and the scoreboard
 
 A **scoreboard** tracks whether an instruction's dependencies are safe. In a simple design, decoding a destination register marks it pending; writeback clears it. A later instruction reading that register is ineligible while the bit is set.
@@ -56,6 +73,33 @@ $$
 
 Keeping pipeline availability out of the persistent scoreboard can simplify state: the scheduler first finds dependency-ready warps, then arbitrates among them for current resources.
 
+### 1.1 Reconstructing a scoreboard entry and its lifecycle
+
+The minimum per-warp implementation needs a pending-writer indication for every architecturally visible register, plus dependency state for barriers and long-lived operations. A practical entry often separates:
+
+- **destination identity:** register number, width or segment mask, and warp/context generation;
+- **producer identity:** execution class or transaction tag, needed when several pipelines complete independently;
+- **completion state:** pending fragments or lane segments, exception/replay state, and a valid bit;
+- **non-register waits:** barrier generation, memory fence, asynchronous-operation group, and reconvergence state.
+
+The generation tag prevents an old result from clearing a new warp that reused the same physical slot. The lifecycle is:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Free
+    Free --> Pending: issue reserves destination and records producer tag
+    Pending --> Partial: one of several fragments returns
+    Partial --> Partial: another matching fragment returns
+    Pending --> Ready: single-result producer completes
+    Partial --> Ready: final required fragment returns
+    Ready --> Free: wake dependent instruction / retire bookkeeping
+    Pending --> Canceled: fault, kill, or context teardown
+    Partial --> Canceled: fault, kill, or context teardown
+    Canceled --> Free: matching late responses drained or discarded
+```
+
+For a simple arithmetic operation, `Pending → Ready` may take a fixed number of cycles. For a coalesced load, the same logical destination can traverse `Partial` many times because different cache sectors return separately. Clearing on the first response is a silent data-corruption bug; refusing all partial completion is correct but may delay consumers that only need an independently trackable subrange. That precision-versus-state trade-off is why scoreboards may track whole registers, register groups, or segments.
+
 ## 2. Why the GPU register file is difficult
 
 Each resident thread owns architectural registers. If an SM holds $T$ threads and each thread receives $R_t$ 32-bit registers, storage is
@@ -67,6 +111,25 @@ $$
 For 2,048 threads at 64 registers/thread, this is 512 KiB before error protection and peripheral logic. More important, one warp instruction may request two or three operands for 32 lanes at once. Building 64–96 independent reads in a conventional multiported memory is impractical.
 
 GPU RFs therefore use many banks and time/space multiplexing. Register mapping spreads lane/register combinations across banks. If several requests target the same bank in the same service slot, some must wait unless the hardware can broadcast one shared value.
+
+```mermaid
+flowchart LR
+    I["issued warp instruction<br/>src A, src B, src C"] --> EXP["expand logical sources into<br/>bank-service requests"]
+    EXP --> MAP["bank mapping<br/>function(register, lane segment)"]
+    MAP --> B0["bank 0"]
+    MAP --> B1["bank 1"]
+    MAP --> B2["bank 2"]
+    MAP --> BN["bank B-1"]
+    B0 --> ARB["one grant per available bank port"]
+    B1 --> ARB
+    B2 --> ARB
+    BN --> ARB
+    ARB --> C["collector entry<br/>operand-valid bitmap"]
+    C -->|"all required segments valid"| D["dispatch to target pipeline"]
+    C -->|"some requests lost arbitration"| MAP
+```
+
+“A bank conflict” therefore does not mean the instruction is incorrect or necessarily replayed from the beginning. It means two requests compete for a service opportunity that the physical bank cannot provide together. The arbiter grants one, retains the others as pending, and the collector remembers already returned segments. Exact bank mapping and service width are implementation-specific; the invariant is that every required active-lane segment arrives exactly once before dispatch.
 
 The register file creates three coupled limits:
 
@@ -103,6 +166,33 @@ N_{collector}\gtrsim \lambda_{issue}T_{collect},
 $$
 
 using Little's law, then add headroom for bank-conflict bursts.
+
+### 3.1 One instruction through a collector
+
+The control protocol can be reconstructed cycle by cycle:
+
+```mermaid
+sequenceDiagram
+    participant S as Scheduler
+    participant C as Free collector entry
+    participant A as Per-bank arbiters
+    participant R as RF banks
+    participant X as Execution pipeline
+    S->>C: allocate {warp, op, mask, sources, destination}
+    C->>A: present pending source-segment requests
+    A->>R: grant at most each bank's port capacity
+    R-->>C: return tagged operand segments
+    Note over C: set valid bits; keep ungranted requests pending
+    loop until every required segment is valid
+        C->>A: retry only pending requests
+        R-->>C: capture additional segments
+    end
+    C->>X: dispatch assembled operands + control
+    X-->>C: accept
+    Note over C: entry becomes free only after acceptance
+```
+
+Backpressure must be lossless at both boundaries. If no collector is free, the scheduler must not advance the warp PC or reserve a destination as though issue succeeded. If the target pipeline refuses a fully collected instruction, the collector must retain its operands and identity; rereading the RF wastes energy and can be wrong if the architectural source is overwritten after the original read under a different execution model.
 
 ## 4. Bank conflicts and broadcast
 
@@ -171,6 +261,23 @@ Replay may occur for a cache miss, translation miss, structural conflict, or fai
 
 This is a distributed transaction: scheduler, coalescer, cache, translation unit, and writeback path all hold pieces of its state. Transaction identity is as important in a GPU as in a CPU MSHR.
 
+```mermaid
+flowchart TB
+    L["warp load issues<br/>reserve destination"] --> C["coalescer creates sector requests<br/>pending mask = all sectors"]
+    C --> T["translation + cache lookup"]
+    T -->|"hit"| R["return sector + lane byte map"]
+    T -->|"miss / resource unavailable"| Q["MSHR or replay queue"]
+    Q --> T
+    R --> M["match warp, destination,<br/>generation, sector"]
+    M --> W["write returned lane fragments"]
+    W --> P{"pending mask empty?"}
+    P -->|"no"| T
+    P -->|"yes"| CLR["clear destination scoreboard<br/>make dependent instruction ready"]
+    M -->|"generation canceled or mismatched"| DROP["discard response without architectural write"]
+```
+
+The miss status holding register (MSHR) records an outstanding cache miss so later accesses can merge with it. It is not a substitute for warp-side state: the cache may know that a sector is outstanding while only the coalescer/replay record knows which lanes and destination bytes consume it. Verification must connect these identities across module boundaries and arbitrary response order.
+
 ## 8. Matrix and tensor operand delivery
 
 An MMA instruction consumes fragments rather than ordinary scalar operands. The visible instruction may represent many fused operations, but the microarchitecture still has to stage matrices into the format expected by the matrix pipeline.
@@ -220,6 +327,15 @@ Key correctness properties include:
 5. A replayed instruction completes exactly once.
 6. Barriers release only the threads or warps belonging to the same barrier phase.
 7. A canceled warp drops late cache, translation, and execution responses.
+
+For performance diagnosis, walk the path in order instead of attributing every bubble to “scoreboard”:
+
+1. If dependency-ready warps are scarce, determine whether register, memory-fragment, barrier, or asynchronous-token state holds them.
+2. If ready warps exist but scheduler issue is low, inspect execution-class compatibility and arbitration policy.
+3. If selected instructions exceed dispatched instructions, inspect collector allocation, RF bank grants, and dispatch acceptance.
+4. If collectors remain occupied for many cycles, histogram collection latency and separate bank conflicts from a blocked target pipeline.
+5. If writeback backs up, split conflicts by ALU, load return, and matrix/accumulator source; adding RF read banks cannot repair a write-port bottleneck.
+6. If lowering registers/thread helps, verify whether the gain came from another resident block, less bank pressure, or a changed compiler schedule—and check that spill traffic did not move the bottleneck to memory.
 
 ## 11. Worked examples
 

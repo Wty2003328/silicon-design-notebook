@@ -107,6 +107,44 @@ The escape path must have reserved/obtainable buffers and fair arbitration. If a
 
 Nonminimal routing (for example, Valiant-style intermediate routing) balances adversarial traffic at extra hops. It requires enough VC classes to prevent phase transitions from making channel cycles.
 
+### 5.1 Concrete failure: four legal turns close one permanent wait cycle
+
+“A cycle might exist” is too abstract to debug. Construct one in a 2×2 mesh whose routers are northwest (NW), northeast (NE), southeast (SE), and southwest (SW). Let the adaptive routing function permit every clockwise turn, and define four directed channel resources:
+
+- $c_E$: NW→NE; $c_S$: NE→SE; $c_W$: SE→SW; $c_N$: SW→NW.
+- Packet P0's body holds $c_E$ while its head at NE requests $c_S$.
+- P1 holds $c_S$ and requests $c_W$; P2 holds $c_W$ and requests $c_N$; P3 holds $c_N$ and requests $c_E$.
+
+```mermaid
+flowchart LR
+    CE["cE: NW→NE<br/>held by P0"] -->|"P0 requests"| CS["cS: NE→SE<br/>held by P1"]
+    CS -->|"P1 requests"| CW["cW: SE→SW<br/>held by P2"]
+    CW -->|"P2 requests"| CN["cN: SW→NW<br/>held by P3"]
+    CN -->|"P3 requests"| CE
+    CE -. "P0 can instead acquire<br/>empty escape VC eS" .-> ES["eS: escape VC<br/>dimension-ordered"]
+    ES --> EY["remaining escape channels<br/>strictly increasing rank"]
+```
+
+At the freeze point every requested output VC has zero available credit because another packet owns its buffer. No switch arbiter can grant a transfer, so no input slot drains; without a drained slot no credit returns; without a credit no head advances; without a head advance no tail releases a channel. Waiting longer and making the arbiter fair do nothing. This distinguishes **deadlock** from ordinary blocking: if P1 merely waited for a destination that was guaranteed to consume, an external event would release $c_S$; here every release event is produced only by another member of the same closed set.
+
+The router state that makes this diagnosis possible is not just flit data. For every input VC it needs `{occupancy, packet/owner ID, head/body/tail, route candidates, requested output, allocated output VC, protocol VN, escape-eligible/escape-committed, age}`; for every output VC it needs `{owner, credits, allocation state}`. A debug snapshot can therefore emit a literal wait-for edge `held_output_vc → requested_output_vc`. Joining these edges across routers reconstructs the cycle above.
+
+**Repair A — forbid enough turns to make rank increase.** With dimension-order XY routing, a packet traverses X and then Y and cannot return from Y to X. Assign every legal channel a monotonically increasing rank. At least one dependency needed by the clockwise cycle is now illegal, so this exact occupancy state is unreachable. The hardware is cheap: simple coordinate comparison and no adaptive congestion choice. The losing cases are nonuniform traffic and faults: all packets choose the same minimal path, and a failed link can destroy connectivity unless routing is recomputed under another acyclic rule.
+
+**Repair B — retain adaptive VCs but reserve an escape VC.** Keep the high-throughput adaptive VCs, including their cyclic dependency graph, and add an escape VC that follows an acyclic XY subnetwork. P0 at NE may request the *separate, empty* escape VC `eS`; after it wins and its tail drains $c_E$, P3 receives a credit, then P2, then P1. One transition breaks the four-way cycle. Once a packet enters escape it must not return to adaptive channels, or it could add a dependency edge back into the cycle. The implementation therefore needs an `escape_committed` bit in the head/VC state, escape-specific route compute, independent buffer/credit state, and arbitration that guarantees a continuously requesting packet eventually wins escape service.
+
+The repair is valid only if the escape resource is **reachable and obtainable**, not merely drawn in the block diagram. These losing cases invalidate the proof:
+
+- adaptive traffic is allowed to allocate and permanently occupy the reserved escape buffers;
+- the allocator continually favors adaptive requests, so escape eligibility never becomes an escape grant;
+- a fault disconnects the XY escape subnetwork but routing keeps using the old proof;
+- an endpoint refuses the response that would drain escape traffic;
+- route-version changes let old and new escape orders coexist and form a transient cycle.
+
+**PPA and performance trade.** One extra VC does not add link bandwidth; it adds buffer words, read/write pointers, credit counters, VC-allocation request/grant matrix entries, mux inputs, and clocked control. If each of five ports adds depth $D$ at flit width $F$, the raw storage increment is approximately $5DF$ bits per router before error bits and control. More adaptive VCs reduce head-of-line blocking and raise saturation, but allocator delay/energy and verification state grow roughly with the number of VC contenders. A single escape VC minimizes the correctness tax; multiple escape classes may be required when protocol VNs or topology phases have independent dependency orders.
+
+**Counters and assertions that close the proof in RTL.** Record cycles blocked by `{no credit, no output VC, lost switch arbitration, sink backpressure}`, adaptive-to-escape transitions, escape occupancy and maximum wait age, tail releases, and a watchdog's sampled wait-for chain. Assert that an escape-committed packet selects only legal next-rank escape channels; escape ranks strictly increase; adaptive traffic cannot consume reserved escape capacity; credits are conserved; a tail releases exactly its owned VC; and an escape requester receives service within a declared bound under sink-ready assumptions. Formal exploration on a 2×2 or 3×3 instance should cover a near-cycle, force one escape transition, and prove eventual drain. Random traffic that ran for a billion cycles without freezing is evidence of test duration, not a deadlock proof.
+
 ## 6. Protocol deadlock versus network deadlock
 
 Even an acyclic routing graph can deadlock at the protocol level:

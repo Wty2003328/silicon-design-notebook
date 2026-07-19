@@ -92,6 +92,89 @@ The three feedback loops carry all the interesting control:
 
 Everything downstream of rename is a snoop on the CDB; everything at commit is a publication of what the shadow computed. Hold those two facts and the datapath reads as one mechanism, not seven.
 
+### 1.2 The historical construction: relax one ordering constraint at a time
+
+The modern datapath is easier to reconstruct by watching simpler machines fail:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 44, "rankSpacing": 56, "htmlLabels": false}}}%%
+flowchart LR
+    A["In-order interlocked pipe\none stalled op blocks all younger ops"]
+    B["Scoreboard\ncentral ready/busy state; issue ready younger ops"]
+    C["Tomasulo reservation stations\ntags + distributed wakeup + value broadcast"]
+    D["ROB + in-order retirement\nprecise exceptions and recoverable speculation"]
+    E["Explicit RAT + PRF + free list\ncompact tags; scalable value storage"]
+    F["Modern clustered backend\ndistributed IQs, checkpoints, selective replay"]
+
+    A -->|"head-of-line blocking"| B
+    B -->|"WAR/WAW name stalls and centralized wiring"| C
+    C -->|"completion order leaks to architectural state"| D
+    D -->|"values duplicated in ROB/reservation stations"| E
+    E -->|"global wakeup and ports limit frequency"| F
+```
+
+A **scoreboard** is a table that records which functional units and registers are busy. It can let an independent younger instruction execute while an older one waits, but because architectural names are still the storage locations, it must stall on write-after-read (WAR) and write-after-write (WAW) hazards. Tomasulo's algorithm replaces those names inside the window with producer **tags** and places waiting operations in reservation stations near their execution units. A result broadcast matches tags and wakes consumers, removing the false name hazards. The original idea still allows results to reach visible state out of order; a reorder buffer (ROB) is the next feature required for precise exceptions and branch recovery. Modern cores then separate values into a physical register file (PRF), keep only compact tags in schedulers and the ROB, and partition the global structures to meet clock and power limits.
+
+Notice the repeated pattern: the feature that removes one serialization creates a new piece of state that must be recovered. Dynamic issue requires readiness state; renaming requires a map and free list; speculative execution requires a program-order ledger; early scheduling requires replay when predicted latency is wrong. A design is incomplete until both the fast path **and** the undo path are specified.
+
+### 1.3 Worked construction: five instructions through rename, issue, wakeup, and commit
+
+Consider this program fragment. `MUL` takes four cycles; `ADD` takes one:
+
+```text
+I0: MUL x5,  x1,  x2      # long producer
+I1: ADD x6,  x5,  x3      # true RAW dependence on I0
+I2: ADD x5,  x7,  x8      # reuses architectural x5: apparent WAW with I0
+I3: ADD x9,  x5,  x10     # must consume I2, not I0
+I4: ADD x11, x12, x13     # independent
+```
+
+Assume the committed map initially maps `x5→P5`, `x6→P6`, `x9→P9`, and `x11→P11`. Rename walks instructions in program order and updates the speculative register alias table (RAT) after each destination, so later instructions in the same group see earlier new mappings:
+
+| Instruction | Renamed sources | Fresh destination | Displaced tag saved in ROB | Consequence |
+|---|---|---|---|---|
+| I0 | `P1,P2` | `x5→P40` | `P5` | creates the value I1 needs |
+| I1 | `P40,P3` | `x6→P41` | `P6` | waits on P40 |
+| I2 | `P7,P8` | `x5→P42` | `P40` | WAW vanishes: I0 and I2 write different storage |
+| I3 | `P42,P10` | `x9→P43` | `P9` | correctly binds to I2's definition of x5 |
+| I4 | `P12,P13` | `x11→P44` | `P11` | immediately ready |
+
+```mermaid
+sequenceDiagram
+    participant RN as Rename / RAT / free list
+    participant IQ as Issue queues
+    participant EX as Execution units
+    participant CDB as Completion broadcast
+    participant ROB as ROB / commit
+
+    RN->>IQ: dispatch I0(P40), I1(wait P40), I2(P42), I3(wait P42), I4(P44)
+    RN->>ROB: allocate I0..I4 in program order; save new+displaced tags
+    IQ->>EX: issue ready I0, I2, and I4
+    EX->>CDB: I2 completes P42; I4 completes P44
+    CDB->>IQ: wake I3 on tag P42
+    CDB->>ROB: mark I2 and I4 done
+    IQ->>EX: issue I3 while older I0 is still running
+    EX->>CDB: I3 completes P43
+    EX->>CDB: I0 completes P40
+    CDB->>IQ: wake I1 on tag P40
+    IQ->>EX: issue I1
+    EX->>CDB: I1 completes P41
+    ROB->>ROB: retire I0, I1, I2, I3, I4 in order
+```
+
+This example exposes all four ordering domains:
+
+- **Rename order is program order.** It builds the correct version chain (`P40` then `P42`) even when several instructions rename in one cycle.
+- **Issue and completion order follow readiness.** I2, I4, and I3 can finish before I0 and I1.
+- **Value identity is physical-tag identity.** I1 waits for `P40`; I3 waits for `P42`. The reused architectural name `x5` creates no ambiguity.
+- **Commit order is program order.** Although I2 is done, it cannot retire before I0 and I1. This preserves precise state and proves when displaced tags become dead.
+
+If I0 raises an exception, I2/I3/I4 may have written speculative PRF entries, but none of their mappings has become architectural and no displaced tag has been reclaimed. Recovery restores the committed RAT, invalidates their ROB/IQ/LSQ entries, and returns `P40..P44` as appropriate. That is why PRF writes may occur at completion but **architectural map publication** occurs only at commit.
+
+**Performance effect.** The in-order machine waits roughly four cycles for I0 before it can do anything behind I1. The OoO machine uses those slots for I2, I4, and then I3. The gain is bounded by the ready independent work in the window; if every younger instruction depends on I0, the extra structures do nothing. It can also lose when rename/free-list pressure, IQ wakeup delay, PRF port contention, or ROB head blocking adds more time or energy than the overlapped work saves.
+
+**Evidence and invariants.** Count issue age inversions, ready-but-not-selected cycles by execution port, ROB-head blocked cycles by cause, rename stalls by free-list/ROB/IQ/LSQ fullness, and squashed µops per recovery. Assert that every source tag equals the youngest older dynamic definition at rename; no physical tag is allocated twice while live; a consumer issues only when all source-ready bits are true; commit is monotonically increasing in ROB age; and a freed tag is not referenced by any surviving source, map, or late response. These properties reconstruct the intended partial order directly.
+
 ---
 
 ## 2. Register renaming: mapping names to erase false dependencies
@@ -511,6 +594,21 @@ This makes exception handling **lazy**, which is the key idea. A fault is detect
 **Synchronous vs asynchronous.** A synchronous exception (page fault, illegal instruction, ECALL) is tied to a specific instruction, so attaching it to that ROB entry makes it automatically precise. An asynchronous **interrupt** (timer, external IRQ) belongs to no instruction; the core takes it *at a commit boundary* — it lets the current head retire or not, then diverts, so the interrupted PC is always a clean instruction boundary. Checking at commit rather than at execute is exactly what keeps that boundary unambiguous despite out-of-order completion.
 
 **RISC-V mechanics.** On a trap the hardware saves the restart PC to `mepc`/`sepc`, the cause to `mcause`/`scause`, and auxiliary data (faulting address or instruction) to `mtval`/`stval`, lowers `mstatus.MIE`, raises privilege, and jumps to `mtvec`/`stvec`; `MRET`/`SRET` reverses it. Traps may be **delegated** from M-mode to S-mode (`medeleg`/`mideleg`) so the OS handles common faults without a firmware round-trip — the separate S-mode vector cuts privilege transitions on syscalls and page faults versus a single-entry model like MIPS. Hardware resolves simultaneous exceptions by a fixed priority (instruction-fetch faults over decode over execute over memory), but that ordering is a spec detail, not a datapath one.
+
+### 9.1 Verification closure follows the instruction lifecycle
+
+Random instruction tests are necessary but not sufficient: most backend failures occur when two individually legal events coincide. Organize verification around the same lifecycle as §1.3:
+
+| Boundary | Required proof | High-value collision to force |
+|---|---|---|
+| Rename | source tags name the youngest older definition; destinations are unique | two same-cycle writes to one architectural register plus a same-group consumer |
+| Dispatch | one instruction allocates matching ROB/IQ/LSQ identities atomically, or allocates none | free list empties while ROB has space; LSQ fills on the last lane of a wide group |
+| Wakeup/select | only ready, valid, non-killed entries issue; port constraints hold | result broadcast and branch kill target the same entry in one cycle |
+| Complete | a response updates only its live tag/epoch and records exceptions without committing them | delayed divide/cache response returns after its destination tag was squashed and reused |
+| Commit | only consecutive done, nonfaulting head entries retire; stores become eligible in order | exception at lane 0 while lanes 1–3 are done; interrupt concurrent with a retiring branch |
+| Recovery | map, free list, ROB/IQ/LSQ tails, and checkpoints agree on one age boundary | nested branches resolve out of order; mispredict coincides with memory replay and SMT activity |
+
+Use a small in-order reference model at the **commit interface**, not at execution completion. Each retired instruction is compared against the reference architectural state; speculative completion is checked with local assertions because it is intentionally out of order. Tag every request and response with a generation or epoch so a flushed cache miss, divide, or translation response cannot write a newly reused physical register. The closure dashboard should include IPC but also rename starvation, ready-queue occupancy, issue-port utilization, wakeup replays, ROB-head stall cause, flush depth, recovery cycles, and PRF/issue-queue switching. Those counters reveal whether a larger window actually exposes parallel work or merely stores more blocked and soon-to-be-squashed instructions.
 
 ---
 

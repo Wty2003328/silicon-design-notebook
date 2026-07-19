@@ -37,6 +37,78 @@ Sparsity can be unstructured, where any value may be zero, or structured, where 
 
 **Beginner checkpoint:** compare the dense cost with the complete sparse or quantized cost. Include metadata, decode, imbalance, padding, conversions, accuracy recovery, and utilization. The fraction of zeros or bit width alone is not a speedup.
 
+### Derive the compressed datapath from one eight-element dot product
+
+Trace a length-eight dot product using INT8 activations
+
+$$x=[3,-2,5,1,0,4,-1,2]$$
+
+and weights
+
+$$w=[2,0,-1,0,0,3,0,-2].$$
+
+A dense two-lane datapath consumes four cycles and performs eight MAC slots even though only four products matter. Its accumulator obtains
+
+$$3\cdot2+5\cdot(-1)+4\cdot3+2\cdot(-2)=9.$$
+
+Clock-gating the multiplier when `w==0` saves switching energy, but the tensor still occupies 8 bytes, all eight weights still cross memory and register-file ports, and the command still takes four issue cycles. **Zero detection alone is an energy feature, not a bandwidth or latency feature.**
+
+Now constrain each group of four weights to contain exactly two nonzeros (2:4 structured sparsity). Store the two values and a small pattern code identifying their positions. Group 0 stores values `[2,-1]` at positions `[0,2]`; group 1 stores `[3,-2]` at `[1,3]` within its group. With a two-lane sparse MAC, the replay is:
+
+| Cycle | Metadata decode | Activation selection | Products | Accumulator |
+|---:|---|---|---|---:|
+| 0 | group 0 pattern → positions 0,2 | gather `x[0]=3`, `x[2]=5` | $3\cdot2$, $5\cdot(-1)$ | 1 |
+| 1 | group 1 pattern → absolute positions 5,7 | gather `x[5]=4`, `x[7]=2` | $4\cdot3$, $2\cdot(-2)$ | 9 |
+
+```mermaid
+flowchart LR
+    V["packed values<br/>2, -1, 3, -2"] --> ALIGN["value / metadata align FIFO"]
+    M["pattern codes<br/>positions 0,2 and 1,3"] --> DEC["2:4 pattern decoder"]
+    DEC --> G["activation gather / lane select"]
+    X["dense activation group"] --> G
+    ALIGN --> MAC["two sparse MAC lanes"]
+    G --> MAC
+    MAC --> ACC["wide accumulator"]
+    ACC --> RQ["scale + round + saturate"]
+```
+
+The speedup comes from **packing and issuing only useful lanes**, not from the mask by itself. That feature requires a decoder, activation-select muxes or a gather network, a value/metadata alignment FIFO, group and reduction counters, and an end-of-group marker. A pattern code and its values must travel under one valid/tag; if backpressure advances one stream without the other, every later product uses the wrong coordinate.
+
+Compression also has a concrete storage ledger. Four INT8 values cost 32 bits. There are six legal ways to choose two positions from four, so a simple code needs 3 bits per group, or 6 bits for this dot product. The 38-bit ideal stream is 40.6% smaller than the 64-bit dense weights, but a byte-aligned implementation might use two 8-bit headers and occupy 48 bits—only 25% smaller. A 64-bit memory beat may erase all capacity savings for a single short group unless several groups are packed together. The architecture result must count transferred beats and padding, not just entropy.
+
+### Quantization is another staged transformation, not a datatype label
+
+Suppose real activations and weights were first mapped to INT8 with scales $s_x$ and $s_w$ and zero-points of zero. The integer accumulator `acc=9` represents a real value near $9s_xs_w$. To produce an output tensor with scale $s_y$, hardware computes
+
+$$q_y=\operatorname{sat}_{8}\!\left(\operatorname{round}\left(acc\frac{s_xs_w}{s_y}\right)+z_y\right).$$
+
+The multiplier/shift approximation for $(s_xs_w)/s_y$, its rounding mode, and saturation are architectural state. Per-channel quantization further requires the channel index to select the scale entry in the same cycle the corresponding accumulator retires. Thus the full pipeline is `unpack → sparse position decode → gather → narrow multiply → wide accumulate → scale lookup → fixed-point multiply/shift → round → saturate → pack`. A claim of “INT8 2:4 execution” is incomplete until every stage and precision is specified.
+
+### Follow failures to increasingly flexible mechanisms
+
+| Baseline failure | Feature | Enabling state/data movement | Cost and losing case |
+|---|---|---|---|
+| zeros toggle MACs | operand gating | zero detector and clock/data gate | saves compute energy only; detector/gate delay can hurt frequency |
+| zeros still consume bytes/cycles | structured packed format | pattern code, packer/decoder, lane select, fixed group counter | metadata/padding dominate short tensors; accuracy may not tolerate the pattern |
+| fixed pattern misses natural zeros | unstructured indices/bitmap | pointer/index streams, bounds checks, variable-rate FIFO | index bytes, irregular gathers, load imbalance |
+| one sparse operand is easy but both operands are sparse | coordinate intersection | merge/bitmap/hash matcher and restart state | matching throughput/energy can exceed skipped MAC cost |
+| lanes finish at different times | fine-grained work queues or work stealing | task tags, queue/crossbar, output-owner and reduction state | routing/queue area and nondeterministic accumulation order |
+| one precision loses accuracy for outliers | per-channel/group scale or mixed-precision fallback | scale SRAM, index alignment, conversion path, mode per tile | scale bandwidth and conversions; wide fallback fragments lanes |
+
+The dense path should remain reachable. For the eight-value example, structured sparse wins because density is exactly 50% and decode is fixed rate. A 7/8-dense group would either be illegal under 2:4 pruning or require an unstructured encoding whose metadata and gather cost can exceed one saved MAC. A density/mode selector should compare complete predicted cycles and bytes, then attach the chosen representation to the tile descriptor so producer, memory, decoder, and compute agree.
+
+### Replay malformed metadata and a sparse/dense fallback
+
+Assume group 1's pattern code is reserved or claims two positions but only one value remains before end-of-tile. The decoder must detect the inconsistency before the generated activation address is issued. It records tensor/tile/group identity, drains or quarantines the framed packet, suppresses the output-valid event, and reports a terminal data-format fault. Guessing a position or consuming a value from the next tile would turn data corruption into an unauthorized address and desynchronize all later work.
+
+For a valid tile whose measured density rises above the break-even threshold, dispatch can replay it through the dense path. The descriptor supplies the same logical tensor, scale, zero point, accumulation width, and output layout to both modes. If sparse data is stored compressed, dense fallback first expands into a bounded scratchpad tile; conversion time and bytes belong to the sparse-mode cost. The outputs may differ slightly if sparse dynamic scheduling changes floating-point accumulation order, so the numerical contract must either require a fixed reduction order or specify an accepted tolerance.
+
+### Trace-derived counters and assertions
+
+Measure logical values, retained values, encoded value bytes, metadata bytes, physical transfer beats, decoder groups/cycle, matcher output rate, gather conflicts, useful versus gated versus actually skipped MACs, queue imbalance/tail cycles, scale-cache misses, conversion cycles, saturation/overflow counts, dense-fallback rate, and model-quality change. Separating “gated” from “skipped” prevents an energy optimization from being reported as throughput.
+
+Assert that every legal group decodes to the required number of unique in-range positions; value and metadata tags never diverge under stalls; every retained product reaches its correct output exactly once; skipped positions have exactly zero contribution under the declared zero-point/scaling rules; accumulator and scale identities match output channel/group; malformed data cannot generate an external access; sparse and dense paths obey the same output contract; and reset/replay cannot join a prefix from one compressed tile to a suffix from another.
+
 ## 1. Quantization contract
 
 Affine quantization maps real value $x$ to integer $q$:

@@ -30,9 +30,43 @@ flowchart LR
 
 Occupancy is a capacity ceiling; issue eligibility and instruction-level parallelism determine whether that capacity becomes throughput.
 
+### 0.1 How the scheduler evolved from the throughput objective
+
+Begin with a lane array and one warp. It runs efficiently until an instruction waits; then every lane is idle. Each subsequent mechanism repairs the newly exposed failure:
+
+```mermaid
+flowchart LR
+    A["one warp executes<br/>lane array idles on a miss"] -->|"retain several contexts"| B["resident warp pool"]
+    B -->|"choose another context at zero save/restore cost"| C["warp scheduler"]
+    C -->|"some resident warps have RAW dependencies"| D["scoreboard-derived ready mask"]
+    D -->|"ready instruction may target a busy pipe"| E["per-pipeline eligible masks + arbitration"]
+    E -->|"more contexts consume RF / shared memory"| F["block admission + occupancy limits"]
+    F -->|"many active warps can thrash caches or wait together"| G["locality-, age-, and criticality-aware policy"]
+```
+
+The important split is **mechanism versus policy**. The scoreboard, barrier table, and pipeline-ready signals establish which issues are legal; scheduling policy chooses among those legal candidates. Policy may change performance or fairness, but it must never override a dependency or synchronization constraint.
+
 ## Before the details: resident does not mean ready
 
 A GPU groups threads into warps. The warp scheduler chooses a warp whose next instruction has ready inputs and an available execution pipeline. A resident warp has allocated registers and shared memory and is present on the streaming multiprocessor; an eligible warp is resident **and** can issue now. Barriers, dependencies, memory misses, or unavailable pipelines can make many resident warps ineligible.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Admitted: block fits every resource budget
+    Admitted --> Eligible: next instruction and operands available
+    Eligible --> Issued: selected and target pipe accepts
+    Issued --> Eligible: independent next instruction
+    Issued --> ScoreboardWait: produced value pending
+    Issued --> MemoryWait: load / atomic outstanding
+    Issued --> BarrierWait: arrival or fence not released
+    ScoreboardWait --> Eligible: writeback clears dependency
+    MemoryWait --> Eligible: final response / replay completes
+    BarrierWait --> Eligible: barrier generation releases
+    Eligible --> Retired: thread exits
+    Retired --> [*]: whole block completes and frees resources
+```
+
+“Ready” is often used loosely; this state model forces precision. A warp can be dependency-ready but not **issue-eligible for a particular slot** because the required load/store, special-function, or matrix pipeline cannot accept it. Performance counters should preserve these distinctions rather than collapse them into a single stall bucket.
 
 Occupancy is a capacity ratio determined by threads per block, registers per thread, shared memory per block, and hardware limits. It matters because more resident warps create more opportunities to hide latency. It stops helping once the scheduler already finds ready work every cycle or another resource—memory bandwidth, instruction issue, arithmetic pipelines—saturates. Excess occupancy can even force smaller register allocations and spills.
 
@@ -49,6 +83,8 @@ A warp groups $W$ threads sharing an instruction issue stream. Per-warp state in
 - outstanding memory/atomic transactions;
 - call/return and exception state;
 - scheduling priority/age.
+
+At admission, the block allocator reserves the warp-state entries and maps each warp to a register-file allocation. Fetch then supplies an instruction at the warp's program counter (PC); decode identifies source/destination registers and execution class; the scoreboard turns source readiness into a dependency-ready bit; barrier and memory-order logic contribute further legal bits; pipeline availability is applied last. On issue, the PC advances or changes, the destination is marked pending, and the instruction is handed to operand collection. On completion, writeback clears only the matching destination generation. This explicit sequence explains why “scheduler” is not one comparator—it is a control loop distributed across fetch, scoreboard, dispatch, and completion.
 
 The scheduler issues one warp instruction to a lane group. Inactive lanes do no useful work but may still consume parts of the pipeline cycle. SIMT efficiency for instruction $i$ is
 
@@ -88,6 +124,21 @@ $$
 
 and occupancy is resident warps divided by $W_{max}$. Allocation granularities round register/shared-memory use upward, producing occupancy cliffs.
 
+```mermaid
+flowchart TB
+    K["candidate block<br/>threads, warps, registers/thread,<br/>shared memory/block"] --> Q["round each request to<br/>hardware allocation quantum"]
+    Q --> R{"RF capacity remains?"}
+    R -->|"no"| STOP["do not admit block"]
+    R -->|"yes"| S{"shared-memory capacity remains?"}
+    S -->|"no"| STOP
+    S -->|"yes"| W{"warp, thread, and block slots remain?"}
+    W -->|"no"| STOP
+    W -->|"yes"| A["atomically reserve every budget"]
+    A --> P["create resident warps<br/>initialize PC, mask, barriers"]
+```
+
+Admission must be all-or-nothing because a block's warps communicate through shared memory and barriers. Reserving registers first and later discovering that shared memory does not fit would either leak capacity or require rollback. Implementations may pipeline the checks, but the architectural result must appear atomic: a partially admitted block must never become schedulable.
+
 High occupancy is not always better. Reducing registers may introduce spills to local/global memory; smaller tiles may reduce data reuse; more warps may increase cache/MHSR contention.
 
 ## 4. Latency-hiding requirement
@@ -101,6 +152,29 @@ $$
 where $I_{warp}$ captures independent issue opportunities per warp before waiting. Real scheduling mixes instruction types and pipelines; the equation explains why occupancy alone is incomplete.
 
 For a memory latency of 400 cycles, 32 resident warps do not hide latency if every warp issues one load then immediately waits. They need enough independent operations/loads per warp, coalesced transactions, and outstanding-memory capacity.
+
+Trace the intended overlap. Warp 0's miss is not accelerated; its empty cycles are filled with other warps whose next operations are independent:
+
+```mermaid
+sequenceDiagram
+    participant S as Warp scheduler
+    participant W0 as Warp 0
+    participant W1 as Warp 1
+    participant W2 as Warp 2
+    participant M as Memory system
+    S->>W0: issue load at cycle 0
+    W0->>M: coalesced requests
+    Note over W0,M: W0 becomes ineligible; data is still hundreds of cycles away
+    S->>W1: issue independent ALU work
+    S->>W2: issue independent load / ALU work
+    loop while W0 waits
+        S->>S: select another compatible eligible warp
+    end
+    M-->>W0: final response writes destination
+    W0-->>S: scoreboard clears; W0 re-enters eligible set
+```
+
+This succeeds only if the other warps do not encounter the same correlated stall. If every warp misses on the same memory partition, waits at the same barrier, or targets a saturated load/store pipe, resident count is high but the eligible set still empties.
 
 ## 5. Scoreboarding and eligibility
 
@@ -121,6 +195,26 @@ Operand collectors decouple register-bank reads from execution issue. A warp sel
 
 ## 6. Warp scheduling policies
 
+### 6.1 The issue decision in one cycle
+
+For each scheduler partition, the implementation can be understood as mask construction followed by priority selection:
+
+```mermaid
+flowchart LR
+    R["resident warp bits"] --> AND["legal-candidate AND tree"]
+    D["decoded next instruction<br/>sources ready"] --> AND
+    B["not waiting on barrier,<br/>fence, replay, or exception"] --> AND
+    P["compatible pipeline can accept"] --> AND
+    AND --> E["eligible mask by pipeline class"]
+    E --> A["policy arbiter<br/>round-robin / age / GTO / two-level"]
+    A --> G["selected warp + instruction"]
+    G --> H{"collector and dispatch<br/>accept this cycle?"}
+    H -->|"yes"| U["issue; update PC and scoreboard"]
+    H -->|"no"| K["retain/retry selection;<br/>count structural block"]
+```
+
+The diagram exposes a common modeling error: selecting a warp is not proof that it issued. A register-bank conflict or full collector may reject it after policy arbitration. A cycle-accurate simulator and RTL counter design should record at least `candidate`, `selected`, `dispatch-accepted`, and `completed` events separately.
+
 | Policy | Idea | Strength | Risk |
 |---|---|---|---|
 | round-robin | rotate ready warps | fairness, simplicity | weak locality, may spread stalls |
@@ -130,6 +224,18 @@ Operand collectors decouple register-bank reads from execution issue. A warp sel
 | criticality-aware | prioritize warps/blocks on completion critical path | tail and block progress | criticality estimation |
 
 Policy interacts with caches. GTO may improve per-warp locality; round-robin may expose more MLP but enlarge the concurrent working set. Evaluate scheduler and memory hierarchy together.
+
+No policy dominates because the objective changes with the bottleneck:
+
+| Workload condition | Feature that appears attractive | Why it can win | Losing case / required guardrail |
+|---|---|---|---|
+| independent arithmetic across many warps | round-robin | simple fairness and broad latency hiding | scatters the active working set and may lose instruction/data locality |
+| one warp has a reusable hot tile | greedy-then-oldest (GTO) | finishes a run of local operations before switching | can delay old or critical warps; needs age/fairness escape |
+| too many concurrent misses thrash L1/L2 | two-level or memory-aware throttling | limits active memory working set | too much throttling destroys memory-level parallelism (MLP) |
+| a nearly complete block holds scarce shared memory | completion-aware priority | retires the block and liberates capacity | prioritizing a truly stalled tail cannot create progress |
+| several pipeline classes are imbalanced | per-class arbitration / dual issue | matches ready work to idle resources | extra issue width loses when RF, collectors, or one pipeline already binds |
+
+A policy experiment is incomplete unless it reports the mechanism by which throughput changed: eligible-set size, issue-slot utilization, cache miss/queue pressure, block release time, and fairness or tail latency.
 
 ## 7. Dual issue and pipeline balance
 
@@ -187,6 +293,27 @@ Per kernel/SM count:
 - preemption/context-save latency.
 
 Avoid “not selected” as a root cause: it may simply mean another warp was ready. The limiting signal is cycles with unused issue capacity and why no compatible warp could issue.
+
+Use a procedural diagnosis rather than reading occupancy in isolation:
+
+1. **Was an issue slot unused?** If no, the scheduler is not the immediate bottleneck; inspect the saturated execution or memory pipeline.
+2. **Was any warp dependency-ready?** If no, split waits into long-scoreboard, barrier/fence, instruction-fetch, and memory/replay causes.
+3. **Was a compatible pipeline available?** If no, compare instruction mix with per-class capacity; extra generic issue width will not help.
+4. **Was a candidate selected but not dispatched?** If yes, inspect operand-collector fullness, register-bank conflicts, and dispatch-crossbar arbitration.
+5. **Would more resident warps create new eligible work?** Check the binding admission resource and spill/reuse cost before reducing registers or shared memory.
+6. **Are stalls correlated?** If all warps wait on the same cache partition or barrier, increasing occupancy amplifies contention rather than hiding it.
+
+The corresponding scheduler verification plan should assert:
+
+1. a selected group is resident, nonempty, and legal under its register, barrier, memory-order, and exception state;
+2. the warp PC and destination scoreboard change only when dispatch accepts the instruction, never on a rejected selection;
+3. two schedulers cannot issue the same warp instruction unless the architecture explicitly permits and identifies the pair;
+4. block resources remain reserved until every warp exits and every architecturally relevant late response is completed or canceled;
+5. a barrier releases only the matching block, participant set, barrier identifier, and generation;
+6. an eligible warp eventually receives service under the stated fairness contract, unless higher-priority traffic is allowed to starve it explicitly;
+7. reset, trap, preemption, and context teardown cannot leave a stale eligible bit pointing at a reused warp slot.
+
+Random tests should vary dependency latency, bank/collector backpressure, barrier arrival order, block packing, and pipeline availability independently. Directed worst cases—one perpetually eligible warp, all warps targeting one pipe, simultaneous block retirement/admission, and a late completion after slot reuse—exercise bugs that average-throughput workloads rarely expose.
 
 ## 12. Numbers to remember
 

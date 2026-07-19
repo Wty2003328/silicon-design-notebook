@@ -39,6 +39,93 @@ The central distinction is:
 
 A sparse accelerator wins only when removed data movement and MAC work exceed the metadata, matching, routing, and imbalance cost.
 
+### 0.1 Derive the MoE machinery from eight routed tokens
+
+A dense feed-forward layer sends every token through one weight pair. A mixture-of-experts (MoE) layer first computes router scores, then runs only selected expert feed-forward networks. The apparent saving—one expert instead of all experts—creates a new irregular scheduling problem.
+
+Take eight tokens with top-1 expert choices among four experts:
+
+$$
+[e_0,e_3,e_0,e_1,e_3,e_3,e_2,e_3].
+$$
+
+A naive implementation sends tokens individually as soon as the router produces them. It performs eight small, poorly utilized matrix–vector launches and repeatedly fetches expert weights. Alternatively, four fixed engines can wait for their assigned tokens, but their work is `[2,1,1,4]`; the layer completes when expert 3 finishes four tokens. Useful assignment efficiency relative to four engines is
+
+$$
+\eta=\frac{8}{4\cdot4}=50\%.
+$$
+
+The first feature is **grouping**: count tokens per expert, prefix-sum those counts to compute compact-buffer offsets, scatter token records into expert-contiguous batches, execute one batch per expert, then inverse-scatter results to original token order.
+
+| Stage | Concrete state for the eight-token trace | Result |
+|---|---|---|
+| route | records `(token_id, expert_id, gate_weight)` | token identity survives reordering |
+| histogram | counts `[2,1,1,4]` | exact queue/buffer demand is known |
+| prefix sum | base offsets `[0,2,3,4]`, end 8 | each expert receives a disjoint range |
+| compact scatter | buffer order `[t0,t2 | t3 | t6 | t1,t4,t5,t7]` | contiguous expert batches enable GEMM |
+| expert execution | batch shapes 2,1,1,4 | weight tile is reused within each batch |
+| inverse scatter | use stored token IDs and gate weights | logical outputs return to `t0…t7` order |
+
+```mermaid
+flowchart LR
+    T["tokens t0…t7"] --> R["router + top-1<br/>0,3,0,1,3,3,2,3"]
+    R --> H["histogram<br/>2,1,1,4"]
+    H --> P["prefix offsets<br/>0,2,3,4,8"]
+    R --> S["scatter records by offset"]
+    P --> S
+    S --> Q0["expert 0: t0,t2"]
+    S --> Q1["expert 1: t3"]
+    S --> Q2["expert 2: t6"]
+    S --> Q3["expert 3: t1,t4,t5,t7"]
+    Q0 --> G["expert GEMMs / vector epilogues"]
+    Q1 --> G
+    Q2 --> G
+    Q3 --> G
+    G --> I["inverse scatter by token ID"]
+```
+
+This feature is enabled by more than a top-k comparator. Hardware or software-visible accelerators need histogram counters, a prefix-sum engine or scan sequence, per-expert write cursors, compact-token SRAM, token IDs, gate weights, expert queue descriptors, credits, an inverse map, and a barrier that knows how many assignments must return. With top-2 routing, one token creates two records and its final output cannot retire until both weighted expert results have arrived.
+
+### 0.2 Capacity overflow forces an explicit semantic choice
+
+The average load is $Tk/E=8/4=2$. With capacity factor $c=1.5$, each expert reserves
+
+$$C_e=\lceil1.5\cdot2\rceil=3$$
+
+slots. Expert 3 receives four assignments, so one does not fit. “Capacity factor” becomes hardware behavior at this exact point. The implementation must choose one of four model-visible policies:
+
+- **stall/backpressure:** preserve the route and wait for expert-3 space; increases tail latency and can propagate to the router;
+- **spill/second wave:** place the fourth record in an overflow queue and run expert 3 again; preserves semantics but adds launch and weight-residency time;
+- **reroute:** use a recorded next-choice expert and its gate rule; changes the selected expert but may be part of the trained model contract;
+- **drop:** contribute zero or a residual-only path; cheapest, but explicitly changes model output.
+
+Replay this example with the spill policy. The compact buffer stores the first three expert-3 records in its reserved range and places `t7` in a framed overflow queue. Experts 0–3 run their first batches. Expert-3 weights remain resident, so a second one-token microbatch processes `t7`; its result joins the same inverse-scatter table. The completion barrier expects eight returned records, not merely four expert-done events. If the overflow record is lost, all engines can become idle while the barrier waits forever; if the barrier expects only seven, the layer can retire with a missing token.
+
+### 0.3 Follow imbalance to scheduling and transport features
+
+| Observed failure | Feature introduced | Enabling descriptors/state/dataflow | PPA/complexity and losing case |
+|---|---|---|---|
+| per-token launches underfill matrix engine | expert grouping and compact batches | token record, histogram, prefix offsets, compact/inverse buffers | scan/scatter latency and SRAM; loses for tiny batches or low-latency single-token service |
+| hot expert sets layer time | split batch or replicate hot expert | sub-batch descriptors, replica/version table, merge count | duplicate weights and traffic; cold experts strand replica capacity |
+| expert weights exceed local memory | expert cache and prefetch | object-size tags, residency/refcount, router-informed prefetch, miss queue | megabyte fills, fragmentation, wrong prediction wastes bandwidth |
+| remote experts cause all-to-all bursts | hierarchical placement and credits | destination chip/core, token packet, virtual channel, receive capacity | NoC/link buffers and synchronization; local imbalance can be cheaper than remote traffic |
+| arbitrary sparse products unbalance PEs | overdecomposed tasks + work queues | coordinate/output-owner tags, queue/crossbar, reduction arrival count | routing/queue energy and changed accumulation order |
+| dense tiles pay sparse decode overhead | density-aware dense fallback | density/format field, conversion descriptor, common output layout/scale | estimator/conversion overhead; wrong threshold oscillates modes |
+
+Replication illustrates the trade-off. Splitting expert 3 across two engines reduces its four-token critical batch to two tokens per replica, but only if both replicas possess the same weight version. Loading that expert twice can cost more than the saved compute for one small batch. Admission should compare weight-transfer time with expected future assignments, and counters must attribute whether a “replica hit” actually reused resident weights.
+
+### 0.4 Replay malformed routing and a remote fault
+
+If a router emits expert ID 5 when only IDs 0–3 exist, bounds validation must fault before indexing histogram or destination tables. Otherwise one malformed score can corrupt queue metadata or route a packet outside its security allocation. The terminal record identifies request, layer, token, expert ID, and routing epoch; no success barrier fires for that layer.
+
+If expert 3 is remote and one token packet is retried after a link error, the receiver deduplicates by `(request, layer, token_id, expert_id, routing_epoch)`. A credit reserves queue capacity before transmission. The sender retains the record until an acknowledgement establishes ownership transfer; reset increments the epoch and quarantines late packets. Replaying without identity can execute a token twice, while dropping the original before acknowledgement can lose it. Expert computation may proceed for already received tokens, but final inverse scatter waits for exactly the assignment count declared by the router, or terminates with the documented fault policy.
+
+### 0.5 Trace-derived counters and assertions
+
+Record router/top-k cycles; assignment count; expert histogram and its max/mean/variance; histogram/scan/scatter time; compact and overflow bytes; microbatch-size distribution; matrix utilization per expert; expert-weight residency hits, fills, and wasted prefetches; local/remote token bytes; credit and queue stalls; replicas used; spill/reroute/drop count; inverse-scatter wait; and layer critical expert. A single average expert load hides the tail that determines completion.
+
+Assertions should guarantee that histogram sum equals the number of assignment records; prefix ranges are disjoint, monotonic, and within capacity; every accepted assignment occupies exactly one normal, overflow, reroute, or dropped-policy state; token/expert/epoch identity survives compaction and transport; top-k results produce exactly the declared number of returns; no expert queue accepts without credit; duplicate remote packets cannot duplicate computation or accumulation; inverse scatter writes the correct token and gate contribution; and the layer emits success only after every required assignment reaches one terminal state.
+
 ## 1. Structured versus unstructured sparsity
 
 **Structured sparsity** removes fixed groups—blocks, channels, or a pattern such as two nonzeros in every four weights. Hardware can decode the pattern with small masks and route remaining values through regular datapaths.

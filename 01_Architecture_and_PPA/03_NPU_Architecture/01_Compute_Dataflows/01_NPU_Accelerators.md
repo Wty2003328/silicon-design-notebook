@@ -40,6 +40,81 @@ flowchart LR
     O --> H["DRAM / HBM / peer chips"]
 ```
 
+### 0.1 Derive the machine: one MAC becomes an accelerator only after four failures
+
+It is easier to understand an NPU by *building the smallest possible one* and watching it fail than by memorizing a finished block diagram. Start with one multiply-accumulate datapath, three registers, and a controller:
+
+```mermaid
+flowchart LR
+    A["activation register a"] --> MUL["multiplier"]
+    W["weight register w"] --> MUL
+    MUL --> ADD["adder"]
+    PS["partial-sum register ps"] --> ADD
+    ADD --> PS
+    PS --> OUT["result"]
+```
+
+On every enabled cycle it performs `ps_next = ps + a*w`. This is already sufficient to compute any matrix multiplication: software can present the operands in the correct order and clear or read `ps` at the right time. It is also a poor accelerator. For a $2\times2$ example,
+
+$$
+C_{00}=a_{00}b_{00}+a_{01}b_{10},
+$$
+
+the controller performs `clear ps`, two operand reads, two MAC cycles, and one result write. It repeats that sequence for $C_{01}$, $C_{10}$, and $C_{11}$. The eight useful MACs require sixteen operand deliveries and four accumulator drains. The multiplier may be busy, but the same $A$ and $B$ values are repeatedly fetched because there is no place or path through which one fetched value can serve another result.
+
+The complete evolution is therefore causal:
+
+```mermaid
+flowchart TB
+    B0["Baseline: one MAC + three registers"]
+    F0["Failure: operands are reread and control is paid per MAC"]
+    B1["Feature 1: several PEs + neighbor forwarding"]
+    F1["Failure: a large array demands too many external ports"]
+    B2["Feature 2: banked scratchpad + multicast / skew network"]
+    F2["Failure: array waits while the next tile is fetched"]
+    B3["Feature 3: DMA + ping-pong buffers + event scoreboard"]
+    F3["Failure: non-GEMM operations and skinny shapes idle the array"]
+    B4["Feature 4: vector/reduction path + partitionable array"]
+    B0 --> F0 --> B1 --> F1 --> B2 --> F2 --> B3 --> F3 --> B4
+```
+
+**Feature 1 — spatial reuse.** Replicate the MAC into processing elements (PEs) and connect adjacent operand registers. A value read at an array edge advances one PE per cycle, so a single read contributes to several results. This feature is not enabled by multipliers alone. Each PE needs an activation register, a weight or second-input register, an accumulator, valid bits, boundary masking, and forwarding control. The array edge needs *skew registers*: row 1 is delayed one cycle relative to row 0, row 2 by two cycles, and so on, so that the correct $A_{mk}$ and $B_{kn}$ meet. Removing those validity and alignment states produces a fast array that silently multiplies operands from different $k$ iterations.
+
+**Feature 2 — an explicitly scheduled memory.** A $D\times D$ array can consume roughly $2D$ operand words per cycle at its boundary. HBM cannot expose hundreds of independent low-latency ports, so the design inserts a banked SRAM scratchpad. A compiler chooses tiles whose activation, weight, and output footprints fit; direct memory access (DMA) engines move each tile in large bursts; address generators turn loop counters into bank/row addresses; multicast or systolic links fan the words into the array. Unlike a cache, this scratchpad does not discover reuse dynamically. The command says which bytes occupy each bank and when they may be overwritten. That is why the compiler schedule and the hardware buffer-state machine form one architectural mechanism.
+
+**Feature 3 — overlap.** With one activation buffer and one weight buffer, the array must stop before those locations can receive the next tile. Ping-pong buffering duplicates the live storage: while bank set `A` feeds tile 0, DMA fills bank set `B` for tile 1. A dependency scoreboard records events such as `A_FILLED`, `W_FILLED`, `COMPUTE_DONE`, and `OUTPUT_DRAINED`. The compute sequencer may consume a bank only after both fill events; DMA may overwrite it only after compute releases it. More SRAM alone does not create overlap—the event state and bank ownership rules do.
+
+**Feature 4 — heterogeneous completion.** Real layers also contain bias, activation, normalization, transpose, reduction, and quantization. Sending every intermediate to HBM restores the movement cost the array removed. A vector/reduction engine therefore shares the scratchpad, and the command graph passes an on-chip tile from matrix compute to post-processing before output DMA. Partitioning a large array into smaller independently controlled regions similarly recovers utilization for small or skinny matrices. These features add crossbars, bank conflicts, command states, and verification cases; they should be justified by end-to-end traffic and utilization, not by peak TOPS.
+
+#### Replay one command through the evolved machine
+
+Consider a command `GEMM M=4, N=4, K=4` on a $2\times2$ output-stationary array. “Output stationary” means that each PE keeps one $C$ partial sum while $A$ and $B$ move. The compiler emits four output tiles: `(m0,n0)`, `(m0,n1)`, `(m1,n0)`, and `(m1,n1)`, where each tile contains $2\times2$ outputs.
+
+1. **Decode and reserve.** The command processor validates dimensions and precision, chooses free activation/weight/output banks, allocates a tile tag, and sets all four PE accumulators to zero. Reservation prevents another command from reusing the same banks while the tile is live.
+2. **Fill.** Two DMA descriptors fetch the first $2\times4$ activation slice and $4\times2$ weight slice. Their completion responses set `A0_READY` and `B0_READY`. In parallel, DMA fills alternate banks `A1/B1` with the next tile's operands.
+3. **Launch.** When both ready bits are set, loop counters initialize `k=0`; edge generators emit skewed rows and columns; PE valid bits advance with the operands. For four reduction steps the PE accumulators retain $C$ while the operands propagate.
+4. **Drain and post-process.** Array completion transfers four accumulators to the output bank. A vector command applies bias or quantization in place. Output DMA may start only after that event, not merely after the last multiply.
+5. **Recycle and overlap.** The scoreboard releases `A0/B0`; the next compute immediately selects already-filled `A1/B1`; DMA reuses the released banks for tile 2. Completion is published only after the final output write reaches the command's required visibility point.
+
+The *replay* is the important comparison. The baseline fetches operands around every MAC and serializes load–compute–store. The evolved path fetches a tile once, reuses its words across PEs and cycles, overlaps the next fill, and keeps post-processing on chip. The mathematical operation is unchanged; only the lifetime and movement of its state changed.
+
+#### What each improvement costs, and when it loses
+
+| Improvement | Enabling state and datapath | Main PPA/complexity cost | Losing case |
+|---|---|---|---|
+| PE replication and forwarding | operand/valid pipelines, accumulators, boundary masks | multiplier area, clock power, routing congestion, fill/drain latency | small $M,N,K$ or data-dependent control leaves many PEs idle |
+| banked scratchpad | SRAM banks, address generators, arbitration, ECC | SRAM area/leakage, bank muxes, compiler-visible conflicts | footprint exceeds capacity or access pattern is random |
+| multicast/systolic network | fanout tree or neighbor links, credits/skew stages | wire energy, physical timing, backpressure state | little operand reuse or unbalanced fanout |
+| ping-pong overlap | two live versions, ownership bits, event scoreboard | nearly doubled tile-buffer capacity and more deadlock states | transfer is already hidden or tiles consume all SRAM |
+| vector/reduction engine | lane registers, reductions, special functions, shared-bank arbitration | area that does not raise dense-MAC peak; numerical corner cases | model consists almost entirely of large GEMMs |
+| array partitioning | boundary muxes, independent sequencers and reductions | lower density/frequency and harder broadcast | workload is consistently large and square |
+
+#### Evidence that the mechanism is working
+
+Useful counters must distinguish *why* peak was lost: PE useful slots; masked edge slots; fill/drain slots; operand-starvation cycles; output-backpressure cycles; scratchpad bank conflicts; DMA bytes and occupancy; buffer phase waits; vector handoff bytes; and accumulator spills. A single “array utilization” number cannot tell the designer which feature is missing.
+
+Corresponding assertions include: a PE may update its partial sum only when both operand valids and the tile tag agree; a scratchpad bank is never written while a consumer owns it; a tile cannot launch before all required fill events; each output contains exactly $K$ products despite stalls; masked PEs cannot modify architectural memory; and command completion cannot precede the final visible DMA write. These properties connect the abstract GEMM to the actual distributed state that implements it.
+
 ---
 
 ## 1. Why a von-Neumann core is the wrong shape for dense GEMM

@@ -31,6 +31,22 @@ flowchart TB
 
 The architecture question is not “how many GPUs?” It is which tensor/data state resides where, which communication pattern follows, and whether that pattern matches topology bandwidth and latency.
 
+### 0.1 How scale-up mechanisms evolve
+
+Replicating a kernel on more GPUs is the baseline. It scales only independent work; any partitioned tensor introduces a new movement and synchronization problem. The scale-up stack grows in response:
+
+```mermaid
+flowchart LR
+    A["independent GPUs<br/>host stages every transfer"] -->|"host path copies twice and bottlenecks"| B["peer DMA / peer virtual addressing"]
+    B -->|"many peers need the same group operation"| C["collective engines and algorithms"]
+    C -->|"one algorithm performs poorly on nonuniform links"| D["topology discovery + hierarchical collectives"]
+    D -->|"communication sits on the step critical path"| E["chunking + compute/communication overlap"]
+    E -->|"shared HBM and injection resources interfere"| F["admission, channels, QoS, congestion control"]
+    F -->|"link/device faults grow likely at scale"| G["CRC, replay, timeout, reconfiguration, checkpoint"]
+```
+
+Direct memory access (**DMA**) means a copy engine moves data without making scalar GPU lanes execute each load and store. Peer DMA removes the host from the payload path, but not from setup, address authorization, or completion control. A collective adds a distributed state machine above DMA: every rank must agree on participant set, tensor range, reduction operation, sequence number, and completion epoch.
+
 ## Before the details: a collective is an algorithm placed on links
 
 A multi-GPU system is a graph: GPUs are vertices and physical links are edges with bandwidth, latency, direction, and sharing rules. Software tensors or tasks are placed on vertices. Communication algorithms choose paths and schedule chunks over edges. The same nominal link rate can produce very different performance depending on topology and placement.
@@ -93,6 +109,25 @@ $$
 
 bytes for tensor size $N$, with $2(P-1)$ steps. It is bandwidth-efficient for large messages but latency grows with $P$.
 
+Track one chunk in a four-GPU ring. The reduce-scatter phase accumulates one contribution at each hop until one GPU owns the reduced chunk; the all-gather phase circulates that completed chunk so every GPU receives it. Other chunks execute the same path in a pipelined rotation.
+
+```mermaid
+flowchart LR
+    subgraph RS["reduce-scatter for chunk c"]
+        A0["GPU 0<br/>c = x0"] -->|"send c"| A1["GPU 1<br/>c = x0 ⊕ x1"]
+        A1 -->|"send reduced c"| A2["GPU 2<br/>c = x0 ⊕ x1 ⊕ x2"]
+        A2 -->|"send reduced c"| A3["GPU 3 owns<br/>c = x0 ⊕ x1 ⊕ x2 ⊕ x3"]
+    end
+    subgraph AG["all-gather for completed chunk c"]
+        B3["GPU 3"] --> B0["GPU 0 receives c"]
+        B0 --> B1["GPU 1 receives c"]
+        B1 --> B2["GPU 2 receives c"]
+    end
+    A3 --> B3
+```
+
+Here `⊕` denotes the chosen associative reduction, such as floating-point addition; it is not necessarily bitwise XOR. Actual floating-point order matters numerically, so algorithm/ring-order changes can alter rounding even when every implementation is mathematically an all-reduce.
+
 ### 4.2 Tree all-reduce
 
 Reduction up and broadcast down use $O(\log P)$ steps, good for latency/smaller messages. Links near the root can bottleneck unless the topology/tree is balanced.
@@ -104,6 +139,33 @@ Reduce within fast local groups, exchange among group leaders, then distribute l
 ### 4.4 All-to-all
 
 Expert/token exchange stresses bisection bandwidth and endpoint queues. Every participant sends distinct data to every other. Routing imbalance and incast can dominate even if aggregate bytes look acceptable.
+
+### 4.5 One chunk through DMA, link credits, reduction, and replay
+
+A chunk descriptor needs communicator/epoch, source and destination ranges, collective step, peer/route, reduction type and precision, byte count, packet sequence range, and completion event. One hop proceeds as follows:
+
+```mermaid
+sequenceDiagram
+    participant H0 as GPU 0 HBM/L2
+    participant E0 as GPU 0 collective engine
+    participant L as Link + replay buffers
+    participant E1 as GPU 1 collective engine
+    participant H1 as GPU 1 HBM/L2
+    E0->>H0: DMA read chunk for {epoch e, step s}
+    H0-->>E0: payload
+    E0->>L: packets {route, e, s, sequence, CRC}
+    Note over L: inject only with downstream credits
+    L->>E1: packet k
+    E1-->>L: NAK k after CRC failure
+    L->>E1: replay buffered packet k
+    E1-->>L: ACK k; release replay entry
+    E1->>H1: read local contribution / write reduced chunk
+    H1-->>E1: reduction data complete
+    E1->>E1: decrement step bytes; advance only when all sequences arrive
+    E1-->>E0: step completion or next-hop progress
+```
+
+A **credit** is permission indicating downstream buffer space; it prevents the sender from overwriting a full receiver. A cyclic-redundancy check (**CRC**) detects corrupted link packets; a negative acknowledgement (**NAK**) asks the transmitter to resend from its replay buffer. Replay repairs transport, not collective semantics: duplicate packet sequence numbers must be suppressed so a reduction is not applied twice. The collective step completes only after all required packets are accepted, reduced/stored at the required visibility scope, and any error policy resolves.
 
 ## 5. Scaling efficiency
 
@@ -140,6 +202,14 @@ Chunk size trades startup against overlap:
 - too many in-flight chunks exhaust queues/buffers and contend with compute memory traffic.
 
 Use separate streams/engines and dependency events, then measure actual simultaneous compute/fabric/HBM utilization rather than assuming overlap.
+
+| Change | Why it can help | When it loses | Required evidence |
+|---|---|---|---|
+| smaller chunks | starts communication earlier and shortens drain tail | startup/header/event cost dominates; too many queue entries | exposed tail falls more than message-rate and queue stalls rise |
+| more collective channels | uses parallel links/routes | channels contend for the same HBM, L2, or bottleneck cut | per-link balance improves without HBM slowdown |
+| aggressive overlap | hides communication behind independent kernels | compute and DMA share HBM/L2 or reserve too many SM resources | simultaneous timeline plus compute-only and comm-only baselines |
+| compression/low precision | moves fewer bytes | conversion cost, error, or poor compressibility dominates | payload reduction, conversion time, and numerical/convergence result |
+| hierarchical algorithm | keeps bulk traffic on fast local links | leader or upper-tier phase becomes serialized | bytes and time per topology tier, not aggregate fabric utilization |
 
 ## 7. Peer memory and address spaces
 
@@ -225,6 +295,20 @@ Per link/path/rank/collective:
 - retry/errors/degraded links.
 
 Profile the complete step timeline. Device kernel metrics alone cannot explain scale-up efficiency.
+
+### 12.1 Verification and procedural diagnosis
+
+Correctness properties should cover both transport and collective state:
+
+1. each packet sequence is accepted at most once per communicator epoch and collective step, even across CRC replay;
+2. a credit is consumed only when a packet occupies the corresponding downstream resource and returned exactly once when that resource is freed;
+3. reduction completion includes every required rank exactly once and cannot mix tensor ranges, data types, operations, or epochs;
+4. DMA completion is not reported before data reaches the promised visibility point; system- or peer-scope consumers use the required fence;
+5. timeout, link reset, or rank failure either completes reconfiguration consistently across ranks or terminates the collective—no subset may silently continue in the old communicator;
+6. route/channel arbitration guarantees the documented progress class and cannot deadlock a cyclic request/response dependency;
+7. overlapping compute cannot overwrite a chunk until its last collective reader releases it.
+
+Diagnose a slow collective in path order: confirm all ranks entered the same operation; locate the slowest rank and first delayed chunk; separate DMA-read, injection-credit, link-transfer/replay, remote reduction/write, and synchronization time; identify the hottest physical cut; then compare that interval with HBM and compute activity. This avoids “fabric bound” as a catch-all when the actual limit is source HBM, endpoint reduction, rank skew, or a missing overlap dependency.
 
 ## 13. Numbers to remember
 

@@ -98,7 +98,112 @@ Runtime faults include compilation/guard failure, illegal memory, launch/resourc
 
 Performance is bounded by plan critical path, not sum of kernels. Track launch/queue gaps, kernel time, transfers, collectives, allocator/compilation time, and overlap. A fused kernel wins only if removed traffic/launch exceeds reduced occupancy, recomputation, or longer critical-path effects.
 
-## 10. Invariants, tests, and staged construction
+## 10. Worked construction: `Y = GELU(XW + b)` from graph to completed event
+
+This example makes every layer concrete. Let `X` be `[M,K]`, `W` be `[K,N]`, bias `b` be `[N]`, and `Y` be `[M,N]`. **GELU** is the Gaussian error linear unit activation. Assume half-precision inputs, wider accumulation, row-major logical tensors, and dimensions initially known only within profiles.
+
+### 10.1 Minimum correct baseline and the bottleneck it exposes
+
+The minimum stack can lower matrix multiplication, bias addition, and GELU to three validated library/generated kernels on one stream:
+
+```mermaid
+flowchart LR
+    X["X[M,K]"] --> GEMM["kernel 0: XW"]
+    W["W[K,N]"] --> GEMM
+    GEMM --> T0["temporary T0[M,N] in HBM"]
+    T0 --> BIAS["kernel 1: + b"]
+    B["b[N]"] --> BIAS
+    BIAS --> T1["temporary T1[M,N] in HBM"]
+    T1 --> GELU["kernel 2: GELU"]
+    GELU --> Y["Y[M,N]"]
+```
+
+This baseline is valuable because it establishes reference semantics and a fallback. Its demonstrated cost is two extra full-tensor writes and reads through high-bandwidth memory (HBM), two extra launches, and two live temporaries. That evidence derives a fusion requirement: keep each accumulator tile on chip, add bias, apply GELU, and write `Y` once.
+
+Fusion is legal only after the compiler proves that `T0/T1` do not escape, aliasing does not expose their intermediate values, the requested numerical tolerance permits the chosen activation approximation and accumulator conversion, and the fused kernel fits register/shared-memory limits. If any proof fails, retain the baseline region rather than silently changing semantics.
+
+### 10.2 IR transformations must preserve a readable proof trail
+
+The importer first creates semantic operations `matmul`, `broadcast_add`, and `gelu`. Shape inference proves `X.K == W.K` and `W.N == b.N`; alias analysis proves `Y` does not overlap a live input illegally. A fusion pass creates one region but retains a source map from each fused instruction range to the three original nodes. Layout selection may pack `W` into a tensor-core-friendly physical layout; the logical indexing contract and packing version remain in the executable.
+
+```mermaid
+flowchart TD
+    S["semantic IR: matmul -> add -> GELU"] --> L{"shape, alias, precision, target legal?"}
+    L -->|"no"| F["three-kernel reference/fallback region"]
+    L -->|"yes"| R["fused region with source map"]
+    R --> T["choose BM x BN x BK tile + warp roles"]
+    T --> M["allocate shared-memory stages + register accumulators"]
+    M --> P["pipeline async global-to-shared copies with matrix instructions"]
+    P --> E["bias + GELU epilogue; one global write"]
+    E --> G{"resource and numerical checks pass?"}
+    G -->|"no"| T
+    G -->|"yes"| C["emit kernel, guards, ABI, metadata, fallback ID"]
+```
+
+For a candidate tile, the compiler materializes exact state: shared-memory buffers `A[stage][BM,BK]` and `B[stage][BK,BN]`; per-warp accumulator fragments; asynchronous-copy group/barrier phase; loop trip count `ceil(K/BK)`; edge predicates for partial `M/N/K` tiles; bias pointer/stride; and output conversion mode. Producer warps issue copies for tile `k+1` while consumer warps compute tile `k`. A stage cannot be overwritten until every consumer has acknowledged its phase. This is a bounded producer-consumer protocol, not merely an instruction-reordering hint.
+
+### 10.3 One tile over time
+
+```wavedrom
+{ "signal": [
+  { "name": "copy_stage0", "wave": "01..0........" },
+  { "name": "stage0_ready", "wave": "0..1...0....." },
+  { "name": "mma_stage0", "wave": "0...1..0....." },
+  { "name": "copy_stage1", "wave": "0...1..0....." },
+  { "name": "stage1_ready", "wave": "0......1...0." },
+  { "name": "mma_stage1", "wave": "0.......1..0." },
+  { "name": "epilogue", "wave": "0..........10" },
+  { "name": "Y_write", "wave": "0...........1" }
+] }
+```
+
+If stage 1's copy is delayed, the consumer waits on its ready phase while stage 0 is no longer reusable until its consumers release it. A correct scheduler does not advance the phase counter merely because a copy instruction was issued. If register pressure from the fused epilogue reduces occupancy enough that the wait cannot be hidden, the fused candidate can lose to a split kernel despite lower HBM traffic. The autotuner must compare end-to-end region time, not reward fusion by construction.
+
+### 10.4 Runtime submission and exact object lifetimes
+
+At model load, the runtime validates the executable target and code object, allocates or imports `W`, packs it if the packing-cache key misses, records a `weights_ready` event, and pins the allocation generation while the model version is live. For invocation `R27`, it then performs:
+
+```mermaid
+sequenceDiagram
+    participant H as Host executor
+    participant A as Pool allocator
+    participant S0 as Copy stream
+    participant S1 as Compute stream
+    participant D as Driver/GPU
+    H->>H: validate profile guards and tensor schemas
+    H->>A: reserve Y + workspace; capture generations
+    H->>S0: enqueue X upload or wait on producer event
+    S0-->>H: event X_ready(R27)
+    H->>S1: wait X_ready + weights_ready
+    H->>S1: launch fused kernel(R27, pointers, dimensions)
+    S1->>D: command with code ID, ABI parameters, event ID
+    D-->>S1: terminal completion or fault
+    S1-->>H: Y_ready(R27)
+    H->>A: retire workspace after last-use event
+    H-->>H: publish output or propagate terminal error once
+```
+
+Every command captures allocation `(address, generation)` pairs, not bare pointers. If a canceled request releases workspace and the pool reuses the same address, a delayed command or completion from the old cancel epoch is rejected rather than corrupting the new owner. Cross-stream order comes from recorded events; host enqueue order is insufficient.
+
+### 10.5 Failure, fallback, and replay boundaries
+
+Failures at different layers have different safe recovery:
+
+- **shape guard fails before submission:** choose another compatible compiled profile, then an explicitly allowed reference/fallback region, or reject. No GPU side effect has occurred, so whole-region replay is safe.
+- **allocation fails before commands publish:** release reservations and retry under a smaller batch/profile if policy permits. A partially admitted batch retains its original request identities.
+- **kernel reports illegal memory access/device loss:** the output and context may be poisoned. Do not rerun only the GELU portion because the fused kernel has no committed intermediate. Recover the context/device as required and replay the whole region from immutable inputs, or fail the invocation once.
+- **collective or externally visible state follows the kernel:** replay requires an idempotence/epoch protocol across that boundary. A local kernel completion alone does not prove the distributed operation can be repeated.
+- **numerical differential test fails during tuning:** quarantine that candidate and preserve its compiler/target/configuration identity; never put it in the performance cache.
+
+The exact-once unit is the invocation/plan node, while transport commands may retry underneath it. Record states `Created → Guarded → ResourcesReserved → Submitted → Running → Completed`, with terminal alternatives `Failed` and `Canceled`. Only `Completed` publishes `Y_ready`; a reset-epoch mismatch turns a late completion into diagnostic evidence, not success.
+
+### 10.6 Cost, observability, and verification closure
+
+The added machinery consumes compile time, code-cache capacity, guard branches, packed-weight storage, runtime event records, pooled-memory fragmentation, registers, shared memory, and validation space. It loses for tiny matrices where launch and specialization costs dominate, for rare shapes that explode variants, for low-reuse weights whose packing cost is not amortized, or when fusion reduces occupancy/parallelism. Preserve the three-kernel baseline as both fallback and oracle.
+
+An end-to-end trace for `R27` should connect framework node IDs, IR/fusion region, guard/profile choice, kernel/code-object ID, tile candidate, stream/command/event IDs, allocation generations, hardware counters, and terminal output. Verify adjacent boundaries: framework versus semantic IR; unfused versus fused output over edge shapes and special values; compiler-estimated versus measured resources; event dependency graph versus randomized stream delays; stale-generation and reset-epoch injection; allocator last-use safety; and the same request with fusion disabled. The stack is reproducible when a slow or wrong `Y` can be traced to an assumption, command, resource stall, or numerical transformation—not merely to “the GPU.”
+
+## 11. Invariants, tests, and staged construction
 
 Invariants: every generated kernel maps to source semantic nodes; guards dominate specialization; task dependencies cover every producer/consumer and mutable alias; device allocation generations reject stale commands; workspace slices do not overlap live uses; collective sequence/group matches all ranks; and each submitted task completes/faults/cancels once.
 

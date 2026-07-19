@@ -22,6 +22,23 @@ A GPU number — "1.9 IPC," "achieved 82% of HBM peak," "230 W" — is only as t
 
 The scope line is precise: [GPU Core Architecture](../01_Core_Architecture/00_Index.md) defines what the SM and memory system are; this page explains the **simulator**—its execution/trace paradigm, timing model, and the reduction from a workload to a validated statistic.
 
+### 0.1 Why the simulation stack gained each layer
+
+The methods are an evolution driven by questions that the previous model cannot answer:
+
+```mermaid
+flowchart LR
+    A["operation counts / roofline"] -->|"cannot expose scheduler, MSHR, or contention stalls"| B["cycle timing model"]
+    C["static kernel assembly"] -->|"does not reveal dynamic branches, masks, or addresses"| D["functional execution frontend"]
+    D -->|"PTX is not final allocation or scheduling; closed libraries unavailable"| E["hardware-captured SASS trace frontend"]
+    E -->|"trace freezes timing-sensitive paths"| F["execution-driven fallback / matched path-validity tests"]
+    B --> G["component events and raw counters"]
+    E --> G
+    G -->|"a cycle total alone cannot localize error"| H["counter-level silicon calibration + paired residuals"]
+```
+
+The timing model is the shared middle: either frontend supplies the next dynamic warp instruction, active mask, operands, and addresses; the model decides **when** it can issue and complete under a selected microarchitecture. The final validation layer determines whether those modeled mechanisms predict hardware inside a declared workload and generation envelope.
+
 ---
 
 ## 1. Two simulators, two paradigms
@@ -206,13 +223,21 @@ For the GPU-specific source/compiler/ROI/counter chain, see [GPU source-to-resul
 
 A CUDA `.cu` translation unit contains ordinary host C++ plus device functions and kernels. The compiler driver logically performs two compilations:
 
-~~~text
-CUDA source
-├─ host path -> host C++/object -> CPU executable
-└─ device path -> PTX virtual ISA -> ptxas -> target cubin/SASS
-                                      └──────┬──────┘
-                         PTX + one/more cubins -> fat binary embedded in host object
-~~~
+```mermaid
+flowchart LR
+    SRC["CUDA .cu source"] --> SPLIT{"compiler-driver split"}
+    SPLIT --> HOST["host C++ compilation<br/>CPU object + executable"]
+    SPLIT --> DEV["device compilation"]
+    DEV --> PTX["PTX virtual ISA"]
+    PTX --> PTXAS["ptxas<br/>target-specific assembly + allocation"]
+    PTXAS --> CUBIN["cubin containing SASS machine code"]
+    PTX --> FAT["fat binary"]
+    CUBIN --> FAT
+    FAT --> HOST
+    HOST --> RUN["host launches kernel;<br/>driver selects cubin or JIT-compiles PTX"]
+```
+
+PTX is the compiler's virtual instruction set; SASS is the native instruction set executed by a particular NVIDIA target. A `cubin` packages target machine code, while a fat binary can embed PTX and one or more cubins so the driver can select a compatible image.
 
 At launch, the CUDA runtime/driver selects a compatible cubin for the real GPU; if only compatible PTX is available, it may just-in-time compile PTX to a target cubin. Consequently, record the CUDA toolkit, `-arch`/`-code` targets, optimization/fast-math flags, libraries, and driver used for trace capture. They determine final instruction scheduling, register allocation, spills, and numerical operations.
 
@@ -253,6 +278,40 @@ Before cycle 0 of a kernel, the model knows grid dimensions, block dimensions, r
 
 Stall counters are predicates sampled at these gates: no eligible warp, scoreboard dependency, pipeline full, operand-collector conflict, MSHR full, interconnect backpressure, DRAM queueing, or barrier wait. They explain cycles; they are not compiler annotations.
 
+### 6.4.1 Replay one traced load through the timing state
+
+Take one dynamic trace record with `(warp, PC, opcode, active mask, source/destination registers, lane addresses)`. Its address values are input stimulus; all resource timing below is newly simulated:
+
+```mermaid
+sequenceDiagram
+    participant F as Trace / functional frontend
+    participant S as Scheduler + scoreboard
+    participant C as Coalescer / L1
+    participant N as NoC / L2 / HBM
+    participant A as Statistics accumulators
+    F->>S: next warp load record
+    S->>S: wait until sources ready and LD/ST pipe accepts
+    S->>A: issue++ ; active_lane_slots += popcount(mask)
+    S->>S: mark destination pending
+    S->>C: lane addresses + warp/destination generation
+    C->>C: form sector transactions
+    C->>A: requested_bytes and sector_count += formed work
+    alt MSHR / downstream credit unavailable
+        C-->>S: structural block; retain request for replay
+        S->>A: replay_or_queue_full_cycles++
+        C->>C: retry on a later modeled cycle
+    end
+    C->>N: accepted miss transactions
+    N->>N: arbitrate queues and advance timing constraints cycle by cycle
+    N-->>C: sector responses, possibly out of order
+    C->>C: clear pending-sector bits and reassemble lanes
+    C-->>S: final matching fragment writes destination
+    S->>S: clear scoreboard; dependent instruction becomes eligible
+    S->>A: completion, latency, cache, NoC, and DRAM events++
+```
+
+“Schedule an event” is a semantic description, not a requirement that the code use one global priority queue. A cycle simulator may advance pipeline latches and call each component once per cycle; an event-oriented implementation may store a future ready timestamp. They are equivalent only if they enforce the same earliest-completion time, arbitration order, queue occupancy, and backpressure. A rejected transaction must not increment accepted-traffic or completion counts; a replay must retain identity and must complete exactly once.
+
 ### 6.5 Raw outputs and reduction
 
 **Execution-driven (GPGPU-Sim).** `nvcc` compiles CUDA device code—or a supported OpenCL toolchain supplies its corresponding device artifact—into PTX and, when requested, target SASS in a fat binary → GPGPU-Sim extracts PTX (or `cuobjdump`'s SASS, optionally converted to PTXPlus) → a **functional** pass executes threads to produce correct state and the dynamic instruction stream → that same stream drives the **timing** pass, accumulating cycles through the §2–3 model.
@@ -264,6 +323,18 @@ Either way, the reported statistics are computed as:
 $$\text{IPC} = \frac{\text{warp-instructions executed}}{\text{cycles}}, \qquad \text{BW}_{\text{achieved}} = \frac{\text{bytes moved (post-coalesce)}}{\text{cycles}/f}, \qquad \text{occupancy} = \frac{\overline{\text{active warps}}}{\text{warps}_{\max}/\text{SM}}$$
 
 where $f$ = core clock and *warp-instructions* (machine-instruction count) is used for cross-simulator fairness. Each numerator is an accumulator the §2–§3 event loop increments: a warp-instruction on every issue, post-coalesce bytes on every transaction (§3), a running active-warp average sampled per cycle.
+
+```mermaid
+flowchart LR
+    E["raw per-cycle events<br/>issue, active lanes, cache access,<br/>queue grant, DRAM command, completion"] --> C["typed counters<br/>counts, occupancy integrals,<br/>latency and stall histograms"]
+    C --> K["per-kernel totals<br/>cycles, warp instructions,<br/>payload and transferred bytes"]
+    K --> M["derived metrics<br/>IPC, achieved BW, hit rate,<br/>occupancy, utilization"]
+    M --> P["activity × energy<br/>power and energy"]
+    M --> V["match ROI and counters<br/>against hardware"]
+    V --> R["signed residuals,<br/>rank fidelity, uncertainty"]
+```
+
+Derived metrics must be reproducible from preserved raw totals. For example, storing only a rounded hit rate loses the access denominator and makes weighted multi-kernel aggregation ambiguous. Preserve numerator, denominator, unit, clock domain, region of interest (ROI), and whether bytes are requested, post-coalescer, cache-fill, or physical-interface bytes.
 
 *Worked numbers — the three statistics for one SM's stream.* Suppose one SM retires $2.00\times10^{9}$ warp-instructions over $1.05\times10^{9}$ cycles: $\text{IPC}=2.00/1.05\approx\mathbf{1.9}$ (the "1.9 IPC" of §0, now sourced; $\le n_{\text{sched}}$, next paragraph). If over those cycles its coalescer sent $4.8\times10^{8}$ 32-byte sectors to HBM $=15.4$ GB, then at $f=1.4$ GHz the run is $1.05\times10^{9}/1.4\times10^{9}=0.75$ s and $\text{BW}_{\text{achieved}}=15.4/0.75\approx\mathbf{20.5\ GB/s}$ for this SM — $\times\,132$ SMs $\approx2.7$ TB/s, i.e. **~81% of a 3.35 TB/s HBM3 part**, the "achieved fraction of peak" of §3 as an *output* of contention, not an input. If the per-cycle active-warp average is $48$ against $W_{\max}=64$, occupancy $=48/64=\mathbf{75\%}$. All three fall out of the same accumulators, which is why they are mutually consistent rather than three separate estimates.
 
@@ -338,6 +409,21 @@ A defensible attribution workflow is:
 5. report remaining residuals without renaming them a universal floor.
 
 Performance and power error also cannot be combined by taking the root-sum-square of MAE and MAPE values; those are mean absolute metrics, not standard deviations, and their residuals share activity counters. Propagate paired signed residuals through the energy calculation, bootstrap complete runs, or report conservative intervals. Co-validation against the same silicon is valuable precisely because it reveals that covariance.
+
+### 8.3 Simulator verification before silicon validation
+
+Validation asks whether the model predicts hardware; verification first asks whether the implementation obeys its own model. Use invariants and tiny synthetic kernels before fitting parameters:
+
+1. **Instruction conservation:** every admitted dynamic warp instruction is either issued once or remains blocked for a named reason; retirement never exceeds issue.
+2. **Lane accounting:** active plus inactive lane-slots equals warp width for every issued instruction; divergent path masks reproduce the functional path.
+3. **Memory conservation:** lane requests map to coalesced sectors; accepted sectors equal hits plus misses; every accepted miss ends in one fill/defined fault; returned bytes never exceed their transaction masks.
+4. **Resource bounds:** resident blocks, registers, shared memory, MSHRs, queue entries, credits, and pipeline occupancy never exceed configuration capacity.
+5. **Causality:** completion time is no earlier than issue plus the declared latency and all intervening arbitration/command constraints; a scoreboard clears only on the matching completion.
+6. **Progress:** with finite-latency memory and available output space, replay queues and warps eventually advance; request/response networks cannot form an unmodeled deadlock.
+7. **Reduction consistency:** recomputing IPC, bandwidth, occupancy integrals, and energy from raw logs matches the reported summary within rounding.
+8. **Determinism contract:** identical seed, trace, configuration, and scheduling mode reproduce event counts; intentional randomization records its seed and run distribution.
+
+Then use differential tests: infinite-cache versus finite-cache, zero-latency versus calibrated latency, one versus many SMs, one versus many memory partitions, and FIFO versus FR-FCFS. Each controlled change should move only its causal counters. If doubling HBM bandwidth changes dynamic instruction count in a supposedly path-frozen SASS replay, either the statistic boundary is wrong or timing has leaked into functional replay.
 
 ---
 

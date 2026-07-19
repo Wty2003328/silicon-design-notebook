@@ -30,6 +30,33 @@ This chapter bridges the gap between the protocol-level view in [CPU_Architectur
 
 The organizing claim is simple: **stable states express permission; transient states express unfinished obligations.** A correct controller must track both.
 
+### 0.1 The protocol evolution: reduce traffic without weakening the permission proof
+
+Coherence features evolved by preserving the same single-writer/multiple-reader contract while removing a particular source of serialization or traffic:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
+flowchart LR
+    A["One shared cache / no private copies\nimplicit serialization; poor scaling"]
+    B["Write-through snooping\nmemory current; every write broadcasts"]
+    C["Write-back MSI\nM state keeps private dirty data local"]
+    D["MESI\nE state proves clean exclusivity"]
+    E["MOESI / MESIF\nowner or forwarder supplies shared data"]
+    F["Directory protocol\nrecord sharers/owner; target messages"]
+    G["Split-transaction scalable fabric\ntransient states, IDs, acks, VCs, retries"]
+
+    A -->|"shared-cache ports and distance bottleneck"| B
+    B -->|"write bandwidth grows with store rate"| C
+    C -->|"private read then write still broadcasts upgrade"| D
+    D -->|"dirty sharing or responder selection wastes traffic"| E
+    E -->|"broadcast work grows with agent count"| F
+    F -->|"network latency makes state changes non-atomic"| G
+```
+
+**MSI** (Modified, Shared, Invalid) adds dirty ownership so repeated writes can remain private; it also creates the obligation to find the owner because memory may be stale. **MESI** adds Exclusive for a clean line known to have no other copy, turning the common private read-then-write sequence into a silent `E→M` transition. **MOESI** adds Owned so dirty data can be shared without immediately writing memory; **MESIF** instead names one clean Forward responder to avoid multiple caches replying. A directory replaces broadcast with stored sharer/owner identities, trading network traffic for directory capacity and overflow policy. Once requests and responses can be independently delayed, all of these protocols require transient state, transaction IDs, acknowledgement proofs, and deadlock-safe message classes.
+
+Thus a new stable letter is justified only if it removes enough messages on a common trace to repay its extra state transitions and verification space. It never removes the underlying obligations: identify the newest data, revoke incompatible permissions, and establish one serialization order per line.
+
 ---
 
 ## 1. Three contracts that are often confused
@@ -199,6 +226,65 @@ For a whole-line overwrite, the implementation may avoid fetching old data if by
 Upgrade is GetM with the data response suppressed because the requester already has a clean copy. It is safe only while that copy remains valid and no intervening writer can change the value. The home serializes Upgrade with every other request for the line; losing a race may force retry or a full GetM.
 
 *Worked traffic number.* Four sharers hold \(X\), including requester C0. C0 upgrades. The home sends three invalidations and receives three acknowledgements: six control messages, plus request and grant = **eight control messages, zero data lines**. A naive GetM that refetched the 64-byte line would add at least one data transfer. Upgrade attacks data bandwidth, not the fundamental \(O(K)\) revocation cost.
+
+### 4.5 One line through private read, sharing, write ownership, and handoff
+
+Replay one physical line `X`, initially containing `0` in memory with every private cache Invalid. `C0` loads, `C1` loads, `C0` stores `1`, `C1` loads the new value, and finally `C1` stores `2`. The trace uses a directory and MOESI because it exposes both clean sharing and a dirty owner; the MESI alternative is noted at the dirty handoff.
+
+```mermaid
+sequenceDiagram
+    participant C0 as Core 0 L1
+    participant H as Home / directory
+    participant C1 as Core 1 L1
+    participant M as Memory
+
+    C0->>H: GetS(X) for load
+    H->>M: read X=0; directory has no sharer
+    M-->>C0: Data 0 + exclusive-clean grant
+    Note over C0,H: C0=E; directory owner/sharer=C0; memory=0 current
+
+    C1->>H: GetS(X) for load
+    H->>C0: downgrade/probe E copy
+    C0-->>H: shared acknowledgement
+    H-->>C1: Data 0 + shared grant
+    Note over C0,C1: C0=S, C1=S; both may read 0, neither may write
+
+    C0->>H: Upgrade(X) for store 1; C0 enters SM
+    H->>C1: Invalidate X
+    C1-->>H: InvAck after X becomes I
+    H-->>C0: exclusive grant after all acks
+    Note over C0,M: C0=M and writes 1; memory still contains stale 0
+
+    C1->>H: GetS(X) for later load
+    H->>C0: Forward GetS; memory must not answer
+    C0-->>C1: Data 1
+    C0-->>H: owner response / downgrade
+    H-->>C1: shared completion
+    Note over C0,C1: MOESI: C0=O, C1=S; C1 reads 1
+
+    C1->>H: Upgrade/GetM(X) for store 2; C1 enters SM
+    H->>C0: invalidate/recall dirty owner
+    C0-->>H: owner acknowledgement; relinquish X
+    H-->>C1: exclusive grant
+    Note over C0,C1: C0=I, C1=M and writes 2; single writer preserved
+```
+
+The state/data ledger makes the proof explicit:
+
+| Step | C0 | C1 | Directory knowledge | Newest value location | Why the next operation is legal |
+|---|---|---|---|---|---|
+| Initial | I | I | no sharers/owner | memory=`0` | memory is authoritative |
+| C0 load | E | I | sole clean holder C0 | C0 and memory=`0` | E proves no peer copy, enabling silent future write if C1 never arrives |
+| C1 load | S | S | sharers `{C0,C1}` | both caches and memory=`0` | multiple readers, no writer |
+| C0 store | M | I | owner `C0` | C0=`1`; memory stale `0` | C0 waited for C1's invalidation acknowledgement before writing |
+| C1 load | O | S | owner `C0`, sharers include C1 | C0/C1=`1`; memory stale `0` | home forwarded from dirty owner, never stale memory |
+| C1 store | I | M | owner `C1` | C1=`2`; memory stale | C0 relinquished owner/read permission before C1's grant |
+
+In **MSI**, the first C0 load would end in S even with no other copy, so a following C0 store would send an unnecessary Upgrade. MESI's E state removes exactly that message. In **MESI**, C0's dirty response to C1's load normally updates memory and both become S; MOESI's O state avoids that writeback and keeps C0 responsible for dirty shared data. O wins for repeated producer-consumer handoffs but expands the controller and directory cases because memory is stale while several readers exist.
+
+The important timing boundary is not “request sent” or even “data received.” C0 may leave SM and perform its store only after exclusive permission is present **and** the invalidation count is zero. Similarly, C1's first load cannot accept memory's `0` while the directory names dirty owner C0; only C0's `1` is legal. Data and permission may arrive in either order, so transaction state needs independent `data_present` and `permission_present/acks_remaining` conditions.
+
+**Costs, observables, and verification.** Record GetS/GetM/Upgrade counts, data source (memory/owner/LLC), silent `E→M`, invalidations and acknowledgements per ownership grant, owner interventions, dirty handoffs, retry rate, transaction dwell by transient state, and bytes/flit-hops. The same trace should reduce to different message counts under MSI, MESI, and MOESI while returning values `0,0,1` and ending with only C1 writable at value `2`. Assertions should check at every event—not only stable endpoints—that at most one cache has write permission, a grant to M implies zero outstanding revocations, memory never responds while a dirty owner is authoritative, data equals the latest line-coherence-order write, and stale/duplicate acknowledgements cannot decrement a new transaction's counter. Cover the same trace with data-before-ack, ack-before-data, replacement, backpressure, and both cores issuing the last ownership request simultaneously.
 
 ---
 

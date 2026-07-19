@@ -205,6 +205,57 @@ Two mechanisms ride on top, each amortizing a fixed cost:
 
 The essential point: FR-FCFS, write batching, and QoS are three terms of one objective — maximize row-hit throughput, minus turnaround waste, subject to fairness and deadline constraints.
 
+### 5.3 Follow one read: address → queue → legal commands → ECC → response
+
+Now execute one 64-byte CPU read `R17` instead of discussing the structures separately. Its physical address maps to channel 0, rank 0, bank group 1, bank 3, row 42, column 6. Bank 3 currently has row 19 open, so `R17` is a **row conflict**. A younger DMA request `D9` already targets row 19 and is therefore a row hit. This pair exposes why the controller needs mapping, queues, timing state, reordering, ECC, and response tracking.
+
+```mermaid
+sequenceDiagram
+    participant CPU as "CPU/AXI requester"
+    participant IN as "ingress + address map"
+    participant Q as "read queue"
+    participant S as "FR-FCFS + timing guards"
+    participant B as "DRAM bank/data bus"
+    participant E as "ECC + response queue"
+    CPU->>IN: "AR(ID=17, PA, 64 B, QoS)"
+    IN->>Q: "allocate R17: ch0/r0/bg1/b3/row42/col6"
+    Note over Q,S: "D9 is younger but hits open row19; serve D9 first unless R17 age/deadline overrides"
+    S->>B: "READ D9 (legal row hit)"
+    S->>B: "PRE bank3 after tRAS and bus guards"
+    S->>B: "ACT row42 after tRP and rank ACT guards"
+    S->>B: "READ R17 after tRCD and column-bus guard"
+    B-->>E: "DQ burst after CL"
+    E->>E: "capture → ECC decode/correct → beat mask complete"
+    E-->>CPU: "R(ID=17, data, corrected/poison status)"
+```
+
+**Ingress and mapping.** The AXI/CHI front end accepts `R17` only after allocating a transaction/response slot. The entry retains `{source port, protocol ID 17, address, size/burst, byte enables, QoS/order domain, arrival time, error state}`. Address mapping derives the DRAM tuple; the controller must preserve both identities because the DRAM scheduler uses the tuple while the return network uses source/ID. A bad implementation overwrites the protocol ID with a bank index and later cannot route an out-of-order response.
+
+**Queueing turns arrival order into a choice.** `R17` enters the read queue with `next_command=PRE`, while `D9` has `next_command=READ`. Plain FCFS would choose the older `R17`, close row 19, and destroy `D9`'s free hit. FR-FCFS first filters for commands legal in the current cycle, then promotes the row-hit `D9`; age/starvation and QoS can eventually override that preference. The queue entry therefore needs more than an address: decoded location, row-hit/command status, age/deadline, dependency/order class, and source quotas. Reordering is bounded by the requester's ordering contract and by the finite response reorder state.
+
+**Command generation is repeated readiness, not one precomputed delay.** After `D9`, the scheduler considers `R17` each command cycle:
+
+1. `PRE bank3` may issue only after row 19 has satisfied $t_{RAS}$, its last write/read guards, and the command bus is free. Issue changes the bank to precharging and sets its next legal `ACT` to `now + tRP`.
+2. `ACT row42` may issue when precharge completes *and* rank/bank-group guards such as $t_{RRD}$ and the four-activate window $t_{FAW}$ permit it. Issue records `open_row=42`, starts restore state, and sets `READ_earliest = now + tRCD` plus future `PRE/ACT` deadlines.
+3. `READ col6` may issue once row 42 is active and column-command/data-bus guards permit. The controller reserves the future DQ interval at `READ + CL`; another bank may be ready yet lose because its burst would overlap that interval.
+4. The PHY captures the burst, deskews/deserializes it, and reports beat/framing status. The controller assembles the cache line and marks returned beats in `R17`'s entry.
+
+At every step, contention can extend wall time beyond the nominal conflict sum. Rank-level ACT power limits can delay `ACT`; another bank's column command can delay `READ`; a write-drain phase or read/write turnaround can delay the data bus; refresh can block the rank; and response backpressure can hold the completed line after DRAM service. The observable latency is therefore
+
+$$
+L_{R17}=L_{ingress\ queue}+L_{command\ wait}+t_{RP}+t_{RCD}+t_{CL}+t_{burst}+L_{ECC}+L_{response\ wait},
+$$
+
+where only the middle device timings appear in a datasheet.
+
+**ECC is part of completion, not an afterthought.** System ECC is checked on the assembled codeword before data is declared valid. No syndrome returns the data normally. A correctable syndrome selects/flips the bad bit, increments a corrected-error counter, records syndrome/address for scrub policy, and returns corrected data—often with one or more pipeline cycles. An uncorrectable syndrome must propagate poison/error under the platform contract; it must not free `R17` as a successful read. Some controllers perform a bounded reread or link/PHY retry to distinguish a transient transfer error, but that attempt retains the same live `R17` and cannot create a second architectural completion. Persistent failure is contained/reported rather than retried forever.
+
+**Return and retirement.** The response queue checks that every expected beat is present, associates ECC/error status, and selects the source/ID. It may return `D9` before `R17` if their IDs/order domains permit. Once `R(ID=17)` handshakes, the controller frees the response and transaction entry exactly once; bank row 42 may stay open under open-page policy. “DRAM data arrived” and “requester accepted a response” are different timestamps and must not share one counter.
+
+The PPA cost follows the state just exercised: deeper request/response queues expose more bank parallelism but add SRAM/comparators; richer age/QoS selection enlarges the critical scheduling search; more outstanding IDs add return-state and muxing; ECC adds check-bit storage, XOR trees, latency, and RAS registers. A wider scheduler window can improve row-hit rate yet increase starvation pressure and dynamic power. An oversized queue at near-saturation often worsens tail latency without raising bandwidth—the service resource, not storage, is full.
+
+**Replayable evidence and invariants.** Capture the accepted request record, decoded tuple, queue insertion/removal, every issued command with cycle and blocking-guard reason, open-row transitions, DQ reservation/beat receipt, ECC syndrome/action, and response handshake. Counters should separate queue wait, row hit/empty/conflict, each command/timing stall, read/write turnaround, refresh, bus utilization, ECC class, response backpressure, and per-source age. Assert one live entry before acceptance; no command before all guards; one open row per bank; no overlapping DQ owners; returned beats match the declared burst; ECC status accompanies the data it checked; same-ID ordering is preserved; and every accepted request produces exactly one success/error response under bounded downstream readiness. Replaying that event ledger against a small reference bank/timing model should reproduce the same command and completion cycles.
+
 ---
 
 ## 6. Refresh: the mandatory background tax

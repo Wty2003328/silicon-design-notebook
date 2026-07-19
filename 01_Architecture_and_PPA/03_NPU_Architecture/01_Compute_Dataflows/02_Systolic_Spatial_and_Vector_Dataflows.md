@@ -37,6 +37,94 @@ In an output-stationary mapping, a processing element keeps one or more partial 
 
 **Beginner checkpoint:** count useful multiply-accumulate operations divided by available processing-element cycles. Then separate idle cycles caused by array shape, pipeline fill/drain, dependencies, imbalance, and missing data. Peak operations per second alone hides all five.
 
+### Build a systolic schedule from a two-by-two multiplication
+
+The term *systolic* can sound more mysterious than the circuit is. Derive it from the smallest nontrivial case. Let
+
+$$
+A=\begin{bmatrix}a_{00}&a_{01}\\a_{10}&a_{11}\end{bmatrix},\qquad
+B=\begin{bmatrix}b_{00}&b_{01}\\b_{10}&b_{11}\end{bmatrix}.
+$$
+
+Four output-stationary PEs hold $C_{00}$ through $C_{11}$. $A$ values enter from the left and move right; $B$ values enter from the top and move down. Each PE contains two input registers, one partial-sum register, a MAC, valid/tag state, and two forwarding registers:
+
+```mermaid
+flowchart LR
+    Ain["A input + valid/tag"] --> AR["A register"]
+    Bin["B input + valid/tag"] --> BR["B register"]
+    AR --> MAC["multiply-add"]
+    BR --> MAC
+    PS["stationary partial sum C"] --> MAC
+    MAC --> PS
+    AR --> Aout["forward A right"]
+    BR --> Bout["forward B down"]
+```
+
+If all four rows and columns begin simultaneously, the wrong operands meet. The boundary therefore *skews* row $i$ by $i$ cycles and column $j$ by $j$ cycles. This alignment rule creates the diagonal wavefront:
+
+```mermaid
+flowchart TB
+    A0["row 0: a00, a01 at cycles 0,1"] --> P00["PE00 / C00"] --> P01["PE01 / C01"]
+    A1["row 1: a10, a11 at cycles 1,2"] --> P10["PE10 / C10"] --> P11["PE11 / C11"]
+    B0["col 0: b00, b10 at cycles 0,1"] --> P00 --> P10
+    B1["col 1: b01, b11 at cycles 1,2"] --> P01 --> P11
+```
+
+The exact useful work is:
+
+| Cycle | PE00 | PE01 | PE10 | PE11 | What changed |
+|---:|---|---|---|---|---|
+| 0 | $a_{00}b_{00}\rightarrow C_{00}$ | idle | idle | idle | leading corner enters |
+| 1 | $a_{01}b_{10}\rightarrow C_{00}$ | $a_{00}b_{01}\rightarrow C_{01}$ | $a_{10}b_{00}\rightarrow C_{10}$ | idle | three PEs lie on the wavefront |
+| 2 | idle | $a_{01}b_{11}\rightarrow C_{01}$ | $a_{11}b_{10}\rightarrow C_{10}$ | $a_{10}b_{01}\rightarrow C_{11}$ | trailing wave reaches the far PE |
+| 3 | idle | idle | idle | $a_{11}b_{11}\rightarrow C_{11}$ | final result completes |
+
+```wavedrom
+{ "signal": [
+  { "name": "clock", "wave": "p...." },
+  { "name": "A row 0 in", "wave": "==xxx", "data": ["a00", "a01"] },
+  { "name": "A row 1 in", "wave": "x==xx", "data": ["a10", "a11"] },
+  { "name": "B col 0 in", "wave": "==xxx", "data": ["b00", "b10"] },
+  { "name": "B col 1 in", "wave": "x==xx", "data": ["b01", "b11"] },
+  { "name": "PE00 useful", "wave": "11xxx" },
+  { "name": "PE01 useful", "wave": "x11xx" },
+  { "name": "PE10 useful", "wave": "x11xx" },
+  { "name": "PE11 useful", "wave": "xx11x" }
+] }
+```
+
+This trace explains three properties that a block-level diagram hides. First, **fill and drain are geometric**, not a memory accident: only one PE can work at cycle 0 and only one at cycle 3. Second, valid bits must travel with data; a global “array enabled” signal would make idle PEs accumulate garbage. Third, a stall cannot be inserted into only one forwarding path. Either elastic buffers preserve operand pairing, or the affected wavefront region stops together.
+
+### Evolve the dataflow by following the first bottleneck
+
+The preceding array fixes repeated global reads, but it is not automatically the right answer for every operation. Each next feature responds to a measured failure:
+
+| Observed failure on the baseline | Feature introduced | What must exist to enable it | New cost or failure mode |
+|---|---|---|---|
+| partial sums are repeatedly read and written | output-stationary accumulation | wide PE accumulator, clear/drain states, output ownership | long reductions occupy the accumulator; context switches become expensive |
+| weights are reused by many batches but reloaded at every output | weight-stationary mode | PE weight register/file, preload command, weight-valid/version bits | poor benefit for batch-1 or frequently changing weights; moving wide partial sums costs energy |
+| one source SRAM bank is read once per destination | multicast | destination mask, fanout tree, pipeline/credit state | wire capacitance and one blocked branch can throttle the tree |
+| $M$ or $N$ is smaller than the physical array | independently partitionable subarrays | boundary muxes, separate tags/counters, merge/reduction path | extra routing and control lower dense-mode efficiency |
+| normalization, activation, or gather leaves the array idle | vector lane path | vector register/SRAM ports, instruction sequencer, cross-lane reduction | centralized register/network energy; still inefficient for random memory latency |
+| operand DMA arrives late | double buffering and access–execute decoupling | two buffer phases, ready/release events, queues and credits | SRAM capacity and state-space double; bad reservation can deadlock |
+
+Now replay the $2\times2$ example in a vector engine. Two lanes can compute a row of $C$ together: broadcast $a_{00}$ while loading $(b_{00},b_{01})$, then broadcast $a_{01}$ with $(b_{10},b_{11})$. This takes two vector MAC steps for one output row and repeats for row 1. There is no diagonal fill/drain and changing the vector length is easy, but each step reads a vector register and traverses a broadcast/cross-lane network. The systolic version pays four ramp cycles yet forwards operands through tiny local registers. Consequently, vectors win for short, irregular, or rapidly changing shapes; the systolic array wins when a long regular stream amortizes the ramp and local movement. A heterogeneous NPU exists because neither losing case can be repaired by scheduling alone.
+
+### Trace-driven control and verification
+
+A real tile command should expose at least `(tile_id, m_valid, n_valid, k_count, dataflow, precision, input_bank, weight_bank, output_bank)`. At launch, the controller clears or restores the selected accumulators, initializes edge-skew counters, and attaches `tile_id` to the first valids. Each hop advances data, valid, reduction index, and tag together. At the trailing edge, a PE asserts output valid only after observing exactly `k_count` useful pairs. Boundary masks allow the same schedule to run a partial edge tile without committing padded results.
+
+The cycle trace gives direct verification properties rather than generic advice:
+
+- at PE$(i,j)$, the first legal pair cannot arrive before cycle $i+j$ after launch;
+- whenever a PE performs a MAC, its $A$ and $B$ tags, tile IDs, and reduction index must match;
+- each unmasked PE performs exactly `k_count` MACs before one output-valid event;
+- a stalled output cannot overwrite its accumulator, and backpressure must not separate a forwarded datum from its valid/tag;
+- masked rows/columns may switch internally but cannot update architectural output;
+- a buffer phase may be released only after the last wavefront that references it has passed.
+
+Counters should mirror the same states: useful PE-cycles, leading/trailing ramp cycles, boundary-masked cycles, operand-starved cycles, backpressured cycles, multicast stalls, subarray occupancy, and vector-fallback cycles. With those counters, the designer can decide whether the next improvement belongs in array shape, buffering, network, or compiler mapping instead of treating every low-utilization kernel as “not enough TOPS.”
+
 ## 1. Start from the loop nest
 
 Matrix multiplication $C_{mn}=\sum_k A_{mk}B_{kn}$ is the canonical three-loop computation:

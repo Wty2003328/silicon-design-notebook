@@ -31,6 +31,22 @@ flowchart LR
 
 Optimization is a hierarchy: coalesce lanes, reuse on chip, expose enough MLP, and balance memory partitions.
 
+### 0.1 How the path evolved from a lane load
+
+Start with the simplest possible implementation: each active lane sends its own request directly to memory. It is functionally correct, but it immediately exposes several throughput failures. The memory hierarchy evolves by repairing them in order:
+
+```mermaid
+flowchart LR
+    A["one request per active lane"] -->|"duplicates sectors and wastes bytes"| B["coalescer<br/>merge lanes by aligned sector"]
+    B -->|"repeated tiles still reach HBM"| C["L1 cache + software-managed shared memory"]
+    C -->|"one miss blocks later independent misses"| D["MSHRs + nonblocking replay"]
+    D -->|"many SMs concentrate on a few destinations"| E["partitioned L2 + address hashing"]
+    E -->|"virtual pages miss translation state"| F["multi-level TLB + parallel walkers"]
+    C -->|"copy instructions consume lanes and registers"| G["asynchronous global-to-shared copy"]
+```
+
+An **MSHR** (miss status holding register) is the metadata entry that represents an outstanding cache miss and remembers which later requests depend on its fill. “Nonblocking” means other independent accesses can proceed while that miss is outstanding. Every feature adds state that must survive replay: lane masks, byte enables, destination identity, warp/context generation, and the set of fragments still owed.
+
 ## Before the details: one instruction can create many transactions
 
 A warp executes one memory instruction, but each active lane supplies its own address. Hardware groups those addresses into aligned memory sectors or cache-line transactions. Consecutive addresses usually coalesce well; a large stride or scattered pattern may require many transactions and move far more bytes than the program requested.
@@ -68,6 +84,34 @@ A single warp instruction may occupy several miss-queue entries. Partial respons
 
 Stores merge byte masks/data from lanes. Conflicting lanes writing the same address have ISA-defined or undefined ordering depending on operation; atomics require explicit serialization, not arbitrary merge.
 
+### 2.1 One load, including partial completion and replay
+
+Trace an eight-lane example (shortened from a 32-lane warp) in which the lanes touch three sectors and one sector cannot allocate an MSHR on its first attempt:
+
+```mermaid
+sequenceDiagram
+    participant W as Warp / scoreboard
+    participant C as Coalescer + replay entry
+    participant L as L1 cache / MSHRs
+    participant M as Lower memory
+    W->>C: load {8 lane addresses, active mask, destination, generation g}
+    C->>C: form sectors S0, S1, S2 and lane-byte return maps
+    C->>L: request S0
+    C->>L: request S1
+    C->>L: request S2
+    L-->>C: S0 hit; return lanes 0..2
+    L-->>C: S1 miss accepted; MSHR allocated
+    L-->>C: S2 rejected; MSHR full
+    Note over C: pending = {S1, S2}; retain S2 for replay
+    C->>L: replay S2 after resource-ready signal
+    L->>M: misses for S1 and S2
+    M-->>C: S2 data returns first; write mapped lanes
+    M-->>C: S1 data returns; pending becomes empty
+    C-->>W: clear destination only for matching generation g
+```
+
+Replay is a resource protocol, not permission to duplicate architectural effects. The coalescer must retry only unaccepted work (or explicitly suppress duplicate accepted responses), merge out-of-order fragments into the right lane bytes, and wake the warp exactly once. A killed warp leaves its lower-level transactions in flight; the generation tag lets returning data be discarded instead of corrupting a newly admitted warp that reused the slot.
+
 ## 3. Shared memory: a programmer-controlled cache
 
 Shared memory is banked on-chip SRAM allocated per block. Software/compiler explicitly stages tiles, avoiding tag/replacement overhead and making reuse predictable.
@@ -81,6 +125,24 @@ d=\max_b |\{\text{distinct requested words mapping to bank }b\}|
 $$
 
 sets the idealized service multiplier. Padding a 2D tile changes row stride and can remove power-of-two conflicts.
+
+```mermaid
+flowchart TB
+    subgraph Bad["stride 32 words: distinct addresses, same bank"]
+        L0["lane 0: word 0"] --> B0["bank 0 queue"]
+        L1["lane 1: word 32"] --> B0
+        L2["lane 2: word 64"] --> B0
+        LN["..."] --> B0
+    end
+    subgraph Good["stride 33 words: padding rotates bank index"]
+        P0["lane 0: word 0"] --> G0["bank 0"]
+        P1["lane 1: word 33"] --> G1["bank 1"]
+        P2["lane 2: word 66"] --> G2["bank 2"]
+        PN["..."] --> GN["other banks"]
+    end
+```
+
+Both layouts store the same logical tile; the extra padding changes only the physical row stride seen by `bank = word_address mod B`. The first pattern needs one bank to serve many distinct words serially. The second exposes bank-level parallelism. A true broadcast—many lanes reading the **same** word—is different from a conflict and may be served once with replicated delivery.
 
 Shared memory trades occupancy for reuse. A larger tile reduces global traffic but consumes more shared memory per block, potentially reducing resident blocks and latency hiding.
 
@@ -110,6 +172,26 @@ $$
 GPU demand may require thousands of transactions device-wide. Per-SM limits can strand HBM bandwidth even when many warps are resident. Conversely, excessive MLP can saturate queues and increase tail latency/replay.
 
 Merge same-line requests but retain per-warp/lane completion. A single missing sector can hold a warp destination dependent on the operation's completion semantics.
+
+The full miss path is a chain of independently backpressured ownership transfers:
+
+```mermaid
+flowchart LR
+    C["coalescer subrequest"] --> A{"L1 tag lookup"}
+    A -->|"hit"| R["return sector"]
+    A -->|"miss and free MSHR"| M["allocate/merge MSHR<br/>record dependents"]
+    A -->|"miss and no entry/credit"| P["replay queue"]
+    P --> A
+    M --> N["NoC request credit"]
+    N --> L2["L2 slice / its MSHR"]
+    L2 --> H["HBM controller"]
+    H --> F["fill response"]
+    F --> M
+    M --> R
+    R --> D["lane-byte reassembly<br/>pending-fragment clear"]
+```
+
+Increasing one queue helps only if it is the binding stage. More L1 MSHRs can simply move backpressure to NoC credits or L2 miss entries; more outstanding work can also inflate queueing latency and evict useful lines. Capacity sweeps therefore need occupancy histograms and full-cycle counters at every boundary, not just a final bandwidth number.
 
 ## 6. L2 partitions and address camping
 
@@ -190,6 +272,18 @@ Measure:
 - asynchronous-copy overlap and barrier wait.
 
 A low “memory utilization” percentage may mean poor coalescing, insufficient outstanding requests, partition imbalance, cache hits doing useful work, or compute-bound execution. Diagnose the path, not one headline counter.
+
+Use the transaction conservation laws as verification anchors:
+
+1. every active requested byte is mapped to exactly one architectural return or a defined fault; inactive lanes create no side effect;
+2. the set of accepted sectors plus replay-pending sectors equals the set formed by the coalescer—no loss and no duplicate acceptance;
+3. an MSHR fill wakes every matching dependent and no nonmatching warp generation;
+4. dirty bytes and store byte-enables survive merge, eviction, retry, and writeback without widening into neighboring bytes;
+5. shared-memory arbitration serves every distinct bank address once, while a legal broadcast returns the same value to every participating lane;
+6. translation, cache, and coherence permissions are checked before an architectural load/store/atomic completes;
+7. fences and asynchronous-copy barriers release only after all operations in their declared scope reach the required visibility point.
+
+For performance diagnosis, compare adjacent event counts: lane requests → coalesced sectors → L1 misses → L2 misses → HBM transactions. The first ratio that changes unexpectedly identifies traffic amplification or lost reuse; the first queue whose full cycles rise identifies where additional memory-level parallelism stops helping.
 
 ## 12. Numbers to remember
 

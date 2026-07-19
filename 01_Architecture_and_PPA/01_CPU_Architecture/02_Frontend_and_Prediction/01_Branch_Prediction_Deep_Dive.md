@@ -108,6 +108,35 @@ $$
 
 where $S$ = predictor storage and $\rho$ = mispredict-rate reduction factor. So the $2.85\times$ accuracy demand above costs $\rho^2\approx\mathbf{8\times}$ predictor storage. *A machine 2× wider and 1.4× deeper needs ~8× the branch-predictor area to run at the same fraction of its peak* — the quantitative reason front-end predictor budgets climbed from a few hundred bytes on early pipelines to 32–64 KB (TAGE-SC-L in modern P-cores, §4.3) exactly as pipelines deepened and widened. Predictor area is not fashion; it is the $\rho^2$ tax of the $W\!\cdot\!P$ it protects, and it is why §0.1's $N_{\text{stage}}^\star\propto1/\sqrt{p_{\text{miss}}}$ and this $S\propto p_{\text{miss}}^{-2}$ co-evolved: deeper pipes and bigger predictors are the same design decision seen from two sides.
 
+### 0.3 How prediction evolved: follow the residual error
+
+The predictor family did not grow by accumulating unrelated algorithms. Each generation kept the previous generation as a fallback and added state for the class of misses that remained:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart LR
+    A["Wait for execute\ncorrect; every branch stalls"]
+    B["Static direction\nno learned state"]
+    C["1-bit then 2-bit bimodal\nper-PC bias + hysteresis"]
+    D["gshare / two-level\nPC + global history"]
+    E["Tournament\nselector chooses local or global"]
+    F["TAGE\ntagged geometric histories + usefulness"]
+    G["TAGE-SC / hybrid\ncorrect residual correlations"]
+    H["Decoupled multi-predictor frontend\nBTB + TAGE + ITTAGE + RAS + FTQ"]
+
+    A -->|"branch bubble dominates"| B
+    B -->|"different PCs have different bias"| C
+    C -->|"same PC changes with context"| D
+    D -->|"one history length and aliasing"| E
+    E -->|"fixed components waste capacity"| F
+    F -->|"provider has systematic residue"| G
+    G -->|"direction alone cannot supply target bandwidth"| H
+```
+
+The state evolution is equally important. Static prediction remembers nothing. Bimodal adds one saturating counter per indexed PC. Global-history prediction adds a shift register and a table indexed by a hash of PC and history. TAGE adds partial tags to reject destructive aliases, several history lengths so each branch can find an appropriate context, and usefulness counters so a newly allocated long-history entry cannot immediately override a proven shorter one. The complete frontend finally adds separate target/type state, a return stack, speculative-history checkpoints, and a fetch target queue (FTQ).
+
+The costs also evolve. Each accuracy feature increases lookup energy, alias corner cases, training latency, and recovery state. If a tiny embedded workload already has a two-bit-predictor misses-per-thousand-instructions (MPKI) below its performance target, TAGE can lose on energy and clock period. If a server workload has a large code footprint, a sophisticated direction predictor can still lose because the branch target buffer (BTB) misses or the instruction cache cannot supply the predicted target. Optimization must therefore classify residual misses—direction, target, return, indirect, capacity, or latency—instead of treating “branch mispredict” as one number.
+
 ---
 
 ## 1. What must be predicted, and why one structure cannot do it
@@ -161,6 +190,47 @@ flowchart TD
 ```
 
 The loop `PC → predict → next-PC → PC` closes every cycle; the FTQ (§7) lets it run ahead of the I-cache; and the one back-edge from execute is the mispredict recovery that §0's tax pays for. Hold that picture and the rest is filling in each box.
+
+### 1.1 One dynamic branch from prediction to retirement
+
+A block diagram shows ownership; a lifecycle shows why each metadata field exists. Assume a conditional branch at PC `B` is fetched under speculative global history `Hspec`. “Speculative” means the history already contains predicted outcomes of older branches that have not resolved. The frontend must use it to predict far ahead, but also be able to undo it.
+
+```mermaid
+sequenceDiagram
+    participant F as Fetch / next-PC
+    participant P as BTB + direction predictor
+    participant Q as FTQ metadata
+    participant X as Execute / branch resolve
+    participant R as Recovery + ROB
+
+    F->>P: lookup(B, Hspec)
+    P-->>F: type, predicted direction, predicted target
+    P->>Q: save B, prediction, provider ID, indices, history checkpoint
+    F->>P: shift predicted outcome into speculative history
+    F->>F: fetch predicted successor
+    Q->>X: carry prediction metadata with branch
+    X->>X: compute actual direction and target
+    alt prediction correct
+        X->>P: train provider/alternate with actual outcome
+        X->>R: mark branch complete
+        R->>Q: release checkpoint when safe
+    else direction or target wrong
+        X->>R: identify branch age; kill all younger work
+        R->>P: restore pre-branch history, then append actual outcome
+        X->>P: train using saved lookup metadata
+        R->>F: redirect to actual successor
+    end
+```
+
+The FTQ entry is not merely a target address. It is the **receipt for the prediction**: the branch PC, predicted direction and target, branch type, the component that provided the answer, enough table index/tag context to update the same logical entry later, and a history checkpoint or checkpoint identifier. Without that receipt, execute could know the prediction was wrong but not reliably train the structure that made it; recomputing an index from the *current* history is wrong because dozens of later predictions may already have shifted the global history register (GHR).
+
+**Why history is updated speculatively.** Waiting until execute to shift an outcome would make every younger branch predict with stale context, erasing correlations between nearby branches. The frontend therefore shifts the predicted bit immediately. Correct predictions make that state eventually true; a misprediction restores the checkpoint and shifts the actual bit. This is the same speculate–validate–recover pattern used by the rename map. The enabling control is an age-tagged checkpoint stack or circular checkpoint file, not an unstructured “flush” signal.
+
+**Training policy is a design choice.** Updating at execute adapts quickly, but a wrong-path branch can train before an older branch later squashes it. Updating at retirement avoids wrong-path pollution, but delays learning by the ROB residence time and needs the prediction receipt to survive until commit. A common design resolves this by updating direction confidence at resolution while attaching an epoch or validity check to allocation, or by allowing speculative update with an undo mechanism. The correct choice depends on phase-change speed, checkpoint storage, and tolerance of wrong-path pollution.
+
+**Timing effect and losing cases.** A correct lookup keeps fetch producing a block every cycle. A late L2-BTB response may still redirect after one or two incorrect blocks; a TAGE answer that takes two cycles needs a fast preliminary predictor whose answer can be overridden. These overrides are not full execute-time mispredicts, but they consume fetch bandwidth and must be counted separately. Adding tables can reduce direction MPKI while increasing override bubbles or extending the next-PC critical path enough to lower frequency—an apparent accuracy win that loses system performance.
+
+**Observable proof.** Split events into `direction_miss`, `target_miss`, `btb_miss`, `ras_miss`, `indirect_target_miss`, `late_override`, and `checkpoint_full_stall`; report each as MPKI and lost cycles. Track provider-table selection, useful-counter promotions, allocations, tag collisions, and accuracy by history length. Assertions should prove that a resolved branch trains with its saved lookup context, a redirect restores exactly the pre-branch history plus the actual outcome, all younger FTQ/ROB entries are invalidated, and a late response from the killed epoch cannot redirect fetch. Those observations distinguish “the algorithm is inaccurate” from “the algorithm is accurate but cannot deliver its answer on time.”
 
 ---
 
@@ -506,6 +576,19 @@ The mainstream high-performance cores make the same bet — a near-perfect predi
 | Mispredict penalty | microbenchmark dependent | microbenchmark dependent | 13 cycles in the typical V2 configuration table |
 
 The commercial columns are intentionally cautious because exact predictor composition and accuracy are not contractual product specifications. XiangShan is the one column that can be read module by module: uFTB, FTB, TAGE-SC, ITTAGE, and a persistent RAS feed a decoupled FTQ, with explicit speculative history and redirect recovery ([Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md)).
+
+### 8.1 Verification must separate prediction, timing, and recovery
+
+A predictor can pass an end-of-program architectural test while silently losing most of its intended performance, so verification needs three layers:
+
+| Layer | Questions | Directed stress and evidence |
+|---|---|---|
+| Functional prediction | Does each counter saturate correctly? Does provider/alternate selection choose the longest valid tag match? | Exhaust every 2-bit/3-bit counter transition; force tag aliases; create branches whose correct history lengths differ |
+| Delivery timing | Is a prediction available in the cycle its consumer expects? Are late overrides and BTB-level redirects handled once? | Back-to-back taken branches, multiple branches per fetch block, L1/L2 BTB disagreement, FTQ empty/full transitions |
+| Recovery | Does a mispredict restore PC, GHR, path history, RAS, and checkpoints to one consistent branch boundary? | Nested calls/returns across a mispredict, two unresolved branches resolving in reverse order, redirect concurrent with cache/TLB replay |
+| Learning quality | Does training reduce repeated misses without destructive pollution? | Warm-up curves, MPKI by branch PC/type/provider, allocation usefulness, alias conflict matrices, phase-change traces |
+
+The central recovery invariant is: **after branch `B` redirects, every surviving frontend state must be derivable from instructions no younger than `B`, followed by `B`'s actual outcome.** It applies simultaneously to the PC, speculative histories, RAS top, FTQ tail, and predictor-update epoch. Verifying each structure in isolation misses cross-structure skew—for example, restoring the GHR but not the RAS, or killing the FTQ entry while a delayed predictor response still carries its old epoch.
 
 ---
 

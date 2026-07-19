@@ -2,7 +2,7 @@
 
 > **First-time reader orientation:** SoC and chiplet architecture is physical composition. Shared SRAM/DRAM, NoC wires, protocol buffers, clock/power domains, DDR/HBM/CXL/die-to-die PHYs, package routes, thermals, repair, and test can dominate the cost that a logical block diagram omits.
 
-> **Abbreviation key — skim now and return as needed:** system on chip (SoC); static/dynamic random-access memory (SRAM/DRAM); one-transistor one-capacitor (1T1C); network on chip (NoC); input/output (I/O); physical interface (PHY); high-bandwidth memory (HBM); double data rate (DDR); compute express link (CXL); error-correcting code (ECC); power, performance, and area (PPA); process, voltage, and temperature (PVT); dynamic voltage and frequency scaling (DVFS); mean time between failures (MTBF).
+> **Abbreviation key — skim now and return as needed:** system on chip (SoC); static/dynamic random-access memory (SRAM/DRAM); one-transistor one-capacitor (1T1C); network on chip (NoC); input/output (I/O); physical interface (PHY); high-bandwidth memory (HBM); double data rate (DDR); compute express link (CXL); error-correcting code (ECC); power, performance, and area (PPA); process, voltage, and temperature (PVT); dynamic voltage and frequency scaling (DVFS); mean time between failures (MTBF); always-on (AON); clock-domain crossing (CDC); reset-domain crossing (RDC); integrated clock-gating cell (ICG); power-management unit (PMU); Unified Power Format (UPF); Common Power Format (CPF).
 
 ---
 
@@ -154,6 +154,127 @@ though real models include clustering and redundancy. Smaller chiplets may impro
 
 Multiple domains require clock/reset crossings, synchronizers/FIFOs, isolation, retention, level shifters, and sequencing. DVFS saves power only if workload slack and transition latency support it. Power-gating saves leakage but costs wake energy/time and state retention/reinitialization.
 
+### 7.1 Derive domains from independent requirements
+
+A **clock domain** is logic whose sequential state is timed by one clock relationship. A **voltage domain** is logic supplied at one operating voltage. A **power domain** is logic that can be switched on, retained, or off as a unit. They are different partitions: two blocks may share a clock but use different voltage rails, or share a rail while one clock is stopped. Treating the three boundaries as one diagram either adds unnecessary crossings or hides unsafe ones.
+
+Start with the minimum baseline: one rail, one clock, no power gating. It has almost no crossing logic, but an idle accelerator still leaks, a low-speed peripheral pays the compute voltage, and changing the single clock or rail disturbs every block. Those failures derive three separate requirements:
+
+1. independent activity control derives a clock domain and ICG;
+2. independent performance/energy operating points derive a voltage domain and level shifters;
+3. independent leakage shutdown derives a switchable power domain, isolation, retention or reinitialization, and an AON controller.
+
+```mermaid
+flowchart LR
+    Base["one rail + one clock"] --> CFail["idle clock tree and flops still toggle"]
+    Base --> VFail["slow block pays fast-block voltage"]
+    Base --> PFail["idle transistors still leak"]
+    CFail --> CD["clock domain: ICG + CDC/RDC contract"]
+    VFail --> VD["voltage domain: regulator + level shifters + DVFS state"]
+    PFail --> PD["power domain: switch + isolation + retention/reset"]
+    CD --> PMU["AON PMU sequences legal transitions"]
+    VD --> PMU
+    PD --> PMU
+```
+
+Partition by a workload and dependency ledger, not by RTL hierarchy. Keep blocks together when they wake together, exchange high-bandwidth single-cycle traffic, share state that would be expensive to retain, or cannot tolerate added level-shifter/isolation delay. Split them when their utilization, required voltage/frequency, retention need, or safety/security authority differs enough to repay the crossings. A very fine partition can lose: every boundary adds control, verification states, placement keepouts, rail routing, wake energy, and timing arcs.
+
+### 7.2 One accelerator shutdown, with the state that makes it safe
+
+Assume an NPU domain has an ingress queue, DMA engine, scratchpad, compute array, and completion queue. The naive action—drop its supply when software requests idle—can lose a DMA write, strand a coherent request, or drive an unknown value into an AON interrupt controller. A safe implementation adds this explicit state:
+
+- `admit_enable`, which prevents new commands;
+- accepted/outstanding counters for DMA, fabric, and completion writes;
+- a `quiesce_req/quiesce_ack` handshake;
+- retained context bits or a declared reinitialization image;
+- isolation controls with a specified clamp value;
+- clock-gate, reset, power-switch, and power-good controls;
+- a transition state machine and timeout/error record in the AON PMU.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ON
+    ON --> DRAIN: idle_request / admit_enable=0
+    DRAIN --> SAVE: queues_empty && outstanding=0
+    SAVE --> ISOLATE: retention_save_ack
+    ISOLATE --> OFF: outputs_clamped; clock_off; switch_off
+    OFF --> POWERING: wake_request / switch_on
+    POWERING --> RESTORE: power_good && clocks_stable
+    RESTORE --> ON: reset_released; restore_done; isolate=0; admit_enable=1
+    DRAIN --> ON: abort_before_isolation
+    SAVE --> FAULT: save_timeout
+    POWERING --> FAULT: power_good_timeout
+```
+
+```wavedrom
+{ "signal": [
+  { "name": "idle_req",       "wave": "0.1......0" },
+  { "name": "admit_enable",   "wave": "1..0.....1" },
+  { "name": "outstanding",    "wave": "=.=.=0....", "data": ["3", "2", "1"] },
+  { "name": "retention_save", "wave": "0....10..0" },
+  { "name": "isolate",        "wave": "0.....1.0." },
+  { "name": "clock_enable",   "wave": "1......0.1" },
+  { "name": "power_good",     "wave": "1.......01" },
+  { "name": "wake_req",       "wave": "0.......10" }
+] }
+```
+
+The ordering is the mechanism: stop admission, drain accepted effects to their promised ordering point, save retained state, clamp outputs, stop the clock, and only then remove power. Wake reverses physical dependencies: establish the rail, wait for `power_good`, stabilize clock/reset, restore or reinitialize, re-establish protocol credits and identities, then remove isolation and reopen admission. If a save or power-good timeout occurs, the controller enters a diagnosable fault state; it must not guess that state was retained.
+
+### 7.3 Clock-domain and reset-domain crossings are protocols
+
+A single-bit level that changes slowly can cross through a two-flop synchronizer, accepting latency and a nonzero metastability probability. A pulse needs pulse stretching, a toggle protocol, or request/acknowledge so it cannot disappear between destination edges. Multi-bit data needs a bundled-data handshake or an asynchronous FIFO; synchronizing each data bit independently can assemble a word that never existed. A reset crossing has a related rule: asynchronous assertion may force a safe state immediately, but deassertion is synchronized separately in every receiving clock domain so flops do not leave reset on different edges.
+
+```mermaid
+flowchart TD
+    S["source-domain event"] --> Q{"payload kind?"}
+    Q -->|"stable one-bit level"| Sync["two-flop synchronizer"]
+    Q -->|"pulse / must not lose"| Hand["toggle or req/ack handshake"]
+    Q -->|"multi-bit stream"| FIFO["asynchronous FIFO: Gray pointers + synchronized status"]
+    Q -->|"reset release"| Reset["asynchronous assert, per-domain synchronized deassert"]
+    Sync --> Obs["latency + MTBF evidence"]
+    Hand --> Obs
+    FIFO --> Obs
+    Reset --> Obs
+```
+
+The PPA trade is concrete. More synchronizer stages improve MTBF but add latency. Deeper asynchronous FIFOs absorb clock-ratio bursts but cost SRAM/flops and increase backpressure delay. A generated clock with a known phase relation may use a constrained synchronous crossing; an unrelated or stoppable clock must not inherit that assumption.
+
+### 7.4 Voltage transitions need a closed-loop protocol
+
+For a DVFS change, frequency and voltage cannot move in arbitrary order. When increasing performance, raise voltage and wait for regulator/clock qualification before increasing frequency. When decreasing performance, lower frequency first, then reduce voltage. During the transition, block or tolerate work according to the clock/rail specification. The PMU needs requested and actual operating points, transition-in-progress state, acknowledgements from regulator and clock generator, timeout handling, and thermal/current limit overrides.
+
+Break-even for entering a lower-power state is not its advertised leakage alone. If transition energy is $E_{tr}$, active-state power is $P_{on}$, sleep power is $P_{sleep}$, and transition latency is acceptable, the energy break-even idle time is approximately
+
+$$
+t_{BE}=\frac{E_{tr}}{P_{on}-P_{sleep}}.
+$$
+
+Predicting an idle interval shorter than $t_{BE}$ wastes energy; a longer interval may still lose if wake latency violates a service-level objective. Retaining more state shortens wake but adds retention-cell area, an AON rail load, save/restore verification, and leakage.
+
+### 7.5 UPF/CPF is executable power intent, not the architecture itself
+
+UPF and CPF describe power domains, supply networks and states, power switches, isolation, retention, level shifting, and related control intent so tools can insert/check implementation cells and power-aware behavior. They do not invent quiescence, completion semantics, safe clamp values, or the software-visible state machine. Those must exist in the architecture before power intent is written.
+
+Use one traceable flow:
+
+```mermaid
+flowchart LR
+    Req["architectural power-state table"] --> RTL["RTL: PMU FSM, quiesce, save/restore, controls"]
+    Req --> Intent["UPF/CPF: domains, supplies, states, switches, isolation, retention, level shifting"]
+    RTL --> PA["power-aware RTL simulation"]
+    Intent --> PA
+    PA --> Syn["synthesis: insert/map low-power cells"]
+    Syn --> Equiv["power-aware equivalence + structural checks"]
+    Equiv --> PnR["placement/CTS/routing: rails, switches, AON routes, IR drop"]
+    PnR --> Gate["gate simulation + static timing across modes"]
+    Gate --> Signoff["scenario coverage, power integrity, wake sequence, fault evidence"]
+```
+
+The architecture-to-intent handoff must name, for every crossing and state: source/destination domain, legal supply states, signal direction, clamp value and when it becomes active, level-shifter direction, retained registers and retention supply, save/restore protocol, reset behavior, and ownership of each control. Tools can then detect an unisolated crossing or missing level shifter. They cannot decide whether a response channel must clamp to `VALID=0` or whether the fabric must synthesize an error response instead; that is a protocol decision.
+
+Power-aware verification injects supply-off corruption and replays the shutdown/wake trace. Check that no request is accepted after admission closes; every earlier accepted request completes or is explicitly aborted; isolation precedes corruption; retained state survives allowed states; non-retained state returns to reset; no clock toggles an unpowered domain; wake does not release output before state and protocol credits are valid; and every timeout reaches a bounded, observable recovery. Structural UPF/CPF checks and a clean CDC report are necessary, but neither proves the transaction-level drain invariant.
+
 A mode table should name:
 
 - allowed domain clocks/voltages;
@@ -221,6 +342,8 @@ If the workload keeps most traffic local, partitioning can win cost/yield. If co
 - [DDR Controller](../02_Shared_Memory/01_DDR_Controller.md).
 - [Routing, Flow Control, and Deadlock](../04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md).
 - [Chiplets, CXL, and Die-to-Die](../05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md).
+- [Low-Power Architecture and Domain Partitioning](../../../02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md).
+- [UPF and CPF Power Intent](../../../02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md).
 
 ## References
 

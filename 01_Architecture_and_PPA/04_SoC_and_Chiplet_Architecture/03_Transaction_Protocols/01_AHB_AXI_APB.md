@@ -156,6 +156,54 @@ flowchart LR
     S -- "R: read data" --> M
 ```
 
+### 3.1 Build the protocol through four repairs: one transfer becomes an elastic transaction machine
+
+The channel table is easier to remember when it is *derived as a sequence of repairs*. Start with the smallest correct register access and change the machine only when a workload demonstrates a concrete loss.
+
+```mermaid
+flowchart LR
+    S0["Step 0: fixed two-phase transfer<br/>one request, one response"] -->|"loss: idle setup cycle"| S1["Step 1: pipeline address over prior data<br/>AHB-style shared bus"]
+    S1 -->|"loss: a slow target stalls everyone"| S2["Step 2: elastic VALID/READY stages<br/>buffers absorb variable latency"]
+    S2 -->|"loss: address, data, reads and writes contend"| S3["Step 3: split AW/W/B/AR/R<br/>independent AXI channels"]
+    S3 -->|"loss: one request still exposes latency"| S4["Step 4: IDs + outstanding tables<br/>many transactions, reordered completion"]
+```
+
+**Step 0 — a blocking two-phase access.** A minimal peripheral interface needs an address/data register, a state bit saying `SETUP` or `ACCESS`, and an error/completion input. In cycle 0 the initiator presents the request; in cycle 1 the target performs it and completes. Nothing else may start meanwhile. This is APB's virtue for configuration: the target has almost no queueing or ordering state. Its losing case is equally clear: even a zero-wait target uses at most one transfer every two cycles, and a slow target stretches the only transaction slot.
+
+**Step 1 — overlap the next address with the current data.** Keep one shared transaction pipeline but add an address-phase pipeline register and an arbiter owner register. While transfer A occupies the data phase, transfer B's address can be decoded. That removes the compulsory setup bubble and produces the AHB-style one-beat-per-cycle fast path. The new state is small — current data-phase owner, next address/control, burst state, and response — but a target that inserts a wait state still freezes the shared pipeline. Reads and writes still share one address/control transaction stream—even though their data wires run in opposite directions—so they cannot proceed as independent full-duplex transactions.
+
+**Step 2 — replace a timing promise with elasticity.** Put a VALID bit beside each payload register and a READY/backpressure path from its consumer. Now a stage advances when `VALID && READY`, not on a globally assumed cycle. A register slice or FIFO may be inserted without changing transaction semantics, so long wires, variable target latency, and clock/rate bridges no longer force every endpoint to change. What enables this is real state: the payload register, its occupancy/VALID bit, and—when READY is registered—the skid entry explained in §2. The price is one or more cycles of latency, buffer leakage/dynamic power, and a backpressure tree that must meet timing.
+
+**Step 3 — split concerns whose service times are independent.** Elasticity alone does not help if an address waits behind data on the same channel or a read waits behind a write. AXI therefore duplicates the per-channel occupancy/handshake machinery five times. `AW` and `AR` queues hold addresses and attributes; `W` holds data and byte enables; `B` and `R` carry independently backpressured completions. The target also needs association state: a write cannot be committed until the accepted address and its data beats are matched, and the final beat/response must close exactly that transaction. Five channels cost wires, FIFO entries, arbiters, clock-tree load, and verification state; on a low-rate register bank those costs lose to APB because there is no useful overlap to recover.
+
+**Step 4 — let multiple channel handshakes describe multiple unfinished transactions.** The initiator allocates an outstanding-table entry before sending an address. The entry records at least `{ID, read/write, destination/route, beats remaining, ordering domain, completion/error state}`. The fabric extends the ID with source identity, and each target or return network preserves it. A returning `RID`/`BID` selects the correct entry; the last beat frees it and wakes the original requester. This table—not the existence of `ARVALID`—is what converts independent channels into latency hiding. It costs storage, comparators, per-ID order tracking, timeout state, and enough response buffering to accept legal reordering.
+
+The following trace shows why “independent” does not mean “unordered chaos.” Read A (`ID=0`) reaches a slow target; read B (`ID=1`) reaches a fast target one cycle later. Both addresses are accepted before either response exists. B may complete first because its ID names a different ordered stream; A still completes against its own entry.
+
+```wavedrom
+{ "signal": [
+  { "name": "ACLK",       "wave": "p........." },
+  { "name": "ARVALID",    "wave": "01.0......" },
+  { "name": "ARREADY",    "wave": "01.0......" },
+  { "name": "ARID",       "wave": "x34x......", "data": ["A: ID0 slow", "B: ID1 fast"] },
+  { "name": "RVALID",     "wave": "0....10.10" },
+  { "name": "RREADY",     "wave": "1........." },
+  { "name": "RID/RDATA",  "wave": "x....5x.6x", "data": ["ID1: data B", "ID0: data A"] },
+  { "name": "entry[ID1]", "wave": "0.1..0...." },
+  { "name": "entry[ID0]", "wave": "01......0." }
+], "head": { "text": "Two elastic address handshakes; completion is matched by ID, not by wall-clock order" } }
+```
+
+**When the richer machine loses.** AXI does not make one isolated register access faster: extra queue, arbitration, and pipeline stages often add latency. It wins only when overlap amortizes them. Too-shallow address/data FIFOs move the bottleneck rather than removing it; too many IDs expand every downstream table and response mux; registering every channel eases frequency but lengthens read latency; sharing buffers saves area but allows one channel/class to block another. Select the simplest tier whose concurrency covers the measured bandwidth–delay product.
+
+**Make the evolution observable and provable.** Useful counters are accepted beats and stall cycles per channel, address-to-first-data and address-to-completion latency, outstanding-table high-water mark, reorder distance, per-ID head-of-line stall, target wait cycles, default-slave errors, and bridge FIFO occupancy. The minimum assertions are procedural:
+
+- while `VALID && !READY`, payload and sidebands remain stable;
+- every response ID names a live entry of the correct type, every entry completes once, and no entry is freed before its last beat;
+- accepted beats never exceed declared burst length, and a write response cannot precede acceptance of its complete write;
+- completions for the same ID preserve required order, while different IDs must not be falsely coupled;
+- every accepted request eventually completes or returns a declared error under bounded target/fairness assumptions.
+
 ---
 
 ## 4. Outstanding, ID-tagged, out-of-order transactions: hiding latency

@@ -148,6 +148,53 @@ A device cache can hold shared/owned lines and respond to probes. It needs trans
 
 Coherence scope may be inner, outer, system, or device-specific. “Coherent” must state which agents and memory types participate.
 
+### 6.1 Follow one coherent device read: ordering, service class, and fault are one contract
+
+Use a network-interface controller (NIC) transmit descriptor as the concrete path. The CPU writes a packet buffer and descriptor in write-back cache, rings a memory-mapped doorbell, and the NIC reads the descriptor/data. A baseline noncoherent design can work only if software cleans every dirty cache line before the doorbell and invalidates completion lines afterward. Missing one maintenance operation exposes stale data. **I/O coherence removes that manual visibility step by letting the home snoop CPU caches; it does not remove ordering, translation, QoS, or fault state.**
+
+```mermaid
+sequenceDiagram
+    participant CPU as "CPU + cache"
+    participant DEV as "coherent NIC"
+    participant IOM as "IOMMU"
+    participant FAB as "NoC/QoS fabric"
+    participant H as "home/directory"
+    CPU->>CPU: "write packet + descriptor D52"
+    CPU->>DEV: "release/fence; doorbell D52"
+    DEV->>IOM: "ReadShared(IOVA, RID=9, context, class=control)"
+    alt "translation/permission fault"
+        IOM-->>DEV: "fault(RID=9); retain D52 as fault-pending"
+        CPU->>IOM: "repair mapping; invalidate/fence"
+        DEV->>IOM: "bounded replay of D52 read"
+    end
+    IOM->>FAB: "PA + requester/order/QoS/security/coherent attributes"
+    FAB->>H: "admit and arbitrate under control-class budget"
+    H->>CPU: "snoop dirty descriptor/cache line if needed"
+    CPU-->>H: "data + downgrade/ack"
+    H-->>FAB: "Data(RID=9, coherence state, poison status)"
+    FAB-->>DEV: "ordered response; retire RID=9 once"
+    DEV->>DEV: "fetch payload; transmit"
+    DEV->>CPU: "coherent completion write; interrupt after visibility point"
+```
+
+**1. Publish before notifying.** CPU stores may sit in a store buffer or cache and the interconnect may use independent channels. A release operation/fence orders the descriptor and payload writes before the doorbell. The doorbell's arrival tells the device that descriptor `D52` exists; it is not by itself proof that unordered older stores are visible. Coherence answers *which copy is current* when the device reads, while the fence answers *whether the producer was allowed to advertise the work yet*.
+
+**2. Allocate identity before issue.** The NIC retains descriptor state `{ring/sequence D52, I/O virtual address, length, operation, retry count, completion target}` and allocates request ID `RID=9`. Its outbound request adds device/stream or process context, ordering domain, coherent/cacheable/shareable attributes, security domain, monitoring ID, and requested service class. These fields have different owners: `RID` matches completion, the order domain prevents illegal overtaking, the context selects translation/protection, and the QoS class affects service but not correctness.
+
+**3. Translate and police intent.** The IOMMU resolves the I/O virtual address through its context/IOTLB/page walker and checks read permission. It emits a physical address while preserving or trusted-remapping requester, order, coherence, and monitoring identities. An untrusted NIC cannot promote itself to an unrestricted highest class: platform policy maps its device/context plus operation into allowed QoS. Translation miss entries and page-walk bandwidth are part of the end-to-end service path; priority preserved after the IOMMU is useless if the walk queue itself has unbounded interference.
+
+**4. Enforce QoS at every finite queue.** Descriptor/control reads may use a low-latency class while bulk payload reads use a bounded-bandwidth class. Source credits prevent the device from filling all fabric/home entries; virtual channels or reserved buffers preserve mandatory responses; weighted/age arbitration carries the class through NoC and memory-controller service. A priority value alone cannot preempt a long packet already on a link, an active DRAM burst, or a coherence transaction holding a home entry, so the service contract includes maximum burst/outstanding counts and admission bounds.
+
+**5. Resolve coherence at the home.** If the CPU owns the descriptor line dirty, memory is stale. The home sends a snoop, receives data plus downgrade/ack, updates directory state, and returns the current line to `RID=9`. The NIC need not force a CPU cache clean, but the coherent path consumes home transaction state, snoop/response capacity, and possibly an ownership transfer. Response/data traffic must retain a progress path independent of new device requests.
+
+**6. Preserve completion meaning.** The NIC cannot post “transmit complete” when its read was merely accepted. It consumes the descriptor/payload, performs the I/O operation, then writes a coherent completion record. The interrupt is ordered after the completion's declared visibility point. The CPU's handler performs the matching acquire/read before reusing the buffer. This creates the software happens-before chain `CPU publish → doorbell → device read/use → completion visible → interrupt/CPU consume`.
+
+**7. Fault without duplicating work.** If translation or permission fails, the IOMMU creates a fault record containing device/context, address, access type, `RID=9`, reason, and timestamp; no home request is issued. For a recoverable page-request design, the NIC keeps `D52` in a `fault-pending` state while software installs/repairs the mapping, performs the required IOTLB invalidation and fence, and authorizes a bounded replay. Replay may use a new transport request ID, but it remains tied to the same descriptor sequence, and only one successful device operation/completion is permitted. A permission violation, poison returned by coherence/memory, retry limit, device reset, or inaccessible dirty owner instead produces a declared error completion/containment path. Retrying indefinitely at top priority would turn one fault into denial of service.
+
+The implementation state follows directly: descriptor/fault/retry tables in the device; context, IOTLB and walk-MSHR state in the IOMMU; per-class token/deficit/age and outstanding quotas at each arbitration point; per-ID order/reorder entries; home transient/snoop masks; and completion visibility/interrupt state. More coherent outstanding work hides latency but expands every one of those tables. Reserved queues and bandwidth improve isolation but strand capacity when idle unless borrowing/reclaim is safe. Stronger ordering reduces reorder logic but serializes independent payload reads. Coherent I/O removes software cache-maintenance cost while adding snoop traffic, directory pressure, device-reset rules, and verification state.
+
+**Replayable observation and verification.** Correlate descriptor `D52`, device/context, `RID`, physical address, order domain, QoS/partition/monitor IDs, home transaction, and completion sequence across timestamped probes. Attribute latency to doorbell wait, device queue, translation/walk, fabric admission/serialization, home/snoop, memory, return/reorder, and device service; count offered/admitted/completed bytes, throttled cycles, borrowed/reclaimed capacity, snoops/dirty interventions, faults/replays, poison, deadline misses, and maximum age by class. Assertions should prove publish-before-doorbell and completion-before-interrupt under the declared memory model; no request reaches the home after a translation denial; QoS/security remapping is authorized; retries cannot create two live operations or two completions for `D52`; same-domain ordering is preserved despite different classes; mandatory responses progress; and device reset drains/aborts transactions and coherent ownership before state is discarded. Replaying the captured boundary events with the same contract/policy must reproduce the same fault decision and terminal completion.
+
 ## 7. IOMMU, address identity, and QoS
 
 Translation can change request attributes and latency. The IOMMU associates device/process context, permissions, memory type, and sometimes QoS IDs. Its context/IOTLB miss queues are shared bottlenecks that need partitioning or bounded service.

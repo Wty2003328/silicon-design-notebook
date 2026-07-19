@@ -23,6 +23,23 @@ The CPU book describes a **latency machine**: a CPU core spends substantial hard
 
 This page takes the notebook's hardware-design lens ("*what must this block do or hold, and why — then what does that cost*", the method used for the ROB in [OoO Execution §3](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md)) and applies it to the GPU. It derives the generic SM, matrix-instruction path, memory hierarchy, and occupancy rules. Generation-specific instruction encodings and capacities vary, but the architectural roles remain: hide latency with resident parallelism, amortize control through SIMT, and keep reusable tensor data near the execution pipelines.
 
+Read the chapter as an **evolution driven by one bottleneck at a time**, not as a bag of blocks. Each added feature solves the limit exposed by the previous design and creates the next constraint:
+
+```mermaid
+flowchart LR
+    A["Many independent scalar threads<br/>too much front-end cost"] -->|"share fetch, decode, issue"| B["SIMT warp<br/>one instruction, many lanes"]
+    B -->|"lanes choose different paths"| C["active masks + reconvergence state"]
+    C -->|"one warp waits hundreds of cycles"| D["many resident warps + warp scheduler"]
+    D -->|"all contexts must switch instantly"| E["large on-chip register file"]
+    E -->|"wide multiport SRAM is too costly"| F["banked RF + operand collectors"]
+    B -->|"lanes generate 32 addresses"| G["memory coalescer"]
+    F -->|"scalar lanes cannot feed AI peak"| H["matrix pipelines + tiled reuse"]
+    G --> H
+    H -->|"copy and compute serialize"| I["asynchronous copy + staged barriers"]
+```
+
+The arrows are dependencies. For example, a large register file is not an arbitrary GPU feature: it is what makes switching among resident warps a pointer/state-selection operation rather than a memory save/restore. Banking is then needed because that large file cannot economically have every logical read port demanded by a warp instruction. Later sections preserve this “problem → mechanism → new bottleneck” order.
+
 ---
 
 ## 1. Throughput, not latency — why the machine is shaped differently
@@ -61,6 +78,24 @@ The result is a machine of **many simple SIMT cores** (Streaming Multiprocessors
 3. **Work distributor → SM.** A global **work distributor** (NVIDIA's GigaThread engine) hands *whole blocks* to SMs that have room. **The block is the unit of dispatch and of resource allocation:** an SM admits a block only if it can *simultaneously* fit that block's registers, shared memory, warp slots, and a block slot — which is exactly the `min` in §7's occupancy formula. Once placed, a block runs to completion on that one SM (its threads share that SM's shared memory and can barrier-synchronize) and never migrates.
 4. **Block → warps → lanes.** The SM splits each resident block into **warps** of 32 threads (§2), and the schedulers (§4) interleave *all* resident warps from *all* resident blocks to hide latency (§1).
 
+```mermaid
+flowchart TB
+    H["Host program"] --> R["runtime + driver"]
+    R --> Q["stream / command queue"]
+    Q --> CP["GPU command processor"]
+    CP --> G["kernel grid"]
+    G --> B0["thread block 0"]
+    G --> B1["thread block 1"]
+    G --> BN["thread block N"]
+    B0 -->|"admit whole block if all resources fit"| SM0["SM 0"]
+    B1 -->|"independent placement"| SM1["SM 1"]
+    SM0 --> W0["warp 0"]
+    SM0 --> W1["warp 1"]
+    W0 --> L["32 per-thread lanes<br/>one issued instruction + active mask"]
+```
+
+Notice the two different scheduling levels. The chip-level distributor places **whole blocks** according to capacity; the SM-level scheduler chooses **individual eligible warps** cycle by cycle. A block cannot be split across ordinary SMs merely because some registers remain free on each. This indivisibility creates packing loss and the occupancy cliffs derived in §7.
+
 So the "**block slots**", "**blocks**", and "**warps/block**" that appear in the occupancy formula (§7) are not free knobs — they are this dispatch hierarchy: the launch carves the grid into blocks, the work distributor packs blocks onto SMs subject to the resource `min`, and each block becomes the warps the scheduler feeds. It is also why a kernel with oversized blocks or heavy per-thread resource use launches at low occupancy — the distributor cannot fit enough blocks onto each SM. [End-to-End GPU AI Inference and Serving](../05_AI_Workloads_and_Serving/02_End_to_End_GPU_AI_Inference_and_Serving.md) follows the host/runtime queue through model steps; the hardware fact is that a GPU is a **queue-fed, block-granular work engine** attached to a CPU.
 
 ---
@@ -80,6 +115,22 @@ From "one instruction drives 32 lanes," derive what the hardware must hold for e
 
 That third item is the expensive one and the reason the register file dominates the SM. Everything in §4–§5 follows from it.
 
+```mermaid
+flowchart LR
+    F["one fetched warp instruction"] --> D["decode once"]
+    D --> P["warp PC + control"]
+    P --> M["32-bit active mask"]
+    M --> L0["lane 0<br/>private registers"]
+    M --> L1["lane 1<br/>private registers"]
+    M --> LX["..."]
+    M --> L31["lane 31<br/>private registers"]
+    L0 --> O["lane-wise results / addresses"]
+    L1 --> O
+    L31 --> O
+```
+
+The shared instruction does **not** mean shared data. Every active lane substitutes its own register operands, produces its own result, and may calculate a different address. The active mask gates architectural effects: an inactive lane must not update its destination register, issue a memory side effect, or count as a participating lane in the wrong synchronization operation.
+
 ---
 
 ## 3. Warp divergence and reconvergence — the hardware cost of the SIMT bargain
@@ -91,6 +142,20 @@ SIMT promises a scalar programming model, but the hardware issues *one* instruct
 3. **It must nest correctly**, because a branch inside a branch splits an already-reduced mask.
 
 The structure that satisfies all three is a **per-warp SIMT reconvergence stack**. Each entry is a triple `(next-PC, active-mask, reconvergence-PC)`. On a divergent branch the hardware pushes the two path entries plus the reconvergence entry; it executes each path with its reduced mask; when a path's PC hits the reconvergence-PC it pops, and when the stack unwinds to the reconvergence entry the full mask is restored. This is a genuine hardware block — a small stack SRAM per warp plus the mask-manipulation datapath — and it is what a GPU has *instead of* a branch predictor and misprediction-recovery machinery.
+
+```mermaid
+flowchart TB
+    BR["branch at PC B<br/>active mask = 11111111"] --> SPLIT{"evaluate predicate<br/>for every active lane"}
+    SPLIT -->|"taken mask = 11001010"| T["execute taken path<br/>PC = T, mask = 11001010"]
+    SPLIT -->|"defer"| ST["stack entry<br/>PC = N, mask = 00110101,<br/>reconverge = R"]
+    T --> RT["taken path reaches R"]
+    RT --> POP["pop deferred entry"]
+    POP --> N["execute not-taken path<br/>PC = N, mask = 00110101"]
+    N --> RN["not-taken path reaches R"]
+    RN --> JOIN["restore mask = 11111111<br/>continue at R"]
+```
+
+This trace uses eight bits only to stay readable; a real NVIDIA warp mask has 32 bits. The stack stores **control context**, not lane register data—the latter never left the register file. A nested branch pushes another context, which is why stack depth and overflow handling are real implementation concerns.
 
 **The cost is throughput, and it is quantifiable.** While a warp runs a divergent region, masked-off lanes do no useful work, so the SIMT execution efficiency is
 
@@ -207,6 +272,22 @@ Section 3 was control divergence; this is its memory twin. A single warp LD/ST p
 
 **The coalescer** — a hardware unit in the Load/Store Unit — exists to prevent that. It inspects the 32 active per-lane addresses *at issue time* and merges them into the **minimum set of aligned sector transactions** that covers them:
 
+```mermaid
+flowchart LR
+    A["32 lane addresses + byte enables<br/>inactive lanes removed"] --> S["sector-index calculation<br/>floor(address / 32 B)"]
+    S --> M["merge equal sector indices<br/>combine byte masks"]
+    M --> T0["sector request 0<br/>address + requested bytes"]
+    M --> T1["sector request 1"]
+    M --> TN["sector request N-1"]
+    T0 --> C["L1 / L2 / memory"]
+    T1 --> C
+    TN --> C
+    C --> R["response fragments<br/>tagged by warp + destination + lane"]
+    R --> WB["reassemble and write active lanes"]
+```
+
+The coalescer must preserve enough identity to reverse the merge: transaction responses return at sector granularity, but architectural completion is per destination lane. Partial hits, misses, replays, and faults therefore require a pending-fragment mask or count; the destination scoreboard cannot clear when only the first sector returns.
+
 $$N_{\text{txn}} \;=\; \Big|\big\{\ \lfloor a_i / G \rfloor \;:\; i \in \text{active lanes}\ \big\}\Big|$$
 
 where $a_i$ = byte address of lane $i$ and $G$ = transaction granularity (32 B). Best case — 32 lanes read 32 consecutive 4-byte words — the addresses fall in one or a few sectors and the warp is served in the fewest transactions (a 128-byte line = 4 sectors, fully utilized). Worst case — a scattered/strided pattern — every lane lands in a different sector and $N_{\text{txn}}$ explodes toward 32, so the warp fetches up to 32× the bytes it uses and effective bandwidth collapses by the same factor.
@@ -279,6 +360,21 @@ where $\alpha$ = activity factor, $C$ = switched capacitance, $V$ = supply volta
 The flip side is **power density**: an SM is almost all active datapath and register SRAM, so a full die is a very dense, very hot power source. That makes the GPU a **power- and thermal-capped** device: board power is limited (`nvidia-smi -pl`), and a Boost/DVFS (dynamic voltage-frequency scaling) controller continuously picks the highest clock such that $P \le P_{\text{cap}}$ and $T \le T_{\text{limit}}$. A compute-heavy (tensor-core) phase raises current and the controller *lowers* the clock to stay under the cap; a memory-bound phase draws less core power and may clock *up* (which does not help, since HBM is the bottleneck). Modeling that perf↔power↔thermal loop correctly — rather than quoting peak-TFLOPS × peak-clock × all-SMs — is the job of [Full_Chip_Modeling §3, §4.3](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md).
 
 Finally, **data-movement energy is the real budget.** Reading an operand from the register file costs a fraction of a pJ; from shared memory a bit more; from L2 more; from **HBM ~1–2 orders of magnitude more per byte** than on-chip, and off-package (NVLink/PCIe) more still ([Full_Chip_Modeling §4.3](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) gives representative pJ/bit). So the memory hierarchy of §7 exists **as much to save energy as to save time**: every byte kept in the register file or shared-memory scratchpad instead of HBM is both faster *and* cheaper, and at throughput scale the energy term dominates the design.
+
+### 8.1 Closing the causal loop with observables and properties
+
+An architect should be able to distinguish which evolutionary step is failing from counters, then connect the same boundary to a correctness property:
+
+| Mechanism | Performance evidence that it binds | Minimum correctness property |
+|---|---|---|
+| SIMT grouping and reconvergence | active lanes/issued instruction, divergent-branch count, reconvergence-stack pressure | only active lanes create register or memory side effects; every deferred path reconverges or exits |
+| resident-warp latency hiding | resident versus eligible warps, unused issue slots, long-scoreboard cycles | a warp issues only when its dependencies and synchronization state are legal |
+| register file and collectors | RF bank-conflict cycles, collector occupancy/full, selected-but-not-dispatched instructions | each requested operand segment is delivered once to the matching warp generation |
+| coalescer and replay | sectors per warp request, useful/requested bytes, replay causes, outstanding sectors | destination readiness clears only after every required sector or defined fault completes |
+| shared-memory/L1/HBM hierarchy | hit rates, bytes at every level, bank/partition imbalance, HBM queue occupancy | ordering, address-space, and barrier rules prevent reading stale or overwritten tile data |
+| matrix/asynchronous pipeline | matrix issue utilization, copy/barrier/queue stalls, producer/consumer idle | a tile is consumed only after its matching completion phase and freed only after final use |
+
+The diagnosis order follows the datapath: first find unused issue or lane slots, then operand-delivery loss, then excess memory transactions, then the binding memory level, and finally copy/compute imbalance. A single “GPU utilization” percentage cannot distinguish these mechanisms and is insufficient evidence for a design change.
 
 ---
 

@@ -50,6 +50,91 @@ flowchart LR
     E --> S
 ```
 
+### 0.1 Build the scheduler by replaying three tiles
+
+Start with a blocking controller and three independent tiles `T0`, `T1`, and `T2`. Each load takes four cycles, matrix compute takes six, and store takes three. The baseline controller reuses one input and one output buffer and executes
+
+```text
+LOAD T0 → COMPUTE T0 → STORE T0 → LOAD T1 → ...
+```
+
+for $3(4+6+3)=39$ cycles. The array is idle during 21 of them. Adding a DMA engine does not fix this if one program counter still waits for each phase; the first required feature is independent queues plus physical storage for overlapping lifetimes.
+
+The compiler/runtime emits three command types per tile. A compact executable stream might be:
+
+| ID | Command and essential descriptor fields | Wait events | Signal event |
+|---|---|---|---|
+| L0 | `LOAD src=A0, dst=IB0:g5, shape/strides, ctx=7` | `IB0_FREE:g5` | `T0_INPUT_READY` |
+| C0 | `MMA in=IB0:g5, out=OB0:g2, mapping=17` | `T0_INPUT_READY`, `OB0_FREE:g2` | `T0_COMPUTE_DONE` |
+| S0 | `STORE src=OB0:g2, dst=O0, visibility=system` | `T0_COMPUTE_DONE` | `T0_STORED` |
+| L1/C1/S1 | same roles using alternate `IB1/OB1` generations | corresponding phase events | tile-1 events |
+| L2/C2/S2 | reuse `IB0/OB0` only after tile 0 releases them | generation-6 free events | tile-2 events |
+
+`IB0:g5` means input-bank group 0, generation 5. Reuse for tile 2 increments the generation to 6, so a late response naming generation 5 cannot corrupt tile 2.
+
+```mermaid
+flowchart LR
+    L0["L0: fill IB0:g5"] --> C0["C0: compute to OB0:g2"] --> S0["S0: drain O0"]
+    L1["L1: fill IB1:g8"] --> C1["C1: compute to OB1:g4"] --> S1["S1: drain O1"]
+    L2["L2: fill IB0:g6"] --> C2["C2: compute to OB0:g3"] --> S2["S2: drain O2"]
+    C0 -. "releases IB0" .-> L2
+    S0 -. "releases OB0" .-> C2
+```
+
+With two input and two output phases, one legal replay is:
+
+| Cycles | Load DMA | Matrix engine | Store DMA | Important state transition |
+|---|---|---|---|---|
+| 0–3 | fill T0 in IB0 | idle | idle | `IB0 FILLING→READY` |
+| 4–7 | fill T1 in IB1 | compute T0, cycles 4–9 | idle | C0 consumes IB0; L1 owns IB1 |
+| 8–9 | idle | finish T0 | idle | T1 ready but matrix resource busy |
+| 10–12 | begin T2 in reused IB0 | compute T1, cycles 10–15 | store T0 | C0 release increments IB0 generation |
+| 13 | finish T2 load | compute T1 | idle | T2 ready |
+| 16–18 | idle | compute T2, cycles 16–21 | store T1 | three engines overlap where dependencies allow |
+| 19–21 | idle | finish T2 | idle | final output becomes ready |
+| 22–24 | idle | idle | store T2 | command group completes at required visibility |
+
+Total time falls to 25 cycles. The arithmetic did not change; overlap came from (1) distinct queues, (2) duplicate storage, (3) generation-tagged ownership, and (4) events that name data readiness rather than original program order. The achieved interval is still six cycles because compute is the slowest stage. Making load faster cannot improve steady throughput until compute changes.
+
+### 0.2 What state actually enables decoupling
+
+The finished block diagram hides five interacting state machines:
+
+- **Descriptor state:** opcode, tensor extents/strides, current multidimensional index, protection context, command/tile/epoch, and error policy.
+- **Transaction state:** physical address, byte mask, destination bank/generation, outstanding fragments, retry/fault state, and response count. One tile descriptor may split into many transactions at page or burst boundaries.
+- **Allocation state:** `FREE→FILLING→READY→IN_USE→DRAINING→FREE`, owner engine, reader count, last-consumer event, and generation.
+- **Event state:** generation, expected producer count, arrivals, waiting commands, terminal error, and memory-visibility scope.
+- **Scheduler state:** ready queues, resource reservations, age/priority, bank-conflict prediction, power/QoS limits, and a progress guarantee.
+
+Queues without generations are unsafe after reset; generations without a drain/quarantine rule can wrap and alias; events without allocation ownership permit overwrite; ownership without backpressure deadlocks when all phases wait on one another. Decoupling is therefore a distributed protocol, not merely “run DMA asynchronously.”
+
+### 0.3 Replay a fault while independent work passes it
+
+Suppose L1 faults on its second source page at cycle 6. The load transaction records `(context, command=L1, tile=T1, source index, destination=IB1:g8, completed-byte bitmap/count, epoch)`, marks IB1 `FAULTED`, and signals an error-pending state rather than `T1_INPUT_READY`. C1 and S1 remain blocked. C0 continues because it already owns valid IB0/OB0 state.
+
+At cycle 10, C0 releases IB0. If T2 is independent and its descriptor has no declared dependence on T1, the scheduler may issue L2 into `IB0:g6` and then C2 while T1 waits for page service. This is coarse-grained out-of-order execution: no speculative value is consumed, and the explicit event graph proves independence. Once software resolves the page and translation invalidation completes, L1 reissues only the missing fragment into IB1:g8. Its ready event fires after old and replayed fragments together reach the expected byte count; then C1 can execute. Final group completion waits for S0, S1, and S2, so bypassing the fault improves utilization without hiding failure from the host.
+
+A terminal permission fault instead transitions L1 and all dependent commands to error, releases or quarantines their allocations, and suppresses S1 success. Unrelated T0/T2 may complete if the ABI permits partial command-group success. A late response updates state only when context, command epoch, bank number, and bank generation all match. These rules prevent the classic corruption in which a canceled DMA writes into a newly allocated tile.
+
+### 0.4 Cost ledger and losing cases
+
+| Feature | Benefit | Main PPA/complexity cost | When it loses |
+|---|---|---|---|
+| independent load/compute/store queues | overlap stage latency | queue SRAM, arbitration, tags, verification state | one short tile or a single dominant stage with no concurrent work |
+| ping-pong banks | overlap adjacent tile lifetimes | duplicated SRAM capacity/leakage and more bank routing | duplication forces smaller tiles and destroys reuse |
+| many DMA transactions | hides HBM/translation latency | transaction-table SRAM, comparators, reorder responses | bandwidth is already saturated or transfers are tiny/metadata-heavy |
+| dynamic scratchpad allocator | adapts to mixed tile sizes | free-list/bitmap logic, fragmentation and deadlock cases | static predictable workload fits a fixed partition |
+| event-driven out-of-order issue | bypasses busy/faulted independent commands | associative readiness checks or wakeup lists, starvation policy | command graph is nearly serial |
+| precise page replay | preserves completed work | fault queues, checkpoints, epochs, partial-byte bookkeeping | pinned-memory deployment never faults |
+
+The scheduler must be evaluated at equal SRAM capacity. Comparing a double-buffered design with twice the SRAM against a single-buffered baseline confounds scheduling with capacity and may conceal a tile-size/reuse loss.
+
+### 0.5 Trace-derived counters and assertions
+
+Expose timestamps for enqueue, ready, issue, first/last transaction, engine start/end, visibility, and completion under one command/tile identity. Count queue occupancy and full cycles; transactions and bytes outstanding; useful bandwidth versus short/alignment overhead; buffer-state residency and fragmentation; bank conflicts by competing engine; event wait reason; overlap of each engine pair; out-of-order bypasses; page faults/replay bytes; stale-generation responses; throttle cycles; and final critical-path stage.
+
+Assert that a ready event equals the expected transaction count/bytes for one descriptor generation; an engine consumes only a `READY` allocation with matching tile and generation; writers cannot overlap live readers; an allocation is released exactly once after its last consumer; event errors propagate to all dependent commands without producing success; scheduler reservations cannot create a resource cycle under the documented command constraints; replay cannot duplicate completed bytes; and terminal completion implies no live allocation, transaction, or event remains for the command epoch.
+
 ## 1. Descriptor-driven commands
 
 A descriptor describes work at tensor or tile granularity. Fields commonly include:

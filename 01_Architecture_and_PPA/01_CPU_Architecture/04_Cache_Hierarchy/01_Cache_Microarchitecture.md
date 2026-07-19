@@ -25,6 +25,31 @@ $$\text{AMAT} = t_{hit} + m \times t_{penalty}$$
 
 Associativity and the hit-path circuit hold down $t_{hit}$; replacement and prefetch hold down the miss rate $m$; the MSHR (miss-status holding register) and non-blocking machinery hold down the *effective* $t_{penalty}$ by overlapping misses; the hierarchy turns $t_{penalty}$ itself into a smaller, nested AMAT; write policy and coherence keep all of it correct while spending the least bandwidth. Read the page as a campaign against three terms, not a catalogue of structures. Where the OoO page derived structures from a *dataflow* contract, this page derives them from an *arithmetic* one: **minimize AMAT subject to area, power, and a one-cycle timing budget.** By the end you should be able to whiteboard a set-associative controller and, more importantly, say *which knob moves which term and where each one stops paying*.
 
+### 0.1 The construction path: first shorten a miss, then overlap it, then prevent it
+
+A cache hierarchy evolves by replaying the same load stream against successively less serial machines:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
+flowchart LR
+    A["No cache\nevery load pays memory latency"]
+    B["Blocking cache\nhits are fast; one miss freezes all access"]
+    C["Hit under miss\nhits bypass one outstanding miss"]
+    D["Nonblocking cache\nmultiple MSHRs overlap distinct misses"]
+    E["Banked / multiported access\nmultiple lookups and fills per cycle"]
+    F["Prefetch\npredict future lines and allocate early"]
+
+    A -->|"temporal/spatial locality unused"| B
+    B -->|"independent hits wait behind a miss"| C
+    C -->|"a second miss still blocks"| D
+    D -->|"tag/data ports serialize offered MLP"| E
+    E -->|"demand still waits for a predictable first touch"| F
+```
+
+The arrows attack different bottlenecks and therefore need different state. A blocking cache needs one controller finite-state machine (FSM) because at most one miss exists. Hit-under-miss must separate the miss path from the hit path and prevent a hit to the victim or outstanding line from observing half-installed state. A nonblocking cache needs one **miss status holding register (MSHR)** per outstanding line, transaction identities on responses, and merging for repeated misses. Banking supplies *lookup bandwidth* but adds bank-conflict arbitration. Prefetch adds prediction/confidence state and must yield MSHRs, ports, and bandwidth to demand traffic.
+
+This ordering prevents a common design mistake: adding a powerful prefetcher to a blocking or MSHR-starved cache. The prefetcher then consumes the only miss resource and makes demand latency worse. First make misses independently trackable, then make the arrays accept the offered parallelism, and only then generate speculative traffic.
+
 ---
 
 ## 1. The organizing theory: locality, the memory wall, and AMAT
@@ -235,6 +260,68 @@ So an MSHR is best read not as a row of fields but as **the per-miss continuatio
 **Miss merging, concretely.** A primary miss (no match) allocates an entry, picks a victim, starts any writeback, and issues one fill. A secondary miss (match) just adds itself as a waiter — **no second fill** — and when the data lands, every merged waiter wakes in the same cycle. A **writeback buffer** (4–8 entries) then decouples the dirty eviction from the fill: the victim is copied out in one cycle and the fill issues immediately, so writeback drains in the background instead of serializing in front of every miss (turning a ~40-cycle write-then-fill into a ~21-cycle overlapped one). A **split-transaction** interconnect is the same idea on the bus — request and response carry a transaction ID so the line is not locked for its whole latency, without which none of this MLP is reachable.
 
 One more effective-penalty cut hides here: the core stalls on *one word*, not the whole line. **Critical-word-first** returns the requested word ahead of the rest of the line and un-stalls the dependent instruction the moment it lands (early restart does the same without reordering the bus), so the experienced penalty is the latency to the critical word rather than to the full 64 B transfer — shaving the last few beats off every miss.
+
+### 3.4 One access sequence through blocking, hit-under-miss, and nonblocking designs
+
+Use one request stream throughout. `A` and `A+8` lie in the same 64-byte line; `B` is already resident; `C` is a different missing line. Requests arrive one per cycle:
+
+```text
+cycle 0: load A       # primary miss, 40-cycle lower-level latency
+cycle 1: load B       # independent cache hit
+cycle 2: load A+8     # same-line secondary miss
+cycle 3: load C       # independent miss
+```
+
+| Design | What happens to the same four requests | Required new state | Performance and losing case |
+|---|---|---|---|
+| Blocking | `A` owns the controller until its fill; B, A+8, and C wait at the cache input | one miss address and one FSM | simplest and lowest leakage, but even B's hit waits ~39 cycles |
+| Hit-under-miss | A remains outstanding while B reads an unaffected set/way; A+8 and C cannot create another miss transaction | miss address plus victim/transient exclusion and a hit bypass | saves B, but no miss-under-miss: C still waits; a hit to A's victim must be blocked |
+| Nonblocking, one MSHR | A allocates the only MSHR; B hits; A+8 merges into A; C waits for an entry | associative outstanding-line lookup and a waiter list | same-line merging saves traffic, but one distinct miss still serializes C |
+| Nonblocking, two or more MSHRs | A and C allocate separate entries, B hits, A+8 merges; fills may return out of order by transaction ID | per-line MSHRs, response IDs/epochs, fill arbitration | exposes two-miss MLP; loses if one cache bank/fill port cannot accept the concurrent work |
+| Banked + prefetched | independent banks can accept B/C lookups while a trained stream prefetch for C was allocated before cycle 3 | bank queues/arbiters plus prefetch confidence, priority, and usefulness state | C can become a hit; wrong prefetches steal banks/MSHRs and evict useful lines |
+
+The comparison separates four kinds of parallelism that are often collapsed into “nonblocking”: **hit-under-miss**, **miss-under-miss**, **same-line miss merging**, and **array-port concurrency**. MSHRs enable the first three at the transaction level; banks or ports are still needed to sustain their lookup/fill bandwidth.
+
+### 3.5 Signal and state flow for the nonblocking case
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
+flowchart TD
+    REQ["load/store request\nline address, byte mask, destination, epoch"]
+    BANK["bank select + request arbiter"]
+    TAG["tag/state lookup"]
+    HIT{"stable hit?"}
+    OM["outstanding-line CAM\nsearch MSHR addresses"]
+    MERGE["merge waiter into matching MSHR"]
+    ALLOC{"free MSHR + victim/writeback resources?"}
+    NEW["allocate MSHR\nline, waiters, target way, permission, epoch"]
+    MISS["send lower-level/coherence request with transaction ID"]
+    RET["response/data return"]
+    ID["transaction-ID + epoch match"]
+    FILL["fill-bank arbitration\ninstall tag/data/state"]
+    WAKE["select critical bytes; wake all live waiters"]
+    RETRY["backpressure or replay request"]
+
+    REQ --> BANK --> TAG --> HIT
+    HIT -->|"yes"| WAKE
+    HIT -->|"no"| OM
+    OM -->|"same line"| MERGE
+    OM -->|"no match"| ALLOC
+    ALLOC -->|"yes"| NEW --> MISS --> RET --> ID
+    ALLOC -->|"no"| RETRY
+    ID -->|"live transaction"| FILL --> WAKE
+    ID -->|"stale/killed"| RETRY
+```
+
+Walk the example through the diagram. `A` misses, finds no outstanding match, allocates `M0`, captures its victim/writeback obligation, and sends one lower-level request tagged `M0:g` where `g` is a generation or epoch. `B` takes its bank's stable-hit path while `M0` waits. `A+8` misses the tag array but hits `M0`'s line-address CAM and appends a second `(destination, byte-select, age, epoch)` waiter; it sends no request. `C` allocates `M1` if an entry, bank, and downstream credit exist. Responses may return `M1` before `M0`; transaction IDs route each fill to the correct continuation rather than relying on issue order.
+
+The fill does not become visible merely because data arrived. The controller must win the fill-bank port, complete any dirty-victim handoff, install tag/data/coherence state atomically, and check that each waiter is still live. Critical-word-first may wake the requested waiter before the remaining beats install, but the line stays transient and another access to an unfilled word must merge or wait. An epoch check drops a response whose requester was flushed; it must not write a physical register or a newly reused MSHR.
+
+**Banking is a throughput feature, not a latency feature.** With $P$ offered accesses and $B$ single-ported banks, distinct-bank requests proceed together, but same-bank requests arbitrate. A bank conflict is not a cache miss and should not train replacement or prefetch state. Hashing line bits can spread regular strides, while duplicating tags or adding true ports reduces conflicts at area and wire cost. Fills, writebacks, snoops, and demands also contend for those ports; a design that models only core requests overstates bandwidth.
+
+**Prefetch joins at allocation, under lower priority.** A stride/stream predictor proposes a future line and confidence. It first checks tags and MSHRs to avoid duplicates, then allocates only if demand retains a reserved entry/credit. Mark the resulting line prefetched; the first demand hit makes it useful, eviction without demand makes it useless, and displacement of a later-reused demand line records pollution. Throttle degree/distance when late prefetches, useless fills, demand-MSHR stalls, or bandwidth queueing rise.
+
+**Observability and verification.** Count primary misses, merged secondary misses, hit-under-miss, miss-under-miss, bank-conflict stalls by requester class, MSHR-full cycles, fill-port conflicts, prefetch useful/late/useless/polluting, and latency from detect→inject→first beat→fill→wake. Assert one live transaction per line (unless the protocol explicitly permits otherwise), exactly one lower-level request for all merged waiters, no stable hit to a transient/victim line, response ID/epoch ownership, dirty data preservation, and one wake per live waiter with the requested bytes. A liveness property should show that every accepted demand eventually completes under fair downstream service; reserving the last MSHR/credit for demand is part of making that property true.
 
 ---
 

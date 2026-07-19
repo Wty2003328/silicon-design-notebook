@@ -31,6 +31,22 @@ flowchart LR
 
 This page owns the full architectural path from offered traffic to achieved stack bandwidth, including address mapping, scheduling, ECC/RAS, thermals, and multi-stack scaling.
 
+### 0.1 Why wide memory still needs a controller evolution
+
+HBM widens the physical interface, but width alone leaves most pins idle for irregular traffic. The controller hierarchy evolves as each new bottleneck appears:
+
+```mermaid
+flowchart LR
+    A["wide interface<br/>single serial request stream"] -->|"row cycle is tens of ns"| B["many channels, pseudochannels,<br/>bank groups, and banks"]
+    B -->|"addresses may camp on one resource"| C["striped / hashed address mapping"]
+    C -->|"commands have readiness and turnaround constraints"| D["per-bank queues + FR-FCFS scheduling"]
+    D -->|"reads, writes, and requestors interfere"| E["drain modes + age / QoS control"]
+    E -->|"stacked arrays expose faults and retention work"| F["ECC, repair, scrub, refresh"]
+    F -->|"temperature raises refresh and limits rate"| G["thermal sensing + throttling"]
+```
+
+First-ready, first-come, first-served (**FR-FCFS**) means the controller first prefers commands that are legal now—often open-row hits—and uses arrival age among suitable requests. It improves bus use over strict arrival order, but requires age or quality-of-service (QoS) escape so a stream of row hits cannot starve an older row miss.
+
 ## Before the details: peak bandwidth needs enough independent work
 
 High-bandwidth memory obtains a large peak rate from many relatively narrow channels operating in parallel, connected through a silicon interposer or advanced package. Each channel still contains banks, timing restrictions, queues, refresh, and read/write turnarounds. The interface can transfer at peak only when requests are large enough, distributed well, and available early enough to keep channels busy.
@@ -117,6 +133,47 @@ First-ready, first-come, first-served (FR-FCFS) still favors ready row hits, but
 
 Batching writes reduces bus turnarounds but can create read-tail spikes. Per-requestor queues and age escalation prevent a high-row-locality bulk stream from starving latency-sensitive traffic.
 
+### 5.1 Carry one read from the last-level cache to corrected data
+
+Assume an L2 miss reaches a bank whose requested row is not open. One request record must carry at least transaction identity, return destination, requestor/QoS class, physical address, read/write/atomic type, byte mask, age, and error/poison state. The controller then performs this sequence:
+
+```mermaid
+sequenceDiagram
+    participant L as L2 / NoC
+    participant Q as HBM controller queue
+    participant R as Refresh + thermal control
+    participant B as Selected channel / bank
+    participant E as PHY + ECC path
+    L->>Q: read request {ID, address, class, return route}
+    Q->>Q: decode stack, channel, pseudochannel, bank, row, column
+    R-->>Q: bank availability, refresh deadline, thermal rate limit
+    alt conflicting row is open
+        Q->>B: PRECHARGE when tRAS permits
+        B-->>Q: bank becomes precharged after tRP
+    end
+    Q->>B: ACTIVATE requested row
+    Note over Q,B: wait at least tRCD before a column command
+    Q->>B: READ when bank, bus, and QoS rules permit
+    B-->>E: burst after column latency
+    E->>E: check syndrome; correct, retry, or mark poison
+    E-->>L: return data + ID + status
+    L->>L: match outstanding miss and wake dependents
+```
+
+`PRECHARGE` closes an open row and restores the bitline reference; `ACTIVATE` opens a row into the bank's sense amplifiers; `READ` selects columns from that open row. The timing names are elapsed guards: $t_{RAS}$ protects restore before precharge, $t_{RP}$ covers precharge, and $t_{RCD}$ covers activation-to-column delay. A row hit skips precharge and activation, which is why FR-FCFS values it; a row miss pays them but must still receive bounded service.
+
+```wavedrom
+{ "signal": [
+  { "name": "CK",      "wave": "p............." },
+  { "name": "CMD",     "wave": "x3..4...5....x", "data": ["PRE", "ACT", "READ"] },
+  { "name": "BANK_OK", "wave": "0.1..........." },
+  { "name": "DQ",      "wave": "x..........3.x", "data": ["read burst"] },
+  { "name": "RESP",    "wave": "0...........10" }
+], "head": { "text": "Qualitative HBM row-conflict read: scheduling guards precede data and corrected response" } }
+```
+
+The waveform is qualitative; exact cycles depend on the HBM generation and speed bin. Refresh can hold `BANK_OK` low before `PRE/ACT`, and a thermal controller can reduce command/data opportunities or lower the interface rate. ECC checking sits after the burst; a correctable error may add decode/correction latency, while an uncorrectable error returns poison/fault status instead of silently releasing normal data.
+
 ## 6. Memory-level parallelism must reach the stack
 
 Peak bandwidth requires enough outstanding independent cache lines to cover round-trip latency:
@@ -160,9 +217,13 @@ A stack combines many dies and interconnects; RAS must cover data arrays, TSV/la
 
 ECC overhead affects capacity, bandwidth, burst format, and write energy. Correctable-error storms can consume service bandwidth and predict impending failure; expose them to firmware.
 
+ECC protection has several possible boundaries. On-die correction may repair cell faults internally without exposing a syndrome; controller-visible or end-to-end ECC protects the transfer and storage path seen by the accelerator. The architectural response must distinguish clean data, corrected data, retryable transport failure, uncorrectable poisoned data, and a retired or remapped resource. A retry retains the original transaction identity and ordering obligation. It must not create a second architectural completion if the first response later arrives.
+
 ## 9. Thermals and power delivery
 
 Stacked dies impede heat removal, while the neighboring GPU/NPU is often the package hotspot. DRAM temperature increases refresh demand and leakage; controllers may throttle or change refresh behavior.
+
+These effects feed the scheduler directly rather than appearing only as a power report. A refresh deadline temporarily removes a bank, pseudochannel, or larger domain from the legal-command set. Higher-temperature refresh shortens the useful service interval; thermal throttling may insert command gaps or select a lower data rate. Both reduce $\eta_{refresh}$ or $\eta_{thermal}$ in §1 and increase queue residence, so a temperature rise can lower achieved bandwidth even when the offered request stream is unchanged.
 
 Power includes:
 
@@ -213,6 +274,24 @@ Invariants:
 - refresh/repair eventually services every required region;
 - throttling cannot deadlock coherence or mandatory traffic;
 - address mapping is bijective over implemented capacity and handles disabled resources.
+
+### 11.1 Reconstruct achieved bandwidth from the event ledger
+
+Do not fit one opaque “HBM efficiency.” Measure where interface opportunities were lost:
+
+| Lost opportunity | State/event that enables it | Counter evidence | Typical losing case |
+|---|---|---|---|
+| command not legal | per-bank open row and timing timestamps | blocked cycles by `tRCD`, `tRP`, `tRAS`, bank-group/power rule | random rows or too few banks active |
+| no request for an idle channel | upstream MSHRs/credits and channel mapping | empty-queue cycles; outstanding-request histogram | insufficient memory-level parallelism or channel camping |
+| bus-direction bubble | read/write mode and turnaround timestamp | read→write and write→read guard cycles | small alternating bursts |
+| refresh/repair unavailability | refresh deadline, bank/rank busy state, remap table | refresh wait, scrub/retry/repair cycles | hot stack or error storm |
+| ECC/retry overhead | syndrome, retry count, poison state | corrected/uncorrected errors and replay bytes | marginal link/cell or aggressive operating point |
+| thermal throttling | temperature sensors and selected rate/command budget | throttled cycles, temperature, clock/rate state | sustained bandwidth beside a hot compute die |
+| unbalanced service | decoded channel/bank and per-queue occupancy | per-channel bytes and balance efficiency | stride/address-hash mismatch |
+
+Useful achieved bandwidth is `architectural payload bytes / elapsed time`; raw bus bandwidth includes ECC, retry, scrub, and transferred-but-unused bytes. Reconcile the two with byte conservation, then reconcile elapsed interface slots as `payload + protocol/ECC + turnaround + refresh/repair + throttled/idle`. If those categories do not account for the measured interval, the instrumentation is incomplete.
+
+Verification should replay the §5.1 trace under row hit, row miss, refresh collision, correctable error, retry, poison, and thermal state changes. Assert that command guards are never violated, every accepted request terminates exactly once with data or a defined error, age/QoS rules guarantee required progress, refresh deadlines are met, and remapping never aliases two physical locations into one architectural address.
 
 ## 12. Numbers to remember
 

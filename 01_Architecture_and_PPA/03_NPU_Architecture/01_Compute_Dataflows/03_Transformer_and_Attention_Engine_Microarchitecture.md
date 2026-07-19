@@ -36,6 +36,103 @@ flowchart LR
     B --> V
 ```
 
+### 0.1 Evolution path: from a GEMM coprocessor to a token-serving pipeline
+
+Start with the smallest plausible Transformer accelerator: one matrix array, one input buffer, one weight buffer, one output buffer, and DMA. It executes each graph node separately. For a projection it loads operands, runs GEMM, and writes the result. For softmax—which the array cannot execute—it writes scores to memory, asks a CPU or a small scalar unit to process them, then reads probabilities back for the probability–value multiply.
+
+This machine is functionally complete, but the first attention layer exposes three failures:
+
+1. **Intermediate-traffic failure.** Materializing an $S\times S$ score matrix causes quadratic storage and traffic even though softmax consumes each row immediately.
+2. **Pipeline-balance failure.** The matrix engine produces score rows faster than a scalar exponential/sum unit consumes them, so the expensive array waits behind inexpensive nonlinear work.
+3. **Decode-shape failure.** One-token projection is a matrix–vector operation; it has little weight reuse and leaves most rows of a monolithic square array empty.
+
+The architecture evolves in response, not by adding unrelated blocks:
+
+```mermaid
+flowchart TB
+    G0["GEMM-only engine<br/>every graph node spills"]
+    X0["Failure: score traffic + scalar bottleneck"]
+    G1["Add vector/reduction engine<br/>and shared banked SRAM"]
+    X1["Failure: sequential engines still wait"]
+    G2["Add tile events, dependency scoreboard<br/>and ping-pong banks"]
+    X2["Failure: decode streams weights and growing KV history"]
+    G3["Add KV address generator, deep DMA queues<br/>and partitionable matrix arrays"]
+    X3["Failure: many requests have different lengths and priorities"]
+    G4["Add request scheduler, per-sequence state<br/>and commit/rollback metadata"]
+    G0 --> X0 --> G1 --> X1 --> G2 --> X2 --> G3 --> X3 --> G4
+```
+
+Adding a vector engine fixes the operator-coverage problem only if the score tile can move to it *without leaving the chip*. That requirement forces a shared or explicitly connected scratchpad and a bank-ownership protocol. Adding two buffers fixes serialization only if a scoreboard knows which producer event makes each tile valid and which consumer event makes a bank reusable. Supporting decode requires more than accepting a small matrix dimension: it requires enough outstanding memory requests to cover HBM latency, a key–value (KV) cache address generator that follows page/block tables, and either array partitioning or a vector path that can use the small shape. Finally, continuous batching requires state per sequence because different requests are at different token positions and can leave, fault, or finish independently.
+
+### 0.2 Carry one decode token through one attention head
+
+Use a deliberately small example so every state transition is visible: one new token, one attention head with head dimension $d_h=64$, and 256 cached tokens divided into four 64-token KV blocks. The compiler has already tiled the projection weights and assigned scratchpad banks. A command contains a request ID, layer ID, token position, tensor addresses/layouts, precision, four KV block descriptors, and dependency/completion event IDs.
+
+```mermaid
+flowchart LR
+    A["1. load activation + projection weights"] --> QKV["2. Q/K/V projection"]
+    QKV --> APP["3. stage new K/V at token 256"]
+    APP --> KB["4. iterate four 64-token KV blocks"]
+    KB --> SCORE["5. QKᵀ score tile"]
+    SCORE --> STAT["6. update running max m and sum l"]
+    STAT --> OV["7. update output accumulator o with V"]
+    OV --> MORE{"more KV blocks?"}
+    MORE -->|yes| KB
+    MORE -->|no| NORM["8. normalize o/l"]
+    NORM --> PROJ["9. output projection + residual / norm"]
+    PROJ --> COMMIT["10. commit KV position + signal event"]
+```
+
+The procedural trace is:
+
+1. **Admit and allocate.** The scheduler checks that the request is runnable, assigns a matrix partition, allocates two score/KV staging-bank pairs, and creates a token epoch. An *epoch* is a version number that distinguishes this token's work from late responses belonging to an aborted attempt.
+2. **Projection.** DMA fills an activation tile and the first projection-weight tile. The matrix engine produces Q, K, and V fragments. K and V are staged in an on-chip append buffer; the committed KV length is not advanced yet. This prevents an abort from exposing a half-written token.
+3. **Prefetch block 0 and block 1.** The KV address generator converts `(request, layer, head, token range)` into physical block/page addresses. DMA fetches K/V block 0 into bank set A while bank set B begins filling with block 1. Translation and bounds checks apply to every generated segment, not only the first address.
+4. **Score block 0.** After `K0_READY`, the matrix engine multiplies the query by 64 keys. The output is a 64-score row in a scratchpad bank; event `SCORE0_READY` transfers ownership to the reduction/vector path.
+5. **Online softmax state.** The reduction unit computes block maximum $m_b$. The vector unit updates three persistent row states: running maximum $m$, normalization sum $l$, and vector accumulator $o[0:63]$. These values—not the full scores—survive to the next block. On the first block, $m=-\infty$, $l=0$, and $o=0$.
+6. **Weighted-value update.** The matrix/vector datapath multiplies the rescaled probabilities by V block 0 and accumulates into $o$. Only after this consumer releases the bank may DMA overwrite it. Meanwhile matrix work on block 1 can begin if its K data and a free score bank are available.
+7. **Repeat blocks 1–3.** Each block replays score → max → exponential/sum → weighted-V update. If vector throughput is slower than score production, ready banks fill and scoreboard backpressure stops new score launches before overwrite. If DMA is slower, the matrix partition reports KV-starved cycles rather than consuming stale data.
+8. **Finalize.** After block 3, the vector engine computes $o/l$, converts to the architectural output precision, and emits an attention-output event. Output projection, residual add, and normalization consume that event, preferably without an HBM round trip.
+9. **Commit.** KV write DMA makes the staged K/V visible, then the sequence-state unit atomically advances committed length from 256 to 257 for this epoch. Only afterward may command completion be signaled. If sampling rejects or speculative execution rolls back the token, the committed length remains 256 and the provisional tail is reclaimed.
+
+This replay makes the distinction between **data state** and **control state** concrete. Data state includes Q, the staged K/V fragment, scratchpad score tiles, $m$, $l$, and $o$. Control state includes the current KV-block index, bank owner, ready/release events, outstanding DMA IDs, token epoch, and committed length. Reconstructing only the arithmetic datapaths without that control state cannot implement a correct streaming attention engine.
+
+### 0.3 Why overlap works—and where it stops working
+
+For KV block $i$, define $T_D$ as DMA fill time, $T_M$ as matrix score time, and $T_V$ as reduction/softmax/weighted-V time. A serial engine pays $T_D+T_M+T_V$ per block. With at least two correctly banked stages and event-driven issue, steady-state interval approaches
+
+$$
+T_{block}=\max(T_D,T_M,T_V),
+$$
+
+but only after a fill ramp and only if the scratchpad can support simultaneous DMA writes and engine reads. “Double buffered” does not guarantee overlap: if both phases map to the same physical bank or the vector engine retains a score bank longer than expected, arbitration serializes the stages.
+
+| Feature | State/datapath that enables it | Main PPA/complexity cost | Where it loses |
+|---|---|---|---|
+| fused online softmax | running $m,l,o$, reduction tree, exponential/reciprocal approximation, score-to-vector path | wider live state, special-function area, numerical verification | very short sequences where launch/setup dominates |
+| shared banked scratchpad | multi-bank SRAM, ownership bits, arbitration and bypass | SRAM area/leakage, ports/mux timing, bank conflicts | footprint or irregular KV access defeats residency |
+| ping-pong pipeline | duplicate banks, event scoreboard, per-tile tags | capacity overhead and deadlock/error state space | one stage dominates so completely that overlap gives little gain |
+| partitionable array | boundary muxes, independent accumulators/sequencers | routing, clock/control power, some dense-mode frequency/area loss | sustained large prefill GEMMs already fill one array |
+| KV address engine | block/page walker, translation cache, gather queues, bounds state | metadata bandwidth and fault/replay machinery | contiguous short contexts need only simple linear DMA |
+| per-request scheduling | sequence table, epochs, quotas, preemption safe points | SRAM/control overhead and fairness complexity | offline single-stream inference needs little scheduling |
+
+The losing cases matter because every “flexibility” feature consumes area and clock power even when unused. A research comparison must therefore report end-to-end token latency or goodput under a workload mix, not merely show that the new block accelerates its preferred kernel.
+
+### 0.4 Make the trace observable and provable
+
+Counters should reconstruct the token timeline: request admission wait; QKV projection cycles; KV bytes and translation misses; per-block DMA-, matrix-, and vector-stage times; bank-conflict and ready-queue stalls; matrix partition occupancy; vector/reduction occupancy; score bytes spilled off chip; committed and rolled-back KV tokens; and time from final visible KV write to completion. Per-stage histograms matter because averages hide one long request blocking many short requests.
+
+Assertions follow directly from the state transitions:
+
+- a score tile may be consumed only when its producer event, tile tag, request ID, layer, head, and epoch match;
+- a scratchpad bank cannot be owned simultaneously by DMA fill and an engine reader unless the physical banking contract explicitly permits it;
+- every KV block contributes exactly once to the running $m,l,o$ state, in an order allowed by the numerical contract;
+- $l$ must remain positive and finite after the first unmasked score; masked elements cannot contribute to $l$ or $o$;
+- committed KV length cannot advance before both K and V writes are visible, and a rollback cannot erase a previously committed token;
+- completion cannot occur with outstanding DMA, unreleased banks, or a provisional tail for the command epoch.
+
+Those checks verify the mechanism that makes the algorithm fast, not only the final tensor. A numerically correct output can still conceal a bank lifetime violation that fails under a different stall pattern.
+
 ## 1. The Transformer block as hardware operations
 
 For input activation matrix $X$, projection weights form queries, keys, and values:

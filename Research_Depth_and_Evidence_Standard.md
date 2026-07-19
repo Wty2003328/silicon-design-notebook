@@ -107,6 +107,37 @@ Use a diagram when spatial, causal, ownership, state, or temporal relationships 
 - Show backpressure, error/recovery, or feedback arcs when they change the mechanism; a one-way happy-path diagram is insufficient when those paths determine correctness.
 - Do not add a decorative figure that merely repeats a nearby list. A useful figure lets the reader predict an event, identify state ownership, or derive a design/verification artifact.
 
+### 1.11 Procedural mechanism and feature-evolution contract
+
+A chapter must not present advanced features as an inventory. Teach each major mechanism as the response to a demonstrated limitation of a simpler design:
+
+```mermaid
+flowchart LR
+    C["contract and minimum correct baseline"] --> T0["trace one concrete input/workload"]
+    T0 --> F["observe or quantify the failure/bottleneck"]
+    F --> R["derive a new requirement or invariant"]
+    R --> M["add state, metadata, control, data path, or protocol"]
+    M --> T1["replay the same example, including recovery"]
+    T1 --> COST["PPA, complexity, physical, verification, and losing cases"]
+    COST --> E["counters, traces, assertions, and validation"]
+    E -->|"next exposed bottleneck"| F
+```
+
+For every important feature:
+
+1. Define its input/output/state/timing contract and expand terminology locally.
+2. Construct the smallest correct baseline before naming the advanced solution.
+3. Carry a concrete instruction, tensor tile, request, packet, command, or state transition through that baseline in causal order.
+4. Show a quantified performance loss or a concrete correctness/scaling failure.
+5. Derive the requirement that a repair must satisfy.
+6. Identify the exact added queues, tags, masks, checkpoints, pointers, scoreboards, descriptors, metadata, or state-machine transitions and who owns them.
+7. Replay the same example through normal completion and at least one stall, fault, replay, cancellation, or recovery path.
+8. State the power/performance/area (PPA), wiring, timing, software, security, reliability, and verification costs, plus the workload for which the feature loses.
+9. Compare alternatives under the same assumptions rather than listing unrelated pros and cons.
+10. Map conclusions to counters, simulator events, traces, assertions, coverage, and a stronger validation source.
+
+A summary table belongs after this derivation. If the reader sees “modern designs add X” without first seeing the failure that requires X and the state/control that enables it, the explanation is incomplete.
+
 ---
 
 ## 2. Claim and source discipline

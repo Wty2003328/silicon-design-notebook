@@ -151,6 +151,121 @@ $$
 
 after adding serialization edges for shared matrix engines, DMA channels, SRAM banks, NoC links, and DRAM. Merely summing per-layer isolated latencies is pessimistic when overlap is legal and optimistic when shared-resource contention was omitted.
 
+### 1.2 One complete trace: model node → target commands → events → final numbers
+
+The abstract stages become concrete in this toy run. The numbers are deliberately small enough to audit by hand; a real model repeats the same transformations for thousands of operators.
+
+#### A. Freeze and lower the graph
+
+Assume the framework benchmark runs inference with fixed input `X[4,4]`, constant weight `W[4,4]`, and a `MatMul → Add(bias) → ReLU` pattern. Export records exact tensor values/shapes, opset, precision policy, and preprocessing. Shape inference confirms the matrix dimensions; a graph pass fuses bias and ReLU into an NPU-supported epilogue. The optimized graph has one scheduled node rather than three, so its manifest records both forms and the eliminated intermediate.
+
+The compiler lowers the node through progressively more hardware-specific representations:
+
+```text
+Graph IR:
+  y = relu(matmul(X[4,4], W[4,4]) + bias[4])
+
+Tensor/loop IR:
+  for m=0..3, n=0..3, k=0..3:
+      acc[m,n] += X[m,k] * W[k,n]
+  y[m,n] = relu(acc[m,n] + bias[n])
+
+Mapped IR for a 2x2 output-stationary array:
+  tile (m,n,k) by (2,2,4)
+  spatial m across array rows; spatial n across columns; temporal k
+  retain int32 acc in PEs; run fused vector epilogue before store
+
+Target command/micro-op stream for each output tile t:
+  LOAD_XW  t, input_bank[phase], weight_bank[phase] -> INPUT_READY[t]
+  MMA_OS   t, K=4, waits INPUT_READY[t]             -> ARRAY_DONE[t]
+  EPILOGUE t, bias, relu, waits ARRAY_DONE[t]       -> OUTPUT_READY[t]
+  STORE_Y  t, waits OUTPUT_READY[t]                 -> STORED[t]
+```
+
+The last block is the NPU equivalent of assembly. Some machines expose binary instructions; others expose fixed-size descriptors interpreted by firmware. In both cases the simulator must consume the same executable semantics as hardware: opcode, tile extents, addresses/strides, bank and phase, precision, mapping ID, waits/signals, context, and fault policy. Simulating the loop IR while assuming a different hidden command schedule does not validate the compiler/runtime stack.
+
+```mermaid
+flowchart LR
+    SRC["framework benchmark<br/>inputs + weights"] --> ONNX["exported graph<br/>shapes + operator semantics"]
+    ONNX --> OPT["optimized graph<br/>fusion + layout + quantization"]
+    OPT --> TIR["tensor / loop IR"]
+    TIR --> MAP["mapped IR<br/>2×2×4 tiles + OS dataflow"]
+    MAP --> BIN["NPU descriptors / micro-ops"]
+    BIN --> FE["simulator fetch + decode"]
+    FE --> EV["timed resource events"]
+    EV --> CNT["cycles + traffic + activity counts"]
+    CNT --> MET["latency + utilization + energy + bottleneck"]
+```
+
+#### B. Convert commands into timed events
+
+The hardware model declares a 2×2 array, two input phases, two output phases, one load DMA channel, one store DMA channel, banked SRAM, and a 1 GHz clock. For this toy calibration, one tile load occupies load DMA for 5 cycles, the complete systolic MMA including fill/drain occupies the array for 6 cycles, the fused epilogue is included in that reservation, and a store occupies store DMA for 2 cycles.
+
+An event-driven simulator maintains a priority queue ordered by timestamp. `LOAD_START(t0)` reserves load DMA and its destination banks; it schedules `LOAD_DONE(t0)` at cycle 5. That callback sets `INPUT_READY[t0]`, wakes `MMA(t0)`, reserves the array for cycles 5–10, and schedules `ARRAY_DONE(t0)` at cycle 11. Events that request a busy resource remain in a ready queue; they do not disappear and they do not advance simulated time by polling. Completion callbacks update counters and release bank generations.
+
+One legal zero-based timeline is:
+
+| Cycles | Load DMA | 2×2 array | Store DMA | Event at interval end |
+|---|---|---|---|---|
+| 0–4 | tile 0 | idle | idle | `INPUT_READY[0]` at 5 |
+| 5–9 | tile 1 | tile 0, cycles 5–10 | idle | `INPUT_READY[1]` at 10 |
+| 10 | idle | finish tile 0 | idle | `OUTPUT_READY[0]` at 11 |
+| 11–12 | tile 2 begins, cycles 11–15 | tile 1, cycles 11–16 | tile 0 | `STORED[0]` at 13 |
+| 13–15 | finish tile 2 load | tile 1 | idle | `INPUT_READY[2]` at 16 |
+| 16 | idle | finish tile 1 | idle | `OUTPUT_READY[1]` at 17 |
+| 17–18 | tile 3 begins, cycles 17–21 | tile 2, cycles 17–22 | tile 1 | `STORED[1]` at 19 |
+| 19–21 | finish tile 3 load | tile 2 | idle | `INPUT_READY[3]` at 22 |
+| 22 | idle | finish tile 2 | idle | `OUTPUT_READY[2]` at 23 |
+| 23–24 | idle | tile 3, cycles 23–28 | tile 2 | `STORED[2]` at 25 |
+| 25–28 | idle | finish tile 3 | idle | `OUTPUT_READY[3]` at 29 |
+| 29–30 | idle | idle | tile 3 | graph completion at 31 |
+
+The unusual load start at cycle 11 is caused by buffer lifetime, not load-DMA availability: tile 2 reuses tile 0's input phase only after tile 0 releases it. Tile 3 likewise waits for tile 1. A model that schedules load 2 immediately at cycle 10 without checking bank ownership is one cycle faster and architecturally impossible. This is why events and resources, not just per-operator lookup times, produce the final answer.
+
+#### C. Reduce the event trace into metrics
+
+The fused GEMM performs $4\cdot4\cdot4=64$ useful MACs. Four tile reservations each occupy four PEs for six cycles, or 96 available MAC slots, so compute-phase utilization is
+
+$$U_{compute}=64/96=66.7\%.$$
+
+End-to-end array utilization additionally includes time when the array has no runnable tile:
+
+$$U_{wall}=64/(4\cdot31)=51.6\%.$$
+
+The reported latency is 31 cycles, or 31 ns at 1 GHz. A report that says only 66.7% utilization conceals load/buffer startup and final store drain; one that says only 51.6% conceals how well the array performs once scheduled. Both denominators belong in the result.
+
+Assume no cross-output-tile reuse in this illustrative mapping. Four tiles each load 8 B of X and 8 B of W and store four 32-bit outputs, so HBM traffic is 64 B read plus 64 B write. The simulator derives those bytes from issued transactions and cross-checks them against descriptor footprints; it does not infer them from elapsed cycles. The same trace increments SRAM writes on refill, operand reads, result writes, and store reads, and MAC/control activity when those events execute.
+
+Energy is then a reduction over counts, never a second timing simulation. For an explicitly *illustrative* energy reference table of 20 pJ/HBM-byte, 1 pJ/SRAM-byte, 0.2 pJ/MAC, and 2 pJ for each of 15 decoded command/event actions, if the trace records 128 HBM bytes and 256 SRAM bytes,
+
+$$
+E_{dynamic}=128(20)+256(1)+64(0.2)+15(2)=2858.8\text{ pJ}.
+$$
+
+At 50 mW modeled leakage for 31 ns, leakage adds $1.55$ nJ, so the toy total is 4.409 nJ. These values are not technology claims; replacing them with characterized SRAM, link, MAC, and controller tables is what turns the action counts into evidence. Area is similarly the sum of instantiated component areas—not something learned from the cycle trace—and should be calibrated to memory compilers and synthesis.
+
+The final per-run record therefore contains at least: graph latency and critical path; cycles per operator/tile; useful and available MAC slots; stall cycles by input-bank, DMA, SRAM-bank, output, dependency, and fault cause; bytes/accesses per tensor and hierarchy; peak/average bandwidth; queue and buffer occupancy; activity counts and energy-table provenance; static/dynamic energy; modeled area; unsupported/fallback operations; and host wall time used to run the simulator as a separate metric.
+
+#### D. Replay a recoverable fault
+
+If tile 2's load encounters a page-not-present response at cycle 12, its destination bank remains `FILLING`, `INPUT_READY[2]` is suppressed, and the transaction saves descriptor index, completed fragments, context, and epoch. Suppose page service plus invalidation/replay delays readiness until cycle 33. Tile 1 still completes and stores. Under an in-order tile-issue policy, the array then idles because tile 2's dependency is unresolved; an out-of-order policy could use tile 1's released phase to load tile 3 and should expose that bypass explicitly. Tile 2 executes cycles 33–38 once ready, and later events follow the selected policy and released resources. The final result includes `fault_wait_cycles` and the changed critical path exactly once. It must not also add an analytical “average page-fault penalty” to the already delayed event trace.
+
+A terminal permission fault produces no successful graph latency. The simulator emits a terminal command status, offending address/context, cycles until fault observation and cleanup, partial traffic/activity, and whether other independent graph work completed. Converting that run to a normal latency by pretending the failed tile took zero cycles is a modeling bug.
+
+#### E. Validate the simulator and choose fidelity consciously
+
+This toy trace supplies hand-checks: 64 MACs; four output tiles; exactly one terminal store per tile; 128 HBM bytes under the stated no-reuse mapping; no bank generation reused before release; and causally ordered ready/done events. The analytical lower bound is 16 array cycles ($64/4$), while the mapped systolic reservations total 24 cycles because fill/drain is modeled. The end-to-end event result must be at least both the resource-constrained critical path and every traffic/bandwidth lower bound. Small random shapes should compare output tensors and event counts with a reference implementation; selected kernels should then correlate cycles/traffic with RTL or silicon.
+
+| Model feature | What new decision it distinguishes | Enabling model state | Cost / when unnecessary |
+|---|---|---|---|
+| closed-form mapping counts | tile/dataflow/reuse choices | loop bounds, hierarchy, mapping, action equations | fastest; misses time-varying contention |
+| cycle/event array model | fill/drain, bank/DMA stalls, overlap | clocks, queues, resources, ownership, timed events | slower; unnecessary when candidates differ by obvious count bounds |
+| translation/fault model | virtual-memory latency and isolation policy | IOTLB/walker/fault queues, context/epoch/replay | expensive state; pinned offline inference may omit it explicitly |
+| graph/runtime model | fusion, dependency critical path, multi-engine/multi-request overlap | graph DAG, placement, scheduler, shared resources | kernel tuning does not need full serving state |
+| NoC/DRAM timing | interference, row locality, backpressure | packets, banks, queues, arbitration and timing rules | traces and runtime grow sharply; aggregate bandwidth may suffice early |
+
+Simulator invariants include monotonically nondecreasing timestamps; no resource overlap beyond declared capacity; every accepted command reaches one terminal event; dependency events cannot precede producers; bytes and actions are counted exactly once across retry; a bank generation cannot be accessed outside its allocation lifetime; graph completion equals the latest required terminal event; energy equals trace counts dotted with a versioned reference table; and unsupported work cannot silently vanish from coverage. These assertions protect the *measurement instrument* before its results are used to compare architectures.
+
 ---
 
 ## 2. From a layer + mapping to latency and energy — the shared mechanism

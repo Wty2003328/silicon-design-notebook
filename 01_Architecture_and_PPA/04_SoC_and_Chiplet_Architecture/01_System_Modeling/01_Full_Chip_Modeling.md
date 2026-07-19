@@ -403,6 +403,49 @@ Control flows *down* (the governor sets $(V,f)$ and gating); computed quantities
 
 On real silicon this loop *is* the governor, running in hardware/firmware at millisecond granularity: measure (RAPL counters, on-die current and thermal sensors) → compare to budget/limit → actuate $(V,f)$ and gating → repeat. In a model it is a solver iterating the four boxes to convergence. Either way, **this loop is the precise reason a leaf-only model is not a chip model** — it has the bottom box and none of the three above it.
 
+### 3.1 Follow one composed CPU → accelerator → DMA job through the fixed point
+
+The loop becomes concrete when one unit of application work crosses block boundaries. Suppose a CPU thread prepares an inference descriptor, rings an NPU doorbell, and later consumes the result. The NPU's direct-memory-access engine (DMA) shares the NoC, last-level cache, and DDR channel with unrelated CPU misses. A baseline spreadsheet would add a CPU setup time, an isolated NPU time, and an isolated DMA time. It fails twice: setup can overlap DMA/compute, while DDR contention can stretch both CPU and accelerator service and change their power. The model must instead advance one **causal job graph** against shared resource state.
+
+```mermaid
+flowchart LR
+    CPU["CPU<br/>build descriptor + doorbell"] --> CMD["command queue<br/>job J42"]
+    CMD --> NPU["NPU scheduler<br/>allocate context"]
+    NPU --> DMA["DMA bursts<br/>weights / activations"]
+    DMA --> NOC["shared NoC queues + links"]
+    NOC --> MEM["LLC / IOMMU / DDR queues"]
+    MEM --> DMA
+    DMA --> NPU
+    NPU --> DONE["completion record + interrupt"]
+    DONE --> CPU
+    CPU -. "misses / stores" .-> NOC
+    NOC --> MON["accepted work, stalls,<br/>bytes, activity"]
+    MEM --> MON
+    NPU --> MON
+    MON --> PT["power + thermal epoch solve"]
+    PT --> GOV["DVFS / throttle / gating"]
+    GOV -. "new service rates" .-> CPU
+    GOV -. "new service rates" .-> NPU
+    GOV -. "new injection limit" .-> DMA
+```
+
+The procedural trace is:
+
+1. **Create causality, not just demand.** At simulated time $t_0$, the CPU retires stores that build descriptor `J42`, executes the required release/doorbell ordering, and emits a command-queue event. The model records `{job ID, dependency predecessors, bytes by buffer, deadline, CPU cycles consumed, security/address context}`. Until the doorbell event exists, the NPU cannot start; this preserves software overhead and synchronization.
+2. **Admit only against finite state.** The NPU scheduler allocates a context/command slot. The DMA allocates outstanding read/write descriptors and translation entries before injecting requests. If a queue is full, the upstream event is rescheduled or backpressured; it is not allowed to disappear into an infinite buffer. Queue occupancy is what converts demand into queueing delay.
+3. **Break the job into traffic and compute events.** Tiling produces weight/activation reads, output writes, and compute tiles with explicit dependencies. Double buffering allows tile $k$ compute to overlap tile $k{+}1$ DMA, so job time is governed by the longer stream after fill/drain—not the sum of every transfer and multiply.
+4. **Compete at the resources actually shared.** Each DMA burst and CPU cache miss carries source/class/address into the NoC and memory models. Per-link arbitration, LLC misses, address mapping, bank state, refresh, and DDR scheduling determine service. A CPU row hit may pass an older NPU row conflict; a display deadline may preempt both. The completion timestamp is therefore an output of the current mixed queue, not the isolated block latency.
+5. **Return completions through the dependency graph.** A memory response releases its DMA entry and may mark a tile ready; the tile schedules compute using the NPU service rate at that time. The final output write must become visible under the declared completion semantics before `J42` posts its completion and interrupt. The CPU wakeup then schedules the dependent software work. Transaction IDs and job/tile IDs let out-of-order events update the correct predecessor count.
+6. **Accumulate activity in an epoch.** Every accepted flit, cache access, DDR command, DMA byte, CPU instruction, and NPU operation increments a named counter. At epoch end, per-event energies plus leakage produce a spatial power map. Crucially, stalled units contribute clock/leakage and perhaps retry activity, not their isolated peak operation count.
+7. **Feed the operating point back.** The thermal/power layer advances temperature and checks rail, package, and thermal limits. A governor may lower NPU frequency, cap DMA injection, or reduce CPU turbo. Those actions modify the *future* event service rates; the model then continues or iterates the epoch until activity, power, temperature, and frequency agree. If the NPU slows, its buffers remain occupied longer, which can increase contention and move the fixed point again.
+8. **Reduce only after the causal chain closes.** Job latency is `CPU descriptor start → architecturally valid completion`, CPU interference is the counterfactual or paired change in CPU progress, energy/job is the integral of chip/package power over the same interval, and throughput is completions per steady-state wall time. The result is not `CPU time + NPU time + DMA time`; it is the elapsed time of the dependency graph under the converged resource schedule.
+
+The state required to enable this is a compact system ledger: live jobs and predecessor counts; finite queue/credit/outstanding occupancy at each boundary; shared-resource calendars or event queues; per-domain $(V,f,\text{power state})$; per-block activity and leakage; thermal-node temperatures; and governor integrator/hysteresis state. This is more expensive than isolated algebra—runtime grows with dynamic events and queues, thermal epochs add iteration, and storing every transaction can dominate trace volume. Fidelity should therefore be spent on shared bottlenecks and feedback edges; compute tiles that never contend may remain analytical.
+
+**Losing cases reveal missing composition.** An infinite DMA queue hides backpressure; independent CPU/NPU traces hold injection fixed even after one side throttles; summing phase times destroys overlap; averaging power over the whole run misses short rail/thermal excursions; assigning every request a fixed DDR delay removes the contention path that couples the agents. A sensitivity run should remove each coupling deliberately: if “no contention,” “no overlap,” or “fixed frequency” produces the same answer, either that mechanism truly is irrelevant for this workload or the model never connected it.
+
+**Replay and verification contract.** A reproducible job result needs workload/phase and random-seed hashes, contract/config version, address map, initial cache/memory state, queue depths, arbitration policies, per-domain clock/power tables, thermal initial state and epoch, plus the ordered external event stream. Preserve milestone timestamps `{doorbell, first DMA issue, first/last data, first compute, output visible, interrupt, CPU consume}` and resource stall/activity counters. Assert conservation from admitted job → one completion/error, DMA request → one response, bytes injected → delivered/dropped-by-declared-fault, and energy total → sum of block/uncore/delivery terms. Validate the isolated leaves first, then a single-agent composed trace, then the CPU+NPU contention trace, and finally the governor/thermal transient; a final throughput number without this evidence chain cannot identify which layer created it.
+
 ---
 
 ## 4. One equation, three architectures

@@ -43,6 +43,77 @@ Device requests add identity. An IOMMU must know which device and software conte
 
 **Beginner checkpoint:** changing a page-table entry is not enough. Every CPU, IOMMU, and device cache that could retain the old mapping must be invalidated and acknowledge completion before memory is safely reused.
 
+## 0.1 Derive the translation engine by replaying one load
+
+Begin with no TLB: every load would perform all page-table reads before accessing data. That is functionally sufficient but makes a four-level translation a serial memory program. A TLB removes repeated walks; a page-walk cache removes repeated upper-tree reads; multiple walk slots overlap independent misses; miss merging prevents two requests for the same translation from duplicating work. Each feature repairs a measured bottleneck and adds identifiable state.
+
+Consider CPU load `L17` with virtual address `VA`, address-space identifier `ASID=9`, and access type `read/user`. Assume a four-level page table and a TLB miss. The exact implementation can differ, but a reconstructable walker performs this lifecycle:
+
+```mermaid
+sequenceDiagram
+    participant LSU as Load-store unit
+    participant MQ as TLB-miss queue
+    participant W as Walker slot 3
+    participant PWC as Page-walk cache
+    participant C as Coherent cache/memory
+    participant T as TLB fill port
+    LSU->>MQ: L17(VA, ASID=9, read/user, ROB tag)
+    MQ->>MQ: search same virtual-page/context miss
+    MQ->>W: allocate slot; save requesters + epoch
+    W->>PWC: lookup root/upper-level prefix
+    alt upper prefix hits
+        PWC-->>W: next-table physical address
+    else prefix misses
+        W->>C: read level-0 PTE cache line
+        C-->>W: coherent PTE line
+        W->>W: check valid/leaf/reserved/permission fields
+    end
+    W->>C: dependent lower-level PTE reads
+    C-->>W: leaf PTE
+    W->>W: check permissions and form physical page number
+    W->>T: fill(virtual page, physical page, ASID, permissions, epoch)
+    T-->>LSU: wake L17 and merged requesters
+    LSU->>C: replay data access with physical address
+```
+
+The walker slot must store current level, base physical address, virtual-page indices, ASID/VM identifier, access type and privilege, requester list, outstanding memory transaction identity, accumulated permissions, accessed/dirty update status, and invalidation/reset epoch. A line fill alone is not success: the returned PTE is parsed, reserved encodings are rejected, permissions from all levels are combined, superpage alignment is checked, and any required accessed/dirty-bit update reaches its architectural completion point.
+
+```wavedrom
+{ "signal": [
+  { "name": "L17_TLB_miss", "wave": "01.0........." },
+  { "name": "walk_slot",    "wave": "0.1========0.", "data": ["alloc", "L0", "L1", "L2", "leaf", "fill", "wake"] },
+  { "name": "pte_req",      "wave": "0..101010..." },
+  { "name": "pte_rsp",      "wave": "0...101010.." },
+  { "name": "tlb_fill",     "wave": "0.........10" },
+  { "name": "L17_replay",   "wave": "0..........1" }
+] }
+```
+
+Now inject three failures and derive the controls:
+
+1. **A second load misses on the same page.** Without a merge table it consumes another slot and repeats the dependent reads. Compare virtual page, context, stage, access compatibility, and epoch; append its requester tag to slot 3; wake both only after one validated fill.
+2. **An invalidation arrives while the walk is at level 2.** Without an epoch or associative cancel, the old walk may refill a stale translation after invalidation completes. Mark matching slots killed or advance a context generation. A killed memory response may release resources, but it may not fill a TLB or wake a requester. Restart under the new epoch if the requester remains live.
+3. **The final PTE is not present.** A CPU load reports a precise page fault at retirement. A PRI-capable device records the request in a fault-wait state, sends one page request, and stops replaying until software returns success or denial. On success it retries translation under the current context epoch; on denial it completes once with an error. Unlimited retry would livelock and flood the fault queue.
+
+```mermaid
+stateDiagram-v2
+    [*] --> LOOKUP
+    LOOKUP --> WAIT_PTE: issue coherent PTE read
+    WAIT_PTE --> LOOKUP: non-leaf valid PTE
+    WAIT_PTE --> FILL: permitted leaf
+    WAIT_PTE --> FAULT_WAIT: recoverable not-present + PRI
+    WAIT_PTE --> TERMINAL_FAULT: malformed or permission fault
+    FAULT_WAIT --> LOOKUP: software success / current epoch
+    FAULT_WAIT --> TERMINAL_FAULT: denial or timeout
+    LOOKUP --> KILLED: matching invalidation or reset
+    WAIT_PTE --> KILLED: matching invalidation or reset
+    KILLED --> [*]: discard response; no fill
+    FILL --> [*]: fill + wake once
+    TERMINAL_FAULT --> [*]: report once
+```
+
+This evolution has losing cases. A large fully associative merge structure lengthens the TLB-miss critical path; many walker slots increase PTE traffic and cache pollution; a large PWC can retain stale upper entries and makes invalidation more expensive; eager hardware accessed/dirty updates create extra atomic/coherent traffic. Size with measured miss concurrency, not core count alone. Observe allocation/merge/full cycles, time by level and cache service, kill/restart cause, PWC hit level, requester fan-out, accessed/dirty update, and terminal/recoverable fault latency. Assert that each accepted miss ends exactly once in fill, architectural fault, or cancellation, and that an invalidated epoch can never produce a later fill.
+
 ## 1. Hardware page-walker microarchitecture
 
 A serial $L$-level walk can require $L$ dependent memory reads. A practical walker contains:

@@ -27,6 +27,27 @@ flowchart LR
 
 The model must preserve causality: protocol messages create traffic, traffic delay changes transaction overlap, and that overlap changes future protocol state/traffic.
 
+### 0.1 The model evolves only when the simpler abstraction changes the answer
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
+flowchart LR
+    A["Fixed miss latency\none delay per cache outcome"]
+    B["Protocol-event model\nrequests, transients, acks, finite TBEs"]
+    C["Packet network\nmessage bytes, routes, queueing"]
+    D["Flit/credit router model\nVCs, buffers, arbitration, links"]
+    E["Execution-driven coupling\nMSHR backpressure changes future issue"]
+
+    A -->|"cannot compare protocols or sharing fanout"| B
+    B -->|"fixed transport hides congestion and packet size"| C
+    C -->|"packet latency hides head-of-line blocking/deadlock"| D
+    D -->|"open-loop injection ignores core slowdown"| E
+```
+
+Start with the leftmost model that can distinguish the proposed designs. A fixed-latency cache is appropriate when only core scheduling changes and the memory system is held constant. Protocol events become necessary when alternatives change invalidations, forwarding, ownership, or finite transaction-buffer pressure. Packet detail is necessary when data/control size and routes differ. Flit/credit detail is necessary when virtual channels (VCs), buffer depth, arbitration, serialization, or deadlock are the research question. Execution-driven coupling is necessary when those delays fill miss status holding registers (MSHRs), stall the core, alter synchronization, or change prefetch timeliness.
+
+Every step adds state and calibration burden. Greater detail can lose by running too slowly to sample workload phases or by introducing uncalibrated parameters. Fidelity is useful only when it changes a design ranking or closes a correctness proof; otherwise it is simulation noise with a larger confidence interval.
+
 ## Before the details: the protocol and network form a feedback loop
 
 A coherence controller creates messages because cache state changes. The network delays those messages according to routes, buffers, and competing traffic. Delay keeps coherence transactions open longer, occupying transient-state entries and miss trackers. Once those structures fill, the processor or cache injects fewer requests. The traffic source therefore depends on the network being measured.
@@ -168,6 +189,106 @@ Keep raw layers separate when calculating results:
 Average packet latency cannot be substituted for cache-miss latency: a miss may wait before injection, require multiple dependent packets, and wait again at the destination. [CPU source-to-result workflow](../00_Design_Methodology/03_CPU_Simulation_Methodology_and_Evidence.md) defines the earlier compiler/loader/ROI stages.
 
 Avoid zero-time combinational cycles across components. Define event ordering or clock phases so same-cycle credit/message/response behavior is deterministic and matches intended hardware.
+
+### 7.1 Exact worked trace: one load miss becomes six flits and a 49-cycle result
+
+This trace is deliberately small enough to reproduce by hand. It follows one load `L` after a translation hit. `L` addresses physical line `X`, which is Invalid in the private L1 data cache. The directory reports no sharers and the last-level cache also misses, so memory supplies the line. There is no competing traffic except a two-cycle lack of output credit on the request path.
+
+**Declared model parameters and cycle convention.** A state change scheduled for cycle `c` occurs at the start of `c`; a component with latency `d` schedules its dependent event for `c+d`. The L1 tag lookup is 1 cycle. Network flits are 16 bytes. A `GetS` (get shared/read permission) request is an 8-byte one-flit packet. A data response is an 8-byte header plus a 64-byte line, hence `ceil(72/16)=5` flits. Source and home are three links apart. Each hop costs one router stage plus one link stage, or 2 cycles; wormhole flow control lets successive flits pipeline through the route. Home-directory lookup is 2 cycles, memory service is 20 cycles, destination reassembly is 1 cycle, fill arbitration/array install is 2 cycles, and result broadcast/wakeup is 1 cycle.
+
+```mermaid
+sequenceDiagram
+    participant L as Load / L1D
+    participant MSHR as MSHR + coherence controller
+    participant SNI as Source NI / credits
+    participant N as 3-hop routers and links
+    participant H as Home / directory
+    participant MEM as Memory
+    participant DNI as Destination NI / fill path
+
+    L->>MSHR: c101 miss X; allocate M0 in IS, attach load destination+epoch
+    MSHR->>SNI: c102 enqueue one-flit GetS(X, txn=M0:g)
+    Note over SNI: c103-c104 no output credit; request remains queued
+    SNI->>N: c105 inject request flit; consume one downstream credit
+    N->>H: c112 complete ejection after 3 router+link hops
+    H->>H: c112-c114 directory lookup: no sharer/owner
+    H->>MEM: c114 issue memory read X; mark home transaction pending
+    MEM-->>H: c134 return 64-byte line
+    H->>N: c135-c139 inject header/body/tail (5 flits)
+    N->>DNI: header c141; tail c145; reassembly complete c146
+    DNI->>MSHR: c146-c148 arbitrate fill port; install data/tag/S state
+    MSHR-->>L: c148-c149 select requested bytes, write result, wake dependent
+    Note over L: dependent may issue at c149; load-to-use = 149-100 = 49 cycles
+```
+
+The exact event ledger is:
+
+| Cycle/interval | Event and state mutation | Counters charged at this point |
+|---|---|---|
+| `100→101` | load issues; L1 tag/state arrays read | `l1d_access += 1` |
+| `101` | tag miss; allocate `M0`, state `IS` (Invalid→Shared pending), save line, waiter, permission, victim, transaction generation `g` | `l1d_miss += 1`, `mshr_alloc += 1`, occupancy begins |
+| `102` | controller creates `GetS(X,M0:g)` and enqueues it at source network interface (NI) | `gets += 1`, `packets_created += 1`, `flits_created += 1` |
+| `103,104` | required output VC has no downstream credit; flit cannot leave NI | `credit_blocked_cycles += 2`; no hop or injection is counted |
+| `105→112` | credit arrives; inject one flit; route across three router/link hops and eject/reassemble | `injected_flits += 1`, `flit_hops += 3`, request injection-to-ejection sample `7` |
+| `112→114` | home looks up directory/LLC; finds no sharer, owner, or data | `directory_lookups += 1`, `directory_misses += 1` |
+| `114→134` | one memory read is outstanding; requester remains IS and MSHR occupied | `memory_reads += 1`, memory-service sample `20` |
+| `134→135` | home creates response with 8-byte header + 64-byte payload | `data_responses += 1`, `packets_created += 1`, `flits_created += 5`, `response_bytes += 72` |
+| `135→146` | five flits inject during `135..139`; header reaches destination at 141, tail at 145, full packet reassembles at 146 | `injected_flits += 5`, `flit_hops += 15`, response injection-to-complete sample `11` |
+| `146→148` | fill competes for/wins array port; tag, data, and Shared permission install atomically | `fills += 1`, fill-path sample `2` |
+| `148→149` | requested bytes select, destination result writes, waiter wakes, `M0` frees | load-to-use sample `49`; MSHR occupancy ends |
+
+The request uses one flit and the response five, so final network work is
+
+$$
+N_{packet}=2,\qquad N_{flit}=1+5=6,\qquad
+W_{flit-hop}=1\times3+5\times3=18.
+$$
+
+`M0` is occupied over `[101,149)`, contributing **48 MSHR-slot-cycles** to the occupancy integral and a maximum occupancy of one. The load-to-use latency is **49 cycles**. The two network packet samples are 7 and 11 cycles, so their unweighted mean is 9 cycles—yet substituting 9 for the load miss latency would understate the actual 49 cycles by more than 5× because it omits cache detection, NI waiting, home lookup, memory, packet creation/serialization, fill arbitration, and wakeup. This is exactly why packet latency and coherence-miss latency must remain separate statistics.
+
+The 49 cycles also reconcile by phase, with no double-counting:
+
+$$
+T_{load\to use}=
+\underbrace{2}_{\text{L1 detect + request preparation}}+
+\underbrace{3}_{\text{NI enqueue to injection}}+
+\underbrace{7}_{\text{request network/ejection}}+
+\underbrace{22}_{\text{directory + memory}}+
+\underbrace{12}_{\text{response creation/network/reassembly}}+
+\underbrace{3}_{\text{fill + wake}}=49.
+$$
+
+The decomposition is based on timestamp boundaries, not on adding separately averaged components; in larger runs, wormhole serialization, parallel snoops, and memory overlap make “sum of averages” invalid.
+
+### 7.2 How the simulator produces those events and final statistics
+
+A discrete-event implementation keeps a priority queue ordered by `(time, phase, sequence_number)`. A cycle-stepped implementation evaluates the same ordering every tick. One deterministic phase order is:
+
+1. deliver link arrivals and returning credits;
+2. place arrived flits into input VCs and reassemble completed packets;
+3. let endpoint protocol controllers consume messages and schedule directory/memory/fill work;
+4. perform VC allocation, switch allocation, and link traversal for already-buffered flits;
+5. let NIs inject new head/body/tail flits only when queue space, a VC, and credit exist;
+6. update occupancy integrals, ages, timeout checks, and end-of-cycle counters.
+
+The phases prevent a credit created by a departure from being consumed “backward in zero time” by an injection in the same modeled stage unless the target hardware explicitly has that bypass. A monotonically increasing sequence number makes two events with equal time/phase reproducible.
+
+Every object carries identity across layers: `(core, load-sequence, physical-line, MSHR index, MSHR generation)` at the cache; a protocol transaction ID at the controller; and `(packet ID, flit index, head/body/tail, VC)` in the network. At response time, `M0:g` must still own line X and the waiter epoch must still be live. If a branch flush or replacement changed the generation, the response may release protocol resources but cannot install into the new transaction or wake the old destination.
+
+Counters update at the causal event, not by reconstructing them at the end. Flits increment on injection, flit-hops on successful link traversal, blocked cycles when a ready flit loses specifically for credit/VC/switch/output reasons, MSHR occupancy once per occupied slot per cycle, and transaction latency when the matching completion timestamp closes its start timestamp. Histograms retain distributions; averages are derived as `sum/count` only after the region of interest (ROI).
+
+For a benchmark, final results are reductions over these raw ledgers:
+
+$$
+\text{IPC}=\frac{N_{committed}}{C_{ROI}},\quad
+\text{mean miss latency}=\frac{\sum_j(t^{fill}_j-t^{miss}_j)}{N_{completed\ misses}},\quad
+\overline{Q}_{MSHR}=\frac{\sum_{c\in ROI}Q_{MSHR}(c)}{C_{ROI}},\quad
+U_{link}=\frac{N_{flit\ traversals}}{N_{links}\,C_{ROI}\,\text{flits/link/cycle}}.
+$$
+
+Warm-up events populate state but their counters are not included; measurement resets the accumulators while preserving tags, directory entries, queues, credits, and in-flight start timestamps. At ROI end, either drain accepted work and attribute it under a declared policy or stop only at a quiescent boundary. Silently deleting in-flight requests shortens latency samples and violates conservation.
+
+**Verification of the worked trace.** Check credit conservation for every VC: `upstream credit count + downstream occupied slots + flits launched against consumed credits but not yet deposited + returning credits not yet applied = configured capacity` under the declared pipeline timing. Also check one injection and one ejection per flit ID, in-order body/tail delivery within the packet, legal route hops, and exact 18 flit-hops. At the protocol layer assert one live `IS` transaction for X, no Shared installation before data and permission, response-generation match, and one wake with the memory value. At completion reconcile created versus consumed messages, allocated versus freed MSHRs, memory reads versus data responses, and per-phase timestamps. Then perturb one factor at a time—add one credit-stall cycle, one router stage, one memory cycle, or one fill-port conflict—and require the load-to-use result to rise by exactly the causally exposed amount. That sensitivity test catches hidden zero-time edges and double-counted latency.
 
 ## 8. Warm-up and measurement
 

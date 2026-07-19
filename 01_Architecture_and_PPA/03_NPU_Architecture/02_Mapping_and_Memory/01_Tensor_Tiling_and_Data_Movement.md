@@ -39,6 +39,70 @@ For matrix multiplication, a tile with dimensions $M_t$, $N_t$, and $K_t$ needs 
 
 **Beginner checkpoint:** write a byte-accurate capacity equation and traffic equation before running a mapping search. The compiler search should explore legal, understood choices—not compensate for an undefined memory model.
 
+### Derive a legal schedule from one tile that does not fit
+
+Consider `GEMM C[4,4] = A[4,8] × B[8,4]` with INT8 inputs and 32-bit partial sums. The array is $2\times2$, and the relevant scratchpad partition is 64 bytes. A first attempt keeps the entire operation resident:
+
+$$
+S_A=4\cdot8=32\text{ B},\quad S_B=8\cdot4=32\text{ B},\quad S_C=4\cdot4\cdot4=64\text{ B}.
+$$
+
+The 128-byte live set is already twice the capacity before alignment, metadata, or overlap. This is the baseline failure that creates tiling: choose $M_t=2$, $N_t=2$, and $K_t=4$. One activation tile is 8 B, one weight tile is 8 B, and one accumulator tile is 16 B. Double-buffering A and B requires
+
+$$
+2(8)+2(8)+16=48\text{ B},
+$$
+
+leaving 16 B for bank-rounding or command metadata. The tile fits, but capacity legality is only the first proof obligation.
+
+```mermaid
+flowchart LR
+    OP["GEMM 4 × 4 × 8"] --> CUT["tile M,N,K as 2,2,4"]
+    CUT --> A0["A tile: 2 × 4 × 1 B = 8 B"]
+    CUT --> B0["B tile: 4 × 2 × 1 B = 8 B"]
+    CUT --> C0["C tile: 2 × 2 × 4 B = 16 B"]
+    A0 --> BUF["ping/pong A = 16 B"]
+    B0 --> BUF2["ping/pong B = 16 B"]
+    C0 --> ACC["one live accumulator tile = 16 B"]
+    BUF --> FIT{"48 B ≤ 64 B"}
+    BUF2 --> FIT
+    ACC --> FIT
+```
+
+Now map the operation. There are four $(m,n)$ output tiles and two $k$ slabs per output tile. Because a $C$ tile must accumulate both slabs, the two $k$ commands for a given $(m,n)$ cannot be separated by an overwrite or drain of its accumulator. A useful loop order is `m_tile → n_tile → k_tile`, with an optimization: keep both 8-byte A slabs for one `m_tile` resident while the two `n_tile` values stream different B slabs. The same A bytes then serve both left and right output tiles.
+
+| Step | Resident or transferred data | Array action | Ownership transition |
+|---:|---|---|---|
+| 0 | DMA `A[m0,k0]`, `A[m0,k1]`, and `B[k0,n0]` | idle | selected input banks `FREE→FILLING→READY` |
+| 1 | retain `A[m0,k0]`; prefetch `B[k1,n0]` | accumulate first four $k$ terms into `C[m0,n0]` | accumulator `FREE→IN_USE` |
+| 2 | select resident `A[m0,k1]`; prefetch `B[k0,n1]` | accumulate final four terms | `C[m0,n0]` becomes `READY` |
+| 3 | output DMA drains `C[m0,n0]` | begin `C[m0,n1]` with `A[m0,k0]` and `B[k0,n1]` | old output bank drains while alternate accumulator is used |
+| 4 | prefetch `B[k1,n1]` | finish `C[m0,n1]` | both A slabs have now been reused across two N tiles |
+| 5 | replace A banks with `A[m1,k0/k1]` | repeat for bottom two output tiles | A lifetime ends only after its last N consumer |
+
+This replay exposes what a mapping descriptor must encode: original extents; tile extents; loop order; array spatial assignment; scratchpad allocation and bank mapping; A/B/C layouts and strides; accumulator initialization versus continuation for each $k$ slab; boundary masks; buffer phase; predecessor/producer events; and the exact event after which each allocation can be reused. A tuple `(2,2,4)` alone is not an executable mapping.
+
+### Follow each failure to the feature that repairs it
+
+1. **Whole live set exceeds capacity → hierarchical tiling.** The compiler splits loops at HBM, scratchpad, and PE levels. Enabling hardware consists of nested address counters, programmable strides, partial-tile masks, and accumulator-continuation state. Smaller tiles fit but reduce reuse and increase command/ramp overhead.
+2. **Legal tile serializes load and compute → ping-pong allocation.** Two physical phases plus `FILLING/READY/IN_USE` ownership let DMA and compute overlap. The price is duplicated bytes and more bank conflicts. If doubling A and B forces $M_t$ or $N_t$ to shrink, saved overlap can be smaller than lost reuse.
+3. **Repeated B tiles waste A reloads → change loop order and lifetime.** Retaining both A slabs across `n_tile` avoids a second A fetch. It requires capacity and a liveness record proving no later consumer remains before eviction. If B is much larger or reused more, the opposite order may be better.
+4. **Logical fit still conflicts physically → bank-aware layout.** Padding or an address swizzle spreads simultaneous array reads across banks. It costs wasted bytes or XOR/mux logic and can harm contiguous DMA. Capacity must be recomputed using physical allocation, not logical tensor bytes.
+5. **Last tiles underfill the array → masked tail or alternate kernel.** Boundary predicates suppress invalid rows/columns. For severe tails, a vector kernel or smaller subarray may use fewer capacity slots. Masking preserves one code path but burns PE cycles.
+6. **Fusion saves a round trip but enlarges the live set → joint producer/consumer tiling.** Keeping a GEMM output for bias and activation removes an output write plus later read. The fused mapping needs vector-engine ports and a shared layout; it loses if the smaller combined tile causes enough extra weight/activation reloads.
+
+### Replay a boundary and a fault, not just the ideal tile
+
+If the same mapping is used for $M=3,N=3,K=8$, the four output tiles have valid shapes $2\times2$, $2\times1$, $1\times2$, and $1\times1$. The descriptor retains physical $2\times2$ allocation but supplies `m_valid` and `n_valid`. Address generation must not fetch beyond logical rows merely because masked PEs ignore their products; either generate shortened DMA lines or point padded lanes at a permitted zero page. Output DMA writes only valid coordinates. The useful-output fraction is $9/16$, making a smaller subarray attractive despite identical mathematical work.
+
+If `B[k1,n0]` faults after `C[m0,n0]` has accumulated the first slab, the command cannot clear or expose that accumulator. Its checkpoint is `(tile_id, k_tile=1, accumulator_bank, accumulator_generation, completed_reduction_count=4)`. On replay, DMA refills the missing B tile, validates the same mapping/context generation, and continues the remaining four products exactly once. A terminal permission fault instead invalidates the partial output and suppresses success. Restarting at $k=0$ without clearing would double-count; clearing would discard completed work. Precise continuation state is therefore part of the mapping contract.
+
+### Evidence and verification at tile granularity
+
+Counters should report logical versus physically allocated bytes; HBM/NoC/SRAM bytes by tensor and tile; A/B/C reuse distance; accumulator continuation and spills; masked PE slots; bank-conflict cycles; each buffer-state residency; DMA–compute–drain overlap; layout-conversion bytes; and fused intermediates retained versus spilled. Those measurements let a researcher reproduce why this loop order won rather than accepting a mapper's opaque score.
+
+Assertions derived from the trace include: every logical $(m,n,k)$ iteration is issued exactly once; a continued $C$ tile uses the same tile ID, accumulator generation, scale, and reduction interval; no buffer is overwritten before its last declared consumer; physical allocation including padding stays within capacity; a masked address cannot escape tensor/protection bounds; output becomes visible only after all $K$ slabs; and a fault/replay neither loses nor duplicates a reduction interval.
+
 ## 1. Describe mapping at every level
 
 For each loop dimension specify:
