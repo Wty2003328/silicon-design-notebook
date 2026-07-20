@@ -16,7 +16,7 @@
   \draw[->] (ADD) -- (RIP); \draw[->] (ADD) -- (CLA); \draw[->] (CLA) -- (PRE);
   \draw[->] (MUL) -- (PP); \draw[->] (PP) -- (RED); \draw[->] (RED) -- (CPA);
   \draw[->] (PRE) -- (CPA);
-  \draw[->] (CPA) -- ++(1.3,0) node[right]{sum / product};
+  \draw[->] (CPA) -- ++(2.1,0) node[right]{sum / product};
 \end{circuitikz}
 \end{document}
 ```

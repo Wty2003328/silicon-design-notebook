@@ -56,22 +56,22 @@ Pure silicon is **intrinsic**. **Doping** deliberately replaces a tiny fraction 
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[thick,scale=0.9,transform shape]
-  \draw[fill=gray!25] (-1.2,2.85) rectangle (5.2,3.45);
-  \node at (2.0,3.15) {conductive gate $G$};
-  \draw[fill=blue!12] (-1.2,2.5) rectangle (5.2,2.85);
-  \node[right] at (5.2,2.67) {oxide: insulator};
-  \draw[fill=orange!12] (-1.2,-0.3) rectangle (5.2,2.5);
-  \node at (2.0,0.15) {p-type silicon body $B$};
-  \draw[fill=green!25] (-0.8,0.65) rectangle (0.8,1.65);
-  \draw[fill=green!25] (3.2,0.65) rectangle (4.8,1.65);
-  \node at (0,1.15) {$n^+$ source $S$};
-  \node at (4.0,1.15) {$n^+$ drain $D$};
-  \draw[very thick,blue] (0.8,1.95) -- (3.2,1.95);
-  \node at (2.0,2.25) {inversion channel ($V_{GS}>V_{th}$)};
-  \draw[->] (2.0,4.0) -- (2.0,3.47) node[midway,right] {$+V_G$ creates field};
-  \draw[->] (3.15,1.35) -- (1.0,1.35) node[midway,above] {electron drift};
-  \draw[->] (1.0,0.9) -- (3.15,0.9) node[midway,below] {conventional $I_D$};
+\begin{circuitikz}[thick,scale=0.85,transform shape,font=\small]
+  \draw[fill=gray!25] (-1.6,2.85) rectangle (6.4,3.45);
+  \node at (2.4,3.15) {conductive gate $G$};
+  \draw[fill=blue!12] (-1.6,2.5) rectangle (6.4,2.85);
+  \node[right] at (6.4,2.67) {oxide};
+  \draw[fill=orange!12] (-1.6,-0.3) rectangle (6.4,2.5);
+  \node at (2.4,0.1) {p-type silicon body $B$};
+  \draw[fill=green!25] (-1.4,0.65) rectangle (0.9,1.65);
+  \draw[fill=green!25] (3.9,0.65) rectangle (6.2,1.65);
+  \node at (-0.25,1.15) {$n^{+}$ source $S$};
+  \node at (5.05,1.15) {$n^{+}$ drain $D$};
+  \draw[very thick,blue] (0.9,1.95) -- (3.9,1.95);
+  \node at (2.4,2.25) {inversion channel ($V_{GS}>V_{th}$)};
+  \draw[->] (2.4,4.0) -- (2.4,3.47) node[midway,right] {$+V_G$ creates field};
+  \draw[->] (3.8,1.35) -- (1.0,1.35) node[midway,above] {electron drift};
+  \draw[->] (1.0,0.9) -- (3.8,0.9) node[midway,below] {conventional $I_D$};
 \end{circuitikz}
 \end{document}
 ```
@@ -493,7 +493,7 @@ At the logic level, the four storage transistors are two cross-coupled CMOS inve
   \node[not port] (IL) at (0,1.5) {};
   \node[not port,xscale=-1] (IR) at (4,1.5) {};
   \draw (IL.out) -- (2.0,1.5) coordinate(Q) -- (IR.in);
-  \draw (IR.out) -- (4.8,1.5) -- (4.8,0.4) -- (-0.8,0.4) -- (-0.8,1.5) -- (IL.in);
+  \draw (IR.out) -- (5.3,1.5) -- (5.3,0.2) -- (-1.3,0.2) -- (-1.3,1.5) -- (IL.in);
   \node[above] at (Q) {$Q$};
   \node[above] at (IR.out) {$\overline Q$};
   \node[below] at (0,1.0) {2T inverter};

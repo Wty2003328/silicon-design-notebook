@@ -458,11 +458,10 @@ A fixed-priority encoder is combinational: if request 7 is continuously high, lo
   \node[blk] (PTR) at (4.5,-2.2) {fairness\\pointer};
   \draw[->] (-0.8,0) node[left]{request} -- (ROT);
   \draw[->] (ROT) -- (PRI); \draw[->] (PRI) -- (BACK); \draw[->] (BACK) -- (OWN);
-  \draw[->] (OWN) -- ++(1.2,0) node[right]{one-hot grant};
+  \draw[->] (OWN.east) -- ++(1.3,0) node[right]{one-hot grant};
+  \draw[->] (OWN.north west) to[out=115,in=65,looseness=4.5] node[above]{stall: retain owner} (OWN.north east);
   \draw[->] (PTR) -| node[pos=0.25,below]{rotation amount} (ROT.south);
   \draw[->] (OWN.south) |- node[pos=0.8,below]{accepted} (PTR.east);
-  \draw[->] (OWN.south) -- ++(0,-1.0) -| (12.4,0) -- (OWN.east);
-  \node[below] at (11.6,-1.15) {stall: retain owner};
 \end{circuitikz}
 \end{document}
 ```
@@ -620,10 +619,10 @@ $$
   \node[and port] (AR) at (2.2,-1.15) {};
   \node[not port] (INV) at (-0.1,-1.15) {};
   \node[draw,rounded corners,minimum width=2.1cm,minimum height=2.2cm,align=center] (SR) at (5.5,0) {cross-coupled\\SR latch};
-  \draw (-1.2,1.4) node[left]{$D$} -- (0.5,1.4) coordinate (D) node[circ]{} -- (AS.in 1);
+  \draw (-1.4,1.4) node[left]{$D$} -- (0.3,1.4) coordinate (D) node[circ]{} -- (AS.in 1);
   \draw (D) |- (INV.in);
-  \draw (INV.out) -- (AR.in 1) node[midway,above]{$\overline D$};
-  \draw (0.7,-2.2) node[below]{$E$} -- (0.7,0.9) coordinate (E) node[circ]{} -- (AS.in 2);
+  \draw (INV.out) -- (AR.in 1) node[pos=0.32,above]{$\overline D$};
+  \draw (1.2,-2.2) node[below]{$E$} -- (1.2,0.9) coordinate (E) node[circ]{} -- (AS.in 2);
   \draw (E) |- (AR.in 2);
   \draw (AS.out) -- node[above]{$S_g$} (SR.west |- AS.out);
   \draw (AR.out) -- node[below]{$R_g$} (SR.west |- AR.out);
@@ -688,7 +687,7 @@ But transparency is a hazard in a clocked pipeline: while a latch is open, a cha
   \node[not port] (CI) at (2.0,-2.0) {};
   \draw[->] (-0.8,0) node[left]{$D$} -- (M);
   \draw[->] (M) -- node[above]{$M$} (S);
-  \draw[->] (S) -- ++(1.2,0) node[right]{$Q$};
+  \draw[->] (S) -- ++(1.9,0) node[right]{$Q$};
   \draw (0.2,-2.0) node[left]{$CLK$} -- (1.0,-2.0) coordinate (C) node[circ]{} -- (CI.in);
   \draw[->] (CI.out) -- (M.south);
   \draw[->] (C) -- ++(0,-0.7) -| (S.south);
@@ -744,13 +743,13 @@ Setup constrains the **maximum-delay path** because data must arrive before the 
   \tikzset{ff/.style={draw,minimum width=1.5cm,minimum height=0.9cm,align=center},logic/.style={draw,rounded corners,minimum width=2.9cm,minimum height=0.9cm,align=center}}
   \node[ff] (FD) at (6.2,2.7) {DFF};
   \draw[->] (-0.5,2.7) node[left]{$D$} -- (FD);
-  \draw[->] (FD) -- ++(1.2,0) coordinate (QD) node[right]{$Q$};
+  \draw[->] (FD) -- ++(1.7,0) coordinate (QD) node[right]{$Q$};
 
   \node[xor port] (XT) at (3.1,0.9) {};
   \node[ff] (FT) at (6.2,0.9) {DFF};
   \draw (XT.in 1) -- ++(-1.0,0) node[left]{$T$};
   \draw[->] (XT.out) -- (FT);
-  \draw[->] (FT) -- ++(1.2,0) coordinate (QT) node[circ]{} node[right]{$Q$};
+  \draw[->] (FT) -- ++(1.7,0) coordinate (QT) node[circ]{} node[right]{$Q$};
   \draw (QT) -- ++(0,-0.65) -| (XT.in 2);
 
   \node[logic] (LJ) at (3.1,-0.9) {$D=J\overline Q+\overline KQ$};
@@ -758,7 +757,7 @@ Setup constrains the **maximum-delay path** because data must arrive before the 
   \draw[->] (-0.5,-0.65) node[left]{$J$} -- (1.65,-0.65);
   \draw[->] (-0.5,-1.15) node[left]{$K$} -- (1.65,-1.15);
   \draw[->] (LJ) -- (FJ);
-  \draw[->] (FJ) -- ++(1.2,0) coordinate (QJ) node[circ]{} node[right]{$Q$};
+  \draw[->] (FJ) -- ++(1.7,0) coordinate (QJ) node[circ]{} node[right]{$Q$};
   \draw (QJ) -- ++(0,-0.55) -| (LJ.south) node[pos=0.75,below]{$Q,\overline Q$};
 
   \node[logic] (LS) at (3.1,-2.8) {$D=S+\overline RQ$};
@@ -766,7 +765,7 @@ Setup constrains the **maximum-delay path** because data must arrive before the 
   \draw[->] (-0.5,-2.55) node[left]{$S$} -- (1.65,-2.55);
   \draw[->] (-0.5,-3.05) node[left]{$R$} -- (1.65,-3.05);
   \draw[->] (LS) -- (FS);
-  \draw[->] (FS) -- ++(1.2,0) coordinate (QS) node[circ]{} node[right]{$Q$};
+  \draw[->] (FS) -- ++(1.7,0) coordinate (QS) node[circ]{} node[right]{$Q$};
   \draw (QS) -- ++(0,-0.55) -| (LS.south) node[pos=0.75,below]{$Q$};
 \end{circuitikz}
 \end{document}
@@ -846,7 +845,7 @@ The baseline DFF loads new data on every active edge. A design often needs “up
   \node[blk] (FF) at (5.0,1.5) {DFF};
   \draw[->] (-0.5,1.75) node[left]{new $D$} -- (1.1,1.75);
   \draw[->] (MUX) -- (FF);
-  \draw[->] (FF) -- ++(1.2,0) coordinate (Q) node[circ]{} node[right]{$Q$};
+  \draw[->] (FF) -- ++(1.7,0) coordinate (Q) node[circ]{} node[right]{$Q$};
   \draw[->] (Q) -- ++(0,0.9) -| (MUX.north) node[pos=0.75,above]{old $Q$};
   \draw[->] (2.0,0.2) node[below]{$E$} -- (MUX.south);
   \draw[->] (5.0,0.2) node[below]{$CLK$} -- (FF.south);
@@ -857,7 +856,7 @@ The baseline DFF loads new data on every active edge. A design often needs “up
   \node[blk,minimum width=2.2cm] (BANK) at (9.3,-2.0) {register\\bank};
   \draw[->] (-1.3,-1.75) node[left]{$CE$} -- (0.35,-1.75);
   \draw[->] (-1.3,-2.25) node[left]{test enable} -- (0.35,-2.25);
-  \draw[->] (LAT) -- node[above]{held enable} (GATE.in 1);
+  \draw[->] (LAT) -- node[pos=0.4,above]{held enable} (GATE.in 1);
   \draw (3.1,-3.3) node[below]{$CLK$} -- (3.9,-3.3) coordinate (C) node[circ]{} |- (GATE.in 2);
   \draw[->] (C) -| (LAT.south);
   \draw[->] (GATE.out) -- node[above]{gated clock} (BANK);
@@ -880,7 +879,7 @@ The feedback mux implements $D_{ff}=E D+\overline E Q$. It gives independent con
   \draw[->] (-0.5,1.7) node[left]{functional $D$} -- (1.0,1.7);
   \draw[->] (2.0,0.15) node[below]{reset} -- (RM.south);
   \draw[->] (RM) -- (SF);
-  \draw[->] (SF) -- ++(1.0,0) node[right]{$Q$};
+  \draw[->] (SF) -- ++(1.6,0) node[right]{$Q$};
   \node[above] at (3.6,2.2) {synchronous reset};
 
   \node[blk] (F1) at (2.2,-2.0) {DFF 1\\async clear};
@@ -1111,9 +1110,9 @@ The composition starts mechanically: one DFF stores one bit; $N$ DFFs sharing cl
   \node at (3.0,0) {$\vdots$};
   \node[ff] (FN) at (3.0,-1.5) {DFF bit $N{-}1$};
   \draw[->] (-0.4,1.5) node[left]{$D[0]$} -- (F0);
-  \draw[->] (F0) -- ++(1.4,0) node[right]{$Q[0]$};
+  \draw[->] (F0) -- ++(1.9,0) node[right]{$Q[0]$};
   \draw[->] (-0.4,-1.5) node[left]{$D[N{-}1]$} -- (FN);
-  \draw[->] (FN) -- ++(1.4,0) node[right]{$Q[N{-}1]$};
+  \draw[->] (FN) -- ++(1.9,0) node[right]{$Q[N{-}1]$};
   \draw (0.2,-2.8) node[left]{$CLK$} -- (1.0,-2.8) coordinate (C) node[circ]{};
   \draw[->] (C) |- (F0.south); \draw[->] (C) |- (FN.south);
   \draw (5.8,-2.8) node[right]{shared enable / load policy} -- (5.0,-2.8) coordinate (E) node[circ]{};
@@ -1174,7 +1173,7 @@ with a serial boundary input substituted when $i$ has no neighbor.
   \draw[->] (-0.7,0.2) node[left]{$Q_{i-1}$} -- (1.9,0.2);
   \draw[->] (-0.7,-0.2) node[left]{$Q_{i+1}$} -- (1.9,-0.2);
   \draw[->] (MUX) -- (FF);
-  \draw[->] (FF) -- ++(1.4,0) coordinate (Q) node[circ]{} node[right]{$Q_i$};
+  \draw[->] (FF) -- ++(1.9,0) coordinate (Q) node[circ]{} node[right]{$Q_i$};
   \draw[->] (Q) -- ++(0,1.2) -| (1.9,-0.6) node[pos=0.25,above]{hold feedback};
   \draw[->] (3.0,-1.9) node[below]{mode[1:0]} -- (MUX.south);
   \draw[->] (6.3,-1.9) node[below]{$CLK$} -- (FF.south);
@@ -1194,7 +1193,7 @@ A shift register moves at most one position per active edge. If an instruction m
   \node[stage] (S4) at (9.2,0) {8 parallel 2:1 muxes\\additional 0 or 4};
   \draw[->] (-0.8,0) node[left]{8-bit input} -- (S1);
   \draw[->] (S1) -- (S2); \draw[->] (S2) -- (S4);
-  \draw[->] (S4) -- ++(1.3,0) node[right]{8-bit result};
+  \draw[->] (S4) -- ++(1.9,0) node[right]{8-bit result};
   \draw[->] (2.0,-1.8) node[below]{$amount[0]$} -- (S1.south);
   \draw[->] (5.6,-1.8) node[below]{$amount[1]$} -- (S2.south);
   \draw[->] (9.2,-1.8) node[below]{$amount[2]$} -- (S4.south);
@@ -1252,12 +1251,12 @@ $$
   \tikzset{blk/.style={draw,rounded corners,minimum width=2.4cm,minimum height=1.15cm,align=center}}
   \node[blk] (PRE) at (2.0,0.8) {prefix AND tree\\$T_i=E\prod_{k<i}Q_k$};
   \node[blk] (XOR) at (5.5,0.8) {$N$ XOR gates\\$D_i=Q_i\oplus T_i$};
-  \node[blk] (BANK) at (9.0,0.8) {$N$-bit DFF bank};
+  \node[blk] (BANK) at (9.0,0.8) {$N$-bit\\DFF bank};
   \draw[->] (-0.8,1.1) node[left]{$E$} -- (0.8,1.1);
   \draw[->] (-0.8,0.5) node[left]{$Q[N{-}1{:}0]$} -- (0.8,0.5);
   \draw[->] (PRE) -- node[above]{$T$} (XOR);
   \draw[->] (XOR) -- node[above]{$D$} (BANK);
-  \draw[->] (BANK) -- ++(1.2,0) coordinate (Q) node[circ]{} node[right]{$Q[N{-}1{:}0]$};
+  \draw[->] (BANK) -- ++(1.9,0) coordinate (Q) node[circ]{} node[right]{$Q[N{-}1{:}0]$};
   \draw[->] (Q) -- ++(0,1.1) -| (XOR.north) node[pos=0.25,above]{feedback};
   \draw[->] (Q) -- ++(0,-1.2) -| (PRE.south);
   \draw[->] (9.0,-1.6) node[below]{shared $CLK$} -- (BANK.south);
@@ -1334,8 +1333,8 @@ A register-file write port contains address decoder, write data/bitlines, byte/b
   \draw[->] (WDRV) -- (ARR);
   \draw[->] (ARR) -- (RM0); \draw[->] (ARR) -- (RM1);
   \draw[->] (RM0) -- (BP0); \draw[->] (RM1) -- (BP1);
-  \draw[->] (BP0) -- ++(1.0,0) node[right]{read data 0};
-  \draw[->] (BP1) -- ++(1.0,0) node[right]{read data 1};
+  \draw[->] (BP0) -- ++(1.7,0) node[right]{read data 0};
+  \draw[->] (BP1) -- ++(1.7,0) node[right]{read data 1};
   \draw[->] (2.0,-2.0) node[left]{write/read addresses} -- (CMP);
   \draw[->,dashed] (CMP) -| (BP0.south) node[pos=0.25,below]{collision select};
   \draw[->,dashed] (CMP) -| (BP1.south);
@@ -1384,11 +1383,11 @@ A pure function reacts only to the present input; a controller must react to *wh
   \node[blk] (OUT) at (6.0,-1.5) {output logic\\$Y=G(S,X)$};
   \draw[->] (-0.7,1.3) node[left]{inputs $X$} -- (1.2,1.3);
   \draw[->] (NEXT) -- node[above]{$S^+$} (REG);
-  \draw[->] (REG) -- ++(1.3,0) coordinate (S) node[circ]{} node[right]{present $S$};
+  \draw[->] (REG) -- ++(2.0,0) coordinate (S) node[circ]{} node[right]{present $S$};
   \draw[->] (S) -- ++(0,1.1) -| (NEXT.north) node[pos=0.25,above]{state feedback};
   \draw[->] (S) |- (OUT.east);
   \draw[->] (-0.7,-1.5) node[left]{inputs $X$} -- (OUT);
-  \draw[->] (OUT) -- ++(1.3,0) node[right]{outputs $Y$};
+  \draw[->] (OUT) -- ++(2.0,0) node[right]{outputs $Y$};
   \draw[->] (6.0,-3.0) node[below]{clock / reset} -- (REG.south);
 \end{circuitikz}
 \end{document}

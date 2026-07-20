@@ -18,7 +18,7 @@
   \node[blk] (PK) at (12.1,-1.8) {flags, overflow /\\underflow, pack};
   \draw[->] (-1.0,-1.8) node[left,align=right]{from alignment\\above} -- (OP);
   \draw[->] (OP) -- (NO); \draw[->] (NO) -- (RN); \draw[->] (RN) -- (PK);
-  \draw[->] (PK) -- ++(1.0,0) node[right]{encoded result};
+  \draw[->] (PK) -- ++(1.7,0) node[right]{encoded result};
 \end{circuitikz}
 \end{document}
 ```
@@ -320,8 +320,8 @@ The concrete adder pipeline is therefore a composition of hardware already deriv
   \draw[->] (un) -- (cmp); \node at (1.5,2.45){fields};
   \draw[->] (cmp) -- (shr); \node at (4.5,2.45){$\Delta e$};
   \draw[->] (shr) -- (add); \node at (7.5,2.45){aligned};
-  \draw[->] (add) -- ++(1.1,0) node[right,align=left]{raw sum\\continued below};
-  \draw[->] (-1.1,-1.5) node[left,align=right]{from add\\above} -- (lzd);
+  \draw[->] (add) -- ++(1.8,0) node[right,align=left]{raw sum\\continued below};
+  \draw[->] (-1.7,-1.5) node[left,align=right]{from add\\above} -- (lzd);
   \draw[->] (lzd) -- (rnd); \node at (1.6,-0.45){normalized + GRS};
   \draw[->] (rnd) -- (pack); \node at (4.8,-0.45){rounded};
   \draw[->] (un.south) -- ++(0,-0.45) -- ++(-1.2,0) -- ++(0,-3.0) -| node[pos=0.25,below]{signs and special-case class} (pack.south);
@@ -369,7 +369,8 @@ This figure is a **hardware ownership map**, not a promise that each box is exac
   \node[fpblock] (mul1) at (0,-1.4) {$p\times p$\\multiplier};
   \node[fpblock,minimum width=2.6cm] (wide) at (3.6,-1.4) {carry-save / wide\\product + aligned $c$};
   \node[fpblock] (one) at (7.1,-1.4) {normalize\\and round once};
-  \draw[->] (mul1) -- node[above]{$2p$ bits} (wide);
+  \draw[->] (mul1) -- (wide);
+  \node at (1.75,-0.55) {$2p$ bits};
   \draw[->] (wide) -- (one);
   \node[left] at (-1.15,-1.4) {$a,b$};
   \node[above] at (3.6,-0.8) {$c$};
