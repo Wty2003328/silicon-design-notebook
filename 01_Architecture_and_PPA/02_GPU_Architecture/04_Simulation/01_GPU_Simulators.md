@@ -291,13 +291,13 @@ sequenceDiagram
     participant A as Statistics accumulators
     F->>S: next warp load record
     S->>S: wait until sources ready and LD/ST pipe accepts
-    S->>A: issue++ ; active_lane_slots += popcount(mask)
+    S->>A: issue++ , active_lane_slots += popcount(mask)
     S->>S: mark destination pending
     S->>C: lane addresses + warp/destination generation
     C->>C: form sector transactions
     C->>A: requested_bytes and sector_count += formed work
     alt MSHR / downstream credit unavailable
-        C-->>S: structural block; retain request for replay
+        C-->>S: structural block, retain request for replay
         S->>A: replay_or_queue_full_cycles++
         C->>C: retry on a later modeled cycle
     end
@@ -306,7 +306,7 @@ sequenceDiagram
     N-->>C: sector responses, possibly out of order
     C->>C: clear pending-sector bits and reassemble lanes
     C-->>S: final matching fragment writes destination
-    S->>S: clear scoreboard; dependent instruction becomes eligible
+    S->>S: clear scoreboard, dependent instruction becomes eligible
     S->>A: completion, latency, cache, NoC, and DRAM events++
 ```
 

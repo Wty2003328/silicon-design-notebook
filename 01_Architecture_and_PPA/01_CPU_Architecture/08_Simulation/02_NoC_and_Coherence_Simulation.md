@@ -206,19 +206,19 @@ sequenceDiagram
     participant MEM as Memory
     participant DNI as Destination NI / fill path
 
-    L->>MSHR: c101 miss X; allocate M0 in IS, attach load destination+epoch
+    L->>MSHR: c101 miss X, allocate M0 in IS, attach load destination+epoch
     MSHR->>SNI: c102 enqueue one-flit GetS(X, txn=M0:g)
-    Note over SNI: c103-c104 no output credit; request remains queued
-    SNI->>N: c105 inject request flit; consume one downstream credit
+    Note over SNI: c103-c104 no output credit, request remains queued
+    SNI->>N: c105 inject request flit, consume one downstream credit
     N->>H: c112 complete ejection after 3 router+link hops
     H->>H: c112-c114 directory lookup: no sharer/owner
-    H->>MEM: c114 issue memory read X; mark home transaction pending
+    H->>MEM: c114 issue memory read X, mark home transaction pending
     MEM-->>H: c134 return 64-byte line
     H->>N: c135-c139 inject header/body/tail (5 flits)
-    N->>DNI: header c141; tail c145; reassembly complete c146
-    DNI->>MSHR: c146-c148 arbitrate fill port; install data/tag/S state
+    N->>DNI: header c141, tail c145, reassembly complete c146
+    DNI->>MSHR: c146-c148 arbitrate fill port, install data/tag/S state
     MSHR-->>L: c148-c149 select requested bytes, write result, wake dependent
-    Note over L: dependent may issue at c149; load-to-use = 149-100 = 49 cycles
+    Note over L: dependent may issue at c149, load-to-use = 149-100 = 49 cycles
 ```
 
 The exact event ledger is:

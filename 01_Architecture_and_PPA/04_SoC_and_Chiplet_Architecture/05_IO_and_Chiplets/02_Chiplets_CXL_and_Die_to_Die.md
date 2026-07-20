@@ -176,22 +176,22 @@ sequenceDiagram
     participant AB as "D2D + coherence adapter B"
     participant H as "home/directory B"
     participant M as "memory or dirty owner"
-    CPU->>AA: "miss X; allocate T37; ReadShared(X,T37)"
-    Note over AA: "request VC credit--; assign S418; save retry copy; CRC"
+    CPU->>AA: "miss X, allocate T37, ReadShared(X,T37)"
+    Note over AA: "request VC credit--, assign S418, save retry copy, CRC"
     AA->>AB: "flit S418 containing txn T37"
     alt "CRC/framing error"
-        AB-->>AA: "NAK/replay from S418; no coherence request created"
+        AB-->>AA: "NAK/replay from S418, no coherence request created"
         AA->>AB: "replay identical S418"
     end
-    AB-->>AA: "link ACK S418; credit when receive slot frees"
+    AB-->>AA: "link ACK S418, credit when receive slot frees"
     AB->>H: "deliver ReadShared(X,T37) exactly once"
-    H->>M: "directory lookup; memory read or snoop dirty owner"
+    H->>M: "directory lookup, memory read or snoop dirty owner"
     M-->>H: "data + required ownership response"
     H-->>AB: "Data(X,T37,state,beats)"
-    Note over AB: "response/data VC credit--; new link sequence + retry copy"
+    Note over AB: "response/data VC credit--, new link sequence + retry copy"
     AB->>AA: "response flits with txn T37"
     AA-->>AB: "link ACK/credits"
-    AA->>CPU: "match T37; install line; wake load; free T37"
+    AA->>CPU: "match T37, install line, wake load, free T37"
 ```
 
 The enabling state can be reviewed as a layered ledger:
@@ -210,14 +210,14 @@ The enabling state can be reviewed as a layered ledger:
 ```mermaid
 stateDiagram-v2
     [*] --> Serving
-    Serving --> LinkReplay: "CRC error; session state intact"
+    Serving --> LinkReplay: "CRC error, session state intact"
     LinkReplay --> Serving: "replayed sequence acknowledged"
     Serving --> Quiescing: "link down / timeout / peer reset"
-    Quiescing --> Training: "stop injection; snapshot or abort in-flight state"
-    Training --> Reconcile: "lanes train/repair; exchange capabilities and epoch"
+    Quiescing --> Training: "stop injection, snapshot or abort in-flight state"
+    Training --> Reconcile: "lanes train/repair, exchange capabilities and epoch"
     Reconcile --> Serving: "same epoch and replay window safely reconciled"
     Reconcile --> ProtocolRecovery: "peer epoch changed or transport state lost"
-    ProtocolRecovery --> Serving: "old transactions resolved; credits rebuilt; routes enabled"
+    ProtocolRecovery --> Serving: "old transactions resolved, credits rebuilt, routes enabled"
 ```
 
 During **quiescing**, stop new injection, mark the route unavailable, and retain retry/protocol tables. During **training**, repair or down-width lanes and re-establish electrical/link framing. During **reconciliation**, exchange a session epoch, accepted-sequence/replay-window state, and fresh credit baseline. Replay is safe only if both peers prove the same session and agree which sequences were accepted. If the peer epoch changed, raise a transport abort into the coherence layer: the requester/home tables must resolve each old transaction, roll back or finish transient directory state, and reissue only under a new transaction identity after the old one cannot complete. If an unreachable chiplet may own dirty data, recovery cannot invent a clean copy; policy must preserve the owner through reset, reach it over another route, poison/isolate the affected lines, or declare a fatal containment event.
@@ -276,8 +276,8 @@ CXL earns its place by carrying **three protocols on one physical link**, becaus
 ```mermaid
 stateDiagram-v2
     [*] --> HostBias
-    HostBias --> DeviceBias: "host flushes page; no host-cached copy remains"
-    DeviceBias --> HostBias: "host needs the page; device relinquishes exclusivity"
+    HostBias --> DeviceBias: "host flushes page, no host-cached copy remains"
+    DeviceBias --> HostBias: "host needs the page, device relinquishes exclusivity"
     HostBias --> HostBias: "device access resolves at host home (snoop)"
     DeviceBias --> DeviceBias: "device access resolves locally, no host snoop"
 ```

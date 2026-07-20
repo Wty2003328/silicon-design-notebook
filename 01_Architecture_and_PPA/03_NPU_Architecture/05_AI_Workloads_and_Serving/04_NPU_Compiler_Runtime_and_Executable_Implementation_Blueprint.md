@@ -192,7 +192,7 @@ sequenceDiagram
     participant F as Firmware scheduler
     participant D as DMA / IOMMU
     participant E as NPU engines
-    H->>H: choose profile; validate X/Y bindings + generations
+    H->>H: choose profile, validate X/Y bindings + generations
     H->>H: reserve workspace and invocation epoch
     H->>Q: write descriptor I52 and command-list pointer
     H->>Q: release-store producer index / ring doorbell
@@ -204,7 +204,7 @@ sequenceDiagram
     F->>D: write output tiles
     D-->>F: output-visible completion
     F->>Q: terminal record(I52, epoch, status)
-    Q-->>H: interrupt/poll; acquire completion; publish Y
+    Q-->>H: interrupt/poll, acquire completion, publish Y
 ```
 
 The release/acquire operations in this trace are memory-ordering operations: the producer publishes a fully initialized descriptor before advancing the queue index, and the host reads a terminal record only after firmware makes output and status visible. A doorbell alone does not make stale cache lines coherent.

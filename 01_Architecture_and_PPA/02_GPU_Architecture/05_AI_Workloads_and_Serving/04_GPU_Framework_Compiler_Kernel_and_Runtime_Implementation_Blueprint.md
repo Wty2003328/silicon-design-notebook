@@ -171,7 +171,7 @@ sequenceDiagram
     participant S1 as Compute stream
     participant D as Driver/GPU
     H->>H: validate profile guards and tensor schemas
-    H->>A: reserve Y + workspace; capture generations
+    H->>A: reserve Y + workspace, capture generations
     H->>S0: enqueue X upload or wait on producer event
     S0-->>H: event X_ready(R27)
     H->>S1: wait X_ready + weights_ready

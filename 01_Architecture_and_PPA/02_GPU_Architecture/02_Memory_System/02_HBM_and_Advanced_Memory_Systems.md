@@ -155,7 +155,7 @@ sequenceDiagram
     Note over Q,B: wait at least tRCD before a column command
     Q->>B: READ when bank, bus, and QoS rules permit
     B-->>E: burst after column latency
-    E->>E: check syndrome; correct, retry, or mark poison
+    E->>E: check syndrome, correct, retry, or mark poison
     E-->>L: return data + ID + status
     L->>L: match outstanding miss and wake dependents
 ```

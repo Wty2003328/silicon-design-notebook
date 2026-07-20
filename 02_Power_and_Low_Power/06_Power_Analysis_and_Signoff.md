@@ -93,7 +93,7 @@ flowchart TD
     DIE["On-die grid + decap\nR_grid, C_die — fast band (>100 MHz)"]
     CELL["Standard cell\nsees V_DD − V_droop"]
     VRM --> PCB --> PKG --> DIE --> CELL
-    CELL -.->|i(t) drawn back through Z(f)| VRM
+    CELL -.->|"i(t) drawn back through Z(f)"| VRM
 ```
 
 The voltage error has two physical terms, and which one dominates depends entirely on *how fast* the current changes:

@@ -59,7 +59,7 @@ sequenceDiagram
     participant T as TLB fill port
     LSU->>MQ: L17(VA, ASID=9, read/user, ROB tag)
     MQ->>MQ: search same virtual-page/context miss
-    MQ->>W: allocate slot; save requesters + epoch
+    MQ->>W: allocate slot, save requesters + epoch
     W->>PWC: lookup root/upper-level prefix
     alt upper prefix hits
         PWC-->>W: next-table physical address

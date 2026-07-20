@@ -72,9 +72,9 @@ Coherence, consistency, and synchronization solve different problems. Treating t
 Coherence supplies two per-line invariants:
 
 1. **Single-Writer/Multiple-Reader (SWMR):** either one cache has write permission and no other valid copy exists, or one or more caches have read permission and none may write.
-2. **Data-value:** a load of line \(X\) returns the value of the latest store before it in \(X\)'s coherence order.
+2. **Data-value:** a load of line $X$ returns the value of the latest store before it in $X$'s coherence order.
 
-These invariants do **not** impose a total order across different lines. Consider a producer that stores data to \(D\) and then sets flag \(F\), while a consumer waits for \(F\) and then reads \(D\). A coherent machine can keep each line individually correct while allowing the consumer to observe new \(F\) and old \(D\) under a weak consistency model. A release store to \(F\) and an acquire load of \(F\), or an appropriate fence, supplies the missing cross-address order. Conversely, a fence cannot make two dirty copies of the *same* line legal; only coherence prevents that.
+These invariants do **not** impose a total order across different lines. Consider a producer that stores data to $D$ and then sets flag $F$, while a consumer waits for $F$ and then reads $D$. A coherent machine can keep each line individually correct while allowing the consumer to observe new $F$ and old $D$ under a weak consistency model. A release store to $F$ and an acquire load of $F$, or an appropriate fence, supplies the missing cross-address order. Conversely, a fence cannot make two dirty copies of the *same* line legal; only coherence prevents that.
 
 **A useful review rule:** when a bug report says “stale data,” first ask whether the stale value is from the same address (usually coherence/cache-maintenance) or from a different address whose publication was reordered (usually consistency/synchronization). The symptom is similar; the violated contract is not.
 
@@ -139,7 +139,7 @@ An optimization may combine messages, omit a clean replacement, or forward data 
 
 ## 3. Why transient states are unavoidable
 
-Suppose a core has line \(X\) in S and executes a store. It sends Upgrade and waits for invalidation acknowledgements. During that wait it may not write—the old sharers still exist—but it is no longer an ordinary S line either: a second local store should merge behind the first transaction rather than launch another Upgrade, an eviction must not discard transaction state, and a forwarded snoop must be answered according to the in-flight request. Call the state **SM**: started in S, waiting to become M.
+Suppose a core has line $X$ in S and executes a store. It sends Upgrade and waits for invalidation acknowledgements. During that wait it may not write—the old sharers still exist—but it is no longer an ordinary S line either: a second local store should merge behind the first transaction rather than launch another Upgrade, an eviction must not discard transaction state, and a forwarded snoop must be answered according to the in-flight request. Call the state **SM**: started in S, waiting to become M.
 
 The same construction produces a family of transient states:
 
@@ -151,7 +151,7 @@ The same construction produces a family of transient states:
 | **MI** | M→I | wait for dirty writeback acceptance/completion |
 | **EI/SI** | E/S→I | wait for a replacement or inclusion acknowledgement if required |
 
-Real protocols subdivide these states because **data and permission can arrive independently**. An IM transaction might have the data but still wait for two invalidation acknowledgements, or have all acknowledgements but still wait for the owner to forward data. Those are observably different obligations and often become states such as IM\(_D\) (need data), IM\(_A\) (need acknowledgements), and IM\(_{AD}\) (need both). The exact names are not important; the product of outstanding conditions is.
+Real protocols subdivide these states because **data and permission can arrive independently**. An IM transaction might have the data but still wait for two invalidation acknowledgements, or have all acknowledgements but still wait for the owner to forward data. Those are observably different obligations and often become states such as IM$_D$ (need data), IM$_A$ (need acknowledgements), and IM$_{AD}$ (need both). The exact names are not important; the product of outstanding conditions is.
 
 ### 3.1 Transaction storage: MSHR, TBE, or transient buffer
 
@@ -173,13 +173,13 @@ The transaction table is associative by block address because a response carries
 
 ### 3.2 The acknowledgement counter is a proof, not bookkeeping
 
-If a directory reports \(K\) old sharers and grants write permission immediately after sending \(K\) invalidations, the new writer can race ahead while a stale reader still holds S. The writer may enter M only after the protocol has evidence that every revocation completed. That evidence is the count
+If a directory reports $K$ old sharers and grants write permission immediately after sending $K$ invalidations, the new writer can race ahead while a stale reader still holds S. The writer may enter M only after the protocol has evidence that every revocation completed. That evidence is the count
 
-\[
+$$
 A_{\text{remaining}} = K - A_{\text{received}}.
-\]
+$$
 
-The SM/IM transaction completes only when \(A_{\text{remaining}}=0\) **and** required data has arrived. Acknowledgement counting is therefore a hardware proof of SWMR. Directory protocols may initialize the count from the sharer vector; broadcast protocols may use a combined response or a fixed participant count, but the proof obligation is identical.
+The SM/IM transaction completes only when $A_{\text{remaining}}=0$ **and** required data has arrived. Acknowledgement counting is therefore a hardware proof of SWMR. Directory protocols may initialize the count from the sharer vector; broadcast protocols may use a combined response or a fixed participant count, but the proof obligation is identical.
 
 ---
 
@@ -209,7 +209,7 @@ sequenceDiagram
     O-->>R: Data(X)
     O-->>H: owner response
     H-->>R: completion / shared permission
-    Note over O,R: O becomes O (or S after writeback); R becomes S
+    Note over O,R: O becomes O (or S after writeback), R becomes S
     Note over M: memory is updated now in MESI, or later in MOESI
 ```
 
@@ -225,7 +225,7 @@ For a whole-line overwrite, the implementation may avoid fetching old data if by
 
 Upgrade is GetM with the data response suppressed because the requester already has a clean copy. It is safe only while that copy remains valid and no intervening writer can change the value. The home serializes Upgrade with every other request for the line; losing a race may force retry or a full GetM.
 
-*Worked traffic number.* Four sharers hold \(X\), including requester C0. C0 upgrades. The home sends three invalidations and receives three acknowledgements: six control messages, plus request and grant = **eight control messages, zero data lines**. A naive GetM that refetched the 64-byte line would add at least one data transfer. Upgrade attacks data bandwidth, not the fundamental \(O(K)\) revocation cost.
+*Worked traffic number.* Four sharers hold $X$, including requester C0. C0 upgrades. The home sends three invalidations and receives three acknowledgements: six control messages, plus request and grant = **eight control messages, zero data lines**. A naive GetM that refetched the 64-byte line would add at least one data transfer. Upgrade attacks data bandwidth, not the fundamental $O(K)$ revocation cost.
 
 ### 4.5 One line through private read, sharing, write ownership, and handoff
 
@@ -239,34 +239,34 @@ sequenceDiagram
     participant M as Memory
 
     C0->>H: GetS(X) for load
-    H->>M: read X=0; directory has no sharer
+    H->>M: read X=0, directory has no sharer
     M-->>C0: Data 0 + exclusive-clean grant
-    Note over C0,H: C0=E; directory owner/sharer=C0; memory=0 current
+    Note over C0,H: C0=E, directory owner/sharer=C0, memory=0 current
 
     C1->>H: GetS(X) for load
     H->>C0: downgrade/probe E copy
     C0-->>H: shared acknowledgement
     H-->>C1: Data 0 + shared grant
-    Note over C0,C1: C0=S, C1=S; both may read 0, neither may write
+    Note over C0,C1: C0=S, C1=S, both may read 0, neither may write
 
-    C0->>H: Upgrade(X) for store 1; C0 enters SM
+    C0->>H: Upgrade(X) for store 1, C0 enters SM
     H->>C1: Invalidate X
     C1-->>H: InvAck after X becomes I
     H-->>C0: exclusive grant after all acks
-    Note over C0,M: C0=M and writes 1; memory still contains stale 0
+    Note over C0,M: C0=M and writes 1, memory still contains stale 0
 
     C1->>H: GetS(X) for later load
-    H->>C0: Forward GetS; memory must not answer
+    H->>C0: Forward GetS, memory must not answer
     C0-->>C1: Data 1
     C0-->>H: owner response / downgrade
     H-->>C1: shared completion
-    Note over C0,C1: MOESI: C0=O, C1=S; C1 reads 1
+    Note over C0,C1: MOESI: C0=O, C1=S, C1 reads 1
 
-    C1->>H: Upgrade/GetM(X) for store 2; C1 enters SM
+    C1->>H: Upgrade/GetM(X) for store 2, C1 enters SM
     H->>C0: invalidate/recall dirty owner
-    C0-->>H: owner acknowledgement; relinquish X
+    C0-->>H: owner acknowledgement, relinquish X
     H-->>C1: exclusive grant
-    Note over C0,C1: C0=I, C1=M and writes 2; single writer preserved
+    Note over C0,C1: C0=I, C1=M and writes 2, single writer preserved
 ```
 
 The state/data ledger makes the proof explicit:
@@ -294,7 +294,7 @@ The home (or an atomic snoop bus) establishes a total **coherence order per line
 
 ### 5.1 Two simultaneous writers
 
-C0 and C1 both issue GetM(\(X\)). The home accepts one first, say C0:
+C0 and C1 both issue GetM($X$). The home accepts one first, say C0:
 
 1. C0's transaction invalidates old sharers and completes to M.
 2. C1 remains queued, receives Retry/NACK, or is held in a pending slot.
@@ -314,7 +314,7 @@ Every choice moves complexity; none removes it. The verification state space is 
 
 ### 5.3 Replacement races
 
-A set may choose \(X\) as a victim just as a snoop for \(X\) arrives. The controller must serialize tag lookup, victim capture, and snoop response so the line is never “between structures.” A dirty victim copied into a writeback buffer is still a coherent owner until the home accepts the PutM; the buffer must therefore snoop-hit and supply data. This is why writeback buffers carry tags and protocol state, not just data.
+A set may choose $X$ as a victim just as a snoop for $X$ arrives. The controller must serialize tag lookup, victim capture, and snoop response so the line is never “between structures.” A dirty victim copied into a writeback buffer is still a coherent owner until the home accepts the PutM; the buffer must therefore snoop-hit and supply data. This is why writeback buffers carry tags and protocol state, not just data.
 
 ### 5.4 Early data and early permission
 
@@ -336,31 +336,31 @@ Snooping discovers holders by asking everyone. A directory remembers holders and
 
 | Mechanism | Metadata cost | Request traffic | Natural serialization | Best fit |
 |---|---:|---:|---|---|
-| shared snoop bus | little/no directory | \(O(N)\) probes per transaction | bus order | small clusters |
+| shared snoop bus | little/no directory | $O(N)$ probes per transaction | bus order | small clusters |
 | snoop filter + broadcast domain | tag-only holder hints | filtered broadcast | central filter/order point | medium coherent islands |
-| full-map directory | \(N\) sharer bits per tracked line | \(O(K)\) targeted messages | home per line | modest core counts |
-| sparse directory | pointers for common few-sharer case | \(O(K)\), overflow action | home per line | many cores, mostly private data |
+| full-map directory | $N$ sharer bits per tracked line | $O(K)$ targeted messages | home per line | modest core counts |
+| sparse directory | pointers for common few-sharer case | $O(K)$, overflow action | home per line | many cores, mostly private data |
 | coarse vector | one bit per group/cluster | targeted within groups, broadcast inside group | hierarchical homes | chiplets/large meshes |
 
 ### 6.1 Full-map directory sizing
 
-For \(L\) tracked lines and \(N\) coherent agents, a full sharer vector needs \(L\times N\) bits, plus owner/state/tag overhead. A 64 MiB last-level cache (LLC) with 64-byte lines has
+For $L$ tracked lines and $N$ coherent agents, a full sharer vector needs $L\times N$ bits, plus owner/state/tag overhead. A 64 MiB last-level cache (LLC) with 64-byte lines has
 
-\[
+$$
 L=\frac{64\cdot2^{20}}{64}=2^{20}=1{,}048{,}576\text{ lines}.
-\]
+$$
 
 At 64 agents, sharer bits alone are
 
-\[
+$$
 2^{20}\times64\text{ bits}=64\text{ Mib}=8\text{ MiB}.
-\]
+$$
 
 That is 12.5% of the LLC data capacity before tags, error-correcting code (ECC), owner, and replacement bits. At 256 agents it becomes 32 MiB—half the data array. Directory representation is therefore an architectural choice, not incidental metadata.
 
 ### 6.2 Sparse directories and overflow
 
-Most lines are private or shared by only a few agents, so a sparse directory stores \(P\) owner/sharer pointers rather than \(N\) bits. With \(P=4\) and \(N=256\), four 8-bit pointers cost 32 bits instead of 256. When a fifth sharer arrives, hardware must choose:
+Most lines are private or shared by only a few agents, so a sparse directory stores $P$ owner/sharer pointers rather than $N$ bits. With $P=4$ and $N=256$, four 8-bit pointers cost 32 bits instead of 256. When a fifth sharer arrives, hardware must choose:
 
 - broadcast on overflow;
 - evict one sharer by invalidating it;
@@ -384,11 +384,11 @@ Coherence operates at line granularity, typically 64 bytes, while software objec
 - **True sharing:** two cores access the same bytes and at least one writes. Communication is semantically necessary.
 - **False sharing:** cores write different bytes that occupy the same line. The protocol still transfers exclusive ownership of the entire line, so the line ping-pongs although the variables are logically independent.
 
-If C0 increments an 8-byte counter in the first half of a line and C1 increments another counter in the second half, every alternating store can require a GetM, a dirty intervention, a 64-byte transfer, and acknowledgements. With one store every 20 cycles per core at 3 GHz, the pair attempts \(2\times3\,\text{GHz}/20=300\) million stores/s. If ownership alternates and each transfer moves 64 bytes, data traffic alone approaches
+If C0 increments an 8-byte counter in the first half of a line and C1 increments another counter in the second half, every alternating store can require a GetM, a dirty intervention, a 64-byte transfer, and acknowledgements. With one store every 20 cycles per core at 3 GHz, the pair attempts $2\times3\,\text{GHz}/20=300$ million stores/s. If ownership alternates and each transfer moves 64 bytes, data traffic alone approaches
 
-\[
+$$
 300\times10^6\times64 \approx 19.2\text{ GB/s},
-\]
+$$
 
 for two 8-byte counters—before control traffic. Padding or per-core counters removes the sharing and can collapse that traffic nearly to zero.
 
@@ -440,7 +440,7 @@ Coherence is defined on a physical line. Virtually indexed caches must ensure sy
 
 At minimum, assert these properties per line:
 
-1. **At most one writer:** \(\sum_i [state_i\in\{M,E\}] \le 1\), extended appropriately when O is present.
+1. **At most one writer:** $\sum_i [state_i\in\{M,E\}] \le 1$, extended appropriately when O is present.
 2. **Writer excludes readers:** if any cache has M/E write permission, every other cache is I.
 3. **Dirty uniqueness:** at most one cache/writeback buffer owns data newer than memory.
 4. **Directory soundness:** every valid private copy is represented by the directory/snoop filter, unless a precisely defined broadcast fallback covers it.
@@ -484,7 +484,7 @@ Cover at least:
 
 - I→E→M private read-then-write with no Upgrade;
 - M owner supplies a peer GetS and downgrades correctly;
-- \(K\)-sharer Upgrade waits for exactly \(K-1\) acknowledgements;
+- $K$-sharer Upgrade waits for exactly $K-1$ acknowledgements;
 - simultaneous GetM requests produce one winner and later handoff;
 - snoop collides with IS, IM, SM, and dirty writeback;
 - data arrives before permission and permission before data;
@@ -499,7 +499,7 @@ Generate loads, stores, atomics, evictions, maintenance, and backpressure across
 
 ### 10.4 Formal properties and bounded progress
 
-Formal verification is unusually effective because coherence properties are local per address. Abstract data to one or two symbolic values, reduce the address space, and retain many agents symmetrically. Prove the safety invariants continuously; prove bounded response under fair-resource assumptions; and use cover properties to ensure contested traces such as M→O/S and simultaneous writers are reachable. Parameterized proof for arbitrary \(N\) is difficult, but symmetry and data independence let small-agent proofs expose most controller bugs.
+Formal verification is unusually effective because coherence properties are local per address. Abstract data to one or two symbolic values, reduce the address space, and retain many agents symmetrically. Prove the safety invariants continuously; prove bounded response under fair-resource assumptions; and use cover properties to ensure contested traces such as M→O/S and simultaneous writers are reachable. Parameterized proof for arbitrary $N$ is difficult, but symmetry and data independence let small-agent proofs expose most controller bugs.
 
 **A sign-off trap:** a test that checks final memory after all caches flush can miss a transient stale read that occurred earlier. Scoreboard each *completed operation at its completion time*, not merely the final state.
 
@@ -526,27 +526,27 @@ Counters must avoid creating a new critical path. Increment local narrow event c
 
 For a coherence transaction, a useful first-order latency decomposition is
 
-\[
+$$
 T_{\text{coh}} =
 T_{\text{req→home}}
 +T_{\text{dir}}
 +\max(T_{\text{snoop round trip}},\,T_{\text{data source}})
 +T_{\text{grant→req}}
 +T_{\text{queue}}.
-\]
+$$
 
-The max appears because snoop/acknowledgement work and data retrieval can overlap; queueing dominates near saturation. For an uncontended private E hit, \(T_{\text{coh}}=0\) on the local critical path. For a dirty remote owner across a mesh, two or three network legs plus queueing can make a “cache hit somewhere” slower than an LLC hit.
+The max appears because snoop/acknowledgement work and data retrieval can overlap; queueing dominates near saturation. For an uncontended private E hit, $T_{\text{coh}}=0$ on the local critical path. For a dirty remote owner across a mesh, two or three network legs plus queueing can make a “cache hit somewhere” slower than an LLC hit.
 
 Traffic per transaction is approximately
 
-\[
+$$
 B_{\text{coh}} \approx B_{\text{control}}(2+2K) + B_{\text{data}}D,
-\]
+$$
 
-where \(K\) is the number of targeted sharers, the two fixed control messages are the request and completion/grant, and \(D\in\{0,1,\ldots\}\) is the number of line transfers/writebacks. Protocols can combine an acknowledgement with data or a completion, so this is an accounting model rather than an exact packet count. It exposes the two independent optimizations:
+where $K$ is the number of targeted sharers, the two fixed control messages are the request and completion/grant, and $D\in\{0,1,\ldots\}$ is the number of line transfers/writebacks. Protocols can combine an acknowledgement with data or a completion, so this is an accounting model rather than an exact packet count. It exposes the two independent optimizations:
 
-- directories, sparse encodings, and sharer prediction reduce **control fanout** \(K\);
-- E, O, Upgrade, direct cache transfer, and whole-line stores reduce **data movement** \(D\).
+- directories, sparse encodings, and sharer prediction reduce **control fanout** $K$;
+- E, O, Upgrade, direct cache transfer, and whole-line stores reduce **data movement** $D$.
 
 | Design choice | Wins | Costs / risk | Prefer when |
 |---|---|---|---|
@@ -555,8 +555,8 @@ where \(K\) is the number of targeted sharers, the two fixed control messages ar
 | direct cache transfer | lower dirty-owner latency | split data/permission races | mesh/fabric supports forwarding |
 | inclusive LLC | cheap holder discovery | duplicate capacity, back-invalidations | small private-cache aggregate |
 | non-inclusive + snoop filter | data capacity efficiency | separate metadata and eviction rules | large private caches/core counts |
-| full-map directory | simple exact sharers | \(O(N)\) bits per line | modest \(N\) |
-| sparse/coarse directory | scalable storage | overflow latency/traffic | large \(N\), few sharers normally |
+| full-map directory | simple exact sharers | $O(N)$ bits per line | modest $N$ |
+| sparse/coarse directory | scalable storage | overflow latency/traffic | large $N$, few sharers normally |
 | NACK/retry | simpler conflict handling | livelock and extra traffic | rare collisions, strong fairness |
 | queued home transactions | fewer retries | home storage and head-of-line blocking | high contention |
 
@@ -571,8 +571,8 @@ where \(K\) is the number of targeted sharers, the two fixed control messages ar
 | shared/home transactions | tens to hundreds per slice | mesh bandwidth–delay product |
 | snoop cluster scale | ~4–16 agents | broadcast remains practical |
 | directory scale | tens to hundreds+ | targeted messages replace broadcast |
-| full-map directory bits | \(N\) per tracked line | grows linearly with agent count |
-| Upgrade with \(K\) total sharers | \(K-1\) Inv + \(K-1\) Ack | revocation proof cost |
+| full-map directory bits | $N$ per tracked line | grows linearly with agent count |
+| Upgrade with $K$ total sharers | $K-1$ Inv + $K-1$ Ack | revocation proof cost |
 | uncontended E→M | 0 coherence messages | why E exists |
 | false-sharing transfer | usually one full line per handoff | tiny variables can burn GB/s |
 | coherence verification focus | transient states and races | stable MESI is a small fraction of state space |
@@ -583,44 +583,44 @@ where \(K\) is the number of targeted sharers, the two fixed control messages ar
 
 **1 — Size a full-map directory.** A 32 MiB LLC uses 64-byte lines and serves 48 agents. Sharer bits:
 
-\[
+$$
 L=\frac{32\cdot2^{20}}{64}=524{,}288,\qquad
 S=L\cdot48=25{,}165{,}824\text{ bits}=3\text{ MiB}.
-\]
+$$
 
 Add a 6-bit owner field, 3 protocol bits, and 2 status bits per line:
 
-\[
+$$
 524{,}288\cdot11/8 \approx 0.69\text{ MiB}.
-\]
+$$
 
-Total before ECC/tags is **3.69 MiB**, 11.5% of the LLC data. A four-pointer sparse directory needs \(4\lceil\log_2 48\rceil=24\) sharer bits/line instead of 48, halving the sharer store, but it must define overflow behavior.
+Total before ECC/tags is **3.69 MiB**, 11.5% of the LLC data. A four-pointer sparse directory needs $4\lceil\log_2 48\rceil=24$ sharer bits/line instead of 48, halving the sharer store, but it must define overflow behavior.
 
-**2 — Prove an Upgrade cannot complete early.** C0, C1, C2, and C3 hold S. C0 requests M. The home sends invalidations to C1–C3, so \(A_{\text{remaining}}=3\). C1 and C3 acknowledge; the count becomes 1. If C0 writes now, C2 can still read its S copy: writer and reader coexist, violating SWMR. Only C2's acknowledgement makes the count 0 and completes the proof that C0 is sole owner. The counter is not a latency hint; it is the guard on the S→M transition.
+**2 — Prove an Upgrade cannot complete early.** C0, C1, C2, and C3 hold S. C0 requests M. The home sends invalidations to C1–C3, so $A_{\text{remaining}}=3$. C1 and C3 acknowledge; the count becomes 1. If C0 writes now, C2 can still read its S copy: writer and reader coexist, violating SWMR. Only C2's acknowledgement makes the count 0 and completes the proof that C0 is sole owner. The counter is not a latency hint; it is the guard on the S→M transition.
 
-**3 — Separate coherence from consistency.** Producer executes \(D=42; F=1\). Consumer observes \(F=1\) then reads \(D=0\). Could coherence still be correct? **Yes.** Each line can return its latest value in its own coherence order while the weak memory model exposes the \(F\) store before the \(D\) store to the consumer. Use release on the store to \(F\) and acquire on the load of \(F\) (or stronger fences) to order the two addresses. If the consumer instead reads an old value of \(F\) after a newer store to the same line is complete in its coherence order, that is a coherence/data-value failure.
+**3 — Separate coherence from consistency.** Producer executes $D=42; F=1$. Consumer observes $F=1$ then reads $D=0$. Could coherence still be correct? **Yes.** Each line can return its latest value in its own coherence order while the weak memory model exposes the $F$ store before the $D$ store to the consumer. Use release on the store to $F$ and acquire on the load of $F$ (or stronger fences) to order the two addresses. If the consumer instead reads an old value of $F$ after a newer store to the same line is complete in its coherence order, that is a coherence/data-value failure.
 
 **4 — Quantify false sharing.** Two cores alternately update independent 8-byte counters on one 64-byte line at 50 million updates/s each. Every update transfers ownership and one 64-byte line. Approximate data traffic:
 
-\[
+$$
 2\cdot50\times10^6\cdot64=6.4\text{ GB/s}.
-\]
+$$
 
 Padding each counter onto a separate line lets each core retain M; after the first ownership acquisition, steady-state coherence data traffic is approximately zero. The cost is 128 bytes instead of 16—an 8× footprint increase traded for 6.4 GB/s less interconnect traffic.
 
 **5 — Size a transient table by Little's law.** A home slice accepts 0.4 new coherence transactions/cycle and average completion latency is 45 cycles. Required mean occupancy:
 
-\[
+$$
 N=\lambda W=0.4\cdot45=18\text{ entries}.
-\]
+$$
 
 Eighteen entries only hold the average; burst tolerance and queueing require margin. At 2× headroom choose at least 36, typically round to **48 or 64 entries**. If the slice has only 16 entries, backpressure begins before the target rate even in the average case.
 
 **6 — Find the deadlock cycle.** A request queue cannot drain until it emits an invalidation; the invalidation queue cannot drain until it emits an acknowledgement; the response queue holding that acknowledgement cannot drain because its consumer waits for a free request entry. Dependency cycle:
 
-\[
+$$
 Q_{\text{req}}\rightarrow Q_{\text{snoop}}\rightarrow Q_{\text{resp}}\rightarrow Q_{\text{req}}.
-\]
+$$
 
 Break it by reserving response capacity and making responses an escape class that never requires request resources to drain, or by separating classes into virtual networks with an acyclic dependency order. Adding total buffer capacity without breaking the cycle only makes deadlock rarer, not impossible.
 

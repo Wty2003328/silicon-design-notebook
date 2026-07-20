@@ -99,14 +99,14 @@ sequenceDiagram
     C->>L: request S0
     C->>L: request S1
     C->>L: request S2
-    L-->>C: S0 hit; return lanes 0..2
-    L-->>C: S1 miss accepted; MSHR allocated
-    L-->>C: S2 rejected; MSHR full
-    Note over C: pending = {S1, S2}; retain S2 for replay
+    L-->>C: S0 hit, return lanes 0..2
+    L-->>C: S1 miss accepted, MSHR allocated
+    L-->>C: S2 rejected, MSHR full
+    Note over C: pending = {S1, S2}, retain S2 for replay
     C->>L: replay S2 after resource-ready signal
     L->>M: misses for S1 and S2
-    M-->>C: S2 data returns first; write mapped lanes
-    M-->>C: S1 data returns; pending becomes empty
+    M-->>C: S2 data returns first, write mapped lanes
+    M-->>C: S1 data returns, pending becomes empty
     C-->>W: clear destination only for matching generation g
 ```
 

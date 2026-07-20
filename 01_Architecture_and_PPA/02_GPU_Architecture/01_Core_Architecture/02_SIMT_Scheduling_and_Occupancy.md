@@ -164,14 +164,14 @@ sequenceDiagram
     participant M as Memory system
     S->>W0: issue load at cycle 0
     W0->>M: coalesced requests
-    Note over W0,M: W0 becomes ineligible; data is still hundreds of cycles away
+    Note over W0,M: W0 becomes ineligible, data is still hundreds of cycles away
     S->>W1: issue independent ALU work
     S->>W2: issue independent load / ALU work
     loop while W0 waits
         S->>S: select another compatible eligible warp
     end
     M-->>W0: final response writes destination
-    W0-->>S: scoreboard clears; W0 re-enters eligible set
+    W0-->>S: scoreboard clears, W0 re-enters eligible set
 ```
 
 This succeeds only if the other warps do not encounter the same correlated stall. If every warp misses on the same memory partition, waits at the same barrier, or targets a saturated load/store pipe, resident count is high but the eligible set still empties.

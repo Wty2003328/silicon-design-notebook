@@ -158,10 +158,10 @@ sequenceDiagram
     L->>E1: packet k
     E1-->>L: NAK k after CRC failure
     L->>E1: replay buffered packet k
-    E1-->>L: ACK k; release replay entry
+    E1-->>L: ACK k, release replay entry
     E1->>H1: read local contribution / write reduced chunk
     H1-->>E1: reduction data complete
-    E1->>E1: decrement step bytes; advance only when all sequences arrive
+    E1->>E1: decrement step bytes, advance only when all sequences arrive
     E1-->>E0: step completion or next-hop progress
 ```
 

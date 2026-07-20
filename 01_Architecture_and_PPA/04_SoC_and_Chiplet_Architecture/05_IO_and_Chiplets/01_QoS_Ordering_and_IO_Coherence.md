@@ -161,11 +161,11 @@ sequenceDiagram
     participant FAB as "NoC/QoS fabric"
     participant H as "home/directory"
     CPU->>CPU: "write packet + descriptor D52"
-    CPU->>DEV: "release/fence; doorbell D52"
+    CPU->>DEV: "release/fence, doorbell D52"
     DEV->>IOM: "ReadShared(IOVA, RID=9, context, class=control)"
     alt "translation/permission fault"
-        IOM-->>DEV: "fault(RID=9); retain D52 as fault-pending"
-        CPU->>IOM: "repair mapping; invalidate/fence"
+        IOM-->>DEV: "fault(RID=9), retain D52 as fault-pending"
+        CPU->>IOM: "repair mapping, invalidate/fence"
         DEV->>IOM: "bounded replay of D52 read"
     end
     IOM->>FAB: "PA + requester/order/QoS/security/coherent attributes"
@@ -173,9 +173,9 @@ sequenceDiagram
     H->>CPU: "snoop dirty descriptor/cache line if needed"
     CPU-->>H: "data + downgrade/ack"
     H-->>FAB: "Data(RID=9, coherence state, poison status)"
-    FAB-->>DEV: "ordered response; retire RID=9 once"
-    DEV->>DEV: "fetch payload; transmit"
-    DEV->>CPU: "coherent completion write; interrupt after visibility point"
+    FAB-->>DEV: "ordered response, retire RID=9 once"
+    DEV->>DEV: "fetch payload, transmit"
+    DEV->>CPU: "coherent completion write, interrupt after visibility point"
 ```
 
 **1. Publish before notifying.** CPU stores may sit in a store buffer or cache and the interconnect may use independent channels. A release operation/fence orders the descriptor and payload writes before the doorbell. The doorbell's arrival tells the device that descriptor `D52` exists; it is not by itself proof that unordered older stores are visible. Coherence answers *which copy is current* when the device reads, while the fence answers *whether the producer was allowed to advertise the work yet*.

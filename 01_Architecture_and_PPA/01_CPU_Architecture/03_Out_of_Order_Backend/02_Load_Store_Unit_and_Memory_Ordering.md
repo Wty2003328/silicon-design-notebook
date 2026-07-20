@@ -250,13 +250,13 @@ sequenceDiagram
     LQ->>LQ: predictor permits issue past unresolved S
     LQ->>DC: read address A
     DC-->>LQ: return old value V0
-    LQ->>WB: write V0; wake dependent slice
-    SQ->>SQ: S address resolves to A; data is V1
+    LQ->>WB: write V0, wake dependent slice
+    SQ->>SQ: S address resolves to A, data is V1
     SQ->>LQ: compare against younger executed loads
     LQ-->>RP: violation: L observed before older overlapping S
     RP->>ROB: mark L and affected younger results noncommittable
     RP->>WB: poison/squash dependent results and pending requests
-    RP->>LQ: reset L completion; wait for or forward from S
+    RP->>LQ: reset L completion, wait for or forward from S
     RP->>RP: train load/store PCs into one dependency set
     LQ->>WB: replay L with V1, then re-execute dependents
     ROB->>ROB: retire only after replayed chain is valid

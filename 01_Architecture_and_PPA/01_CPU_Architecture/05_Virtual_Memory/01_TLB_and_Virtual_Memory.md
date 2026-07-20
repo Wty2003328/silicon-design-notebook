@@ -262,7 +262,7 @@ sequenceDiagram
 
     L->>T1: lookup(ASID=7, VPN, user-read)
     alt L1 DTLB hit
-        T1-->>L: PPN + R/W/X/U permissions; continue VIPT tag check
+        T1-->>L: PPN + R/W/X/U permissions, continue VIPT tag check
     else L1 miss
         T1->>T2: lookup(ASID=7, VPN, page-size candidates)
         alt STLB hit
@@ -277,15 +277,15 @@ sequenceDiagram
             alt valid permitted leaf
                 W-->>T2: fill translation if walk generation is live
                 T2-->>T1: refill L1
-                T1-->>L: PA; resume cache access
+                T1-->>L: PA, resume cache access
             else invalid, misaligned, or permission failure
-                W-->>L: record precise page-fault cause; do not fill TLB
+                W-->>L: record precise page-fault cause, do not fill TLB
                 L-->>O: trap only when L reaches architectural fault boundary
             end
         end
     end
-    O->>O: later edit this PTE; publish new mapping/permission
-    O->>T1: invalidate VPN+ASID locally/remotely; advance generation
+    O->>O: later edit this PTE, publish new mapping/permission
+    O->>T1: invalidate VPN+ASID locally/remotely, advance generation
     T1-->>O: acknowledgement after old entry and matching walk are unusable
     O->>O: only now reuse old frame or expose weaker permission
 ```

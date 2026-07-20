@@ -182,7 +182,7 @@ sequenceDiagram
     C->>A: present pending source-segment requests
     A->>R: grant at most each bank's port capacity
     R-->>C: return tagged operand segments
-    Note over C: set valid bits; keep ungranted requests pending
+    Note over C: set valid bits, keep ungranted requests pending
     loop until every required segment is valid
         C->>A: retry only pending requests
         R-->>C: capture additional segments

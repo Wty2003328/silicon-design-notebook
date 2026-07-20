@@ -215,7 +215,7 @@ sequenceDiagram
         X->>R: mark branch complete
         R->>Q: release checkpoint when safe
     else direction or target wrong
-        X->>R: identify branch age; kill all younger work
+        X->>R: identify branch age, kill all younger work
         R->>P: restore pre-branch history, then append actual outcome
         X->>P: train using saved lookup metadata
         R->>F: redirect to actual successor

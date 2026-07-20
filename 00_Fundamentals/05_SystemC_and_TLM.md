@@ -265,7 +265,7 @@ sequenceDiagram
     autonumber
     participant I as Initiator (e.g. CPU / DMA)
     participant T as Target (e.g. memory / slave)
-    Note over I,T: one ref-counted payload passed by reference; every call carries an sc_time delay
+    Note over I,T: one ref-counted payload passed by reference, every call carries an sc_time delay
     I->>T: nb_transport_fw(trans, BEGIN_REQ, delay)
     T-->>I: TLM_ACCEPTED
     T->>I: nb_transport_bw(trans, END_REQ, delay)

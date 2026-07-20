@@ -219,7 +219,7 @@ sequenceDiagram
     participant E as "ECC + response queue"
     CPU->>IN: "AR(ID=17, PA, 64 B, QoS)"
     IN->>Q: "allocate R17: ch0/r0/bg1/b3/row42/col6"
-    Note over Q,S: "D9 is younger but hits open row19; serve D9 first unless R17 age/deadline overrides"
+    Note over Q,S: "D9 is younger but hits open row19, serve D9 first unless R17 age/deadline overrides"
     S->>B: "READ D9 (legal row hit)"
     S->>B: "PRE bank3 after tRAS and bus guards"
     S->>B: "ACT row42 after tRP and rank ACT guards"

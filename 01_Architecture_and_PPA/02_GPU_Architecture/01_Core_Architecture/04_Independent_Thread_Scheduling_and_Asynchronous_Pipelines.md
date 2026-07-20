@@ -130,7 +130,7 @@ sequenceDiagram
         L->>A: launch descriptor for tile n+1
         A->>M: autonomous multidimensional transfer
         L->>X: compute tile n while transfer runs
-        M-->>A: tile n+1 complete; signal phase token
+        M-->>A: tile n+1 complete, signal phase token
         L->>L: wait only before first use of tile n+1
     end
 ```

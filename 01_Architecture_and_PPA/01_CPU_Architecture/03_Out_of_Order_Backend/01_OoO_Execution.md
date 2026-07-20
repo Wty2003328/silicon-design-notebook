@@ -148,9 +148,9 @@ sequenceDiagram
     participant ROB as ROB / commit
 
     RN->>IQ: dispatch I0(P40), I1(wait P40), I2(P42), I3(wait P42), I4(P44)
-    RN->>ROB: allocate I0..I4 in program order; save new+displaced tags
+    RN->>ROB: allocate I0..I4 in program order, save new+displaced tags
     IQ->>EX: issue ready I0, I2, and I4
-    EX->>CDB: I2 completes P42; I4 completes P44
+    EX->>CDB: I2 completes P42, I4 completes P44
     CDB->>IQ: wake I3 on tag P42
     CDB->>ROB: mark I2 and I4 done
     IQ->>EX: issue I3 while older I0 is still running

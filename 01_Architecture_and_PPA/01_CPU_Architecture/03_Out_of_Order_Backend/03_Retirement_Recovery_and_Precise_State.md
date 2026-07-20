@@ -262,7 +262,7 @@ sequenceDiagram
     participant Trap as trap vector
     MC-->>LSQ: return data plus poison (uncorrectable)
     LSQ->>ROB: complete load, tag entry pending-MCE
-    Note over ROB: continue speculatively; not yet an exception
+    Note over ROB: continue speculatively, not yet an exception
     ROB->>ROB: load becomes oldest and would retire
     ROB->>ROB: commit older, squash load and younger
     ROB->>Trap: raise precise MCE with cause, address, PC
