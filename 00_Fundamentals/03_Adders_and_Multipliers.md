@@ -1,24 +1,12 @@
 # Datapath Arithmetic — The Carry Chain and How to Beat It
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.78,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum width=2.4cm,minimum height=1.0cm,align=center}}
-  \node[blk] (ADD) at (0,1.2) {$N$-bit addition};
-  \node[blk] (RIP) at (3.4,2.1) {ripple carry\\$O(N)$ latency};
-  \node[blk] (CLA) at (3.4,0.3) {lookahead /\\carry select};
-  \node[blk] (PRE) at (6.8,0.3) {parallel-prefix tree\\$O(\log N)$ latency};
-  \node[blk] (MUL) at (0,-2.1) {multiplication};
-  \node[blk] (PP) at (3.4,-2.1) {partial products\\Booth recoding};
-  \node[blk] (RED) at (6.8,-2.1) {carry-save reduction\\Wallace / Dadda};
-  \node[blk] (CPA) at (10.2,-0.9) {final carry-\\propagate adder};
-  \draw[->] (ADD) -- (RIP); \draw[->] (ADD) -- (CLA); \draw[->] (CLA) -- (PRE);
-  \draw[->] (MUL) -- (PP); \draw[->] (PP) -- (RED); \draw[->] (RED) -- (CPA);
-  \draw[->] (PRE) -- (CPA);
-  \draw[->] (CPA) -- ++(2.1,0) node[right]{sum / product};
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  ADD["N-bit addition"] --> RIP["ripple carry<br/>O(N) latency"]
+  ADD --> CLA["lookahead /<br/>carry select"] --> PRE["parallel-prefix tree<br/>O(log N) latency"]
+  MUL["multiplication"] --> PP["partial products<br/>Booth recoding"] --> RED["carry-save reduction<br/>Wallace / Dadda"] --> CPA["final carry-<br/>propagate adder"]
+  PRE --> CPA
+  CPA --> OUT["sum / product"]
 ```
 
 > **Prerequisites:** [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the FO4 delay unit, series-stack fan-in limits, wire RC), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (MUX, XOR, comparator).
@@ -310,7 +298,7 @@ Because no carry travels along the word, a CSA has **$O(1)$ delay independent of
 \usepackage{circuitikz}
 \begin{document}
 \begin{circuitikz}[american,thick,scale=0.9,transform shape]
-  \node[draw,minimum width=2.2cm,minimum height=1.5cm,align=center] (FA) at (0,0) {full adder\\3:2 compressor};
+  \node[draw,minimum width=2.2cm,minimum height=1.5cm,align=center] (FA) at (0,0) {full\\adder\\3:2\\compressor};
   \draw (-2.0,0.5) -- (-1.1,0.5) node[left]{$x_i$};
   \draw (-2.0,0.0) -- (-1.1,0.0) node[left]{$y_i$};
   \draw (-2.0,-0.5) -- (-1.1,-0.5) node[left]{$z_i$};

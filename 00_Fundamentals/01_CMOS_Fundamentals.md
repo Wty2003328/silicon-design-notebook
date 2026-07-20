@@ -56,22 +56,23 @@ Pure silicon is **intrinsic**. **Doping** deliberately replaces a tiny fraction 
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[thick,scale=0.85,transform shape,font=\small]
-  \draw[fill=gray!25] (-1.6,2.85) rectangle (6.4,3.45);
-  \node at (2.4,3.15) {conductive gate $G$};
-  \draw[fill=blue!12] (-1.6,2.5) rectangle (6.4,2.85);
-  \node[right] at (6.4,2.67) {oxide};
-  \draw[fill=orange!12] (-1.6,-0.3) rectangle (6.4,2.5);
-  \node at (2.4,0.1) {p-type silicon body $B$};
-  \draw[fill=green!25] (-1.4,0.65) rectangle (0.9,1.65);
-  \draw[fill=green!25] (3.9,0.65) rectangle (6.2,1.65);
-  \node at (-0.25,1.15) {$n^{+}$ source $S$};
-  \node at (5.05,1.15) {$n^{+}$ drain $D$};
-  \draw[very thick,blue] (0.9,1.95) -- (3.9,1.95);
-  \node at (2.4,2.25) {inversion channel ($V_{GS}>V_{th}$)};
-  \draw[->] (2.4,4.0) -- (2.4,3.47) node[midway,right] {$+V_G$ creates field};
-  \draw[->] (3.8,1.35) -- (1.0,1.35) node[midway,above] {electron drift};
-  \draw[->] (1.0,0.9) -- (3.8,0.9) node[midway,below] {conventional $I_D$};
+\begin{circuitikz}[thick,scale=0.9,transform shape,font=\small]
+  \draw[fill=gray!25] (-1.8,2.85) rectangle (6.6,3.45);
+  \node[left,align=right] at (-1.8,3.15) {gate\\$G$};
+  \draw[fill=blue!12] (-1.8,2.5) rectangle (6.6,2.85);
+  \node[right] at (6.6,2.63) {oxide};
+  \draw[fill=orange!12] (-1.8,-0.9) rectangle (6.6,2.5);
+  \node[align=center] at (2.4,-0.45) {$p$-type\\body\\$B$};
+  \draw[fill=green!25] (-1.6,0.7) rectangle (0.8,1.7);
+  \draw[fill=green!25] (4.0,0.7) rectangle (6.4,1.7);
+  \node[align=center] at (-0.4,1.2) {$n^{+}$\\source\\$S$};
+  \node[align=center] at (5.2,1.2) {$n^{+}$\\drain\\$D$};
+  \draw[very thick,blue] (0.8,2.0) -- (4.0,2.0);
+  \draw[dotted] (4.0,2.0) -- (6.55,2.0);
+  \node[right,align=left] at (6.6,2.0) {inversion\\channel};
+  \draw[->] (2.4,4.05) -- (2.4,3.47) node[midway,right] {$+V_G$};
+  \draw[->] (3.9,1.25) -- (0.9,1.25) node[midway,above,align=center] {electron\\drift};
+  \draw[->] (0.9,0.75) -- (3.9,0.75) node[midway,below] {$I_D$};
 \end{circuitikz}
 \end{document}
 ```
@@ -261,11 +262,11 @@ Model the switching device as an effective resistance discharging the load:
   \draw (0,2.4) node[vcc]{$V_{DD}$} to[R,l=$R_p$] (0,1.2) coordinate(UP)
         (UP) -- (1.0,1.2) node[right]{$Y$}
         (1.0,1.2) to[C,l=$C_L$] (1.0,0) node[ground]{};
-  \node at (0.5,-0.95) {low$\to$high: charge via $R_p$};
+  \node[align=center] at (0.5,-1.1) {charge\\via\\$R_p$};
   \draw (5.0,1.2) coordinate(DN) -- (6.0,1.2) node[right]{$Y$}
         (6.0,1.2) to[C,l=$C_L$] (6.0,0) node[ground]{}
         (DN) to[R,l_=$R_n$] (5.0,0) node[ground]{};
-  \node at (5.5,-0.95) {high$\to$low: discharge via $R_n$};
+  \node[align=center] at (5.5,-1.1) {discharge\\via\\$R_n$};
 \end{circuitikz}
 \end{document}
 ```
@@ -496,8 +497,8 @@ At the logic level, the four storage transistors are two cross-coupled CMOS inve
   \draw (IR.out) -- (5.3,1.5) -- (5.3,0.2) -- (-1.3,0.2) -- (-1.3,1.5) -- (IL.in);
   \node[above] at (Q) {$Q$};
   \node[above] at (IR.out) {$\overline Q$};
-  \node[below] at (0,1.0) {2T inverter};
-  \node[below] at (4,1.0) {2T inverter};
+  \node[below,align=center] at (0,1.0) {2T\\inverter};
+  \node[below,align=center] at (4,1.0) {2T\\inverter};
   \node[nmos,rotate=-90] (AXL) at (2.0,2.5) {};
   \node[nmos,rotate=-90] (AXR) at (4.0,2.5) {};
   \draw (Q) -- (AXL.S);

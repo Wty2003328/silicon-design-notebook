@@ -44,24 +44,12 @@ flowchart LR
 
 It is easier to understand an NPU by *building the smallest possible one* and watching it fail than by memorizing a finished block diagram. Start with one multiply-accumulate datapath, three registers, and a controller:
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.9,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum height=0.95cm,align=center,font=\small}}
-  \node[blk,minimum width=1.7cm] (a) at (0,0.9) {act. reg $a$};
-  \node[blk,minimum width=1.7cm] (w) at (0,-0.9) {wt. reg $w$};
-  \node[blk,minimum width=1.4cm] (mul) at (3.0,0) {$\times$};
-  \node[blk,minimum width=1.4cm] (add) at (5.5,0) {$+$};
-  \node[blk,minimum width=1.9cm] (ps) at (8.3,0) {p-sum reg $ps$};
-  \draw[->] (a.east) -| (mul.north);
-  \draw[->] (w.east) -| (mul.south);
-  \draw[->] (mul.east) -- (add.west);
-  \draw[->] (add.east) -- (ps.west);
-  \draw[->] (ps.south) -- (8.3,-1.9) -- (5.5,-1.9) node[midway,below,font=\footnotesize]{accumulate $ps{+}a{\cdot}w$} -- (add.south);
-  \draw[->] (ps.east) -- ++(0.9,0) node[right]{result};
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  A["act. reg a"] --> MUL["multiply"]
+  W["wt. reg w"] --> MUL
+  MUL --> ADD["add"] --> PS["p-sum reg ps"] --> R["result"]
+  PS -->|"accumulate ps + a*w"| ADD
 ```
 
 On every enabled cycle it performs `ps_next = ps + a*w`. This is already sufficient to compute any matrix multiplication: software can present the operands in the correct order and clear or read `ps` at the right time. It is also a poor accelerator. For a $2\times2$ example,

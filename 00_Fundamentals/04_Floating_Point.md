@@ -1,26 +1,9 @@
 # Floating Point — The Range/Precision Trade and Its Hardware
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.78,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.5cm,align=center}}
-  \node[blk] (UN) at (1.6,1.7) {unpack: sign,\\exponent,\\significand};
-  \node[blk] (SP) at (5.1,1.7) {classify: zero,\\subnormal,\\inf / NaN};
-  \node[blk] (AL) at (8.6,1.7) {compare\\exponents,\\then align};
-  \draw[->] (-1.0,1.7) node[left]{encoded operands} -- (UN);
-  \draw[->] (UN) -- (SP); \draw[->] (SP) -- (AL);
-  \draw[->] (AL) -- ++(1.4,0) node[right,align=left]{continued below:\\aligned operands};
-
-  \node[blk] (OP) at (1.6,-1.8) {add / multiply /\\fused operation};
-  \node[blk] (NO) at (5.1,-1.8) {normalize +\\LZ detect};
-  \node[blk] (RN) at (8.6,-1.8) {GRS +\\rounding mode};
-  \node[blk] (PK) at (12.1,-1.8) {flags, overflow /\\underflow, pack};
-  \draw[->] (-1.0,-1.8) node[left,align=right]{from alignment\\above} -- (OP);
-  \draw[->] (OP) -- (NO); \draw[->] (NO) -- (RN); \draw[->] (RN) -- (PK);
-  \draw[->] (PK) -- ++(1.7,0) node[right]{encoded result};
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  IN["encoded operands"] --> UN["unpack: sign,<br/>exponent, significand"] --> SP["classify: zero,<br/>subnormal, inf / NaN"] --> AL["compare exponents,<br/>then align"] --> CB["continued below:<br/>aligned operands"]
+  FA["from alignment<br/>above"] --> OP["add / multiply /<br/>fused operation"] --> NO["normalize +<br/>LZ detect"] --> RN["GRS +<br/>rounding mode"] --> PK["flags, overflow /<br/>underflow, pack"] --> ER["encoded result"]
 ```
 
 > **Prerequisites:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (the mantissa $p\times p$ multiplier, the final CPA, and the SRT/Goldschmidt recurrences this page reuses), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (barrel shifter, leading-zero count, priority encoder), [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the area→energy argument behind §6).
@@ -305,28 +288,11 @@ The same hardware must also survive a case where alignment loses visible digits.
 
 The concrete adder pipeline is therefore a composition of hardware already derived in the preceding pages:
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.82,transform shape]
-  \tikzset{fpblock/.style={draw,rounded corners,minimum width=2.15cm,minimum height=1.05cm,align=center}}
-  \node[fpblock] (un) at (0,1.5) {classify\\and unpack};
-  \node[fpblock] (cmp) at (3.0,1.5) {exponent\\compare};
-  \node[fpblock] (shr) at (6.0,1.5) {right barrel\\shift + sticky};
-  \node[fpblock] (add) at (9.0,1.5) {add/subtract\\significands};
-  \node[fpblock] (lzd) at (0,-1.5) {leading-zero\\detect + shift};
-  \node[fpblock] (rnd) at (3.2,-1.5) {GRS decision\\+ increment};
-  \node[fpblock] (pack) at (6.4,-1.5) {flags\\and pack};
-  \draw[->] (un) -- (cmp); \node at (1.5,2.45){fields};
-  \draw[->] (cmp) -- (shr); \node at (4.5,2.45){$\Delta e$};
-  \draw[->] (shr) -- (add); \node at (7.5,2.45){aligned};
-  \draw[->] (add) -- ++(1.8,0) node[right,align=left]{raw sum\\continued below};
-  \draw[->] (-1.7,-1.5) node[left,align=right]{from add\\above} -- (lzd);
-  \draw[->] (lzd) -- (rnd); \node at (1.6,-0.45){normalized + GRS};
-  \draw[->] (rnd) -- (pack); \node at (4.8,-0.45){rounded};
-  \draw[->] (un.south) -- ++(0,-0.45) -- ++(-1.2,0) -- ++(0,-3.0) -| node[pos=0.25,below]{signs and special-case class} (pack.south);
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  UN["classify<br/>and unpack"] -->|fields| CMP["exponent<br/>compare"] -->|Δe| SHR["right barrel<br/>shift + sticky"] -->|aligned| ADD["add/subtract<br/>significands"] --> RAW["raw sum,<br/>continued below"]
+  FA["from add<br/>above"] --> LZD["leading-zero<br/>detect + shift"] -->|normalized + GRS| RND["GRS decision<br/>+ increment"] -->|rounded| PACK["flags<br/>and pack"]
+  UN -.->|signs and special-case class| PACK
 ```
 
 This figure is a **hardware ownership map**, not a promise that each box is exactly one cycle. Pipeline registers are inserted to balance the delay of the barrel shifter, significand adder, normalization network, and round incrementer. A typical five-stage implementation might schedule the same transaction like this:
@@ -350,35 +316,22 @@ This figure is a **hardware ownership map**, not a promise that each box is exac
 
 ### 8.2 Why a fused multiply-add is physically different from “multiplier then adder”
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.8,transform shape]
-  \tikzset{fpblock/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.95cm,align=center}}
-  \node[fpblock] (mul0) at (0,1.4) {$p\times p$\\multiplier};
-  \node[fpblock] (r0) at (3.0,1.4) {normalize\\and round};
-  \node[fpblock] (a0) at (6.0,1.4) {$p$-bit\\FP add};
-  \node[fpblock] (r1) at (9.0,1.4) {normalize\\and round};
-  \draw[->] (mul0) -- (r0);
-  \draw[->] (r0) -- (a0); \node at (4.5,2.35) {rounded product};
-  \draw[->] (a0) -- (r1);
-  \node[left] at (-1.15,1.4) {$a,b$};
-  \node[above] at (6.0,2.0) {$c$};
-  \draw[->] (6.0,2.0) -- (a0.north);
-
-  \node[fpblock] (mul1) at (0,-1.4) {$p\times p$\\multiplier};
-  \node[fpblock,minimum width=2.6cm] (wide) at (3.6,-1.4) {carry-save / wide\\product + aligned $c$};
-  \node[fpblock] (one) at (7.1,-1.4) {normalize\\and round once};
-  \draw[->] (mul1) -- (wide);
-  \node at (1.75,-0.55) {$2p$ bits};
-  \draw[->] (wide) -- (one);
-  \node[left] at (-1.15,-1.4) {$a,b$};
-  \node[above] at (3.6,-0.8) {$c$};
-  \draw[->] (3.6,-0.8) -- (wide.north);
-  \node[right,align=left] at (10.1,1.4) {separate operations:\\two roundings};
-  \node[right,align=left] at (8.4,-1.4) {fused path:\\one architectural rounding};
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  subgraph SEP["separate operations — two roundings"]
+    direction LR
+    ab1["a, b"] --> M1["p×p multiplier"] --> R1["normalize<br/>and round"]
+    R1 -->|rounded product| ADD["p-bit<br/>FP add"]
+    C1(["c"]) --> ADD
+    ADD --> R2["normalize<br/>and round"]
+  end
+  subgraph FUS["fused path — one architectural rounding"]
+    direction LR
+    ab2["a, b"] --> M2["p×p multiplier"]
+    M2 -->|2p bits| CS["carry-save / wide<br/>product + aligned c"]
+    C2(["c"]) --> CS
+    CS --> R3["normalize and<br/>round once"]
+  end
 ```
 
 The upper path destroys low product bits before $c$ arrives; no later adder can reconstruct them. The lower path retains the full product, aligns $c$ to that wider internal scale, inserts it alongside the multiplier's partial-product rows in carry-save form (or into an equivalent wide adder), performs one final carry-propagate addition, then normalizes and rounds. Replicating an FMA therefore requires a wider internal format and a single rounding boundary—not merely issuing a multiply and an add in adjacent cycles.

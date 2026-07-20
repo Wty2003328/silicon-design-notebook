@@ -48,54 +48,30 @@ $$
 
 Four output-stationary PEs hold $C_{00}$ through $C_{11}$. $A$ values enter from the left and move right; $B$ values enter from the top and move down. Each PE contains two input registers, one partial-sum register, a MAC, valid/tag state, and two forwarding registers:
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.85,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum height=0.9cm,align=center,font=\small}}
-  \node[blk,minimum width=1.5cm] (ar) at (0,1.4) {A reg};
-  \node[blk,minimum width=1.5cm] (br) at (0,-1.4) {B reg};
-  \node[blk,minimum width=1.8cm] (mac) at (3.4,0) {MAC $\times\!+$};
-  \node[blk,minimum width=2.0cm] (ps) at (6.7,0) {stationary $ps{=}C$};
-  \draw[->] (-2.7,1.4) node[left]{A in} -- (ar.west);
-  \draw[->] (-2.7,-1.4) node[left]{B in} -- (br.west);
-  \draw (ar.east) -- ++(0.6,0) coordinate (jA) node[circ]{};
-  \draw (br.east) -- ++(0.6,0) coordinate (jB) node[circ]{};
-  \draw[->] (jA) |- ([yshift=0.2cm]mac.west);
-  \draw[->] (jB) |- ([yshift=-0.2cm]mac.west);
-  \draw[->] (jA) -- (8.6,1.4) node[right]{fwd A};
-  \draw[->] (jB) -- (1.35,-3.0) node[below]{fwd B};
-  \draw[->] (mac.east) -- (ps.west);
-  \draw[->] (ps.south) -- (6.7,-2.4) -- (3.4,-2.4) node[midway,below,font=\footnotesize]{accumulate} -- (mac.south);
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  AIN["A in"] --> AR["A reg"]
+  BIN["B in"] --> BR["B reg"]
+  AR --> MAC["MAC<br/>multiply then add"]
+  BR --> MAC
+  AR -->|fwd A| FA["to right PE"]
+  BR -->|fwd B| FB["to lower PE"]
+  MAC --> PS["stationary ps = C"]
+  PS -->|accumulate| MAC
 ```
 
 If all four rows and columns begin simultaneously, the wrong operands meet. The boundary therefore *skews* row $i$ by $i$ cycles and column $j$ by $j$ cycles. This alignment rule creates the diagonal wavefront:
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.85,transform shape]
-  \tikzset{pe/.style={draw,rounded corners,minimum width=1.7cm,minimum height=1.0cm,align=center,font=\small}}
-  \node[pe] (p00) at (0,0) {PE00\\$C_{00}$};
-  \node[pe] (p01) at (3.0,0) {PE01\\$C_{01}$};
-  \node[pe] (p10) at (0,-2.5) {PE10\\$C_{10}$};
-  \node[pe] (p11) at (3.0,-2.5) {PE11\\$C_{11}$};
-  \draw[->] (-2.1,0) node[left]{$a_{0\ast}$} -- (p00.west);
-  \draw[->] (-2.1,-2.5) node[left]{$a_{1\ast}$} -- (p10.west);
-  \draw[->] (p00.east) -- (p01.west);
-  \draw[->] (p10.east) -- (p11.west);
-  \draw[->] (p01.east) -- ++(0.9,0) node[right]{fwd A};
-  \draw[->] (p11.east) -- ++(0.9,0) node[right]{fwd A};
-  \draw[->] (0,1.5) node[above]{$b_{\ast0}$} -- (p00.north);
-  \draw[->] (3.0,1.5) node[above]{$b_{\ast1}$} -- (p01.north);
-  \draw[->] (p00.south) -- (p10.north);
-  \draw[->] (p01.south) -- (p11.north);
-  \draw[->] (p10.south) -- ++(0,-0.8) node[below]{fwd B};
-  \draw[->] (p11.south) -- ++(0,-0.8) node[below]{fwd B};
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  A0["a row 0"] --> P00["PE00<br/>C00"] --> P01["PE01<br/>C01"] --> FA0["fwd A"]
+  A1["a row 1"] --> P10["PE10<br/>C10"] --> P11["PE11<br/>C11"] --> FA1["fwd A"]
+  B0["b col 0"] --> P00
+  B1["b col 1"] --> P01
+  P00 --> P10
+  P01 --> P11
+  P10 --> FB0["fwd B"]
+  P11 --> FB1["fwd B"]
 ```
 
 The exact useful work is:

@@ -408,34 +408,18 @@ $$
 
 A narrow side datapath carries the mod-$m$ residues of the operands, combines them with the same multiply/add structure as the full-width multiply–accumulate (MAC), and compares the reduced result against the residue of the computed accumulator; a mismatch flags a fault. Choosing $m=3$ needs only 2-bit residues and catches **every single-bit error**: a flip at bit $k$ changes a value by $\pm2^{k}$, and $2^{k}\bmod3$ alternates $1,2,1,2,\dots$ — never $0$ — so any single flipped bit perturbs the residue. Arbitrary-magnitude errors escape only when the error is $\equiv0\bmod3$, so coverage of random corruption is about $2/3$.
 
-```tikz
-\usepackage{circuitikz}
-\begin{document}
-\begin{circuitikz}[american,thick,scale=0.8,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum height=0.8cm,align=center,font=\small}}
-  \node[blk,minimum width=1.5cm] (mul) at (0,1.2) {$\times$};
-  \node[blk,minimum width=1.5cm] (add) at (2.9,1.2) {$+$};
-  \node[blk,minimum width=1.6cm] (acc) at (5.6,1.2) {acc};
-  \draw[->] (-1.9,1.45) node[left]{$a$} -- ([yshift=0.16cm]mul.west);
-  \draw[->] (-1.9,0.95) node[left]{$b$} -- ([yshift=-0.16cm]mul.west);
-  \draw[->] (mul.east) -- (add.west);
-  \draw[->] (add.east) -- (acc.west);
-  \draw[->] (acc.south) -- ++(0,-0.5) -| (add.south);
-  \node[blk,minimum width=1.7cm] (rmul) at (0,-1.4) {$\times\bmod 3$};
-  \node[blk,minimum width=1.7cm] (radd) at (2.9,-1.4) {$+\bmod 3$};
-  \node[blk,minimum width=1.6cm] (rres) at (5.6,-1.4) {res};
-  \draw[->] (-1.9,-1.15) node[left]{$a\bmod 3$} -- ([yshift=0.16cm]rmul.west);
-  \draw[->] (-1.9,-1.65) node[left]{$b\bmod 3$} -- ([yshift=-0.16cm]rmul.west);
-  \draw[->] (rmul.east) -- (radd.west);
-  \draw[->] (radd.east) -- (rres.west);
-  \node[blk,minimum width=1.4cm] (mod) at (8.2,1.2) {$\bmod 3$};
-  \node[blk,minimum width=1.2cm] (cmp) at (8.2,-0.1) {$=?$};
-  \draw[->] (acc.east) -- (mod.west);
-  \draw[->] (mod.south) -- (cmp.north);
-  \draw[->] (rres.east) -| (cmp.south);
-  \draw[->] (cmp.east) -- ++(1.1,0) node[right]{error};
-\end{circuitikz}
-\end{document}
+```mermaid
+flowchart LR
+  A["a"] --> MUL["multiply"]
+  B["b"] --> MUL
+  MUL --> ADD["add"] --> ACC["acc"]
+  ACC -->|accumulate| ADD
+  AM["a mod 3"] --> RMUL["multiply mod 3"]
+  BM["b mod 3"] --> RMUL
+  RMUL --> RADD["add mod 3"] --> RRES["res"]
+  ACC --> MOD["mod 3"] --> CMP["equal ?"]
+  RRES --> CMP
+  CMP --> ERR["error"]
 ```
 
 The checker must occupy a different fault domain than the datapath it watches; a residue lane sharing the broken multiplier fails identically (common-mode) and confirms the wrong answer.

@@ -355,7 +355,7 @@ At cold power-on every flip-flop holds an unknown value; the reset network must 
   \draw (ff1.north) -- (0,1.7) coordinate (r1);
   \draw (ff2.north) -- (3.8,1.7) coordinate (r2);
   \draw (r1) -- (r2);
-  \draw (r1) -- (-2.5,1.7) node[left]{$\overline{\texttt{arst}}$ clear};
+  \draw (r1) -- (-2.5,1.7) node[left]{$\overline{\texttt{arst}}$};
 \end{circuitikz}
 \end{document}
 ```
