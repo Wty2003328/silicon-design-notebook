@@ -115,15 +115,14 @@ For example, $F=AB+\overline A C$ can be read two ways:
   \draw (P0.in 2) -- ++(-0.8,0) node[left]{$B$};
   \draw (P1.in 2) -- ++(-0.8,0) node[left]{$C$};
   \draw (P0.out) -- (O.in 1); \draw (P1.out) -- (O.in 2);
-  \draw (O.out) -- ++(0.6,0) node[right]{$F$};
-
-  \node[draw,rounded corners,minimum width=1.6cm,minimum height=1.5cm,align=center] (M) at (9.2,1.0) {2:1\\MUX};
-  \draw (M.west) ++(0,0.35) -- ++(-1.1,0) node[left]{$B=D_1$};
-  \draw (M.west) ++(0,-0.35) -- ++(-1.1,0) node[left]{$C=D_0$};
-  \draw (M.south) -- ++(0,-0.7) node[below]{$A$};
-  \draw (M.east) -- ++(0.7,0) node[right]{$F$};
-  \node[below,align=center] at (2.7,-1.0) {SOP\\gate\\network};
-  \node[below,align=center] at (9.2,-1.0) {Shannon\\form};
+  \draw (O.out) -- ++(1.0,0) node[right]{$F$};
+  \node[below,align=center] at (2.7,-1.4) {SOP\\gate\\network};
+  \node[draw,rounded corners,minimum width=1.7cm,minimum height=1.7cm,align=center] (M) at (11.4,1.0) {2:1\\MUX};
+  \draw (M.west) ++(0,0.4) -- ++(-1.3,0) node[left]{$B=D_1$};
+  \draw (M.west) ++(0,-0.4) -- ++(-1.3,0) node[left]{$C=D_0$};
+  \draw (M.south) -- ++(0,-0.9) node[below]{$A$};
+  \draw (M.east) -- ++(0.9,0) node[right]{$F$};
+  \node[below,align=center] at (11.4,-1.4) {Shannon\\form};
 \end{circuitikz}
 \end{document}
 ```
@@ -464,13 +463,13 @@ One inverter has one output for each input and therefore no memory. Connect two 
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick,scale=0.9,transform shape]
-  \node[not port] (IA) at (0,1.0) {};
-  \node[not port,rotate=180] (IB) at (3.2,-1.0) {};
-  \draw (IA.out) -- (3.2,1.0) -- (3.2,-0.45) -- (IB.in);
-  \draw (IB.out) -- (0,-1.0) -- (0,0.45) -- (IA.in);
-  \node[right] at (3.2,1.0) {$\overline Q$};
-  \node[left] at (0,-1.0) {$Q$};
+\begin{circuitikz}[american,thick,scale=1.1,transform shape,font=\small]
+  \node[not port] (A) at (0,1.0) {};
+  \node[not port,rotate=180] (B) at (0,-1.0) {};
+  \draw (A.out) -- (1.4,1.0) -- (1.4,-1.0) -- (B.in);
+  \draw (B.out) -- (-1.4,-1.0) -- (-1.4,1.0) -- (A.in);
+  \draw (-1.4,0) node[circ]{} -- ++(-0.9,0) node[left]{$Q$};
+  \draw (1.4,0) node[circ]{} -- ++(0.9,0) node[right]{$\overline{Q}$};
 \end{circuitikz}
 \end{document}
 ```
@@ -486,15 +485,17 @@ The simplest controllable bistable is the **setâ€“reset (SR) latch**. Two cross-
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick,scale=0.9,transform shape]
-  \node[nor port] (NQ) at (0,1.25) {};
-  \node[nor port,rotate=180] (NQB) at (3.5,-1.25) {};
-  \draw (NQ.out) -- (3.5,1.25) -- (3.5,-0.70) -- (NQB.in 1);
-  \draw (NQB.out) -- (0,-1.25) -- (0,0.70) -- (NQ.in 2);
-  \draw (NQ.in 1) -- ++(-1.1,0) node[left]{$R$};
-  \draw (NQB.in 2) -- ++(1.1,0) node[right]{$S$};
-  \node[right] at (3.5,1.25) {$Q$};
-  \node[left] at (0,-1.25) {$\overline Q$};
+\begin{circuitikz}[american,thick,scale=1.1,transform shape,font=\small]
+  \node[nor port] (U) at (0,1.35) {};
+  \node[nor port] (D) at (0,-1.35) {};
+  \draw (U.in 1) -- ++(-2.2,0) node[left]{$R$};
+  \draw (D.in 2) -- ++(-2.2,0) node[left]{$S$};
+  \draw (U.out) -- ++(3.0,0) node[right]{$Q$};
+  \draw (D.out) -- ++(3.0,0) node[right]{$\overline{Q}$};
+  \draw (D.in 1) -- ++(-0.5,0) coordinate (di);
+  \draw (U.in 2) -- ++(-0.5,0) coordinate (ui);
+  \draw (U.out) ++(1.0,0) node[circ]{} -- (di);
+  \draw (D.out) ++(1.0,0) node[circ]{} -- (ui);
 \end{circuitikz}
 \end{document}
 ```
@@ -527,15 +528,17 @@ The NAND implementation is the polarity dual. Its command inputs are active-lowâ
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick,scale=0.9,transform shape]
-  \node[nand port] (NQ) at (0,1.25) {};
-  \node[nand port,rotate=180] (NQB) at (3.6,-1.25) {};
-  \draw (NQ.out) -- (3.6,1.25) coordinate (Q) node[circ]{} -- (3.6,-0.70) -- (NQB.in 1);
-  \draw (NQB.out) -- (0,-1.25) coordinate (QB) node[circ]{} -- (0,0.70) -- (NQ.in 2);
-  \draw (NQ.in 1) -- ++(-1.1,0) node[left]{$\overline S$};
-  \draw (NQB.in 2) -- ++(1.1,0) node[right]{$\overline R$};
-  \node[right] at (Q) {$Q$};
-  \node[left] at (QB) {$\overline Q$};
+\begin{circuitikz}[american,thick,scale=1.1,transform shape,font=\small]
+  \node[nand port] (U) at (0,1.35) {};
+  \node[nand port] (D) at (0,-1.35) {};
+  \draw (U.in 1) -- ++(-2.2,0) node[left]{$\overline{S}$};
+  \draw (D.in 2) -- ++(-2.2,0) node[left]{$\overline{R}$};
+  \draw (U.out) -- ++(3.0,0) node[right]{$Q$};
+  \draw (D.out) -- ++(3.0,0) node[right]{$\overline{Q}$};
+  \draw (D.in 1) -- ++(-0.5,0) coordinate (di);
+  \draw (U.in 2) -- ++(-0.5,0) coordinate (ui);
+  \draw (U.out) ++(1.0,0) node[circ]{} -- (di);
+  \draw (D.out) ++(1.0,0) node[circ]{} -- (ui);
 \end{circuitikz}
 \end{document}
 ```
@@ -582,19 +585,20 @@ $$
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick,scale=0.9,transform shape]
-  \node[and port] (AS) at (2.2,1.15) {};
-  \node[and port] (AR) at (2.2,-1.15) {};
-  \node[not port] (INV) at (-0.1,-1.15) {};
-  \node[draw,rounded corners,minimum width=2.1cm,minimum height=2.2cm,align=center] (SR) at (5.5,0) {cross-coupled\\SR\\latch};
-  \draw (-1.4,1.4) node[left]{$D$} -- (0.3,1.4) coordinate (D) node[circ]{} -- (AS.in 1);
-  \draw (D) |- (INV.in);
-  \draw (INV.out) -- (AR.in 1) node[pos=0.32,above]{$\overline D$};
-  \draw (1.2,-2.2) node[below]{$E$} -- (1.2,0.9) coordinate (E) node[circ]{} -- (AS.in 2);
-  \draw (E) |- (AR.in 2);
+\begin{circuitikz}[american,thick,scale=0.9,transform shape,font=\small]
+  \node[and port] (AS) at (2.6,1.2) {};
+  \node[and port] (AR) at (2.6,-1.2) {};
+  \node[not port] (INV) at (-0.3,-1.2) {};
+  \node[draw,rounded corners,minimum width=2.3cm,minimum height=2.5cm,align=center] (SR) at (6.1,0) {cross-coupled\\SR\\latch};
+  \draw (-2.9,1.35) node[left]{$D$} -- (-1.6,1.35) coordinate(jd) node[circ]{} -- (AS.in 1);
+  \draw (jd) |- (INV.in);
+  \draw (INV.out) -- (AR.in 1) node[pos=0.55,above]{$\overline{D}$};
+  \draw (0.8,-2.7) node[below]{$E$} -- (0.8,1.05);
+  \draw (0.8,1.05) -- (AS.in 2);
+  \draw (0.8,-1.35) -- (AR.in 2);
   \draw (AS.out) -- node[above]{$S_g$} (SR.west |- AS.out);
   \draw (AR.out) -- node[below]{$R_g$} (SR.west |- AR.out);
-  \draw (SR.east) -- ++(0.9,0) node[right]{$Q$};
+  \draw (SR.east) -- ++(1.0,0) node[right]{$Q$};
 \end{circuitikz}
 \end{document}
 ```
