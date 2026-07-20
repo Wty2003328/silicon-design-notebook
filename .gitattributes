@@ -1,0 +1,30 @@
+# Line-ending policy: text files are stored as LF in the repository.
+# Git auto-detects text vs binary; text is normalized to LF on commit.
+* text=auto
+
+# Explicit text types (kept LF in the repo)
+*.md   text
+*.markdown text
+*.txt  text
+*.json text
+*.js   text
+*.css  text
+*.html text
+*.svg  text
+*.yml  text
+*.yaml text
+*.tex  text
+*.csv  text
+
+# Binary assets: never modify bytes / line endings
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.zip  binary
