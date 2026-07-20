@@ -161,19 +161,47 @@ A sparse decode front end contains:
 
 Metadata and values must remain synchronized across retries. A dropped metadata word can misassociate every later value, so designs use packet lengths, tile identifiers, checksums, and end markers rather than an unframed stream.
 
-## 3. Matching sparse operands
+## 3. Sparse matrix multiplication: dataflow before mechanism
 
-Sparse–dense multiplication only needs coordinates from the sparse operand. Sparse–sparse multiplication must find matching reduction coordinates from both operands.
+Before choosing a matcher or a network, the architect chooses a **dataflow** for the product $C=AB$ — *how operands are paired and where partial results are reduced*. That single choice decides which of three costs dominates: **index matching** (finding operands that share a reduction coordinate), **merging** (summing partial products that land on the same output), and **reuse** (how many times a fetched value is used before eviction). No dataflow escapes all three; each sacrifices one to cheapen the others. This is the sparse analogue of the dense stationary-dataflow choice ([Systolic, Spatial, and Vector Dataflows](02_Systolic_Spatial_and_Vector_Dataflows.md)) — but sparsity makes the reduction *data-dependent*, which is what turns a static wiring choice into a matching-and-merging problem.
 
-Common matching microarchitectures include:
+### 3.1 Three canonical dataflows
+
+**Inner-product** ($C_{ij}=A_{i,:}\cdot B_{:,j}$). Take one row of $A$ and one column of $B$ and reduce their **intersection** — only reduction indices $k$ where *both* operands are nonzero contribute. Output arrives in final form (no merge, minimal output storage), but the machine visits all $M\times N$ output positions whether or not they end up nonzero, so **work scales with the dense output size, not with the nonzeros**. When $C$ is itself sparse most intersections are empty and the array spins. This is the dataflow that *needs* the matching networks of §3.2, and its wasted-intersection problem is exactly why the other two exist. (ExTensor is built around making this intersection cheap and hierarchical.)
+
+**Outer-product** ($C=\sum_k A_{:,k}\,B_{k,:}$). Take one *column* of $A$ and one *row* of $B$ and form their rank-1 product; sum those rank-1 updates over $k$. There is **no input matching at all** — every nonzero of the column pairs with every nonzero of the row — and input reuse is maximal (each operand is read once per update). The price is the **merge**: a given $C_{ij}$ receives contributions from many different $k$, produced *out of order and scattered across all of $C$*, so the machine generates $\sum_k \text{nnz}(A_{:,k})\,\text{nnz}(B_{k,:})$ partial products (the true multiply count) into a large intermediate that must later be summed. The bottleneck moves from the multiplier to the merger and to intermediate-storage bandwidth. (OuterSPACE; SpArch adds an on-chip **condense** step and a pipelined merge tree to stop the intermediate from exploding.)
+
+**Row-wise / Gustavson** ($C_{i,:}=\sum_{k:\,A_{ik}\neq0} A_{ik}\,B_{k,:}$). For each nonzero $A_{ik}$ in row $i$, fetch row $k$ of $B$, scale it, and **accumulate into a per-output-row accumulator** keyed by column; condense that row to sparse form when the row is finished. It streams $A$ once, gathers only the $B$ rows its nonzeros select (no empty intersections, no all-to-all merge), and confines accumulation to one output row at a time — so it balances the three costs instead of paying any one in full. It is the dataflow modern SpGEMM accelerators converge on (MatRaptor, GAMMA), and its centerpiece is the **row accumulator** of §3.3; reuse of $B$ rows shared across different $A$ rows becomes a caching problem (GAMMA's Fibercache).
+
+| Dataflow | Input matching | Reuse | Merge / accumulate | Intermediate storage | Wasted work |
+|---|---|---|---|---|---|
+| Inner-product | intersection per output | low (re-streams operands) | none — output is final | tiny | high when $C$ is sparse |
+| Outer-product | none | maximal | heavy, global, out-of-order | large | none, but merge-bound |
+| Row-wise (Gustavson) | none — gather by index | cached $B$ rows | bounded, one output row at a time | one row | low |
+
+The structured-sparsity cases of the [GPU tensor core](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) (§4.2, 2:4) and [Sparsity, Quantization, and Compression](../02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) (§6–§7) are the degenerate easy case: a *fixed* pattern collapses matching to a 2-bit multiplexer and removes the merge entirely, which is why a dense array accelerates 2:4 but not arbitrary sparsity. Everything below is the general, unstructured problem.
+
+### 3.2 Operand matching (the inner-product / intersection mechanism)
+
+Sparse–dense multiplication only needs coordinates from the sparse operand. Sparse–sparse multiplication must find matching reduction coordinates from both operands. Common matching microarchitectures include:
 
 - merge two sorted index streams;
 - intersect bitmaps;
 - hash or associative lookup;
-- distribute nonzeros by coordinate and merge partial products;
+- skip-ahead on the sparser stream, advancing past runs that cannot match;
 - convert one operand to a dense local tile when density is high.
 
 The matcher produces a variable number of products per cycle. Elastic FIFOs isolate it from the multiplier array. If average matcher output is $\lambda_m$ products/cycle and compute accepts $\mu_c$, stable execution requires $\lambda_m<\mu_c$; burst capacity handles local variation but cannot fix an average mismatch.
+
+### 3.3 The accumulator and merge datapath (the outer-product / row-wise mechanism)
+
+Where matching feeds the inner-product array, **accumulation** is what the other two dataflows spend their hardware on — summing partial products that share an output coordinate but arrive out of order. Three realizations:
+
+- **Sparse accumulator (SPA):** a dense-indexed scratch array the width of one output row. A partial product $\langle j, v\rangle$ does a single indexed read-add-write at column $j$; when the row completes, a **condense** pass walks the SPA and emits only the touched columns as sparse output. $O(1)$ per accumulate, but it costs one dense row of SRAM and a compaction sweep.
+- **Hash accumulator:** key the accumulator by column index so its storage scales with *nonzeros produced per row* rather than with $N$ — the choice when rows are wide but their output stays sparse. It pays collision handling and a variable-latency probe.
+- **Merge tree:** stream sorted partial-product lists into a pipelined tree of compare-add nodes that sums equal-keyed entries on the fly. This is the outer-product answer at scale (SpArch): it turns the giant unordered intermediate into a bounded, streaming merge, at the cost of keeping the input lists sorted.
+
+The recurring hazard is the one the structured datapath also guards — a value and its index must never separate under backpressure, or every later accumulate lands on the wrong column. Once matched or accumulated, the variable-rate product stream still has to reach the PE that owns each output coordinate, which is the distribution-and-reduction problem of §4.
 
 ## 4. Flexible distribution and reduction
 
@@ -348,6 +376,11 @@ Useful counters include decoded density, metadata bytes, matcher utilization, PE
 3. H. Wang, Z. Zhang, and S. Han, “SpAtten,” HPCA 2021 — [paper](https://arxiv.org/abs/2012.09852).
 4. L. Lu et al., “Sanger: A Co-Design Framework for Enabling Sparse Attention using Reconfigurable Architecture,” MICRO 2021 — [paper](https://liqianglu-zju.github.io/files/conference/2021/MICRO_2021_Sanger.pdf).
 5. S. Rajbhandari et al., “DeepSpeed-MoE,” 2022 — [paper](https://arxiv.org/abs/2201.05596).
+6. K. Hegde et al., “ExTensor: An Accelerator for Sparse Tensor Algebra,” MICRO 2019 (hierarchical intersection). 
+7. S. Pal et al., “OuterSPACE: An Outer Product Based Sparse Matrix Multiplication Accelerator,” HPCA 2018 (outer-product dataflow).
+8. Z. Zhang, H. Wang, S. Han, W. J. Dally, “SpArch: Efficient Architecture for Sparse Matrix Multiplication,” HPCA 2020 (condense + pipelined merge).
+9. N. Srivastava et al., “MatRaptor: A Sparse-Sparse Matrix Multiplication Accelerator Based on Row-Wise Product,” MICRO 2020 (Gustavson/row-wise).
+10. G. Zhang, N. Attaluri, J. S. Emer, D. Sanchez, “Gamma: Leveraging Gustavson's Algorithm to Accelerate Sparse Matrix Multiplication,” ASPLOS 2021 (Fibercache).
 
 ---
 

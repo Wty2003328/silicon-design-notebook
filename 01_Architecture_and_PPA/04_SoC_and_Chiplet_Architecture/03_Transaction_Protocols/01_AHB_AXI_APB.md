@@ -480,6 +480,32 @@ Because *extend* chains hashes, the final PCR is a cryptographic commitment to t
 
 **Trade-off — confidentiality versus latency/area, and matching the threat model.** Each layer is strictly stronger and strictly more expensive, and the knee is the *threat model*, not performance. Encryption-only (0% storage, ~0 latency in CTR) defeats a passive bus snoop or a stolen module; adding a MAC (+12.5%) defeats active tampering; adding a replay tree (+metadata accesses, +on-die root) defeats record-and-replay — the level a confidential virtual machine needs against a privileged attacker with physical DRAM access (as in AMD SEV-SNP, Intel TDX, and Arm CCA). *When the simpler option wins:* a phone or embedded SoC with **soldered** LPDDR and no bus-probe attacker in scope can rely on TrustZone isolation alone and omit line encryption entirely — the AES area, MAC bandwidth, and tree latency buy nothing against its threat model. The *same* engine placed at the die-to-die adapter (the UCIe/CXL "integrity and data encryption" mode) protects inter-die traffic, which is why multi-vendor chiplet trust (the [Chiplets, CXL, and Die-to-Die](../05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md) page §10) reuses exactly this confidentiality/integrity/replay machinery across the package boundary.
 
+## 13. Serial peripheral protocols: I2C, SPI, and UART
+
+The AMBA fabric of §1–§8 moves high-bandwidth parallel traffic on-die. But a chip also talks to slow, pin-scarce, off-chip devices — sensors, EEPROMs, power-management ICs, displays, other MCUs (microcontroller units) — where a thirty-wire AXI (Advanced eXtensible Interface) bus is absurd. Those links use **serial** buses that trade bandwidth for pin count. Three dominate, and they span the pin/throughput/complexity trade the same way §6's AXI/AHB/APB tiering does.
+
+### 13.1 I2C — two wires, many devices, addressed and arbitrated
+
+**Why.** Reach dozens of slow peripherals over exactly **two** shared wires. **Mechanism.** **SCL** (serial clock) and **SDA** (serial data) are both **open-drain with pull-ups**, so any device may pull the wire low but none drives it high — the bus **wire-ANDs**, which is what makes multiple masters safe. A transfer is a **START** (SDA falls while SCL is high), a 7-bit (or 10-bit) **address** plus a read/write bit, a slave **ACK** (the addressed slave pulls SDA low on the 9th clock), then ACK-framed data bytes, then **STOP** (SDA rises while SCL is high). SDA may change only while SCL is low, so the two SCL-high edges are unambiguous framing markers. **Multi-master arbitration falls out of open-drain for free:** each master reads SDA back while driving; a master that wanted a 1 but sees 0 has lost to someone pulling low and withdraws — the lower address wins, non-destructively, with no data lost. A slow slave can **clock-stretch** by holding SCL low. Speeds: 100 k / 400 k / 1 M / 3.4 M (standard / fast / fast-plus / high-speed). **Cost.** The pull-up resistance times bus capacitance forms an RC that caps speed, and every byte pays addressing/ACK overhead; the 7-bit space is 128 nodes minus ~16 reserved.
+
+### 13.2 SPI — four wires, full-duplex, fastest of the three
+
+**Why.** When you need real throughput (NOR flash, ADCs, displays) and can spend pins. **Mechanism.** **SCLK, MOSI** (master-out slave-in), **MISO** (master-in slave-out), and one **active-low chip-select** per slave. The master and slave shift registers form one ring, so every clock edge shifts one bit out *and* one in — **full-duplex**, with no addressing and no ACK, just clock and select. One master fans out to N slaves with N chip-selects (or a daisy-chain). The **four modes** are the product of **CPOL** (idle clock level) × **CPHA** (sample on the leading vs trailing edge); modes 0 and 3 are most common, and master and slave must agree or every bit is sampled on the wrong edge. **Cost.** No built-in addressing (a pin per slave), no flow control, no error detection — but the simplest fast link (tens to >100 MHz).
+
+### 13.3 UART — no shared clock at all
+
+**Why.** The classic point-to-point asynchronous link (console, GPS, module-to-module) over just **TX/RX**, with a **baud rate** agreed in advance and no clock wire. **Mechanism.** The idle line is high; a frame is a **START** bit (0), 5–9 **data** bits LSB-first, an optional **parity** bit, and 1–2 **STOP** bits (1). Having no clock to lock onto, the receiver **oversamples** (typically 16×): the START falling edge arms a counter and each bit is sampled at its center. **Drift budget, derived:** the last data bit may be sampled up to half a bit-period off, so over a ~10-bit frame the accumulated baud mismatch must stay under ≈ ½ ÷ 10 ≈ **5 %** (in practice < 2–3 % with margin) or the STOP bit lands in the wrong place — a framing error. **Cost.** Point-to-point only, low speed, and both ends must be pre-set to the same baud.
+
+### 13.4 Choosing between them
+
+| Bus | Wires | Clock | Addressing | Duplex | Typical speed | Use when |
+|---|---|---|---|---|---|---|
+| I2C | 2 (shared) | SCL | 7/10-bit, in-band | half | 0.1–3.4 MHz | many slow devices, pin-scarce |
+| SPI | 3 + 1/slave | SCLK | chip-select | full | 10–100+ MHz | few devices, need throughput |
+| UART | 2 | none (baud) | none (point-to-point) | full | ≤ a few Mbaud | one link, no clock wire |
+
+The through-line with §6's tiering: **spend wires and protocol complexity only where bandwidth demands it.** I2C minimizes pins at the cost of speed and per-byte overhead; SPI spends pins for raw full-duplex throughput; UART drops even the clock wire for the simplest possible link. On a real SoC (system-on-chip) all three hang off an APB (Advanced Peripheral Bus) peripheral segment, each behind a small controller a CPU programs over the fabric — bridging the low-speed serial world into the high-speed parallel one of §1.
+
 ---
 
 ## Cross-references

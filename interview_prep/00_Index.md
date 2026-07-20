@@ -14,6 +14,7 @@
 | 07 | [Manufacturing and Bring-up Questions](07_Manufacturing_and_Bringup_Questions.md) | fab/packaging/bring-up interview Q&A moved out of 07_Manufacturing_and_Bringup/ |
 | 08 | [RTL Coding Questions](08_RTL_Coding_Questions.md) | whiteboard canon with full SystemVerilog solutions |
 | 09 | [Hardware Interview Questions](09_Hardware_Interview_Questions.md) | worked numeric problems + snap answers per domain |
+| 10 | [Digital-IC Frontend Interview Bank](10_Digital_IC_Frontend_Interview_Bank.md) | real-company 面经 questions by topic, each cross-linked to the section that answers it |
 
 ---
 

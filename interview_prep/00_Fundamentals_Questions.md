@@ -22,7 +22,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 **A:** The prefix operator (G_L, P_L) o (G_R, P_R) = (G_L + P_L*G_R, P_L*P_R) is associative: [(a o b) o c] = [a o (b o c)]. This means we can freely parenthesize the computation into a binary tree structure, evaluating pairs in parallel. Without associativity, we'd be stuck with sequential left-to-right evaluation (like RCA (ripple-carry adder)). Associativity enables O(log N) depth instead of O(N). Note: the operator is NOT commutative — order matters (it encodes the bit-position ordering).
 
-### Q3: Explain why Kogge-Stone is impractical beyond 32 bits.
+### Q3: Why does a wide (64-bit) Kogge-Stone adder get wiring-limited, and what is used instead?
 
 **A:** At level k of a Kogge-Stone tree, each prefix node connects to a node 2^(k-1) positions away. For a 64-bit adder, level 6 has wires spanning 32 bit positions. In physical design, these long wires cause: (1) significant RC (resistance-capacitance) delay (wire delay dominates gate delay in advanced nodes), (2) routing congestion (N*log(N) wires competing for limited metal tracks), (3) the need for repeater insertion, adding area and power. In 7nm, a 32-position wire can take 50+ ps — comparable to or exceeding the gate delay it's trying to save. Han-Carlson (which only computes even-position prefixes, halving the wiring) or hybrid architectures are preferred for wide adders.
 
@@ -58,23 +58,19 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 **A:** A compound adder simultaneously computes Sum_0 (for Cin=0) and Sum_1 (for Cin=1) using a shared prefix tree. The prefix tree computes all G_{i:0} and P_{i:0} values. Then: Sum_0[i] = P_i ^ G_{i-1:0} and Sum_1[i] = P_i ^ (G_{i-1:0} | P_{i-1:0}). The final result is selected by a MUX (multiplexer) based on the actual carry-in. This adds minimal overhead (~N MUX2 gates) to the prefix tree but provides both results. Compound adders are essential in FP (floating-point) addition where the exponent difference determines whether to add or subtract, and both results may be needed.
 
-### Q12: What does "in practice, let the tool decide" actually mean?
-
-**A:** Modern synthesis tools contain libraries of arithmetic components (Synopsys DesignWare, Cadence ChipWare). When you write `a + b`, the tool: (1) selects from RCA, CLA, carry-select, multiple prefix adder variants based on timing constraints, (2) sizes the gates and buffers optimally, (3) can try multiple architectures and keep the best one (with `compile_ultra -timing`), (4) handles bit-width-specific optimizations (e.g., for 7-bit adders, RCA might be optimal). Manual adder design is only justified when you need: pipelined adders split across stages, compound adders, speculative adders, or when the tool's choice is provably suboptimal for your specific constraints. In the author's experience, DesignWare beats hand-crafted adders in >95% of cases.
-
-### Q13: What is a speculative adder?
+### Q12: What is a speculative adder?
 
 **A:** A speculative adder uses a fast but potentially incorrect adder (e.g., truncated carry chain or carry prediction) to produce a result quickly, alongside a slower but correct error-detection circuit. If the speculation is correct (which it is >99% of the time for random inputs), the result is used directly. If not, a correction cycle is invoked. This trades average-case performance for worst-case correctness. Used in high-frequency ALUs (arithmetic logic unit) where even a Kogge-Stone is too slow, but the design can tolerate occasional 2-cycle operations. Also called "variable-latency adders."
 
-### Q14: How do you verify an adder design?
+### Q13: How do you verify an adder design?
 
 **A:** (1) Exhaustive testing for small widths (≤16 bits): test all 2^(2N+1) input combinations including carry-in. (2) For wide adders: random testing with millions of vectors, plus corner cases: all-zeros, all-ones, alternating patterns, carry chain through all bits (e.g., A=0xFFFF_FFFF, B=1), boundary values. (3) Formal verification: prove equivalence to a simple reference model (`a + b + cin`). Modern formal tools can verify 64-bit adders in seconds. (4) Timing verification: ensure the adder meets the target delay under all PVT (process-voltage-temperature) corners. The carry path through all N bits is almost always the critical path.
 
-### Q15: Explain the difference between P = A XOR B and P = A OR B for propagate.
+### Q14: Explain the difference between P = A XOR B and P = A OR B for propagate.
 
 **A:** Both work for carry computation: C_{i+1} = G + P*C_i. With P = A OR B, when A=B=1, P=1, but G=1, and G + P*C = 1 + 1*C = 1, which is correct (the G term dominates). So P = A OR B gives the same carry as P = A XOR B. However, for SUM: S_i = P_i XOR C_i requires the XOR definition. Some implementations use P_OR = A|B for carry computation (slightly faster, since OR is simpler than XOR) and compute sum separately using P_XOR = A^B. The Kogge-Stone tree uses P_OR (or equivalently, the kill signal K = ~A & ~B) internally, and P_XOR only at the final sum stage.
 
-### Q16: What is an approximate adder and when would you use one in an AI accelerator?
+### Q15: What is an approximate adder and when would you use one in an AI accelerator?
 
 **A:** An approximate adder deliberately trades arithmetic correctness for reduced delay, area, or power. Common designs include: (1) Truncated carry chain: only propagate carries within K-bit blocks, ignoring inter-block carries. Delay drops from O(N) to O(K). Error rate ~50%, but average error magnitude is small. (2) Lower-Part-OR (LOA): use bitwise OR for lower bits, accurate adder for upper bits. Only the (1,1) input case per bit produces an error. (3) Speculative adder: predict carry-in to each block, compute in parallel, optionally check/correct. In AI accelerators, approximate adders are used in MAC (multiply-accumulate) units for the lower bits of the accumulator — neural networks tolerate 1-3% accuracy degradation from approximate arithmetic because ReLU (rectified linear unit) activations absorb small errors, quantization to INT8/FP8 already dominates the error budget, and training with quantization-aware training (QAT) can compensate. Key design rule: always keep the sign bit and upper bits accurate. The first and last network layers should use accurate arithmetic since errors there propagate most.
 
@@ -293,23 +289,7 @@ inverter with equal output drive. For minimum delay through a path, each stage s
 have equal stage effort (product of logical effort, electrical effort, and branching
 effort). This leads to optimal gate sizing: larger gates for higher fan-out stages.
 
-**Q19: What is random dopant fluctuation (RDF)?**
-
-In modern transistors, the channel is so small that individual dopant atoms matter.
-A minimum-size 7nm transistor might have only 10-20 dopant atoms under the gate.
-The exact number and position of these atoms is random, causing Vth variation:
-σ(Vth) ∝ 1/√(W×L). This is a major source of mismatch and timing variation at
-advanced nodes. FinFETs partially mitigate RDF by using undoped channels with
-workfunction engineering to set Vth.
-
-**Q20: What is CPODE and why is it important?**
-
-Continuous Poly on Diffusion Edge cuts the polysilicon gate at the boundary of active
-region to isolate adjacent transistors. This allows tighter cell-to-cell spacing compared
-to dummy poly approach, increasing standard cell density. It's a key enabler for smaller
-standard cell heights (6T, 5.5T) at 5nm and below.
-
-**Q21: Explain buried power rail (BPR) and backside power delivery.**
+**Q19: Explain buried power rail (BPR) and backside power delivery.**
 
 Buried Power Rail places VDD/VSS rails below the transistor layer (buried in the silicon),
 freeing up Metal 1 for signal routing. Backside Power Delivery (BSPDN) takes this further
@@ -319,7 +299,7 @@ density. Intel PowerVia (first deployed in Intel 18A, 2025) delivers power throu
 vias, eliminating IR drop on frontside metal by up to 50%. TSMC N2P will use Super Power Rail
 (SPR) backside delivery. Samsung SF2 node also plans BSPDN.
 
-**Q22: Why does lowering VDD help power more than it hurts performance?**
+**Q20: Why does lowering VDD help power more than it hurts performance?**
 
 Dynamic power ∝ VDD². Delay ∝ VDD/(VDD-Vth)^α where α ≈ 1-2. So a 10% VDD reduction
 gives ~19% power savings but only ~10-15% delay increase (when VDD >> Vth). The
@@ -327,7 +307,7 @@ energy-delay product (EDP) improves with VDD reduction until VDD approaches ~3nV
 (near-threshold). This is why DVFS (dynamic voltage and frequency scaling) is so effective — even modest voltage reduction
 yields significant power savings with manageable performance loss.
 
-**Q23: What is antenna effect and how is it fixed?**
+**Q21: What is antenna effect and how is it fixed?**
 
 During metal etching in fabrication, long metal lines connected to a gate can accumulate
 charge from the plasma. This charge can damage the thin gate oxide via Fowler-Nordheim
@@ -335,7 +315,7 @@ tunneling. The antenna ratio = metal_area / gate_area. If it exceeds the process
 fixes include: adding a diode to the gate node (provides discharge path), breaking the
 long metal into segments on different layers (layer hopping), or rerouting.
 
-**Q24: What is the difference between SOI and bulk CMOS?**
+**Q22: What is the difference between SOI and bulk CMOS?**
 
 In bulk CMOS, transistors are built directly on the silicon substrate — they share the
 substrate and have body ties, parasitic capacitance, body effect, and latch-up risk.
@@ -344,7 +324,7 @@ Benefits: no latch-up, lower junction capacitance (30-50% less), reduced body ef
 better short-channel control. Drawbacks: floating body effects (in partially-depleted SOI),
 self-heating (oxide is a thermal insulator), higher wafer cost.
 
-**Q25: How does CMP affect ASIC design?**
+**Q23: How does CMP affect ASIC design?**
 
 Chemical Mechanical Polishing planarizes metal and dielectric surfaces. If metal density
 is non-uniform, CMP causes thickness variation — dense regions polish faster (dishing),

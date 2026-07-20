@@ -4,19 +4,19 @@
 \usepackage{circuitikz}
 \begin{document}
 \begin{circuitikz}[american,thick,scale=0.78,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.05cm,align=center}}
-  \node[blk] (UN) at (1.5,1.5) {unpack sign / exponent\\and significand};
-  \node[blk] (SP) at (5.0,1.5) {classify zero / subnormal\\infinity / NaN};
-  \node[blk] (AL) at (8.5,1.5) {compare exponents\\and align};
-  \draw[->] (-1.0,1.5) node[left]{encoded operands} -- (UN);
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.5cm,align=center}}
+  \node[blk] (UN) at (1.6,1.7) {unpack: sign,\\exponent,\\significand};
+  \node[blk] (SP) at (5.1,1.7) {classify: zero,\\subnormal,\\inf / NaN};
+  \node[blk] (AL) at (8.6,1.7) {compare\\exponents,\\then align};
+  \draw[->] (-1.0,1.7) node[left]{encoded operands} -- (UN);
   \draw[->] (UN) -- (SP); \draw[->] (SP) -- (AL);
   \draw[->] (AL) -- ++(1.4,0) node[right,align=left]{continued below:\\aligned operands};
 
-  \node[blk] (OP) at (1.5,-1.6) {add / multiply /\\fused operation};
-  \node[blk] (NO) at (5.0,-1.6) {normalize +\\leading-zero detect};
-  \node[blk] (RN) at (8.5,-1.6) {GRS + rounding\\mode};
-  \node[blk] (PK) at (12.0,-1.6) {flags, overflow /\\underflow, pack};
-  \draw[->] (-1.0,-1.6) node[left,align=right]{from alignment\\above} -- (OP);
+  \node[blk] (OP) at (1.6,-1.8) {add / multiply /\\fused operation};
+  \node[blk] (NO) at (5.1,-1.8) {normalize +\\LZ detect};
+  \node[blk] (RN) at (8.6,-1.8) {GRS +\\rounding mode};
+  \node[blk] (PK) at (12.1,-1.8) {flags, overflow /\\underflow, pack};
+  \draw[->] (-1.0,-1.8) node[left,align=right]{from alignment\\above} -- (OP);
   \draw[->] (OP) -- (NO); \draw[->] (NO) -- (RN); \draw[->] (RN) -- (PK);
   \draw[->] (PK) -- ++(1.0,0) node[right]{encoded result};
 \end{circuitikz}
@@ -273,7 +273,7 @@ Two rules survive every format above and are the takeaways to keep: **the multip
 
 ---
 
-## 8. Operations in brief: multiply, add, divide
+## 8. Operations: multiply, add, divide, and the elementary functions
 
 The mechanisms follow from the format; none needs a pipeline dump.
 
@@ -315,15 +315,15 @@ The concrete adder pipeline is therefore a composition of hardware already deriv
   \node[fpblock] (shr) at (6.0,1.5) {right barrel\\shift + sticky};
   \node[fpblock] (add) at (9.0,1.5) {add/subtract\\significands};
   \node[fpblock] (lzd) at (0,-1.5) {leading-zero\\detect + shift};
-  \node[fpblock] (rnd) at (3.0,-1.5) {GRS decision\\+ increment};
-  \node[fpblock] (pack) at (6.0,-1.5) {flags\\and pack};
-  \draw[->] (un) -- node[above]{fields} (cmp);
-  \draw[->] (cmp) -- node[above]{$\Delta e$} (shr);
-  \draw[->] (shr) -- node[above]{aligned} (add);
+  \node[fpblock] (rnd) at (3.2,-1.5) {GRS decision\\+ increment};
+  \node[fpblock] (pack) at (6.4,-1.5) {flags\\and pack};
+  \draw[->] (un) -- (cmp); \node at (1.5,2.45){fields};
+  \draw[->] (cmp) -- (shr); \node at (4.5,2.45){$\Delta e$};
+  \draw[->] (shr) -- (add); \node at (7.5,2.45){aligned};
   \draw[->] (add) -- ++(1.1,0) node[right,align=left]{raw sum\\continued below};
   \draw[->] (-1.1,-1.5) node[left,align=right]{from add\\above} -- (lzd);
-  \draw[->] (lzd) -- node[above]{normalized + GRS} (rnd);
-  \draw[->] (rnd) -- node[above]{rounded} (pack);
+  \draw[->] (lzd) -- (rnd); \node at (1.6,-0.45){normalized + GRS};
+  \draw[->] (rnd) -- (pack); \node at (4.8,-0.45){rounded};
   \draw[->] (un.south) -- ++(0,-0.45) -- ++(-1.2,0) -- ++(0,-3.0) -| node[pos=0.25,below]{signs and special-case class} (pack.south);
 \end{circuitikz}
 \end{document}
@@ -360,7 +360,7 @@ This figure is a **hardware ownership map**, not a promise that each box is exac
   \node[fpblock] (a0) at (6.0,1.4) {$p$-bit\\FP add};
   \node[fpblock] (r1) at (9.0,1.4) {normalize\\and round};
   \draw[->] (mul0) -- (r0);
-  \draw[->] (r0) -- node[above]{rounded product} (a0);
+  \draw[->] (r0) -- (a0); \node at (4.5,2.35) {rounded product};
   \draw[->] (a0) -- (r1);
   \node[left] at (-1.15,1.4) {$a,b$};
   \node[above] at (6.0,2.0) {$c$};
@@ -391,6 +391,33 @@ $$
 so an 8-bit seed reaches FP32 in 2 iterations and FP64 in 3, each iteration a pair of FMAs (§5). Historical footnote worth its one sentence: the 1994 **Pentium FDIV bug** was five missing entries in exactly the SRT quotient-selection table above — a reminder that the recurrence's lookup table must be *formally* verified, because a handful of wrong entries produce errors in one division in nine billion.
 
 Synthesizable IP for all of this exists off the shelf — Synopsys **DesignWare** (`DW_fp_*`), Berkeley **HardFloat** (the RISC-V BOOM/Rocket FPUs), and **FloPoCo** for FPGA — parameterized by $(k,p)$ and pipeline depth, where deeper pipelines buy frequency at the cost of latency exactly as in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §8.
+
+### 8.3 Elementary functions: range reduction, polynomials, tables, and CORDIC
+
+Divide and $\sqrt{\ }$ are the first members of a larger family — $\exp,\log,\sin,\cos,2^x,\log_2 x,1/x,1/\sqrt{x}$ — that no single multiply-add computes. Their hardware (a GPU's **special-function unit (SFU)**, a DSP's transcendental block, an NPU's activation/exponential unit) is built from one recipe in three steps, and the real design choice lives in step 2.
+
+**The recipe: reduce → approximate → reconstruct.** A polynomial or table accurate over the whole real line is hopeless — it would need astronomically many terms. So every unit first **range-reduces** the argument to a small interval using the function's own identity, approximates there, then reconstructs:
+
+- $e^x$: write $x=k\ln2+r$ with $k=\mathrm{round}(x/\ln2)$ and $r\in[-\tfrac{\ln2}{2},\tfrac{\ln2}{2}]$; then $e^x=2^k e^r$, where $2^k$ is a free exponent add and only $e^r$ on the tiny interval is approximated ($2^x$ splits as $2^{\lfloor x\rfloor}2^{\{x\}}$ the same way).
+- $\log_2(m\cdot2^e)=e+\log_2 m$ with $m\in[1,2)$: the exponent $e$ is extracted for free, only $\log_2 m$ on $[1,2)$ is approximated.
+- $\sin,\cos$: reduce $x$ modulo $\pi/2$ and track the quadrant. For **large** arguments this subtraction *is* the whole difficulty — $x-N\tfrac{\pi}{2}$ catastrophically cancels (§5) unless $\pi/2$ is carried to extra precision (the Payne–Hanek reduction). Range reduction, not the polynomial, is where transcendental units are most often wrong.
+
+**Step 2 — three ways to approximate on the reduced interval**, and this is the architectural decision:
+
+- **Minimax polynomial.** Evaluate a low-degree polynomial by Horner/Estrin, reusing the existing FMA (§5) — so on a machine that already has a multiplier this is almost free silicon. The coefficients are **minimax** (Remez), not Taylor: Taylor is optimal only *at* the expansion point, while the Remez polynomial equioscillates to minimise *worst-case* error across the whole interval, meeting a target ULP at the lowest degree. Latency $=$ degree $\times$ FMA.
+- **Table + interpolation.** A LUT indexed by the argument's high bits returns a base value plus a slope (and, for one order more, a curvature); a linear or quadratic interpolation on the low bits finishes it. The canonical GPU SFU (Oberman–Siu) computes $1/x,\,1/\sqrt{x},\,2^x,\,\log_2 x,\,\sin,\cos$ by **quadratic interpolation** on small tables in a couple of cycles with one narrow multiplier — trading SRAM for arithmetic. At very low precision the tables go *add-only* (bipartite/multipartite), dropping the multiplier entirely.
+- **CORDIC (shift-and-add).** Iterate a sequence of micro-rotations built from only **adds and barrel shifts** — no multiplier at all. Circular mode yields $\sin,\cos,\arctan$ and vector magnitude; hyperbolic mode yields $\exp,\log,\sinh,\cosh,\sqrt{\ }$; linear mode yields multiply and divide. It retires **one bit of accuracy per iteration** (linear convergence), so latency scales with precision — the area-minimal choice for an FPGA/DSP block with no spare multiplier, and the one that loses to table-plus-polynomial whenever a multiplier is already on the floor.
+
+**The reciprocal/root family is special: seed, then square the error.** For $1/x,\sqrt{x},1/\sqrt{x}$ a very coarse seed — a tiny LUT, or the famous $\mathtt{0x5f3759df}$ bit hack that reads a float's exponent field as a linear estimate of $-\tfrac12\log_2 x$ — is refined by **Newton–Raphson / Goldschmidt**, each iteration a pair of FMAs that *doubles* the correct bits (the quadratic $e_{i+1}=Be_i^2$ of the divide unit above). Two to three iterations from an 8-bit seed reach FP32/FP64, which is why an SFU's job is often just to produce a good *seed* and let the FMA pipeline finish the refinement.
+
+**Accuracy is an architectural specification, not an afterthought.** The unit's contract — its **ULP error bound**, whether it is **monotonic**, whether it is correctly rounded ($<0.5$ ULP) or merely *faithful* ($\le1$ ULP), and how it handles $0,\infty,$ NaN and out-of-domain inputs ($\log$ of a negative) — is fixed at design time and trades directly against area and latency. A GPU's fast `__expf` (a few ULP, one SFU pass) and a correctly-rounded `libm exp` ($<0.5$ ULP, a longer compensated polynomial) are *different hardware/software contracts for the same function*, chosen by whether the workload is a neural-net activation (loose) or a scientific kernel (tight) — the same "accuracy policy is part of architecture" point the NPU exponential unit makes ([Transformer and Attention Engine Microarchitecture](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md)).
+
+| Method | Ops used | Latency | Area | Best when |
+|---|---|---|---|---|
+| Minimax polynomial | FMA (existing) | degree × FMA | ~0 extra (reuses MUL) | a multiplier already exists; moderate degree |
+| Table + interpolation | small LUT + narrow MUL | 1–few cycles | SRAM-heavy | high throughput, fixed function set (GPU SFU) |
+| CORDIC | adds + shifts | ∝ precision | tiny, no MUL | no spare multiplier (FPGA/DSP) |
+| Newton / Goldschmidt | FMA + seed LUT | 2–3 × FMA | seed table | reciprocal, sqrt, rsqrt |
 
 ---
 
@@ -448,3 +475,6 @@ These are not a rules table to memorize; they are three encodings that make the 
 6. Micikevicius, P. et al., "FP8 Formats for Deep Learning," arXiv:2209.05433, 2022. The E4M3/E5M2 split.
 7. Open Compute Project, *OCP Microscaling (MX) Formats Specification v1.0*, 2023. The block-scaled MXFP formats of §7.
 8. Gupta, S. et al., "Deep Learning with Limited Numerical Precision," ICML 2015. Stochastic rounding for low-precision training (§4).
+9. Muller, J.-M., *Elementary Functions: Algorithms and Implementation*, 3rd ed., Birkhäuser, 2016. Range reduction, minimax/Remez, table methods, and CORDIC of §8.3.
+10. Oberman, S.F. and Siu, M.Y., "A High-Performance Area-Efficient Multifunction Interpolator," *IEEE Symposium on Computer Arithmetic (ARITH-17)*, 2005. The quadratic-interpolation GPU SFU of §8.3.
+11. Walther, J.S., "A unified algorithm for elementary functions," *AFIPS Spring Joint Computer Conference*, 1971. The unified circular/linear/hyperbolic CORDIC of §8.3.

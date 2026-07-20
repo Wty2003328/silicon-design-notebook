@@ -460,8 +460,9 @@ A fixed-priority encoder is combinational: if request 7 is continuously high, lo
   \draw[->] (ROT) -- (PRI); \draw[->] (PRI) -- (BACK); \draw[->] (BACK) -- (OWN);
   \draw[->] (OWN) -- ++(1.2,0) node[right]{one-hot grant};
   \draw[->] (PTR) -| node[pos=0.25,below]{rotation amount} (ROT.south);
-  \draw[->] (OWN.south) |- node[pos=0.25,right]{accepted} (PTR.east);
-  \draw[->] (OWN.south) -- ++(0,-1.2) -| node[pos=0.25,below]{stall: retain owner} (OWN.east);
+  \draw[->] (OWN.south) |- node[pos=0.8,below]{accepted} (PTR.east);
+  \draw[->] (OWN.south) -- ++(0,-1.0) -| (12.4,0) -- (OWN.east);
+  \node[below] at (11.6,-1.15) {stall: retain owner};
 \end{circuitikz}
 \end{document}
 ```
@@ -851,16 +852,16 @@ The baseline DFF loads new data on every active edge. A design often needs “up
   \draw[->] (5.0,0.2) node[below]{$CLK$} -- (FF.south);
   \node[above] at (3.5,2.7) {per-register feedback enable};
 
-  \node[blk,minimum width=2.3cm] (LAT) at (1.5,-2.0) {enable latch\\open while $CLK=0$};
-  \node[and port] (GATE) at (5.0,-2.0) {};
-  \node[blk,minimum width=2.2cm] (BANK) at (8.2,-2.0) {register\\bank};
-  \draw[->] (-1.0,-1.75) node[left]{$CE$} -- (0.35,-1.75);
-  \draw[->] (-1.0,-2.25) node[left]{test enable} -- (0.35,-2.25);
+  \node[blk,minimum width=2.7cm] (LAT) at (1.7,-2.0) {enable latch\\open while $CLK=0$};
+  \node[and port] (GATE) at (5.9,-2.0) {};
+  \node[blk,minimum width=2.2cm] (BANK) at (9.3,-2.0) {register\\bank};
+  \draw[->] (-1.3,-1.75) node[left]{$CE$} -- (0.35,-1.75);
+  \draw[->] (-1.3,-2.25) node[left]{test enable} -- (0.35,-2.25);
   \draw[->] (LAT) -- node[above]{held enable} (GATE.in 1);
-  \draw (2.8,-3.2) node[below]{$CLK$} -- (3.6,-3.2) coordinate (C) node[circ]{} |- (GATE.in 2);
+  \draw (3.1,-3.3) node[below]{$CLK$} -- (3.9,-3.3) coordinate (C) node[circ]{} |- (GATE.in 2);
   \draw[->] (C) -| (LAT.south);
   \draw[->] (GATE.out) -- node[above]{gated clock} (BANK);
-  \node[below] at (5.0,-3.7) {shared clock enable};
+  \node[below] at (5.9,-3.9) {shared clock enable};
 \end{circuitikz}
 \end{document}
 ```
@@ -958,20 +959,20 @@ Power gating removes the supply from ordinary state, so a normal DFF forgets its
 \begin{document}
 \begin{circuitikz}[american,thick,scale=0.85,transform shape]
   \tikzset{blk/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.9cm,align=center}}
-  \node[blk] (MAIN) at (3.2,1.2) {main DFF\\switchable $V_{DD}$};
-  \node[blk] (SAVE) at (6.3,1.2) {save switch};
-  \node[blk,minimum width=2.4cm] (SH) at (9.4,1.2) {shadow latch\\always-on supply};
-  \node[blk] (REST) at (6.3,-1.0) {restore switch};
-  \node[blk,minimum width=2.4cm] (PM) at (3.2,-2.6) {power controller};
-  \draw[->] (-0.4,1.2) node[left]{functional $D$} -- (MAIN);
-  \draw[->] (MAIN) -- (SAVE) node[midway,above]{$Q$};
+  \node[blk] (MAIN) at (3.0,1.4) {main DFF\\switchable $V_{DD}$};
+  \node[blk] (SAVE) at (6.4,1.4) {save switch};
+  \node[blk,minimum width=2.4cm] (SH) at (9.7,1.4) {shadow latch\\always-on supply};
+  \node[blk] (REST) at (8.4,-0.9) {restore switch};
+  \node[blk,minimum width=6.2cm] (PM) at (5.9,-3.0) {power controller};
+  \draw[->] (-0.6,1.4) node[left]{functional $D$} -- (MAIN);
+  \draw[->] (MAIN) -- node[midway,above]{$Q$} (SAVE);
   \draw[->] (SAVE) -- (SH);
   \draw[->] (SH.south) |- (REST.east);
-  \draw[->] (REST.west) -| (MAIN.south) node[pos=0.25,below]{retained bit};
-  \draw[->] (MAIN.north) -- ++(0,0.8) node[above]{$Q$ to isolation};
-  \draw[->,dashed] (PM) -- node[left]{power/isolate} (MAIN);
-  \draw[->,dashed] (PM.east) -| node[pos=0.75,right]{save} (SAVE.south);
-  \draw[->,dashed] (PM.east) -- (REST.west) node[midway,below]{restore};
+  \draw[->] (REST.west) -| node[pos=0.3,above]{retained bit} (MAIN.south);
+  \draw[->] (MAIN.north) -- ++(0,0.7) node[above]{$Q$ to isolation};
+  \draw[->,dashed] (2.6,-2.55) -- node[pos=0.5,left]{power/isolate} (2.6,0.9);
+  \draw[->,dashed] (6.4,-2.55) -- node[pos=0.25,right]{save} (SAVE.south);
+  \draw[->,dashed] (8.4,-2.55) -- node[midway,right]{restore} (REST.south);
 \end{circuitikz}
 \end{document}
 ```
@@ -1011,8 +1012,9 @@ Given the flip-flop is two latches, why does anyone still pipeline with bare lat
   \node[blk,minimum width=2.0cm] (LB) at (6.2,0) {phase-B\\latch};
   \node[blk,minimum width=2.4cm] (FAST) at (9.3,0) {next logic\\reduced budget};
   \node[blk,minimum width=2.0cm] (LC) at (12.4,0) {phase-A\\latch};
-  \draw[->] (LA) -- (SLOW); \draw[->] (SLOW) -- node[above]{late but legal} (LB);
+  \draw[->] (LA) -- (SLOW); \draw[->] (SLOW) -- (LB);
   \draw[->] (LB) -- (FAST); \draw[->] (FAST) -- (LC);
+  \node at (4.65,1.25) {late but legal};
   \draw[->] (0,-1.8) node[below]{$\phi_A$} -- (LA.south);
   \draw[->] (6.2,-1.8) node[below]{$\phi_B$} -- (LB.south);
   \draw[->] (12.4,-1.8) node[below]{$\phi_A$} -- (LC.south);
@@ -1061,7 +1063,7 @@ where $t_r$ = time allowed to resolve, $T_0$ = a characterized aperture constant
   \node[blk] (F2) at (6.2,1.2) {DFF 2};
   \node[blk] (LOG) at (9.8,1.2) {ordinary logic};
   \draw[->] (-0.7,1.2) node[left]{asynchronous input} -- (F1);
-  \draw[->] (F1) -- node[above]{$t_r$: resolution only} (F2);
+  \draw[->] (F1) -- node[above]{$t_r$ to resolve} (F2);
   \draw[->] (F2) -- (LOG);
   \node[below,align=center] at (4.1,0.55) {no functional fan-out\\from stage 1};
   \node[blk] (PAR) at (2.0,-2.0) {cell $\tau,T_0$};
@@ -1216,7 +1218,7 @@ Start from one toggle flip-flop with $T=1$. It changes state on every active edg
   \node[ff] (F2) at (7.1,0) {TFF 2\\$T=1$};
   \node[ff] (F3) at (9.9,0) {TFF 3\\$T=1$};
   \draw[->] (-1.0,0) node[left]{source clock} -- (F0);
-  \draw[->] (F0) -- node[above]{$Q_0$ clocks next stage} (F1);
+  \draw[->] (F0) -- node[above]{$Q_0$} (F1);
   \draw[->] (F1) -- node[above]{$Q_1$} (F2);
   \draw[->] (F2) -- node[above]{$Q_2$} (F3);
   \draw[->] (F3) -- ++(1.2,0) node[right]{$Q_3$};
@@ -1253,8 +1255,8 @@ $$
   \node[blk] (BANK) at (9.0,0.8) {$N$-bit DFF bank};
   \draw[->] (-0.8,1.1) node[left]{$E$} -- (0.8,1.1);
   \draw[->] (-0.8,0.5) node[left]{$Q[N{-}1{:}0]$} -- (0.8,0.5);
-  \draw[->] (PRE) -- node[above]{$T[N{-}1{:}0]$} (XOR);
-  \draw[->] (XOR) -- node[above]{$D[N{-}1{:}0]$} (BANK);
+  \draw[->] (PRE) -- node[above]{$T$} (XOR);
+  \draw[->] (XOR) -- node[above]{$D$} (BANK);
   \draw[->] (BANK) -- ++(1.2,0) coordinate (Q) node[circ]{} node[right]{$Q[N{-}1{:}0]$};
   \draw[->] (Q) -- ++(0,1.1) -| (XOR.north) node[pos=0.25,above]{feedback};
   \draw[->] (Q) -- ++(0,-1.2) -| (PRE.south);
@@ -1320,14 +1322,14 @@ A register-file write port contains address decoder, write data/bitlines, byte/b
   \tikzset{blk/.style={draw,rounded corners,minimum width=2.0cm,minimum height=0.9cm,align=center}}
   \node[blk] (WDEC) at (1.5,2.0) {write decoder};
   \node[blk] (WDRV) at (1.5,0.5) {write drivers};
-  \node[blk,minimum width=2.5cm,minimum height=2.6cm] (ARR) at (5.0,1.25) {word array\\rows $\times$ bits\\2R1W cells};
+  \node[blk,minimum width=2.5cm,minimum height=2.6cm] (ARR) at (5.5,1.25) {word array\\rows $\times$ bits\\2R1W cells};
   \node[blk] (RM0) at (8.5,2.1) {read mux /\\bitlines 0};
   \node[blk] (RM1) at (8.5,0.3) {read mux /\\bitlines 1};
   \node[blk] (BP0) at (11.6,2.1) {bypass\\MUX 0};
   \node[blk] (BP1) at (11.6,0.3) {bypass\\MUX 1};
   \node[blk,minimum width=2.7cm] (CMP) at (6.6,-2.0) {write/read address\\comparators};
   \draw[->] (-1.0,2.0) node[left]{write address} -- (WDEC);
-  \draw[->] (WDEC) -- node[above]{one wordline} (ARR);
+  \draw[->] (WDEC) -- node[above]{wordline} (ARR);
   \draw[->] (-1.0,0.5) node[left]{write data + enables} -- (WDRV);
   \draw[->] (WDRV) -- (ARR);
   \draw[->] (ARR) -- (RM0); \draw[->] (ARR) -- (RM1);
@@ -1494,19 +1496,19 @@ When a multi-bit binary counter increments across a carry boundary, several bits
 ```tikz
 \usepackage{circuitikz}
 \begin{document}
-\begin{circuitikz}[american,thick,scale=0.82,transform shape]
-  \tikzset{blk/.style={draw,rounded corners,minimum width=2.5cm,minimum height=1.1cm,align=center}}
-  \node[blk] (BIN) at (0.8,0) {source binary\\pointer DFFs};
-  \node[blk] (XOR) at (4.2,0) {registered XOR encoder\\$G=B\oplus(B\!\gg\!1)$};
-  \node[blk] (SYNC) at (7.8,0) {two DFFs\\per Gray bit};
-  \node[blk] (DST) at (11.4,0) {destination compare\\and decode};
+\begin{circuitikz}[american,thick,scale=0.76,transform shape]
+  \tikzset{blk/.style={draw,rounded corners,minimum width=2.6cm,minimum height=1.5cm,align=center}}
+  \node[blk] (BIN) at (0.9,0) {source binary\\pointer DFFs};
+  \node[blk] (XOR) at (4.7,0) {registered\\Gray encoder\\$G=B\oplus(B\!\gg\!1)$};
+  \node[blk] (SYNC) at (8.5,0) {two DFFs\\per Gray bit};
+  \node[blk] (DST) at (12.3,0) {destination\\compare + decode};
   \draw[->] (BIN) -- node[above]{$B$} (XOR);
-  \draw[->] (XOR) -- node[above]{registered $G$} (SYNC);
-  \draw[->] (SYNC) -- node[above]{synchronized $G$} (DST);
-  \draw[->] (-0.8,-1.8) node[left]{source clock} -| (XOR.south);
-  \draw[->] (7.8,-1.8) node[below]{destination clock} -- (SYNC.south);
-  \draw[->,dashed] (5.8,-2.8) node[left]{bounded inter-bit skew} -| (SYNC.south west);
-  \draw[->,dashed] (-0.8,1.6) node[left]{one legal increment / event} -| (BIN.north);
+  \draw[->] (XOR) -- node[above]{$G$} (SYNC);
+  \draw[->] (SYNC) -- node[above]{$G$} (DST);
+  \draw[->] (-1.0,-2.1) node[left]{source clock} -| (XOR.south);
+  \draw[->] (8.5,-2.2) node[below]{destination clock} -- (SYNC.south);
+  \draw[->,dashed] (6.3,-3.1) node[left]{bounded inter-bit skew} -| (SYNC.south west);
+  \draw[->,dashed] (-1.0,2.0) node[left,align=right]{one legal\\increment} -| (BIN.north);
 \end{circuitikz}
 \end{document}
 ```

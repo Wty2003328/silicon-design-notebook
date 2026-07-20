@@ -246,7 +246,7 @@ The vector side is not leftover control logic. It needs predictable throughput f
 - quantize/dequantize and scale application;
 - top-k and sampling support.
 
-An exponential unit may use range reduction plus a polynomial or table approximation. Accuracy policy is part of architecture: acceptable error, rounding mode, exceptional inputs, and accumulation width must match model-quality validation.
+An exponential unit may use range reduction plus a polynomial or table approximation — the full design space (range reduction, minimax polynomials, table-plus-interpolation, and CORDIC) is detailed in [Floating_Point §8.3](../../../00_Fundamentals/04_Floating_Point.md). Accuracy policy is part of architecture: acceptable error, rounding mode, exceptional inputs, and accumulation width must match model-quality validation.
 
 If one attention tile produces $R$ rows every $T_M$ cycles and the vector engine processes $V$ rows/cycle, avoiding backlog requires
 

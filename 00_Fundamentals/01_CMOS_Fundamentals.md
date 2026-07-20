@@ -57,21 +57,21 @@ Pure silicon is **intrinsic**. **Doping** deliberately replaces a tiny fraction 
 \usepackage{circuitikz}
 \begin{document}
 \begin{circuitikz}[thick,scale=0.9,transform shape]
-  \draw[fill=gray!25] (-1.2,2.2) rectangle (5.2,2.8);
-  \node at (2.0,2.5) {conductive gate $G$};
-  \draw[fill=blue!12] (-1.2,1.85) rectangle (5.2,2.2);
-  \node[right] at (5.2,2.02) {oxide: insulator};
-  \draw[fill=orange!12] (-1.2,-0.3) rectangle (5.2,1.85);
+  \draw[fill=gray!25] (-1.2,2.85) rectangle (5.2,3.45);
+  \node at (2.0,3.15) {conductive gate $G$};
+  \draw[fill=blue!12] (-1.2,2.5) rectangle (5.2,2.85);
+  \node[right] at (5.2,2.67) {oxide: insulator};
+  \draw[fill=orange!12] (-1.2,-0.3) rectangle (5.2,2.5);
   \node at (2.0,0.15) {p-type silicon body $B$};
   \draw[fill=green!25] (-0.8,0.65) rectangle (0.8,1.65);
   \draw[fill=green!25] (3.2,0.65) rectangle (4.8,1.65);
   \node at (0,1.15) {$n^+$ source $S$};
   \node at (4.0,1.15) {$n^+$ drain $D$};
-  \draw[very thick,blue] (0.8,1.72) -- (3.2,1.72);
-  \node[above] at (2.0,1.72) {electron inversion channel when $V_{GS}>V_{th}$};
-  \draw[->] (2.0,3.35) -- (2.0,2.82) node[midway,right] {$+V_G$ creates field};
-  \draw[->] (3.15,1.25) -- (1.0,1.25) node[midway,below] {electron drift};
-  \draw[->] (1.0,0.85) -- (3.15,0.85) node[midway,below] {conventional $I_D$};
+  \draw[very thick,blue] (0.8,1.95) -- (3.2,1.95);
+  \node at (2.0,2.25) {inversion channel ($V_{GS}>V_{th}$)};
+  \draw[->] (2.0,4.0) -- (2.0,3.47) node[midway,right] {$+V_G$ creates field};
+  \draw[->] (3.15,1.35) -- (1.0,1.35) node[midway,above] {electron drift};
+  \draw[->] (1.0,0.9) -- (3.15,0.9) node[midway,below] {conventional $I_D$};
 \end{circuitikz}
 \end{document}
 ```
@@ -261,11 +261,11 @@ Model the switching device as an effective resistance discharging the load:
   \draw (0,2.4) node[vcc]{$V_{DD}$} to[R,l=$R_p$] (0,1.2) coordinate(UP)
         (UP) -- (1.0,1.2) node[right]{$Y$}
         (1.0,1.2) to[C,l=$C_L$] (1.0,0) node[ground]{};
-  \node at (0.5,-0.55) {low-to-high: charge through $R_p$};
+  \node at (0.5,-0.95) {low$\to$high: charge via $R_p$};
   \draw (5.0,1.2) coordinate(DN) -- (6.0,1.2) node[right]{$Y$}
         (6.0,1.2) to[C,l=$C_L$] (6.0,0) node[ground]{}
         (DN) to[R,l_=$R_n$] (5.0,0) node[ground]{};
-  \node at (5.5,-0.55) {high-to-low: discharge through $R_n$};
+  \node at (5.5,-0.95) {high$\to$low: discharge via $R_n$};
 \end{circuitikz}
 \end{document}
 ```
