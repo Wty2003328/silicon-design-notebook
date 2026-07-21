@@ -202,6 +202,8 @@ $$
 E[U]=B\left(1-\left(1-\frac{1}{B}\right)^K\right).
 $$
 
+A given bank goes unused only if all $K$ requests miss it — probability $(1-1/B)^K$ — so it is used with probability $1-(1-1/B)^K$; summing over the $B$ banks by linearity of expectation gives $E[U]$.
+
 The difference $K-E[U]$ is a first estimate of requests that collide. It is optimistic when register allocation or lane mapping creates patterns.
 
 Hardware can mitigate conflicts with:

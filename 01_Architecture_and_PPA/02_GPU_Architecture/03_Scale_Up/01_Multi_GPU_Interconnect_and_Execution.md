@@ -71,7 +71,7 @@ $$
 (BW_{ij},\ L_{ij},\ H_{ij},\ shared\ links,\ peer\ access,\ atomic/coherence\ scope).
 $$
 
-A single “fabric bandwidth” number hides oversubscription and nonuniform paths. Build a topology matrix and identify bisection cuts used by each collective.
+A single “fabric bandwidth” number hides oversubscription and nonuniform paths. Build a topology matrix and identify bisection cuts (partitions splitting the device set into two halves) used by each collective.
 
 ## 2. Communication cost model
 
@@ -107,7 +107,7 @@ $$
 V_{ring}=2\frac{P-1}{P}N
 $$
 
-bytes for tensor size $N$, with $2(P-1)$ steps. It is bandwidth-efficient for large messages but latency grows with $P$.
+bytes for tensor size $N$, with $2(P-1)$ steps. Each of the two phases runs $P-1$ steps that each move an $N/P$ chunk, giving $(P-1)N/P$ bytes per phase. It is bandwidth-efficient for large messages but latency grows with $P$.
 
 Track one chunk in a four-GPU ring. The reduce-scatter phase accumulates one contribution at each hop until one GPU owns the reduced chunk; the all-gather phase circulates that completed chunk so every GPU receives it. Other chunks execute the same path in a pipelined rotation.
 
@@ -138,7 +138,7 @@ Reduce within fast local groups, exchange among group leaders, then distribute l
 
 ### 4.4 All-to-all
 
-Expert/token exchange stresses bisection bandwidth and endpoint queues. Every participant sends distinct data to every other. Routing imbalance and incast can dominate even if aggregate bytes look acceptable.
+Expert/token exchange stresses bisection bandwidth and endpoint queues. Every participant sends distinct data to every other. Routing imbalance and incast (many senders converging on one receiver) can dominate even if aggregate bytes look acceptable.
 
 ### 4.5 One chunk through DMA, link credits, reduction, and replay
 
@@ -329,7 +329,7 @@ $$
 2\frac78\times4=7\ \text{GiB}.
 $$
 
-At effective 100 GB/s, transfer floor is about 75 ms (using GiB/GB carefully), plus 14 startup steps and local reduction/HBM overhead.
+At effective 100 GB/s, transfer floor is about 75 ms (using GiB/GB carefully; $7\ \text{GiB}/100\ \text{GB/s}$), plus 14 startup steps and local reduction/HBM overhead.
 
 ### Problem 2 — overlap
 

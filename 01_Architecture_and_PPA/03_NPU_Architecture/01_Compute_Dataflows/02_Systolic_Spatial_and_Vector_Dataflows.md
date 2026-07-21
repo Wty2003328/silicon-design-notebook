@@ -230,7 +230,7 @@ $$
 b_{acc}\gtrsim b_a+b_w+\lceil\log_2K\rceil
 $$
 
-bits plus sign/guard/saturation policy. Narrow input multipliers do not imply narrow accumulators or output networks.
+bits plus sign/guard/saturation policy. The three terms are the $b_a+b_w$-bit product width plus the $\lceil\log_2K\rceil$ bits of headroom a $K$-term sum can demand (its magnitude grows by at most a factor $K$). Narrow input multipliers do not imply narrow accumulators or output networks.
 
 Local storage amortizes network/global accesses but consumes area and can limit array tiling. Banking/ports must match operand arrival and result drain rates.
 

@@ -273,11 +273,13 @@ $$
 T_{ring}\approx2(N-1)L_{step}+\frac{2(N-1)}{N}\frac{M}{B_{eff}}.
 $$
 
+The $2(N-1)$ steps and $\frac{2(N-1)}{N}M$ transferred bytes come from a reduce-scatter followed by an all-gather, each phase using $N-1$ steps that move one $M/N$ chunk per step.
+
 Small decode collectives can be latency-dominated. The launch, synchronization, routing, and protocol terms cannot be hidden by quoting link peak bandwidth.
 
 ### 10.2 Pipeline parallelism
 
-Layer stages fit different devices. For $K$ stages and microbatch count $m$, an ideal balanced pipeline has a fill/drain fraction roughly $(K-1)/(m+K-1)$. Serving has small and irregular microbatches, so bubbles and stage imbalance can be large. A failed or slow stage stalls the entire request.
+Layer stages fit different devices. For $K$ stages and microbatch count $m$, an ideal balanced pipeline has a fill/drain fraction roughly $(K-1)/(m+K-1)$ ($K-1$ bubble steps to fill and drain, out of $m+K-1$ total pipeline steps). Serving has small and irregular microbatches, so bubbles and stage imbalance can be large. A failed or slow stage stalls the entire request.
 
 ### 10.3 Expert parallelism
 

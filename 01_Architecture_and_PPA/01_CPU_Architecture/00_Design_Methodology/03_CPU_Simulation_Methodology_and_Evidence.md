@@ -229,6 +229,8 @@ $$
 n\gtrsim\left(\frac{z c_v}{\varepsilon}\right)^2.
 $$
 
+The relative half-width is $z c_v/\sqrt{n}$; setting it equal to $\varepsilon$ and solving for $n$ gives the estimate.
+
 Autocorrelated intervals reduce effective sample size, so block, phase-select, or space samples farther apart and verify convergence. A statistical confidence interval covers random sampling variation under its assumptions; it does not include a wrong binary, unrepresentative phase selection, or cold-state bias.
 
 Warm-up is a separate timescale. Checkpoints may preserve architectural state while predictor/cache/TLB/queue state is cold or stale. Measure each structure's convergence and warm long-lived state functionally where possible before a shorter detailed pipeline/queue warm-up. More measured samples do not average away the same cold-start bias repeated at every sample.
@@ -275,7 +277,7 @@ $$
 
 Shared or correlated bias does not cancel this way and can approach linear addition. For example, a traffic-count error can inflate both simulated delay and the activity passed to a power model. Co-validate the composed performance→power result rather than treating independently validated components as automatically correct together.
 
-For design-space exploration, absolute error and ranking error are different. A model that predicts every configuration 10% slow can preserve ranking, while a lower mean error with configuration-dependent scatter can reverse close choices. If per-configuration random error has standard deviation $s$, two independent design means generally need a true separation on the order of $2.8s$ for a rough 95% pairwise distinction. Treat closer points as unresolved, increase samples/fidelity, or make the decision using PPA and risk rather than false precision.
+For design-space exploration, absolute error and ranking error are different. A model that predicts every configuration 10% slow can preserve ranking, while a lower mean error with configuration-dependent scatter can reverse close choices. If per-configuration random error has standard deviation $s$, two independent design means generally need a true separation on the order of $2.8s$ for a rough 95% pairwise distinction (the difference of two independent means has standard deviation $s\sqrt2$, and $1.96\,s\sqrt2\approx2.8s$). Treat closer points as unresolved, increase samples/fidelity, or make the decision using PPA and risk rather than false precision.
 
 ## 11. CPU and RISC-V tool selection
 

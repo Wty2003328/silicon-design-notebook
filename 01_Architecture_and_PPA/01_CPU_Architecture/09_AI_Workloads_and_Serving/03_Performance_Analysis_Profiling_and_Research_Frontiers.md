@@ -70,7 +70,7 @@ $$
 P_{attainable}\le\min(P_x,I_xB_x).
 $$
 
-The ridge point is
+The ridge point, where the compute and bandwidth roofs meet ($P_x=I^*B_x$), is
 
 $$
 I^*=\frac{P_x}{B_x}.

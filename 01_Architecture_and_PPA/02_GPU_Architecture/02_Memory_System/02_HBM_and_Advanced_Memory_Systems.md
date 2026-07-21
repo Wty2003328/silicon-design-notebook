@@ -383,7 +383,7 @@ About 938 independent transactions must exist system-wide; queue/credit sizing n
 
 ### Problem 3 — migration break-even
 
-Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way, ignoring contention. If HBM saves 2 ms per subsequent iteration, more than six iterations are needed just to recover copy time; dirty writeback and service interference raise the threshold.
+Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way ($2\ \text{GiB}/200\ \text{GB/s}$), ignoring contention. If HBM saves 2 ms per subsequent iteration, more than six iterations are needed just to recover copy time; dirty writeback and service interference raise the threshold.
 
 ## Cross-references
 

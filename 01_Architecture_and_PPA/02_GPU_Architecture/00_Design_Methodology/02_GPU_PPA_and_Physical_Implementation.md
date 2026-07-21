@@ -77,7 +77,7 @@ $$
 B_{write}=4\times32\times1\times32=4096\ \text{bits/cycle}.
 $$
 
-At 1.5 GHz that is 1.5 TB/s of local read traffic and 0.75 TB/s of writes *inside one SM* before predicate, tensor-fragment, special-register, or replay traffic. A single memory with eight read and four write ports would have prohibitive cell/periphery and wiring. Real organizations split lanes and banks, collect operands over time, or assign schedulers to RF partitions.
+At 1.5 GHz that is 1.5 TB/s of local read traffic ($8192\times1.5\ \text{GHz}/8$) and 0.75 TB/s of writes *inside one SM* before predicate, tensor-fragment, special-register, or replay traffic. A single memory with eight read and four write ports would have prohibitive cell/periphery and wiring. Real organizations split lanes and banks, collect operands over time, or assign schedulers to RF partitions.
 
 A bank function maps register number and sometimes lane/sub-core to a physical bank. Two source operands that map to the same single-read bank cannot both return in that cycle. Operand collectors retain the first operand while arbitrating for the second; this converts an impossible multiport requirement into variable collection latency. Bank conflicts therefore depend on compiled register assignment and instruction mix. A PPA estimate must pair the cheaper banked implementation with simulated conflict/replay counters rather than assuming all nominal issue slots remain available.
 
@@ -180,7 +180,7 @@ Suppose doubling tensor pipelines raises theoretical SM tensor peak 2×. The tar
 - extra routing causes a 4% clock reduction;
 - HBM unchanged.
 
-If the workload can raise tensor issue only from 0.85 to 1.00 of the old peak because operand supply saturates, compute speedup is 1.18× at best, then 1.13× after frequency loss. Memory-bound kernels gain zero. The design is defensible only if tensor-heavy weighted workloads justify the area/power and the operand system is co-designed; “2× tensor cores” is not “2× GPU.”
+If the workload can raise tensor issue only from 0.85 to 1.00 of the old peak because operand supply saturates, compute speedup is 1.18× at best ($1.00/0.85$), then 1.13× after frequency loss ($1.18\times0.96$). Memory-bound kernels gain zero. The design is defensible only if tensor-heavy weighted workloads justify the area/power and the operand system is co-designed; “2× tensor cores” is not “2× GPU.”
 
 ## 10. GPU PPA review checklist
 

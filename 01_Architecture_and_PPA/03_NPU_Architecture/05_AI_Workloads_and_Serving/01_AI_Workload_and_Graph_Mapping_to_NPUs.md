@@ -82,7 +82,7 @@ $$
 U_{pad}=\frac{\text{useful work at }n}{\text{executed work at }\hat n}.
 $$
 
-For a GEMM dimension directly proportional to work, this can be approximately $n/\hat n$; for attention score work it can approach $(n/\hat n)^2$. Consequently, “supports dynamic sequence length” is incomplete without the shape-bound and masking strategy.
+For a GEMM dimension directly proportional to work, this can be approximately $n/\hat n$; for attention score work it can approach $(n/\hat n)^2$ (the score matrix is $n\times n$, so its work scales as $n^2$). Consequently, “supports dynamic sequence length” is incomplete without the shape-bound and masking strategy.
 
 ### 1.4 Layout is an index map, not cosmetic metadata
 
@@ -102,7 +102,13 @@ $$
 x\approx s_x(q_x-z_x),
 $$
 
-where $q_x$ is the stored integer, $s_x$ is a scale, and $z_x$ is a zero point. A dot product then needs a wider accumulator and correction terms if zero points are nonzero. The compiler must decide:
+where $q_x$ is the stored integer, $s_x$ is a scale, and $z_x$ is a zero point. A dot product then needs a wider accumulator and correction terms if zero points are nonzero. For a length-$K$ dot product,
+
+$$
+\sum_{i=1}^{K} s_x(q_{x,i}-z_x)\,s_w(q_{w,i}-z_w)=s_xs_w\left(\sum_i q_{x,i}q_{w,i}-z_x\sum_i q_{w,i}-z_w\sum_i q_{x,i}+Kz_xz_w\right),
+$$
+
+so the three $z$-dependent sums are the corrections and vanish for symmetric ($z_x=z_w=0$) encoding. The compiler must decide:
 
 - per-tensor, per-channel, per-group, or per-token scales;
 - symmetric versus asymmetric representation;
@@ -180,7 +186,7 @@ Mapping choices include:
 - **explicit `im2col`:** materialize sliding image/filter windows as matrix rows/columns for a simple GEMM backend, at the cost of potentially large expansion traffic;
 - **Winograd/FFT-like transforms:** reduce multiplications for selected shapes while adding transforms, numerical concerns, and workspace.
 
-Depthwise convolution has little cross-channel reduction and often underuses a wide matrix array; grouping multiple images/spatial positions or using a vector/spatial path can be superior. CNN mapping must count halo overlap between tiles, stride/dilation effects, and padding, not only nominal MACs.
+Depthwise convolution has little cross-channel reduction and often underuses a wide matrix array; grouping multiple images/spatial positions or using a vector/spatial path can be superior. CNN mapping must count halo overlap between tiles (the input-border region adjacent tiles must both load because the filter window straddles the tile boundary), stride/dilation effects, and padding, not only nominal MACs.
 
 ## 7. Sparse GEMM and structured sparsity
 

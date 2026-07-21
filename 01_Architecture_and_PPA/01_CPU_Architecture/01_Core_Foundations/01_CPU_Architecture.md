@@ -317,7 +317,7 @@ The separation of concerns is worth stating because it recurs everywhere in the 
 
 | Predictor | Accuracy (SPEC INT) | Shipped in |
 |---|---|---|
-| Static (always-taken / BTFNT) | 60–75 % | simple embedded |
+| Static (always-taken / BTFNT = backward-taken, forward-not-taken) | 60–75 % | simple embedded |
 | 2-bit BHT | 85–90 % | early RISC |
 | gshare (global history) | 93–95 % | AMD K6 |
 | Tournament (local+global) | 95–97 % | Alpha 21264 |

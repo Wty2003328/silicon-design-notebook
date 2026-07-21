@@ -206,7 +206,7 @@ $$
 w_{min} \;=\; \frac{I}{J_{max}\cdot t_{metal}}
 $$
 
-where $w_{min}$ = required width, $t_{metal}$ = metal thickness. A 10 mA average through a 400 nm-thick M5 stripe at $J_{max}=2$ MA/cm² needs ~1.25 mm of width — i.e. a single narrow stripe *cannot* legally carry it, forcing many parallel stripes. This is the same physics that rewards the wide top-metal power straps of §5, and it couples EM directly to the grid-density trade-off.
+where $w_{min}$ = required width, $t_{metal}$ = metal thickness. A 10 mA average through a 400 nm-thick M5 stripe at $J_{max}=2$ MA/cm² needs ~1.25 µm of width ($w_{min}=I/(J_{max}t)=0.01/(2\times10^{6}\cdot4\times10^{-5})$ cm) — i.e. a single minimum-width stripe *cannot* legally carry it, forcing many parallel stripes. This is the same physics that rewards the wide top-metal power straps of §5, and it couples EM directly to the grid-density trade-off.
 
 **Temperature is the sharp knob.** From the exponential, $MTTF(85°\text{C})/MTTF(105°\text{C}) \approx e^{E_a/k}(1/358-1/378) \approx 3.3\times$ for $E_a=0.7$ eV — a 20 °C rise roughly *halves* lifetime. This is why EM is signed off at the *hottest* junction corner, and why EM and thermal signoff (§11) are coupled: the self-heating of a high-current wire raises its own $T$ and accelerates its own failure. Signoff targets **> 10-year lifetime at 105 °C**, with the AC limit ~2× the DC limit (bidirectional current partially self-heals). At advanced nodes thinner wires push $J$ up and grain-boundary scattering pushes Cu resistivity up together, tightening the constraint — mitigated by cobalt caps, ruthenium liners, and again **backside power delivery**, which moves the highest-current wires off the congested signal stack.
 

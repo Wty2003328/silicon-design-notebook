@@ -89,7 +89,7 @@ where $b$ is bytes/element. Larger tiles increase data reuse but consume registe
 
 ### 3.1 Reuse and operational intensity
 
-Ignoring cache effects, one tile performs $2B_MB_NB_K$ FLOPs and loads about $b(B_MB_K+B_KB_N)$ input bytes. Its input operational intensity is
+Ignoring cache effects, one tile performs $2B_MB_NB_K$ FLOPs and loads about $b(B_MB_K+B_KB_N)$ input bytes. Its input operational intensity, after the shared $B_K$ factor cancels, is
 
 $$I_{tile}\approx\frac{2B_MB_N}{b(B_M+B_N)}.$$
 
@@ -185,6 +185,8 @@ For $L$ layers, $H_{kv}$ KV heads, head dimension $d_h$, and $b_{kv}$ bytes/elem
 
 $$C_{token}=2LH_{kv}d_hb_{kv}.$$
 
+The factor $2$ counts the stored key and value tensors.
+
 For sequences with lengths $S_i$,
 
 $$C_{KV}=C_{token}\sum_i S_i.$$
@@ -261,7 +263,7 @@ Partition a projection along output or input dimensions. One form produces parti
 
 $$V_{ring}=2\frac{P-1}{P}n$$
 
-bytes per GPU. TP reduces per-GPU weight bytes and compute but inserts communication inside every layer, making low latency and fast scale-up links important.
+bytes per GPU. The factor of two reflects a reduce-scatter then an all-gather, each moving $\frac{P-1}{P}n$ bytes per GPU. TP reduces per-GPU weight bytes and compute but inserts communication inside every layer, making low latency and fast scale-up links important.
 
 ### 11.2 Data parallelism
 
@@ -273,11 +275,11 @@ Layer ranges live on different GPUs; activations flow between stages. With $P$ s
 
 $$\eta_{pipe}\approx\frac{m}{m+P-1},$$
 
-before imbalance and communication. In autoregressive inference, token-by-token dependencies and small microbatches complicate bubble hiding.
+before imbalance and communication. Here the $m$ useful microbatch steps run against a fill-and-drain bubble of $P-1$ steps. In autoregressive inference, token-by-token dependencies and small microbatches complicate bubble hiding.
 
 ### 11.4 Expert parallelism
 
-Experts are partitioned across ranks. Each MoE layer performs all-to-all traffic proportional to dispatched token activations, with data-dependent destinations. EP should be placed on topology regions with high bisection bandwidth and monitored for incast and rank skew.
+Experts are partitioned across ranks. Each MoE layer performs all-to-all traffic proportional to dispatched token activations, with data-dependent destinations. EP should be placed on topology regions with high bisection bandwidth and monitored for incast (many ranks sending to one destination at once) and rank skew.
 
 ### 11.5 Combined parallelism
 

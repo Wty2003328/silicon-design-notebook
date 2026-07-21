@@ -206,6 +206,8 @@ $$
 N_{out}\gtrsim BWL/Q.
 $$
 
+Here $BW\,L$ is the bandwidth–delay product (the bytes that must be in flight to cover the round trip); dividing by the $Q$ bytes per transaction gives the outstanding-transaction count.
+
 Scatter-gather fetches metadata that itself needs translation and DMA. Validate list lengths/addresses and prevent cycles/unbounded traversal.
 
 ## 4. Address spaces and IOMMU

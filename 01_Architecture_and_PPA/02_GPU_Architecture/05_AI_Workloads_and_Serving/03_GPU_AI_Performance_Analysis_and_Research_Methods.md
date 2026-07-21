@@ -169,7 +169,7 @@ For a message of $n$ bytes,
 
 $$T(n)=\alpha+\frac{n}{BW_{effective}}+T_{queue}+T_{protocol}+T_{sync},$$
 
-where $\alpha$ includes startup. For collectives include algorithm steps and topology. A ring all-reduce over $P$ ranks communicates approximately $2(P-1)n/P$ bytes per rank; tree algorithms reduce step count but use different link loads.
+where $\alpha$ includes startup. For collectives include algorithm steps and topology. A ring all-reduce over $P$ ranks communicates approximately $2(P-1)n/P$ bytes per rank ($(P-1)n/P$ each for the reduce-scatter then all-gather phases); tree algorithms reduce step count but use different link loads.
 
 ### 6.1 Communication operational intensity
 
@@ -187,7 +187,7 @@ Let $T_e$ be tokens assigned to expert $e$. Useful balance measures include the 
 
 $$CV=\frac{\sigma(T_e)}{\mu(T_e)},\qquad \eta_{balance}=\frac{\sum_eT_e}{E\max_eT_e}.$$
 
-The second approximates useful grouped-GEMM occupancy when the step waits for the largest expert batch. Also measure destination/rank totals; experts can be balanced globally yet create network incast.
+The second approximates useful grouped-GEMM occupancy when the step waits for the largest expert batch. Also measure destination/rank totals; experts can be balanced globally yet create network incast (many ranks targeting one destination).
 
 ## 7. Queueing, batching, and SLO modeling
 

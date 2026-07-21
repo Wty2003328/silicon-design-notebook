@@ -139,7 +139,7 @@ flowchart TB
 
 Admission must be all-or-nothing because a block's warps communicate through shared memory and barriers. Reserving registers first and later discovering that shared memory does not fit would either leak capacity or require rollback. Implementations may pipeline the checks, but the architectural result must appear atomic: a partially admitted block must never become schedulable.
 
-High occupancy is not always better. Reducing registers may introduce spills to local/global memory; smaller tiles may reduce data reuse; more warps may increase cache/MHSR contention.
+High occupancy is not always better. Reducing registers may introduce spills to local/global memory; smaller tiles may reduce data reuse; more warps may increase cache/MSHR contention.
 
 ## 4. Latency-hiding requirement
 

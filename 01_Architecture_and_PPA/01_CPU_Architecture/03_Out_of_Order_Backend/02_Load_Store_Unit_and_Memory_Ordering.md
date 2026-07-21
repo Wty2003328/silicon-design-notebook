@@ -282,6 +282,8 @@ $$
 E[busy]=B\left(1-\left(1-\frac1B\right)^P\right).
 $$
 
+A given bank is missed by one request with probability $1-\frac1B$, so is idle after all $P$ requests with probability $\left(1-\frac1B\right)^P$; summing the busy probability $1-\left(1-\frac1B\right)^P$ over the $B$ banks (linearity of expectation) gives the result.
+
 Four requests into four banks occupy only $4(1-(3/4)^4)\approx2.73$ banks on average, showing why banking alone does not equal porting.
 
 Misses allocate MSHRs and retain LQ state. Multiple loads to the same line merge but still need separate destination and ordering metadata. Backpressure must be defined when the L1 has no MSHR, fill buffer, TLB miss slot, or response port.

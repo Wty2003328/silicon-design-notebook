@@ -177,7 +177,7 @@ The generator must split transfers at page, cache-line, interconnect-burst, or p
 
 ## 3. DMA queues and outstanding transactions
 
-Separate load and store queues prevent output drain from blocking input fetch, but both compete for memory bandwidth. Each command expands into requests tracked by transaction entries similar to cache MSHRs.
+Separate load and store queues prevent output drain from blocking input fetch, but both compete for memory bandwidth. Each command expands into requests tracked by transaction entries similar to cache MSHRs (miss-status handling registers).
 
 An entry needs:
 

@@ -82,7 +82,7 @@ Scale-up choices:
 | hardware coherence | transparent sharing | probes/directories, state scale, failure recovery |
 | software-managed collective | topology-aware efficiency | compiler/runtime complexity and phase barriers |
 
-For collective communication, the hardware contract supplies links, routing, ordering, and copy/reduction engines; the library chooses ring, tree, hierarchical, or topology-specific schedules. A ring all-reduce moves approximately $2(P-1)M/P$ bytes per participant for $P$ participants and message size $M$, excluding protocol overhead. Small messages are latency-dominated; large messages are bandwidth-dominated.
+For collective communication, the hardware contract supplies links, routing, ordering, and copy/reduction engines; the library chooses ring, tree, hierarchical, or topology-specific schedules. A ring all-reduce moves approximately $2(P-1)M/P$ bytes per participant for $P$ participants and message size $M$ (a reduce-scatter then an all-gather, each $P-1$ steps of $M/P$ bytes), excluding protocol overhead. Small messages are latency-dominated; large messages are bandwidth-dominated.
 
 Failures are architectural. Specify link retry, poison, timeout, device reset, partial collective failure, and whether outstanding remote writes are known to be visible. A reset GPU must not silently reuse transaction identities still present in a peer; use epochs and fabric-level quiescence.
 

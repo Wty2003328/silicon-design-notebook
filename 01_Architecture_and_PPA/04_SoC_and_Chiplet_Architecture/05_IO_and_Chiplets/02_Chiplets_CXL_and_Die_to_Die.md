@@ -80,6 +80,8 @@ $$
 Y\approx e^{-D_0A}.
 $$
 
+Because $Y$ falls exponentially in $A$, dividing the function across $n$ dice of area $A/n$ each raises per-die yield to $e^{-D_0A/n}>e^{-D_0A}$.
+
 Splitting reduces individual die area but package yield multiplies component/assembly yields and adds link/test overhead. More chiplets are not automatically cheaper.
 
 Use traffic matrices from representative workloads. An average boundary traffic number hides bursts and coherence fanout that set queue/credit requirements.

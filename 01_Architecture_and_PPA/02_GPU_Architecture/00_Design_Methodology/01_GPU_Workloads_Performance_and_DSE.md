@@ -189,7 +189,7 @@ $$
 P_{roof}=\min(120,\ 10\times3)=30\ \text{tera-operations/s}.
 $$
 
-The kernel is HBM-bound at this boundary, with a 133 ms lower-bound time. If profiling shows only 1.8 TB/s and 60% coalescing efficiency, the achieved bound is 18 tera-operations/s and about 222 ms. Doubling tensor pipelines cannot help. Candidate fixes are layout/coalescing, reuse/tiling, cache policy, more MSHRs, or delivered HBM bandwidth. Timing simulation must distinguish coalescing waste from outstanding-request or NoC/controller limits.
+The kernel is HBM-bound at this boundary, with a 133 ms lower-bound time ($400\ \text{GB}/3\ \text{TB/s}$). If profiling shows only 1.8 TB/s and 60% coalescing efficiency, the achieved bound is 18 tera-operations/s and about 222 ms. Doubling tensor pipelines cannot help. Candidate fixes are layout/coalescing, reuse/tiling, cache policy, more MSHRs, or delivered HBM bandwidth. Timing simulation must distinguish coalescing waste from outstanding-request or NoC/controller limits.
 
 ## 10. Aggregation and decision rules
 

@@ -145,7 +145,7 @@ $$
 V_{ring}=2\frac{N-1}{N}M,
 $$
 
-plus $2(N-1)$ communication steps. Bandwidth dominates large $M$; per-step latency dominates small messages. Layer time is bounded by
+plus $2(N-1)$ communication steps. This decomposes as reduce-scatter then all-gather, each $N-1$ steps moving $M/N$ bytes per participant, so volume $2(N-1)\cdot M/N=2\frac{N-1}{N}M$ over $2(N-1)$ steps. Bandwidth dominates large $M$; per-step latency dominates small messages. Layer time is bounded by
 
 $$
 T_{layer}\ge\max(T_{local\ compute},T_{collective\ exposed})
@@ -161,7 +161,7 @@ $$
 T\approx(K+m-1)T_s,
 $$
 
-so utilization is $m/(K+m-1)$. Unequal stage time, communication, bubbles from variable sequences, and decode's small microbatches worsen it.
+so utilization is $m/(K+m-1)$ ($(K-1)T_s$ fills the pipeline, then $m$ microbatches drain one per $T_s$; each stage stays busy only $mT_s$ of the $(K+m-1)T_s$ wall time). Unequal stage time, communication, bubbles from variable sequences, and decode's small microbatches worsen it.
 
 ### 5.3 Expert parallelism
 

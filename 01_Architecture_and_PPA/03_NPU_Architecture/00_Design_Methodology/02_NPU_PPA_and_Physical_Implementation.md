@@ -178,7 +178,7 @@ and multiply peak rate by the fraction of graph operations that can actually use
 
 Different “non-volatile CIM” labels hide different device physics:
 
-- **resistive RAM (ReRAM or RRAM)** stores resistance and can form dense analog conductance crossbars. It offers parallel dot products but faces device variation, nonlinear writes, conductance drift, endurance limits, sneak paths, and ADC/DAC overhead.
+- **resistive RAM (ReRAM or RRAM)** stores resistance and can form dense analog conductance crossbars. It offers parallel dot products but faces device variation, nonlinear writes, conductance drift, endurance limits, sneak paths (leakage currents through unselected crossbar cells), and ADC/DAC overhead.
 - **phase-change memory (PCM)** stores material phase/resistance with multiple conductance levels. It can support analog weights but programming is relatively high-energy, asymmetric, and subject to drift and finite endurance.
 - **magnetoresistive RAM (MRAM)** stores magnetic state. It offers non-volatility and strong read endurance with digital compatibility, but cell/write-current and analog-multilevel behavior differ from ReRAM/PCM; it is often more natural as robust storage or digital near-memory compute.
 - **ferroelectric RAM or transistor memory (FeRAM/FeFET)** uses polarization state, with attractive voltage/energy possibilities but process integration, endurance, variability, and array maturity dependent on the device generation.

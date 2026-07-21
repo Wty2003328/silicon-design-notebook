@@ -85,7 +85,7 @@ $$
 C_{wave}=k+m+n-2+C_{pipeline},
 $$
 
-where $C_{pipeline}$ covers implementation-specific register and output drain stages. Useful MACs are $mnk$. Provisioned PE-cycle utilization for this tile is
+where $C_{pipeline}$ covers implementation-specific register and output drain stages. The $k+m+n-2$ term is the $k$ cycles to stream the reduction plus $(m-1)+(n-1)$ cycles to fill the first and drain the last diagonal of the array. Useful MACs are $mnk$. Provisioned PE-cycle utilization for this tile is
 
 $$
 U_{array}=\frac{mnk}{PQ\,C_{wave}}.

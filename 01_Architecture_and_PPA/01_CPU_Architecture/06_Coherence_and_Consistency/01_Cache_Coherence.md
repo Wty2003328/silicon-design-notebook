@@ -426,7 +426,7 @@ An I/O-coherent agent instead issues coherent reads/writes through the home, let
 
 ### 8.3 Instruction/data coherence
 
-Self-modifying code and just-in-time compilation write bytes through the data-cache path and later fetch them through the instruction-cache path. Many architectures do not make the I-cache automatically coherent with D-cache writes. Software must clean the modified data line to the point of unification, invalidate the corresponding instruction line, and execute the required barriers. The protocol may be perfectly coherent among D-caches while the instruction fetch still sees an old copy.
+Self-modifying code and just-in-time compilation write bytes through the data-cache path and later fetch them through the instruction-cache path. Many architectures do not make the I-cache automatically coherent with D-cache writes. Software must clean the modified data line to the point of unification (the level at which this core's instruction cache, data cache, and translation-table walks observe one copy), invalidate the corresponding instruction line, and execute the required barriers. The protocol may be perfectly coherent among D-caches while the instruction fetch still sees an old copy.
 
 ### 8.4 Aliases and physical identity
 

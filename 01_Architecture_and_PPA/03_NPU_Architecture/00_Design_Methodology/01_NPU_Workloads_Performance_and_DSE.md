@@ -99,7 +99,7 @@ $$
 T_{tile}\ge\max(T_{compute},T_{DMA}),
 $$
 
-after initial fill and final drain. If DMA takes longer, the array stalls by approximately $T_{DMA}-T_{compute}$ per steady tile. This is the bandwidth-balance condition:
+after initial fill and final drain. If DMA takes longer, the array stalls by approximately $T_{DMA}-T_{compute}$ per steady tile. This is the bandwidth-balance condition, from $T_{DMA}=B_{tile}/BW_{delivered}\le T_{compute}$:
 
 $$
 \frac{B_{tile}}{T_{compute}}\le BW_{delivered}.
@@ -135,7 +135,7 @@ $$
 T_{op}\ge\max\left(\frac{C_m}{n_mr_m},\frac{C_v}{n_vr_v},T_{memory},T_{communication}\right).
 $$
 
-Before memory limits, balanced allocation makes the first two terms approximately equal:
+Before memory limits, balanced allocation makes the first two terms approximately equal, $\frac{C_m}{n_mr_m}\approx\frac{C_v}{n_vr_v}$, which rearranges to:
 
 $$
 \frac{n_m}{n_v}\approx\frac{C_mr_v}{C_vr_m}.
@@ -153,7 +153,7 @@ $$
 B_{KV}\propto 2L H d\,b_{element}
 $$
 
-per layer and batch item, before compression/layout. Capacity, read bandwidth, and paging become architecture constraints. Record context-length distribution, not only maximum length.
+per layer and batch item (the factor $2$ counts the stored key and value tensors), before compression/layout. Capacity, read bandwidth, and paging become architecture constraints. Record context-length distribution, not only maximum length.
 
 ## 8. Sparsity and MoE require value-dependent characterization
 

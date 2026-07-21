@@ -149,7 +149,7 @@ $$
 L_{open}=h\,t_{CL}+(1-h)\,(t_{RP}+t_{RCD}+t_{CL}), \qquad L_{closed}=t_{RCD}+t_{CL}
 $$
 
-Setting them equal and solving gives a clean result — the break-even hit rate is set purely by the *ratio* of precharge to activate cost:
+Cancelling the common $t_{CL}$ leaves $(1-h^{\star})(t_{RP}+t_{RCD})=t_{RCD}$, hence $t_{RP}=h^{\star}(t_{RP}+t_{RCD})$. Setting them equal and solving gives a clean result — the break-even hit rate is set purely by the *ratio* of precharge to activate cost:
 
 $$
 \boxed{\,h^{\star}=\frac{t_{RP}}{t_{RP}+t_{RCD}}\,}

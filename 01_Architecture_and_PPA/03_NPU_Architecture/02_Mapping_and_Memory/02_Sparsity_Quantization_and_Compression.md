@@ -146,6 +146,8 @@ $$
 b_{acc}\gtrsim b_a+b_w+\lceil\log_2K\rceil.
 $$
 
+The $b_a+b_w$ bits bound one product; summing $K$ of them adds a further $\lceil\log_2K\rceil$ bits.
+
 Block floating point shares an exponent across a block, reducing exponent storage but losing range for outliers. FP8-like formats trade exponent/mantissa differently for training/inference; conversions and scaling are first-class operations.
 
 ## 3. Quantization error and calibration
@@ -185,7 +187,7 @@ $$
 B_{sparse}=Nd(b_v+b_m)+H.
 $$
 
-Compression beats dense $Nb_v$ when
+Compression beats dense $Nb_v$ when $Nd(b_v+b_m)+H<Nb_v$, i.e.
 
 $$
 d<\frac{b_v-H/N}{b_v+b_m}.
@@ -374,7 +376,7 @@ The 4-bit MXFP4 element (E2M1: 1 sign, 2 exponent, 1 mantissa, exponent bias 1) 
 | 10 | $1.m\cdot2^{1}$ | $2.0,\ 3.0$ |
 | 11 | $1.m\cdot2^{2}$ | $4.0,\ 6.0$ |
 
-so eight signed magnitudes $\{0,0.5,1,1.5,2,3,4,6\}$ (no infinities or NaN). The block spans $0.5\to6$ ($12\times$, $\approx3.6$ binades) and the shared E8M0 scale slides that window across the full $2^{-127}\dots2^{127}$ range.
+so eight signed magnitudes $\{0,0.5,1,1.5,2,3,4,6\}$ (no infinities or NaN). The block spans $0.5\to6$ ($12\times$, $\approx3.6$ binades, the intervals between consecutive powers of two) and the shared E8M0 scale slides that window across the full $2^{-127}\dots2^{127}$ range.
 
 ```mermaid
 flowchart LR

@@ -46,6 +46,8 @@ $$
 L_0=H(L_r+L_l)+\left\lceil\frac{P}{F}\right\rceil-1.
 $$
 
+The head flit crosses all $H$ hops in $H(L_r+L_l)$; the remaining $\lceil P/F\rceil-1$ flits then stream in one per cycle behind it — the trailing serialization term.
+
 Under load add queueing and arbitration. Wider flits reduce serialization but enlarge crossbars, buffers, and links; more buffering absorbs bursts but increases area/leakage and can worsen congestion spreading.
 
 ## 2. Credit-based flow control

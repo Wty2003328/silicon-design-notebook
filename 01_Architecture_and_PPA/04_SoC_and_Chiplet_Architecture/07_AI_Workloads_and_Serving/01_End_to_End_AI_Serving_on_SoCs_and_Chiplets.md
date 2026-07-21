@@ -68,7 +68,7 @@ $$
 T_{load}\ge \sum_{j\in serial}\left(L_j+\frac{M_j}{B_{j,eff}}\right),
 $$
 
-When decompression or repacking changes byte count, each stage must be normalized to one common artifact basis. If the checkpoint basis is $M_w$ bytes and stage $j$ processes $M_j$ bytes at delivered rate $B_{j,eff}$, its checkpoint-equivalent rate is
+When decompression or repacking changes byte count, each stage must be normalized to one common artifact basis. If the checkpoint basis is $M_w$ bytes and stage $j$ processes $M_j$ bytes at delivered rate $B_{j,eff}$, its checkpoint-equivalent rate (the $M_w$ basis divided by that stage's service time $M_j/B_{j,eff}$) is
 
 $$
 R_j=B_{j,eff}\frac{M_w}{M_j}.
@@ -314,7 +314,7 @@ $$
 S\approx\frac{(E[A]+1)T_t}{T_d+T_v(k)}.
 $$
 
-The numerator counts target-equivalent token progress. The model must include batching and memory effects; acceptance rate alone does not predict system speedup.
+The numerator counts target-equivalent token progress (the $+1$ is the token the target commits from its own verification pass even when every proposed token is rejected). The model must include batching and memory effects; acceptance rate alone does not predict system speedup.
 
 MoE is another conditional workload: routing selects a subset of experts. It reduces arithmetic per token relative to executing every expert but creates load imbalance, metadata, and all-to-all communication. Capacity and tail latency depend on the hottest expert, not average expert load.
 

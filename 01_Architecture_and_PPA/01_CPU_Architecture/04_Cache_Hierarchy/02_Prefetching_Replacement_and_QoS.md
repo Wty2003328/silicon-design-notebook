@@ -114,7 +114,7 @@ $$
 d\gtrsim\lambda_{consume}L_{fill},
 $$
 
-in units of lines, where the consumer uses $\lambda_{consume}$ lines/cycle and fill latency is $L_{fill}$. If $d$ is too small, prefetches are late; too large, they occupy capacity before use and cross phase/page boundaries.
+in units of lines, where the consumer uses $\lambda_{consume}$ lines/cycle and fill latency is $L_{fill}$. Over that fill latency the consumer advances $\lambda_{consume}L_{fill}$ lines, so the prefetch must lead by at least that many to land before the demand. If $d$ is too small, prefetches are late; too large, they occupy capacity before use and cross phase/page boundaries.
 
 Throttle using measured pressure:
 

@@ -359,7 +359,7 @@ Disaggregation helps when separate scaling/queuing improves SLOs more than KV tr
 - optional KV/prefix spill tiers;
 - failure recovery and rolling update staging.
 
-DMA may bypass CPU copies but not CPU control or topology constraints. A path can be GPU-direct and still bottleneck on PCIe root sharing, NIC registration cache, network incast, or destination HBM traffic.
+DMA may bypass CPU copies but not CPU control or topology constraints. A path can be GPU-direct and still bottleneck on PCIe root sharing, NIC registration cache, network incast (many senders converging on one receiver), or destination HBM traffic.
 
 ## 14. SLOs and throughput
 

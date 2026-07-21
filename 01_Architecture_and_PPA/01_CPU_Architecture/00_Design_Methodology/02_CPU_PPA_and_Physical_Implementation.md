@@ -114,6 +114,8 @@ $$
 Y_{raw}=(1-p)^N\approx e^{-Np}.
 $$
 
+The final step uses $\ln(1-p)\approx-p$ for small $p$.
+
 The independence assumption is simplified, but the exponential exposure explains why spare rows/columns, fuse or electrically programmed repair, error correction, and screening are normal macro features. A CPU capacity label normally states usable bytes; physical area also contains spare capacity, parity/ECC bits, tag/state bits, and periphery. Soft errors from radiation are handled with parity, ECC, scrubbing, replay, or duplication according to the state's consequence and recovery window.
 
 ### 2.3 Ports are expensive
@@ -183,6 +185,8 @@ For $k$ protected bits, a single-error-correcting code needs parity bits $r$ sat
 $$
 2^r\ge k+r+1.
 $$
+
+The $r$ check bits produce $2^r$ distinct syndromes, which must identify each of the $k+r$ possible single-bit error positions plus the no-error case.
 
 Adding overall parity gives single-error correction, double-error detection (SECDED). Protection adds stored bits, encoder/checker logic, correction latency, scrub traffic, and fault-report state.
 

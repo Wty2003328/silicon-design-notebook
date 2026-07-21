@@ -131,7 +131,7 @@ Initially `x=y=0`:
 | `x = 1` | `y = 1` |
 | `r0 = y` | `r1 = x` |
 
-Outcome `r0=0, r1=0` is forbidden under SC: no single total order can place both loads before the other hart's store while preserving both local store→load orders. It is allowed by models that permit a later load to bypass an earlier store to a different address, as ordinary store buffers do.
+Outcome `r0=0, r1=0` is forbidden under SC: no single total order can place both loads before the other hart's store while preserving both local store→load orders (the two program-order edges and the two load-before-store edges close the cycle $x{=}1 \rightarrow r0{=}y \rightarrow y{=}1 \rightarrow r1{=}x \rightarrow x{=}1$). It is allowed by models that permit a later load to bypass an earlier store to a different address, as ordinary store buffers do.
 
 A full fence between each store and load forbids that bypass/visibility outcome. A fence is therefore an ordering edge, not a “flush all caches” instruction.
 

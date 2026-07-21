@@ -333,7 +333,7 @@ Server and infrastructure SoCs (Arm Neoverse CMN-600/700/S3-class meshes; Gravit
 The fabric's parameters are ultimately *wire* statements:
 
 - **Link pipelining.** A 1–2 mm mesh link routes in ~1 cycle at SoC clocks; longer or cross-die links need pipeline flops (adding hops of latency) or **elastic buffers** (pipeline flops with backpressure = a distributed FIFO).
-- **CDC.** Multi-clock SoCs put async FIFOs at NIU boundaries or run the fabric on one mesochronous grid ([Async_Design_and_CDC](../../../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)).
+- **CDC.** Multi-clock SoCs put async FIFOs at NIU boundaries or run the fabric on one mesochronous (same-frequency, fixed-phase) grid ([Async_Design_and_CDC](../../../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md)).
 - **Width / serialization.** 512-bit flits near memory; narrow regions serialize (1 flit = 2–4 phits), trading bandwidth for routing-congestion relief.
 - **Die-to-die.** UCIe / proprietary D2D PHYs (physical-layer interface) carry the *same* flit protocol across chiplets (CHI-C2C, AXI-over-D2D) — the NoC becomes a package-scale network at ~5–20 ns and a serdes (serializer/deserializer)-class PHY per crossing ([IC_Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md)).
 - **Floorplan coupling.** Router placement *is* tile placement, and a mesh's $k\,b$ bisection is also a *routing-resource* claim — those bisection wires must physically exist across the die middle ([Physical_Design](../../../05_Backend_Physical_Design/01_Physical_Design.md)). §2's bisection-wire argument is a floorplan constraint, not just a graph metric.

@@ -174,7 +174,7 @@ $$
 D_{sparse}\approx dKN(q_v+q_i)+D_{row/block},
 $$
 
-versus $KNq_v$ dense bytes. Element-level sparsity saves capacity only when
+versus $KNq_v$ dense bytes. Setting $dKN(q_v+q_i)<KNq_v$ and cancelling $KN$ gives the threshold below. Element-level sparsity saves capacity only when
 
 $$
 d<\frac{q_v}{q_v+q_i}
@@ -236,7 +236,7 @@ $$
 l' = e^{m-m'}l+\sum_j e^{x_j-m'}.
 $$
 
-The output accumulator is rescaled by the same factor when $m$ changes. The method reduces intermediate memory traffic but introduces reduction dependencies, exponentials, and careful numerical ordering.
+The factor $e^{m-m'}$ rebases the earlier denominator $l$ from the old maximum $m$ to the new $m'$. The output accumulator is rescaled by the same factor when $m$ changes. The method reduces intermediate memory traffic but introduces reduction dependencies, exponentials, and careful numerical ordering.
 
 On CPUs, tile sizes must fit vector/tile registers and cache while leaving room for packed K/V panels. Parallelizing over heads and query blocks is usually simpler than splitting one softmax row, because a split row needs max/sum reductions across workers.
 
@@ -332,7 +332,7 @@ $$
 N_{outstanding}\ge \frac{WL}{B}
 $$
 
-independent outstanding requests. GEMM panels naturally expose streaming parallelism. ANN graph traversal may expose only a few dependent misses and achieve low bandwidth while remaining memory-latency bound.
+independent outstanding requests. This is Little's law for the memory pipeline: bandwidth $W$ issues $W/B$ line requests per second, each in flight for latency $L$, so $N_{outstanding}=(W/B)L$. GEMM panels naturally expose streaming parallelism. ANN graph traversal may expose only a few dependent misses and achieve low bandwidth while remaining memory-latency bound.
 
 Software prefetch, simultaneous requests, loop unrolling, and independent accumulators raise concurrency. They are limited by load buffers, miss-status holding registers, memory-controller queues, and cache pollution.
 
