@@ -133,7 +133,7 @@ $$
 
 where $C_{dep}$ = depletion capacitance under the channel and $n=1+C_{dep}/C_{ox}$ is the body factor. At 300 K the prefactor $\frac{kT}{q}\ln 10 = 60\ \text{mV/decade}$ is a **hard thermodynamic floor** for any device that switches by modulating a Boltzmann barrier — bulk planar devices sit at $S\approx 80$–$100$ (poor gate control, large $C_{dep}/C_{ox}$); FinFETs reach $\approx 65$–$70$ by driving $n\to 1$.
 
-This one equation is the master constraint of the whole page. It says: **to keep leakage low you want high $V_{th}$, but to keep speed and noise margin you want low $V_{th}$ — and $S$ sets the exchange rate between them.** With $S=70\ \text{mV/dec}$, dropping $V_{th}$ by 210 mV multiplies off-current by $1000$. That exchange rate is why $V_{th}$ has stopped scaling, why Dennard scaling ended (§4.5), why leakage is now half the power budget (§13), and why sub-60 mV/dec "steep-slope" devices (tunnel FETs, negative-capacitance FETs) are researched at all.
+This one equation is the master constraint of the whole page. It says: **to keep leakage low you want high $V_{th}$, but to keep speed and noise margin you want low $V_{th}$ — and $S$ sets the exchange rate between them.** The rule worth burning in: **every $S$ millivolts of $V_{th}$ change is one decade ($10\times$) of off-current.** With $S=70\ \text{mV/dec}$, dropping $V_{th}$ by 210 mV — three $S$'s — multiplies off-current by $10^3=1000$. That exchange rate is why $V_{th}$ has stopped scaling, why Dennard scaling ended (§4.5), why leakage is now half the power budget (§13), and why sub-60 mV/dec "steep-slope" devices (tunnel FETs, negative-capacitance FETs) are researched at all.
 
 ### 1.4 Second-order effects that matter at advanced nodes
 
@@ -218,6 +218,8 @@ $$
 V_M=\frac{V_{thn}+r\,(V_{DD}-|V_{thp}|)}{1+r}
 $$
 
+**Plug in numbers** ($V_{DD}=0.75$ V, $V_{thn}=|V_{thp}|=0.3$ V). Sized for equal strength ($r=1$): $V_M=\frac{0.3+(0.75-0.3)}{2}=0.375$ V, exactly $V_{DD}/2$. Now leave both devices *minimum* width, so the weaker PMOS gives $r=\sqrt{\mu_p/\mu_n}\approx\sqrt{0.45}=0.67$: $V_M=\frac{0.3+0.67(0.45)}{1.67}=0.36$ V — the trip point sits $\sim15$ mV *below* mid-rail. That small skew for skipping the $\sim2.2\times$ PMOS upsizing is exactly the bargain an area-driven HD library takes.
+
 A **symmetric** VTC ($V_M=V_{DD}/2$, equal noise margins) needs $k_n=k_p$, i.e. $\mu_p(W/L)_p=\mu_n(W/L)_n$, i.e. $W_p\approx 2$–$2.5\,W_n$. But *real* standard-cell libraries rarely size for a perfectly symmetric $V_M$: velocity saturation flattens the benefit, and a high-density (HD) library will accept a slightly skewed $V_M$ to use a **smaller PMOS** and save area, while a high-performance (HP) library widens the PMOS toward symmetry for balanced edges. On FinFETs the ratio is *quantised* to integer fins (§8), so the "2.5×" ideal collapses to a 1:1 or 2:1 fin count with the asymmetry absorbed by threshold flavour instead — a concrete case of theory meeting a discrete process.
 
 ---
@@ -291,6 +293,8 @@ $$
 
 where $\alpha\approx 1.3$ for a modern velocity-saturated device (§1.2). Read it as the master delay law: **speed comes from overdrive $V_{DD}-V_{th}$, and because $\alpha<2$, raising $V_{DD}$ helps sub-quadratically** while costing energy quadratically — the root of every voltage/frequency trade. The process-independent unit is the **FO4 delay** (an inverter driving four copies of itself), $\approx 12$–$15\ \text{ps}$ at N5; the notebook measures pipeline stages, wakeup loops, and cache paths in FO4 precisely because it cancels the process out.
 
+**The sub-quadratic trade, with numbers.** Hold $V_{th}=0.35$ V and $\alpha=1.3$, and boost $V_{DD}$ from $0.70\to0.80$ V ($+14\%$). Overdrive rises $0.35\to0.45$ V, so delay $\propto V_{DD}/(V_{DD}-V_{th})^{\alpha}$ scales by $\dfrac{0.80/0.45^{1.3}}{0.70/0.35^{1.3}}=\dfrac{2.26}{2.74}=0.82$ — a mere $\sim18\%$ speed-up. Switching energy $\propto V_{DD}^2$ meanwhile climbs $(0.80/0.70)^2=1.31$, i.e. $+31\%$. So $+14\%$ volts buys only $-18\%$ delay but $+31\%$ energy — the alpha-power law made arithmetic, and why $V_{DD}$ is a last-resort speed knob.
+
 ### 4.2 Dynamic energy: the $\tfrac12 CV^2$ that pays for computation
 
 Charging $C_L$ from 0 to $V_{DD}$ draws $Q V_{DD}=C_L V_{DD}^2$ from the supply; half is stored on the capacitor and **half is dissipated in the PMOS regardless of its resistance.** Discharging dumps the stored half through the NMOS. So each *transition* costs $\tfrac12 C_L V_{DD}^2$ and, aggregated over a clock, the dynamic power is:
@@ -304,7 +308,21 @@ where $\alpha$ = **activity factor** (average power-consuming transitions per cy
 ### 4.3 The other two powers: short-circuit and leakage
 
 - **Short-circuit power.** During an input edge both networks conduct briefly, shorting $V_{DD}$ to ground: $P_{sc}\approx \tfrac{\beta}{12}(V_{DD}-2V_{th})^3\,\tfrac{\tau}{T}$, where $\tau$ = input transition time and $T$ = period. It is typically **5–15% of dynamic**, vanishes for fast edges (small $\tau$), and disappears entirely once $V_{DD}<2V_{th}$ — a small but real reason to keep slews sharp.
-- **Leakage (static) power.** The switch never fully opens (§1.3), so $P_{leak}=V_{DD}\,I_{leak}$ with $I_{leak}\propto 10^{-V_{th}/S}$. Once dominated by dynamic, leakage is now **20–50%** of total at advanced nodes and is the entire budget of an idle or always-on block (§13). It is the reason cells ship in $V_{th}$ *flavours*: **LVT** (low $V_{th}$ — fast, leaky), **SVT**, **HVT** (slow, low-leakage), placed cell-by-cell so only timing-critical paths pay the leakage.
+- **Leakage (static) power.** The switch never fully opens (§1.3), so $P_{leak}=V_{DD}\,I_{leak}$ with $I_{leak}\propto 10^{-V_{th}/S}$. Once dominated by dynamic, leakage is now **20–50%** of total at advanced nodes and is the entire budget of an idle or always-on block (§13). It is the reason cells ship in $V_{th}$ *flavours*: **LVT** (low $V_{th}$ — fast, leaky), **SVT**, **HVT** (slow, low-leakage), placed cell-by-cell so only timing-critical paths pay the leakage. How big is that "flavour" swing? Apply the §1.3 decade rule at fixed $S$:
+
+```python
+# Off-current scales as 10^(-Vth/S): each S millivolts of Vth = one decade.
+# So a threshold "flavour" swing is a leakage swing (same S):
+S = 0.075                                       # subthreshold slope, V/decade
+Vth = {"LVT": 0.30, "SVT": 0.38, "HVT": 0.45}   # threshold flavours (V)
+hvt = Vth["HVT"]
+for name, vt in Vth.items():
+    ratio = 10 ** ((hvt - vt) / S)              # I_off(flavour) / I_off(HVT)
+    print(f"{name}: {ratio:6.1f}x HVT leakage")
+# LVT: 100.0x   SVT:   8.6x   HVT:   1.0x
+```
+
+An LVT cell leaks $\sim100\times$ an HVT cell for just 150 mV of threshold — which is why leakage recovery is largely a game of swapping non-critical cells to HVT.
 
 $$
 P_{total}=\underbrace{\alpha C V_{DD}^2 f}_{\text{dynamic}}+\underbrace{P_{sc}}_{\text{short-circuit}}+\underbrace{V_{DD}I_{leak}}_{\text{leakage}}

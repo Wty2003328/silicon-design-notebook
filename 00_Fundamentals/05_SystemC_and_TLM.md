@@ -40,14 +40,29 @@ Each step deliberately discards or constrains information. Transaction models ar
 
 ### 1.1 Elaboration vs simulation — two disjoint phases
 
-A SystemC program runs in two strictly separated phases, and conflating them is the first novice error:
+Intuitively, **elaboration is assembling and wiring the board; simulation is switching on the power** — you build the structure once, then run it, and never re-solder a live board. A SystemC program runs in two strictly separated phases, and conflating them is the first novice error:
 
 - **Elaboration** builds the *structure*: the constructor of every `sc_module` runs, sub-modules are instantiated, channels are created, **ports are bound** to channels, and processes are *registered* with the kernel. No simulated time passes; no process bodies run (beyond construction). At the end, the module/port/channel graph is **fixed** — SystemC structure is *static* (there is no runtime module creation), which is what lets the kernel pre-resolve every interface binding and iterate cheaply thereafter. Callbacks `before_end_of_elaboration → end_of_elaboration → start_of_simulation` fire at the boundary.
 - **Simulation** begins when `sc_start()` is called: the scheduler runs, advancing `sc_time` and triggering processes, until the queue empties, the time limit is hit, or `sc_stop()` is called.
 
+```mermaid
+flowchart TD
+    START(["program start"]) --> C1["ELABORATION starts<br/>(no simulated time passes)"]
+    C1 --> C2["sc_module constructors run<br/>sub-modules and channels created"]
+    C2 --> C3["ports bound to channels<br/>processes registered with kernel"]
+    C3 --> C4["structure now FIXED<br/>before/end_of_elaboration callbacks"]
+    C4 -->|"sc_start()"| S1["SIMULATION starts<br/>start_of_simulation callback"]
+    S1 --> S2["scheduler loop<br/>evaluate / update / delta / timed"]
+    S2 --> S3{"queue empty<br/>time limit<br/>or sc_stop()?"}
+    S3 -->|"no — keep running"| S2
+    S3 -->|"yes"| DONE(["simulation ends"])
+```
+
 The separation is the same "build the graph once, then run it" discipline as the static elaboration of an RTL netlist — and for the same reason: a static structure has a fixed cost per event, so the per-event work $i_{\text{ev}}$ of the [slowdown identity $S\approx w=i_{\text{ev}}\,n_{\text{ev}}$](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) is bounded and small.
 
 ### 1.2 The scheduler — evaluate, update, and the delta cycle
+
+**Intuition — the two-pass whiteboard.** A delta cycle is one *"everyone reads, then everyone writes"* round. In the **evaluate** pass every process reads the *old* whiteboard and privately works out what it wants to write; in the **update** pass all those writes land on the *new* whiteboard at once. Because no process can see another's write until the round closes, the order in which processes read and decide cannot change the outcome — that order-independence is exactly what §1.3 proves, and it is why hardware, where everything settles "at once," can be modeled faithfully on a strictly sequential host.
 
 The core of the kernel is a loop over **delta cycles**. A delta cycle is a step of **zero simulated time** containing three sub-phases, run in this exact order:
 
@@ -101,6 +116,24 @@ The evaluate–update split is not an implementation nicety; it is what buys **d
 
 **Proof.** Let $S$ be the vector of channel values *frozen* at the start of the evaluate phase. Every read during evaluate returns a component of $S$ (no write is visible until update). Hence each runnable process $P_i$ computes its write requests as a *pure function of the frozen state*, $r_i = f_i(S)$, with no dependence on whether $P_j$ ran before or after it — because $P_j$'s writes are invisible during evaluate. The multiset of requests $\{f_i(S)\}$ is therefore order-independent. In the update phase each channel resolves its new value from the requests targeting it; for a single-writer `sc_signal` this is deterministic (multiple writers to one signal in a delta is a modeling error, exactly like multiple RTL drivers). So the post-update state $S' = U(S)$ is a deterministic function of $S$. $\square$
 
+**Worked example — the swap only channels get right.** Two `SC_METHOD`s fire on the *same* clock edge and cross-assign the same two signals — the canonical order-independence test:
+
+```cpp
+sc_signal<int> a, b;              // at the clock edge: a == 1, b == 2
+// both methods:  SC_METHOD(...);  sensitive << clk.pos();
+void p() { a.write(b.read()); }   // reads OLD b (2) -> requests a <= 2
+void q() { b.write(a.read()); }   // reads OLD a (1) -> requests b <= 1
+```
+
+Both are runnable in the *same* evaluate phase, so both read the frozen state before either write commits:
+
+| Phase | `p` does | `q` does | committed |
+|---|---|---|---|
+| evaluate (either order) | reads `b`=2, requests `a`←2 | reads `a`=1, requests `b`←1 | nothing visible yet |
+| update | — | — | `a`=2, `b`=1 — **swapped** |
+
+Run `p` first or `q` first: the result is identically `a=2, b=1`, because each read saw the frozen value, never the other's pending write. Had `a` and `b` been plain `int` members, `p`-then-`q` gives `a=2, b=2` (q reads the *new* a) while `q`-then-`p` gives `a=1, b=1` — two different wrong answers, neither a swap. The request/update split is the whole difference between "order cannot matter" and "order silently decides the result."
+
 **Why this makes combinational feedback deterministic.** A zero-delay combinational network settles as a **fixed-point iteration** over delta cycles: $S \to U(S) \to U(U(S)) \to \dots$, each step order-independent by the claim, all at the *same* simulated time. If the network is well-formed (no zero-delay cycle that fails to converge) it reaches a stable fixed point $S^\star = U(S^\star)$ in a bounded number of delta cycles — at most the combinational depth. The determinism is precisely that the sequence $U^k(S)$ does not depend on scheduler order, so the fixed point is reached the same way on every run and every simulator. A *true* zero-delay combinational loop (an odd-inversion ring) has **no** fixed point: $U$ has no stable point and the kernel spins delta cycles forever at one time value — the model of a real oscillation, and the reason zero-delay comb loops are illegal in SystemC just as in RTL.
 
 **Worked number.** Model an $N$-stage ripple (e.g., an 8-bit ripple-carry) as $N$ `SC_METHOD`s, each sensitive to the previous stage's `sc_signal`. Stage $k$ cannot see stage $k{-}1$'s new value until an update, so the carry propagates **one stage per delta cycle**: the network settles in **$N=8$ delta cycles at $0$ ns of simulated time**. The eight deltas are the causal ordering imposed on zero-time events; the simulated clock has not moved. This is the concrete face of "delta cycles sequence zero-time updates without breaking causality" from [SoC/chiplet simulation methodology](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) — and the per-delta cost (evaluate + update + notify over the runnable set, a few hundred host instructions per activated process) is why a design that generates thousands of deltas per simulated microsecond pays for them in the $n_{\text{ev}}$ term of the slowdown identity.
@@ -133,6 +166,16 @@ SystemC's structural model exists to answer one question cleanly: **how does one
 - **Port** (`sc_port<IF>`): a module's *requirement* — "I need something that implements `IF`." The module calls interface methods **through** the port; at elaboration the port is *bound* to a channel that implements `IF`, and the call dispatches to that channel. This is the **interface-method-call (IMC)** idiom.
 - **Export** (`sc_export<IF>`): the dual — a module *provides* an interface upward, publishing an implementation (its own or a forwarded sub-channel's) to whoever binds to it.
 
+A module names only the *interface* it needs; elaboration binds its port to whatever *channel* implements that interface, so computation and communication meet only at the method contract:
+
+```mermaid
+flowchart LR
+    MOD["Module<br/>computation"] -->|"calls a method through"| PORT["Port<br/>needs an IF"]
+    PORT -->|"bound to a channel (elaboration)"| CHAN["Channel<br/>communication"]
+    CHAN -->|"implements"| IF["Interface IF<br/>method contract, no data"]
+    PORT -.->|"knows only"| IF
+```
+
 **Why the channel sits *behind* an interface — the decoupling theorem.** Because a module calls `port->method()` and never names a concrete channel type, you can **swap the channel implementation without touching the module**: replace an `sc_signal` with a logging channel, or a simple bus with an arbitrated one, and every module bound to that interface is unchanged and recompiles clean. Communication is thereby separated from computation *at the type level* — the module's code depends only on the interface's method signatures, a minimal-sufficient contract. This is the exact principle TLM-2.0 scales up in §5: standardize the interface (and the transaction it carries) and any implementation behind it interoperates. The IMC indirection costs one virtual dispatch per call — a handful of host instructions, negligible against the transaction work it guards, and the reason the abstraction is free enough to always use.
 
 ---
@@ -144,6 +187,26 @@ A process is the kernel's unit of concurrency. SystemC has two that matter (plus
 - **`SC_METHOD`** — **no own stack.** It runs to completion every time it is triggered and **cannot call `wait()`** (there is no stack to suspend). It models combinational logic or a single clocked evaluation: re-invoked from the top on each trigger. Cheap — a plain function call, no coroutine context switch — which is why cycle-/signal-level models favor it.
 - **`SC_THREAD`** — **own coroutine stack.** It is launched once and runs a persistent body (typically `while(true){ …; wait(); }`), suspending at `wait()` and resuming *where it left off* with its local state intact. It models a process with memory of its own progress — a bus master issuing a sequence, a CPU model's main loop. More expensive: a stack allocation plus a context switch on every `wait()`/resume.
 - **`SC_CTHREAD`** — a clocked `SC_THREAD` implicitly sensitive to a clock edge; `wait()` waits for the next edge. Used for cycle-based/behavioral-synthesis styles; largely subsumed by `SC_THREAD` + `wait(clk.posedge_event())`.
+
+A minimal `SC_METHOD` — combinational logic sensitive to a signal, re-run on every change of its input:
+
+```cpp
+SC_MODULE(inverter) {
+    sc_in<bool>  a;              // input port  (bound to an sc_signal)
+    sc_out<bool> y;              // output port (bound to an sc_signal)
+
+    void comb() {                // method body: runs to completion, no wait()
+        y.write(!a.read());      // write() is deferred to the UPDATE phase
+    }
+
+    SC_CTOR(inverter) {
+        SC_METHOD(comb);         // register comb as a method process
+        sensitive << a;          // static sensitivity: re-run whenever a changes
+    }
+};
+```
+
+Because `y`'s new value commits in update and only then wakes whatever is sensitive to it, each such combinational stage costs **one delta cycle** — the mechanism behind the ripple settle of §1.3.
 
 **Static vs dynamic sensitivity.** *Static* sensitivity is fixed at elaboration (`sensitive << a << b;` for a method; the argument-less `wait()` in a thread waits on it) — the analog of an RTL sensitivity list. *Dynamic* sensitivity overrides it per-invocation: a thread does `wait(event)`, `wait(t)`, or `wait(e1 | e2)`; a method uses `next_trigger(...)` to change what wakes it next time. Dynamic sensitivity is what lets one thread walk a protocol (wait for grant, then wait for data, then wait for ack) without a state machine of static-sensitive methods.
 
@@ -215,6 +278,20 @@ A plain port carries one direction; a transaction needs *two* (an initiator driv
 - **`tlm_initiator_socket`** = a forward **port** (to call `b_transport` / `nb_transport_fw` / `get_direct_mem_ptr` / `transport_dbg` on the target) **plus** a backward **export** (to receive the target's `nb_transport_bw` / `invalidate_direct_mem_ptr`).
 - **`tlm_target_socket`** = the mirror: a forward export (it *implements* the forward interface) plus a backward port (to call back into the initiator).
 
+```mermaid
+flowchart LR
+    GP[["tlm_generic_payload<br/>cmd, addr, ptr, len, resp"]]
+    subgraph INIT["Initiator (CPU / DMA)"]
+      IS["tlm_initiator_socket<br/>fwd port + bwd export"]
+    end
+    subgraph TARG["Target (memory / slave)"]
+      TS["tlm_target_socket<br/>fwd export + bwd port"]
+    end
+    IS -->|"FORWARD: b_transport / nb_transport_fw<br/>payload by reference"| TS
+    TS -->|"BACKWARD: nb_transport_bw / invalidate_dmi"| IS
+    GP -.->|"one object, filled by initiator"| IS
+```
+
 Binding `initiator_socket.bind(target_socket)` wires **both** paths at once. Sockets are templated on the **bus width** and a **protocol-traits** type, so the compiler rejects a bind between incompatible protocols — a static interoperability check, not a runtime surprise. The convenience sockets in `tlm_utils` (`simple_initiator_socket`, `simple_target_socket`) let a model register callback methods instead of subclassing, which is why most real models use them. This bidirectional, type-checked bundle is the reason sockets exist beyond §2's plain ports: the non-blocking backward call in §5.5 has nowhere to go without the socket's backward path.
 
 ### 5.4 Blocking transport — one call, whole transaction (the LT workhorse)
@@ -226,6 +303,28 @@ void b_transport(tlm_generic_payload& trans, sc_time& delay);
 ```
 
 One call carries the entire transaction: the initiator fills the payload, calls `b_transport`, and on return reads the response status and (for reads) the data. The target may **consume simulated time** — it can call `wait()` inside `b_transport` to model latency — which is why `b_transport` must be invoked from an `SC_THREAD` (an `SC_METHOD` has no stack to block on, §3). The `delay` argument is the temporal-decoupling offset (§6.2): the target *adds* its latency to `delay` and returns, letting the initiator account for time without a kernel synchronization. This is **two timing points** per transaction (call = begin, return = end) folded into one call — coarse, fast, and exactly what **loosely-timed (LT)** modeling uses. It is the interface a CPU model's load/store issues, and the one that boots operating systems.
+
+A minimal target-side implementation reads the payload fields, services the access **through** the initiator's own buffer, annotates latency, and — the one rule you cannot skip — overwrites the response status:
+
+```cpp
+void mem_target::b_transport(tlm_generic_payload& trans, sc_time& delay) {
+    sc_dt::uint64  addr = trans.get_address();
+    unsigned char* ptr  = trans.get_data_ptr();     // initiator's buffer — no copy
+    unsigned int   len  = trans.get_data_length();
+
+    if (addr + len > SIZE) {                         // mem[SIZE] is the backing store
+        trans.set_response_status(TLM_ADDRESS_ERROR_RESPONSE);
+        return;
+    }
+    if (trans.is_read())        memcpy(ptr, mem + addr, len);   // target   -> initiator
+    else if (trans.is_write())  memcpy(mem + addr, ptr, len);   // initiator -> target
+
+    delay += sc_time(40, SC_NS);                     // annotate latency, no wait()
+    trans.set_response_status(TLM_OK_RESPONSE);      // MUST overwrite INCOMPLETE
+}
+```
+
+This is exactly the ownership chain the next trace walks step by step.
 
 #### 5.4.1 Worked LT trace: one CPU load becomes one final result
 

@@ -129,6 +129,27 @@ $$
 
 The $(n-1)\,t_{\text{carry}}$ term is the killer. A 32-bit RCA is $\approx 50$ gate delays $\approx 1$ ns at 28 nm — hopeless for a 2 GHz core with a 500 ps period. **That single number is why the rest of this page exists.** Ripple is $\Theta(n)$ delay for $\Theta(n)$ area: one corner of the design box, optimal on area, worst on delay. Everything below spends area to walk toward the $\Theta(\log n)$ corner.
 
+In RTL the chain is not hidden — it *is* the code. The carry bit of stage $i{+}1$ is written as a direct function of stage $i$'s, so synthesis wires up exactly the serial recurrence of §1:
+
+```systemverilog
+module ripple_adder #(parameter int N = 32) (
+  input  logic [N-1:0] a, b,
+  input  logic         cin,
+  output logic [N-1:0] sum,
+  output logic         cout
+);
+  logic [N:0] c;                 // c[0]=cin, c[i+1] depends on c[i]  -> the chain
+  assign c[0] = cin;
+  for (genvar i = 0; i < N; i++) begin : fa
+    assign sum[i] = a[i] ^ b[i] ^ c[i];                      // s_i = p_i ^ c_i
+    assign c[i+1] = (a[i] & b[i]) | (c[i] & (a[i] ^ b[i]));  // c_{i+1} = g_i + p_i c_i
+  end
+  assign cout = c[N];
+endmodule
+```
+
+Writing `a + b` infers the same structure; you only spell it out when you need to *split* that chain across pipeline stages or graft on one of the faster carry schemes below.
+
 ### 2.1 Worked trace: why `0111 + 0001` exercises the entire chain
 
 Use bits from least to most significant and $c_0=0$:
@@ -183,6 +204,17 @@ Instead of waiting for the ripple, compute each carry straight from the unrolled
 $$
 c_4 = g_3 + p_3g_2 + p_3p_2g_1 + p_3p_2p_1g_0 + p_3p_2p_1p_0c_0
 $$
+
+Evaluate all four carries for the running vector `0111 + 0001` ($g=\{1,0,0,0\}$, $p=\{0,1,1,0\}$ from the LSB, $c_0=0$). Each formula is an independent AND-OR of signals that already exist, so they settle *together* rather than in a wave:
+
+| carry | expression | value |
+|---|---|---:|
+| $c_1$ | $g_0$ | $1$ |
+| $c_2$ | $g_1 + p_1g_0$ | $0+1{\cdot}1 = 1$ |
+| $c_3$ | $g_2 + p_2g_1 + p_2p_1g_0$ | $0+0+1{\cdot}1{\cdot}1 = 1$ |
+| $c_4$ | $g_3 + p_3g_2 + \dots + p_3p_2p_1p_0c_0$ | $0$ — $p_3{=}0$ kills every term |
+
+Same $\{c_1,c_2,c_3,c_4\}=\{1,1,1,0\}$ the ripple produced serially in §2.1 — but here every carry falls out in one gate burst instead of a four-deep chain. That is the whole appeal, and the next paragraph is why you cannot cash it in for free.
 
 In principle this is $O(1)$ *logic depth* — a two-level AND-OR — so every carry is available at once. The catch is **fan-in**: $c_{i+1}$ needs a gate with $i{+}2$ inputs, and a flat 16-bit CLA would demand a 17-input AND. In CMOS, series transistor stacks past $\sim4$ tall have ruinous resistance and delay ([CMOS_Fundamentals](01_CMOS_Fundamentals.md)), so a wide flat CLA must be decomposed into a gate *tree* anyway — defeating the "$O(1)$" promise.
 
@@ -242,6 +274,55 @@ $$
 $$
 
 "Compute all the carries" **is** "compute all prefixes of an associative sequence" — the classic parallel-prefix (scan) problem. And a prefix-sum over an associative operator has a **$\lceil\log_2 n\rceil$-depth** parallel solution. That is *why* prefix adders hit the $\Theta(\log n)$ delay floor of §1: the carry problem was a scan in disguise, and scans parallelise logarithmically.
+
+Intuitively a prefix-sum is a **parallel running total**: instead of sweeping a list left-to-right accumulating as you go, you compute *every* running total at once with a tree of combines — depth $\log_2 n$, not $n$. The carry network is that tree with $\circ$ as the accumulator. For $n=8$ it produces all eight carries $c_1{\dots}c_8$ in three levels, each level combining spans twice as wide as the last:
+
+```mermaid
+flowchart TB
+  A0["0"] --> B0["0"]
+  A1["1"] --> B1["1:0"]
+  A2["2"] --> B2["2:1"]
+  A3["3"] --> B3["3:2"]
+  A4["4"] --> B4["4:3"]
+  A5["5"] --> B5["5:4"]
+  A6["6"] --> B6["6:5"]
+  A7["7"] --> B7["7:6"]
+  A0 --> B1
+  A1 --> B2
+  A2 --> B3
+  A3 --> B4
+  A4 --> B5
+  A5 --> B6
+  A6 --> B7
+  B0 --> C0["0"]
+  B1 --> C1["1:0"]
+  B2 --> C2["2:0"]
+  B3 --> C3["3:0"]
+  B4 --> C4["4:1"]
+  B5 --> C5["5:2"]
+  B6 --> C6["6:3"]
+  B7 --> C7["7:4"]
+  B0 --> C2
+  B1 --> C3
+  B2 --> C4
+  B3 --> C5
+  B4 --> C6
+  B5 --> C7
+  C0 --> D0["c1"]
+  C1 --> D1["c2"]
+  C2 --> D2["c3"]
+  C3 --> D3["c4"]
+  C4 --> D4["c5"]
+  C5 --> D5["c6"]
+  C6 --> D6["c7"]
+  C7 --> D7["c8"]
+  C0 --> D4
+  C1 --> D5
+  C2 --> D6
+  C3 --> D7
+```
+
+Each node is labeled by the bit span it has reduced (`5:2` = the combined $(G,P)$ of bits 5..2); the bottom row's `i:0` spans *are* the carries. This particular shape — every node fan-out 2, exact $\log_2 n$ depth — is **Kogge-Stone**. Read off its cost: the last level's diagonal wires reach from bit $i$ back to $i{-}4$ (in general $i{-}n/2$), a dense mat of long wires. That is the "max wiring" corner §5.1 quantifies; other shapes trade depth or fan-out to thin those wires out.
 
 ### 5.1 The prefix family is one trade-off surface
 
@@ -310,6 +391,29 @@ Because no carry travels along the word, a CSA has **$O(1)$ delay independent of
 
 The carry wire moves **diagonally to the next column at the next reduction level**, not horizontally into the neighboring cell in the same level. That single wiring difference is why all columns compress concurrently. A correctness invariant for every column is integer-value conservation: the weighted sum of all input bits to a reduction level must equal the weighted sum of all output sum/carry bits; no timing assumption is needed to prove it.
 
+The accountant's trick makes it concrete: rather than tallying each number into a single total as it arrives (a carry-propagate every time), keep the partial result as **two piles** — a sum pile and a carry pile — and fold in new operands with carry-free CSAs. Stacking CSAs funnels any number of operands down to those two piles in logarithmic depth; only then does one real adder tally them:
+
+```mermaid
+flowchart TB
+  PP0 --> A["3:2 CSA"]
+  PP1 --> A
+  PP2 --> A
+  PP3 --> B["3:2 CSA"]
+  PP4 --> B
+  PP5 --> B
+  A -->|sum| C["3:2 CSA"]
+  A -->|carry| C
+  B -->|sum| C
+  B -->|carry| D["3:2 CSA"]
+  C -->|sum| D
+  C -->|carry| D
+  D -->|sum| CPA["carry-propagate<br/>adder"]
+  D -->|carry| CPA
+  CPA --> PROD["product"]
+```
+
+Each `carry` edge carries one column of weight (it re-enters shifted one place left — the diagonal move above); the six rows collapse to two in three CSA levels, and the lone carry-propagate add at the bottom is the *only* place the chain is ever paid.
+
 $$
 \text{levels} \approx \lceil \log_{1.5}(n/2)\rceil,\qquad \text{since each 3:2 level shrinks the count by the ratio }3{:}2
 $$
@@ -340,6 +444,17 @@ $$
 
 Each digit selects one partial product from $\{0,\pm A,\pm 2A\}$ — all trivial (a shift and/or a two's-complement negate, no addition). This **halves** the partial-product count to $\lceil n/2\rceil$, *guaranteed* (not data-dependent), and handles signed two's-complement operands naturally, because the recoding produces the negative partial products itself.
 
+**Worked recode.** Take multiplier $Q = 45 = 00101101_2$ and append $b_{-1}{=}0$. Scan overlapping 3-bit windows $(b_{2i+1},b_{2i},b_{2i-1})$, each producing one signed digit:
+
+| $i$ | window | $d_i=-2b_{2i+1}+b_{2i}+b_{2i-1}$ | selects |
+|---:|:---:|---:|:---:|
+| 0 | $(0,1,0)$ | $+1$ | $+A$ |
+| 1 | $(1,1,0)$ | $-1$ | $-A$ |
+| 2 | $(1,0,1)$ | $-1$ | $-A$ |
+| 3 | $(0,0,1)$ | $+1$ | $+A$ |
+
+Check by reconstructing the multiplier: $1{\cdot}4^3 - 1{\cdot}4^2 - 1{\cdot}4^1 + 1{\cdot}4^0 = 64-16-4+1 = 45$. Four partial products $\{+A,-A,-A,+A\}$ at bit weights $\{2^6,2^4,2^2,2^0\}$ replace the eight an 8-bit unsigned array would form — halved, and each is a shift-or-negate, no adder.
+
 **Radix-2 vs radix-4 vs radix-8 — the count-vs-hard-multiple trade.** Higher radix cuts the partial-product count further, but the multiples get expensive:
 
 | Radix | Window | PP count | Multiples needed | Verdict |
@@ -349,6 +464,24 @@ Each digit selects one partial product from $\{0,\pm A,\pm 2A\}$ — all trivial
 | 8 | 4 bits | $n/3$ | adds $\pm 3A$ — a **hard multiple** | needs a real CPA to precompute $3A$ |
 
 Radix-8 removes another third of the rows but requires $3A$, which is not a shift — it costs a carry-propagate add up front and extra mux area, usually eating the reduction win. So **radix-4 Booth is the default in every commercial multiplier and synthesis library** (DesignWare and friends). Radix-8/16 appear only in very wide or heavily-pipelined multipliers where the hard-multiple precompute amortises across many partial products.
+
+The recode itself is a tiny combinational map from the 3-bit window to a signed digit — one case statement per window:
+
+```systemverilog
+// Radix-4 Booth: 3-bit window -> signed digit in {-2,-1,0,+1,+2},
+// selecting a partial product from {0, +A, -A, +2A, -2A}.
+function automatic logic signed [2:0] booth_r4 (input logic [2:0] w);
+  case (w)                      // w = {b[2i+1], b[2i], b[2i-1]}
+    3'b000, 3'b111: booth_r4 =  3'sd0;   //  0
+    3'b001, 3'b010: booth_r4 =  3'sd1;   // +A
+    3'b011        : booth_r4 =  3'sd2;   // +2A
+    3'b100        : booth_r4 = -3'sd2;   // -2A
+    3'b101, 3'b110: booth_r4 = -3'sd1;   // -A
+  endcase
+endfunction
+```
+
+The digit's sign drives a conditional two's-complement of $A$; its magnitude drives a 0-or-1-bit left shift — so each partial product is a mux plus an XOR row for the negate, never an add. (Radix-8 would add a `3'b...` case needing $\pm3A$, which no shift produces — the "hard multiple" above.)
 
 ### 7.2 Reduction: Wallace vs Dadda trees
 
@@ -363,6 +496,8 @@ The partial-product array is a multi-operand add, so reduce it with a carry-save
 | Final CPA width | narrower | wider |
 | Layout regularity | lower | higher |
 | Net | essentially a wash — synthesis chooses | |
+
+**Concrete depth.** Reduce the 8 partial-product rows of a 16-bit radix-4 Booth array. Each level squeezes the tallest column by the $3{:}2$ ratio, so the row count falls $8\to6\to4\to3\to2$ — four CSA levels, exactly $\lceil\log_{1.5}(8/2)\rceil=\lceil\log_{1.5}4\rceil=\lceil3.42\rceil=4$. Dadda reaches the same 4 while inserting the fewest adders (it only ever reduces down to the next number in $2,3,4,6,9,13,\dots$); Wallace also lands at 4 but compresses eagerly, spending more adders to hand the final CPA a narrower redundant pair.
 
 In practice the difference is a few percent and the tool picks; the *concept* — a $\log$-depth CSA tree feeding one CPA — is what matters.
 

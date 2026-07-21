@@ -246,6 +246,8 @@ $$
 
 where $F|_{x_1=c}$ is the cofactor with $x_1$ fixed to $c$. At $x_1=0$ the right side becomes $F|_0$; at $x_1=1$ it becomes $F|_1$, so it matches $F$ for every input. **That expression is exactly a 2:1 mux** with select $x_1$ and data $\{F|_0,F|_1\}$. Recurse on the remaining variables and an $n$-input function becomes a tree of 2:1 muxes selecting among truth-table entries—a mux tree is a lookup table. Therefore a 2:1 mux is universal when its data inputs may be constants or literals, and an $n$-variable function needs at most a $2^{n-1}{:}1$ mux when the last variable is folded into the data inputs.
 
+Concretely, take $F=AB+\overline A C$ from §0.2 and split on $A$. The cofactors are $F|_{A=0}=C$ (with $A{=}0$ the $AB$ term dies and $\overline A C$ becomes $C$) and $F|_{A=1}=B$, so $F=\overline A\,C+A\,B$ — literally a 2:1 mux with select $A$, data $D_0=C$ and $D_1=B$. That is exactly the "Shannon form" drawn in §0.2: nothing was minimized, the mux *is* the two-entry truth table indexed by $A$.
+
 The gate-level structure follows the equation directly. The inverter creates $\overline S$; two product terms qualify the data inputs; the final OR joins the mutually exclusive paths:
 
 ```tikz
@@ -269,6 +271,18 @@ The gate-level structure follows the equation directly. The inverter creates $\o
 ```
 
 This is a true gate-and-wire schematic: a branch denotes the same electrical signal driving more than one gate, while a gate symbol owns the Boolean operation. A standard-cell implementation commonly absorbs the AND/OR/invert network into one compound cell; a transmission-gate implementation instead opens exactly one bidirectional switch between the selected input and the output.
+
+In RTL the selection is a one-liner — index the data with the select and let synthesis pick the physical structure that §2.2 weighs:
+
+```systemverilog
+module mux_nb #(parameter int W = 8, N = 4) (
+  input  logic [N-1:0][W-1:0]  d,          // N packed data words
+  input  logic [$clog2(N)-1:0] sel,
+  output logic [W-1:0]         y
+);
+  assign y = d[sel];   // synthesis realizes flat, tree, TG, or LUT
+endmodule
+```
 
 ### 2.2 Building an n:1 mux: tree vs flat, TG vs AOI, LUT vs cell
 
@@ -432,6 +446,8 @@ flowchart LR
   OWN -->|accepted| PTR
   OWN -->|stall: retain owner| OWN
 ```
+
+Trace one rotation. Four requesters, the fixed-priority core picks the lowest index, and the pointer records that requester 1 was served last — so this round's priority order is $2\!\to\!3\!\to\!0\!\to\!1$. Suppose `req = 1010` (requesters 3 and 1 asking). Walking the rotated order, requester 2 is idle and requester 3 is asking, so **3 wins** — even though the fixed-priority core alone would have handed it to requester 1. On acceptance the pointer advances past 3, making requester 0 highest priority next round, so a continuously asserting requester 3 cannot starve requester 1. That is the whole point of the rotate / fixed-priority / inverse-rotate sandwich above.
 
 Update the pointer on an **accepted** grant, not merely an asserted grant; otherwise backpressure can cause ownership to jump while the selected requester still expects service. Fixed priority minimizes state and can protect a real-time class. Round robin bounds starvation among continuously eligible peers but may hurt critical traffic. Weighted or deficit arbitration adds counters to represent reserved shares and burst history. Verification must assert one-hot-or-zero grant, grant implies request, stable ownership under stall, pointer update only on acceptance, and a bounded-service property under explicitly stated assumptions.
 
@@ -696,6 +712,14 @@ The diagram is qualitative, not drawn to analog time. The vulnerable aperture ex
 
 Setup constrains the **maximum-delay path** because data must arrive before the next capture edge. Hold constrains the **minimum-delay path** because new data must not arrive too soon after the same edge. Increasing the clock period repairs setup but does not repair hold; hold is fixed with delay cells, clock-skew adjustment, or a different cell/path placement. That asymmetry is why setup and hold must never be summarized as one generic “timing check.”
 
+**Put numbers on it.** Take an illustrative library corner — $t_{cq}=90$ ps, $t_{su}=40$ ps, $t_h=30$ ps, clock skew $t_{skew}=20$ ps — and a 2 GHz target, so $T_{clk}=500$ ps. Setup sets the combinational ceiling every max-delay path must beat:
+
+$$
+t_{logic}\le T_{clk}-t_{skew}-t_{cq}-t_{su}=500-20-90-40=350\ \text{ps}.
+$$
+
+Hold checks the min-delay path; even a direct flop-to-flop wire ($t_{logic}=0$) passes, because the contamination delay $t_{cq}\ge t_h+t_{skew}$ is $90\ge 50$ — a 40 ps margin. This is the asymmetry just stated, in numbers: relaxing $T_{clk}$ from 500 ps toward 1000 ps grows the 350 ps setup budget but leaves the 40 ps hold margin untouched, because the hold inequality contains no $T_{clk}$ term.
+
 ### 4.6 Functional flip-flop families: change the next-state logic, not the storage physics
 
 “D flip-flop” describes the next-state function $Q^+=D$. Other named flip-flops describe different input functions; in a modern standard-cell flow they are commonly synthesized as a DFF plus combinational logic unless a dedicated cell is smaller or faster.
@@ -824,6 +848,22 @@ The feedback mux implements $D_{ff}=E D+\overline E Q$. It gives independent con
 
 **Synchronous reset** is sampled on the active edge and participates in the D path. It is timing-friendly and glitch-resistant but cannot clear state when the clock is stopped. **Asynchronous reset/set** directly forces the storage node independent of clock, useful for safe power-up and clock-off states, but assertion and especially deassertion are asynchronous events. Recovery and removal are the reset analogues of setup and hold: deassert too near an edge and different flops can leave reset on different cycles or go metastable. A common policy is **asynchronous assert, synchronous deassert** through a reset synchronizer in each clock domain.
 
+In RTL both controls live in one `always_ff` — the async reset sits in the sensitivity list and dominates, the enable is a synchronous guard inside the clocked branch, and *not assigning* $q$ is how the flop holds:
+
+```systemverilog
+module dff_en_arst (
+  input  logic clk, rst_n, en, d,
+  output logic q
+);
+  always_ff @(posedge clk or negedge rst_n)
+    if      (!rst_n) q <= 1'b0;   // async clear — dominates everything
+    else if (en)     q <= d;      // synchronous load only when enabled
+    //   else        q <= q;      // implicit: unassigned means retain
+endmodule
+```
+
+The `negedge rst_n` in the sensitivity list is precisely what makes the reset asynchronous; drop it and test `!rst_n` only inside the clocked branch and the identical code becomes a synchronous reset. Synthesis is free to realize the `en` guard as the per-register feedback mux or, across a bank, as the shared clock-gate cell drawn above.
+
 ```mermaid
 flowchart LR
   subgraph SYNC["synchronous reset"]
@@ -946,7 +986,9 @@ so unbalanced logic that would fail a rigid flip-flop boundary can close between
 
 ### 4.11 Metastability: the third equilibrium and a probabilistic failure budget
 
-The cross-coupled pair has a *third* equilibrium besides 0 and 1: the balance point at $\approx V_{dd}/2$. It is unstable, but a setup/hold violation can leave the node there, and only circuit noise nudges it off. Linearizing around that point,
+The cross-coupled pair has a *third* equilibrium besides 0 and 1: the balance point at $\approx V_{dd}/2$. It is unstable, but a setup/hold violation can leave the node there, and only circuit noise nudges it off.
+
+Picture a ball balanced exactly on a hilltop: it *must* eventually roll to one side, but nothing bounds *when* — an infinitesimal push decides the direction after an unbounded wait. The storage node stranded at $V_m$ is that ball. The hazard is not a wrong value but an *undecided* one that can still be resolving at the instant a downstream flop tries to sample it. Linearizing around that point,
 
 $$
 \frac{dV}{dt}=\frac{V-V_m}{\tau}\;\;\Rightarrow\;\; V(t)-V_m=(V(0)-V_m)\,e^{\,t/\tau}
@@ -959,6 +1001,20 @@ $$
 $$
 
 where $t_r$ = time allowed to resolve, $T_0$ = a characterized aperture constant, $f_{clk}$ = sampling-clock frequency, and $f_{data}$ = asynchronous transition rate.
+
+**A worked plug-in.** Use illustrative worst-corner cell constants $\tau=20$ ps and $T_0=10$ ps in a system with $f_{clk}=1$ GHz and $f_{data}=10$ MHz, so the event-rate denominator is $T_0\,f_{clk}\,f_{data}=10^{-11}\cdot10^{9}\cdot10^{7}=10^{5}$ per second. If the asynchronous signal were sampled by a lone flop with only $t_r\approx300$ ps of leftover slack to resolve,
+
+$$
+\text{MTBF}\approx\frac{e^{300/20}}{10^{5}}=\frac{e^{15}}{10^{5}}\approx\frac{3.3\times10^{6}}{10^{5}}\approx 33\ \text{s},
+$$
+
+a catastrophe. Insert the second synchronizer flop and the first now gets almost a whole clock period, $t_r\approx900$ ps:
+
+$$
+\text{MTBF}\approx\frac{e^{900/20}}{10^{5}}=\frac{e^{45}}{10^{5}}\approx\frac{3.5\times10^{19}}{10^{5}}\approx 3.5\times10^{14}\ \text{s}\approx 11\ \text{million years}.
+$$
+
+The same cell, given 600 ps more resolution time, buys a factor $e^{600/20}=e^{30}\approx10^{13}$ — the exponential-in-$t_r$ shape made concrete, and the quantitative version of "adding a stage buys almost one clock period" below.
 
 ```mermaid
 flowchart LR
@@ -1259,6 +1315,34 @@ Here `ack` is a **Moore** output because it depends only on `RESP`; `start` is a
 ```
 
 The waveform is the procedural test: it demonstrates why `RUN` prevents duplicate starts while `req` remains high and why `RESP` retains completion until the requester observes it.
+
+In RTL the derivation is three moves: a state register, a next-state/output block with safe defaults, and a `default` arm that makes any illegal code recover to `IDLE` (§6.3):
+
+```systemverilog
+module req_ctrl (
+  input  logic clk, rst_n, req, done,
+  output logic start, ack
+);
+  typedef enum logic [1:0] {IDLE, RUN, RESP} state_t;
+  state_t state, next;
+
+  always_ff @(posedge clk or negedge rst_n)      // state register
+    if (!rst_n) state <= IDLE;
+    else        state <= next;
+
+  always_comb begin                              // next-state + outputs
+    next = state;  start = 1'b0;  ack = 1'b0;    // defaults: hold, no pulse
+    unique case (state)
+      IDLE: if (req)  begin next = RUN;  start = 1'b1; end  // Mealy accept
+      RUN:  if (done)       next = RESP;
+      RESP: begin ack = 1'b1; if (!req) next = IDLE; end    // Moore ack
+      default:              next = IDLE;                    // recovery
+    endcase
+  end
+endmodule
+```
+
+The defaults are load-bearing: because `start` and `ack` are cleared at the top of every evaluation, they assert only where explicitly raised, so no accidental latch or stray command can appear. `start` reads `req` inside `IDLE` (Mealy), while `ack` depends on the state alone (Moore) — the two output styles §6.1 named, now visible as two lines of the same block.
 
 ### 6.2 State encoding: one-hot vs binary vs gray
 

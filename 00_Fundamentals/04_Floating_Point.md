@@ -77,6 +77,37 @@ Everything below is a consequence of how a given format splits $N$ between $k$ a
 
 **The implicit bit — one free bit of precision.** Because a normalized significand always satisfies $1\le m<2$, its leading bit is *always* 1. Storing it would waste a bit, so it is not stored: the hardware prepends a "hidden" 1 to the $(p{-}1)$ stored fraction bits, giving $p$ bits of precision from $p{-}1$ bits of storage. (The single exception is subnormals, §3, whose hidden bit is 0 — which is exactly what makes them special.)
 
+**A worked encoding — $-6.5$ into FP32.** Take the fields apart by hand. Write the magnitude in binary and normalize so the leading bit is the hidden $1$:
+
+$$
+6.5 = 110.1_2 = 1.101_2 \times 2^{2}.
+$$
+
+The stored fraction is $101$ padded to 23 bits, the unbiased exponent is $2$ (biased $2+127=129$), and the sign is $1$:
+
+$$
+\underbrace{1}_{s}\ \ \underbrace{1000\,0001}_{129}\ \ \underbrace{101\,0000\,0000\,0000\,0000\,0000}_{\text{stored fraction}}\;=\;\texttt{0xC0D00000}.
+$$
+
+Decode it back: $(-1)^1\times 1.101_2\times 2^{129-127}=-1.625\times 4=-6.5$ — clean, because $6.5$ is a sum of powers of two. Most decimals are not: $0.1$ has no finite binary expansion, so its significand $1.1001\,1001\,1001\ldots_2$ is *rounded* to 24 bits and stored as $\texttt{0x3DCCCCCD}\approx 0.100000001$ — the rounding of §4, already visible in the encoding. The standard way to see the three fields is to reinterpret the bits:
+
+```c
+#include <stdint.h>
+#include <math.h>
+#include <stdio.h>
+
+// Reinterpret a float's bits and split out the three IEEE-754 fields.
+void dissect(float x) {
+    union { float f; uint32_t u; } v = { .f = x };        // type-pun via union
+    uint32_t sign =  v.u >> 31;
+    int32_t  exp  = (int32_t)((v.u >> 23) & 0xFF) - 127;   // remove the bias
+    uint32_t frac =  v.u & 0x7FFFFF;                       // 23 stored bits
+    float    ulp  = nextafterf(x, INFINITY) - x;           // gap to next float
+    printf("%g: sign=%u exp=%d frac=0x%06X ulp=%g\n", x, sign, exp, frac, ulp);
+}
+// dissect(-6.5f) -> sign=1 exp=2 frac=0x500000 ulp=4.76837e-07
+```
+
 **ULP and machine epsilon.** In the binade $[2^{e},2^{e+1})$ the representable numbers are spaced by one **unit in the last place**,
 
 $$
@@ -84,6 +115,8 @@ $$
 $$
 
 where $\epsilon$ = **machine epsilon**, the gap between $1.0$ and the next larger float, and $p$ = significand precision (bits, including the hidden bit). The spacing scales with $2^{e}$ — the promised constant *relative* resolution.
+
+**A ULP / machine-epsilon computation.** Machine epsilon is just the ULP at $1.0$: the next float above $1.000\ldots0_2$ sets the lowest stored bit, giving $1+2^{-23}$, so $\epsilon=2^{-23}\approx1.19\times10^{-7}$ (FP32). The gap then rides the binade. Near $100$ (in $[2^6,2^7)$) it is $2^{6-23}=2^{-17}\approx7.6\times10^{-6}$ — so $100.0$ and $100.000008$ are adjacent floats with nothing between them; near $6.5$ (in $[2^2,2^3)$) it is $2^{2-23}=2^{-21}\approx4.8\times10^{-7}$, the `ulp` the snippet above prints for $-6.5$. Constant *relative* precision ($\sim7$ digits) everywhere; only the absolute spacing moves.
 
 **The rounding-error model.** Round-to-nearest maps any real $x$ (in range) to the closest float, so it errs by at most half a ULP:
 
@@ -115,7 +148,7 @@ Two pairs make the trade explicit. **FP16 vs BF16** are both 16-bit yet opposite
 
 ## 3. Gradual underflow: why subnormals exist
 
-Turn the smallest-normal knob and a real hazard appears. The smallest normal is $2^{\,e_{\min}}$ (for FP32, $2^{-126}$). If the next value below it were $0$, there would be a **gap** as wide as the smallest normal itself between $0$ and $2^{e_{\min}}$ — far wider than the spacing just *above* $2^{e_{\min}}$. Two distinct numbers whose difference lands in that gap would subtract to exactly $0$, breaking the property every programmer relies on:
+Turn the smallest-normal knob and a real hazard appears. The smallest normal is $2^{\,e_{\min}}$ (for FP32, $2^{-126}$). If the next value below it were $0$, there would be a **gap** as wide as the smallest normal itself between $0$ and $2^{e_{\min}}$ — far wider than the spacing just *above* $2^{e_{\min}}$. (In FP32 that cliff is $2^{-126}$ wide, yet the spacing just above it is only $2^{-149}$ — a step $2^{23}\approx8.4\times10^{6}$ times too big.) Two distinct numbers whose difference lands in that gap would subtract to exactly $0$, breaking the property every programmer relies on:
 
 $$
 a \ne b \quad\Longrightarrow\quad a - b \ne 0.
@@ -168,6 +201,14 @@ $$
 
 When $x\approx y$ the denominator collapses while the numerator does not, so the relative error is **amplified by $(|x|+|y|)/|x-y|$**, which diverges as the operands converge. The subtraction merely strips away the agreeing leading digits, promoting the operands' pre-existing rounding error into the most significant bits of the result. The lesson is algorithmic: never compute a small quantity as the difference of two large nearly-equal ones (the quadratic formula, variance as $E[x^2]-E[x]^2$, finite differences all bite here).
 
+**A cancellation demo you can check by hand.** Work in a toy decimal float carrying 4 significant digits (RNE), standing in for FP32's $\sim7$. Two nearby values arrive, each *already* rounded to the format:
+
+$$
+a=3.14159\Rightarrow fl(a)=3.142,\qquad b=3.14127\Rightarrow fl(b)=3.141.
+$$
+
+The subtraction is *exact* (Sterbenz): $3.142-3.141=0.001$. But the true difference is $a-b=0.00032$, so the computed $0.001$ is off by $\approx210\%$ — the answer is essentially noise. Nothing failed in the subtract; it cancelled the four agreeing digits $3.141$ and promoted each operand's half-ULP rounding error (up to $0.0005$, invisible while riding a value of $\sim3$) into the *leading* digit of a result of size $\sim0.001$. FP32 does the identical thing in binary with $2^{-24}$ in place of the decimal ULP — which is why a small quantity must never be formed as the difference of two large near-equal ones.
+
 Cancellation is also *why the FP adder has a close path*. When the exponent difference is $\le 1$ the result may cancel to many leading zeros, needing a full-width normalization shift driven by a leading-zero anticipator; when it is $\ge 2$ alignment dominates but normalization is trivial. The two expensive shifts never occur together, so real adders split into a **far path** (big align, tiny normalize) and a **close path** (tiny align, big normalize) and pick the winner — a concrete payoff of the cancellation analysis, not a bag of stages to memorize.
 
 **The FMA: one rounding instead of two.** A **fused multiply-add** computes
@@ -181,6 +222,13 @@ with a **single** rounding of the *exact* product-plus-addend, versus $fl(fl(a\c
 1. **Accuracy per term.** A dot product accumulated with FMA rounds once per term, not twice, roughly halving the error constant; more importantly the intermediate product is never truncated to $p$ bits before it is added.
 2. **Error-free transforms.** Because the product is kept exact internally, $p=fl(a\cdot b)$ and $e=\text{fma}(a,b,-p)$ together give $a\cdot b = p+e$ **exactly** — the rounding error is *recovered as a number*. This "2Product" is the foundation of compensated (Kahan) summation and double-double arithmetic (§6).
 3. **Cheap iterative refinement.** Newton/Goldschmidt reciprocal and square-root steps are chains of $\text{fma}(-b,x,1)$ that would lose their meaning if the product were pre-rounded.
+
+**An FMA rounding difference, by hand.** Take a 3-significant-digit toy float and compute $a\cdot b+c$ with $a=b=9.99,\ c=-99.8$; the exact product is $99.8001$.
+
+- **Separate**, $fl(fl(a\cdot b)+c)$: round the product first, $fl(99.8001)=99.8$, then $99.8-99.8=0$ — the result vanishes.
+- **Fused**, $fl(a\cdot b+c)$: keep the product exact, $99.8001-99.8=0.0001$, round once to $1.00\times10^{-4}$.
+
+The true answer is $0.0001$; the separate path lost it *entirely* by truncating the product to the format before $c$ could cancel the leading digits, while the FMA's single rounding kept it. This is the "never round the intermediate product" point made numeric — and exactly why the §8.2 datapath carries the full $2p$-bit product into the add.
 
 **Why the FMA is area-expensive.** The addend $c$ must align against the *full* $2p$-bit product before rounding, so the internal adder spans product width plus alignment range — roughly $3p$ bits (about 74 for FP32, 161 for FP64) against a bare FP adder's $p{+}3$. That wide carry-propagate add is usually the FMA's critical path and buys it $\sim 1{-}2$ cycles of latency over a plain multiply. Designs pay it anyway because one fused instruction with one rounding is both faster and *more accurate* than two — which is why the FMA, not the standalone multiply-then-add, is the primitive every modern datapath exposes. The multiplier tree feeding it (radix-4 Booth → Dadda → sparse-prefix CPA) is derived in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §7.
 
