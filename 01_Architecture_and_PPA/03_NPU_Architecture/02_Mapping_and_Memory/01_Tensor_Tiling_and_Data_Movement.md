@@ -332,7 +332,7 @@ Before metadata/alignment, it fits 128 KiB but not 96 KiB.
 
 ### Problem 2 — arithmetic intensity
 
-That tile performs $2M_tN_tK_t=2{,}097{,}152$ operations. Reading each input tile once and writing INT32 output once moves $16{,}384+16{,}384+65{,}536=98{,}304$ B at that boundary, giving about 21.3 ops/B.
+That tile performs $2M_tN_tK_t=2{,}097{,}152$ operations. Reading each INT8 input tile once ($128{\times}64=8{,}192$ B each) and writing the INT32 output once ($128{\times}128{\times}4=65{,}536$ B) moves $8{,}192+8{,}192+65{,}536=81{,}920$ B at that boundary, giving about 25.6 ops/B. (The $16{,}384$-B input figures in Problem 1 are the *double-buffered capacity*, not the once-read traffic counted here.)
 
 ### Problem 3 — fusion trade
 

@@ -119,7 +119,7 @@ $$
 Resident blocks are
 
 $$
-B_{res}=\min(B_{max},B_{reg},B_{smem},B_{warp},B_{thread}),
+B_{res}=\min(B_{max},B_{reg},B_{smem},B_{warp}),
 $$
 
 and occupancy is resident warps divided by $W_{max}$. Allocation granularities round register/shared-memory use upward, producing occupancy cliffs.

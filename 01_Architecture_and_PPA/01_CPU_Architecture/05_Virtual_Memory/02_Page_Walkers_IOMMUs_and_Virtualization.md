@@ -159,13 +159,13 @@ Coherence of page-table *data* does not automatically invalidate decoded TLB/PWC
 
 Virtualization often translates guest virtual address (GVA) → guest physical address (GPA) → system physical address (SPA). A naive nested walk can require many accesses: each stage-1 page-table access itself needs stage-2 translation.
 
-For $L_1$ stage-1 levels and $L_2$ stage-2 levels, worst-case dependent references approach
+For $L_1$ stage-1 levels and $L_2$ stage-2 levels, worst-case dependent references (for the translation, before the final data access) approach
 
 $$
-L_1L_2+L_2
+(L_1{+}1)(L_2{+}1)-1
 $$
 
-under a straightforward construction, before final data access. Caches reduce average cost but not the structural dependency.
+because each of the $L_1$ stage-1 PTE reads sits at a guest-physical address that itself needs an $L_2$-access stage-2 walk, plus the stage-1 reads and one final guest-physical→system translation (the full count is derived in [TLB and Virtual Memory](01_TLB_and_Virtual_Memory.md) §5.5). For two 4-level trees this is $5\times5-1=24$. Caches reduce average cost but not the structural dependency.
 
 Mitigations:
 
