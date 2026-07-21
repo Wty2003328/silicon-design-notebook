@@ -114,7 +114,7 @@ Dynamic and leakage are spent on completely different axes — dynamic is propor
 | Short-circuit | 5–10 % | 5–10 % | roughly stable |
 | Leakage | 20–30 % | 40–50 % | rose until FinFET, then flat-high |
 
-**Across temperature, the crossover moves within a single chip.** Dynamic power is nearly temperature-flat; leakage roughly **doubles every 10–12 °C** (§4). So a block that is 70 % dynamic at 25 °C can be leakage-dominated at 105 °C — which is why leakage signoff runs at the *hot* corner and why the thermal-runaway loop of §1 exists at all.
+**Across temperature, the crossover moves within a single chip.** Dynamic power is nearly temperature-flat; leakage roughly **doubles every 10–12 °C** (§4). So a block that is 70 % dynamic at 25 °C can be leakage-dominated at 105 °C (that 80 °C span is ~7 doublings — a 100×-plus leakage rise against near-flat dynamic, enough to swamp the 70 % dynamic share completely) — which is why leakage signoff runs at the *hot* corner and why the thermal-runaway loop of §1 exists at all.
 
 **Across activity, the crossover defines when to power-gate.** As a block idles, its dynamic term falls toward zero while leakage holds constant, so **standby power is pure leakage** and standby battery life is set entirely by it. Below some activity threshold a block leaks more than it computes, and the correct response is not to gate its clock (which leaves leakage untouched) but to **cut its rail entirely** — power gating (§6). The whole reason there are two different "off" techniques is that they attack the two different currents.
 
@@ -146,6 +146,30 @@ $$
 
 **Power runs as the cube of frequency across the DVFS range.** This is the quantitative heart of the "chase the last 10 % of clock and pay disproportionately" behaviour: the top of the V/f curve is where you are pushing $V_{DD}$ hard just to hold frequency, so a 10 % clock bump can cost ~33 % power. It runs both ways — **halving frequency-and-voltage cuts power ~8× while only doubling runtime, a net ~4× energy win** — which is exactly why DVFS throttles down aggressively under a thermal or battery cap. Near threshold the approximation *understates* the benefit: as $V_{DD}\to V_{th}$ the overdrive $(V_{DD}-V_{th})^{\alpha}$ collapses, so frequency falls *faster* than voltage and the low end of the curve is even more energy-favourable than the cube suggests (§3.2). The hard floor on $V_{DD}$ is not power but **noise-margin and regeneration collapse** at ~0.3–0.5 V ([CMOS §3.2](../00_Fundamentals/01_CMOS_Fundamentals.md)) and SRAM read-margin failure ([CMOS §12.4](../00_Fundamentals/01_CMOS_Fundamentals.md)).
 
+**Put real numbers in it.** Take a modern node ($V_{th}\approx0.3$ V, velocity-saturation exponent $\alpha\approx1.3$) and drop $V_{DD}$ from 1.0 V to 0.8 V — a 20 % voltage trim. The delay model says how much clock you keep:
+
+- $f_{max}\propto(V_{DD}-V_{th})^{1.3}/V_{DD}$: the overdrive falls $0.7\to0.5$, so $f$ drops to only **0.81×** — almost exactly the voltage ratio, which is *why* $f\propto V_{DD}$ holds empirically over this window.
+- $P_{dyn}=V_{DD}^2\,f$: $0.80^2\times0.81\approx$ **0.52×**.
+
+A 20 % voltage cut **halves the power** for only ~20 % less clock — and the bare cube $0.8^3=0.51$ lands in the same place. Sweep the whole range and $P/P_0$ tracks $V^3$ column-for-column:
+
+```python
+Vth, a = 0.3, 1.3                       # threshold, velocity-saturation exponent
+fmax = lambda V: (V - Vth)**a / V       # alpha-power delay model: f_max(Vdd)
+P    = lambda V: V**2 * fmax(V)         # P ~ Vdd^2 * f, evaluated at f = fmax
+f0, P0 = fmax(1.0), P(1.0)
+for V in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
+    print(f"V={V:.1f}  f/f0={fmax(V)/f0:.2f}  P/P0={P(V)/P0:.2f}  V^3={V**3:.2f}")
+# V=1.0  f/f0=1.00  P/P0=1.00  V^3=1.00
+# V=0.9  f/f0=0.91  P/P0=0.74  V^3=0.73
+# V=0.8  f/f0=0.81  P/P0=0.52  V^3=0.51
+# V=0.7  f/f0=0.69  P/P0=0.34  V^3=0.34
+# V=0.6  f/f0=0.55  P/P0=0.20  V^3=0.22
+# V=0.5  f/f0=0.39  P/P0=0.10  V^3=0.12
+```
+
+The `P/P0` and `V^3` columns agree within a few percent all the way down — that agreement *is* the cube law, and it is the lever a DVFS governor pulls when it trades a little speed for a lot of power.
+
 ### 3.2 Energy per op and the minimum-energy point
 
 If energy per op is $\propto V_{DD}^2$, why not scale $V_{DD}$ to the floor for every workload? Because leakage sets a lower bound. Total energy per op has two parts, and lowering voltage moves them in *opposite* directions:
@@ -155,6 +179,17 @@ E_{op}=\underbrace{\alpha C V_{DD}^2}_{\text{dynamic}\,\downarrow}\;+\;\underbra
 $$
 
 As $V_{DD}$ drops the dynamic part falls quadratically, but the clock slows, so each op *takes longer* and the block **leaks for more time per op** — the leakage-energy term rises. Their sum has a genuine minimum, the **minimum-energy point (MEP)**, derived at the transistor level in [CMOS §4.4](../00_Fundamentals/01_CMOS_Fundamentals.md) and sitting near threshold, typically **~0.3–0.4 V**.
+
+**See the valley.** Normalise the dynamic weight to 1, give leakage a small coefficient, and treat $I_{leak}$ as roughly flat in $V_{DD}$, so the leakage-energy term collapses to $E_{leak}\propto V_{DD}^2/(V_{DD}-V_{th})^{1.3}$. Tabulating both terms as $V_{DD}$ falls (arbitrary units — the *shape* is the point, $V_{th}=0.3$ V):
+
+| $V_{DD}$ | $E_{dyn}\propto V_{DD}^2$ | $E_{leak}$ (↑ as $V_{DD}\!\downarrow$) | $E_{total}$ |
+|---|---|---|---|
+| 0.80 (nominal) | 0.64 | 0.05 | 0.69 |
+| 0.50 | 0.25 | 0.06 | 0.31 |
+| **0.40 (MEP)** | 0.16 | 0.10 | **0.26** |
+| 0.35 | 0.12 | 0.18 | 0.30 |
+
+Coming down from nominal, dropping $V_{DD}$ collapses the dynamic term far faster than leakage grows, so total energy *falls* — here to ~2.7× below the nominal-voltage energy by 0.40 V. Push *below* the MEP and each op takes so long (the delay's $(V_{DD}-V_{th})^{1.3}$ denominator collapsing toward zero) that accumulated leakage energy overtakes the still-shrinking dynamic term, and $E_{total}$ climbs *back up* (0.26 → 0.30 from 0.40 to 0.35 V). That U-shaped floor is the MEP: you scale voltage down *to* it, not past it.
 
 This is the whole rationale for **near-threshold computing (NTC)**: run at $V_{DD}\approx0.4$–0.6 V, a few $\times V_T$ above $V_{th}$, for **~5–10× better energy per op at roughly a third to a half the frequency**. It is the right operating point wherever throughput-per-watt beats latency — wake-word engines, always-on sensor hubs, IoT, and the efficiency cores of a big.LITTLE cluster. The frequency loss is real, which is why NTC is paired with parallelism (§5): recover throughput by going wide at low voltage rather than fast at high voltage. The MEP is bounded below by the same margin and SRAM-collapse floors as §3.1, which is why nobody ships logic at 0.2 V.
 
@@ -205,7 +240,7 @@ With transistors still shrinking but voltage frozen, power *density* began to cl
 
 1. **Single-thread frequency stalled at 3–5 GHz.** The delay improvement of §3.1 was still there to cash in, but cashing it in means raising $V_{DD}$, and the cube law made that thermally impossible. Frequency has not meaningfully moved in twenty years. [SoC/chiplet PPA and Physical Implementation](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) turns that wall into clock, voltage, thermal, and power-delivery constraints.
 2. **The industry pivoted to parallelism** — multicore, wide SIMD, and specialised accelerators — because §5.1 says that is the *only* energy-efficient way to spend a growing transistor budget once frequency is capped.
-3. **Dark silicon became a first-class constraint.** If a chip cannot power all its transistors within the thermal ceiling, a growing fraction must stay dark at any instant:
+3. **Dark silicon became a first-class constraint.** If a chip cannot power all its transistors within the thermal ceiling, a growing fraction must stay dark at any instant — the transistors are all fabricated and paid for, but the thermal budget can only "light up" a fraction of them at once:
 
 | Node | Fraction that must stay off at peak |
 |---|---|
@@ -221,6 +256,26 @@ The Apple-class SoC makes it concrete: fully activating a ~5 nm phone SoC would 
 ## 6. The reduction map: four levers, and what each attacks
 
 Every power-reduction technique in existence is an attack on one term of $P_{total}=\alpha C V_{DD}^2 f + V_{DD}I_{leak}$, and the discipline is matching the technique to the term — clock gating does nothing for leakage; power gating does nothing for a busy block's dynamic; DVFS touches both but is bounded by latency and margin. This table is the map from lever to term; the *how* (flow, UPF, corner cases) is [Power_Reduction_Techniques](04_Power_Reduction_Techniques.md).
+
+The map has a natural tree shape — the master equation, its four levers (one per multiplicand, plus leakage), and the technique that spends each — with the mechanism and cost/bound detail in the table just below:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart LR
+    EQ["P_total = alpha*C*Vdd^2*f  +  Vdd*I_leak"]
+    EQ --> DYN["Dynamic term<br/>alpha*C*Vdd^2*f"]
+    EQ --> LK["Leakage term<br/>Vdd*I_leak"]
+    DYN --> A["lever: alpha<br/>(activity)"]
+    DYN --> Cc["lever: C<br/>(capacitance)"]
+    DYN --> Vv["lever: Vdd, f<br/>(voltage / freq)"]
+    LK  --> LKN["lever: leakage<br/>(via Vdd rail and Vth)"]
+    A    --> T1["Activity reduction<br/>operand isolation, data gating"]
+    A    --> T2["Clock gating<br/>(clock alpha -> 0)"]
+    Cc   --> T3["Capacitance reduction<br/>short wires, move data less"]
+    Vv   --> T4["DVFS<br/>scale Vdd + f with demand"]
+    LKN  --> T5["Power gating<br/>cut the Vdd rail on idle blocks"]
+    LKN  --> T6["Multi-Vt / body bias<br/>HVT off-critical, raise Vth"]
+```
 
 | Lever | Term attacked | Mechanism | Costs / bounds |
 |---|---|---|---|

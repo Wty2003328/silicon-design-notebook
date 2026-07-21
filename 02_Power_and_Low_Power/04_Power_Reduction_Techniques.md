@@ -108,6 +108,20 @@ Trace *why* it failed and the fix names itself: everything went wrong because th
 
 An element that is transparent at one clock level and opaque at the other is, by definition, a **level-sensitive latch** — here transparent-low. Latch the enable on the low phase, then AND the *latched* enable with the clock, and every glitch is structurally impossible: when $EN$ changes during $CLK=1$ the latch is opaque and the change waits for the falling edge. That latch-plus-AND is the entire idea of the **Integrated Clock Gating (ICG)** cell; it is *integrated* (characterized as one glitch-free unit with a defined insertion delay and a scan-override input) precisely so the latch→AND net cannot pick up skew or crosstalk that a discrete pair would.
 
+The cell is exactly those two elements — a transparent-low (negative) latch feeding one input of an AND gate:
+
+```mermaid
+flowchart LR
+    EN["EN"] --> LAT["negative latch<br/>transparent when CLK low"]
+    CLK["CLK"] --> LAT
+    LAT --> ENL["ENL<br/>settles while CLK low"]
+    ENL --> AND["AND"]
+    CLK --> AND
+    AND --> GCLK["GCLK"]
+```
+
+A glitch on $EN$ during $CLK=1$ arrives at an *opaque* latch and waits for the falling edge, so $GCLK$ only ever sees an enable that settled while $CLK$ was low — the runt pulse is structurally unreachable, not merely improbable.
+
 The cost of the cell is small but real: ~1–2× a minimum inverter in area, and — the subtle part — its *own* clock pin toggles every cycle upstream of the gate, so an ICG gating too few flops burns more than it saves. The enable timing is a setup to the *inactive* (falling) edge, giving the enable roughly a half-cycle to a full cycle to arrive; the precise STA semantics (hard requirement vs. margin house-rule, and time-borrowing through transparency) are the same as any latch path in [STA](../06_Signoff/01_STA.md).
 
 ### 2.3 Granularity and the clock-tree share: gating near the root
@@ -174,7 +188,7 @@ The transition itself burns energy, which sets a minimum residency. During a dow
 
 $$E_{trans} \approx \frac{P_{old}\,T_{trans}}{2}, \qquad\text{so dropping OPP pays only if}\quad T_{idle} > \frac{E_{trans}}{\Delta P}$$
 
-where $\Delta P$ is the power saved at the lower point. For $P_{old}=1$ W, $T_{trans}=50$ µs, $\Delta P=0.5$ W: $T_{idle} > 50$ µs. With margin, governors floor the interval at **1–10 ms between transitions** — the quantitative sense in which DVFS is a *millisecond* technique. This is the same amortization logic as the power-gating break-even (§4.4); the two differ only in the size of the round-trip cost.
+where $\Delta P$ is the power saved at the lower point. Worked: for $P_{old}=1$ W, $T_{trans}=50$ µs, $\Delta P=0.5$ W, the transition wastes $E_{trans}\approx P_{old}T_{trans}/2 = 25$ µJ, so the low OPP pays back only after $T_{idle} > E_{trans}/\Delta P = 50$ µs. With margin, governors floor the interval at **1–10 ms between transitions** — the quantitative sense in which DVFS is a *millisecond* technique. This is the same amortization logic as the power-gating break-even (§4.4); the two differ only in the size of the round-trip cost.
 
 ### 3.4 Recovering the guardband: AVS, droop, adaptive clocking
 
@@ -205,6 +219,21 @@ Cutting a rail is conceptually trivial and practically invasive, because the sin
 
 Problem 3 forces **isolation cells**: a clamp gate at each domain output, *powered from the always-on rail*, that pins the output to a known safe value (AND-type clamps to 0, OR-type to 1) for the entire dead period. The floating alternative is not merely undefined logic — a mid-rail voltage drives a receiving always-on gate into partial conduction, a DC crowbar path burning static power while emitting garbage. The isolation enable must itself be generated *outside* the gated domain, or it dies exactly when it is needed.
 
+The whole arrangement — one series switch, a *virtual* rail feeding the block, and always-on isolation on the outputs:
+
+```mermaid
+flowchart TD
+    VDD["VDD (always-on)"] --> HSW["header switch<br/>HVT PMOS<br/>opens in sleep"]
+    HSW --> VVDD["virtual VDD"]
+    VVDD --> BLK["gated logic block"]
+    BLK -->|"outputs"| OUT["block outputs"]
+    BLK --> VSS["VSS (always-on)"]
+    OUT --> ISO["isolation clamp<br/>always-on rail"]
+    ISO --> AON["always-on logic"]
+```
+
+*Header* shown: a high-$V_t$ PMOS in series between true $V_{DD}$ and the block's *virtual* $V_{DD}$ — open it and the local rail collapses to zero. The *footer* variant is the mirror (an HVT NMOS between the block's virtual $V_{SS}$ and true $V_{SS}$): smaller for equal $R_{on}$, but it bounces the virtual ground, so headers dominate ASIC practice (§4.2). $SLEEP$ and the isolation enable both originate in the always-on controller and must be strictly sequenced (§4.5).
+
 ### 4.2 Sizing the switch: IR drop vs rush current
 
 The switch network is squeezed between two opposing constraints. **Big enough** that the active current flows with negligible loss: with $I_{active}=P_{active}/V_{DD}$ and a drop budget $\Delta V_{drop}$ (typically 5–10 % of $V_{DD}$, since every lost millivolt is lost speed by the §3.1 delay model), the required on-resistance is $R_{sw}=\Delta V_{drop}/I_{active}$. A 100 mW block at 0.9 V draws 111 mA; a 45 mV budget demands $R_{sw}<0.41\,\Omega$, which at ~500 Ω·µm needs ~1235 µm of PMOS, distributed across ~165 switch cells. (Header/PMOS switches keep a clean chip-common ground but need ~2× the width of a footer/NMOS for equal $R_{on}$; footers are smaller but bounce the virtual ground — headers dominate ASIC practice.)
@@ -231,7 +260,15 @@ Either flavour pays only if the block sleeps long enough, and this break-even is
 
 $$T_{breakeven} = \frac{E_{overhead}}{P_{leak,saved}} = \frac{E_{enter}+E_{exit}}{P_{leak,saved}}, \qquad \text{sleep pays} \iff T_{idle} > T_{breakeven}$$
 
-where $P_{leak,saved}$ = leakage eliminated while gated (W), and $E_{enter}, E_{exit}$ = enter/exit energies (J). This is the same shape as the DVFS transition break-even (§3.3), with a much larger round-trip cost — which is exactly why the two techniques target different timescales. That produces the unifying picture of the whole activity/idle toolbox as a **residency ladder**, each lever owning the range its break-even carves out:
+where $P_{leak,saved}$ = leakage eliminated while gated (W), and $E_{enter}, E_{exit}$ = enter/exit energies (J). This is the same shape as the DVFS transition break-even (§3.3), with a much larger round-trip cost — which is exactly why the two techniques target different timescales.
+
+**Worked break-even (SRPG).** Take the §4.2 block — 100 mW active at 0.9 V, internal (decap + parasitic) capacitance $C_{internal}=10$ nF, leaking an assumed $P_{leak,saved}=5$ mW while powered. The round trip is dominated by *refilling the rail* at wake: $E_{exit}\approx C_{internal}V_{DD}^2 = 10\text{ nF}\times(0.9\text{ V})^2 = 8.1$ nJ. The SAVE/RESTORE pulses across on-die shadow latches are a fraction of a nJ, so the rush-current recharge *is* essentially the whole overhead, $E_{overhead}\approx 8$ nJ. Then
+
+$$T_{breakeven}=\frac{E_{overhead}}{P_{leak,saved}}=\frac{8\ \text{nJ}}{5\ \text{mW}}\approx 1.6\ \mu\text{s}.$$
+
+That ~µs is only the *energy* floor — sleep any shorter and refilling the rail burns more than the leakage it saved. The *binding* floor is latency: the idle window must also outlast the entry+exit sequence itself — drain, SAVE, isolate, power down; then power up, settle at the far corner, reset, RESTORE, de-isolate (§4.5) — with the recharge deliberately ramped over µs to keep rush current off the ~8 A slam of §4.2. That sequence runs 5–50 µs for SRPG (ms for a full reboot), and with margin it is what files power gating under "ms+" below, even though the energy alone breaks even far sooner. That extra round trip — rush-limited recharge, reset, state restore — is what DVFS's lighter V/f ramp never pays, and why the two levers own different timescales.
+
+That produces the unifying picture of the whole activity/idle toolbox as a **residency ladder**, each lever owning the range its break-even carves out:
 
 | Idle timescale | Lever | What it recovers | Round-trip cost |
 |---|---|---|---|

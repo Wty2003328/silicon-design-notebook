@@ -116,13 +116,35 @@ where ripple% is the droop budget (typically 5–10 % of $V_{DD}$). For $V_{DD}=
 
 ### 4.2 Why the profile is not flat: package–die anti-resonance
 
-The catch is that the PDN is not a resistor — it is a ladder of $L$ and $C$ stages, and **every inductor–capacitor boundary is a resonant tank**. The package's series inductance $L_{pkg}$ resonating against the on-die decapacitance $C_{die}$ produces an *anti-resonant* impedance peak — the notorious **"first droop"**:
+The catch is that the PDN is not a resistor — it is a ladder of $L$ and $C$ stages, and **every inductor–capacitor boundary is a resonant tank**. Why a *peak* and not a dip? Seen from the die, the upstream package inductance is a *rising* impedance ($|Z_L|=2\pi fL$) while the on-die decap is a *falling* one ($|Z_C|=1/2\pi fC$); at the frequency where they cross ($|Z_L|=|Z_C|$, i.e. $f_{res}$ below) the die is looking into an inductor and a capacitor in *parallel*, and a parallel $LC$ tank *maximises* impedance at resonance — a series tank would dip. That parallel crossover is the "anti" in anti-resonance. The package's series inductance $L_{pkg}$ resonating against the on-die decapacitance $C_{die}$ produces exactly this *anti-resonant* impedance peak — the notorious **"first droop"**:
 
 $$
 f_{res} \;=\; \frac{1}{2\pi\sqrt{L_{pkg}\,C_{die}}}, \qquad |Z|_{peak}\approx \sqrt{\frac{L_{pkg}}{C_{die}}}\cdot\frac{1}{\zeta}
 $$
 
-where $\zeta$ is the damping ratio (low $\zeta$ = tall, sharp peak). With $L_{pkg}\sim0.1\text{–}1$ nH and $C_{die}\sim$ tens of nF this lands at **~50–300 MHz** — right in the band a burst of activity can excite. A current step whose frequency content hits $f_{res}$ rings the tank and produces a droop far larger than $I\!\cdot\!Z_{target}$ would predict. This is *why* $di/dt$ events (domain wake-up, a vector unit turning on, a large cluster clock-ungating, §11) are dangerous out of proportion to their average power: each is a load *step* that dumps energy straight into the resonance. The mitigations are the same two the whole page keeps returning to — **more/closer decap** to lower $|Z|_{peak}$ and raise/damp the resonance (§7), and **adaptive clocking / droop detectors** that stretch the clock when a droop is sensed. Below the package tank sit the slower board/VRM resonances (kHz–few MHz, the "third droop"); above it, the on-die response (the fast "first droop" proper). The droop budget is spent across all three:
+where $\zeta$ is the damping ratio (low $\zeta$ = tall, sharp peak). With $L_{pkg}\sim0.1\text{–}1$ nH and $C_{die}\sim$ tens of nF this lands at **~50–300 MHz** — right in the band a burst of activity can excite. A current step whose frequency content hits $f_{res}$ rings the tank and produces a droop far larger than $I\!\cdot\!Z_{target}$ would predict. This is *why* $di/dt$ events (domain wake-up, a vector unit turning on, a large cluster clock-ungating, §11) are dangerous out of proportion to their average power: each is a load *step* that dumps energy straight into the resonance.
+
+Plotting $|Z(f)|$ against frequency gives the profile every PDN designer keeps in their head — a floor held down stage by stage, with the package–die peak poking through:
+
+```text
+ |Z|(mΩ)          PDN impedance profile — the first-droop peak
+  24 |                         *                anti-resonance
+     |                        / \               (package L × die C)
+  16 |                       /   \
+     |                      /     \
+   9 |--------------------/-------\------------  Z_target (~9 mΩ)
+   8 |                 /-*         *-\
+   4 |         /-*----'             '---*-\
+   2 |*---*---'                            \
+     +----+----+----+----+----+----+----+----+
+      1k  10k  100k  1M   10M  100M 300M  1G    f (log)
+      |__VRM & bulk__|__package caps_|_on-die decap_|
+      the curve pokes above Z_target in the ~10–300 MHz danger band
+```
+
+*Red = the PDN impedance $|Z(f)|$; the flat line is the $Z_{target}$ ceiling of §4.1 (~9 mΩ). Each decoupling stage holds $|Z|$ down in its own band — VRM and bulk caps at low $f$, package caps in the mid-band, on-die decap at high $f$ — but the package-inductance/die-capacitance anti-resonance pushes the curve **above** the ceiling near 100 MHz, exactly the band a $di/dt$ burst has energy in. Everything in §7 is about pushing that peak back under the line.*
+
+The mitigations are the same two the whole page keeps returning to — **more/closer decap** to lower $|Z|_{peak}$ and raise/damp the resonance (§7), and **adaptive clocking / droop detectors** that stretch the clock when a droop is sensed. Below the package tank sit the slower board/VRM resonances (kHz–few MHz, the "third droop"); above it, the on-die response (the fast "first droop" proper). The droop budget is spent across all three:
 
 $$
 V_{guardband} \;\approx\; \underbrace{V_{static}}_{\sim3\text{–}5\%} + \underbrace{V_{dynamic}}_{\sim5\text{–}10\%} \;\Rightarrow\; \text{total } \sim10\text{–}15\%\ \text{of } V_{DD}

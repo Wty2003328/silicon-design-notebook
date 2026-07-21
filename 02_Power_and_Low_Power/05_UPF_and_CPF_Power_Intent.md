@@ -82,6 +82,8 @@ where $P_{leak}(R)$ = R's leakage when on, $\rho_{idle}(R)$ = fraction of time R
 
 ## 3. Isolation: clamping an output that has stopped meaning anything
 
+**What it is, in one line.** An isolation cell is a *shutoff valve on a domain's outputs*: while the upstream domain is off, control holds each output at a known safe position — low, high, or frozen-at-last — so the still-powered domain downstream reads a defined value instead of the floating garbage an unpowered driver leaves behind. Clamp an output whose driver lost power; do not let a dead block speak.
+
 **Why isolation must exist — the failure is physical, not stylistic.** When a domain's supply is removed, its output nets are driven by nothing. Electrically they float; to the powered-on logic reading them they resolve to **X** (unknown). That X is not inert: the always-on receiver latches it, propagates it through its own logic, and one dead block silently corrupts a live one — a false interrupt, a spurious bus grant, a wrong arbiter decision. An unpowered node *has no logic value*, so the only fix is to stop reading the dead net and instead **clamp** the boundary to a defined, safe value while the source is off. That clamp cell is the isolation cell, and it is the memory-corruption barrier of the power domain: nothing X may escape a gated region into an on one.
 
 **The real trade-off: what is a "safe" value?** The clamp value is not free choice — it is dictated by what the signal *means* to its receiver, and getting it wrong substitutes a clean functional bug for the X:
@@ -103,6 +105,8 @@ Isolation is the memory-side twin of every "hold it until it is safe to release"
 
 ## 4. Level shifting: a logic level is valid only relative to a rail
 
+**What it is, in one line.** A logic level is like a price quoted in a local currency: a "1" at a 0.5 V rail and a "1" at a 0.9 V rail are *different amounts*, and a value crossing between them must be converted at the border or the receiver reads the wrong figure. A level shifter is that currency exchange — it restates the source's "1" as a "1" the sink's rail can actually resolve. A logic level is meaningful only relative to a rail.
+
 **Why the construct must exist.** A logic level is not an absolute voltage — it is defined *relative to the rail of the gate that reads it*. A domain running at $V_{DDL}=0.5$ V drives a clean "1" at 0.5 V; a domain at $V_{DDH}=0.9$ V expects a "1" near 0.9 V. Feed the 0.5 V "1" into the 0.9 V receiver and it may fall below that receiver's input-high threshold $V_{IH,H}$: the input is *unresolved*, and — worse than a wrong bit — the receiver's first inverter can sit with both transistors partly on, drawing continuous **crowbar (short-circuit) current**. A crossing needs a level shifter exactly when
 
 $$
@@ -118,6 +122,8 @@ where $V_{OH}^{\text{src}}$ = source's output-high ($\approx V_{DDL}$), $V_{IH}^
 ---
 
 ## 5. Retention: keeping only the state you cannot afford to rebuild
+
+**What it is, in one line.** Retention is a *checkpoint taken before the lights go out*: a small always-on shadow latch copies only the register values you could not cheaply rebuild, holds them on a trickle rail through the sleep, and restores them on wake — so the block resumes exactly where it stopped instead of cold-starting. Keep only the state you cannot afford to rebuild; everything reconstructable is deliberately left out and reloaded later.
 
 **Why the construct must exist.** Power-gating is the strongest leakage lever there is — it removes the supply, so the gated logic leaks essentially nothing (the mechanism, switch sizing, and rush-current staging live in [Power_Reduction_Techniques §4](04_Power_Reduction_Techniques.md)). But it is indiscriminate: it **erases every flop** in the domain. For state you can regenerate cheaply — pipeline registers, anything reloadable from memory — that is fine; you re-initialize on wake. For state that is *expensive or impossible to recompute* — the program counter, control/status registers, configuration, mode bits — erasure means the block cannot resume, only restart. Retention resolves the conflict: a **shadow latch on an always-on rail**, attached to selected flops, that *saves* their value before the domain goes off and *restores* it after it comes back, so the block wakes exactly where it slept.
 
@@ -137,6 +143,32 @@ where $E_{reinit}$ = energy to rebuild the dropped state on wake, $T_{wake}$ = a
 **The hidden cost — always-on plumbing.** Retention only works if the save, restore, clock, and isolation-control signals actually *reach* the retention flops while the domain around them is dark. Ordinary buffers in the gated domain are dead when it is off, so those signals must be carried by **always-on buffers/repeaters** threaded through the gated region on the always-on rail. This is a real, easily forgotten cost of the scheme (a whole class of "the clock never reached the retention flop" bugs), and it is why UPF has an explicit repeater strategy — the always-on network is part of the intent, not an afterthought.
 
 **Sequencing.** Retention adds an ordering rule to the isolation rule of §3: **save before power-down, restore only after the supply is stable.** Restoring into an unstable, still-ramping rail transfers data at low voltage and silently corrupts it — the worst kind of bug, since the block wakes with wrong register values and produces wrong results without crashing. Real flows gate the restore on a voltage detector reaching ~90–95% of nominal.
+
+**Where the three cells physically sit (one crossing).** §3–§5 each defined one boundary cell in isolation; here is how they occupy a *single* power-domain crossing together. The gated domain (`PD_CPU`) runs on a **switched rail** fed by a power switch; the receiver lives in an **always-on domain** (`PD_AON`). On the crossing itself sit the always-on cells: the isolation cell clamps the gated output — powered by AON so it still works while the source is dark — and, *only if the two sides differ in voltage*, a level shifter follows it (when a boundary is both gated and cross-voltage, one combined iso+LS cell does both jobs). Retention flops stay *inside* the gated domain but keep their shadow latch on the always-on rail. The cost the picture makes visible: every control signal — `sleep`, `iso_en`, `save`/`restore` — originates in the always-on PMU and must reach its target through **always-on buffers**, because ordinary buffers in the gated region die the instant it powers off.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart LR
+    PMU["PMU controller<br/>sleep / iso / save / restore"]
+    PS["Power switch (header)<br/>VDD_CPU_IN to VDD_CPU_SW<br/>opened by sleep"]
+    subgraph CPU["Gated domain PD_CPU — switched rail VDD_CPU_SW"]
+        LOGIC["ordinary flops<br/>corrupt to X when off"]
+        RET["retention flops<br/>shadow latch on AON rail"]
+    end
+    subgraph BND["The crossing — always-on cells"]
+        ISO["isolation cell<br/>clamp 0 / 1 / hold"]
+        LS["level shifter<br/>VDDL to VDDH"]
+    end
+    subgraph AON["Always-on domain PD_AON — VDD_AON"]
+        RCV["receiver logic"]
+    end
+    LOGIC --> ISO --> LS --> RCV
+    PS -->|"switched rail"| LOGIC
+    PS -->|"switched rail"| RET
+    PMU -.->|"sleep"| PS
+    PMU -.->|"iso_en via AON buffer"| ISO
+    PMU -.->|"save / restore via AON buffer"| RET
+```
 
 ---
 
@@ -159,6 +191,14 @@ add_pst_state CPU_SLEEP  -pst SoC_PST -state {TOP_ON CPU_RET PERI_ON }
 add_pst_state DEEP_SLEEP -pst SoC_PST -state {TOP_ON CPU_OFF PERI_OFF}
 ;# no row contains TOP_OFF: the always-on domain off is, by construction, illegal
 ```
+
+**Tiny worked example — the collapse in numbers.** Take those three supplies, each nominally in one of on/ret/off: $k^{D} = 3^{3} = 27$ syntactic combinations. The physics prunes almost all of them:
+
+- **TOP is always-on**, so `TOP` is pinned `ON` — its off/retention rows are illegal by construction: $27 \to 9$.
+- **PERI has no retention hardware**, so `PERI_RET` is meaningless and `PERI` is just on/off: $9 \to 6$.
+- **PERI powers off only together with a fully-off CPU** (the peripheral stays live to catch traffic while the CPU runs or merely retains, and no useful mode runs one dark while the other is up), so `PERI_OFF` occurs exactly when `CPU_OFF`: $6 \to 3$.
+
+What survives is exactly the three rows declared above — `ALL_ON`, `CPU_SLEEP`, `DEEP_SLEEP`. A 27-state cross-product has collapsed to a 3-row contract, and every isolation, level-shift, and retention proof now runs over those 3 states, not 27.
 
 **Trade-off: expressiveness vs verification cost.** A rich PST (many DVFS points, many independent sleep combinations) exposes more low-power operating modes — more chances to save energy — but every added row is a state to implement and verify, and every added *edge* is a transition sequence to design and prove. A coarse PST is cheap to verify but leaves energy on the table. Designs therefore keep exactly the states with a real duty-cycle justification (an idle mode the workload actually spends time in) and no more — the same "gate only where residency justifies the overhead" logic as §2, now applied to states instead of regions. The PST is where the abstract claim "UPF exists to make power verification tractable" becomes concrete: it is the artifact that bounds the problem.
 

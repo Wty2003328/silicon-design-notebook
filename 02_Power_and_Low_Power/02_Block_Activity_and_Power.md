@@ -37,13 +37,13 @@ Before estimating $\alpha$ you have to be precise about what it counts, because 
 - **Signal probability** $p$ — the long-run fraction of cycles a node holds logic 1. A static property of the value.
 - **Activity factor** $\alpha$ — the *expected number of energy-drawing transitions per clock*. Only the $0\!\to\!1$ transition pulls charge from the supply (it charges the load cap; the $1\!\to\!0$ edge dumps that charge to ground and draws nothing further). Over a full up-then-down cycle the node dissipates $CV^2$, so the $\alpha$ in $P=\alpha C V^2 f$ is the probability of a $0\!\to\!1$ transition per cycle, $\alpha \in [0,1]$.
 
-For a **temporally independent** (memoryless) node the two are tied together:
+For a **temporally independent** (memoryless) node — one whose value each cycle is an independent coin flip — the two are tied together:
 
 $$
-\alpha \;=\; P(0\!\to\!1) \;=\; p\,(1-p), \qquad \alpha_{\max}=0.25 \ \text{ at } p=0.5
+\alpha \;=\; P(0\!\to\!1) \;=\; \underbrace{(1-p)}_{\text{was }0}\;\underbrace{p}_{\text{now }1} \;=\; p\,(1-p), \qquad \alpha_{\max}=0.25 \ \text{ at } p=0.5
 $$
 
-where $p$ = signal probability. This is why "random data" sits at $\alpha \approx 0.25$: uniformly random bits have $p=0.5$ and toggle a quarter of the time on the charging edge. The **toggle rate** that simulators report counts *both* edges and is therefore $2\alpha$; a clock has $\alpha=1$ (one rising edge every cycle) but a toggle rate of 2. Keeping this convention straight is the first thing a power estimate can get quietly wrong — the tool hands you toggle counts, but the equation wants $0\!\to\!1$ charging events.
+where $p$ = signal probability. The product form is just two independent events lining up: to charge on this edge the node had to sit at 0 last cycle *and* land on 1 this one. This is why "random data" sits at $\alpha \approx 0.25$: uniformly random bits have $p=0.5$ and toggle a quarter of the time on the charging edge. The **toggle rate** that simulators report counts *both* edges and is therefore $2\alpha$; a clock has $\alpha=1$ (one rising edge every cycle) but a toggle rate of 2. Keeping this convention straight is the first thing a power estimate can get quietly wrong — the tool hands you toggle counts, but the equation wants $0\!\to\!1$ charging events.
 
 Activity spans two orders of magnitude across a chip, and the ladder itself is the intuition:
 
@@ -63,7 +63,7 @@ The gap between "random data" and "real data" is not noise; it is **correlation*
 
 ## 2. Two ways to get $\alpha$: vectored vs vectorless
 
-The dichotomy of §0 is the field's fundamental fork, and each side is the other's weakness turned inside out.
+The dichotomy of §0 is the field's fundamental fork, and each side is the other's weakness turned inside out. Intuitively, **vectored** *measures* — run representative stimulus and count what actually toggled, like metering a house while its real appliances run — while **vectorless** *predicts* — hand the logic input statistics and let algebra propagate them, like estimating that same bill from appliance ratings and usage habits without switching anything on.
 
 | | **Vectored** (simulation-driven) | **Vectorless** (probabilistic) |
 |---|---|---|
@@ -119,6 +119,31 @@ $$
 
 where $p_a,p_b$ = input signal probabilities, $p_y$ = output. One topological pass yields $p$ at every node; feeding each $p$ into $\alpha = p(1-p)$ gives a first activity estimate.
 
+**Worked example — one pass through a 2-level cone.** Take $y=(a\wedge b)\vee c$ with independent inputs $p_a=0.5,\ p_b=0.4,\ p_c=0.3$. Sweep in topological order: the AND gives $p_n=p_a p_b=0.20$; the OR gives $p_y=1-(1-p_n)(1-p_c)=1-(0.80)(0.70)=0.44$; and $\alpha_y=p_y(1-p_y)=0.246$, a hair under the $0.25$ random-data ceiling. Because $n$ (built from $a,b$) and $c$ never reconverge, the product rule is *exact* here — the instant two inputs share a source, §4 applies.
+
+```mermaid
+flowchart LR
+    A["a<br/>p=0.5"] --> G1{"AND"}
+    B["b<br/>p=0.4"] --> G1
+    G1 -->|"p=0.20"| G2{"OR"}
+    C["c<br/>p=0.3"] --> G2
+    G2 -->|"p=0.44"| Y["y<br/>α = p(1−p) = 0.246"]
+```
+
+The mechanism is exactly that traversal, and the whole gate library is a handful of one-liners:
+
+```python
+def p_and(pa, pb): return pa * pb
+def p_or(pa, pb):  return 1 - (1 - pa) * (1 - pb)
+def p_xor(pa, pb): return pa + pb - 2 * pa * pb
+
+# 2-level cone:  y = (a AND b) OR c,  inputs independent
+p_n = p_and(0.5, 0.4)        # a AND b -> 0.20
+p_y = p_or(p_n, 0.3)         # n OR c  -> 0.44
+alpha_y = p_y * (1 - p_y)    # p(1-p)  -> 0.2464
+print(round(p_n, 4), round(p_y, 4), round(alpha_y, 4))  # 0.2 0.44 0.2464
+```
+
 That last step secretly re-assumes temporal independence, so the rigorous formulation works in **transition density** instead of re-deriving $\alpha$ from $p$. Najm's result propagates activity through a gate via the *Boolean difference*: node $y$ can only toggle when it is *sensitive* to an input that toggled, and it is sensitive to $x_i$ exactly when $\partial y/\partial x_i = y|_{x_i=1}\oplus y|_{x_i=0}$ is true. For independent inputs,
 
 $$
@@ -148,7 +173,7 @@ These two effects *are* the accuracy gap in the §2 table. A vectored simulation
 
 ## 5. Glitch power: the activity a zero-delay model can't see
 
-Everything so far counted *functional* transitions — one per node per cycle at most. Real gates also produce **glitches**: spurious extra transitions within a single cycle, and at advanced nodes they are not a rounding error but **25–40 % of dynamic power** in datapath-heavy blocks (higher still in GPU/video-class designs). They are also the hardest activity to predict, for a reason that cuts to the vectored/vectorless divide.
+Everything so far counted *functional* transitions — one per node per cycle at most. Real gates also produce **glitches**: spurious extra transitions within a single cycle, and at advanced nodes they are not a rounding error but **25–40 % of dynamic power** in datapath-heavy blocks (higher still in GPU/video-class designs). Intuitively a glitch is a gate *changing its mind mid-cycle*: its inputs arrive at slightly different times, so for a moment it computes on stale data, drives a wrong value, then corrects when the late input lands — and the supply pays a full $CV^2$ for each needless swing even though the settled logic value never moved. It is the classic logic **hazard**, now priced in joules. Glitches are also the hardest activity to predict, for a reason that cuts to the vectored/vectorless divide.
 
 **The mechanism is timing, not logic.** A gate whose inputs derive from a common source receives them with a time spread $\Delta t$ set by path-delay imbalance. If $\Delta t$ exceeds the gate's inertial (switching) delay $\tau$, the output pulses to a wrong value and back before settling — one glitch, drawing a full (or partial) $CV^2$ for a result that was never logically real.
 
@@ -210,6 +235,22 @@ Because activity gets more real and structure gets more detailed as a design fir
 | **RTL power** | PrimePower RTL, Joules, PowerArtist | $\pm 10$–$20\%$ vs gates | minutes–hours | RTL-sim SAIF/FSDB or emulation activity |
 | **Gate-level** | PrimePower, Voltus | $\pm 5$–$10\%$ (signoff) | hours–days | SDF-annotated gate sim — **the only rung that sees glitch** (§5) |
 | **SPICE** | HSPICE, Spectre | golden per-cell | impractical above small blocks | actual transient waveforms |
+
+The ladder runs *both* directions, and that is the whole point: you **descend** it as the design firms up — more structure, more real activity, more runtime per data point — while each rung is **calibrated upward** by the one below it.
+
+```mermaid
+flowchart TB
+    ARCH["Architectural — McPAT / Wattch<br/>±20–30%, instant<br/>activity: perf-sim event counts"]
+    RTL["RTL power — Joules / PrimePower<br/>±10–20%, minutes–hours<br/>activity: SAIF / emulation"]
+    GATE["Gate-level — PrimePower / Voltus<br/>±5–10% signoff, hours–days<br/>only rung that sees glitch"]
+    SPICE["SPICE — HSPICE / Spectre<br/>golden per-cell, tiny blocks only"]
+    ARCH -->|"refine: +detail +runtime"| RTL
+    RTL --> GATE
+    GATE --> SPICE
+    SPICE -.->|"calibrates .lib"| GATE
+    GATE -.->|"calibrates"| RTL
+    RTL -.->|"calibrates coeffs"| ARCH
+```
 
 Two things about this ladder carry the design decisions:
 

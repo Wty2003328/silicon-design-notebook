@@ -52,6 +52,14 @@ flowchart LR
 
 ## 1. The three main domains are not the same thing
 
+Each axis groups blocks by *what they share*, and each kind of sharing creates a different boundary problem. A concrete mental model before the definitions:
+
+- **Power domain — a shared breaker.** Same power *fate*: flip the breaker and the group goes dark together. The question is "can I cut this group while that group keeps running?" Because power is removed from live logic, the boundary needs isolation for the now-floating outputs, optional retention for state worth keeping, and a PMU-ordered shutdown.
+- **Voltage domain — a shared dimmer.** Same voltage *schedule*: the group sits at one voltage and slides up and down the DVFS dial together. Running one group fast-and-hungry while another runs slow-and-lean *at the same instant* needs two dials, i.e. two rails; a signal crossing between dials needs a level shifter, because a logic high at $0.6\,\text{V}$ is not automatically a clean high to a receiver expecting $0.9\,\text{V}$.
+- **Clock domain — a shared metronome.** Same synchronous *beat*: a receiving register knows when the sending register's data is stable relative to its own edge, so it can capture directly. Two groups on unrelated metronomes share no beat; a direct handoff can sample data mid-change and go metastable, so the crossing needs a synchronizer or handshake — a CDC protocol.
+
+The three groupings cut the chip along different lines, so a block's breaker, its dimmer, and its metronome need not be the same set. The subsections make each axis precise; §1.4 shows why they diverge in practice.
+
 ### 1.1 Power domain: one shared power fate
 
 A power domain contains logic that is switched on and off together. If two blocks must remain independently available, they cannot be in the same independently switchable power domain. If they always enter and leave every low-power state together, separating them may add cost without creating a useful mode.
@@ -92,6 +100,30 @@ Consider a four-core CPU cluster:
 - The shared last-level cache and interrupt controller remain alive: a separate **AON or retention-capable power domain**.
 
 Forcing all three axes into the same four-way partition would require four voltage regulators or rail controls that the architecture does not need. Forcing all three into one domain would prevent per-core shutdown. Correct partitioning preserves the independence that creates value and shares everything else.
+
+The overlap is easiest to see as a picture. The axes nest differently: one voltage rail can span several clock domains, several power switches can sit inside that one rail, and the always-on island stands apart on all three axes at once. Below, an illustrative logic cluster — two cores plus a video engine on one shared rail, the cores synchronous to each other but asynchronous to video — makes the non-alignment explicit.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph VD1["VD_LOGIC: one voltage rail, one DVFS schedule"]
+      subgraph CDA["CD_CPU: one synchronous clock family"]
+        C0["Core0<br/>PD_Core0"]
+        C1["Core1<br/>PD_Core1"]
+      end
+      subgraph CDB["CD_VIDEO: separate clock, async to CPU"]
+        VID["Video engine<br/>PD_Video"]
+      end
+    end
+    subgraph AON["Always-on island (never gated)"]
+      PMU["PMU, wake, RTC<br/>PD_AON / VD_AON / CD_AON"]
+    end
+    PMU -. "sequences the 3 power switches" .-> VD1
+    classDef aon fill:#eef,stroke:#446,stroke-width:1px;
+    class PMU aon;
+```
+
+Read the picture three ways. The outer box is one **voltage** domain (VD_LOGIC), yet it holds two **clock** domains (CD_CPU and CD_VIDEO), which in turn hold three independently switchable **power** domains (PD_Core0, PD_Core1, PD_Video). No axis is a refinement of another — that is what "non-one-to-one" means. The always-on island is its own power, voltage, and clock domain, and it carries the PMU that sequences everyone else's switches, so it can never itself be switched off (§3.5).
 
 ---
 
@@ -206,6 +238,8 @@ For every state element, classify the wake policy:
 Do not select retention by RTL hierarchy alone. “Retain every flop in this module” is easy to write and often wasteful. Retention is a state-architecture decision.
 
 ### 3.5 The AON domain is a minimal trusted island
+
+Intuitively the AON domain is the chip's night watchman: when the rest of the die is dark it stays lit to notice a wake event, judge whether it is genuine, and bring the sleeping regions back in the right order. It has to exist because of a bootstrap fact — *you cannot power-gate the logic that turns the power back on.* Whatever restores a sleeping region must itself already be powered, so a minimal core of control is exempt from every sleep state. That is also what makes it *trusted*: the wake-and-sequence path is the one circuit that must work in the deepest state, so it is verified hardest. It is an *island* because that circuitry is often physically embedded inside a region that switches off around it.
 
 The always-on domain must contain enough circuitry to detect a wake, validate it, sequence supplies/clocks/resets, and observe completion. It should not become a dumping ground. Every unnecessary AON gate leaks in the deepest state and can never benefit from power gating.
 
