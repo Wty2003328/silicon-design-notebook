@@ -44,9 +44,9 @@ Obligations 1 and 2 are the load-bearing ones. Broadcast answers (1) by asking e
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    C0["Core 0 L1$\nwrites X = 99\n(dirty, held locally)"]:::dirty
-    C1["Core 1 L1$\nstill reads X = 42\n(stale!)"]:::stale
-    M["Main Memory\nX = 42"]:::mem
+    C0["Core 0 L1$<br/>writes X = 99<br/>(dirty, held locally)"]:::dirty
+    C1["Core 1 L1$<br/>still reads X = 42<br/>(stale!)"]:::stale
+    M["Main Memory<br/>X = 42"]:::mem
     C0 -.->|"write invisible to Core 1"| C1
     C1 --> M
     classDef dirty fill:#fee2e2,stroke:#b91c1c,color:#000
@@ -188,12 +188,12 @@ Formally, the serializer admits transactions to line $x$ one at a time, which *i
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 50, "htmlLabels": false}}}%%
 flowchart LR
-    RN0["Requester (RN-F)\nCPU + private L1/L2$"]:::rn
-    HN["Home Node (HN-F)\ndirectory / snoop filter\n+ LLC slice\n= serialization & coherence point"]:::hn
-    RN1["Owner (RN-F)\nhas line dirty"]:::rn
-    SN["Subordinate (SN-F)\nmemory controller"]:::sn
+    RN0["Requester (RN-F)<br/>CPU + private L1/L2$"]:::rn
+    HN["Home Node (HN-F)<br/>directory / snoop filter<br/>+ LLC slice<br/>= serialization & coherence point"]:::hn
+    RN1["Owner (RN-F)<br/>has line dirty"]:::rn
+    SN["Subordinate (SN-F)<br/>memory controller"]:::sn
     RN0 -->|"1 request"| HN
-    HN -->|"2 targeted snoop\n(only actual sharers)"| RN1
+    HN -->|"2 targeted snoop<br/>(only actual sharers)"| RN1
     RN1 -->|"3 data (direct to requester = DCT)"| RN0
     RN1 -.->|"3' metadata / resp"| HN
     HN -->|"alt: fetch if uncached"| SN
@@ -409,13 +409,13 @@ Everything above assumes the coherent agents are peers on one die: hop latency i
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 50, "htmlLabels": false}}}%%
 flowchart LR
-    DEV["Accelerator\n(GPU/NIC/AI)\ncoherence CLIENT"]:::dev
+    DEV["Accelerator<br/>(GPU/NIC/AI)<br/>coherence CLIENT"]:::dev
     AG["CXL.cache / CXL.mem agent"]:::ag
-    LNK["CXL link\n(PCIe 6.0 PHY, ~100-300 ns)"]:::lnk
-    HN["Host Home Node\n= single point of coherence\n(tracks device like any sharer)"]:::hn
+    LNK["CXL link<br/>(PCIe 6.0 PHY, ~100-300 ns)"]:::lnk
+    HN["Host Home Node<br/>= single point of coherence<br/>(tracks device like any sharer)"]:::hn
     HOST["Host CPU caches"]:::rn
     DEV <--> AG
-    AG <-->|"asymmetric:\ndevice requests in,\nhost directory decides"| LNK
+    AG <-->|"asymmetric:<br/>device requests in,<br/>host directory decides"| LNK
     LNK <--> HN
     HN <--> HOST
     classDef dev fill:#dcfce7,stroke:#15803d,color:#000

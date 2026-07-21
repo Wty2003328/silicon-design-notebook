@@ -115,14 +115,14 @@ The predictor family did not grow by accumulating unrelated algorithms. Each gen
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    A["Wait for execute\ncorrect; every branch stalls"]
-    B["Static direction\nno learned state"]
-    C["1-bit then 2-bit bimodal\nper-PC bias + hysteresis"]
-    D["gshare / two-level\nPC + global history"]
-    E["Tournament\nselector chooses local or global"]
-    F["TAGE\ntagged geometric histories + usefulness"]
-    G["TAGE-SC / hybrid\ncorrect residual correlations"]
-    H["Decoupled multi-predictor frontend\nBTB + TAGE + ITTAGE + RAS + FTQ"]
+    A["Wait for execute<br/>correct; every branch stalls"]
+    B["Static direction<br/>no learned state"]
+    C["1-bit then 2-bit bimodal<br/>per-PC bias + hysteresis"]
+    D["gshare / two-level<br/>PC + global history"]
+    E["Tournament<br/>selector chooses local or global"]
+    F["TAGE<br/>tagged geometric histories + usefulness"]
+    G["TAGE-SC / hybrid<br/>correct residual correlations"]
+    H["Decoupled multi-predictor frontend<br/>BTB + TAGE + ITTAGE + RAS + FTQ"]
 
     A -->|"branch bubble dominates"| B
     B -->|"different PCs have different bias"| C
@@ -162,16 +162,16 @@ The organizing idea of the whole front end is one sentence: **every predictor is
 flowchart TD
     PC["Fetch PC"]
     subgraph BPU["Branch Prediction Unit — all from PC, in parallel, one cycle"]
-        BTB["BTB\n(branch? type? direct target?)"]
-        DIR["Direction predictor\n(TAGE: taken?)"]
-        RAS["RAS\n(return target)"]
-        ITT["ITTAGE\n(indirect target?)"]
+        BTB["BTB<br/>(branch? type? direct target?)"]
+        DIR["Direction predictor<br/>(TAGE: taken?)"]
+        RAS["RAS<br/>(return target)"]
+        ITT["ITTAGE<br/>(indirect target?)"]
     end
     NPC["next-PC select"]
-    FTQ["FTQ\n(decouples predict from fetch)"]
+    FTQ["FTQ<br/>(decouples predict from fetch)"]
     IC["I-cache"]
     DEC["Decode / rename"]
-    EXE["Execute\n(branch resolves)"]
+    EXE["Execute<br/>(branch resolves)"]
 
     PC --> BTB
     PC --> DIR
@@ -378,16 +378,16 @@ Those obligations compose into one **provider-selection datapath**: every compon
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     PC["Fetch PC"]
-    GHR["Global history\n(folded per table)"]
-    IDX["index = hash(PC, folded history)\ngeometrically longer L per table"]
+    GHR["Global history<br/>(folded per table)"]
+    IDX["index = hash(PC, folded history)<br/>geometrically longer L per table"]
     PC --> IDX
     GHR --> IDX
     subgraph COMP["Predictor components — looked up in parallel"]
-        BASE["Base bimodal\nL=0, untagged\n(always hits)"]
-        T1["T1  L=4\ntag, 3b ctr, u"]
-        T2["T2  L=16\ntag, 3b ctr, u"]
-        T3["T3  L=64\ntag, 3b ctr, u"]
-        T4["T4  L=256\ntag, 3b ctr, u"]
+        BASE["Base bimodal<br/>L=0, untagged<br/>(always hits)"]
+        T1["T1  L=4<br/>tag, 3b ctr, u"]
+        T2["T2  L=16<br/>tag, 3b ctr, u"]
+        T3["T3  L=64<br/>tag, 3b ctr, u"]
+        T4["T4  L=256<br/>tag, 3b ctr, u"]
     end
     IDX --> BASE
     IDX --> T1
@@ -399,15 +399,15 @@ flowchart TD
     T2 --> SEL
     T3 --> SEL
     T4 --> SEL
-    SEL{"pick longest\ntag-matching entry"}
-    SEL -->|longest match = provider| PROV["Provider prediction\n(its 3b counter)"]
+    SEL{"pick longest<br/>tag-matching entry"}
+    SEL -->|longest match = provider| PROV["Provider prediction<br/>(its 3b counter)"]
     SEL -->|next match / base = alternate| ALT["Alternate prediction"]
-    PROV --> PICK{"provider trusted?\n(not newly allocated)"}
+    PROV --> PICK{"provider trusted?<br/>(not newly allocated)"}
     ALT --> PICK
     PICK -->|yes| OUT["Predicted direction"]
     PICK -->|weak / new: use alt| OUT
     OUT --> RES["resolve in execute"]
-    RES --> UPD["update: bump provider counter; u++ if provider right and alt wrong;\non mispredict allocate an entry in a longer table (u=0)"]
+    RES --> UPD["update: bump provider counter; u++ if provider right and alt wrong;<br/>on mispredict allocate an entry in a longer table (u=0)"]
     UPD -.->|train / allocate / decay| COMP
 ```
 

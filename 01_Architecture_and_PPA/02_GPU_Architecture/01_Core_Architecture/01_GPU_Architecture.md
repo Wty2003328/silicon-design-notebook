@@ -201,12 +201,12 @@ flowchart TB
       direction TB
       subgraph SP["Processing sub-partition (x4)"]
         direction TB
-        SCHED["Warp scheduler + scoreboard\n(choose a READY warp; no OoO window)"]:::sched
-        RF["Register-file slice\n(banked SRAM — holds ALL resident warps' state)"]:::rf
-        OC["Operand collector\n(bank arbiter feeds 3-operand FMA)"]:::oc
-        EU["Execution units\nFP32/INT lanes | SFU | Tensor Core | LSU(+coalescer)"]:::eu
+        SCHED["Warp scheduler + scoreboard<br/>(choose a READY warp; no OoO window)"]:::sched
+        RF["Register-file slice<br/>(banked SRAM — holds ALL resident warps' state)"]:::rf
+        OC["Operand collector<br/>(bank arbiter feeds 3-operand FMA)"]:::oc
+        EU["Execution units<br/>FP32/INT lanes | SFU | Tensor Core | LSU(+coalescer)"]:::eu
       end
-      SMEM["Shared memory / L1 data\n(banked scratchpad + cache)"]:::mem
+      SMEM["Shared memory / L1 data<br/>(banked scratchpad + cache)"]:::mem
     end
     HBM["L2 (shared, sliced) -> HBM"]:::hbm
     L1I --> SCHED --> OC

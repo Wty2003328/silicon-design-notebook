@@ -41,13 +41,13 @@ The asymmetry is the whole point. Simulation is a one-sided test (can refute, ca
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    F["Formal verification\n(quantify over all reachable states)"]
-    F --> EC["Equivalence checking\n(does impl == golden?)"]
-    F --> PC["Property checking / model checking\n(can any reachable state be bad?)"]
-    EC --> CEC["Combinational EC\n(1:1 register map -> per-cone SAT)"]
-    EC --> SEC["Sequential EC\n(no register map -> unroll)"]
-    PC --> BMC["BMC\n(bounded: unroll k, hand to SAT/SMT)"]
-    PC --> UNB["Unbounded proof\n(k-induction, IC3/PDR, BDD fixpoint)"]
+    F["Formal verification<br/>(quantify over all reachable states)"]
+    F --> EC["Equivalence checking<br/>(does impl == golden?)"]
+    F --> PC["Property checking / model checking<br/>(can any reachable state be bad?)"]
+    EC --> CEC["Combinational EC<br/>(1:1 register map -> per-cone SAT)"]
+    EC --> SEC["Sequential EC<br/>(no register map -> unroll)"]
+    PC --> BMC["BMC<br/>(bounded: unroll k, hand to SAT/SMT)"]
+    PC --> UNB["Unbounded proof<br/>(k-induction, IC3/PDR, BDD fixpoint)"]
 ```
 
 The rest of the page is these two branches — property checking (§3) and equivalence checking (§5) — plus the two things that govern both: the state-explosion budget that decides what is tractable (§2), and the environment model that decides whether a proof means anything (§4).

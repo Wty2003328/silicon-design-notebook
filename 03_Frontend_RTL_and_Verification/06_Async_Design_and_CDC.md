@@ -121,9 +121,9 @@ $$
 | Scenario | $t_r$ (2-FF) | MTBF (2-FF) | Depth for $10^9$ yr |
 |---|---|---|---|
 | 200 MHz capture, 50 MHz data | 4.86 ns | $\sim10^{33}$ yr | 2 (huge margin) |
-| **2 GHz** capture, 1 GHz data | 0.36 ns | **~7 s** | **5** |
+| **2 GHz** capture, 1 GHz data | 0.36 ns | **~7 ms** | **7** |
 
-At 2 GHz a 2-FF synchronizer fails every few *seconds*; reaching a $10^9$-year target needs five stages, because each stage now contributes only $e^{500\text{ps}/50\text{ps}}=e^{10}$ instead of $e^{97}$. This is why high-frequency CDC at relaxed nodes is genuinely hard, and why 3-FF synchronizers are standard for $f_c>2$ GHz, ASIL-D/aerospace safety margins, or libraries with poor $\tau$. Rule of thumb: if the worst-corner 2-FF MTBF is below ~1000 years, add a stage.
+At 2 GHz a 2-FF synchronizer fails every few *milliseconds*; reaching a $10^9$-year target needs seven stages, because each stage now contributes only $e^{500\text{ps}/50\text{ps}}=e^{10}$ instead of $e^{97}$. This is why high-frequency CDC at relaxed nodes is genuinely hard, and why 3-FF synchronizers are standard for $f_c>2$ GHz, ASIL-D/aerospace safety margins, or libraries with poor $\tau$. Rule of thumb: if the worst-corner 2-FF MTBF is below ~1000 years, add a stage.
 
 **Physical constraints (the essential few).** Resolution time is stolen by anything that eats the period between FF1 and FF2, so: place the two flops adjacent on the *same* clock-tree leaf (zero inter-stage skew), never insert combinational logic between them (it both burns $t_r$ and can present a glitch as a real edge), and prefer low-$V_t$ cells (smaller $\tau$). Many libraries ship a characterized `SYNC2` cell that bakes these in.
 
@@ -267,7 +267,7 @@ always @(posedge clk or negedge async_rst_n)
 - **Assert must be async** so reset takes effect even at power-on when the clock has not yet started — a synchronous-only reset could never be captured with a dead clock.
 - **Deassert must be sync** so every flop in the domain exits reset on one common edge, eliminating the recovery/removal race and the metastable-exit it causes.
 
-**Reset-domain crossing (RDC)** is then the discipline of giving *each* clock domain its own reset synchronizer off the common async source, so assertion is simultaneous but each domain's *release* is aligned to its own clock. When one domain must come out of reset before another (producer before consumer), chain the synchronizers so release order is guaranteed. The exhaustive static checking of these crossings belongs to [Lint, CDC, and RDC signoff §3](07_Lint_CDC_RDC_Signoff.md).
+**Reset-domain crossing (RDC)** is then the discipline of giving *each* clock domain its own reset synchronizer off the common async source, so assertion is simultaneous but each domain's *release* is aligned to its own clock. When one domain must come out of reset before another (producer before consumer), chain the synchronizers so release order is guaranteed. The exhaustive static checking of these crossings belongs to [Lint, CDC, and RDC signoff §4](07_Lint_CDC_RDC_Signoff.md).
 
 ---
 
@@ -301,7 +301,7 @@ always @(posedge clk or negedge async_rst_n)
 
 ## Worked problems
 
-**1 — Choosing synchronizer depth from a target MTBF.** A crossing runs at $f_c=2$ GHz ($T_{clk}=500$ ps), $f_d=1$ GHz, in a 28 nm library ($\tau=50$ ps, $T_0=100$ fs); target MTBF $=10^9$ yr $\approx 3.15\times10^{16}$ s. Required exponent: $e^{t_r/\tau}\ge 3.15\times10^{16}\cdot f_c f_d T_0 = 3.15\times10^{16}\cdot(2\times10^9)(10^9)(10^{-13})\approx 6.3\times10^{21}$, i.e. $t_r/\tau \ge \ln(6.3\times10^{21})\approx 50.3$, so $t_r\ge 2.5$ ns. With $t_r(N)=(N{-}1)\cdot500 - t_{c2q}-t_{su}\approx (N{-}1)\cdot500 - 140$ ps, you need $(N{-}1)\ge 5.3$ → **$N=6$ stages** (a 2-FF here fails every few seconds). The same crossing at $f_c=200$ MHz meets the target with $N=2$ by a $10^{20}\times$ margin — the takeaway is that depth is set by $T_{clk}/\tau$, and high frequency at a coarse node is what forces deep synchronizers.
+**1 — Choosing synchronizer depth from a target MTBF.** A crossing runs at $f_c=2$ GHz ($T_{clk}=500$ ps), $f_d=1$ GHz, in a 28 nm library ($\tau=50$ ps, $T_0=100$ fs); target MTBF $=10^9$ yr $\approx 3.15\times10^{16}$ s. Required exponent: $e^{t_r/\tau}\ge 3.15\times10^{16}\cdot f_c f_d T_0 = 3.15\times10^{16}\cdot(2\times10^9)(10^9)(10^{-13})\approx 6.3\times10^{21}$, i.e. $t_r/\tau \ge \ln(6.3\times10^{21})\approx 50.3$, so $t_r\ge 2.5$ ns. With $t_r(N)=(N{-}1)\cdot500 - t_{c2q}-t_{su}\approx (N{-}1)\cdot500 - 140$ ps, you need $(N{-}1)\ge 5.3$, i.e. $N{-}1=6$ → **$N=7$ stages** (a 2-FF here fails every few milliseconds). The same crossing at $f_c=200$ MHz meets the target with $N=2$ by a $10^{20}\times$ margin — the takeaway is that depth is set by $T_{clk}/\tau$, and high frequency at a coarse node is what forces deep synchronizers.
 
 **2 — Sizing an async FIFO for a burst.** A camera source bursts $B=256$ pixels at $f_{wr}=600$ MHz into a processing domain that drains at $f_{rd}=400$ MHz. Minimum depth to avoid overflow: $D\gtrsim B(1-f_{rd}/f_{wr}) + D_{sync}=256(1-0.667)+ \sim4 \approx 89$. Round up to the next power of two → **depth 128** (pointer width $\lceil\log_2 128\rceil+1=8$). Note depth protects *throughput*, not correctness: a depth-64 FIFO would drop pixels under this burst but would never corrupt a word, because the Gray pointers keep every crossing coherent regardless of depth.
 

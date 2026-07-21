@@ -42,12 +42,12 @@ The organizing principle is that this file is the **single golden source of powe
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    RTL["RTL\n(function only)"]
-    UPF["UPF power intent\n(domains, supplies,\nISO / LS / RET, PST)"]
-    SYN["Synthesis\ninserts ISO, LS,\nRET, switch cells"]
-    PNR["Place & Route\nplaces special cells,\nbuilds power grid"]
-    SIM["Power-aware sim\ncorrupts off domains,\nmodels ISO / RET"]
-    SGN["Signoff\nper-domain power,\nper-domain IR drop"]
+    RTL["RTL<br/>(function only)"]
+    UPF["UPF power intent<br/>(domains, supplies,<br/>ISO / LS / RET, PST)"]
+    SYN["Synthesis<br/>inserts ISO, LS,<br/>RET, switch cells"]
+    PNR["Place & Route<br/>places special cells,<br/>builds power grid"]
+    SIM["Power-aware sim<br/>corrupts off domains,<br/>models ISO / RET"]
+    SGN["Signoff<br/>per-domain power,<br/>per-domain IR drop"]
     RTL --> SYN & SIM
     UPF --> SYN & PNR & SIM & SGN
     SYN --> PNR --> SGN
@@ -235,14 +235,14 @@ Two independently edited “golden” files drift because intent changes are sem
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    A["Architecture contract\nPD/VD/CD map, legal states,\nboundary matrix, sequences"]
-    P["Abstract power intent\nIP scopes, supply handles, states"]
-    R["Power-aware RTL verification\nstatic checks + X/retention behavior"]
-    S["Low-power synthesis\ninsert/map ISO, LS, RET, switches"]
-    E["Power-aware equivalence\nRTL+intent versus netlist+intent"]
-    F["Physical implementation\nvoltage areas, grids, AON routes"]
-    G["Post-route verification\nconnectivity, STA, modes, sequencing"]
-    O["Power/IR/EM/thermal signoff\nand release package"]
+    A["Architecture contract<br/>PD/VD/CD map, legal states,<br/>boundary matrix, sequences"]
+    P["Abstract power intent<br/>IP scopes, supply handles, states"]
+    R["Power-aware RTL verification<br/>static checks + X/retention behavior"]
+    S["Low-power synthesis<br/>insert/map ISO, LS, RET, switches"]
+    E["Power-aware equivalence<br/>RTL+intent versus netlist+intent"]
+    F["Physical implementation<br/>voltage areas, grids, AON routes"]
+    G["Post-route verification<br/>connectivity, STA, modes, sequencing"]
+    O["Power/IR/EM/thermal signoff<br/>and release package"]
     A --> P --> R --> S --> E --> F --> G --> O
 ```
 
@@ -494,7 +494,7 @@ Both answers come straight from the §2 and §5 models — which is the point of
 ## Cross-references
 
 - **Before intent:** [Low-Power Architecture](03_Low_Power_Architecture_and_Domain_Partitioning.md) — partitions power, voltage, clock, and reset domains; supplies the legal-state graph and boundary matrix consumed here.
-- **Down the stack (what realizes this intent):** [Power Reduction Techniques](04_Power_Reduction_Techniques.md) — the actual circuits UPF/CPF only *names*: power-switch sizing and rush-current staging (§4), retention/balloon flops (§4.7), isolation-cell construction (§4.6), clock gating, and the power-down/up sequence and break-even that make gating pay. [CMOS Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) — why an unpowered node has no logic value, why an under-voltage “1” can fail at a higher-rail receiver, and the leakage physics power gating attacks.
+- **Down the stack (what realizes this intent):** [Power Reduction Techniques](04_Power_Reduction_Techniques.md) — the actual circuits UPF/CPF only *names*: power-switch sizing and rush-current staging (§4), retention/balloon flops (§4.3), isolation-cell construction (§4.3), clock gating, and the power-down/up sequence and break-even that make gating pay. [CMOS Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) — why an unpowered node has no logic value, why an under-voltage “1” can fail at a higher-rail receiver, and the leakage physics power gating attacks.
 - **Up the stack (what consumes this intent):** [Power_Analysis_and_Signoff](06_Power_Analysis_and_Signoff.md) — per-domain power and IR-drop signoff, and where UPF-driven static and power-aware checks close. [Power_Fundamentals](01_Power_Fundamentals.md) — the three-way power budget and the leakage term whose reclamation justifies the whole gating/retention apparatus.
 - **Adjacent:** [Block_Activity_and_Power](02_Block_Activity_and_Power.md) — the per-block, per-mode activity/power estimates that tell you *which* blocks have the idle-leakage-×-residency product worth turning into a power domain (§2, §8).
 

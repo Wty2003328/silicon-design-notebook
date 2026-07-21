@@ -40,13 +40,13 @@ The simplest correct processor executes memory operations in program order and w
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart LR
-    A["Blocking in-order memory\none operation completes before the next"]
-    B["Committed store buffer\nretire before cache drain"]
-    C["Split store address and data\ndisambiguate as soon as address is known"]
-    D["Conservative LQ/SQ\nloads wait for all older unknown stores"]
-    E["Speculative disambiguation\npredict independence; detect violations"]
-    F["Store-to-load forwarding\nyoungest older source selected per byte"]
-    G["Nonblocking cache + selective replay\nMSHRs, epochs, dependency poison"]
+    A["Blocking in-order memory<br/>one operation completes before the next"]
+    B["Committed store buffer<br/>retire before cache drain"]
+    C["Split store address and data<br/>disambiguate as soon as address is known"]
+    D["Conservative LQ/SQ<br/>loads wait for all older unknown stores"]
+    E["Speculative disambiguation<br/>predict independence; detect violations"]
+    F["Store-to-load forwarding<br/>youngest older source selected per byte"]
+    G["Nonblocking cache + selective replay<br/>MSHRs, epochs, dependency poison"]
 
     A -->|"store/cache latency blocks retirement"| B
     B -->|"late store data need not hide an early address"| C
@@ -149,9 +149,9 @@ At dispatch, a store with set ID `s` replaces `LFST[s]` with its own queue/ROB i
 
 ```mermaid
 flowchart LR
-    LPC["load PC"] --> SSIT["SSIT lookup\nPC → store-set ID"]
+    LPC["load PC"] --> SSIT["SSIT lookup<br/>PC → store-set ID"]
     SSIT -->|"no valid set"| FREE["issue when address/ports ready"]
-    SSIT -->|"set s"| LFST["LFST lookup\nset s → youngest in-flight store"]
+    SSIT -->|"set s"| LFST["LFST lookup<br/>set s → youngest in-flight store"]
     LFST -->|"no live store"| FREE
     LFST -->|"store Q17 still live"| WAIT["record Q17 dependency; wait"]
     WAIT --> READY["Q17 address/data resolved or store completes"]
@@ -191,9 +191,9 @@ Suppose an older 4-byte store `S0` writes addresses `A+0..A+3`, a younger 2-byte
 ```mermaid
 flowchart TB
     L["L requests A+0, A+1, A+2, A+3"]
-    S1["S1 — youngest older match\nvalid bytes: A+1, A+2"]
-    S0["S0 — next older match\nvalid bytes: A+0..A+3"]
-    C["L1 cache / fill data\nused only for uncovered bytes"]
+    S1["S1 — youngest older match<br/>valid bytes: A+1, A+2"]
+    S0["S0 — next older match<br/>valid bytes: A+0..A+3"]
+    C["L1 cache / fill data<br/>used only for uncovered bytes"]
     B0["L.byte0 ← S0.byte0"]
     B1["L.byte1 ← S1.byte0"]
     B2["L.byte2 ← S1.byte1"]

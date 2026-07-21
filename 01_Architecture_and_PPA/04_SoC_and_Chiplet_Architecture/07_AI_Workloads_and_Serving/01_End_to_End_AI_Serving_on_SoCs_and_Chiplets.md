@@ -26,14 +26,14 @@ where the terms include gateway/tokenization work, scheduler waiting, input prep
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    Store["Object store / NVMe\ncheckpoint shards"]
-    Host["CPU host + DDR\nload, validate, tokenize"]
+    Store["Object store / NVMe<br/>checkpoint shards"]
+    Host["CPU host + DDR<br/>load, validate, tokenize"]
     IO["IOMMU + PCIe/CXL/DMA"]
-    HBM["Accelerator HBM\nweights + KV + workspace"]
-    Run["Runtime scheduler\nbatching + placement"]
-    PF["Prefill\nparallel prompt processing"]
-    DC["Decode loop\none next-token step"]
-    Net["Scale-up / NIC / RDMA\ncollectives or KV transfer"]
+    HBM["Accelerator HBM<br/>weights + KV + workspace"]
+    Run["Runtime scheduler<br/>batching + placement"]
+    PF["Prefill<br/>parallel prompt processing"]
+    DC["Decode loop<br/>one next-token step"]
+    Net["Scale-up / NIC / RDMA<br/>collectives or KV transfer"]
     Out["Sample, detokenize, stream"]
     Store --> Host --> IO --> HBM
     Run --> PF --> DC --> Out

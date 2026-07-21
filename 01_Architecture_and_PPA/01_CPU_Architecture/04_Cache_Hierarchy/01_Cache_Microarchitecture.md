@@ -32,12 +32,12 @@ A cache hierarchy evolves by replaying the same load stream against successively
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart LR
-    A["No cache\nevery load pays memory latency"]
-    B["Blocking cache\nhits are fast; one miss freezes all access"]
-    C["Hit under miss\nhits bypass one outstanding miss"]
-    D["Nonblocking cache\nmultiple MSHRs overlap distinct misses"]
-    E["Banked / multiported access\nmultiple lookups and fills per cycle"]
-    F["Prefetch\npredict future lines and allocate early"]
+    A["No cache<br/>every load pays memory latency"]
+    B["Blocking cache<br/>hits are fast; one miss freezes all access"]
+    C["Hit under miss<br/>hits bypass one outstanding miss"]
+    D["Nonblocking cache<br/>multiple MSHRs overlap distinct misses"]
+    E["Banked / multiported access<br/>multiple lookups and fills per cycle"]
+    F["Prefetch<br/>predict future lines and allocate early"]
 
     A -->|"temporal/spatial locality unused"| B
     B -->|"independent hits wait behind a miss"| C
@@ -303,18 +303,18 @@ The comparison separates four kinds of parallelism that are often collapsed into
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart TD
-    REQ["load/store request\nline address, byte mask, destination, epoch"]
+    REQ["load/store request<br/>line address, byte mask, destination, epoch"]
     BANK["bank select + request arbiter"]
     TAG["tag/state lookup"]
     HIT{"stable hit?"}
-    OM["outstanding-line CAM\nsearch MSHR addresses"]
+    OM["outstanding-line CAM<br/>search MSHR addresses"]
     MERGE["merge waiter into matching MSHR"]
     ALLOC{"free MSHR + victim/writeback resources?"}
-    NEW["allocate MSHR\nline, waiters, target way, permission, epoch"]
+    NEW["allocate MSHR<br/>line, waiters, target way, permission, epoch"]
     MISS["send lower-level/coherence request with transaction ID"]
     RET["response/data return"]
     ID["transaction-ID + epoch match"]
-    FILL["fill-bank arbitration\ninstall tag/data/state"]
+    FILL["fill-bank arbitration<br/>install tag/data/state"]
     WAKE["select critical bytes; wake all live waiters"]
     RETRY["backpressure or replay request"]
 

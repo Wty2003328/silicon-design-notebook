@@ -125,7 +125,7 @@ When $C_c \approx C_g$ that is a **+50 % delay swing** on that stage — a first
 
 ### 1.5 SI-aware STA, briefly
 
-The timing tool assumes the *worst aligned* aggressor: for a setup (max-delay) check it slows the data path (opposite switching) and speeds the capturing clock (same switching) to maximize the required time; for hold it does the reverse. Because real aggressors rarely all align, **timing windows** filter the pessimism away — if an aggressor's switching window cannot overlap the victim's transition, no delta-delay is applied. How this delta-delay folds into slack is [STA](../06_Signoff/01_STA.md)'s job; here it is enough to know the mechanism the tool is modelling.
+The timing tool assumes the *worst aligned* aggressor: for a setup (max-delay) check it slows the data path (opposite switching) and speeds the capturing clock (same switching) to minimize the setup slack; for hold it does the reverse. Because real aggressors rarely all align, **timing windows** filter the pessimism away — if an aggressor's switching window cannot overlap the victim's transition, no delta-delay is applied. How this delta-delay folds into slack is [STA](../06_Signoff/01_STA.md)'s job; here it is enough to know the mechanism the tool is modelling.
 
 ### 1.6 The mitigation trade-off: coupling vs routing resource
 

@@ -296,7 +296,7 @@ It complements [08 RTL Coding Questions](08_RTL_Coding_Questions.md) (whiteboard
 **A:** `fork…join` waits for all spawned processes; `join_any` resumes after the first completes (the rest keep running); `join_none` resumes immediately, leaving all children running in the background. → [Procedural_Processes_and_IPC](../03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) §6.
 
 **Q (OPPO):** What is a virtual interface?
-**A:** A handle (pointer) to a physical interface instance, letting dynamic class-based testbench components — which cannot bind to static module interfaces directly — drive and sample real DUT pins; it is passed in through the config database. → [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md) §6.
+**A:** A handle (pointer) to a physical interface instance, letting dynamic class-based testbench components — which cannot bind to static module interfaces directly — drive and sample real DUT pins; it is passed in through the config database. → [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md) §5.
 
 **Q (Goodix):** What is SVA, and when do you assert?
 **A:** SystemVerilog Assertions (SVA) are temporal properties checked continuously. Assert protocol rules and design invariants — handshakes, one-hot, no overflow, X-checks — at interfaces and key internal points, and pair each assertion with a cover to avoid vacuous passes. → [Assertions_and_Coverage](../03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md) §2.
@@ -355,7 +355,7 @@ It complements [08 RTL Coding Questions](08_RTL_Coding_Questions.md) (whiteboard
 **A:** Constant division becomes a fixed-point multiply by a reciprocal "magic number": `x/N ≈ (x · ceil(2^k/N)) >> k`, choosing k for exactness — no divider needed. Variable division uses iterative restoring/non-restoring or SRT algorithms. → [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md) §9.
 
 **Q (GigaDevice):** Boolean simplification.
-**A:** Apply the algebra or a Karnaugh map, e.g. `a + a'b = a + b` (absorption) and `ab + ab' = a` (combining), to reach the fewest literals/gates before technology mapping. → [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) §2.
+**A:** Apply the algebra or a Karnaugh map, e.g. `a + a'b = a + b` (absorption) and `ab + ab' = a` (combining), to reach the fewest literals/gates before technology mapping. → [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) §0.2.
 
 **Q (T-Head):** Tcl — accumulate/factorial 1..100.
 **A:** `set s 0; for {set i 1} {$i<=100} {incr i} {incr s $i}` yields 5050; a factorial loop `set f [expr {$f*$i}]` works directly because Tcl (8.5+) integers are arbitrary-precision. → [09 Hardware Interview Questions](../interview_prep/09_Hardware_Interview_Questions.md).

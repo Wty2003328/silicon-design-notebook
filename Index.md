@@ -2,8 +2,8 @@
 
 ```mermaid
 flowchart LR
-    F["fundamentals\ndevices + logic + arithmetic"] --> A["architecture + PPA\nCPU / GPU / NPU / SoC"]
-    A --> LP["power architecture\ndomains + intent"]
+    F["fundamentals<br/>devices + logic + arithmetic"] --> A["architecture + PPA<br/>CPU / GPU / NPU / SoC"]
+    A --> LP["power architecture<br/>domains + intent"]
     A --> RTL["RTL + verification"]
     LP --> RTL
     RTL --> SYN["synthesis + constraints"]

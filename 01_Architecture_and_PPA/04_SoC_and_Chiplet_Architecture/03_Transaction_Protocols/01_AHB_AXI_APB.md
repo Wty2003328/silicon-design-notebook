@@ -43,12 +43,12 @@ The abstraction that makes this work is **memory-mapped, master/slave transactio
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    CPU["CPU cluster\n(master)"] --> FAB
-    GPU["GPU\n(master)"] --> FAB
-    DMA["DMA\n(master)"] --> FAB
-    FAB["Interconnect fabric\n(bus / crossbar / NoC)\naddress decode + arbitration"]
-    FAB --> DDR["DDR ctrl\n(slave, AXI)"]
-    FAB --> SRAM["on-chip SRAM\n(slave, AXI/AHB)"]
+    CPU["CPU cluster<br/>(master)"] --> FAB
+    GPU["GPU<br/>(master)"] --> FAB
+    DMA["DMA<br/>(master)"] --> FAB
+    FAB["Interconnect fabric<br/>(bus / crossbar / NoC)<br/>address decode + arbitration"]
+    FAB --> DDR["DDR ctrl<br/>(slave, AXI)"]
+    FAB --> SRAM["on-chip SRAM<br/>(slave, AXI/AHB)"]
     FAB --> BR["APB bridge"]
     BR --> UART["UART"]
     BR --> GPIO["GPIO"]
@@ -148,8 +148,8 @@ The essential state to remember is the *set of five channels and what decouples 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 50, "htmlLabels": false}}}%%
 flowchart LR
-    M["Master\n(initiator)"]
-    S["Slave\n(target)"]
+    M["Master<br/>(initiator)"]
+    S["Slave<br/>(target)"]
     M -- "AW: write address" --> S
     M -- "W: write data" --> S
     S -- "B: write response" --> M

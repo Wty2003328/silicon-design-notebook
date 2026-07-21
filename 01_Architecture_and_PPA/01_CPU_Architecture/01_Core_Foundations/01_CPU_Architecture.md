@@ -33,14 +33,14 @@ CPU features are easiest to remember as a sequence of failed machines. Start wit
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    A["One instruction at a time\ncorrect, long cycle, low utilization"]
-    B["Pipeline\nstage registers + valid bits"]
-    C["Forwarding + interlock\ncomparators, operand muxes, stall control"]
-    D["Branch prediction\nBTB/history state + checkpoints + redirect"]
-    E["Superscalar issue\nmultiple lanes and port arbitration"]
-    F["Out-of-order execution\nrename + IQ + ROB + recovery"]
-    G["Nonblocking memory\nLSQ + MSHRs + replay"]
-    H["Multicore shared memory\ncoherence + consistency ordering"]
+    A["One instruction at a time<br/>correct, long cycle, low utilization"]
+    B["Pipeline<br/>stage registers + valid bits"]
+    C["Forwarding + interlock<br/>comparators, operand muxes, stall control"]
+    D["Branch prediction<br/>BTB/history state + checkpoints + redirect"]
+    E["Superscalar issue<br/>multiple lanes and port arbitration"]
+    F["Out-of-order execution<br/>rename + IQ + ROB + recovery"]
+    G["Nonblocking memory<br/>LSQ + MSHRs + replay"]
+    H["Multicore shared memory<br/>coherence + consistency ordering"]
 
     A -->|"idle units; one long critical path"| B
     B -->|"RAW, control, and resource hazards"| C
@@ -129,14 +129,14 @@ The following is the minimal **implementation structure**, not just the five sta
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 58, "htmlLabels": false}}}%%
 flowchart LR
     PC["PC register"] --> IF["IF: instruction memory"]
-    IF --> IFID["IF/ID register\nPC, instruction, valid"]
+    IF --> IFID["IF/ID register<br/>PC, instruction, valid"]
     IFID --> ID["ID: decode + register read"]
-    ID --> IDEX["ID/EX register\noperands, source/destination IDs, control, valid"]
+    ID --> IDEX["ID/EX register<br/>operands, source/destination IDs, control, valid"]
     IDEX --> MUX["forwarding muxes"]
     MUX --> EX["EX: ALU / branch / address"]
-    EX --> EXMEM["EX/MEM register\nresult, store data, destination, control, valid"]
+    EX --> EXMEM["EX/MEM register<br/>result, store data, destination, control, valid"]
     EXMEM --> MEM["MEM: data memory"]
-    MEM --> MEMWB["MEM/WB register\nresult, destination, write-enable, valid"]
+    MEM --> MEMWB["MEM/WB register<br/>result, destination, write-enable, valid"]
     MEMWB --> WB["WB: register-file write"]
     WB --> ID
 

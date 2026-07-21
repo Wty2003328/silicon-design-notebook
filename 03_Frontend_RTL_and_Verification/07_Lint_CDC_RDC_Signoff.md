@@ -156,7 +156,7 @@ Static checks run on RTL, before and alongside simulation, and re-run on every c
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
-    C["RTL change"] --> L["Lint\n(synthesizable subset)"] --> CDC["CDC\n(clock crossings)"] --> RDC["RDC\n(reset crossings)"] --> OK["Clean:\ntrusted for sim / synth"]
+    C["RTL change"] --> L["Lint<br/>(synthesizable subset)"] --> CDC["CDC<br/>(clock crossings)"] --> RDC["RDC<br/>(reset crossings)"] --> OK["Clean:<br/>trusted for sim / synth"]
     OK -.->|any unwaived violation blocks hand-off| C
     classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000
     classDef g fill:#dcfce7,stroke:#15803d,color:#000

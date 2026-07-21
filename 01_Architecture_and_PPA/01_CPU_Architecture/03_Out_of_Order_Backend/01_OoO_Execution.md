@@ -50,22 +50,22 @@ Four false constraints, four structures:
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     subgraph Frontend["Frontend (in-order)"]
-        FETCH["Fetch\n(PC + Branch Predictor)"]
-        DECODE["Decode\n(ISA -> uops)"]
+        FETCH["Fetch<br/>(PC + Branch Predictor)"]
+        DECODE["Decode<br/>(ISA -> uops)"]
     end
     subgraph Rename["Rename (in-order)"]
-        RAT["RAT\n(Arch -> Phys map)"]
+        RAT["RAT<br/>(Arch -> Phys map)"]
         FREELIST["Free List"]
     end
     subgraph OoO["Out-of-order core"]
-        ROB["ROB\n(program-order ledger)"]
-        IQ["Issue Queue\n(wakeup + select)"]
-        PRF["PRF\n(values)"]
-        EXEC["Exec units\n(ALU/MUL/DIV/FPU/AGU)"]
-        LSQ["LSQ\n(load/store ordering)"]
-        CDB["CDB\n(result broadcast)"]
+        ROB["ROB<br/>(program-order ledger)"]
+        IQ["Issue Queue<br/>(wakeup + select)"]
+        PRF["PRF<br/>(values)"]
+        EXEC["Exec units<br/>(ALU/MUL/DIV/FPU/AGU)"]
+        LSQ["LSQ<br/>(load/store ordering)"]
+        CDB["CDB<br/>(result broadcast)"]
     end
-    COMMIT["Commit\n(in-order retire)"]
+    COMMIT["Commit<br/>(in-order retire)"]
 
     FETCH --> DECODE --> RAT
     FREELIST --> RAT
@@ -99,12 +99,12 @@ The modern datapath is easier to reconstruct by watching simpler machines fail:
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 44, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart LR
-    A["In-order interlocked pipe\none stalled op blocks all younger ops"]
-    B["Scoreboard\ncentral ready/busy state; issue ready younger ops"]
-    C["Tomasulo reservation stations\ntags + distributed wakeup + value broadcast"]
-    D["ROB + in-order retirement\nprecise exceptions and recoverable speculation"]
-    E["Explicit RAT + PRF + free list\ncompact tags; scalable value storage"]
-    F["Modern clustered backend\ndistributed IQs, checkpoints, selective replay"]
+    A["In-order interlocked pipe<br/>one stalled op blocks all younger ops"]
+    B["Scoreboard<br/>central ready/busy state; issue ready younger ops"]
+    C["Tomasulo reservation stations<br/>tags + distributed wakeup + value broadcast"]
+    D["ROB + in-order retirement<br/>precise exceptions and recoverable speculation"]
+    E["Explicit RAT + PRF + free list<br/>compact tags; scalable value storage"]
+    F["Modern clustered backend<br/>distributed IQs, checkpoints, selective replay"]
 
     A -->|"head-of-line blocking"| B
     B -->|"WAR/WAW name stalls and centralized wiring"| C
@@ -462,8 +462,8 @@ So the LSQ is, in the end, **the disambiguation engine for a name space that bin
 flowchart TB
     subgraph LSQ["LSQ (age-ordered)"]
         direction LR
-        LQ["Load Queue\n32-64 entries"]
-        SQ["Store Queue\n24-48 entries"]
+        LQ["Load Queue<br/>32-64 entries"]
+        SQ["Store Queue<br/>24-48 entries"]
     end
     SQ -.->|forward youngest older store| LQ
     SQ -.->|resolving store checks younger loads| LQ

@@ -100,16 +100,16 @@ Closure is the feedback controller that drives measured coverage to the vplan ta
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    RUN["Run regression\n(random seeds + directed)"]:::a --> MERGE["Merge coverage\nacross all runs"]:::b
-    MERGE --> HOLES["Rank holes\n(un-hit bins, by value)"]:::c
-    HOLES -->|holes remain| TRIAGE{"Why is this\nbin unhit?"}:::d
-    TRIAGE -->|reachable by more random| SEED["add seeds /\nloosen constraints"]:::d
-    TRIAGE -->|rare: random uneconomic| DIR["steer constraint /\nwrite directed test"]:::d
-    TRIAGE -->|impossible| WAIVE["waive w/ justification\nor fix cover model"]:::d
+    RUN["Run regression<br/>(random seeds + directed)"]:::a --> MERGE["Merge coverage<br/>across all runs"]:::b
+    MERGE --> HOLES["Rank holes<br/>(un-hit bins, by value)"]:::c
+    HOLES -->|holes remain| TRIAGE{"Why is this<br/>bin unhit?"}:::d
+    TRIAGE -->|reachable by more random| SEED["add seeds /<br/>loosen constraints"]:::d
+    TRIAGE -->|rare: random uneconomic| DIR["steer constraint /<br/>write directed test"]:::d
+    TRIAGE -->|impossible| WAIVE["waive w/ justification<br/>or fix cover model"]:::d
     TRIAGE -->|reachable but test fails| BUG["real DUT bug -> fix RTL"]:::d
     SEED --> RUN
     DIR --> RUN
-    HOLES -->|no holes AND all checks pass\nAND regression stable| DONE["coverage closed"]:::e
+    HOLES -->|no holes AND all checks pass<br/>AND regression stable| DONE["coverage closed"]:::e
     classDef a fill:#fde68a,stroke:#b45309,color:#000
     classDef b fill:#bbf7d0,stroke:#15803d,color:#000
     classDef c fill:#bae6fd,stroke:#0369a1,color:#000

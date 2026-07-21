@@ -20,9 +20,9 @@ Wide machines go idle for different reasons. Scalar superscalar issue runs out o
 
 ```mermaid
 flowchart TB
-    Work["Application parallelism"] --> ILP["ILP\nmultiple scalar ops/cycle"]
-    Work --> DLP["DLP\nsame operation over elements"]
-    Work --> TLP["TLP\nindependent instruction streams"]
+    Work["Application parallelism"] --> ILP["ILP<br/>multiple scalar ops/cycle"]
+    Work --> DLP["DLP<br/>same operation over elements"]
+    Work --> TLP["TLP<br/>independent instruction streams"]
     ILP --> OoO["Superscalar OoO"]
     DLP --> SIMD["Fixed-width SIMD"]
     DLP --> Vector["Length-agnostic vector"]
@@ -165,8 +165,8 @@ An SMT context needs its own architectural PC/register state, privilege state, r
 
 ```mermaid
 flowchart LR
-    T0["Thread 0\nPC + rename state"] --> Pick["Fetch / rename policy"]
-    T1["Thread 1\nPC + rename state"] --> Pick
+    T0["Thread 0<br/>PC + rename state"] --> Pick["Fetch / rename policy"]
+    T1["Thread 1<br/>PC + rename state"] --> Pick
     Pick --> Shared["Shared ROB / IQ / LSQ / PRF"]
     Shared --> EU["Shared execution units"]
     Shared --> Cache["Shared cache + TLB"]

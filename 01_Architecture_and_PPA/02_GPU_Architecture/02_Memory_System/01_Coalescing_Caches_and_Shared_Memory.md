@@ -19,7 +19,7 @@ A warp instruction can name one address per active lane. The memory system must 
 
 ```mermaid
 flowchart LR
-    Warp["lane addresses + masks"] --> Coalesce["coalescer\nsegment / sector formation"]
+    Warp["lane addresses + masks"] --> Coalesce["coalescer<br/>segment / sector formation"]
     Coalesce --> TLB["TLB / page walkers"]
     TLB --> L1["L1 data / texture / shared path"]
     Shared["software-managed shared memory"] --> Banks["banked SRAM"]

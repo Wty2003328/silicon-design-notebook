@@ -45,7 +45,7 @@ The foundry's yield guarantee is **conditional**. The fab qualifies a process �
 - **enclosure** (metal must cover a via by $X$) — margin against **overlay**: the via mask and the metal mask register imperfectly, so a mis-aligned via must still land fully on metal.
 - **min-area / notch / corner** — sub-resolution nubs and slivers do not print faithfully; corner rounding erases them, so the layout must not depend on them.
 - **density** (min/max metal in a moving window) — **CMP** removes material at a rate that depends on local pattern density; too sparse *dishes*, too dense *erodes*, so planarity requires bounded density. This is exactly what dummy fill (§4) exists to satisfy.
-- **antenna** — not geometric in its *failure* at all: a large metal-to-gate area collects plasma charge during etch and can rupture the gate oxide before power-on (§2.6).
+- **antenna** — not geometric in its *failure* at all: a large metal-to-gate area collects plasma charge during etch and can rupture the gate oxide before power-on (checked as an ERC, §3.4).
 
 The physics behind each margin — Rayleigh resolution, etch loading, the overlay budget, CMP dishing/erosion — is developed in [Fabrication_Process](../07_Manufacturing_and_Bringup/01_Fabrication_Process.md) (§3 litho, §4 etch, §7 CMP). What matters here is the **inversion**: DRC is that physics compiled into geometric predicates a tool can check exhaustively over billions of polygons.
 
@@ -111,13 +111,13 @@ DRC never asks *what circuit* the polygons form; a rule-clean layout can be the 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    LAY["Drawn polygons\n(GDSII)"] --> EXT["Extract devices + nets\nfrom geometry"]
-    EXT --> GL["Layout graph\n(devices, nets, typed pins)"]
-    NL["Signed-off netlist\n(schematic)"] --> GS["Reference graph"]
-    GL --> CMP{"Graph isomorphism\n(labeled, partition refinement)"}
+    LAY["Drawn polygons<br/>(GDSII)"] --> EXT["Extract devices + nets<br/>from geometry"]
+    EXT --> GL["Layout graph<br/>(devices, nets, typed pins)"]
+    NL["Signed-off netlist<br/>(schematic)"] --> GS["Reference graph"]
+    GL --> CMP{"Graph isomorphism<br/>(labeled, partition refinement)"}
     GS --> CMP
     CMP -->|isomorphic| OK["LVS clean"]
-    CMP -->|difference = certificate| BAD["short / open /\nwrong device / param"]
+    CMP -->|difference = certificate| BAD["short / open /<br/>wrong device / param"]
 ```
 
 ### 3.2 Extraction: recovering devices and nets from polygons
@@ -139,7 +139,7 @@ Two practical levers mirror §2.6. **Hierarchy**: match a cell master once, then
 
 ### 3.4 ERC: the checks LVS does not phrase as a comparison
 
-LVS proves *equal to the netlist*; some things are wrong **regardless** of the netlist, and **ERC** (Electrical Rule Check) catches those directly from the extracted graph: a **floating gate** (a gate node with no driver → undefined level and leakage), a **missing well/substrate tie** (an un-biased body → latch-up risk), an **antenna** violation (§2.6), a **missing ESD path** from an I/O pad to the rails. These are *one-sided* predicates on the extracted circuit — there is no schematic to compare against — which is why they ride alongside LVS but are logically separate from it.
+LVS proves *equal to the netlist*; some things are wrong **regardless** of the netlist, and **ERC** (Electrical Rule Check) catches those directly from the extracted graph: a **floating gate** (a gate node with no driver → undefined level and leakage), a **missing well/substrate tie** (an un-biased body → latch-up risk), an **antenna** violation (mechanism in [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) §5), a **missing ESD path** from an I/O pad to the rails. These are *one-sided* predicates on the extracted circuit — there is no schematic to compare against — which is why they ride alongside LVS but are logically separate from it.
 
 ---
 
@@ -176,11 +176,11 @@ where $V$ = lifetime volume and $M$ = per-die margin. High-volume parts chase ev
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    RL["Routed full-chip\nGDSII"] --> DRC["DRC\nmanufacturable?"]
-    RL --> LVS["LVS\n= netlist?"]
-    DRC --> DFM["DFM / fill\nyield-aware"]
+    RL["Routed full-chip<br/>GDSII"] --> DRC["DRC<br/>manufacturable?"]
+    RL --> LVS["LVS<br/>= netlist?"]
+    DRC --> DFM["DFM / fill<br/>yield-aware"]
     LVS --> DFM
-    DFM --> GDS["clean or waived\n→ masks"]
+    DFM --> GDS["clean or waived<br/>→ masks"]
     GDS -.->|any unwaived error blocks tape-out| RL
 ```
 

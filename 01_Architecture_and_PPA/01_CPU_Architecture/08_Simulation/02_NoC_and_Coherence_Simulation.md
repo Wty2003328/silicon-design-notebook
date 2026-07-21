@@ -32,11 +32,11 @@ The model must preserve causality: protocol messages create traffic, traffic del
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart LR
-    A["Fixed miss latency\none delay per cache outcome"]
-    B["Protocol-event model\nrequests, transients, acks, finite TBEs"]
-    C["Packet network\nmessage bytes, routes, queueing"]
-    D["Flit/credit router model\nVCs, buffers, arbitration, links"]
-    E["Execution-driven coupling\nMSHR backpressure changes future issue"]
+    A["Fixed miss latency<br/>one delay per cache outcome"]
+    B["Protocol-event model<br/>requests, transients, acks, finite TBEs"]
+    C["Packet network<br/>message bytes, routes, queueing"]
+    D["Flit/credit router model<br/>VCs, buffers, arbitration, links"]
+    E["Execution-driven coupling<br/>MSHR backpressure changes future issue"]
 
     A -->|"cannot compare protocols or sharing fanout"| B
     B -->|"fixed transport hides congestion and packet size"| C

@@ -18,10 +18,10 @@ Adding GPUs multiplies peak compute and local HBM, but it also partitions memory
 ```mermaid
 flowchart TB
     Host["CPU / host memory"] --> Root["PCIe / CXL root fabric"]
-    Root --> G0["GPU 0\nHBM + L2"]
-    Root --> G1["GPU 1\nHBM + L2"]
-    Root --> G2["GPU 2\nHBM + L2"]
-    Root --> G3["GPU 3\nHBM + L2"]
+    Root --> G0["GPU 0<br/>HBM + L2"]
+    Root --> G1["GPU 1<br/>HBM + L2"]
+    Root --> G2["GPU 2<br/>HBM + L2"]
+    Root --> G3["GPU 3<br/>HBM + L2"]
     G0 <--> G1
     G1 <--> G2
     G2 <--> G3

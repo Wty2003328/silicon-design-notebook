@@ -33,12 +33,12 @@ Reset is included because an apparently correct power/clock partition can still 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    W["Workloads and use cases\nactive time, idle residency, deadlines"]
-    D["Dependency graph\nwho needs whom and which state survives"]
-    P["Power domains\non / retention / off"]
-    V["Voltage domains\nOPPs and regulators"]
-    C["Clock and reset domains\nfrequency, phase, reset release"]
-    B["Boundary contract\nisolation, LS, CDC/RDC, retention"]
+    W["Workloads and use cases<br/>active time, idle residency, deadlines"]
+    D["Dependency graph<br/>who needs whom and which state survives"]
+    P["Power domains<br/>on / retention / off"]
+    V["Voltage domains<br/>OPPs and regulators"]
+    C["Clock and reset domains<br/>frequency, phase, reset release"]
+    B["Boundary contract<br/>isolation, LS, CDC/RDC, retention"]
     I["UPF or CPF + RTL/SDC + PMU sequence"]
     Q["Implementation and verification"]
     W --> D

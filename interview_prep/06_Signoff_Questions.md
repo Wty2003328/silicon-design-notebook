@@ -146,12 +146,12 @@ For at-speed testing, the power management unit must be in a known state.
 
 ### Q13: What is the difference between fault coverage and test coverage?
 
-**A:** Fault coverage = detected faults / (total faults - untestable faults).
-Test coverage = detected faults / total faults. Fault coverage excludes
+**A:** Test coverage = detected faults / (total faults - untestable faults).
+Fault coverage = detected faults / total faults. Test coverage excludes
 proven-untestable faults (tied, blocked, redundant) from the denominator,
-giving a more meaningful measure of ATPG effectiveness. Test coverage is more
+giving a more meaningful measure of ATPG effectiveness. Fault coverage is more
 conservative. Example: 95,000 detected out of 100,000 total, with 2,000
-untestable. FC = 95,000/98,000 = 96.9%. TC = 95,000/100,000 = 95.0%.
+untestable. TC = 95,000/98,000 = 96.9%. FC = 95,000/100,000 = 95.0%.
 
 ### Q14: Why is IDDQ testing impractical at advanced nodes?
 
@@ -287,7 +287,7 @@ clocks can share clock tree resources; the others cannot.
 
 ### Q5: Explain CRPR with an example. Why does it matter?
 
-**A:** CRPR (Clock Reconvergence Pessimism Removal) corrects the artificial pessimism when OCV (On-Chip Variation) derates the shared clock path differently for launch and capture. Example: launch and capture FFs share a common clock buffer B with 100ps delay. For setup, OCV derates launch (early, 95ps) and capture (late, 105ps). But B cannot be both 95ps and 105ps simultaneously -- it's one physical cell. CRPR removes this 10ps difference from the analysis. Without CRPR, the tool computes 10ps of false skew that doesn't exist. CRPR typically recovers 5-50ps of slack per path. It's automatically computed by PrimeTime when `timing_remove_clock_reconvergence_pessimism` is enabled. Larger shared clock path segments yield larger CRPR benefits.
+**A:** CRPR (Clock Reconvergence Pessimism Removal) corrects the artificial pessimism when OCV (On-Chip Variation) derates the shared clock path differently for launch and capture. Example: launch and capture FFs share a common clock buffer B with 100ps delay. For setup, OCV derates launch (late, 105ps) and capture (early, 95ps). But B cannot be both 95ps and 105ps simultaneously -- it's one physical cell. CRPR removes this 10ps difference from the analysis. Without CRPR, the tool computes 10ps of false skew that doesn't exist. CRPR typically recovers 5-50ps of slack per path. It's automatically computed by PrimeTime when `timing_remove_clock_reconvergence_pessimism` is enabled. Larger shared clock path segments yield larger CRPR benefits.
 
 ### Q6: Compare OCV, AOCV, and POCV with numbers.
 

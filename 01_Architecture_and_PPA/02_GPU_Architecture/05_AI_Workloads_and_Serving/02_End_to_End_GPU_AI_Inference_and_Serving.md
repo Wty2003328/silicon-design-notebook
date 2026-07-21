@@ -10,8 +10,8 @@
 
 ```mermaid
 flowchart LR
-    Store["object store / NVMe\nmodel shards"] --> Host["CPU memory\ndeserialize / pin / map"]
-    Host --> HBM["GPU HBM\nweights + workspaces + KV pool"]
+    Store["object store / NVMe<br/>model shards"] --> Host["CPU memory<br/>deserialize / pin / map"]
+    Host --> HBM["GPU HBM<br/>weights + workspaces + KV pool"]
     Req["request"] --> Front["gateway / tokenizer / router"]
     Front --> Sched["admission + batch scheduler"]
     Sched --> Prefill["prefill kernels"]

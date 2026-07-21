@@ -299,7 +299,7 @@ functional coverage, allowing unified analysis.
 
 ### Q8: Can you implement a divide-by-1.5 clock?
 
-**A:** Yes, using dual-modulus: alternate between divide-by-1 and divide-by-2. Average period = 1.5T. But the jitter is catastrophic: Jpp = T = 67% of the average period. This is unusable for any clocked logic. In practice, divide-by-1.5 (or any fractional ratio < 2) must use a PLL: set feedback divider to 2 and reference divider to 3 → f_out = f_ref * 3/2 = 1.5 * f_ref. The PLL produces a clean clock with sub-ps jitter.
+**A:** Yes, using dual-modulus: alternate between divide-by-1 and divide-by-2. Average period = 1.5T. But the jitter is catastrophic: Jpp = T = 67% of the average period. This is unusable for any clocked logic. In practice, divide-by-1.5 (or any fractional ratio < 2) must use a PLL: set feedback divider to 2 and reference divider to 3 → f_out = f_ref * 2/3 = f_ref / 1.5 (i.e. a clean divide-by-1.5). The PLL produces a clean clock with sub-ps jitter.
 
 ### Q9: What happens if div_ratio is changed while the counter is mid-count?
 

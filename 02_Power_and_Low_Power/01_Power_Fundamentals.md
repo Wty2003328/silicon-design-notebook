@@ -71,16 +71,16 @@ where $\alpha$ = **activity factor** (average power-consuming transitions per no
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    P["Chip power budget"] --> DYN["Dynamic\n(flows only when nodes toggle)"]
-    P --> STAT["Static\n(flows whenever powered)"]
-    DYN --> SW["Switching\nalpha*C*Vdd^2*f"]
-    DYN --> SC["Short-circuit\n~5-10% of dynamic"]
-    STAT --> LEAK["Leakage\nVdd*I_leak"]
-    SW --> CLK["Clock tree\nalpha=1  ->  30-50%"]
+    P["Chip power budget"] --> DYN["Dynamic<br/>(flows only when nodes toggle)"]
+    P --> STAT["Static<br/>(flows whenever powered)"]
+    DYN --> SW["Switching<br/>alpha*C*Vdd^2*f"]
+    DYN --> SC["Short-circuit<br/>~5-10% of dynamic"]
+    STAT --> LEAK["Leakage<br/>Vdd*I_leak"]
+    SW --> CLK["Clock tree<br/>alpha=1  ->  30-50%"]
     SW --> LOGIC["Logic + glitch"]
     SW --> MEM["Memory access"]
     SW --> WIRE["Interconnect"]
-    LEAK --> SUB["Subthreshold\n(dominant)"]
+    LEAK --> SUB["Subthreshold<br/>(dominant)"]
     LEAK --> ETC["Gate / junction / GIDL"]
 ```
 

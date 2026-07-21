@@ -17,7 +17,7 @@ A GPU does not make one warp's long-latency load cheap. It keeps many warps resi
 
 ```mermaid
 flowchart LR
-    Blocks["thread blocks"] --> Admit["resource admission\nregisters + shared memory + slots"]
+    Blocks["thread blocks"] --> Admit["resource admission<br/>registers + shared memory + slots"]
     Admit --> Pool["resident warp pool"]
     Pool --> Sched["warp schedulers"]
     Score["scoreboard + barriers"] --> Sched

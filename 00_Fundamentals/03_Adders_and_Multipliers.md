@@ -33,10 +33,10 @@ Treat every structure as a repair to a measured carry problem:
 
 ```mermaid
 flowchart TD
-    HA["half adder\nno carry-in"] --> FA["full adder\none-bit carry recurrence"]
-    FA --> RCA["ripple chain\nminimum area"]
-    RCA -->|"linear carry latency"| BLOCK["skip/select blocks\nshorten or speculate locally"]
-    BLOCK -->|"block chain remains"| CLA["lookahead groups\ncompute carries"]
+    HA["half adder<br/>no carry-in"] --> FA["full adder<br/>one-bit carry recurrence"]
+    FA --> RCA["ripple chain<br/>minimum area"]
+    RCA -->|"linear carry latency"| BLOCK["skip/select blocks<br/>shorten or speculate locally"]
+    BLOCK -->|"block chain remains"| CLA["lookahead groups<br/>compute carries"]
     CLA -->|"wide fan-in is not physical"| PREFIX["bounded-fan-in prefix tree"]
     PREFIX -->|"many operands would repeat propagation"| CSA["carry-save redundant form"]
     CSA --> MUL["Booth + compressor tree + final prefix CPA"]

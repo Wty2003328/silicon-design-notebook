@@ -133,14 +133,14 @@ This is why gate-level simulation (§8) exists at all: it re-checks the design u
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    RTL["Same RTL text\n(S, delta, lambda)"]
-    SIM["Simulator\n(event/scheduler semantics)\ndelays, X-prop, sensitivity"]
-    SYN["Synthesizer\n(structural semantics)\nextracts gates, ignores delays"]
+    RTL["Same RTL text<br/>(S, delta, lambda)"]
+    SIM["Simulator<br/>(event/scheduler semantics)<br/>delays, X-prop, sensitivity"]
+    SYN["Synthesizer<br/>(structural semantics)<br/>extracts gates, ignores delays"]
     GATE["Gate netlist"]
     RTL --> SIM
     RTL --> SYN --> GATE
-    SIM -. "the gap:\nrules exist to keep\nthese two equal" .- SYN
-    GATE -. "LEC proves RTL == gates;\nGLS re-checks under real X + timing" .-> RTL
+    SIM -. "the gap:<br/>rules exist to keep<br/>these two equal" .- SYN
+    GATE -. "LEC proves RTL == gates;<br/>GLS re-checks under real X + timing" .-> RTL
 ```
 
 ---

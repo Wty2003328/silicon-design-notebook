@@ -222,10 +222,10 @@ Random stimulus *reaches*, but a run that reaches a corner tells you nothing unl
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 flowchart LR
-    RAND["Constrained-random stimulus\n(this page)"] --> DUT["DUT + checkers"]
-    DUT --> COV["Functional coverage\n(what was hit) — 09"]
+    RAND["Constrained-random stimulus<br/>(this page)"] --> DUT["DUT + checkers"]
+    DUT --> COV["Functional coverage<br/>(what was hit) — 09"]
     COV --> HOLES{"Holes?"}
-    HOLES -->|yes: steer constraints/dist/weights\ntoward the gap| RAND
+    HOLES -->|yes: steer constraints/dist/weights<br/>toward the gap| RAND
     HOLES -->|stubborn corner| DIRECTED["Directed / heavily-steered test"]
     DIRECTED --> DUT
     HOLES -->|no| DONE["Converged — sign-off (11)"]

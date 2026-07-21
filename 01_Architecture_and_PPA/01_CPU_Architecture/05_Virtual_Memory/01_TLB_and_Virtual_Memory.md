@@ -31,14 +31,14 @@ Address translation evolves from a correct but unusably serial baseline:
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart LR
-    A["Flat physical addressing\nfast hardware; no per-process isolation"]
-    B["Page table lookup per access\nisolation/relocation; serial memory reads"]
-    C["L1 TLB\none-cycle cached translation"]
-    D["L2 shared TLB\nmore reach off the critical hit path"]
-    E["Hardware page walker + PWC\nbackground walk; cached interior pointers"]
-    F["VIPT L1 cache\ntranslate and index cache in parallel"]
-    G["ASID + targeted shootdown\navoid global flush; revoke stale mappings"]
-    H["Superpages / nested TLBs\nexpand reach and shorten deep/nested walks"]
+    A["Flat physical addressing<br/>fast hardware; no per-process isolation"]
+    B["Page table lookup per access<br/>isolation/relocation; serial memory reads"]
+    C["L1 TLB<br/>one-cycle cached translation"]
+    D["L2 shared TLB<br/>more reach off the critical hit path"]
+    E["Hardware page walker + PWC<br/>background walk; cached interior pointers"]
+    F["VIPT L1 cache<br/>translate and index cache in parallel"]
+    G["ASID + targeted shootdown<br/>avoid global flush; revoke stale mappings"]
+    H["Superpages / nested TLBs<br/>expand reach and shorten deep/nested walks"]
 
     A -->|"no protection or sparse virtual address space"| B
     B -->|"walk before every data access"| C
@@ -140,13 +140,13 @@ zero while the footprint fits ($S_{WS}\le R_{TLB}$) and climbing toward 1 as it 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    VA["Virtual address\n(from AGU)"]
-    VA --> L1I["L1 ITLB\n16-64 entries, FA, 1 cyc"]
-    VA --> L1D["L1 DTLB\n16-64 entries, FA, 1 cyc"]
-    L1I -->|miss| STLB["L2 STLB\n256-2048 entries, 4-8 way, 2-5 cyc"]
+    VA["Virtual address<br/>(from AGU)"]
+    VA --> L1I["L1 ITLB<br/>16-64 entries, FA, 1 cyc"]
+    VA --> L1D["L1 DTLB<br/>16-64 entries, FA, 1 cyc"]
+    L1I -->|miss| STLB["L2 STLB<br/>256-2048 entries, 4-8 way, 2-5 cyc"]
     L1D -->|miss| STLB
     STLB -->|hit| PA["Physical address"]
-    STLB -->|miss| PW["Page walker + page-walk cache\nSv39: 3 dependent reads"]
+    STLB -->|miss| PW["Page walker + page-walk cache<br/>Sv39: 3 dependent reads"]
     PW -->|fill| STLB
     PW -->|not present| PF["Page-fault trap to OS"]
 ```
@@ -316,8 +316,8 @@ The resolution is a single observation: **the page offset is identical in the vi
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
     VA["Virtual address"]
-    VA -->|high bits: page number| TLB["TLB translate\n(rewrites high bits)"]
-    VA -->|low bits: page offset| IDX["Index set + read ways\n(offset bits, translation-invariant)"]
+    VA -->|high bits: page number| TLB["TLB translate<br/>(rewrites high bits)"]
+    VA -->|low bits: page offset| IDX["Index set + read ways<br/>(offset bits, translation-invariant)"]
     TLB --> PT["Physical tag"]
     IDX --> CT["Candidate tags from set"]
     PT --> CMP{"compare"}

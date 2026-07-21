@@ -22,11 +22,11 @@ Peak arithmetic is only one ceiling. The same model can be matrix-compute-bound 
 
 ```mermaid
 flowchart TB
-    G["framework graph\nLinear / Attention / MoE / Norm"]
-    I["compiler intermediate representation\nshapes + layouts + fusion groups"]
-    K["kernel implementation\ntile sizes + warps + pipeline stages"]
-    X["GPU execution\nblocks -> SMs -> instructions"]
-    R["resources and events\nRF / shared memory / L2 / HBM / fabric"]
+    G["framework graph<br/>Linear / Attention / MoE / Norm"]
+    I["compiler intermediate representation<br/>shapes + layouts + fusion groups"]
+    K["kernel implementation<br/>tile sizes + warps + pipeline stages"]
+    X["GPU execution<br/>blocks -> SMs -> instructions"]
+    R["resources and events<br/>RF / shared memory / L2 / HBM / fabric"]
     G --> I --> K --> X --> R
 ```
 

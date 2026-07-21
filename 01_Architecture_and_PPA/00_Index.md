@@ -40,13 +40,13 @@ The books are not four unrelated feature catalogs. They make different trade-off
 
 ```mermaid
 flowchart TD
-    W["workload exposes latency, bandwidth, locality, and parallelism"] --> CPU["CPU response\npredict and dynamically schedule a small number of general instruction streams"]
-    W --> GPU["GPU response\nreplicate thread state and switch among many SIMT warps to hide latency"]
-    W --> NPU["NPU response\ncompile tensor reuse and movement into spatial/vector dataflows"]
-    CPU --> SOC["SoC response\ncompose heterogeneous agents through memory, protocols, NoC, I/O, and chiplet links"]
+    W["workload exposes latency, bandwidth, locality, and parallelism"] --> CPU["CPU response<br/>predict and dynamically schedule a small number of general instruction streams"]
+    W --> GPU["GPU response<br/>replicate thread state and switch among many SIMT warps to hide latency"]
+    W --> NPU["NPU response<br/>compile tensor reuse and movement into spatial/vector dataflows"]
+    CPU --> SOC["SoC response<br/>compose heterogeneous agents through memory, protocols, NoC, I/O, and chiplet links"]
     GPU --> SOC
     NPU --> SOC
-    SOC --> E["measured service\nlatency, throughput, energy, area, reliability, and cost"]
+    SOC --> E["measured service<br/>latency, throughput, energy, area, reliability, and cost"]
     E -->|"observed bottleneck or failure"| W
 ```
 

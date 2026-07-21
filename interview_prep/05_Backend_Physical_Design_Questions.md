@@ -327,9 +327,9 @@ Voltus-Fi, Cadence Celsius — chip and package thermal analysis.
 
 **Q19: How does temperature inversion affect reliability analysis?**
 
-At low VDD (< 0.8V), the fastest corner shifts from high-temperature to low-temperature
+At low VDD (< 0.8V), the fastest corner shifts from low-temperature to high-temperature
 (because Vth reduction at high T is more beneficial than mobility loss). This means hold
-timing must be checked at low temperature (fast corner), not just high temperature. For
+timing must be checked at high temperature (fast corner), not just low temperature. For
 reliability, this complicates analysis because aging and EM models assume worst-case at
 high temperature, but timing margins may be worse at low temperature.
 

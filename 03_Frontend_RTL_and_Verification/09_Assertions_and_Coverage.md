@@ -134,7 +134,7 @@ $$
 \underbrace{F\,\text{ack}}_{\text{true liveness, unsimulatable}} \;\;\longrightarrow\;\; \underbrace{F_{\le N}\,\text{ack}}_{\text{bounded safety, a timeout}} \;\equiv\; \text{req} \; |\!\!\rightarrow\; \text{\#\#[1:N] ack}
 $$
 
-This is *why* you write `##[1:N]` and not `##[1:$]` in a simulation assertion: the bounded window is a safety property with a finite counterexample (the deadline passes), which a finite run can catch. Unbounded liveness ($F$, `##[1:$]`) is the province of **formal** model checking ([12](12_Formal_Verification.md) §4–5), which reasons about all infinite behaviors symbolically rather than by running them. The choice of bound $N$ is a real design decision — too tight and legal slow paths false-fail; too loose and a genuine hang runs for $N$ cycles before the assertion notices.
+This is *why* you write `##[1:N]` and not `##[1:$]` in a simulation assertion: the bounded window is a safety property with a finite counterexample (the deadline passes), which a finite run can catch. Unbounded liveness ($F$, `##[1:$]`) is the province of **formal** model checking ([12](12_Formal_Verification.md) §3), which reasons about all infinite behaviors symbolically rather than by running them. The choice of bound $N$ is a real design decision — too tight and legal slow paths false-fail; too loose and a genuine hang runs for $N$ cycles before the assertion notices.
 
 ### 2.5 Three lives of one assertion: spec, monitor, proof target
 
@@ -142,7 +142,7 @@ The same property text serves three roles, and this is the deepest reason to inv
 
 1. **As specification.** `full |-> !wr_en` is an unambiguous, executable statement of a rule that a prose spec would render as a sentence someone can misread. Assertions are the spec that cannot drift from the check, because they *are* the check.
 2. **As a simulation monitor.** Bound to the DUT, the assertion watches every regression run and fires on violation — the observability mechanism of §1.1. Its limitation is inherited from simulation: it only checks the paths your stimulus actually drives (hence coverage, hence vacuity guards).
-3. **As a formal proof target.** Handed to a model checker, the *same* assertion is proven to hold on **all** legal inputs, or a counterexample trace is produced ([12](12_Formal_Verification.md) §5). This is why assertions are called "formal-ready": no rewrite is needed to escalate a monitored property to a proved one. Simulation says "not violated in the runs I did"; formal says "cannot be violated." Control-intensive blocks (arbiters, FIFOs, protocol bridges) are routinely *closed by formal* on their assertions, retiring the coverage burden for those properties entirely.
+3. **As a formal proof target.** Handed to a model checker, the *same* assertion is proven to hold on **all** legal inputs, or a counterexample trace is produced ([12](12_Formal_Verification.md) §3). This is why assertions are called "formal-ready": no rewrite is needed to escalate a monitored property to a proved one. Simulation says "not violated in the runs I did"; formal says "cannot be violated." Control-intensive blocks (arbiters, FIFOs, protocol bridges) are routinely *closed by formal* on their assertions, retiring the coverage burden for those properties entirely.
 
 The **bind** construct is the plumbing that makes all three practical without touching the design: it attaches an assertion module to RTL from the outside, so encrypted IP or synthesis-clean RTL gets checked without editing its source.
 
@@ -270,7 +270,7 @@ $$
 \text{run random} \;\to\; \text{measure coverage} \;\to\; \text{find holes} \;\to\; \underbrace{\text{tighten constraints / add directed test}}_{\text{raise }p\text{ for that bin}} \;\to\; \text{repeat}
 $$
 
-Each hole is diagnosed (is it *reachable*? if not, `ignore_bins` it with justification; if so, what stimulus reaches it?) and closed by *raising the probability* of the missing behavior — biasing constraints toward it, or writing a directed test that hits it deterministically ($p=1$). That is how verification *ends*: not when random runs stop failing, but when the curated, reachable coverage model is full. The full triage decision tree and sign-off criteria are the subject of [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) §3–§4; the concept to carry there is that closure is a *sampling* problem with a heavy tail, which is why it needs directed intervention and cannot be brute-forced.
+Each hole is diagnosed (is it *reachable*? if not, `ignore_bins` it with justification; if so, what stimulus reaches it?) and closed by *raising the probability* of the missing behavior — biasing constraints toward it, or writing a directed test that hits it deterministically ($p=1$). That is how verification *ends*: not when random runs stop failing, but when the curated, reachable coverage model is full. The full triage decision tree and sign-off criteria are the subject of [Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md) §3, §5; the concept to carry there is that closure is a *sampling* problem with a heavy tail, which is why it needs directed intervention and cannot be brute-forced.
 
 ---
 

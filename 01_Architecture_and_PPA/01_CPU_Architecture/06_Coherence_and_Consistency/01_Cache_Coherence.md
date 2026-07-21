@@ -37,13 +37,13 @@ Coherence features evolved by preserving the same single-writer/multiple-reader 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
 flowchart LR
-    A["One shared cache / no private copies\nimplicit serialization; poor scaling"]
-    B["Write-through snooping\nmemory current; every write broadcasts"]
-    C["Write-back MSI\nM state keeps private dirty data local"]
-    D["MESI\nE state proves clean exclusivity"]
-    E["MOESI / MESIF\nowner or forwarder supplies shared data"]
-    F["Directory protocol\nrecord sharers/owner; target messages"]
-    G["Split-transaction scalable fabric\ntransient states, IDs, acks, VCs, retries"]
+    A["One shared cache / no private copies<br/>implicit serialization; poor scaling"]
+    B["Write-through snooping<br/>memory current; every write broadcasts"]
+    C["Write-back MSI<br/>M state keeps private dirty data local"]
+    D["MESI<br/>E state proves clean exclusivity"]
+    E["MOESI / MESIF<br/>owner or forwarder supplies shared data"]
+    F["Directory protocol<br/>record sharers/owner; target messages"]
+    G["Split-transaction scalable fabric<br/>transient states, IDs, acks, VCs, retries"]
 
     A -->|"shared-cache ports and distance bottleneck"| B
     B -->|"write bandwidth grows with store rate"| C

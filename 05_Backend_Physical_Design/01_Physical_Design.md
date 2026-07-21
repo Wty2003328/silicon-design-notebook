@@ -57,14 +57,14 @@ Each stage makes one more thing about $\tau_{wire}$ real, and none can run befor
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 45, "htmlLabels": false}}}%%
 flowchart TD
-    IN["Netlist + SDC + LEF/tech + libs\n(pure connectivity, timing = fiction)"] --> FP
-    FP["Floorplan\ndie size, macros, power grid, I/O\n(fixes the frame; least reversible)"]
-    FP --> PL["Placement\nminimize wirelength/timing objective\n(gives every logic net its L)"]
-    PL --> CTS["Clock tree synthesis\nbuild low-skew clock\n(makes hold timing real)"]
-    CTS --> RT["Routing\ncommit metal under DRC + SI\n(makes R, C extractable truth)"]
-    RT --> EX["Extraction + STA\nreal parasitics -> real slack"]
+    IN["Netlist + SDC + LEF/tech + libs<br/>(pure connectivity, timing = fiction)"] --> FP
+    FP["Floorplan<br/>die size, macros, power grid, I/O<br/>(fixes the frame; least reversible)"]
+    FP --> PL["Placement<br/>minimize wirelength/timing objective<br/>(gives every logic net its L)"]
+    PL --> CTS["Clock tree synthesis<br/>build low-skew clock<br/>(makes hold timing real)"]
+    CTS --> RT["Routing<br/>commit metal under DRC + SI<br/>(makes R, C extractable truth)"]
+    RT --> EX["Extraction + STA<br/>real parasitics -> real slack"]
     EX -->|negative slack: geometry changed the RC| PL
-    EX --> SO["Signoff\nDRC / LVS / IR / EM"]
+    EX --> SO["Signoff<br/>DRC / LVS / IR / EM"]
     SO --> GDS["GDSII / OASIS"]
 ```
 
@@ -185,7 +185,7 @@ $$
 
 where $T_{clk}$ = clock period, $t_{cq}$ = clock-to-Q, $t_{comb}$ = combinational path delay, $t_{setup}/t_{hold}$ = flop constraints. Uncontrolled skew eats directly into both margins, so goal #1 is $\delta \approx 0$ everywhere. But the same equations show skew can be *spent deliberately*: give a slow stage a later capture edge ($\delta>0$) and it borrows time from the next stage. This is **useful skew**, and it converts the achievable period from the *worst* stage delay toward the *average*.
 
-Concretely, two back-to-back stages of 3 ns and 1 ns clocked with zero skew need $T_{clk}\ge 3$ ns. Delay the middle capture edge by 0.5 ns: the first stage now sees a 3.5 ns budget and the second a 1.5 ns budget, so both close at $T_{clk} = 2.5$ ns — a 20% frequency gain from *redistributing* slack, not adding logic. The bill comes due on hold: every borrowed picosecond must be repaid with hold buffers on the fast paths. Useful skew trades **setup headroom for hold-fixing buffers and OCV risk**.
+Concretely, two back-to-back stages of 3 ns and 1 ns clocked with zero skew need $T_{clk}\ge 3$ ns. Delay the middle capture edge by 0.5 ns: the first stage now sees a 3.0 ns budget and the second a 2.0 ns budget, so both close at $T_{clk} = 2.5$ ns — a 20% frequency gain from *redistributing* slack, not adding logic. The bill comes due on hold: every borrowed picosecond must be repaid with hold buffers on the fast paths. Useful skew trades **setup headroom for hold-fixing buffers and OCV risk**.
 
 ### 4.2 Building a low-skew tree: the zero-skew merge
 

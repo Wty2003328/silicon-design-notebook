@@ -26,12 +26,12 @@ Synthesis, PnR, and STA are not three views of timing; they are three engines ex
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart LR
-    RTL["RTL\n(function only)"]:::x --> SDC
-    SDC["SDC\n(timing intent:\nclocks · I/O · exceptions)"]:::a
-    SDC --> SYN["Synthesis\noptimize TO it"]:::b
-    SDC --> PNR["Place & route\nbuild TO it"]:::b
-    SDC --> STA["Signoff STA\ncheck AGAINST it"]:::c
-    STA -->|the one equation\nall of them serve| EQ["setup/hold slack ≥ 0"]:::c
+    RTL["RTL<br/>(function only)"]:::x --> SDC
+    SDC["SDC<br/>(timing intent:<br/>clocks · I/O · exceptions)"]:::a
+    SDC --> SYN["Synthesis<br/>optimize TO it"]:::b
+    SDC --> PNR["Place & route<br/>build TO it"]:::b
+    SDC --> STA["Signoff STA<br/>check AGAINST it"]:::c
+    STA -->|the one equation<br/>all of them serve| EQ["setup/hold slack ≥ 0"]:::c
     classDef x fill:#e5e7eb,stroke:#4b5563,color:#000
     classDef a fill:#fde68a,stroke:#b45309,color:#000
     classDef b fill:#bbf7d0,stroke:#15803d,color:#000

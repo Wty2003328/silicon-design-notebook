@@ -25,7 +25,7 @@ flowchart LR
     PHY --> Base["HBM base/interface die"]
     Base --> PC["channels / pseudochannels"]
     PC --> Banks["bank groups + banks"]
-    Banks --> Stack["stacked DRAM dies\nTSVs"]
+    Banks --> Stack["stacked DRAM dies<br/>TSVs"]
     Thermal["package power + cooling"] -. limits .-> Stack
 ```
 

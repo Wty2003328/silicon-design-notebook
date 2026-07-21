@@ -64,9 +64,9 @@ With every flop a pseudo-PI and pseudo-PO, a test is exactly three steps: **shif
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
-    SI["scan_in"] --> CH["Scan chain: all flops\nSHIFT = load stimulus / unload response"] --> SO["scan_out"]
-    CH -->|"capture edge:\nflops act as pseudo-PIs"| CL["Combinational cloud\n(the ONLY thing ATPG solves)"]
-    CL -->|"response captured:\nflops act as pseudo-POs"| CH
+    SI["scan_in"] --> CH["Scan chain: all flops<br/>SHIFT = load stimulus / unload response"] --> SO["scan_out"]
+    CH -->|"capture edge:<br/>flops act as pseudo-PIs"| CL["Combinational cloud<br/>(the ONLY thing ATPG solves)"]
+    CL -->|"response captured:<br/>flops act as pseudo-POs"| CH
 ```
 
 This is the single most important idea in DFT: **scan replaces a search over the state space with a search over one time-frame.** The intractable sequential problem of §1 is gone *by construction*, not by cleverness — the price is the scan hardware, and the industry has judged that price obviously worth paying for four decades.
@@ -121,7 +121,7 @@ $$
 \text{Test Coverage} = \frac{\text{detected}}{\text{total}}
 $$
 
-Test coverage is the more honest (it does not forgive untestable faults). **Untestable** faults are real and instructive: an **ATPG-redundant** fault is one whose line is *logically redundant* — removable without changing the function — so ATPG doubles as a redundancy/DFT-quality check (§4.4). Typical production targets: **>99% stuck-at**, **>90–95% transition**, with automotive/safety parts pushing higher.
+Test coverage is the more honest (it does not forgive untestable faults). **Untestable** faults are real and instructive: an **ATPG-redundant** fault is one whose line is *logically redundant* — removable without changing the function — so ATPG doubles as a redundancy/DFT-quality check (§4.3). Typical production targets: **>99% stuck-at**, **>90–95% transition**, with automotive/safety parts pushing higher.
 
 ### 3.5 Defect level: why the *last* percent of coverage is the expensive one
 
@@ -193,9 +193,9 @@ The cheapest on-chip pattern source is a **linear-feedback shift register (LFSR)
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
-    L["LFSR\n(pseudo-random stimulus)"] --> CUT["Logic under test\n(scan chains)"] --> M["MISR\n(compacts to a signature)"]
+    L["LFSR<br/>(pseudo-random stimulus)"] --> CUT["Logic under test<br/>(scan chains)"] --> M["MISR<br/>(compacts to a signature)"]
     CT["BIST controller"] --> L
-    M --> Q{"signature ==\ngolden?"}
+    M --> Q{"signature ==<br/>golden?"}
 ```
 
 The catch is **random-pattern-resistant (RPR) faults**: some faults need a specific input that pseudo-random patterns almost never produce. A 20-input AND needs all 20 inputs high — probability $2^{-20} \approx 10^{-6}$, so 10,000 LFSR patterns detect it ~1% of the time. This is the *same* signal-probability collapse from §1, and it caps pure-LBIST coverage at a disappointing **80–90%**. The fix is **test-point insertion**: add controllable **control points** (force a hard-to-set node) and observable **observation points** (expose a hard-to-see node) — the direct antidote to the controllability/observability deficits ATPG's redundancy analysis flags. About **2–5%** area buys the jump to **>95%** LBIST coverage.
@@ -229,10 +229,10 @@ Full scan produces enormous test data. Uncompressed, the volume is (scan cells) 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
-    ATE1["ATE\n(few channels)"] --> DEC["Decompressor\n(LFSR + phase shifter)"]
+    ATE1["ATE<br/>(few channels)"] --> DEC["Decompressor<br/>(LFSR + phase shifter)"]
     DEC --> CH["Hundreds of short internal chains"]
-    CH --> CMP["Compactor\n(XOR / MISR)"]
-    CMP --> ATE2["ATE\n(few channels)"]
+    CH --> CMP["Compactor<br/>(XOR / MISR)"]
+    CMP --> ATE2["ATE<br/>(few channels)"]
 ```
 
 So a few tester channels drive a **decompressor** (an LFSR + phase shifter) that expands them into *hundreds* of short internal chains, and the responses are squeezed back through an XOR/MISR **compactor** to a few output channels. This decouples internal chain count from pin count — the very constraint of §2.3 — cutting both data volume and test time by the compression ratio, typically **10–100×**.

@@ -32,9 +32,9 @@ Start from the requirement and let the structure fall out: *make a fast on-die o
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
-    REF["f_ref"] --> RDIV["ref div M"] --> PFD["PFD\nmeasure phase error"]
-    PFD --> CP["Charge pump\n+ loop filter\nintegrate to V_ctrl"]
-    CP --> VCO["VCO\nvoltage -> frequency"]
+    REF["f_ref"] --> RDIV["ref div M"] --> PFD["PFD<br/>measure phase error"]
+    PFD --> CP["Charge pump<br/>+ loop filter<br/>integrate to V_ctrl"]
+    CP --> VCO["VCO<br/>voltage -> frequency"]
     VCO --> OUT["f_out"]
     VCO --> FDIV["feedback div N"]
     FDIV --> PFD
@@ -197,8 +197,8 @@ The DLL answers a narrower question â€” *align a clock's phase to a reference* â
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
     REF["f_ref"] --> PFD["PFD"]
-    PFD --> CP["Charge pump\n+ cap (no zero)"]
-    CP --> VCDL["VCDL\ndelay line (not oscillator)"]
+    PFD --> CP["Charge pump<br/>+ cap (no zero)"]
+    CP --> VCDL["VCDL<br/>delay line (not oscillator)"]
     VCDL --> OUT["f_out = f_ref, phase-shifted"]
     VCDL --> PFD
     classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000

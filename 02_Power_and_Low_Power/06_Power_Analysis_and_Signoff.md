@@ -87,11 +87,11 @@ Everything in §5–§8 is one idea seen at different frequencies. **The PDN is 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 45, "htmlLabels": false}}}%%
 flowchart TD
-    VRM["VRM / regulator\n(ideal source)"]
-    PCB["PCB plane + bulk decap\nR,L,C  — slow band (kHz–MHz)"]
-    PKG["Package plane + SMT decap\nL_pkg ~0.1–1 nH — mid band (10–300 MHz)"]
-    DIE["On-die grid + decap\nR_grid, C_die — fast band (>100 MHz)"]
-    CELL["Standard cell\nsees V_DD − V_droop"]
+    VRM["VRM / regulator<br/>(ideal source)"]
+    PCB["PCB plane + bulk decap<br/>R,L,C  — slow band (kHz–MHz)"]
+    PKG["Package plane + SMT decap<br/>L_pkg ~0.1–1 nH — mid band (10–300 MHz)"]
+    DIE["On-die grid + decap<br/>R_grid, C_die — fast band (>100 MHz)"]
+    CELL["Standard cell<br/>sees V_DD − V_droop"]
     VRM --> PCB --> PKG --> DIE --> CELL
     CELL -.->|"i(t) drawn back through Z(f)"| VRM
 ```

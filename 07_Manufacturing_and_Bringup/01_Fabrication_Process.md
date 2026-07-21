@@ -32,9 +32,9 @@ That is the whole process, as a loop:
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "htmlLabels": false}}}%%
 flowchart LR
-    DEP["Deposit / grow\n(add a blanket film)"] --> LITHO["Pattern — lithography\n(print the stencil: the ONLY design-bearing step)"]
-    LITHO --> SEL["Etch / implant\n(make removal or doping spatially selective)"]
-    SEL --> CMP["Planarize — CMP\n(reflatten so the next image is in focus)"]
+    DEP["Deposit / grow<br/>(add a blanket film)"] --> LITHO["Pattern — lithography<br/>(print the stencil: the ONLY design-bearing step)"]
+    LITHO --> SEL["Etch / implant<br/>(make removal or doping spatially selective)"]
+    SEL --> CMP["Planarize — CMP<br/>(reflatten so the next image is in focus)"]
     CMP -->|repeat tens of times| DEP
 ```
 

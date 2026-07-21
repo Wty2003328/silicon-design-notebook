@@ -23,16 +23,16 @@ Digital structures are easiest to remember when each one is introduced as the re
 
 ```mermaid
 flowchart TD
-    F["Boolean function\nno memory"] --> G["gates and cost model"]
-    G --> M["multiplexer\nselect one value"]
-    M --> D["decoder / encoder\nselect one location"]
-    D --> FB["feedback\nhold one bit"]
-    FB --> SR["set–reset latch\nexplicit commands"]
-    SR --> DL["D latch\none legal data input"]
-    DL --> FF["edge-triggered flip-flop\nremove transparency"]
-    FF --> R["register / counter\ncompose many bits"]
-    R --> FSM["finite-state machine\nstate controls future work"]
-    R --> FIFO["FIFO\ndecouple producer and consumer"]
+    F["Boolean function<br/>no memory"] --> G["gates and cost model"]
+    G --> M["multiplexer<br/>select one value"]
+    M --> D["decoder / encoder<br/>select one location"]
+    D --> FB["feedback<br/>hold one bit"]
+    FB --> SR["set–reset latch<br/>explicit commands"]
+    SR --> DL["D latch<br/>one legal data input"]
+    DL --> FF["edge-triggered flip-flop<br/>remove transparency"]
+    FF --> R["register / counter<br/>compose many bits"]
+    R --> FSM["finite-state machine<br/>state controls future work"]
+    R --> FIFO["FIFO<br/>decouple producer and consumer"]
 ```
 
 Every major subsection therefore answers the same seven questions:
@@ -139,9 +139,9 @@ Before comparing topologies, establish a first-order delay ruler. Logical effort
 
 ```mermaid
 flowchart TD
-    REQ["Function, load, clock, activity, robustness"] --> TOP["Choose topology\nstatic / pass / transmission-gate / dynamic"]
-    TOP --> DEPTH["Choose decomposition\nflat / ripple / balanced tree / prefix"]
-    DEPTH --> SIZE["Choose gate sizes and buffers\nequalize stage effort"]
+    REQ["Function, load, clock, activity, robustness"] --> TOP["Choose topology<br/>static / pass / transmission-gate / dynamic"]
+    TOP --> DEPTH["Choose decomposition<br/>flat / ripple / balanced tree / prefix"]
+    DEPTH --> SIZE["Choose gate sizes and buffers<br/>equalize stage effort"]
     SIZE --> IMPL["Placed circuit with wires and parasitics"]
     IMPL --> CHECK["Delay, area, power, noise, corners"]
     CHECK -->|"constraint violated"| TOP
@@ -549,7 +549,7 @@ For the NAND form, $Q=\overline{\overline S\,\overline Q}$ and $\overline Q=\ove
 stateDiagram-v2
     state "RESET: Q=0" as RESET
     state "SET: Q=1" as SET
-    state "forbidden command\nnot a valid stored state" as BAD
+    state "forbidden command<br/>not a valid stored state" as BAD
     [*] --> RESET
     RESET --> RESET: S=0, R=0
     SET --> SET: S=0, R=0
@@ -784,10 +784,10 @@ The master–slave derivation spends two static latches to guarantee that no com
 
 ```mermaid
 flowchart TD
-    REQ["Required contract: expose one stable value per sampling event"] --> MS["master–slave\nseparate two level windows"]
-    REQ --> PL["pulsed latch\nmake one narrow transparent window"]
-    REQ --> SA["sense-amplifier cell\nregenerate input difference at edge"]
-    REQ --> DY["dynamic / single-phase cell\nsequence charge-storage stages"]
+    REQ["Required contract: expose one stable value per sampling event"] --> MS["master–slave<br/>separate two level windows"]
+    REQ --> PL["pulsed latch<br/>make one narrow transparent window"]
+    REQ --> SA["sense-amplifier cell<br/>regenerate input difference at edge"]
+    REQ --> DY["dynamic / single-phase cell<br/>sequence charge-storage stages"]
     MS --> ROB["favor static robustness and simple signoff"]
     PL --> PWR["favor lower local clock load or time borrowing"]
     SA --> SPD["favor minimum setup and high speed"]
@@ -1017,10 +1017,10 @@ All bits sample the same architectural event, but physical clock skew and unequa
 ```mermaid
 flowchart TD
     FF["flip-flop / latch"] --> REG["parallel register"]
-    REG --> SHIFT["shift register\nserial and parallel modes"]
-    REG --> CNT["counter\nbinary / modulo-N / up-down"]
+    REG --> SHIFT["shift register<br/>serial and parallel modes"]
+    REG --> CNT["counter<br/>binary / modulo-N / up-down"]
     SHIFT --> RING["ring / Johnson counter"]
-    SHIFT --> LFSR["linear-feedback shift register\npseudo-random sequence generator"]
+    SHIFT --> LFSR["linear-feedback shift register<br/>pseudo-random sequence generator"]
     REG --> RF["register file"]
     DEC["address decoder"] --> RF
     RF --> MUX["read mux / bitlines"]
@@ -1394,10 +1394,10 @@ One register can decouple a producer and consumer for one beat if it also stores
 
 ```mermaid
 flowchart TD
-    PROD["producer\npush_valid + data"] --> ADM["push admission\nnot full"]
+    PROD["producer<br/>push_valid + data"] --> ADM["push admission<br/>not full"]
     ADM --> MEM["entry array"]
     WP["write pointer"] --> MEM
-    MEM --> RD["read selection"] --> CONS["consumer\npop_ready + data"]
+    MEM --> RD["read selection"] --> CONS["consumer<br/>pop_ready + data"]
     RP["read pointer"] --> RD
     ADM --> OCC["occupancy / pointer relation"]
     CONS --> OCC
@@ -1462,8 +1462,8 @@ The chapter's blocks become useful when their ownership boundaries compose. Cons
 
 ```mermaid
 flowchart TD
-    P["producer\nvalid + payload"] --> ADM["ready/valid admission"]
-    ADM --> FIFO["FIFO array\nwrite/read pointers + valid state"]
+    P["producer<br/>valid + payload"] --> ADM["ready/valid admission"]
+    ADM --> FIFO["FIFO array<br/>write/read pointers + valid state"]
     FIFO --> HEAD["head payload register"]
     HEAD --> CTRL["IDLE/RUN/RESP controller"]
     CTRL --> W["worker datapath"]

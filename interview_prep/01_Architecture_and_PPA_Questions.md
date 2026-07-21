@@ -698,7 +698,7 @@ history window.
 
 ### Q12: Explain virtual memory page table walk for x86-64. How many memory accesses?
 
-**A:** x86-64 uses 4-level page tables for 48-bit virtual addresses. CR3 holds the physical address of the PML4 (page map level 4) table. Walk: (1) Read PML4 entry at CR3 + VA[47:39]*8; (2) Read PDPT (page directory pointer table) entry at PML4.addr + VA[38:30]*8; (3) Read PD (page directory) entry at PDPT.addr + VA[29:21]*8; (4) Read PT (page table) entry at PD.addr + VA[20:12]*8; (5) Physical address = PT.PFN concatenated with VA[11:0]. That's 4 sequential memory reads for one translation. Without TLB, every load/store becomes 5 memory accesses. With TLB hit rate of 99%, average = 0.99*1 + 0.01*5 = 1.05 accesses. Modern hardware has page walk caches that cache intermediate page table entries, reducing most walks to 1-2 memory accesses.
+**A:** x86-64 uses 4-level page tables for 48-bit virtual addresses. CR3 holds the physical address of the PML4 (page map level 4) table. Walk: (1) Read PML4 entry at CR3 + VA[47:39]*8; (2) Read PDPT (page directory pointer table) entry at PML4.addr + VA[38:30]*8; (3) Read PD (page directory) entry at PDPT.addr + VA[29:21]*8; (4) Read PT (page table) entry at PD.addr + VA[20:12]*8; (5) Physical address = PT.PFN concatenated with VA[11:0]. That's 4 sequential memory reads for one translation. Without TLB, every load/store becomes 5 memory accesses. With TLB hit rate of 99%, average = 0.99*1 + 0.01*5 = 1.04 accesses. Modern hardware has page walk caches that cache intermediate page table entries, reducing most walks to 1-2 memory accesses.
 
 ### Q13: What is register renaming? How does it eliminate WAR and WAW?
 
@@ -945,7 +945,7 @@ limited by memory bandwidth.
 
 **Question:** Core 0 holds line X in S, issues an Upgrade, and waits for invalidation acknowledgements from three other sharers. What state should it use, and when may the store update the line?
 
-**Solution:** Use a transient **SM** state: source permission S, target permission M. Core 0 may still read its clean copy, but it may not write because other S copies remain. Initialize an acknowledgement counter to 3 and decrement only for matching invalidation acknowledgements. The store may update X only after the counter reaches zero and the home grants exclusive completion. Calling the line M early violates SWMR; leaving it ordinary S loses the in-flight transaction and can launch a duplicate Upgrade.
+**Solution:** Use a transient **SM** state: source permission S, target permission M. Core 0 may still read its clean copy, but it may not write because other S copies remain. Initialize an acknowledgement counter to 3 and decrement only for matching invalidation acknowledgements. The store may update X only after the counter reaches zero and the home grants exclusive completion. Calling the line M early violates SWMR (single-writer/multiple-reader: at most one writer or many readers per line at a time); leaving it ordinary S loses the in-flight transaction and can launch a duplicate Upgrade.
 
 ### Problem 7: Directory Storage
 
@@ -1440,7 +1440,7 @@ $$
 $$
 
 $$
-\text{Highest index bit} = 6 + 7 - 1 = 11
+\text{Highest index bit} = 6 + 7 - 1 = 12
 $$
 
 $$
@@ -1448,10 +1448,10 @@ $$
 $$
 
 $$
-11 \leq 11 \quad \checkmark \text{ -- VIPT is safe (exact fit).}
+12 > 11 \quad \Rightarrow \text{ VIPT aliases -- the top index bit comes from the VPN.}
 $$
 
-The index uses bits VA[11:5] (7 bits), all within the 12-bit page offset VA[11:0].
+The index uses bits VA[12:6] (7 bits); bit 12 lies above the 12-bit page offset VA[11:0], so it is a virtual index bit and can alias (fix by page coloring, way size $\le$ page size, or dual lookup).
 The TLB translates the VPN bits (VA[31:12]) in parallel with cache index lookup.
 
 **Part B: 2-way, 64 KB, 64 B lines, 4 KB pages.**

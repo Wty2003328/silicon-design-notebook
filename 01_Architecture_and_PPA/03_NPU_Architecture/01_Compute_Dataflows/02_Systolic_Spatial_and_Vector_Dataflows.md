@@ -17,7 +17,7 @@ An NPU's arithmetic units are rarely the differentiator by themselves. The decis
 
 ```mermaid
 flowchart LR
-    Loops["tensor loop nest\nM, N, K, batch, spatial"] --> Map["spatial / temporal mapping"]
+    Loops["tensor loop nest<br/>M, N, K, batch, spatial"] --> Map["spatial / temporal mapping"]
     Map --> Array["PE array"]
     Weights["weights"] --> NetW["multicast / shift"]
     Acts["activations"] --> NetA["multicast / shift"]
@@ -427,12 +427,12 @@ The transforms wrap the array rather than replace it. $B^{T}dB$ and $A^{T}MA$ co
 
 ```mermaid
 flowchart LR
-    d["input tile d\n(m+r-1) x (m+r-1)"] --> BT["input transform\nV = B^T d B (adds only)"]
-    g["filter g (static weights)"] --> Gt["filter transform\nU = G g G^T (precomputed)"]
-    BT --> HAD["per-coordinate GEMM\nM = U (Hadamard) V on MAC array"]
+    d["input tile d<br/>(m+r-1) x (m+r-1)"] --> BT["input transform<br/>V = B^T d B (adds only)"]
+    g["filter g (static weights)"] --> Gt["filter transform<br/>U = G g G^T (precomputed)"]
+    BT --> HAD["per-coordinate GEMM<br/>M = U (Hadamard) V on MAC array"]
     Gt --> HAD
-    HAD --> AT["inverse transform\nY = A^T M A (adds only)"]
-    AT --> y["output tile Y\nm x m"]
+    HAD --> AT["inverse transform<br/>Y = A^T M A (adds only)"]
+    AT --> y["output tile Y<br/>m x m"]
 ```
 
 The overhead amortizes. The input transform runs once per input channel per tile (independent of $K$); the inverse runs once per output channel per tile (independent of $C$); only the Hadamard multiplies scale with $K\cdot C$. Take $K=C=64$ for one output tile: direct convolution needs $K\cdot(2\times2)\cdot(3\times3)\cdot C=36\cdot4096=147{,}456$ multiplies, Winograd needs $16\cdot K\cdot C=65{,}536$ — the same $2.25\times$, eliminating $81{,}920$ multiplies. The transforms add only additions (on the order of 32 per input tile and 24 per output tile in the Lavin–Gray factoring), a few thousand add-only operations here — negligible beside the eliminated multiplies, since a multiply costs several times an add in a MAC lane. When $C$ and $K$ collapse to $1$ (depthwise, §10), that amortization vanishes and the transforms dominate.

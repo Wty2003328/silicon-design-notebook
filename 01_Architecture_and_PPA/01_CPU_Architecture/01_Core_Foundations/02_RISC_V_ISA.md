@@ -251,13 +251,13 @@ where 12 = page-offset bits, 9 = VPN (virtual page number) index bits per level,
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    A["satp.PPN\n(root table = 1 page)"] --> B["index level with VPN slice (9 bits)"]
+    A["satp.PPN<br/>(root table = 1 page)"] --> B["index level with VPN slice (9 bits)"]
     B --> C{"PTE valid?"}
     C -- No --> F["page fault"]
     C -- Yes --> D{"leaf? (R/W/X set)"}
     D -- No --> E["PTE.PPN = next table base"]
     E --> B
-    D -- Yes --> G["PA = PTE.PPN : page-offset\n(stop early = superpage)"]
+    D -- Yes --> G["PA = PTE.PPN : page-offset<br/>(stop early = superpage)"]
 ```
 
 The walk is the concept: `satp.PPN` names the root page; index it by the top VPN slice; follow non-leaf PTEs down; a leaf gives the physical page. The leaf PTE's *role* bits are what the OS relies on — **R/W/X/U** for protection, and **A/D (accessed/dirty)**, which hardware sets to give the OS its hooks for page replacement and copy-on-write. A superpage is simply a leaf found one level early (in Sv39 the root is level 2, so a 2 MB leaf sits at **level 1** and requires the low PPN (physical page number) bits `PPN[0]` to be zero — natural alignment; a 1 GB leaf sits at level 2 and needs `PPN[1:0]=0`). **ASID** tags each translation with an address-space ID so a context switch needn't flush the whole TLB. The exact PTE bit positions and a hex walk are spec reference; the invariant and the reach/latency law above are what a designer reasons with.
