@@ -296,7 +296,7 @@ where $P_{\text{MAC}}$ = number of MAC units, $U_{\text{spatial}}$ = fraction of
 
 $$E = \sum_{\ell}\sum_{t} \text{accesses}_{t,\ell}\cdot e_{\ell} \;+\; \text{MACs}\cdot e_{\text{MAC}},$$
 
-where $e_\ell$ = energy per access at level $\ell$ (a register read is ~$10^2\times$ cheaper than a DRAM access) and $e_{\text{MAC}}$ = energy per MAC. Because $e_{\text{DRAM}} \gg e_{\text{SRAM}} \gg e_{\text{RF}}$, **energy is dominated by where the accesses land, which the mapping controls — so the mapping is far more an energy decision than a cycle decision.** This is the accelerator analogue of the activity × per-event-energy model that McPAT applies to CPUs ([Full_Chip_Modeling §1.5](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md)); Accelergy (§4) is literally that model for accelerators.
+where $e_\ell$ = energy per access at level $\ell$ (a register read is ~$10^2\times$ cheaper than a DRAM access) and $e_{\text{MAC}}$ = energy per MAC. Because $e_{\text{DRAM}} \gg e_{\text{SRAM}} \gg e_{\text{RF}}$, **energy is dominated by where the accesses land, which the mapping controls — so the mapping is far more an energy decision than a cycle decision.** This is the accelerator analogue of the activity × per-event-energy model that McPAT applies to CPUs ([Full_Chip_Modeling §1.1](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md)); Accelergy (§4) is literally that model for accelerators.
 
 The two families on this page are exactly the two ways to run steps 3–5: **analytical** tools compute the access counts in closed form from the loop bounds and search over mappings; **cycle-accurate** tools step the array in time and let the access pattern and the stalls emerge.
 

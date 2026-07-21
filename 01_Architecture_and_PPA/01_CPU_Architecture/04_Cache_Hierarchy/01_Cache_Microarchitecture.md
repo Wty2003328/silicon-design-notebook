@@ -10,7 +10,7 @@
 > program counter (PC); complementary metal-oxide-semiconductor (CMOS); fan-out-of-four (FO4); artificial intelligence (AI); floating-point operation (FLOP);
 > virtually indexed, physically tagged (VIPT); kilobyte (KB); megabyte (MB); gigabyte (GB); gigahertz (GHz).
 
-> **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (pipeline, memory hierarchy, the AMAT baseline of its §7), [Memory](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (SRAM cell, DRAM organization), [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the instruction window that generates the memory-level parallelism §3 exploits).
+> **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (pipeline, memory hierarchy, the AMAT baseline of its §6), [Memory](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (SRAM cell, DRAM organization), [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the instruction window that generates the memory-level parallelism §3 exploits).
 > **Hands off to:** [Cache_Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md) (stable/transient protocol states, races, directory sizing, atomics/DMA, and verification), [ACE_and_CHI](../06_Coherence_and_Consistency/03_ACE_and_CHI.md) (coherence messages at scale), [DDR_Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (the DRAM a last-level miss talks to), [TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (the translation in front of every access).
 
 ---
@@ -75,7 +75,7 @@ where $t_{hit}$ = hit access time (cycles), $m$ = miss rate (misses per access *
 
 $$\text{AMAT} = t_{L1} + m_{L1}\big(t_{L2} + m_{L2}\big(t_{L3} + m_{L3}\,t_{DRAM}\big)\big)$$
 
-(worked numeric example: [CPU_Architecture §7](../01_Core_Foundations/01_CPU_Architecture.md); full multi-level solve in §12.1). Multiplying out separates the **local** miss rate $m_{Lk}$ (misses per access *reaching* level $k$) from the **global** miss rate (misses per *CPU* access), which is the product of every local rate above:
+(worked numeric example: [CPU_Architecture §6](../01_Core_Foundations/01_CPU_Architecture.md); full multi-level solve in §12.1). Multiplying out separates the **local** miss rate $m_{Lk}$ (misses per access *reaching* level $k$) from the **global** miss rate (misses per *CPU* access), which is the product of every local rate above:
 
 $$\text{AMAT} = \underbrace{t_{L1}}_{\text{always}} + \underbrace{m_{L1}\,t_{L2}}_{\text{reach L2}} + \underbrace{m_{L1}m_{L2}\,t_{L3}}_{\text{reach L3}} + \underbrace{m_{L1}m_{L2}m_{L3}\,t_{DRAM}}_{\text{reach DRAM}}, \qquad \big(\text{level-}k\text{ contribution}\big) = \Big(\textstyle\prod_{j<k} m_{Lj}\Big)\,t_{Lk}$$
 

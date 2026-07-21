@@ -327,7 +327,7 @@ A 64 MiB sequential DMA working set will churn unless huge pages, ATCs, or strea
 
 ### Problem 2 — nested worst-case references
 
-Four-level stage 1 and four-level stage 2 give up to $4\times4+4=20$ dependent PTE references in the simple bound, before the data. Combined TLBs/PWCs are architectural necessities, not optional micro-optimizations.
+Four-level stage 1 and four-level stage 2 give up to $(4{+}1)(4{+}1)-1=24$ dependent PTE references (the exact §3 count), before the data. Combined TLBs/PWCs are architectural necessities, not optional micro-optimizations.
 
 ### Problem 3 — walker bandwidth
 
