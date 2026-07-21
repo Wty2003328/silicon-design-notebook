@@ -352,7 +352,7 @@ Radix-8 removes another third of the rows but requires $3A$, which is not a shif
 
 ### 7.2 Reduction: Wallace vs Dadda trees
 
-The partial-product array is a multi-operand add, so reduce it with a carry-save tree (§6). Both classic trees hit the same $\lceil\log_{1.5}(n/2)\rceil$ depth; they differ only in *when* they do the compressing:
+The partial-product array is a multi-operand add, so reduce it with a carry-save tree (§6). Both classic trees hit the same $\lceil\log_{1.5}(n/2)\rceil$ depth — each carry-save level turns 3 rows into 2, shrinking the row count by a factor $2/3$ per level, so collapsing $n/2$ rows down to the final 2 takes $\log_{1.5}(n/2)$ levels — and they differ only in *when* they do the compressing:
 
 - **Wallace** — reduce **eagerly**: at every level, compress every group of three bits it can. Uses more full adders, but the redundant pair converges to a **narrower** final CPA.
 - **Dadda** — reduce **lazily**: compress only enough to bring each column down to the next Dadda number $d_{j+1}=\lfloor1.5\,d_j\rfloor$ ($2,3,4,6,9,13,19,28,\dots$), deferring everything else. Uses **fewer** full adders (more half adders), a **wider** final CPA, and lays out more regularly.

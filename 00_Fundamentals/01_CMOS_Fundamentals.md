@@ -109,7 +109,7 @@ where $\mu_n$ = electron mobility ($\approx 400\ \text{cm}^2/\text{V·s}$ effect
 
 ### 1.2 The square law is a lie at short channel: the alpha-power law
 
-The quadratic $(V_{GS}-V_{th})^2$ assumes carriers accelerate freely across the channel. In a modern device the lateral field is so high that carrier velocity **saturates** at $v_{sat}\approx 10^7\ \text{cm/s}$ long before the drain. Drive current then becomes **linear**, not quadratic, in overdrive:
+The quadratic $(V_{GS}-V_{th})^2$ assumes carriers accelerate freely across the channel. In a modern device the lateral field is so high that carrier velocity **saturates** at $v_{sat}\approx 10^7\ \text{cm/s}$ long before the drain. Once velocity is pinned at $v_{sat}$, drain current is simply the inversion charge swept past a point per unit time — charge-per-area $C_{ox}(V_{GS}-V_{th})$, times width $W$, times $v_{sat}$ — so it becomes **linear**, not quadratic, in the *overdrive* $V_{GS}-V_{th}$ (how far the gate sits above threshold):
 
 $$
 I_{Dsat}\approx W C_{ox}\,v_{sat}\,(V_{GS}-V_{th}) \quad\Longrightarrow\quad I_{Dsat}\propto (V_{GS}-V_{th})^{\alpha},\ \ \alpha\!:\ 2\to 1
@@ -125,7 +125,7 @@ $$
 I_D = I_0\,\exp\!\left(\frac{V_{GS}-V_{th}}{n\,V_T}\right)\left[1-\exp\!\left(-\frac{V_{DS}}{V_T}\right)\right],\qquad V_T=\frac{kT}{q}\approx 26\ \text{mV at }300\text{ K}
 $$
 
-The steepness of turn-off is the **subthreshold slope** $S$ — the gate swing needed to change $I_D$ by $10\times$:
+The steepness of turn-off is the **subthreshold slope** $S$ — the gate swing needed to change $I_D$ by $10\times$. From the exponential above, $\ln I_D$ is linear in $V_{GS}$ with slope $1/(nV_T)$, so $S\equiv \mathrm{d}V_{GS}/\mathrm{d}(\log_{10}I_D)=\ln 10\cdot(\mathrm{d}V_{GS}/\mathrm{d}\ln I_D)=nV_T\ln 10$; substituting $n=1+C_{dep}/C_{ox}$ and $V_T=kT/q$:
 
 $$
 \boxed{\,S=\frac{kT}{q}\ln 10\left(1+\frac{C_{dep}}{C_{ox}}\right)\,}
@@ -206,7 +206,13 @@ $$
 \tfrac12 k_n (V_M-V_{thn})^2 = \tfrac12 k_p (V_{DD}-V_M-|V_{thp}|)^2,\qquad k_{n,p}=\mu_{n,p}C_{ox}\left(\tfrac{W}{L}\right)_{n,p}
 $$
 
-Solving with $r=\sqrt{k_p/k_n}$:
+Take the square root of both sides (both bracketed terms are positive at $V_M$) and divide by $\sqrt{k_n}$, writing $r=\sqrt{k_p/k_n}$:
+
+$$
+V_M-V_{thn}=r\,(V_{DD}-V_M-|V_{thp}|)
+$$
+
+which is now linear in $V_M$; collecting the $V_M$ terms gives
 
 $$
 V_M=\frac{V_{thn}+r\,(V_{DD}-|V_{thp}|)}{1+r}
@@ -338,7 +344,7 @@ A static gate is a PMOS pull-up network (PUN) dual to an NMOS pull-down network 
 
 ### 5.3 Dynamic (domino) logic
 
-Precharge the output high on one clock phase, then let an NMOS-only evaluation network conditionally discharge it. This removes the slow PUN entirely — fast and compact for wide functions — but pays with **charge sharing, clock-skew sensitivity, no restoring noise immunity during evaluate (a single glitch is latched), and a monotonicity restriction** (needs keepers and static-inverter "domino" stages to cascade). Once common in high-frequency datapaths, it is largely displaced in modern low-power design because its noise and power-integrity cost is unattractive when leakage already dominates.
+Precharge the output high on one clock phase, then let an NMOS-only evaluation network conditionally discharge it. This removes the slow PUN entirely — fast and compact for wide functions — but pays with **charge sharing, clock-skew sensitivity, no restoring noise immunity during evaluate (a single glitch is latched), and a monotonicity restriction** (needs *keepers* — weak feedback PMOS that hold the precharged node against leakage — and static-inverter "domino" stages to cascade). Once common in high-frequency datapaths, it is largely displaced in modern low-power design because its noise and power-integrity cost is unattractive when leakage already dominates.
 
 ### 5.4 I/O signalling: the same physics at pF scale
 
@@ -467,7 +473,7 @@ with $R_{wire}=rL$, $C_{wire}=cL$. The single insight worth keeping: the wire-se
 
 Given a logic path, how do you size each gate for minimum delay *by hand*? **Logical effort** answers it with one normalised delay model, $d=g\cdot h+p$, where $g$ = logical effort (a gate's input-cap penalty vs an inverter of equal drive; $g_{inv}=1$, $g_{NAND2}=4/3$, $g_{NOR2}=5/3$ — the NOR is worse for exactly the series-PMOS reason of §5.1), $h=C_{out}/C_{in}$ = electrical effort (fanout), and $p$ = intrinsic parasitic delay.
 
-For an $N$-stage path, total delay $D=\sum(g_i h_i+p_i)$ is minimised when **every stage carries equal effort**:
+For an $N$-stage path, total delay $D=\sum(g_i h_i+p_i)$ is minimised when **every stage carries equal effort**. The per-stage efforts $f_i=g_ih_i$ have a *fixed product* $\prod_i f_i=G\!\cdot\!H$ (the electrical efforts telescope: $\prod_i h_i=C_{load}/C_{in}=H$), so by AM–GM the sum $\sum_i f_i$ is smallest when all $f_i$ are equal:
 
 $$
 f^{*}=(G\cdot H)^{1/N},\qquad D^{*}=N f^{*}+P

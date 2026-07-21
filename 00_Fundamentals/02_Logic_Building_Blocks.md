@@ -183,13 +183,13 @@ $$
 G=\prod_i g_i,\quad B=\prod_j b_j,\quad H=\frac{C_{out}}{C_{in}},\qquad F = G\,B\,H
 $$
 
-where $G$ = path logical effort, $B$ = path branching effort ($b=(C_{on}+C_{off})/C_{on}$ at each fan-out point), $H$ = overall electrical effort, and $F$ = **path effort**. The path delay $D=\sum_i g_ih_i+\sum_i p_i$ is minimized when **every stage carries the same stage effort**:
+where $G$ = path logical effort, $B$ = path branching effort ($b=(C_{on}+C_{off})/C_{on}$ at each fan-out point), $H$ = overall electrical effort, and $F$ = **path effort**. The stage efforts $g_ih_i$ have a *fixed product* $\prod_i(g_ih_i)=F$ (the branching and electrical efforts telescope to $BH$), so by AM–GM the delay sum $D=\sum_i g_ih_i+\sum_i p_i$ is smallest when **every stage carries the same stage effort**:
 
 $$
 \hat f = g_i h_i = F^{1/N},\qquad D_{min}=N\,F^{1/N}+P
 $$
 
-with $P=\sum_i p_i$. So the optimal *sizing* rule is "equalize effort per stage," and the optimal *number* of stages comes from minimizing $N F^{1/N}$ over $N$. Including parasitics, the best stage effort $\rho$ solves $p_{inv}+\rho(1-\ln\rho)=0$:
+with $P=\sum_i p_i$. So the optimal *sizing* rule is "equalize effort per stage," and the optimal *number* of stages comes from minimizing $N F^{1/N}+P$ over $N$ (set $\mathrm{d}/\mathrm{d}N=0$, treating $N$ as continuous). Including parasitics, the best stage effort $\rho$ solves $p_{inv}+\rho(1-\ln\rho)=0$:
 
 $$
 \rho \approx e \approx 2.7\ (p_{inv}{=}0),\qquad \rho\approx 3.6\text{–}4\ (p_{inv}{\approx}1),\qquad \hat N \approx \log_\rho F \approx \log_4 F
@@ -952,7 +952,7 @@ $$
 \frac{dV}{dt}=\frac{V-V_m}{\tau}\;\;\Rightarrow\;\; V(t)-V_m=(V(0)-V_m)\,e^{\,t/\tau}
 $$
 
-where $V_m$ = metastable voltage and $\tau$ = regeneration time constant set by the pair's gain-bandwidth product. Resolution is exponential, so the probability of *still* being unresolved after time $t_r$ falls exponentially, giving the failure-rate/MTBF law:
+where $V_m$ = metastable voltage and $\tau$ = regeneration time constant set by the pair's gain-bandwidth product. Because the initial offset $V(0)-V_m$ grows by $e^{t/\tau}$, the fraction of starting points *still* inside the undecided band after $t_r$ falls as $e^{-t_r/\tau}$. The failure rate is then (rate of dangerous events) × (survival probability): a failure needs an asynchronous edge (rate $f_{data}$) to land in a narrow capture aperture $T_0$ around a sampling edge (rate $f_{clk}$), so failures occur at $\approx T_0\,f_{clk}\,f_{data}\,e^{-t_r/\tau}$. MTBF is the reciprocal of that rate:
 
 $$
 \text{MTBF}=\frac{e^{\,t_r/\tau}}{T_0\,f_{clk}\,f_{data}}
@@ -1441,7 +1441,7 @@ $$
 D_{min}=\max_t\int_0^t\!\big(r_{wr}(t')-r_{rd}(t')\big)\,dt' \;\approx\; B\Big(1-\frac{r_{rd}}{r_{wr}}\Big)
 $$
 
-where $B$ is burst length and $r_{wr},r_{rd}$ are effective accepted write/read rates. The buffer is stable only if $\overline{r_{rd}}\ge\overline{r_{wr}}$ on average; otherwise no finite depth suffices. Add margin for response/backpressure latency: after `almost_full` or `full` is generated, the producer may already have beats in a pipeline or link.
+where $B$ is burst length and $r_{wr},r_{rd}$ are effective accepted write/read rates — a burst of $B$ writes at rate $r_{wr}$ lasts $B/r_{wr}$, and the reader drains $r_{rd}\,(B/r_{wr})$ in that time, so the leftover backlog is $B(1-r_{rd}/r_{wr})$. The buffer is stable only if $\overline{r_{rd}}\ge\overline{r_{wr}}$ on average; otherwise no finite depth suffices. Add margin for response/backpressure latency: after `almost_full` or `full` is generated, the producer may already have beats in a pipeline or link.
 
 An asynchronous FIFO also pays for synchronized-pointer staleness and usually uses a power-of-two depth so binary/Gray wrap comparison is tractable. The production-grade Gray-pointer full/empty proof belongs to [Async Design and CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md); this chapter owns the synchronous storage/control composition and backlog model.
 
