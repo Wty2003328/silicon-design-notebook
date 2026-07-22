@@ -35,6 +35,17 @@ At chip level add shared SRAM/cache, global NoC, memory controllers/PHYs, host i
 
 ## 1. Energy follows the memory hierarchy
 
+**Intuition — the energy ladder.** Hold one picture before the math: moving an operand usually costs more than computing with it, and the cost climbs steeply with distance from the PE. Normalizing every access to one register-file read (which is close to the energy of the MAC itself), published accelerator studies give order-of-magnitude costs like:
+
+| Access (illustrative, node-dependent) | Relative energy |
+| --- | --- |
+| MAC / register file | ~1x |
+| PE-to-PE neighbor | ~2x |
+| On-chip global SRAM buffer | ~6x |
+| Off-chip DRAM / HBM | ~200x |
+
+So one DRAM/HBM access can cost as much as ~200 MACs. A good dataflow fetches each operand from far memory rarely and reuses it many times from RF/local SRAM, driving the *effective* energy per MAC back toward the ~1x floor. This is why the sum below is over accesses *per level*, not over MACs, and why peak TOPS says little until the traffic is known.
+
 For one mapped operator,
 
 $$
@@ -51,11 +62,23 @@ $$
 
 and leakage remains for idle PEs/SRAM unless power-gated. Use mapped activity, including underfilled arrays and stalled cycles; peak utilization is not a power activity factor.
 
+### 1.1 From energy-per-MAC to TOPS/W
+
+**What it is.** TOPS/W (tera-operations per second per watt) is just the inverse of energy per operation — efficiency and energy-per-op are the same fact in two units. Using the common convention that one MAC counts as two operations (a multiply and an add),
+
+$$
+\text{TOPS/W}=\frac{2}{e_{MAC}\,[\text{pJ}]},
+$$
+
+because 1 pJ/op equals exactly 1 TOPS/W (a pJ is $10^{-12}$ J, and $10^{12}$ op/s at 1 W is $10^{12}$ op/J).
+
+**Why it bites.** Datasheets quote the *arithmetic-only* figure. If the bare INT8 multiply-add costs $e_{MAC}=0.05$ pJ, the headline is $2/0.05=40$ TOPS/W. Fold in the average operand movement per MAC from the energy ladder — SRAM reads, partial-sum traffic, the amortized DRAM share, clocking — say $+0.35$ pJ/MAC, and the *effective* $e_{MAC}=0.40$ pJ gives $2/0.40=5$ TOPS/W: an $8\times$ gap no datasheet shows. Underfilled arrays and stalled cycles push $e_{MAC}$ higher still, because leakage and clock energy are spent on cycles that retire no useful MAC. Quote TOPS/W only with its datatype, counting convention (Section 2), and *sustained* activity.
+
 ## 2. PE and accumulator design
 
 A PE may contain multiplier, adder, local registers, forwarding/muxing, and control. Physical cost depends on operand/accumulator precision, signedness, saturation/rounding, sparsity gating, and supported modes.
 
-Accumulator width must prevent overflow for the reduction length or implement controlled quantization. Supporting INT4/INT8/FP8/BF16/FP16/FP32 modes can require lane packing, multiple multiplier paths, converters, rounding, exception handling, and mode muxes. Peak “TOPS” must name datatype and counting convention.
+Accumulator width must prevent overflow for the reduction length or implement controlled quantization. Concretely, a signed INT8$\times$INT8 product needs 16 bits, and summing $K$ of them adds up to $\lceil\log_2 K\rceil$ bits, so a length-$K$ reduction wants $16+\lceil\log_2 K\rceil$ bits — 26 at $K=1024$. A 32-bit accumulator therefore carries comfortable guard bits and stays overflow-safe to $K=2^{32-16}=65536$; deeper reductions, or FP accumulation of many small terms, force a wider accumulator or periodic rescaling. Supporting INT4/INT8/FP8/BF16/FP16/FP32 modes can require lane packing, multiple multiplier paths, converters, rounding, exception handling, and mode muxes. Peak “TOPS” must name datatype and counting convention.
 
 Systolic forwarding makes local wires regular, but array dimensions create long edge distribution/collection paths and clock load. Very large arrays may need hierarchical clusters or pipeline boundaries.
 
@@ -68,6 +91,14 @@ B_{SRAM}=\sum_t N_{entry,t}\,b_{entry,t},
 $$
 
 for input, weight, output, accumulator, and metadata storage. Physical macros add decoders, bitlines, sense/write circuits, ECC/parity, repair, control, and unused shape/port granularity.
+
+**Capacity, concretely — one tile's footprint.** The bits above are dictated by the live tile. An INT8 matmul tile that produces a $128\times128$ output block from a $128\times256$ activation tile and a $256\times128$ weight tile, with INT32 partial sums, needs:
+
+- activations: $128\times256 = 32$ KiB;
+- weights: $256\times128 = 32$ KiB;
+- partial sums: $128\times128\times4 = 64$ KiB;
+
+about 128 KiB for one live tile, before ECC, macro rounding, and metadata; double-buffering the streamed operands (below) to overlap DMA pushes it toward ~192 KiB. Shape matters: deepening the reduction $K$ grows only the operand storage while the $M\times N$ partial-sum block stays fixed, so a deeper tile accumulates more of the reduction in place before partial sums must spill to a higher level — capacity here buys reduced partial-sum traffic, the capacity-vs-movement knob a mapper turns.
 
 Banking supplies concurrent accesses. For each schedule, construct a bank/port demand table by cycle or phase. Conflicts can stall an array even when total average bandwidth appears sufficient. More banks increase peripheral area, arbitration, address routing, and fragmentation.
 
@@ -137,6 +168,37 @@ A=N_{core}(A_{PE}+A_{local\ SRAM}+A_{vector}+A_{DMA/control})+A_{shared\ SRAM/No
 $$
 
 Regular arrays are dense, but SRAM periphery, NoC, clock/power grid, and utilization/floorplan gaps matter. Thermal hotspots can form in active tensor clusters or memory PHYs; underutilized arrays still leak. Model sustained phase mixes and power-gating transition costs.
+
+**From MAC count to array area.** The first term scales with PE count. A $128\times128$ systolic array is $16{,}384$ INT8 MAC PEs; if each compiled PE — multiplier, accumulator register, forwarding muxes — occupies about $A_{PE}\approx 400\ \mu\text{m}^2$ in the target node (illustrative and strongly node- and precision-dependent), the raw cells are $16{,}384\times 400\ \mu\text{m}^2\approx 6.6\ \text{mm}^2$. Local RF, clock mesh, and intra-array routing lift the placed array block to perhaps $1.3$–$1.5\times$ that. The point: this is usually a *minority* of the die — the SRAM banks feeding it (Section 3), the NoC, DMA, and especially the memory PHYs (Section 7) often outweigh the arithmetic, which is why "dense MAC array" and "dense chip" are different claims and why halving MAC area rarely halves die area.
+
+The floorplan is the physical arrangement that ties these blocks together: operands enter the array from adjacent SRAM edges, results drain to reduction/partial-sum storage, and DMA plus NoC bridge to off-die memory.
+
+```mermaid
+flowchart TB
+    subgraph CORE["NPU core (on-die tile)"]
+      direction TB
+      ABUF["Activation SRAM banks (north)"]
+      WBUF["Weight SRAM banks (west)"]
+      ARR["PE array<br/>systolic MAC grid"]
+      RED["Partial-sum SRAM + reduction (south)"]
+      VEC["Vector / activation / norm"]
+    end
+    DMA["DMA engine + descriptors"]
+    NOC["NoC router"]
+    MC["Memory controller + PHY"]
+    HBM[("HBM / DRAM")]
+
+    ABUF -->|"activations"| ARR
+    WBUF -->|"weights"| ARR
+    ARR -->|"partial sums"| RED
+    RED --> VEC
+    VEC --> DMA
+    DMA <--> NOC
+    NOC <--> MC
+    MC <--> HBM
+    DMA -.->|"fill / drain"| ABUF
+    DMA -.->|"fill / drain"| WBUF
+```
 
 ## 10. CIM and emerging-memory claims
 

@@ -81,12 +81,55 @@ The run manifest must name the exact intermediate artifact and conversion script
 
 For each operator, a mapping chooses tiles, loop order, spatial unrolling, buffers, dataflow, and memory levels.
 
+**What this step means, intuitively.** The mapping is a *recipe* for running one operator on the hardware — how the tensor is sliced into tiles, which loops live at which memory level, which dimensions run in parallel across PEs. A cost model turns that recipe into numbers, and the families below sit on a spectrum. An **analytical** model *counts* what the recipe implies — MACs, per-level accesses, reuse — and multiplies by fixed per-event costs: closed-form and fast, but blind to timing, because it never advances a clock, so queueing, contention, and pipeline fill stay invisible. A **cycle/event** model *plays the recipe forward*, advancing time step by step and letting stalls and fill/drain latency emerge: slower, but it captures the overlap and backpressure the counts miss. Fidelity is bought with simulation time, so the family you pick should match the question you are asking.
+
 - Analytical mapping tools count accesses/reuse and apply performance/energy rules.
 - Systolic cycle models step array demand and produce compute/SRAM/DRAM traces.
 - Coupled models feed requests through NoC/DRAM events and let stalls emerge.
 - Operator/graph models place latency/traffic on dependency/resource schedules.
 
+The same operator-plus-mapping enters whichever engine the chosen family uses, and all four converge on the same metric outputs:
+
+```mermaid
+flowchart TB
+    OP["operator + chosen mapping"] --> Q{"model fidelity?"}
+    Q -->|"count only"| AN["analytical: count MACs, accesses, reuse"]
+    Q -->|"step the array"| CY["systolic cycle: advance clock over PE array"]
+    Q -->|"couple memory"| CO["coupled: inject requests into NoC and DRAM events"]
+    Q -->|"schedule the graph"| GR["operator/graph: place latency on dependency edges"]
+    AN --> AC["access counts x per-event cost"]
+    CY --> CT["compute, SRAM, DRAM cycle traces"]
+    CO --> CS["stalls emerge from contention"]
+    GR --> GS["longest valid path over resources"]
+    AC --> MET["cycles, energy, bandwidth, latency"]
+    CT --> MET
+    CS --> MET
+    GS --> MET
+```
+
 Check mapping legality before performance: capacity, banks, ports, PE dimensions, reduction, DMA lifetimes, and synchronization.
+
+### 4.1 Worked example — analytical count versus cycle estimate for one GEMM tile
+
+*Question:* how many cycles does a `MatMul` with $M=N=K=512$ take on a $128\times128$ weight-stationary array ($S_R=S_C=128$), and why do the two model families disagree?
+
+**Analytical (count-only) estimate.** Useful MACs $=M\,N\,K=512^3=134{,}217{,}728$. The array holds $S_R\,S_C=16{,}384$ MAC units, so the compute-bound floor is
+
+$$
+C_{ideal}=\frac{M\,N\,K}{S_R\,S_C}=\frac{134{,}217{,}728}{16{,}384}=8{,}192\ \text{cycles}.
+$$
+
+Each weight tile is loaded once and reused across all $M=512$ streamed activation rows (reuse factor $512$), so arithmetic intensity is high and the layer is compute-bound; memory will not gate it, and this count is the analytical answer.
+
+**Cycle (step-the-array) estimate.** The array is $128$ wide, but the operator needs $K=512$ contraction rows and $N=512$ output columns, so the mapping *folds*: $\lceil K/128\rceil=4$ row folds $\times\ \lceil N/128\rceil=4$ column folds $=16$ weight tiles. For each tile the array is preloaded (overlapped with the previous tile's stream by double buffering, §6), then $M=512$ activation rows stream through; the first output is ready only after the wavefront fills the array and the last drains, adding $\approx S_R+S_C=256$ cycles per tile. As a first-order model,
+
+$$
+C_{cycle}\approx F_R\,F_C\,(M+S_R+S_C)=16\times(512+256)=12{,}288\ \text{cycles},
+$$
+
+so array utilization is $U_{array}=C_{ideal}/C_{cycle}=8{,}192/12{,}288\approx0.67$ — matching the §8 definition.
+
+**Why they disagree — and the lesson.** Here $512$ is a multiple of $128$, so there is *no* edge underfill; the whole 33% gap is fill/drain latency the count cannot see, because the fixed $256$ overhead cycles are amortized over only $M=512$ useful ones. Stream a taller activation ($M=4{,}096$) through the same weights and the per-tile overhead is unchanged: $C_{ideal}=65{,}536$, $C_{cycle}\approx16\times4{,}352=69{,}632$, and utilization rises to $\approx0.94$. The pure MAC count reports the same peak for both; only stepping the array exposes the fixed latency tax that short-$M$ layers pay. That is when a cycle model earns its cost — and, conversely, why for a large-$M$ compute-bound layer the cheap analytical count is already close.
 
 ## 5. Exact SCALE-Sim output interpretation
 
@@ -173,7 +216,7 @@ An NPU result can be wrong before the cycle model begins. Export/fusion/partitio
 
 Shape-only tools have model-form limits: they can estimate dense loop/access schedules but cannot claim value-dependent zero skipping, dynamic mixture-of-experts balance, numerical accuracy, or data-dependent compression without representative values or derived metadata. Operator-only totals also omit dependencies, shared resources, fallback, and host/device transfers unless a graph scheduler explicitly composes them.
 
-For design comparisons, rerun the compiler/mapping search for every architecture; otherwise mapping quality is confounded with hardware. Report per-operator residuals and graph-level residuals. A small average error can hide a large error on the critical-path operator, while errors on overlapped noncritical operators may not affect end-to-end latency. The validation target must match the final claim's boundary.
+For design comparisons, rerun the compiler/mapping search for every architecture; otherwise mapping quality is confounded with hardware. Report per-operator residuals and graph-level residuals. A small average error can hide a large error on the critical-path operator, while errors on overlapped noncritical operators may not affect end-to-end latency. *Concrete case:* ten operators predicted at $100$ cycles each, where the lone critical-path operator actually costs $200$ (a $100\%$ error there) and the other nine are exact, gives a mean per-operator error of only $100/(10\times100)=10\%$ — yet end-to-end latency is off by the full $100$ cycles if that operator gates the path, and by *zero* if it hides behind a longer parallel branch. The average conceals both outcomes; only per-operator residuals tagged by critical-path membership tell them apart. The validation target must match the final claim's boundary.
 
 ## 12. Result package
 

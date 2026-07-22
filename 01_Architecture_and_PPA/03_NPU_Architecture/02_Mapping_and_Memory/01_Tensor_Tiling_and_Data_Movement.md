@@ -35,6 +35,23 @@ The mapping is correct only if capacity, bandwidth, ordering, boundary masks, an
 
 A tensor operation is often too large to keep all operands on chip. Tiling chooses smaller ranges of loop indices whose input, weight, output, and metadata footprints fit a memory level. Those ranges determine how often each byte is reused before eviction and how much traffic must cross the next, more expensive boundary.
 
+Picture the levels as a staging pipeline: every boundary crossing costs more energy per byte than the one below it, so a byte is pulled down once and reused many times before eviction. The *same* loop nest is split at each boundary — outer tile indices select what lives in the larger, slower level; inner indices select the operands a PE touches this step. That correspondence (one loop split per memory boundary) is the mechanism the rest of this page accounts for.
+
+```mermaid
+flowchart TB
+    DRAM["DRAM / HBM<br/>full tensors A, B, C"]
+    GB["global buffer L2<br/>one outer tile, reused across inner passes"]
+    SP["scratchpad SRAM<br/>ping/pong mid tile, feeds many MACs"]
+    RF["PE RF + accumulator<br/>operand rows, partial sums stay in place"]
+    PE["MAC / vector engine"]
+
+    DRAM -->|"DMA: outer m,n,k tile (rare, costly)"| GB
+    GB -->|"NoC: mid m,n,k tile"| SP
+    SP -->|"feed: inner operands (cheap, frequent)"| RF
+    RF --> PE
+    PE -->|"partial sums accumulate in place"| RF
+```
+
 For matrix multiplication, a tile with dimensions $M_t$, $N_t$, and $K_t$ needs an input block $M_tK_t$, a weight block $K_tN_t$, and partial sums $M_tN_t$, multiplied by their data widths. Double buffering may require two copies of inputs or weights so transfer overlaps computation. Alignment, bank placement, halos, tails, and compressed metadata consume additional capacity. A mathematically fitting tile may still starve the array if its transfers cannot complete before the current tile finishes.
 
 **Beginner checkpoint:** write a byte-accurate capacity equation and traffic equation before running a mapping search. The compiler search should explore legal, understood choices—not compensate for an undefined memory model.
@@ -149,6 +166,8 @@ $$
 I_l=\frac{operations}{Q_l}.
 $$
 
+Intuitively, $I_l$ is how many MACs you extract per byte you pay to move across boundary $l$; tiling for more reuse at a level raises that level's intensity and pushes it away from being the bottleneck.
+
 There is a roofline at every level:
 
 $$
@@ -159,6 +178,8 @@ A tile can be HBM-efficient and still be NoC/RF-bound because one operand is rem
 
 ## 4. Reuse factors
 
+Intuitively, reuse is the number of useful MACs a byte delivers before it leaves on-chip storage. A byte fetched from HBM that feeds a single MAC and is then evicted has reuse $1$ and pays full off-chip cost per operation; tiling exists to raise that number by keeping the byte resident until every MAC that needs it has run.
+
 For GEMM tile:
 
 - each $A[m,k]$ is reused across $N_t$ output columns;
@@ -168,6 +189,22 @@ For GEMM tile:
 Ideal tile-level reuse reduces input bytes per MAC as $M_t,N_t$ grow, but accumulator capacity grows $M_tN_t$. Increasing all dimensions is impossible under fixed SRAM, so mapping chooses which reuse is most valuable given operand precision and bandwidth.
 
 Reuse only counts if lifetime stays within the buffer and scheduling actually avoids reload. Two loop orders with identical tile sizes can produce different traffic.
+
+### Worked example — tile size sets off-chip traffic
+
+Take a square GEMM $C=A\times B$ with $M=N=K=1024$, INT8 inputs, INT32 accumulate, and square tiles $M_t=N_t=K_t=T$ (double-buffered inputs, one resident accumulator per output tile). Two quantities move in opposite directions as $T$ grows:
+
+- **Scratchpad footprint** $=2S_A+2S_B+S_C=2T^2+2T^2+4T^2=8T^2$ bytes — grows as $T^2$.
+- **Off-chip input traffic** $=2MNK/T=2\cdot1024^3/T$ bytes — falls as $1/T$, because each loaded input element feeds $T$ MACs before eviction (its reuse factor is $T$).
+
+| Tile $T$ | Scratchpad $8T^2$ | Off-chip inputs $2\cdot1024^3/T$ | Reuse |
+|---:|---:|---:|---:|
+| $1$ (no reuse) | — | $2$ GiB | $1\times$ |
+| $64$ | $32$ KiB | $32$ MiB | $64\times$ |
+| $128$ | $128$ KiB | $16$ MiB | $128\times$ |
+| $256$ | $512$ KiB | $8$ MiB | $256\times$ |
+
+The $T=1$ row is the pathology tiling removes: fetching both operands for every MAC moves $2MNK=2$ GiB. The scaling is the whole tension — **doubling the tile halves off-chip traffic but quadruples capacity.** Returns diminish: $128\to256$ saves only $8$ MiB more while costing $384$ KiB more SRAM, so the best $T$ is the largest that still fits the buffer (after the metadata, alignment, and double-buffering terms of §2) while keeping the array fed. Loop order can cut one operand further: holding a full $A$ row-band resident across all $n$ tiles reads $A$ just once, at the cost of $M_t\cdot K$ resident bytes. (A one-time $C$ write of $MN=1$ MiB is unchanged by $T$ and omitted above.)
 
 ## 5. Double buffering and pipeline balance
 

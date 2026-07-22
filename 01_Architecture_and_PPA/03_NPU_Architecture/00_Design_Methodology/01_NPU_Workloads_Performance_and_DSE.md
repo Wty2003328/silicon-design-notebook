@@ -59,7 +59,7 @@ $$
 U_{spatial}=\frac{M_tN_t}{\lceil M_t/P\rceil P\;\lceil N_t/Q\rceil Q}.
 $$
 
-For small or skinny matrices, a large square array can have poor utilization. Batch/sequence/hidden dimensions determine whether extra PEs are useful.
+For small or skinny matrices, a large square array can have poor utilization. For example, a skinny tile $M_t{=}48,\,N_t{=}1000$ on a $128\times128$ array takes $\lceil48/128\rceil{=}1$ row-wave (48 of 128 rows live) and $\lceil1000/128\rceil{=}8$ column-waves (the last only $1000-7\times128=104$ wide), so $U_{spatial}=\frac{48\times1000}{128\times(8\times128)}\approx36.6\%$ — nearly two-thirds of the PEs idle on edge underfill. Batch/sequence/hidden dimensions determine whether extra PEs are useful.
 
 The actual operator cycles are
 
@@ -84,6 +84,8 @@ Compute count is usually fixed by the dense operator; dataflow primarily changes
 
 ## 4. Hierarchical roofline and operational intensity
 
+**Intuition — two ceilings.** Every operator hits one of two limits: it runs out of arithmetic units (the flat *compute roof* $P_{compute}$) or it runs out of bandwidth to feed them (the sloped *memory roof* $I_l\,BW_l$, which rises with intensity). Operational intensity $I_l$ (also called arithmetic intensity) — useful operations per byte moved at level $l$ — is the single number that decides which ceiling you meet: reuse each byte for many operations and you climb the slope until you reach the flat roof; touch each byte only once or twice and you are pinned to the slope far below peak. Picture a kitchen with a fixed crew of cooks (compute) fed by one delivery van (bandwidth) — if each delivery yields many dishes the cooks stay busy, but if every dish needs its own delivery the cooks idle waiting no matter how many you hire. The crossover where the roofs meet, $I^{*}=P_{compute}/BW_l$ (the *ridge point*, or machine balance), is the intensity a mapping must reach to be compute-bound rather than starved.
+
 At memory level $l$,
 
 $$
@@ -91,7 +93,34 @@ I_l=\frac{N_{ops}}{B_l},\qquad
 P\le\min(P_{compute},I_lBW_l).
 $$
 
-Construct bounds for register/PE-local storage, shared SRAM, NoC, and HBM/DDR. A mapping can be HBM-efficient but limited by SRAM banks or reduction network.
+Construct bounds for register/PE-local storage, shared SRAM, NoC, and HBM/DDR. A mapping can be HBM-efficient but limited by SRAM banks or reduction network. The same operator has *different* intensities at different levels: what streams from HBM once may be re-read many times from SRAM, so $I_{HBM}>I_{SRAM}$, and each level has its own roof.
+
+**Worked example — one array, two regimes (HBM level, INT8).** Take an array with $P_{compute}=32$ TOPS fed by $BW=1$ TB/s of HBM, so the ridge point is $I^{*}=32\times10^{12}/10^{12}=32$ ops/byte. (Because $BW=1$ TB/s, one byte/s equals one op/s numerically, so on the slope the attainable TOPS is just $I$ itself.) Count DRAM bytes optimistically — each operand read once, output written once, $B=(MK+KN+MN)\,b_{element}$:
+
+- *Prefill GEMM* $M{=}2048,\,N{=}K{=}4096$: $N_{ops}=2MNK\approx6.9\times10^{10}$ ops against $B\approx3.4\times10^{7}$ bytes, so $I=2048$ ops/byte. Since $2048\gg32$ it sits on the flat roof: attainable $=\min(32,\,2048\times1)=32$ TOPS. Compute time $6.9\times10^{10}/(32\times10^{12})\approx2.1$ ms dwarfs memory time $\approx34$ µs — **compute-bound**.
+- *Decode GEMV* $M{=}1,\,N{=}K{=}4096$ (one new token times the weight matrix): $N_{ops}\approx3.4\times10^{7}$ ops, but the weights still cost $B\approx1.7\times10^{7}$ bytes, so $I\approx2$ ops/byte. On the slope, attainable $=2\times1=2$ TOPS — only $2/32=6.25\%$ of peak — and time $\approx17$ µs is set by weight traffic, not MACs — **memory-bound**.
+
+Same silicon, same weights: prefill wants more MACs, decode wants more bandwidth (Section 7). Each weight is read once and used for one MAC, pinning decode near $I\approx2$; the lever is *raising* $I$ — batching decode tokens, keeping weights/KV resident, or compressing them — not adding PEs.
+
+```text
+ attainable
+ TOPS (log)
+   32 |- - - - - - - - - +=====================  compute roof = P_compute
+      |                 /                  o A
+      |                /            (I=2048: 32 TOPS, at peak)
+      |     memory    /
+      |     roof     /   <- ridge  I* = P/BW = 32 ops/byte
+      |  slope = BW /       (machine balance point)
+      |            /
+    2 |- - - - - o B    (I=2: only 2 TOPS = 6.25% of peak)
+      |         /
+      |        /
+      +-------+--+-------+--------------------- operational intensity
+              1  2      32      ...       2048   (ops/byte, log-log)
+        <----- memory-bound ---|--- compute-bound ----->
+```
+
+B rides the sloped roof (attainable $=I\times BW$); A sits under the flat roof (attainable $=P_{compute}$). Moving an operator right — more reuse per byte — is exactly what better tiling and dataflow (Section 3) buy you.
 
 For a double-buffered tile,
 
@@ -214,6 +243,24 @@ Explore coherent configurations:
 - off-chip capacity/bandwidth;
 - precision/accuracy and sparsity support;
 - compiler mapping search space.
+
+Mechanically this is two *nested* loops, not one sweep: an outer search over architecture points $\theta$, and for each one an inner compiler search over legal mappings whose *best* result — never a default or first-legal mapping — is what scores that $\theta$ on the frontier.
+
+```mermaid
+flowchart TB
+    START["workloads plus shape / precision / sparsity mix"] --> SEED["pick architecture point theta"]
+    SEED --> MAPSEARCH["compiler searches mappings: tiling / dataflow / loop order"]
+    MAPSEARCH --> LEGAL{"mapping legal? capacity / banks / ports / deps"}
+    LEGAL -- "no, reject" --> MAPSEARCH
+    LEGAL -- "yes" --> EVAL["cycle / byte / energy / area model"]
+    EVAL --> BEST["keep best mapping for this theta"]
+    BEST --> MOREMAP{"mapping budget left?"}
+    MOREMAP -- "yes" --> MAPSEARCH
+    MOREMAP -- "no" --> PARETO["update Pareto frontier"]
+    PARETO --> MORETHETA{"architecture budget left?"}
+    MORETHETA -- "yes, new theta" --> SEED
+    MORETHETA -- "no" --> OUT["Pareto set: latency / energy / area / quality"]
+```
 
 The mapping is part of the design point. Comparing two architectures using a mapping tuned for only one can reverse conclusions.
 

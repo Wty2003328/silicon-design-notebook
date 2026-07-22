@@ -149,6 +149,21 @@ $$
 
 where $d_h$ is head dimension and $M$ is an optional causal or padding mask. The block then applies output projection, normalization, residual addition, and an FFN.
 
+**What attention computes, intuitively.** Read the output one row at a time. A token's query is compared against every key by dot product, and those scores say *how relevant* each other token is; softmax turns them into weights that sum to one, and the output row is the weighted average of the value vectors. Attention is therefore a **content-addressed soft lookup** — instead of fetching one row by index, each token retrieves a blend of all rows weighted by learned similarity. The $1/\sqrt{d_h}$ factor keeps dot products from growing with head dimension, so softmax stays in a useful range instead of collapsing toward a hard argmax.
+
+As a hardware datapath, one query tile makes two passes through the matrix array wrapped around a vector/softmax stage — the same operand is handed between the array and the vector unit twice:
+
+```mermaid
+flowchart LR
+    Q["Q tile"] --> QK["QKᵀ scores<br/>matrix array"]
+    K["K tile"] --> QK
+    QK --> SC["scale 1/sqrt(d_h)<br/>add mask<br/>vector"]
+    SC --> SM["softmax<br/>max, exp, sum, divide<br/>reduction + special-function"]
+    SM --> PV["probs x V<br/>matrix array"]
+    V["V tile"] --> PV
+    PV --> O["O tile"]
+```
+
 Hardware sees several operator classes:
 
 | Operator | Preferred engine | Main pressure |
@@ -199,6 +214,10 @@ o' = e^{m-m'}o+\sum_j e^{s_j-m'}v_j.
 $$
 
 Final output is $o/l$. The rescaling preserves numerical stability without storing all probabilities.
+
+**Why the rescale $e^{m-m'}$ appears, intuitively.** Stable softmax subtracts the row maximum before exponentiating, but a streaming engine learns the true maximum only after the final block. So it keeps a *provisional* result normalized to the largest score seen *so far*. When a later block reveals a bigger maximum $m'$, every earlier term was exponentiated against a too-small baseline; multiplying the running sum $l$ and accumulator $o$ by $e^{m-m'}<1$ re-bases them onto the new maximum — like re-curving every earlier grade when a higher top score appears. Only three small row states ($m$, $l$, $o$) cross block boundaries, which is exactly what keeps the $S\times S$ scores off HBM.
+
+**Does the working set fit on chip?** Take tiles of $B_r=B_c=128$ with $d_h=128$. The engine holds Q, K, and V tiles (FP16: $3\times128\times128\times2\approx96$ KiB), one $128\times128$ score tile plus a $128\times d_h$ output accumulator (FP32: $2\times64$ KiB), and the tiny $m,l$ rows — about **225 KiB** of live working set. The full materialized score matrix at $S=2048$ would be $2048^2\times4\approx16$ MiB. The tile fits a scratchpad; the full matrix does not, and that gap is the entire reason for streaming.
 
 This algorithm maps to a pipeline:
 
@@ -371,6 +390,8 @@ Counters should report array utilization by shape, vector backlog, reduction occ
 **2 — Vector balance.** A matrix engine emits 128 attention rows every 64 cycles, or 2 rows/cycle. A vector engine that normalizes 1 row/cycle accumulates one row of backlog per cycle and will eventually stall the matrix path. Two rows/cycle is the minimum balanced throughput; more provides burst headroom.
 
 **3 — KV capacity.** A model has 32 layers, 8 KV heads, head dimension 128, two tensors K and V, FP16 storage, and 32,768 cached tokens. Capacity is $32\times8\times128\times2\times2\times32768\approx4$ GiB per sequence. GQA head sharing and lower precision directly reduce both capacity and read bandwidth.
+
+**4 — Attention core cost.** For one head at sequence length $S$ and head dimension $d_h$, scores $QK^T$ cost $2S^2d_h$ operations and the probability–value product costs another $2S^2d_h$, so the attention core is $4S^2d_h=2\times(2S^2d_h)$ operations — quadratic in $S$, unlike projections that are linear in $S$. At $S=2048$, $d_h=128$ that is about $4\times2048^2\times128\approx2.1$ GFLOP per head. Prefill runs this compute-heavy and reuses each K/V tile across many query rows. In decode the shape collapses: one query against $T$ cached keys costs $2Td_h$ operations while reading $\approx b_wTd_h$ KV bytes, an intensity of only $\approx2/b_w$ Op/B. Decode attention is therefore memory-bound on KV reads for the same reason decode projection is memory-bound on weights — and unlike projection it cannot be rescued by batching independent requests, because each request reads its own KV cache.
 
 ## Numbers to remember
 

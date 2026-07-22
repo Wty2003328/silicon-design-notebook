@@ -163,6 +163,18 @@ For an $R\times C$ array multiplying an $M\times K$ tile by $K\times N$:
 - weights shift across the other;
 - outputs/partial sums remain or drain.
 
+Concretely, in a weight-stationary array each PE latches one weight; activations march in from the left, one row per cycle, and each partial sum accumulates down its column and drains at the bottom. Rows are skewed by one cycle each so that an activation always meets the weight it belongs with:
+
+```mermaid
+flowchart LR
+  A0["act row 0"] --> P00["PE<br/>w00"] --> P01["PE<br/>w01"] --> P02["PE<br/>w02"]
+  A1["act row 1"] --> P10["PE<br/>w10"] --> P11["PE<br/>w11"] --> P12["PE<br/>w12"]
+  A2["act row 2"] --> P20["PE<br/>w20"] --> P21["PE<br/>w21"] --> P22["PE<br/>w22"]
+  P00 --> P10 --> P20 --> D0["psum drain 0"]
+  P01 --> P11 --> P21 --> D1["psum drain 1"]
+  P02 --> P12 --> P22 --> D2["psum drain 2"]
+```
+
 Ideal full-tile latency for a basic 2D wavefront is approximately
 
 $$
@@ -170,6 +182,14 @@ T\approx K+R+C-2
 $$
 
 cycles for fill, compute wave, and drain, depending on exact interface/pipeline. Utilization is useful MACs divided by $RC\times T$ MAC slots.
+
+**Worked example — fill, drain, and the utilization law.** The diagonal wave is $R+C-1$ PEs deep, so the last PE (bottom-right corner) begins $R+C-2$ cycles after the first: that skew is the fill, and its mirror image is the drain. Take a $256\times256$ array computing a $256\times256$ output tile ($M=N=S=256$) with reduction depth $K$. Fill and drain together cost $R+C-2=510$ cycles no matter how large $K$ is, so total latency is $T=K+510$. Once the wave has filled the array all $S^2$ PEs run at once, so steady-state throughput reaches the peak $S^2=65{,}536$ MACs/cycle (a genuine all-busy plateau forms whenever $K\ge 2S-1$). Utilization is the productive work over the padded slots,
+
+$$
+\eta=\frac{MNK}{RC\,T}=\frac{K}{K+2S-2},
+$$
+
+the fixed $2S-2$ ramp amortized over $K$ productive cycles. At $K=256$ — as deep as the array is wide — this is $256/766\approx33\%$; at $K=2048$ it climbs to $2048/2558\approx80\%$; and as $K\to\infty$ it approaches $100\%$. Small tiles are ramp-bound, spending their cycles filling and draining rather than computing, which is exactly why systolic arrays reward long, regular reductions and why Problem 1 below loses further efficiency once the tile also underfills the array.
 
 Small or skinny matrices underfill dimensions. Mapping several independent tiles/batches across subarrays improves utilization but requires partitionable distribution/reduction and buffer capacity.
 
@@ -191,11 +211,40 @@ Activations stay while weights/partial sums move, useful when activation reuse d
 
 Maps a convolution row/primitive to PEs to exploit weight, activation, and partial-sum reuse together. It is a family of mappings rather than one fixed layout.
 
+The names differ only in which tensor is pinned inside the PE while the others move — the pinned tensor is the one whose reuse is captured for free:
+
+```mermaid
+flowchart TB
+  subgraph OS["output-stationary"]
+    direction LR
+    OSa["A streams"] --> OSp["PE holds C"]
+    OSb["B streams"] --> OSp
+    OSp --> OSo["drain C once"]
+  end
+  subgraph WS["weight-stationary"]
+    direction LR
+    WSa["A streams"] --> WSp["PE holds W"]
+    WSp --> WSc["psum moves out"]
+  end
+  subgraph RS["row-stationary"]
+    direction LR
+    RSp["PE holds W row, A row, psum"] --> RSo["reduce across PEs"]
+  end
+```
+
 Traffic energy is
 
 $$
 E_{data}=\sum_{operand\ o}\sum_{level\ l}N_{o,l}E_{access,l}.
 $$
+
+**Worked reuse comparison — which tensor stays put, and why it saves energy.** Take a GEMM tile with $A$ of shape $M\times K$, $B$ of shape $K\times N$, and $C$ of shape $M\times N$, using INT8 operands and an INT32 accumulator, and set $M=N=K=128$ (about $2.1$M MACs). The shape fixes the available reuse: each weight $B_{kn}$ feeds $M=128$ output rows, each activation $A_{mk}$ feeds $N=128$ output columns, and each output $C_{mn}$ is accumulated $K=128$ times. A naive dataflow that fetched every operand from the global buffer for every MAC would pay all of that traffic; each stationary choice makes one class of it free:
+
+- **OS** pins $C_{mn}$ in its PE for all $K$ updates. The accumulator — the *widest* operand at 32 bits, $4\times$ an INT8 input — never crosses the array boundary during the reduction; only the final result drains, once. Partial-sum global traffic drops by about $K=128\times$, and because those were the fattest words it usually removes the most *bytes*.
+- **WS** pins each weight $B_{kn}$ across the $M=128$ rows it serves, so a weight leaves the global buffer once instead of 128 times. This wins when weights are large and reused across a big batch, but the still-moving INT32 partial sums cost energy.
+- **RS** (row-stationary) maps a 1-D convolution row to each PE so a filter row, an activation row, and a running partial sum all stay local *together*, capturing weight, activation, and partial-sum reuse in one mapping — at the price of a more complex spatial layout and an inter-PE reduction network.
+
+Energy tracks bytes moved times distance, so the ranking flips with shape: a deep reduction favors OS (kill the wide partial-sum traffic), a large batched weight tile favors WS, and a convolution with all three reuses substantial favors RS. The $E_{data}$ sum above is just this per-operand counting written generally.
 
 The best stationary choice minimizes high-level accesses under actual tensor shape and buffer constraints, not a universal rule.
 

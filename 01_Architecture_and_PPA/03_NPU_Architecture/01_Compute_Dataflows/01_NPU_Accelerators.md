@@ -84,6 +84,41 @@ flowchart TB
 
 **Feature 4 — heterogeneous completion.** Real layers also contain bias, activation, normalization, transpose, reduction, and quantization. Sending every intermediate to HBM restores the movement cost the array removed. A vector/reduction engine therefore shares the scratchpad, and the command graph passes an on-chip tile from matrix compute to post-processing before output DMA. Partitioning a large array into smaller independently controlled regions similarly recovers utilization for small or skinny matrices. These features add crossbars, bank conflicts, command states, and verification cases; they should be justified by end-to-end traffic and utilization, not by peak TOPS.
 
+#### The assembled template
+
+Features 1–4 compose into the **generic accelerator template** every part in this notebook instantiates — the block diagram to keep in your head. The path through it is short: the **host** hands a tensor op to the *command processor*; that engine programs the *DMA* to stage tiles from HBM into the *banked scratchpad*; the *MAC array* consumes them and drains through the *accumulator / vector unit* back to the scratchpad; output DMA returns the result to HBM. This is the structure — the *replay* immediately below traces one command along exactly these edges. Data edges are solid; control edges (host commands, launch/valid) are dashed.
+
+```mermaid
+flowchart TB
+    HOST["Host CPU<br/>command queue"]
+    subgraph CHIP["NPU accelerator die"]
+      CP["Command processor<br/>sequencer + scoreboard"]
+      DMA["DMA engines<br/>+ address generators"]
+      subgraph SP["Banked scratchpad SRAM"]
+        AB["activation banks<br/>ping-pong A0 A1"]
+        WB["weight banks<br/>ping-pong B0 B1"]
+        OB["output banks"]
+      end
+      ARR["PE / MAC array<br/>D x D systolic"]
+      VU["Accumulator +<br/>vector / activation unit"]
+    end
+    HBM["HBM / DRAM<br/>off-chip"]
+
+    HOST -->|"commands"| CP
+    CP -->|"descriptors"| DMA
+    CP -.->|"launch, valid"| ARR
+    HBM <-->|"tile bursts"| DMA
+    DMA -->|"fill"| AB
+    DMA -->|"fill"| WB
+    AB -->|"activations"| ARR
+    WB -->|"weights"| ARR
+    ARR -->|"partial sums"| VU
+    VU -->|"results"| OB
+    OB -->|"drain"| DMA
+```
+
+Read against §1's energy argument, the geometry is deliberate: the array sits *inside* the scratchpad's cheap-SRAM ring, and HBM — the 200× rung — is reachable only through DMA, so every off-chip byte is an explicit, scheduled event rather than an accidental cache miss.
+
 #### Replay one command through the evolved machine
 
 Consider a command `GEMM M=4, N=4, K=4` on a $2\times2$ output-stationary array. “Output stationary” means that each PE keeps one $C$ partial sum while $A$ and $B$ move. The compiler emits four output tiles: `(m0,n0)`, `(m0,n1)`, `(m1,n0)`, and `(m1,n1)`, where each tile contains $2\times2$ outputs.
@@ -199,7 +234,7 @@ where $D$ = array side, $M,N,K$ = GEMM dimensions. **Deriving the fill/drain fac
 
 $$U_{\text{tile}} \;=\; \frac{D^2 K}{D^2 (K+2D)} \;=\; \frac{K}{K+2D},$$
 
-*independent of $D^2$* — the ramps cost a fixed $2D$ cycles whether the array is $16\times16$ or $256\times256$, so only the ratio to $K$ bites. Edge quantization multiplies this whenever $M,N$ miss a multiple of $D$: the $\lceil M/D\rceil\lceil N/D\rceil$ tiles occupy $D^2$ MACs each but only $MN$ columns carry work, yielding the $\tfrac{M}{\lceil M/D\rceil D}\tfrac{N}{\lceil N/D\rceil D}$ prefactor and the full $U$ above. **Worked number (steady-state throughput).** A $D=128$ array at $f=1$ GHz peaks at $D^2 f = 16{,}384\times10^9 = 1.64\times10^{13}$ MAC/s ($32.8$ TOPS). A well-shaped tile with $K=512$: ramps $=2D-2=254$ cycles, $U_{\text{tile}}=512/768 = 66.7\%$, so *effective* throughput is $0.667\times32.8 = 21.9$ TOPS; push $K$ to $4096$ and $U_{\text{tile}}=4096/4352=94\%\to30.8$ TOPS from the identical silicon — the only change is a longer reduction amortizing the fixed $254$-cycle ramp over $16\times$ more useful cycles.
+*independent of $D^2$* — the ramps cost a fixed $2D$ cycles whether the array is $16\times16$ or $256\times256$, so only the ratio to $K$ bites. Edge quantization multiplies this whenever $M,N$ miss a multiple of $D$: the $\lceil M/D\rceil\lceil N/D\rceil$ tiles occupy $D^2$ MACs each but only $MN$ columns carry work, yielding the $\tfrac{M}{\lceil M/D\rceil D}\tfrac{N}{\lceil N/D\rceil D}$ prefactor and the full $U$ above. **Worked number (steady-state throughput).** A $D=128$ array at $f=1$ GHz peaks at $D^2 f = 16{,}384\times10^9 = 1.64\times10^{13}$ MAC/s ($\times2$ op/MAC, since a MAC is one multiply *and* one add, $=32.8$ TOPS). A well-shaped tile with $K=512$: ramps $=2D-2=254$ cycles, $U_{\text{tile}}=512/768 = 66.7\%$, so *effective* (achieved) throughput is $U_{\text{tile}}\times\text{peak}=0.667\times32.8 = 21.9$ TOPS — **utilization is exactly achieved-over-peak**; push $K$ to $4096$ and $U_{\text{tile}}=4096/4352=94\%\to30.8$ TOPS from the identical silicon — the only change is a longer reduction amortizing the fixed $254$-cycle ramp over $16\times$ more useful cycles.
 
 **Why back-to-back tiles bill $\approx\!D$, not $2D$.** The $2D{-}2$ ramp is a *per-isolated-tile* cost, but a real kernel never drains the array between tiles: streaming a long activation matrix through one resident weight block emits output tile after output tile with no reload, so a run of $T$ tiles pays **one** fill and **one** drain around $T$ back-to-back streams:
 

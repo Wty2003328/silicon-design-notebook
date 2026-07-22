@@ -146,6 +146,14 @@ $$
 
 With 8-bit values and 4-bit average metadata, density must be below $8/12=66.7\%$ before capacity falls at all. Decode and routing energy demand an even lower break-even density.
 
+**Worked example — 2:4 structured sparsity.** The most widely deployed structured pattern keeps at most **2 nonzeros in every group of 4** weights: a fixed 50% density with a *predictable* shape. Because the shape is fixed, the payoff arrives almost for free on a nearly-dense datapath.
+
+- **Compute:** 2 multiply-accumulates per group instead of 4 → **2× fewer MACs**, so a tensor core that understands the pattern runs the layer at up to **2× throughput**.
+- **Metadata:** each kept weight needs only its position within the 4 — a 2-bit index (positions 0–3). That is 4 bits per group of 4, i.e. **2 bits per retained value**. Hardware feeds those 2 bits straight into a 4:1 multiplexer that selects the matching activation — no coordinate search, no merge. This is the "2-bit multiplexer" of §3.1.
+- **Bandwidth:** substitute $d=0.5$, $b_v=8$ (INT8), $b_m=2$ into $R_{bytes}=d(b_v+b_m)/b_v$: weights shrink to $0.5\cdot10/8=0.625$, i.e. **62.5%** of dense bytes.
+
+Contrast *unstructured* 50% sparsity, whose arbitrary positions force full coordinates and a runtime index matcher (§3.2). The 2:4 pattern trades pruning freedom for a datapath that captures the 2× with a mux and two metadata bits — which is exactly why current tensor cores accelerate 2:4 but not arbitrary sparsity.
+
 ## 2. Sparse storage and decode front end
 
 CSR and CSC store nonzero values, their column or row indices, and pointers marking each row or column. Block-sparse formats store coordinates per tile rather than per value. Bitmap formats spend one bit per candidate position and are attractive at moderate density.
@@ -242,6 +250,16 @@ Arithmetic sparsity of 80% can still underperform dense hardware if one PE recei
 
 An MoE layer contains many expert subnetworks but routes each token to only a small top-$k$ subset. It is sparse activation at expert granularity.
 
+**What it buys (intuition).** Picture a panel of $E$ specialists with a receptionist — the router — who reads each request and forwards it to only the $k$ most relevant specialists. The panel collectively *knows* as much as all $E$ experts, yet any one request pays for only the $k$ it consults. MoE applies this to the feed-forward layer to decouple **parameter count (capacity)** from **per-token compute**: the layer stores $E$ expert FFNs but activates $k$.
+
+**Worked example.** Let each expert hold $P_e$ parameters; take $E=8$, $k=2$, with $d_{model}=4096$ and FFN width $d_{ff}=14336$, so one expert is $2\,d_{model}d_{ff}\approx117\text{M}$ params.
+
+- total expert params per layer: $E P_e = 8\times117\text{M}\approx940\text{M}$;
+- active per token: $k P_e = 2\times117\text{M}\approx235\text{M}$, plus a negligible router ($d_{model}\times E=32{,}768$ params);
+- active fraction: $k/E = 2/8 = 25\%$.
+
+Since matmul FLOPs scale with the parameters touched, each token does the FFN work of $k$ experts, not $E$ — about **$1-k/E=75\%$ fewer FFN FLOPs than a dense layer of the same $\approx$940M parameters**. That gap, full capacity at a quarter of the compute, is the entire reason to accept the routing, grouping, and load-balancing machinery below.
+
 The pipeline is:
 
 1. a router computes expert scores for each token;
@@ -251,6 +269,20 @@ The pipeline is:
 5. tokens travel to local or remote expert engines;
 6. each expert executes a batched FFN;
 7. outputs return and are weighted/reordered into token order.
+
+Structurally, the router fans each token out to its $k$ experts and a **gate-weighted combine** folds their outputs back into one vector — the step a top-1 trace (§0.1) hides:
+
+```mermaid
+flowchart LR
+    X["token x"] --> RT["router<br/>score E experts"]
+    RT --> TK["top-k select<br/>gates g_a, g_b"]
+    TK --> EA["expert a<br/>FFN"]
+    TK --> EB["expert b<br/>FFN"]
+    EA --> C["combine<br/>g_a*y_a + g_b*y_b"]
+    EB --> C
+    TK -. "gate weights" .-> C
+    C --> Y["token output y"]
+```
 
 This adds hardware needs absent from a dense FFN:
 
