@@ -106,6 +106,23 @@ A CPU never instantiates a raw bit cell alone. An array adds:
 
 The observed access time is decoder + wordline + cell/bitline + sense + output routing, not a single “SRAM latency.” Large predictors, caches, TLBs, and queues are banked or pipelined because wire resistance/capacitance grows with dimensions.
 
+The macro is therefore a datapath, and its latency is a sum of stages rather than one number. A read walks the decode-to-output path below; a write injects at the column drivers.
+
+```mermaid
+flowchart LR
+    ADDR["address + control"] --> DEC["row decoder"]
+    DEC --> WLD["wordline drivers"]
+    WLD --> ARR["6T cell array"]
+    PRE["precharge"] --> ARR
+    ARR --> BL["bitline pair"]
+    BL --> CMUX["column mux"]
+    CMUX --> SA["sense amps"]
+    SA --> ECC["ECC / parity check"]
+    ECC --> OUT["output register"]
+    WDATA["write data"] --> WD["write drivers"]
+    WD --> CMUX
+```
+
 ### 2.2 From one bit to a manufacturable CPU macro
 
 An array must work when millions or billions of cells are manufactured together. If one bit has failure probability $p$ and failures were independent, a raw $N$-bit-array yield would be approximately
@@ -121,6 +138,23 @@ The independence assumption is simplified, but the exponential exposure explains
 ### 2.3 Ports are expensive
 
 True multiported SRAM needs additional access devices/wordlines/bitlines or replicated/banked structures. A PRF for issue width $W$ may demand about $2W$ reads and $W$ writes before considering vector/branch/load paths. Full multiporting expands cell/periphery and routing rapidly.
+
+**Why full multiporting is a square, not a line:** a multiported bit cell is less a storage device than a small grid of wires. Every port that can reach the bit needs its own wordline threaded across the cell and its own bitline (or bitline pair) running down it, so adding ports grows the cell in *both* directions at once. Once the cell is wire-limited — its size set by wire pitch rather than by the transistors — area follows the square of the port count:
+
+$$
+A_{cell}\propto p^2,\qquad p=n_{read}+n_{write},
+$$
+
+counting each read or write port as one wordline and one bitline group. Normalizing a 1-read/1-write cell ($p=2$) to unit area:
+
+| Cell ports | $p$ | Area $\propto (p/2)^2$ |
+|---|---|---|
+| 1R1W | 2 | 1.0× |
+| 2R1W | 3 | 2.25× |
+| 4R2W | 6 | 9.0× |
+| 8R4W | 12 | 36× |
+
+The 8-read/4-write file a 4-wide integer core naively wants ($2W=8$ reads, $W=4$ writes) is roughly 36× the bit-cell area of a single-ported cell, before any periphery. Access delay grows about linearly with $p$ (longer word/bitlines) and access energy faster than linearly, so a fully multiported file is slow and hot, not merely large. That quadratic is the pressure behind every alternative below.
 
 Common CPU alternatives:
 
@@ -162,6 +196,17 @@ $$
 \text{result tag broadcast}\rightarrow\text{entry compares}\rightarrow\text{ready update}\rightarrow\text{oldest-ready select}\rightarrow\text{issue}.
 $$
 
+The chain is drawn straight, but it closes on itself: the instruction that issues broadcasts its own destination tag, waking its dependents in time for them to select the *next* cycle. Back-to-back dependent issue therefore needs the whole loop to settle within one clock, which is why it resists pipelining.
+
+```mermaid
+flowchart LR
+    BC["result tag broadcast"] --> CMP["entry tag compares"]
+    CMP --> RDY["ready-bit update"]
+    RDY --> SEL["oldest-ready select"]
+    SEL --> ISS["issue + execute"]
+    ISS -. "same cycle" .-> BC
+```
+
 Increasing IQ entries, issue width, or operand count loads this loop. Hierarchical selection, segmented wakeup, dependence prediction, banked schedulers, or an extra pipeline stage are physical responses—not abstract simulator parameters.
 
 ## 4. Cache and TLB implementation choices feed back into architecture
@@ -189,6 +234,8 @@ $$
 The $r$ check bits produce $2^r$ distinct syndromes, which must identify each of the $k+r$ possible single-bit error positions plus the no-error case.
 
 Adding overall parity gives single-error correction, double-error detection (SECDED). Protection adds stored bits, encoder/checker logic, correction latency, scrub traffic, and fault-report state.
+
+For example, protecting $k=64$ data bits needs $r=7$ check bits ($2^7=128\ge 64+7+1$); the SECDED parity bit brings the total to 8, a 12.5% array overhead. The relative cost falls as the protected granule widens — a 128-bit word needs only 9 SECDED bits (about 7%) — which is why caches usually protect wide data granules rather than individual bytes.
 
 CPU structures choose different policies:
 

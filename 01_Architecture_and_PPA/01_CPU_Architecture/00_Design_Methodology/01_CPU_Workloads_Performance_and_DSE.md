@@ -59,6 +59,8 @@ It prevents a common mistake: a wider core can raise IPC but lengthen the clock 
 
 ### 1.1 A CPI stack is useful but not naively additive
 
+**Intuition — read the total as an itemized bill.** $\text{CPI}_{base}$ is the ideal cycles the retired work truly costs; every later term is a surcharge for a structure that stalled the core. The stack is a triage tool: if memory dominates the bill, a wider backend buys almost nothing, and if branches dominate, more cache does not help. You attack the tallest bar first.
+
 A first decomposition is
 
 $$
@@ -66,6 +68,20 @@ $$
 $$
 
 The labels mean frontend starvation, data dependencies, branch recovery, exposed memory delay, and full queues/ports. Real stalls overlap: an LLC miss may occur while the frontend is already recovering from a branch. Use simulator stall attribution rules or interval analysis; do not sum independently measured percentages unless the categories are mutually exclusive.
+
+**Worked stack — why isolation overcounts.** Profile a 4-wide core (ideal $\text{CPI}_{base}=1/4=0.25$) two ways. Column A measures each penalty *in isolation* (idealize everything else, then switch one effect on); column B is a single run with everything enabled, then attributed by interval analysis:
+
+| Component | A: isolated penalty | B: interval-analysis share |
+|---|---|---|
+| base (ideal, 4-wide) | 0.25 | 0.25 |
+| frontend | 0.10 | 0.07 |
+| dependencies | 0.15 | 0.11 |
+| branch | 0.15 | 0.10 |
+| memory | 0.55 | 0.42 |
+| resource | 0.05 | 0.05 |
+| **total CPI** | **1.25** | **1.00** |
+
+Column A sums to $1.25$, but the core actually retires at $\text{CPI}=1.00$. The $0.25$-cycle gap is *overlap*: a load miss is frequently serviced while the frontend is already refilling after a mispredict, so the same idle cycle would be billed twice. Optimize against column B — here the memory term ($0.42$) is worth six times the frontend term ($0.07$), so it, not fetch width, is the lever.
 
 ## 2. Four kinds of parallelism constrain the core differently
 
@@ -95,6 +111,20 @@ Useful dimensions include:
 - **parallel/service:** thread scalability, locks, coherence sharing, queue depth, average and tail latency.
 
 Cluster phases by these behaviors rather than benchmark names. Two programs from different suites can exercise the same bottleneck, while two inputs to one program can be microarchitecturally different.
+
+**Two archetypes make the vector concrete.** The same iron law can hide opposite bottlenecks (values illustrative):
+
+| Dimension | Dense FP kernel (compute-bound) | Graph traversal (memory-bound) |
+|---|---|---|
+| Branch MPKI | ~0.5 | ~12 |
+| LLC MPKI | ~1 | ~30 |
+| MLP (outstanding misses) | 2-3 | ~1.2 |
+| Vector fraction | high | ~0 |
+| Active limiter | FUs / register bandwidth | LLC + DRAM latency |
+| Knob that helps | wider vectors, more FUs | larger MSHR/LLC, prefetch, more MLP |
+| Knob that wastes area here | larger LLC | wider issue |
+
+Both can report the same IPC yet spend it on entirely different structures. That is why section 5 sweeps *coupled* knobs against the measured census, not against the benchmark's name: the left column rewards backend width, the right column rewards the memory system, and applying either lever to the wrong workload buys area without speed.
 
 ## 4. First-order models tell you what detailed simulation must resolve
 
@@ -130,7 +160,7 @@ $$
 W\approx\frac{1}{\mu-\lambda}.
 $$
 
-Latency rises sharply near saturation. This is why average unloaded cache/DRAM latency cannot predict server tail latency or many-core scaling.
+Latency rises sharply near saturation: with $\mu=10$ and $\lambda=8$, $W=1/(10-8)=0.5$, but pushing arrivals just 19% higher to $\lambda=9.5$ quadruples the wait to $W=2$. This nonlinear knee is why average unloaded cache/DRAM latency cannot predict server tail latency or many-core scaling.
 
 ## 5. Design-space exploration is a constrained experiment
 
@@ -161,6 +191,39 @@ A wider issue width without more fetch/decode bandwidth, issue ports, physical r
 5. RTL/emulation validates control and software behavior later.
 
 The fastest model that preserves the deciding mechanism is the correct first tool. Detailed simulation of an obviously bandwidth-impossible design only produces a more expensive rejection.
+
+### 5.3 The output of DSE is a Pareto frontier, not a single winner
+
+**What.** With several objectives at once — go faster, but under a power cap, an area cap, and a tail-latency SLO — there is usually no design that wins on every axis. The **Pareto frontier** is the set of *non-dominated* configurations. A design is *dominated* when some other design is at least as good on every objective and strictly better on one; anything dominated is a strictly worse deal, and the frontier is what remains. Concretely, sweep six candidates on (perf, power):
+
+| Design | Perf (geomean speedup) | Power (W) | On frontier? |
+|---|---|---|---|
+| D1 | 1.00 | 5 | yes (cheapest) |
+| D2 | 1.20 | 7 | yes |
+| D3 | 1.15 | 9 | no — D2 is faster *and* cooler |
+| D4 | 1.35 | 12 | yes |
+| D5 | 1.30 | 12 | no — D4 is faster at equal power |
+| D6 | 1.40 | 20 | yes (fastest) |
+
+The frontier $\{D1,D2,D4,D6\}$ is a rising staircase: each extra watt buys the most speed available at that budget. D3 and D5 sit strictly inside it, so no rational objective picks them.
+
+**Why.** Collapsing perf, power, and area into one weighted score hides the trade-off and silently bakes in weights you have not justified. Publishing the frontier keeps the decision explicit and lets the product team choose the operating point — often the *knee*, past which more speed costs disproportionate power — under the real caps rather than an arbitrary scalar.
+
+**How.** Filter the swept points by pairwise dominance, then apply the hard constraints, then pick the knee of what survives:
+
+```mermaid
+flowchart TD
+    START["candidate designs<br/>each with (perf, power, area)"] --> PICK["take next design d"]
+    PICK --> TEST{"any design better on<br/>every objective than d?"}
+    TEST -- yes --> DROP["mark d dominated"]
+    TEST -- no --> KEEP["keep d on frontier"]
+    DROP --> MORE{"more designs?"}
+    KEEP --> MORE
+    MORE -- yes --> PICK
+    MORE -- no --> DONE["frontier = kept designs"]
+    DONE --> CONSTR["drop designs violating<br/>power / area / SLO caps"]
+    CONSTR --> KNEE["pick knee under constraints"]
+```
 
 ## 6. Sampling and aggregation must match the claim
 

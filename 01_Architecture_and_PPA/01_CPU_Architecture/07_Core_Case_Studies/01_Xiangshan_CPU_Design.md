@@ -13,6 +13,8 @@
 
 XiangShan is unusually valuable because module-level design documents expose mechanisms that commercial CPU descriptions usually hide. They show the actual recovery pointers, replay causes, wakeup paths, and queue roles—not only a marketing block diagram.
 
+A methodological fact underlies this discipline: XiangShan is generated from *Chisel* rather than hand-written as fixed RTL. The microarchitecture is parameterized code elaborated into hardware, so widths, queue depths, and cache sizes are build-time choices—which is precisely why a figure only means something once it is pinned to a named configuration, and why the same source keeps emitting new machines. (Its companion methodology pillar, the *difftest* verification harness, appears in §9.)
+
 The documents are also a living engineering record. Pages routed under `kunminghu-v3` may label an individual module `V2R2`, `draft`, or carry a specific document date. This chapter therefore follows three rules:
 
 1. attribute numeric configuration to the official **typical Kunminghu V2** table or a named current module document;
@@ -74,9 +76,11 @@ The BPU does not wait for one perfect prediction. It composes several structures
 
 The early stage keeps fetch moving. Later stages may produce a different answer and override the earlier path. This creates speculation *inside the predictor*: a late override flushes frontend work even before a branch reaches backend execution.
 
+Intuitively this is a *tiered* predictor: a small, fast structure answers immediately so fetch never idles, while slower but more accurate structures re-check a cycle or two later and override when they disagree—the accuracy-versus-latency split of [Branch Prediction](../02_Frontend_and_Prediction/01_Branch_Prediction_Deep_Dive.md), resolved by letting the better late answer flush the cheaper early one. The override is a miniature mispredict-and-recover loop living entirely inside the frontend, before any branch has executed.
+
 ### 2.1 FTQ as lifecycle storage
 
-The FTQ sits between BPU and IFU. A prediction block enters through several BPU stages; later-stage information overwrites or refines earlier fields. The queue then:
+The FTQ sits between BPU and IFU, decoupling the two so prediction can run ahead of fetch and a stall on one side need not stall the other. A prediction block enters through several BPU stages; later-stage information overwrites or refines earlier fields. The queue then:
 
 - sends fetch requests to the IFU;
 - retains PC and predictor metadata;
@@ -85,7 +89,7 @@ The FTQ sits between BPU and IFU. A prediction block enters through several BPU 
 - returns trusted metadata for predictor training after commit;
 - uses BPU runahead to issue instruction prefetches.
 
-Four pointer roles in the documented lifecycle are instructive: BPU production, IFU request, IFU writeback/predecode, and commit/training. They progress at different rates. A redirect must restore each pointer to a boundary consistent with the surviving prediction blocks.
+Four pointer roles in the documented lifecycle are instructive: BPU production, IFU request, IFU writeback/predecode, and commit/training. They progress at different rates: picture four bookmarks sliding along one queue of prediction blocks at different speeds—BPU writing at the head, IFU reading just behind, predecode confirming further back, and training reading only after commit at the tail. A redirect must restore each pointer to a boundary consistent with the surviving prediction blocks; reset one bookmark but not the others, and the stages disagree about which fetch is real.
 
 ### 2.2 Speculative history and return prediction
 
@@ -119,6 +123,8 @@ Kunminghu documentation describes four coordinated rename snapshots. A snapshot 
 
 Snapshots are created around branch jumps because branch mispredictions are frequent redirect sources. Periodic snapshots—documented around groups of committed-width operations—provide coverage when no suitable branch snapshot exists. On redirect, the machine selects an older legal snapshot and walks only the remaining interval.
 
+The mental model is a photograph plus an edit log: a snapshot is a full picture of the rename map at one instruction boundary, and walking replays the RAB's remaining edits forward from that boundary to the redirect point. Restoring the nearest earlier photograph and replaying a handful of edits is far cheaper than replaying the whole log from the last commit—which is why snapshots are spent on branches, the most frequent redirect source.
+
 The snapshot flag travels with renamed operations so modules associate the state with the same ROB index. This synchronization is the hard part. Independently “close” snapshots of RAT and ROB are not correct if they represent different instruction boundaries.
 
 ## 4. Distributed scheduling and speculative wakeup
@@ -127,9 +133,11 @@ The issue system has specialized queues for scalar integer, vector/floating-poin
 
 For fixed-latency operations, a `WakeupQueue` shifts the producer through a latency-aligned pipeline and wakes dependents before final writeback. This lets a consumer issue in time to use forwarding instead of waiting an extra register-file cycle.
 
+Think of the `WakeupQueue` as a countdown timer set to the producer's known latency: because a fixed-latency result's arrival time is knowable in advance, the queue can raise the wakeup exactly early enough for the dependent to issue and catch the value on the forwarding network the moment it lands—never paying the extra round trip through the register file.
+
 Issue entries support both normal writeback wakeup and speculative wakeup. They also keep cancellation/feedback state. Load-dependent consumers carry short dependency metadata so a late load cancellation can invalidate the wakeup chain.
 
-This is a high-value advanced mechanism because it exposes both sides:
+This is a high-value advanced mechanism because it exposes both sides of the general speculative-wakeup model derived in [Advanced Scheduling, Wakeup, and Replay](../03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md):
 
 - **fast path:** predict result availability and shorten dependent latency;
 - **repair path:** find and cancel consumers when the result is late.
@@ -165,6 +173,20 @@ When eligible replays exist, priority separates high-impact causes from ordinary
 ### 5.4 Ordering checks and redirects
 
 The load pipeline checks read-after-read and read-after-write relationships and can generate load–load or store–load violation redirects. The redirect controller arbitrates these against branch redirects and ROB flushes, choosing the oldest valid redirect that has not already been squashed by an older event.
+
+All redirect sources across the machine funnel into that one arbiter:
+
+```mermaid
+flowchart TD
+    A["BPU later-stage override"] --> ARB{"redirect arbiter<br/>oldest valid wins"}
+    B["IFU predecode redirect"] --> ARB
+    C["branch mispredict"] --> ARB
+    D["load-load / store-load violation"] --> ARB
+    E["ROB exception / flush"] --> ARB
+    ARB --> SQ["squash younger work"]
+    SQ --> RS["restore snapshot + RAB walk,<br/>predictor history / RAS, FTQ pointers"]
+    RS --> GO["resume fetch at corrected PC"]
+```
 
 This “oldest wins” rule is fundamental. Repairing a younger violation while an older mispredicted branch removes it would waste work and may restore the machine to an inconsistent point.
 
@@ -208,7 +230,7 @@ The CPU is therefore best understood as several optimistic distributed protocols
 
 ## 9. Verification architecture
 
-XiangShan's open ecosystem includes differential testing against an ISA reference model, but advanced speculation needs more than final register comparison. Verification should combine:
+XiangShan's open ecosystem includes *difftest*, a differential-testing harness that runs the design in lockstep against an ISA reference model and flags the first point where committed architectural state diverges—but advanced speculation needs more than final register comparison. Verification should combine:
 
 - differential retirement checking for architectural state;
 - assertions on ROB/RAB/snapshot pointer relationships;

@@ -215,7 +215,25 @@ For repeated dumps, select the intended snapshot or subtract start counters from
 
 ## 9. Sampling, aggregation, and uncertainty
 
-For fixed-instruction samples representing instruction fractions,
+**What sampling does.** Detailed simulation cannot run a whole program to completion (Section 6.2), but a program is not a stream of unique work: it repeats a handful of *phases* — an inner loop, a probe, a copy — billions of times. Sampling exploits that repetition by timing a few representative windows in detail and extrapolating to the whole. It is opinion polling for programs: a few thousand well-chosen voters predict a national election because the electorate is not all distinct, and a few hundred million instructions predict a trillion for the same reason.
+
+**Why it pays.** A benchmark of $N=10^{12}$ dynamic instructions on a detailed out-of-order model running near $10^5$ instructions/second would need $N/10^5=10^7$ s $\approx116$ days. Simulate instead $k=10$ representative windows of $m=10^7$ instructions each, and only $km=10^8$ instructions get detailed timing — an $N/(km)=10^4\times$ cut, dropping the detailed portion to about 17 minutes. Reaching each window still costs a functional traversal, so once detailed work is removed, fast-forward speed and checkpoints (Section 7) — not the pipeline model — dominate wall-clock; this is why sampling and checkpointing are always paired.
+
+**How the samples are chosen — two families.** *Representative sampling (SimPoint)* profiles the run into fixed-length intervals, fingerprints each by a **basic block vector (BBV)** — how many times each basic block executed, i.e. which code ran and how much — clusters similar BBVs with k-means, keeps the interval nearest each cluster centroid as that cluster's **simulation point**, and weights it by the fraction of the program its cluster covers. A few tens of weighted simulation points then stand in for the whole run. *Systematic sampling (SMARTS)* instead takes a large number of tiny detailed windows spread periodically across the run, each preceded by warm-up, and treats them as a statistical sample whose confidence interval is computed directly. SimPoint asks "which regions are representative?" and its residual error is representativeness; SMARTS asks "how many uniform samples reach a target confidence?" and its residual error is sampling variance you can bound. Both still require warm state at each window.
+
+```mermaid
+flowchart TD
+    PROF["profile full run<br/>into fixed intervals"] --> BBV["basic block vector<br/>per interval"]
+    BBV --> CLUST["cluster similar BBVs<br/>k-means"]
+    CLUST --> REP["keep interval nearest<br/>each centroid"]
+    REP --> SIM["simulate each<br/>representative in detail"]
+    CLUST --> WT["weight = cluster<br/>instruction fraction"]
+    SIM --> COMB["combine: weighted CPI<br/>over representatives"]
+    WT --> COMB
+    COMB --> OUT["whole-program<br/>estimate with CI"]
+```
+
+The cluster fractions produced by SimPoint are exactly the weights $w_i$ used next. For fixed-instruction samples representing instruction fractions,
 
 $$
 \widehat{\text{CPI}}=\sum_iw_i\text{CPI}_i,\qquad \widehat{\text{IPC}}=1/\widehat{\text{CPI}}.
@@ -230,6 +248,8 @@ n\gtrsim\left(\frac{z c_v}{\varepsilon}\right)^2.
 $$
 
 The relative half-width is $z c_v/\sqrt{n}$; setting it equal to $\varepsilon$ and solving for $n$ gives the estimate.
+
+*Worked example.* With per-interval coefficient of variation $c_v=0.5$, a 95% interval ($z\approx1.96$), and a target relative half-width $\varepsilon=0.02$ (±2%), $n\gtrsim(1.96\times0.5/0.02)^2=49^2\approx2400$ units. Tightening the target to ±1% quadruples the requirement to $\approx9600$, because the half-width shrinks only as $1/\sqrt{n}$ — one more decimal digit of precision costs about $100\times$ the samples. SMARTS therefore favors many small windows over a few large ones: the interval tightens with the *number* of units $n$, so for a fixed detailed-instruction budget $n\,m$, smaller windows $m$ raise $n$ and narrow the interval, until per-unit warm-up becomes the limiting cost.
 
 Autocorrelated intervals reduce effective sample size, so block, phase-select, or space samples farther apart and verify convergence. A statistical confidence interval covers random sampling variation under its assumptions; it does not include a wrong binary, unrepresentative phase selection, or cold-state bias.
 

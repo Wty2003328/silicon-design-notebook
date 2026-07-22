@@ -85,6 +85,25 @@ The simulator must model finite resources. Infinite TBEs, input queues, and resp
 
 Events need unique transaction/epoch identity so stale responses/retries do not accidentally complete reused state. Instrument state transition counts and dwell-time histograms.
 
+**What a line's state machine looks like, and why transient states cost resources.** A cached line is not simply present or absent. Between one stable permission and the next it sits in a *transient* state while its request is outstanding on the network — it has asked for permission but not yet collected the data and every acknowledgement. That transient is precisely what a miss tracker (MSHR) or transient-buffer entry (TBE) holds open, so the count of concurrent transients is the occupancy that finite resources cap. The load path in §7.1 walks one line through `I → IS_D → S`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> I
+    I --> IS_D: load miss, send GetS
+    IS_D --> S: data plus acks, fill and wake
+    S --> M: store, send GetM
+    M --> I: evict, writeback
+    S --> I: invalidation
+    note right of IS_D
+        transient state: MSHR/TBE held open,
+        counts as in-flight occupancy,
+        a stale response must not complete it
+    end note
+```
+
+Read `IS_D` as "was **I**, heading to **S**, awaiting **D**ata" (§7.1 abbreviates the same state `IS`). Stable states (`I`, `S`, `M`) need no transaction resource; every transient does — which is why occupancy of these pending states, not packet count, bounds how many misses can be in flight at once.
+
 ## 3. Message and packet model
 
 Classify protocol messages:
@@ -109,6 +128,24 @@ where $F_m$ is flits and $H_m$ hops. This correlates better with link/router ene
 
 ## 4. Router and flow-control fidelity
 
+**What a router actually does, before the parameter list.** Picture a staffed road intersection. Flits arrive on several input lanes and wait in small per-lane buffers. For each waiting flit the router works out which exit it needs (*route compute*), reserves a lane on the far side so the flit has somewhere to land (*virtual-channel allocation*), grants it a turn to cross the middle (*switch allocation*), and finally wires that input to that output through the *crossbar*. Backward-flowing *credits* are the "there is room" signals: a router may launch a flit only when it holds a credit proving the downstream buffer has a free slot.
+
+```mermaid
+flowchart LR
+    IL["Input links<br/>flits arrive"] --> IB["Input buffers<br/>one FIFO per VC"]
+    IB --> RC["Route compute<br/>choose output port"]
+    RC --> VA["VC allocation<br/>reserve a downstream VC"]
+    VA --> SA["Switch allocation<br/>win a crossbar slot"]
+    SA --> XB["Crossbar<br/>wire input to output"]
+    XB --> OL["Output links<br/>flit departs"]
+    CR["Credit count<br/>downstream free slots"] -. "gates" .-> VA
+    CR -. "gates" .-> SA
+    OL -. "spend a credit" .-> CR
+    IB -. "free slot, credit upstream" .-> IL
+```
+
+**Why all these structures exist.** With a single shared queue per input, one flit whose exit is busy freezes every flit behind it even when *their* exits are free — head-of-line blocking. Worse, if packets each hold a buffer while waiting for the next buffer around a cycle, the fabric deadlocks. Splitting each input into several virtual channels (VCs) gives independent lanes, so a stalled packet blocks only its own lane; reserving an *escape* VC routed in strict dimension order breaks the dependency cycle. Every parameter below tunes one part of this machine — how many lanes, how deep, how quickly credits return, how arbitration picks winners.
+
 Detailed model parameters:
 
 - topology/routing and link widths/latencies;
@@ -122,6 +159,46 @@ Detailed model parameters:
 - clock-domain crossings and off-chip links.
 
 gem5 Garnet, for example, exposes flit width, VCs per virtual network, buffers, routing algorithm, and router/link latency. Parameter defaults are not the target architecture; document every override.
+
+### 4.1 Packet latency = header transit + serialization + contention
+
+**What sets one packet's latency.** Three independent costs add up. The **header** is routed and switched at every router it crosses, so it pays the per-hop delay once per hop. The **body and tail** flits pipeline single-file behind the header, so a long packet pays extra just to clock its own bytes onto the wire — *serialization*. And each time a flit loses arbitration or waits for a credit it pays **contention**. For a packet of $F$ flits crossing $H$ hops,
+
+$$
+T_{packet}=\underbrace{H\,t_{hop}}_{\text{header transit}}+\underbrace{F\,t_{flit}}_{\text{serialization}}+\underbrace{T_{contention}}_{\text{queueing / arbitration}},
+$$
+
+where $t_{hop}$ is one router stage plus one link stage and $t_{flit}=L_{flit}/b$ is the time to push one flit onto a channel. The first two terms are the *zero-load* latency a packet sees on an empty network; only $T_{contention}$ depends on the rest of the traffic.
+
+**Worked example on the mesh below.** Reuse the §7.1 fabric: $t_{hop}=2$ cycles, 16-byte flits, one flit per cycle, and the 3-hop dimension-order route drawn here.
+
+```text
+        x=0        x=1        x=2
+         |          |          |
+  y=2   R02 ------ R12 ------ R22
+         |          |          |
+  y=1   R01 ------ R11 ------ R21   <-- home (destination)
+         |          |          |
+  y=0   R00 ------ R10 ------ R20   <-- source
+
+  XY (dimension-order) route, 3 hops:
+     R00 --E--> R10 --E--> R20 --N--> R21
+     each hop = 1 router stage + 1 link stage = 2 cycles
+```
+
+A 72-byte data response is $\lceil 72/16\rceil=5$ flits. On an empty network,
+
+$$
+T_{0}=H\,t_{hop}+F\,t_{flit}=3\times2+5\times1=6+5=11\ \text{cycles},
+$$
+
+exactly the response network sample in §7.1 (both measured from first-flit injection to full reassembly). Now let the middle router `R10` hold the packet 4 cycles because another flow owns the VC it needs:
+
+$$
+T_{packet}=6+5+4=15\ \text{cycles}.
+$$
+
+The one-flit `GetS` request over the same route costs $3\times2+1\times1=7$ cycles with no contention — again matching §7.1. Two lessons carry forward: a data packet's serialization term ($+5$) makes it far heavier than its one-flit request even though both cross the same 3 hops (the flit-hop point of §3: $5\times3=15$ versus $1\times3=3$ flit-hops), and contention is the *only* term that ties one packet's latency to the rest of the workload — which is why the open-loop traces of §6 cannot reproduce it.
 
 ## 5. Synthetic traffic is a theorem test, not a workload prediction
 

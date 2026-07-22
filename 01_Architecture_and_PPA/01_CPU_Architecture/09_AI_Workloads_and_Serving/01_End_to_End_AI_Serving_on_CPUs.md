@@ -164,6 +164,35 @@ Static partitioning improves isolation but can strand capacity. Work stealing im
 
 ## 4. CPU-only inference: prefill and decode are different machines
 
+The two phases load opposite parts of the machine, so a serving stack schedules and tunes them separately. The quantity that separates them is **arithmetic intensity** — operations performed per byte read from memory. A linear layer multiplies an $M\times K$ activation by a $K\times N$ weight for $2MNK$ operations, while the weight tile is only $KNq$ bytes ($q$ bytes per element). Streaming that tile once and reusing it across all $M$ rows gives
+
+$$
+I=\frac{2MNK}{KNq}=\frac{2M}{q}.
+$$
+
+This intensity, $2M/q$ operations per weight byte, depends only on $M$, the number of rows sharing each weight. Prefill makes $M=BS$ large; decode makes $M\approx B$ small — the same weights, a different regime.
+
+**Worked roofline** (illustrative sustained figures: $P_{eff}=10$ TFLOP/s BF16, $B_{eff}=200$ GB/s, so the roofline ridge is at $I_{ridge}=P_{eff}/B_{eff}=50$ ops/byte; $q=2$).
+
+- *Prefill*, $M=512$: $I=2\cdot512/2=512$ ops/byte, well above $50$ → **compute-bound**; peak matrix throughput sets the step time.
+- *Decode*, $M=1$: $I=2\cdot1/2=1$ op/byte, far below $50$ → **bandwidth-bound**; the bytes streamed for weights (and KV state; see the decode bound below) set the step time, not FLOP/s.
+- Decode only reaches the ridge at $M\ge I_{ridge}\,q/2=50$ rows — a batch near $50$ concurrent requests. Real batches are smaller, so decode stays memory-bound. The conclusion holds for any ridge that falls between the two intensities, so the exact figures above are not load-bearing.
+
+The diagram below traces one request through both regimes and the KV cache that couples them.
+
+```mermaid
+flowchart TB
+    A["prompt admitted"] --> P["prefill: all S prompt tokens at once<br/>large GEMM, compute-bound"]
+    P -->|"write S KV per layer"| K[("KV cache<br/>grows with length")]
+    P --> F["first token ready (TTFT)"]
+    F --> D["decode: one token per request<br/>GEMV-like, bandwidth-bound"]
+    K -->|"read all past KV"| D
+    D -->|"append 1 KV per layer"| K
+    D --> S["sample next token"]
+    S -->|"not stop (one TPOT)"| D
+    S -->|"stop or length limit"| R["finish, reclaim KV"]
+```
+
 ### 4.1 Prefill
 
 Prefill processes the input sequence in parallel. For a transformer layer, it forms query, key, and value matrices; computes attention over prompt tokens; applies output projections; and runs feed-forward or MoE sublayers. With batch-token dimension $M=B S$ (batch $B$, prompt length $S$), hidden dimension $K$, and output dimension $N$, many linear layers are matrix multiplications with substantial reuse of each weight tile across $M$ rows.
@@ -187,6 +216,8 @@ Batching several decode requests reuses a weight tile across more rows and raise
 
 ### 4.3 KV-cache lifecycle
 
+Without a cache, decoding token $t$ would re-run attention over all $t-1$ earlier tokens every step, making generation cost grow with the square of the length. The KV cache is the scratchpad that removes that waste: each layer keeps the keys and values it already produced for every past token, so a decode step computes only the new token's query and *reads* the stored keys and values. The price is memory that grows linearly with sequence length and is held for the request's entire lifetime — which turns generation length into a capacity problem rather than a compute one.
+
 Attention stores key and value vectors from previous tokens. For $L$ layers, $H_{kv}$ key/value heads, head dimension $D_h$, element size $q$ bytes, and sequence length $S$,
 
 $$
@@ -194,6 +225,8 @@ M_{KV/request}=2L H_{kv}D_h S q.
 $$
 
 The factor two represents keys and values. Multi-query or grouped-query attention reduces $H_{kv}$ relative to the number of query heads. At serving scale, KV capacity can limit concurrency before arithmetic does.
+
+**Worked KV size** (Llama-3-8B shape: $L=32$, grouped KV heads $H_{kv}=8$, $D_h=128$, $q=2$). Per token, every layer stores one key and one value for each KV head, so the cache grows by $2 L H_{kv} D_h q = 2\cdot32\cdot8\cdot128\cdot2 = 131072$ bytes, i.e. $128$ KiB. A full $S=8192$ context is then $128\times8192 = 1048576$ KiB $= 1$ GiB per request. Budget $40$ GiB for KV and only about $40$ requests fit at full context — a concurrency ceiling reached before compute saturates. Plain multi-head attention (all $32$ heads kept as KV heads) would store $4\times$ more: $512$ KiB per token, $4$ GiB per request. Grouped-query attention buys that $4\times$ back by sharing each stored KV head across four query heads.
 
 CPU KV management choices include contiguous per-request buffers, paged/block allocators, shared prefix blocks, quantized KV, and tiering to slower memory. They trade fragmentation, address translation, gather overhead, copy-on-write complexity, and reuse. The page size used by the runtime is a logical allocation unit and need not equal the operating-system page size.
 

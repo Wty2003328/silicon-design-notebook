@@ -76,6 +76,26 @@ Oldest-ready selection reduces starvation and tends to expose long dependency ch
 
 ## 3. Wakeup: from writeback to prediction
 
+Everything in this section is one feedback loop that must, ideally, close in a single clock cycle. A result tag is *broadcast*; every waiting source *compares* against it in a content-addressable memory (CAM); a match sets a *ready* bit; the *select* arbiter grants the oldest ready operations to execution ports; each granted operation *broadcasts its own destination tag*, waking the next layer of consumers. The loop is the object of study for the rest of the chapter—wakeup fills the queue with ready work, select drains it, and the two chase each other every cycle.
+
+Intuition for the CAM: picture every source operand as a person holding a card printed with the tag it waits for. Wakeup shouts one tag across the room; everyone holding that card raises a hand (sets ready). Select then calls on the oldest raised hands that fit the free ports. The comparison is *associative*—all cards are checked at once, not looked up by index—which is exactly why the structure is a CAM, and why its width and fan-out dominate the cycle-time budget flagged in Section 0. Growing $N$, $S$, or $W$ there means more cards to check, more hands to poll, on a path with only one cycle to finish.
+
+```mermaid
+flowchart LR
+  BC["dest tag<br/>broadcast"] --> CAM["source-tag CAM<br/>associative match"]
+  CAM -->|hit| RDY["set<br/>ready bit"]
+  RDY --> SEL["select<br/>age arbiter"]
+  SEL -->|grant| GR["grant<br/>to port"]
+  GR --> OP["operand read<br/>/ bypass"]
+  OP --> EX["execute"]
+  EX -->|writeback| WB["writeback<br/>wakeup"]
+  WB -.-> BC
+  GR -.->|"fixed latency"| SPEC["speculative<br/>early wakeup"]
+  SPEC -.-> BC
+```
+
+The solid path (broadcast → match → ready → select → grant → execute) is the loop's spine. The two dashed returns are the two ways a producer can re-enter it: the slow, always-correct *writeback wakeup* of Section 3.1, and the fast, sometimes-wrong *speculative wakeup* of Section 3.2 that fires from grant using a known latency instead of waiting for the result.
+
 ### 3.1 Conventional writeback wakeup
 
 When an execution unit completes destination physical register `p37`, it broadcasts `p37`. Every waiting source tag compares against the broadcast; matches set their ready bits. This is robust because completion is known, but a dependent operation usually cannot issue until a later cycle.
@@ -92,6 +112,20 @@ $$
 
 Speculative wakeup overlaps the last term with known producer latency. It is especially valuable for integer chains and load-use paths where a single extra cycle repeats inside a loop.
 
+**Back-to-back issue.** The reason the loop is timing-critical is *dependent* instructions. Independent operations tolerate a slow scheduler—they sit in the queue regardless. But a chain $A\to B\to C$, where each consumes the previous result, reaches one-per-cycle throughput only if $B$ can be *selected the cycle after* $A$ is selected. That forces wakeup and select to complete together inside one cycle—the "atomic" wakeup–select of the complexity-effective analysis. If they cannot share a cycle, every dependent step inserts a bubble and a tight loop's issue rate halves.
+
+*Worked example — atomic vs. split loop.* Three single-cycle ALU ops, $A\!:r3=r1+r2$, $B\!:r5=r3+r4$, $C\!:r7=r5+r6$. Convention: an op selected in cycle $n$ executes in cycle $n{+}1$; a single-cycle producer broadcasts its tag speculatively during its own select cycle.
+
+| cycle | atomic loop (wakeup + select = 1 cycle) | split loop (wakeup + select = 2 cycles) |
+|---|---|---|
+| 1 | select $A$, wake $B$ | select $A$ |
+| 2 | select $B$, wake $C$; $A$ executes | wake $B$ |
+| 3 | select $C$; $B$ executes ($r3$ bypassed) | select $B$, wake $C$ |
+| 4 | $C$ executes ($r5$ bypassed) | wake $C$ |
+| 5 | — | select $C$ |
+
+The atomic loop issues the three-deep chain in three consecutive cycles (chain issue rate $=1$/cycle). The split loop issues one dependent op every two cycles (rate $\to 0.5$), needing five cycles for the same work. Nothing about the two machines differs except whether the CAM match and the select arbiter fit in one cycle—which is why the $N\times S\times W$ comparison count of Section 0 is a first-order clock constraint, not bookkeeping.
+
 ### 3.3 Cancellation is part of wakeup
 
 A predicted wakeup can be wrong because:
@@ -103,6 +137,24 @@ A predicted wakeup can be wrong because:
 - a cache or translation check invalidates early data.
 
 Consumers awakened by that producer must receive a cancel before they use or propagate an invalid operand. Some designs track the exact producer tag; others carry a short dependency vector for recent loads because load latency is the common variable case. The cancellation fanout is as architecturally important as the wakeup fanout.
+
+**Load-hit speculation — the dominant case.** A load's true latency is known only after its cache tag check, but waiting for that check before waking consumers would forfeit back-to-back load-use—the very recurrence Section 3.2 tries to protect. So the scheduler *bets on a hit* and wakes the load's consumers timed to the L1-hit latency. The bet usually pays (L1 hit rates are high), but every consumer selected on it is speculative until the tag check confirms the hit.
+
+*Worked example — mis-speculation shadow.* Take an L1-hit load-use latency $L_{hit}=4$ cycles, a miss latency $L_{miss}=12$ cycles, and a 2-cycle speculative-wakeup pipeline on a 4-wide machine. The load selects at cycle 0; its consumers are woken on the 4-cycle schedule. Between that early wakeup and the cycle the tag check reports *miss*, a *shadow* of up to $4\times 2=8$ dependent µops can already have been selected. On the miss, each shadow µop holds a stale operand: all are canceled and re-woken to the $L_{miss}=12$ timing. The consumer's effective use latency jumps from 4 to 12, and up to 8 issue slots are handed back to the replay path. That fan-out is the point—an under-provisioned cancel path cannot un-issue everything a fast wakeup let through, so cancel width must track wakeup width, not average behavior.
+
+The kill-and-recover path mirrors the wakeup loop, run in reverse: a late or missed result broadcasts a *cancel* tag, the CAM matches it against producer tags (or the load-dependency vector), matching entries clear their ready bit and squash any already-issued consumer, and each entry then waits for a *cause-specific* wake event before re-entering select.
+
+```mermaid
+flowchart LR
+  MISS["miss / late<br/>result detected"] --> KILL["broadcast<br/>cancel tag"]
+  KILL --> MATCH["CAM match:<br/>producer tag<br/>or load-dep vector"]
+  MATCH -->|hit| CLR["clear ready bit<br/>squash if issued"]
+  CLR --> WAIT["re-arm entry<br/>await cause clear"]
+  WAIT --> WEV["cause wake event<br/>MSHR / TLB / port"]
+  WEV --> REWAKE["re-broadcast<br/>real result tag"]
+```
+
+Re-arming on a *cause* (MSHR completion, TLB refill, port free) rather than retrying blindly is what keeps replay demand-driven; Section 6 develops that policy and its livelock risk.
 
 ## 4. Operand delivery: PRF, bypass, and capture
 
