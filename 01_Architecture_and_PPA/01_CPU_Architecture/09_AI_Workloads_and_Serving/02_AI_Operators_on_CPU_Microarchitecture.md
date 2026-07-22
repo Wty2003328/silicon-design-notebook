@@ -29,12 +29,36 @@ $$
 O_{GEMM}=2MKN
 $$
 
-floating-point operations when a multiply and add count separately. A naive loop repeatedly reloads operands. A high-performance kernel tiles the problem:
+floating-point operations when a multiply and add count separately.
+
+**Intuition — work at a desk, not at the warehouse.** Registers and L1 are a small desk, L2 and L3 are shelves within reach, and DRAM is a distant warehouse. A naive loop fetches each operand from the warehouse, spends it on one multiply-add, and throws it away — so it walks to the warehouse $2MKN$ times. *Blocking* (also called *tiling*) instead carries a batch of $A$, $B$, and $C$ to the desk, drains every multiply-add those values can support while they sit there, and only then swaps the batch. The entire kernel is a search for the largest batch that fits each level of the desk-and-shelf hierarchy while keeping the vector units busy.
+
+A naive loop repeatedly reloads operands. A high-performance kernel tiles the problem:
 
 - an **outer cache tile** fits panels of $A$, $B$, and $C$ into selected cache levels;
 - a **packed panel** presents contiguous data in the exact order the kernel consumes;
 - a **microkernel** holds a small $M_r\times N_r$ block of accumulators in vector or tile registers while stepping through $K$;
 - an **epilogue** applies scaling, bias, activation, residual addition, or type conversion before the result leaves registers or cache.
+
+**Why blocking pays — an arithmetic-intensity estimate.** *Arithmetic intensity* is useful FLOPs divided by bytes moved from memory; a kernel can only be compute-bound once its intensity clears the machine's *ridge point* (the FLOP/byte at which the vector units and the memory system are balanced, on the order of 5–15 FLOP/byte for a single CPU core). Take FP32 ($q=4$ bytes/element):
+
+- **Naive.** With no reuse, the inner loop restreams a row of $A$ and a column of $B$ from memory for every output element. Total $A$+$B$ traffic is about $2MKN$ elements $=8MKN$ bytes for $2MKN$ FLOP, an intensity of $2MKN/8MKN = 0.25$ FLOP/byte — independent of matrix size and far below the ridge, so the multipliers starve.
+- **Blocked.** If $b\times b$ tiles of $A$, $B$, and $C$ stay cache-resident, each operand block is loaded once per reuse span instead of once per output row or column, cutting memory traffic by a factor of $b$. Intensity rises to about $b/q = b/4$ FLOP/byte. At $b=256$ that is $\approx 64$ FLOP/byte — a $256\times$ jump — while the three tiles occupy $3\times256^2\times4 = 786{,}432$ bytes $\approx 0.75$ MiB, comfortably inside a 2 MiB L2.
+
+Blocking carries the *same* $2MKN$ FLOP across the roofline from memory-bound to compute-bound; Section 11.1 revisits the matching cache-capacity constraint.
+
+**How the loops nest.** A production GEMM wraps the register microkernel in several loops, each keeping one operand block resident in one level of the hierarchy (the GotoBLAS/BLIS structure). Read outer-to-inner: the outermost loops carve $B$ and $A$ panels down to sizes that stay in L3 then L2, the middle loops feed L1 strips, and the microkernel holds the growing $C$ tile in registers while $K$ streams through.
+
+```mermaid
+flowchart TB
+    J["5th loop over N (jc): choose Nc columns"] --> P["4th loop over K (pc): pack Kc x Nc of B into L3"]
+    P --> I["3rd loop over M (ic): pack Mc x Kc of A into L2"]
+    I --> JR["2nd loop over Nc (jr): Kc x Nr strip of B streams L1"]
+    JR --> IR["1st loop over Mc (ir): choose Mr rows of A"]
+    IR --> MK["microkernel: Mr x Nr tile of C stays in registers"]
+    MK -->|"accumulate over Kc"| MK
+    MK --> EPI["epilogue: scale, bias, activation, convert, store"]
+```
 
 ### 1.1 Why loop order is an architecture decision
 
@@ -45,6 +69,28 @@ R_{bytes}=M_rN_rq_{acc}+M_rK_rq_A+K_rN_rq_B,
 $$
 
 where $q$ denotes bytes per element for a tile step. $M_r$ and $N_r$ cannot grow without bound: register capacity, load ports, instruction issue, and accumulator dependency chains constrain them.
+
+Concretely, the microkernel is a short loop that streams $K$ while every $C$ accumulator stays in a vector register:
+
+```c
+// microkernel: C[Mr][Nr] += A[Mr][Kc] * B[Kc][Nr], Nr = nv*W lanes
+vec acc[Mr][nv];                                    // accumulators: vector registers
+for (i = 0; i < Mr; i++)
+    for (j = 0; j < nv; j++) acc[i][j] = setzero();
+for (p = 0; p < Kc; p++) {                          // stream the K dimension
+    vec bv[nv];
+    for (j = 0; j < nv; j++)
+        bv[j] = load(&Bpack[p*Nr + j*W]);           // load one B row: nv vectors
+    for (i = 0; i < Mr; i++) {
+        vec a = broadcast(Apack[i*Kc + p]);         // one A scalar to all lanes
+        for (j = 0; j < nv; j++)
+            acc[i][j] = fma(a, bv[j], acc[i][j]);   // reuse a and bv[j]
+    }
+}
+// epilogue applies scale/bias/activation, then stores acc[][] to the C tile
+```
+
+Each loaded `bv[j]` feeds all $M_r$ rows and each broadcast `a` feeds all $n_v$ column-vectors, so one memory load drives many fused multiply-adds — that reuse is what makes the operand terms of $R_{bytes}$ small next to the FLOPs. The resident accumulators ($M_rN_rq_{acc}$) dominate register pressure: an AVX-512 kernel with $M_r=14$ and two 16-lane columns ($n_v=2$) already spends 28 of 32 vector registers on `acc`, leaving just enough for `bv` and `a` — which is exactly why $M_r$ and $N_r$ are capped.
 
 Packing $B$ may read and write the entire weight tensor. It is worthwhile when packed weights are reused over many requests; it can dominate a one-shot operator. Report whether packing is included in latency and how many inferences amortize it.
 

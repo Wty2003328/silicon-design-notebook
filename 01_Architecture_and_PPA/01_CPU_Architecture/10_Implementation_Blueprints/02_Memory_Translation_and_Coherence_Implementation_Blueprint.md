@@ -8,6 +8,33 @@ The CPU memory subsystem must make a slow, shared, protected memory appear fast 
 
 This blueprint connects the load-store unit (LSU), translation lookaside buffer (TLB), caches, miss machinery, page-table walker, coherence controller, and fabric. The mechanism chapters—[Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md), [Cache Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [TLB and Virtual Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md), and [Cache Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md)—provide theory. Here every boundary becomes an implementation obligation.
 
+The static block-and-interface map below fixes those boundaries: each block owns state, and each arrow is an interface whose payload, ordering, and failure behavior the later sections must pin down. The single-access path through these blocks is traced separately in §2.
+
+~~~mermaid
+flowchart TB
+  subgraph CORE["per-core memory subsystem"]
+    LSU["LSU<br/>load / store queues<br/>+ forwarding"]
+    MMU["MMU<br/>TLB + page-table walker"]
+    L1["L1 cache<br/>tag / data / coherence state"]
+    MSHR["MSHR<br/>miss + writeback tracking"]
+    COH["coherence controller<br/>stable + transient states"]
+  end
+  FAB["coherent fabric<br/>req / resp / probe / wb channels"]
+  MEM["LLC / directory / memory<br/>serialization point"]
+
+  LSU -->|"VA + access type"| MMU
+  MMU -->|"PA, perms, attrs"| LSU
+  LSU -->|"PA access"| L1
+  L1 -->|"data / completion"| LSU
+  L1 -->|"miss"| MSHR
+  MSHR -->|"fill + wake"| L1
+  MSHR -->|"coherent request"| COH
+  MMU -.->|"PTE fetch"| L1
+  COH <-->|"probe / state"| L1
+  COH <-->|"transactions"| FAB
+  FAB <-->|"snoop / data"| MEM
+~~~
+
 ## 1. Write the memory contract
 
 Freeze these choices before designing arrays:

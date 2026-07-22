@@ -48,7 +48,8 @@ flowchart LR
     EX --> WB["physical register writeback"]
     WB --> ROB
     ROB --> COMMIT["in-order retirement"]
-    EX --> REDIR["redirect / replay"]
+    EX -->|"branch / memory replay"| REDIR["redirect / recovery"]
+    COMMIT -->|"trap / interrupt"| REDIR
     REDIR --> PC
 ~~~
 

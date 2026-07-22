@@ -49,7 +49,7 @@ Admission under overload may reject, delay with a bounded queue, degrade optiona
 
 ## 4. Scheduler loop in causal order
 
-At each scheduling epoch:
+The runtime is a single decision loop: one scheduler thread advances every request so that step order itself enforces the safety rules — reclaim before admitting, reserve before publishing, and publish before mutating shared state. At each scheduling epoch:
 
 1. process completions, faults, cancellations, and freed KV/output capacity;
 2. update per-request phase/progress and deadline slack;
@@ -62,6 +62,25 @@ At each scheduling epoch:
 9. record decisions and schedule the next epoch.
 
 Never form a batch and then discover that one request cannot allocate KV; reservation precedes publication or has a complete rollback. A delayed completion uses request/batch generation to avoid writing into a reassigned slot.
+
+~~~mermaid
+flowchart TD
+    EPOCH(["epoch start"]) --> REAP["reap completions, faults, cancels<br/>free KV and output capacity"]
+    REAP --> UPD["update phase, progress<br/>and deadline slack"]
+    UPD --> ADM["admit queued work<br/>within resource and SLO budgets"]
+    ADM --> SEL["select prefill chunks<br/>and decode requests"]
+    SEL --> FORM["form shape-compatible batch<br/>select execution plan"]
+    FORM --> RES{"reserve slots, KV, workspace,<br/>output credits atomically?"}
+    RES -- "no" --> ROLL["roll back<br/>requeue request"]
+    RES -- "yes" --> PUB["publish batch task<br/>with request IDs and generations"]
+    PUB --> STEP["execute step<br/>CPU plan or device runtime"]
+    STEP --> DONE["on completion scatter outputs<br/>append KV, stream tokens, release"]
+    ROLL --> NEXT["record decisions<br/>schedule next epoch"]
+    DONE --> NEXT
+    NEXT --> EPOCH
+    RES -. "reserve pages" .-> KVM[("KV / state<br/>manager")]
+    DONE -. "append and free" .-> KVM
+~~~
 
 ## 5. Batching and phase policy
 

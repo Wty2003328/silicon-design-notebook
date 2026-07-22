@@ -1,5 +1,7 @@
 # CPU AI-Stack Verification, Operations, and Deployment Blueprint
 
+This blueprint specifies how a CPU AI-stack release is tested, numerically validated, capacity-qualified, and rolled out under gates, so a build reaches production only after every correctness, quality, and performance boundary passes — and can be rolled back within a declared recovery objective.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Registered
@@ -30,6 +32,24 @@ A release bundle contains model/checkpoint hashes, tokenizer/feature artifacts, 
 The compatibility matrix crosses model/tokenizer, graph schema, compiler, plan format, kernel layout, runtime, CPU feature set, device adapter, and serving-state format. Each boundary either guarantees backward compatibility or refuses startup. Silent rebuilds during deployment break reproducibility; new generated plans receive new identities and validation.
 
 ## 2. Correctness and quality validation ladder
+
+Verification and capacity qualification form a gated pipeline: a release advances only while every gate passes, and any failure halts promotion and returns the artifact for diagnosis (Sections 2–5). Only a fully qualified artifact enters the deployment state machine above.
+
+```mermaid
+flowchart TD
+    A["Release artifact<br/>hashes, plans, weights"] --> B["Integrity +<br/>schema validation"]
+    B --> C["Graph parity vs reference<br/>imported + transformed"]
+    C --> D["Numerics: extrema, quant<br/>boundaries, shapes, fallbacks"]
+    D --> E["End-to-end +<br/>determinism/tolerance"]
+    E --> F["Model quality<br/>on held-out data"]
+    F --> G["Concurrency, fault,<br/>security stress"]
+    G --> H["Performance + capacity<br/>qualification"]
+    H --> I{"All gates<br/>pass?"}
+    I -- "no" --> J["Reject / quarantine;<br/>diagnose first divergence"]
+    I -- "yes" --> K["Promote into deployment<br/>state machine, then canary"]
+```
+
+The ladder in detail:
 
 1. validate artifact integrity and schema;
 2. compare imported graph with framework reference on known and randomized inputs;

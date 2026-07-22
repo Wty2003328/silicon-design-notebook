@@ -274,6 +274,48 @@ $$
 
 This partition is conceptual; real events overlap and vendor top-down methodologies use specific counter definitions. Do not add overlapping raw stall events as if mutually exclusive.
 
+The **Top-Down Microarchitecture Analysis Method** (TMAM) turns that conceptual stack into a rigorous, non-overlapping one.
+
+**What it does — audit every issue slot.** A core can *issue* (allocate into the out-of-order backend) at most $w$ micro-operations per cycle, where $w$ is the pipeline width, for example 4 or 6. Picture $w$ conveyor slots offered every cycle; across the same $C$ cycles as the stack above there are $wC$ slots, and TMAM drops each slot into exactly one bin. A slot that carried a µop is *filled*; one that did not is a *stall slot*. Filled slots split by fate: the µop later retired (**Retiring**, useful work) or was squashed by a misprediction or machine clear (**Bad Speculation**, wasted work). Stall slots split by blame: fetch and decode delivered no µop although the backend was ready (**Frontend Bound**), or the backend was full and refused one (**Backend Bound**). Think of a bus audit: a seat filled by a rider who reached their stop, a seat filled by a rider ejected mid-route, a seat empty because nobody had boarded yet, and a seat empty because the aisle ahead was jammed.
+
+**Why slots instead of stall cycles.** The cycle stack above is intuitive, but its raw stall events overlap — an LLC miss and a branch resteer can both be in flight in the same cycle — so summing raw stall counters double-counts and can exceed the cycles available. Assigning each *slot* to one bin forces the four fractions to sum to exactly one, so the largest bin is a trustworthy first verdict before any deeper counter work. `perf stat --topdown` and VTune's top-down tree report the four directly.
+
+Let $R$, $F$, and $Sp$ be the retiring, frontend-undelivered, and bad-speculation slot counts (from `UOPS_RETIRED.RETIRE_SLOTS`, `IDQ_UOPS_NOT_DELIVERED.CORE`, and the issued-but-squashed µops plus recovery bubbles). Then
+
+$$
+\%\text{Retiring}=\frac{R}{wC},\quad
+\%\text{Frontend}=\frac{F}{wC},\quad
+\%\text{BadSpec}=\frac{Sp}{wC},\quad
+\%\text{Backend}=1-\frac{R+F+Sp}{wC}.
+$$
+
+Backend Bound is taken as the residual because a full backend is the one cause not counted directly: every slot the other three do not claim is a backend stall.
+
+```mermaid
+flowchart TD
+    S["Issue slot<br/>w per cycle"] --> Q1{"uop issued?"}
+    Q1 -- "yes" --> Q2{"uop retires?"}
+    Q1 -- "no" --> Q3{"why empty?"}
+    Q2 -- "yes" --> RET["Retiring"]
+    Q2 -- "no, squashed" --> BS["Bad Speculation"]
+    Q3 -- "front had none" --> FE["Frontend Bound"]
+    Q3 -- "back was full" --> BE["Backend Bound"]
+    RET --> RET1["Base useful work"]
+    RET --> RET2["Microcode sequencer"]
+    BS --> BS1["Branch mispredict"]
+    BS --> BS2["Machine clear"]
+    FE --> FE1["Fetch latency<br/>iCache, iTLB, resteer"]
+    FE --> FE2["Fetch bandwidth<br/>decode, uop cache"]
+    BE --> BE1["Memory bound<br/>L1, L2, L3, DRAM, store"]
+    BE --> BE2["Core bound<br/>ports, divider, ILP"]
+```
+
+*How one issue slot is classified into a top bin, and the level-2 refinement of each bin.*
+
+**Worked top-down read.** On a $w=4$ core, a decode-heavy interval records $C=1.0\times10^{9}$ cycles (so $wC=4.0\times10^{9}$ slots), $R=1.20\times10^{9}$, $F=0.40\times10^{9}$, and $Sp=0.20\times10^{9}$. Then Retiring $=1.20/4.00=30\%$, Frontend $=0.40/4.00=10\%$, Bad Speculation $=0.20/4.00=5\%$, and Backend Bound $=1-0.45=55\%$. Backend wins, so drill one level: suppose its refinement attributes about $45\%$ to Memory Bound and only about $10\%$ to Core Bound, with the memory share concentrated in DRAM Bound. That is the same weight-streaming wall as the batch-one decode bound earlier — retiring 1.2 µops/cycle is 30% of a 4-wide machine, a textbook memory-bound IPC. The fix follows the dominant bin: cut bytes per token (4-bit weights) or raise memory-level parallelism (more independent misses in flight, prefetch, batching to reuse the weight stream). Adding vector or matrix throughput would attack only the 10% Core-Bound slice, whose payoff Amdahl's law caps.
+
+The four signatures below drill into whichever bin dominates: 7.1 isolates Core-Bound compute and 7.2–7.3 the Memory-Bound bandwidth and latency inside Backend Bound, while 7.4 covers Frontend Bound together with the software overhead that can surface as frontend stalls, mispredicts, or extra retiring instructions.
+
 ### 7.1 Compute-limited signatures
 
 Evidence may include:
@@ -336,6 +378,7 @@ Recommended derived views include:
 
 | Question | Evidence |
 |---|---|
+| Which top-down bin dominates? | retiring, frontend-undelivered, bad-speculation, backend slots as fractions of total issue slots (see 7) |
 | Is the intended work executing? | retired vector/tile events, disassembly, useful operation count |
 | Is memory local? | local/remote bytes, page placement, thread affinity |
 | Is bandwidth saturated? | per-controller bytes/time versus measured sustainable roof |

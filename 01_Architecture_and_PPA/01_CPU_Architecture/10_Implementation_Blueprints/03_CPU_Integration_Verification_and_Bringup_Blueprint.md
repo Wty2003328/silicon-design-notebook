@@ -1,5 +1,7 @@
 # CPU Integration, Verification, and Bring-up Blueprint
 
+*This blueprint is the repeatable path from independently verified blocks to a booting, characterized, first-silicon CPU; the diagram below is that path, and each stage gates the next.*
+
 ```mermaid
 flowchart LR
     CFG["single-source configuration"] --> INT["core + cache + fabric + debug/power integration"]
