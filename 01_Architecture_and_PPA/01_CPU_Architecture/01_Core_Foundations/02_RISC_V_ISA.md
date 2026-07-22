@@ -43,6 +43,26 @@ $$
 
 where $I_{\text{base}}$ = base instruction forms, $I_e$ = forms added by extension $e$, $I_{\text{all}}$ = the entire historical set. A control microcontroller implements ~RV32IMC and spends *zero* gates decoding vector or floating-point; a datacenter core adds V and H. Nothing pays for what it does not instantiate.
 
+The structure is a frozen core that every implementation carries, an opt-in pool that each design draws from by area, and a *profile* that re-freezes a chosen bundle so software has one target to compile against:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TD
+    BASE["Frozen base RV32I / RV64I<br/>~40 integer instr, guaranteed never to change"]
+    BASE -->|"add M A F D Zicsr Zifencei"| G["RV64G<br/>general-purpose bundle"]
+    G -->|"add per workload (orthogonal, opt-in by area)"| MORE(["optional extensions"])
+    MORE --> C["C compressed"]
+    MORE --> V["V vector"]
+    MORE --> B["B bitmanip"]
+    MORE --> H["H hypervisor"]
+    MORE --> CUS["custom-0..3 opcode space"]
+    PROF["Profile RVA23<br/>freezes a mandatory set = one software target"] -.-> G
+    PROF -.-> V
+    PROF -.-> B
+```
+
+Reading top-down traces the decode bill: the frozen base is mandatory silicon every implementation pays for on every fetch; each extension below it is a separately-priced line item a design instantiates only when its workload earns the area (so a chip's real decode surface is the base plus whichever nodes it chose); and the dotted profile edges are the ecosystem's insurance that *some* bundle is guaranteed present (developed in §6–§7).
+
 **The trade is modularity versus fragmentation.** Orthogonal extensions create a combinatorial space of possible feature subsets; if every chip picks its own, software must target the lowest common denominator or ship many builds — the exact fragmentation that hurt early ARM. RISC-V's answer is **profiles**: **RVA23** (2024) mandates a specific extension set (V, bitmanip, crypto, …) that an application-class chip *must* implement, giving compilers and Linux distributions one stable target. The contract is deliberately re-widened at *profile* granularity rather than per-chip — modularity kept from becoming chaos.
 
 | Axis | Monolithic ISA (x86) | Modular ISA (RISC-V) |
@@ -64,6 +84,26 @@ The decoder sits on the critical path of *every* instruction, and its complexity
 ### 2.1 Load-store: memory is touched only by loads and stores
 
 Arithmetic is strictly register-to-register; only explicit load/store instructions reach memory. Derive the consequence: every instruction then has **at most one memory access** and a *fixed, statically-known* set of register operands. So the pipeline has exactly one memory stage, every ALU op has uniform single-cycle latency, and the number of things that can fault or stall per instruction is bounded. For an out-of-order core this is decisive — address generation separates cleanly into the AGU/load-store queue (→ [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) §5), and there is no "add-to-memory" instruction that is simultaneously an ALU op *and* a store with two distinct fault points mid-instruction.
+
+Concretely, a load-store compiler emits an explicit load or store for *every* memory touch and keeps everything else in registers. Summing an array — `long sum(const long *a, long n)` — compiles to roughly:
+
+```asm
+# a0 = a (pointer), a1 = n;  result returned in a0
+sum:
+    li    t0, 0          # s = 0
+    li    t1, 0          # i = 0
+1:  bge   t1, a1, 2f     # if i >= n, exit  (branch tests registers, no flags)
+    slli  t2, t1, 3      # t2 = i * 8       (8 bytes per long)
+    add   t2, a0, t2     # t2 = &a[i]
+    ld    t3, 0(t2)      # t3 = a[i]        <-- the ONLY line that touches memory
+    add   t0, t0, t3     # s += a[i]        (register-register)
+    addi  t1, t1, 1      # i++
+    j     1b
+2:  mv    a0, t0         # return s
+    ret
+```
+
+Address arithmetic (`slli`, `add`), the accumulate (`add`), and the loop test (`bge`, comparing two registers with no flag side-effect) are all pure register operations; memory is reached at exactly one instruction, `ld`. That single-memory-access, register-everything-else shape is precisely the regularity the rest of §2.1 quantifies.
 
 The alternative is CISC memory operands: x86's `add [mem], reg` fuses load + add + store in one instruction — denser code, fewer fetches — but that "instruction" is really three µops the hardware must crack, with an addressing-mode decode and a mid-instruction fault boundary. RISC's bet, vindicated once pipelining and OoO dominate: **regularity is worth more than density, and the lost density is recoverable separately** (§3).
 
@@ -113,6 +153,35 @@ Two hardware wins fall out of this:
 
 - **Register specifiers are position-invariant.** `rs1` (bits 19:15), `rs2` (24:20), and `rd` (11:7) sit in the *same columns* in every format that uses them. So the register file read fires from those fixed fields **speculatively, in parallel with opcode decode**, and the result is discarded if the format turns out not to use it — no mux, no wait for decode.
 - **The immediate's sign bit is always bit 31.** The immediates *look* scrambled (B- and J-type scatter their bits), but the scramble is deliberate: it pins the sign bit to bit 31 so sign-extension is a single hard-wired fan-out rather than a format-dependent mux, and it moves each immediate bit as little as possible between formats to minimize the immediate-generator's muxing. The encoding optimizes the *machine* that decodes it billions of times per second, at the cost of looking ugly to the human who reads it rarely — exactly the right trade.
+
+**Worked decode — the layout made concrete.** Take two 32-bit words and split each at the fixed column boundaries above. First a clean R-type, where all six fields sit in contiguous columns:
+
+```text
+0x003100B3   (R-type: all fields fixed-position)
+  opcode [6:0]   = 0110011   -> OP (register-register ALU)
+  rd     [11:7]  = 00001     -> x1
+  funct3 [14:12] = 000       -> ADD/SUB family
+  rs1    [19:15] = 00010     -> x2
+  rs2    [24:20] = 00011     -> x3
+  funct7 [31:25] = 0000000   -> ADD   (SUB would be 0100000)
+                                     => add x1, x2, x3
+```
+
+The register file already began reading `x2` (bits 19:15) and `x3` (bits 24:20) at $t=0$, before opcode decode confirmed the format used them. Now the hard case — a branch, whose immediate is the "deliberately scrambled" one:
+
+```text
+0x00B51863   (B-type: immediate scattered across four slices)
+  opcode [6:0]   = 1100011   -> BRANCH
+  funct3 [14:12] = 001       -> BNE
+  rs1    [19:15] = 01010     -> x10  (= a0; same column as R-type above)
+  rs2    [24:20] = 01011     -> x11  (= a1)
+  imm bits gathered as  [12]=b31  [11]=b7  [10:5]=b30..25  [4:1]=b11..8  [0]=0
+        = 0 . 0 . 000000 . 1000 . 0  =  0b0000000010000  = +16
+        sign bit = b31 = 0  -> positive (one fan-out wire, no mux)
+                                     => bne x10, x11, 16
+```
+
+The scramble that looks arbitrary is what kept `rs1`, `rs2`, and the sign bit stationary while the four immediate slices bent around them: the branch means "jump to PC + 16 if x10 ≠ x11" — the same flags-free, compare-two-registers loop-exit branch as §2.1's snippet. One instruction, every §2.3 claim: fixed register columns read before decode, sign bit pinned at 31, immediate reassembled by a shallow fixed mux.
 
 **The critical-path derivation.** Model decode-and-operand-fetch as a dependency chain and ask where the register read sits. If register fields were format-dependent, the read address would not be known until the format is — the path is *serial*:
 

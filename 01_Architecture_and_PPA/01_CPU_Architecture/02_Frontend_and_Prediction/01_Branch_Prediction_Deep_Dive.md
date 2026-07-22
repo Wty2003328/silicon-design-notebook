@@ -302,6 +302,22 @@ stateDiagram-v2
 
 The prediction is just the high bit — the right pair predicts taken, the left pair not-taken — and the middle pair **WN**/**WT** is the **hysteresis buffer**: a lone surprising outcome out of a saturated end (SN or ST) only lands *inside* that buffer and keeps the prediction, so flipping it takes *two* consecutive surprises — a single anomaly cannot punch through. The Markov chain below quantifies this exact walk.
 
+**Worked update sequence — watch one counter ride a loop.** Start cold at `SN` and feed the outcomes a short loop produces: it runs, takes its single not-taken exit, re-enters, runs again, and only then breaks for good. Predict = high bit (`WT`/`ST` ⇒ taken); a taken outcome steps up one notch, a not-taken steps down, both ends saturate.
+
+| Step | State before | Predict | Outcome | Result | State after |
+|---|---|---|---|---|---|
+| 1 | `SN 00` | NT | T | miss | `WN 01` |
+| 2 | `WN 01` | NT | T | miss | `WT 10` |
+| 3 | `WT 10` | T | T | hit | `ST 11` |
+| 4 | `ST 11` | T | T | hit | `ST 11` |
+| 5 | `ST 11` | T | N | **miss** | `WT 10` |
+| 6 | `WT 10` | T | T | hit | `ST 11` |
+| 7 | `ST 11` | T | T | hit | `ST 11` |
+| 8 | `ST 11` | T | N | miss | `WT 10` |
+| 9 | `WT 10` | T | N | miss | `WN 01` |
+
+Steps 1–2 are the one-time cost of *learning* the bias. Step 5 is the payoff: the loop's single not-taken exit only knocks the saturated `ST` down to `WT`, which *still predicts taken*, so the re-entry at step 6 is correct — a 1-bit counter would have flipped at step 5 and missed step 6 as well. It takes two *consecutive* surprises (steps 8–9) to flip a saturated counter to not-taken. That one-anomaly tolerance is the hysteresis the Markov chain (next) and the $1/N$-vs-$2/N$ loop count (below) make precise.
+
 **The Markov-chain derivation.** Model the counter as a 4-state Markov chain over $\{{\tt SN}{=}0,{\tt WN}{=}1,{\tt WT}{=}2,{\tt ST}{=}3\}$: a taken outcome increments (saturating at 3), a not-taken decrements (saturating at 0), and the prediction is the top bit (states 2, 3 ⇒ predict taken). Drive it with a branch taken i.i.d. with probability $p$ (write $q=1-p$, and $r=p/q$ the *odds*). Each up-step carries a factor $p$ and each down-step a factor $q$, so adjacent stationary masses sit in ratio $r$ — the stationary distribution is a *truncated geometric in the odds*:
 
 $$
@@ -336,6 +352,19 @@ $$
 $$
 
 into a $2^{k}$-entry array of 2-bit counters. The XOR **decorrelates aliasing**: two branches sharing a PC-index but differing in history land on different counters, and vice versa, cutting destructive interference ~30 % versus pure PC-indexing. gshare is untagged and simply *tolerates* the collisions that remain, because the counters self-correct — which is both its cheapness (~2 KB, ~89–92 %) and its ceiling.
+
+**Worked index ($k=8$, 256 entries) — one branch splits across histories; two branches can silently collide.** The index is the low 8 PC bits XOR the low 8 GHR bits:
+
+```text
+PC[7:0]  = 0x2C = 0010 1100     branch A
+GHR[7:0] = 0xB3 = 1011 0011     history H1
+XOR      = 0x9F = 1001 1111  -> entry 159
+
+A @ H2 (0xB7):  0x2C ^ 0xB7 = 0x9B  -> entry 155   (one history bit flipped)
+B @ H' (0x4F):  0xD0 ^ 0x4F = 0x9F  -> entry 159   (silent collision with A@H1)
+```
+
+The middle line is the *win*: flip a single history bit and branch $A$ trains a *different* counter, so one static branch can predict taken under `H1` and not-taken under `H2` — the correlation a bias-only table is blind to. The last line is the *ceiling*: a different branch $B$ under history `0x4F` also hashes to entry 159, and being untagged gshare cannot tell $B$'s context from $A$'s, so if their biases oppose they quietly corrupt one counter. That silent, undetectable collision is exactly the destructive aliasing §3.3 attacks and TAGE's tags fix.
 
 **Why history-indexing captures correlation — and why XOR specifically.** Indexing by PC alone learns the *marginal* bias $P(\text{taken}\mid\text{PC})$; indexing by $(\text{PC},h)$ learns the *conditional* $P(\text{taken}\mid\text{PC},h)$ per recent-history pattern $h$. Conditioning never raises uncertainty — $H(\text{dir}\mid\text{PC},h)\le H(\text{dir}\mid\text{PC})$, the gap being the mutual information $I(\text{dir};h\mid\text{PC})$ that recent branches carry about this one. *That gap is the correlation a bias-only predictor is structurally blind to* (§3.1's `if(x)…if(x&&y)` case): the second branch is $\approx\tfrac12$ marginally but near-deterministic given the first. So the entire leverage of history is a conditional-entropy reduction, and any predictor that captures it must give distinct histories distinct state. XOR is the minimal hash that keeps them distinct in a fixed $2^k$ table: for *fixed* $h$ the map $\text{PC}\mapsto\text{PC}\oplus h$ is a bijection, and for *fixed* PC the map $h\mapsto\text{PC}\oplus h$ is a bijection — so the same PC under two histories $h_1\ne h_2$ is *guaranteed* two different indices ($\text{PC}\oplus h_1\ne\text{PC}\oplus h_2$), the precondition for storing $P(\text{taken}\mid\text{PC},h)$ separately. Concatenating $k/2$ PC bits with $k/2$ history bits would throw away half the resolution on each axis; XOR overlays all $k$ bits of both, spending the whole table on the joint context.
 
@@ -412,6 +441,27 @@ flowchart TD
 ```
 
 The untagged base is the fallback of last resort; every tagged hit above it is a bid to override with a longer, more specific history, trusted over its alternate only once its usefulness counter shows that context has *earned* it — and a mispredict then allocates a fresh entry in a still-longer table, so the next encounter has a sharper predictor to try. (§4.2 justifies why those lengths grow *geometrically* rather than linearly.)
+
+**The predict/update step in code.** The datapath above is about a dozen lines. Predict reads every component in parallel and keeps the longest tag match as *provider* (its runner-up as *alternate*); update trains that provider and, only on a miss, allocates a sharper entry in a longer table:
+
+```text
+# PREDICT  (all components read in parallel; idx,tag fold GHR to T's length)
+provider, alt = BASE, BASE                  # BASE is untagged: always hits
+for T in T1..TM:                            # shortest -> longest history
+    if T.entry(PC).tag == tag(PC, T):       # partial-tag hit
+        alt, provider = provider, T.entry(PC)
+pred = alt.dir if provider.is_new else provider.dir   # weak/new -> trust alt
+
+# UPDATE  (at resolve; taken = actual outcome)
+if provider is not alt and provider.dir != alt.dir:   # they disagreed
+    provider.u += (provider.dir == taken) ? +1 : -1   # earn / lose trust (sat)
+provider.ctr += taken ? +1 : -1                       # train direction (sat 3-bit)
+if pred != taken:                                     # mispredict: add context
+    pick one longer table Tj whose entry has u == 0
+    Tj.entry(PC) = { tag, ctr = weak(taken), u = 0 }  # allocate sharper predictor
+```
+
+`is_new` is the *provider trusted?* test in the datapath; a periodic decay of all `u` (omitted for brevity) is what lets a stale long-history entry be reclaimed by a fresh allocation. Note that update touches the *same* entry predict read — the reason §1.1's FTQ receipt carries the saved indices and tags rather than recomputing them from the since-shifted global history.
 
 ### 4.2 Why *geometric* spacing — reach that is exponential in table count
 

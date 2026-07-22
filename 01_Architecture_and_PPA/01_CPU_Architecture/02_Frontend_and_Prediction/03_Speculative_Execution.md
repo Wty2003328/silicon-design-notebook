@@ -93,6 +93,27 @@ A control-speculation lifetime is:
 5. If correct, execution continues and training eventually uses a trusted outcome.
 6. If wrong, the redirect selects the correct PC and all younger work is invalidated.
 
+Concretely, that lifetime is a cross-unit checkpoint protocol: rename snapshots the recovery state the moment the speculative path begins, and the branch unit later either drops the snapshot (correct) or rolls back to it and squashes younger work (wrong).
+
+```mermaid
+sequenceDiagram
+    participant BPU as BPU
+    participant RN as Rename/RAT
+    participant ROB as ROB
+    participant BRU as Branch unit
+    BPU->>RN: predicted next PC
+    Note over RN: snapshot RAT, history, free-list ptr
+    RN->>ROB: allocate speculative ops
+    ROB->>BRU: branch executes, compare outcome
+    alt prediction correct
+        BRU-->>ROB: resolve and drop snapshot
+    else prediction wrong
+        BRU-->>ROB: squash younger ops
+        BRU-->>RN: restore snapshot
+        BRU-->>BPU: correct PC and repair history
+    end
+```
+
 The lost work per misprediction is roughly
 
 $$
@@ -100,6 +121,8 @@ W_{lost} \approx P_{redirect}\times I_{front},
 $$
 
 where $P_{redirect}$ is the redirect-to-refill penalty in cycles and $I_{front}$ is the average number of operations delivered per cycle. This is why a wider machine raises the value of accurate prediction even when the number of lost *cycles* is unchanged.
+
+**Worked example — width multiplies the cost.** Fix the redirect penalty at $P_{redirect}=15$ cycles. A 4-wide frontend throws away $4\times15=60$ issue slots per misprediction; an 8-wide frontend throws away $8\times15=120$ — twice the wasted work for the *same* 15 lost cycles. Now add frequency: if 20% of instructions are branches predicted at 96% accuracy, mispredictions arrive at $1000\times0.20\times0.04=8$ per thousand instructions (8 MPKI). On the 8-wide core that is $8\times15=120$ bubble cycles per 1000 instructions. Against an ideal $1000/8=125$-cycle run, those bubbles nearly double execution time and drop sustained throughput to $1000/(125+120)\approx4.1$ IPC — roughly half of peak. Accuracy, not raw width, is what keeps a wide machine's slots full.
 
 ### 3.1 Speculative predictor history
 
@@ -217,6 +240,15 @@ An advanced core normally uses several. Cache-bank conflicts retry locally; load
 ## 9. Speculation and security
 
 Squashing an instruction removes its architectural result, but does not automatically undo cache fills, predictor changes, port contention, or DRAM activity. A transient instruction that reads a secret and then uses it to choose a cache line can encode the secret in timing even though the instruction never retires.
+
+**Concrete intuition — bounds-check bypass (Spectre v1).** The leak needs two ingredients: a secret read, and a secret-dependent footprint that outlives the squash.
+
+```c
+if (i < array1_len)                 // branch mistrained to predict in-bounds
+    y = array2[ array1[i] * 512 ];  // runs transiently when i is out of bounds
+```
+
+Train the branch taken with legal values of $i$, then supply an out-of-bounds $i$. The frontend speculates down the taken path before the bound resolves. Transiently, $s = array1[i]$ reads a secret byte and the dependent load pulls cache line $array2[s \times 512]$ into L1 (the $\times 512$ stride puts each possible byte value on its own line). The squash discards $y$, its physical registers, and the ROB entries — but not the cache fill. The attacker afterwards times every candidate line $array2[k \times 512]$; the single fast one reveals $k = s$. No architectural state leaked; the *microarchitectural footprint of squashed work* did — which is exactly why blocking the illegal read alone is not enough.
 
 A secure design therefore distinguishes **permission to execute** from **permission to transmit an effect**. Mitigation families include:
 

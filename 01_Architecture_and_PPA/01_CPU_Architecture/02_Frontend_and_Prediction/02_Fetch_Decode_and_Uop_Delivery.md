@@ -39,6 +39,8 @@ Think of two rates. **Peak width** is the most operations one stage can handle i
 
 ## 1. The delivery equation
 
+**Intuition first:** each cycle the frontend advances only as fast as its currently-narrowest stage. One clogged link—a fetch miss, a boundary that straddles two lines, a decoder switch—throttles the whole chain, so useful delivery is a *minimum* across stages, never a sum. The equation below just names the links.
+
 Let $W_r$ be rename width. In cycle $t$, useful delivery is bounded by
 
 $$
@@ -124,11 +126,51 @@ $$
 
 Six decoded instructions can produce more than six µops, overflowing a downstream queue. Conversely, **macro-fusion** may combine a compare+branch pair and **micro-fusion** may keep address and data work together through part of the pipeline, reducing queue pressure.
 
+**Worked example — three stages, three units.** Follow one cycle of an x86-style frontend and watch the unit change at each hop:
+
+- *Fetch (bytes/cycle):* a 32 B fetch block at 3.5 B average instruction length carries $32/3.5\approx 9$ instructions' worth of bytes.
+- *Decode (instructions/cycle):* only 4 decoders exist, so at most 4 of those instructions advance—already narrower than the byte supply.
+- *Deliver (µops/cycle):* at 1.2 µops per instruction, $4\times1.2=4.8$ µops reach the queue.
+
+A 6-wide rename is therefore starved to 4.8 µops/cycle by the legacy decode path even though bytes were plentiful. This is the min() of §1 in concrete units, and closing the 4.8-to-6 gap is exactly the job of the µop cache in §6.
+
 Wide decode costs include replicated decoders, length-steering logic, crossbar movement from byte positions to decoder slots, and output routing to rename. The crossbar—not the opcode table—often sets area/timing.
+
+### 5.1 x86 versus RISC decode: two different hard problems
+
+The two ISA styles make decode expensive in *different* places, which is why their frontends look different.
+
+**Variable-length (x86, 1–15 B).** The hard problem is *finding boundaries*. You cannot begin decoding instruction $N+1$ until you know the length of instruction $N$—an inherently serial dependency. Hardware attacks it two ways: store **predecode markers** (start/end/branch bits) alongside each I-cache line so the length work is done once on refill, and speculatively launch length decode from many candidate start bytes in parallel, discarding the wrong alignments. Expansion is large too—one instruction may become several µops, and genuinely complex operations (string moves, `CPUID`) drop into a microcode sequencer. This cost is precisely *why* x86 leans so hard on a µop cache (Intel's DSB, AMD's op-cache): it memoizes the boundary-plus-decode work so hot code pays it once.
+
+**Fixed / lightly-variable (RISC).** ARM64 instructions are always 4 B, so boundaries are free and $N$ decoders run fully in parallel. RISC-V with the C extension mixes 2 B and 4 B forms, but a fixed low-bit check on each 16-bit parcel resolves length locally—no serial scan. Most instructions map 1:1 to a µop, so $W_{decode,inst}\approx W_{deliver,\mu op}$ and the crossbar stays cheap. The transistor budget goes to *width and prediction* rather than length-steering.
+
+| Aspect | x86 (variable) | RISC (ARM64 / RISC-V) |
+|---|---|---|
+| Instruction length | 1–15 B | 4 B fixed (ARM64); 2 or 4 B (RISC-V C) |
+| Boundary finding | serial length decode + predecode markers | free (ARM64) or local low-bit check |
+| Decode parallelism | few complex + simple decoders; microcode | $N$ uniform decoders in parallel |
+| Instruction→µop | often $>1$; microcode for complex ops | mostly 1:1 |
+| Role of µop cache | hides expensive length+decode; large win | smaller win, still saves energy |
 
 ## 6. µop caches and loop buffers
 
-A µop cache stores decoded operations keyed by instruction address and path context. Hits bypass byte alignment and decode, saving energy and raising bandwidth. Its design questions are cache-like but path-sensitive:
+A µop cache stores decoded operations keyed by instruction address and path context. Hits bypass byte alignment and decode, saving energy and raising bandwidth. **Think of it as memoization for decode:** the first visit to a hot block pays the decoders in full; every later visit replays the stored µops—like caching a compiled function instead of re-parsing its source on each call. On a hit the fetch address indexes the µop cache directly and streams µops to the queue while predecode and decode sit idle.
+
+The bypass is the whole point of the structure:
+
+```mermaid
+flowchart LR
+    PC["fetch address"] --> HIT{"uop cache hit?"}
+    HIT == "hit" ==> UQ["uop queue"]
+    HIT -- "miss" --> IC["L1 I-cache bytes"]
+    IC --> PD["predecode: mark boundaries"]
+    PD --> DEC["decoders: form uops"]
+    DEC --> UQ
+    DEC -. "fill for next time" .-> HIT
+    UQ --> RN["rename"]
+```
+
+Its design questions are cache-like but path-sensitive:
 
 - tag by virtual or physical address;
 - organize by basic block, fetch block, or fixed µop line;
@@ -143,7 +185,17 @@ $$
 D\le hW_u+(1-h)W_d,
 $$
 
-but transitions, misses, branch truncation, and downstream queues reduce it. A loop buffer is smaller and detects repeated short sequences; it can suppress fetch/predict/decode activity nearly entirely for tight loops.
+but transitions, misses, branch truncation, and downstream queues reduce it.
+
+**Worked example — what a hit rate buys.** Suppose the µop cache streams $W_u=8$ µops/cycle on a hit, the legacy decode path sustains $W_d=4$ µops/cycle, and the hit rate is $h=0.8$. Then
+
+$$
+D\le 0.8\times 8+0.2\times 4=6.4+0.8=7.2\ \text{µops/cycle}.
+$$
+
+The cache lifts sustained delivery from 4 to about 7.2 µops/cycle—now enough to feed a 6-wide rename that the decoders alone could not—and, because 80% of µops skip predecode and decode, it removes that pipeline's switching energy on four of every five µops. That dual win, bandwidth *and* power, is why the structure earns its area.
+
+A loop buffer is smaller and detects repeated short sequences; it can suppress fetch/predict/decode activity nearly entirely for tight loops.
 
 ## 7. Decoupling queues absorb burstiness
 

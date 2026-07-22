@@ -261,6 +261,28 @@ That is the whole idea. The signal-level realization (one comparator per source 
 
 **Why forwarding collapses RAW to exactly the load-use residue — the cycle arithmetic.** Number the stages IF=1 … WB=5 and put a producer in EX at cycle $t$. An **ALU** producer latches its result at the *end* of EX (cycle $t$); a dependent one slot behind reaches EX at cycle $t{+}1$ and needs the operand at that cycle's *start*. Since end-of-$t$ precedes start-of-$(t{+}1)$, the EX/MEM latch forwards it with **zero** bubbles; a producer two slots ahead is covered by the MEM/WB forward. Every RAW whose producer is an ALU op is therefore erased outright. A **load** producer misses this by one cycle: its datum returns only at the *end* of MEM (cycle $t{+}1$), while the dependent one slot behind needs it at the *start* of EX (also cycle $t{+}1$) — the value would have to move *backward in time by one cycle*, which no wire can do. Hardware injects exactly one bubble; the consumer then sits in EX at $t{+}2$ and the end-of-MEM($t{+}1$) value forwards forward-in-time. The load-use bubble is thus a **causality** limit, not a routing one — the single RAW case bypass cannot reach — which is why it is the irreducible $b_{\text{lu}} = 1$ of §2.
 
+**The same two cases as a picture** — line up each producer's compute stage against its consumer one slot behind, and read off *when* the datum exists against *when* it is wanted. A forward is legal only when its arrow points **rightward in time** (produced no later than needed); the load-use case is the one arrow that would point left. These are the two shapes §3.1 then traces in full:
+
+```text
+Producer/consumer timing — when the value EXISTS vs. when it is WANTED
+( * = value produced here,  + = value used here,  ## = injected bubble )
+
+CASE 1 — producer is an ALU op  ->  bypass succeeds, 0 bubbles
+cycle:  1    2    3    4    5
+I0 ADD: IF   ID   EX*  MEM  WB
+I1 SUB:      IF   ID   EX+  MEM
+   x5 produced at END of cyc 3 (latched into EX/MEM); used at START of cyc 4.
+   EX/MEM->EX: end-3 precedes start-4  =>  in time, 0 bubbles.
+
+CASE 2 — producer is a LOAD  ->  bypass impossible, 1 bubble
+cycle:  1    2    3    4    5    6
+I2 LW:  IF   ID   EX   MEM* WB
+I3 ADD:      IF   ID   ##   EX+  MEM
+   x7 returns only at END of cyc 4. Unstalled, EX+ would sit at cyc 4 and
+   need MEM->EX to run end-4 -> start-4 = BACKWARD in time => impossible.
+   So stall 1 cyc; EX+ slides to cyc 5, then MEM/WB->EX forwards normally.
+```
+
 *Worked number — what forwarding buys.* Suppose 40% of instructions consume the immediately-preceding result. Without forwarding, an ALU→ALU RAW waits until the producer reaches WB — 2 bubbles — so the data-hazard tax is $0.40 \times 2 = 0.80$ CPI, nearly doubling a base-1 CPI. Forwarding zeroes every ALU-producer case; only the subset whose producer is a *load* survives, at 1 bubble each. With loads ≈ 25% of those producers, the residue is $0.40 \times 0.25 \times 1 = 0.10$ CPI — exactly the $f_{\text{load-dep}}$ of §2. Forwarding turns an 0.80-CPI tax into 0.10, an **8× cut**, and what remains is precisely the causality-limited load-use case the compiler must schedule around.
 
 **Why this machinery does not survive into wide out-of-order cores.** The explicit bypass network is an all-to-all set of paths from every producing stage to every consuming input. Its cost scales as roughly $O(\text{depth} \times W^{2})$ in a $W$-wide machine — every one of $W$ consumers this cycle may need a value from any of the in-flight producers — so wires, muxes, and the timing pressure on the ALU input all explode with width and depth. Beyond a few stages and a couple of lanes it stops being tractable as fixed wiring. The out-of-order core's answer is to replace *all* explicit bypass paths with **one broadcast**: a completing instruction drives its result tag onto a common data bus that every waiting consumer snoops, waking dependents regardless of pipeline distance. That single move — turning a wiring problem into a broadcast — is developed in [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) §4.

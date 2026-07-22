@@ -93,6 +93,8 @@ is a necessary throughput condition. It is not sufficient: TLB, cache banks, loa
 
 ## 2. Load and store queue entries
 
+Before the field lists, fix the mental model: the two queues are ledgers the LSU keeps so it can answer two out-of-order questions later. *For this load, did an older store already write these bytes?* — search the **store queue** (this is forwarding). *For this store, did a younger load read these bytes too early?* — search the **load queue** (this is disambiguation). Nearly every field below exists to make one of those two associative searches decisive, or to drive recovery when the answer is yes.
+
 A load-queue (LQ) entry commonly tracks:
 
 - instruction age/ROB tag and destination physical register;
@@ -109,6 +111,38 @@ A store-queue (SQ) entry tracks:
 - committed status and cache-drain status;
 - ordering/atomic attributes;
 - merge or write-combining information.
+
+The two ledgers feed two associative (content-addressable) searches that run in opposite directions: a load searches the store queue for older writers; a resolving store searches the load queue for younger early readers.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 38, "rankSpacing": 52, "htmlLabels": false}}}%%
+flowchart TB
+    AGU["AGU + DTLB<br/>address, byte mask, age"]
+
+    subgraph SQ["Store queue (age-ordered)"]
+        SQe["per store: age, addr, mask<br/>data, data-valid, drained"]
+    end
+    subgraph LQ["Load queue (age-ordered)"]
+        LQe["per load: age, addr, mask<br/>dest reg, executed, replay"]
+    end
+
+    AGU -->|"load path"| FSRCH["load scans SQ<br/>youngest older overlap"]
+    AGU -->|"store path"| DSRCH["store scans LQ<br/>younger executed overlap"]
+
+    FSRCH --> SQe
+    DSRCH --> LQe
+
+    SQe -->|"hit + data valid"| FMUX["forward mux<br/>youngest older per byte"]
+    SQe -.->|"hit + data late"| STALL["stall or replay load"]
+    L1["L1 D-cache"] -->|"bytes no store covers"| FMUX
+    FMUX --> RES["load value to dest reg"]
+
+    LQe --> VIO{"younger load<br/>read too early?"}
+    VIO -->|"overlap"| RPL["replay load + dependents<br/>train predictor"]
+    VIO -->|"none"| OK["no action"]
+```
+
+A load reaches its value along the *forwarding* path (search store queue, then forward mux, with the cache supplying only bytes no store owns). A store that resolves its address drives the *disambiguation* path: if a younger already-executed load overlaps, that load read too early and must replay. The dashed edge is the forward-versus-stall fork detailed in Section 4 — an address hit whose store data is still late cannot fall back to the cache.
 
 Sizing follows residence time, not only the in-flight instruction mix:
 
@@ -218,6 +252,20 @@ Implementation proceeds from youngest to oldest. Begin with an uncovered mask eq
 This is both a content-addressable search and a wide priority mux. For a 64-entry store queue, two load pipes, and a 64-bit access, the naive structure compares two load addresses against all 64 entries, performs age priority per byte, and routes up to eight byte lanes per load every cycle. Common timing reductions—checking page offset before full physical address, splitting the queue into banks, predicting one forwarding store, or supporting only simple aligned matches on the fast path—save power and delay but create false stalls or replay slow paths. Therefore report exact-match forwards, multi-store merges, partial overlaps, data-not-ready waits, and forwarding replays separately.
 
 The core assertion is per byte: if `L` completes, byte `b` equals the data of the youngest valid older store covering that physical byte, or cache data only if no such store exists. This assertion catches the subtle failure where the correct store is found but the priority is reversed, or a wide load incorrectly treats one partial store as covering every byte.
+
+### 4.3 One address match, three outcomes: forward, stall, or read cache
+
+The merge above assumes every contributing store already holds its data. But the *same* full address match behaves very differently depending on whether the youngest older overlapping store has produced its data yet. Take load `L` reading 4 bytes at `A` and the youngest older store `S` that fully overlaps `L`:
+
+| State of `S` when `L` searches the store queue | Correct action for `L` |
+|---|---|
+| address valid, data valid | forward `S`'s bytes from the SQ; skip the cache |
+| address valid, data not ready | stall `L` on `S`; it may not read cache or an older store |
+| address unknown, predicted independent | read cache now; re-check when `S`'s address resolves |
+
+The middle row is the trap. The cache does hold bytes at `A`, but `S` is older and overlaps, so the architectural value of those bytes is `S`'s not-yet-computed data — the cache copy is stale from `L`'s viewpoint, and the next-older store does not own the byte either. An address match with data-not-ready is a **stall**, not a forward; a design that counts it as a forwarding hit will mistune the dependence predictor.
+
+Using Section 3's cost model with $L_{fast}=4$ and $L_{replay}=30$ cycles: the first row costs about 4 cycles, the second costs however long `S`'s data takes (say 6 cycles of wait), and mispredicting the third row into a stale-cache read costs the full $\approx 30$-cycle replay. That climb from 4 to 6 to 30 cycles is exactly why the memory-dependence predictor of Section 3 exists — to keep genuine aliases out of the 30-cycle bucket while letting truly independent loads take the 4-cycle path.
 
 ## 5. Detecting ordering violations
 

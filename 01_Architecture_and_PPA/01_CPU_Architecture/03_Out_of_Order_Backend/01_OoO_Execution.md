@@ -44,6 +44,32 @@ Four false constraints, four structures:
 | Instructions must issue in program order | An instruction is runnable when its operands are ready, not when its neighbours are | **Issue queue** (§4) |
 | A load must wait for all older stores | Only stores to the *same address* matter, and addresses bind late | **Load-store queue** (§5) |
 
+Before the structural map, the same contract reads as a **pipeline of six stages** an instruction flows through — two in-order ends wrapped around an out-of-order middle, each stage the place one structure does its job:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 48, "rankSpacing": 52, "htmlLabels": false}}}%%
+flowchart LR
+    subgraph inorder_front["in-order front"]
+        RENAME["Rename<br/>RAT: arch -> phys<br/>pop free list"]
+        DISPATCH["Dispatch<br/>alloc ROB + IQ + LSQ<br/>program order"]
+    end
+    subgraph ooo_mid["out-of-order middle"]
+        ISSUE["Issue<br/>IQ wakeup + select<br/>oldest-ready per port"]
+        EXECUTE["Execute<br/>read PRF, run unit<br/>AGU + LSQ for mem"]
+        WRITEBACK["Writeback<br/>CDB: tag + value<br/>PRF write, wake"]
+    end
+    subgraph inorder_back["in-order back"]
+        COMMIT["Commit<br/>ROB head retires<br/>publish map, free tag"]
+    end
+
+    RENAME --> DISPATCH --> ISSUE --> EXECUTE --> WRITEBACK --> COMMIT
+    WRITEBACK -->|"wakeup tag"| ISSUE
+    COMMIT -->|"free displaced tag"| RENAME
+    COMMIT -->|"mispredict flush"| RENAME
+```
+
+Rename and dispatch stay in program order and commit snaps back to it; only issue/execute/writeback run in dataflow order. The three back-edges — wakeup, tag reclaim, flush — are the control loops §1.1 now wires up as hardware.
+
 ### 1.1 The datapath as a map
 
 ```mermaid
@@ -138,6 +164,14 @@ Assume the committed map initially maps `x5→P5`, `x6→P6`, `x9→P9`, and `x1
 | I2 | `P7,P8` | `x5→P42` | `P40` | WAW vanishes: I0 and I2 write different storage |
 | I3 | `P42,P10` | `x9→P43` | `P9` | correctly binds to I2's definition of x5 |
 | I4 | `P12,P13` | `x11→P44` | `P11` | immediately ready |
+
+**Dependence audit — what renaming kept and erased.** The ISA's reuse of `x5` implies three edges among these instructions; renaming deletes exactly the two that are naming artifacts and keeps the one real value flow:
+
+- **RAW (kept — real):** I1 must read I0's `x5`, so it waits on `P40`; I3 must read I2's `x5`, so it waits on `P42`. Renaming *preserves* each by pointing the consumer at its producer's exact tag — this is the computation, and no hardware can remove it.
+- **WAW (erased):** I0 and I2 both write `x5`. Fresh tags place them in *different* storage (`P40` vs `P42`), so nothing serialises the two writes; in-order commit alone settles the final architectural `x5` to the last writer, `P42`.
+- **WAR (erased):** I1 *reads* `x5` (`P40`) while the younger I2 *writes* `x5` (`P42`). Without renaming, I2's write would have to wait for I1's read so as not to clobber the value it needs; with its own fresh `P42`, I2 may execute even before I1 has read `P40`.
+
+So the one reused name forces zero false waits: only the two genuine producer-to-consumer edges (`P40` into I1, `P42` into I3) survive — the §2.1 exactness claim made concrete on a single register.
 
 ```mermaid
 sequenceDiagram
@@ -377,6 +411,32 @@ Its two verbs dictate everything it holds:
 | its **opcode/immediate**, **destination tag**, and **ROB index** | to execute once chosen and report the result back to consumers and the ROB |
 
 The load-bearing observation is what is *absent*: the IQ holds **tags, not values**. Operand values live in the PRF and arrive on the CDB; the IQ tracks *readiness*, not data. So the issue queue is best read as **the scoreboard that turns a stream of completion events into issue decisions** — one per ready instruction per port. (Whether to hold values instead is a real design axis — §4.4 — but every modern core chose tags.)
+
+That split — readiness here, values elsewhere — is one face of a larger division of labor. A single in-flight uop lives in **three structures at once, stitched together by its physical destination tag**: the IQ/RS holds only its *readiness*, the ROB holds its *program-order slot and recovery info*, and the PRF holds its *value*. The tag is the key that lets one CDB broadcast update all three:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TB
+    DISP["Dispatch: one uop,<br/>three slices,<br/>united by its dest tag"]
+    subgraph split["The same uop, three structures"]
+        IQE["IQ / RS entry<br/>src tags + ready bits<br/>(readiness only)"]
+        ROBE["ROB entry<br/>order slot, done,<br/>dest + displaced tag<br/>(order + recovery)"]
+        PRFE["PRF slot at dest tag<br/>the value<br/>(data only)"]
+    end
+    CDB["CDB<br/>tag + value"]
+    RET["Commit: publish map,<br/>free displaced tag"]
+
+    DISP --> IQE
+    DISP --> ROBE
+    DISP -.->|"reserve tag"| PRFE
+    IQE -->|"select, read PRF, exec"| CDB
+    CDB -->|"match src tag: wake"| IQE
+    CDB -->|"write value"| PRFE
+    CDB -->|"set done"| ROBE
+    ROBE --> RET
+```
+
+Read it as one uop across the row: dispatch allocates the three slices in lockstep, the CDB broadcast writes the value into the PRF and flips the *ready* bit in the IQ and the *done* bit in the ROB together, and commit (§3.1) is the single point that turns the ROB slice architectural. Because no structure duplicates another's job, each is sized independently against its own limiter — the IQ against wakeup–select delay (§4.3), the ROB against the window horizons (§3.2), the PRF against port cost (§2.3).
 
 ### 4.2 The common data bus, and why wakeup is a broadcast
 

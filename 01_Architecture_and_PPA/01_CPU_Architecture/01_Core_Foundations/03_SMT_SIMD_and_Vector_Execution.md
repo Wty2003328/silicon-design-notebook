@@ -58,6 +58,30 @@ The distinction matters because each mechanism stores and schedules different st
 
 SIMD/vector amortizes one instruction's fetch/decode over many operations. SMT selects among independent instruction streams to fill scalar issue slots. SIMT combines a multithreaded programming model with grouped lane issue. These mechanisms can coexist: an SMT core can issue vector instructions from either thread.
 
+### 1.1 The same loop, scalar then wide
+
+**WHAT.** "Doing the work wide" is not a metaphor. The scalar loop below touches one element per iteration; the fixed-width SIMD version issues one instruction that operates on eight `float` lanes at once (Intel AVX2 with FMA, intrinsics from `<immintrin.h>`). Fetch, decode, and loop overhead are now paid once per *eight* results instead of once per result — that amortization is the entire point of §1's "amortized control" row.
+
+```c
+// scalar: 1 element per iteration        (SAXPY: y = a*x + y)
+for (int i = 0; i < n; i++)
+    y[i] = a * x[i] + y[i];
+
+// AVX2 + FMA: 8 float lanes per iteration
+__m256 va = _mm256_set1_ps(a);            // broadcast a to 8 lanes
+int i = 0;
+for (; i + 8 <= n; i += 8) {
+    __m256 vx = _mm256_loadu_ps(&x[i]);
+    __m256 vy = _mm256_loadu_ps(&y[i]);
+    vy = _mm256_fmadd_ps(va, vx, vy);     // 8x (a*x + y) in one op
+    _mm256_storeu_ps(&y[i], vy);
+}
+for (; i < n; i++)                        // scalar tail: n % 8 != 0
+    y[i] = a * x[i] + y[i];
+```
+
+**WHY the bridge to §2.** The awkward part is the trailing **scalar tail loop**. Because `__m256` names a *fixed* physical width of eight floats, any `n` that is not a multiple of 8 needs separate remainder code, and the same binary can never widen itself to a future 512-bit unit. Removing exactly that limitation is the job of the vector-length contract in §2.
+
 ## 2. The vector-length contract
 
 In fixed-width SIMD, the ISA names a physical width. Software must be rebuilt or dispatched differently when the width changes. A length-agnostic vector ISA instead exposes a maximum implementation width while software sets the active element count `vl` for each strip-mined iteration.
@@ -73,6 +97,25 @@ The final iteration uses a smaller `vl`; tail policy defines whether inactive el
 ### 2.1 Strip mining example
 
 With $VLEN=256$, $SEW=32$, and $LMUL=2$, $VLMAX=16$ elements. A 100-element loop executes seven vector iterations (six at 16, one at 4). The binary remains correct on a 128-bit or 512-bit implementation because it queries the available length.
+
+The loop that expresses this contract asks the hardware for a length every iteration and lets it shrink on the final pass — so the same binary that ran the AVX kernel of §1.1 needs **no separate remainder loop**:
+
+```asm
+# a0=n, a1=x, a2=y, fa0=a    (SAXPY: y = a*x + y)
+loop:
+    vsetvli t0, a0, e32, m1, ta, ma   # t0 = vl = min(a0, VLMAX)
+    vle32.v v0, (a1)                  # load vl elements of x
+    vle32.v v1, (a2)                  # load vl elements of y
+    vfmacc.vf v1, fa0, v0            # v1 += a * v0, over vl lanes
+    vse32.v v1, (a2)                 # store vl elements of y
+    slli t1, t0, 2                    # bytes done = vl * 4
+    add  a1, a1, t1                   # advance x, y
+    add  a2, a2, t1
+    sub  a0, a0, t0                   # n -= vl
+    bnez a0, loop                     # last pass just uses a smaller vl
+```
+
+On the final pass `vsetvli` returns a smaller `vl` (4 in the example above) and the very same instructions cover the tail. The width is decided at run time, not baked into the mnemonic.
 
 ## 3. Lane organization and the utilization equation
 
@@ -92,6 +135,25 @@ with lane fill, issue availability, memory supply, and active-mask efficiencies.
 
 Lanes may be **element-partitioned** (each lane owns element indices modulo $L$) or **register-partitioned**. Element partitioning simplifies regular arithmetic but makes cross-lane slides, permutations, reductions, and indexed memory expensive. A reduction tree adds area and wiring yet cuts latency from $O(L)$ serialized steps toward $O(\log L)$ stages.
 
+The datapath makes that cost asymmetry visible: each lane's arithmetic path is local and cheap to replicate, while operand supply (the banked register file plus collectors) and any cross-lane movement are *shared* structures that dominate area and energy. This is the picture the utilization factors above draw from — $\eta_{lane}$ lives in the lanes, $\eta_{issue}$ and the operand traffic of §4 live in the collectors and register file, and $\eta_{mask}$ gates individual lanes.
+
+```mermaid
+flowchart LR
+    VRF["Vector RF (banked)"] --> OC["Operand collectors"]
+    OC --> L0["Lane 0: FMA"]
+    OC --> L1["Lane 1: FMA"]
+    OC --> Ln["Lane L-1: FMA"]
+    L0 --> WB["Writeback + bypass"]
+    L1 --> WB
+    Ln --> WB
+    WB --> VRF
+    WB -.->|"chain: forward element i"| OC
+    L0 --> RN["Cross-lane<br/>reduce / slide"]
+    L1 --> RN
+    Ln --> RN
+    RN --> VRF
+```
+
 ### 3.1 Chaining and convoys
 
 Without chaining, a dependent vector instruction waits for the entire producer vector. With lane-level forwarding, element $i$ can enter the consumer shortly after its producer result emerges. For producer startup $S_p$, consumer startup $S_c$, and $n$ elements processed at $L$ elements/cycle,
@@ -100,7 +162,7 @@ $$
 T_{chained}\approx S_p+S_c+\left\lceil\frac{n}{L}\right\rceil,
 $$
 
-rather than paying the full vector length twice. Chaining is vector bypassing; it also creates long, high-fanout physical paths.
+rather than paying the full vector length twice. For example, with $S_p=S_c=5$, $n=64$, and $L=8$, chaining needs about $5+5+\lceil 64/8\rceil=18$ cycles instead of the serialized $5+8+5+8=26$, a $1.44\times$ shortening; the advantage grows with vector length because the shared startup terms are paid once, not once per instruction. Chaining is vector bypassing; it also creates long, high-fanout physical paths.
 
 ## 4. The vector register file is usually the tax collector
 
@@ -172,6 +234,22 @@ flowchart LR
     Shared --> Cache["Shared cache + TLB"]
     EU --> Commit["Per-thread in-order commit"]
 ```
+
+That diagram shows *where* two threads merge; the value of SMT is in *when*. Below, a 4-wide issue window runs each thread alone, then both together. Neither thread alone has enough independent, ready instructions to fill four slots every cycle (dependencies and misses leave gaps); interleaving a second stream fills most of the idle slots with work that was already available.
+
+```text
+4-wide issue.   "." = idle slot (throughput lost).
+
+  Thread 0 alone         Thread 1 alone         SMT: T0 and T1 co-issue
+c1  a a . .            c1  b b b .            c1  a a b b
+c2  a . . .            c2  b . . .            c2  a a b b
+c3  a a a .            c3  b b . .            c3  a a b b
+c4  . . . .            c4  b . . .            c4  b . . .
+
+idle 10/16 (62%)       idle  9/16 (56%)       idle  3/16 (19%)
+```
+
+The combined column places all $6+7=13$ ready instructions from the two threads, leaving only $3$ idle slots — but that gain holds *only* while the shared queues and ports are not themselves the limit, which is exactly what the next bound quantifies.
 
 SMT throughput benefit follows complementarity. Let $C_j$ be the available capacity of resource $j$ per cycle, let $d_{0,j}$ and $d_{1,j}$ be the two threads' demand for that resource when each runs at its own single-thread unit throughput, and let $x$ be the equal throughput scale achieved by each thread while co-running. Then
 
@@ -254,6 +332,16 @@ A 256-entry ROB gives thread 0 a cap of 192 and thread 1 a guaranteed minimum of
 ### Problem 4 — matrix tile supply
 
 A tile operation performs 32,768 operations and can start every 16 cycles, giving a compute roof of 2,048 operations/cycle. Its two operand tiles total 2 KiB, and the L1 path sustainably supplies 96 B/cycle to this kernel. Operand supply takes at least $2048/96\approx21.3$ cycles, so this schedule is load-bound before considering conflicts or the epilogue. Reusing one operand tile across two output tiles reduces new operand bytes and may move the active roof.
+
+### Problem 5 — SIMD speedup ceiling (Amdahl)
+
+Lane count bounds only the *vectorized fraction* of a program, never the whole. Suppose $90\%$ of runtime is a loop an $8$-wide unit accelerates $8\times$, while the remaining $10\%$ stays scalar. With vectorizable fraction $p$ and per-loop speedup $s$,
+
+$$
+S=\frac{1}{(1-p)+p/s}=\frac{1}{0.10+0.90/8}=\frac{1}{0.2125}\approx4.71\times,
+$$
+
+not $8\times$. Doubling to $16$ wide gives $1/(0.10+0.90/16)=1/0.15625=6.4\times$: twice the lanes buys only $1.36\times$ more, and no width beats the scalar-bound ceiling $1/0.10=10\times$. This is why the intro's "eight lanes" checkpoint never means "eight times faster" — the physical width caps the vectorized part, and the scalar remainder sets the roof.
 
 ## Cross-references
 
