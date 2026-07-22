@@ -43,7 +43,7 @@ $$
 
 GPU activity is heterogeneous. An SM can be resident but stalled; tensor cores can toggle heavily while scalar lanes idle; HBM/NoC can dominate a memory kernel. Use event/activity counts per structure rather than one chip utilization percentage.
 
-Along a voltage/frequency curve, higher frequency often requires higher voltage, making dynamic power rise faster than linearly. Under a package power limit, adding compute units or clock can reduce sustainable frequency elsewhere. Evaluate sustained operating point, not unconstrained peak.
+Along a voltage/frequency curve, higher frequency often requires higher voltage, making dynamic power rise faster than linearly. The intuition: near the top of the curve, voltage must climb roughly in step with frequency to keep paths meeting timing, and since $P_{dyn}\propto V^2f$, holding $V\propto f$ pushes dynamic power toward an $f^3$ trend rather than a linear one — the last few percent of clock is the most expensive to buy. Under a package power limit, adding compute units or clock can reduce sustainable frequency elsewhere. Evaluate sustained operating point, not unconstrained peak.
 
 ## 2. The register file is a first-class GPU architecture
 
@@ -127,9 +127,49 @@ More SMs raise aggregate request injection. The shared fabric must provide:
 - memory-partition queues and scheduling;
 - HBM controller/PHY bandwidth and package connections.
 
+These blocks are not free to place, and the floorplan explains the couplings. HBM PHYs must sit at the die edge because each stack drives a very wide interface straight down into the silicon interposer beneath the package; L2 is sliced and scattered through the SM array so no core is far from a cache home; and the NoC is the physical wiring that ties every SM to every L2 slice and memory partition. Adding SMs therefore stretches all of this fabric, not just the compute.
+
+```mermaid
+flowchart LR
+    subgraph INTP["silicon interposer + package"]
+      direction LR
+      HBMW["HBM stacks<br/>west edge"]
+      subgraph DIE["monolithic GPU die"]
+        direction TB
+        MCW["west memory<br/>controllers + HBM PHYs"]
+        subgraph FAB["SM array with distributed L2 slices"]
+          direction TB
+          ROWA["SM cluster row"]
+          L2A["L2 slice band"]
+          ROWB["SM cluster row"]
+          NOC["on-chip network (NoC)"]
+          ROWC["SM cluster row"]
+          L2B["L2 slice band"]
+          ROWD["SM cluster row"]
+        end
+        MCE["east memory<br/>controllers + HBM PHYs"]
+        IOP["host + inter-GPU PHYs"]
+      end
+      HBME["HBM stacks<br/>east edge"]
+    end
+    HBMW --- MCW
+    MCW --- FAB
+    FAB --- MCE
+    MCE --- HBME
+    ROWA --- NOC
+    ROWB --- NOC
+    ROWC --- NOC
+    ROWD --- NOC
+    L2A --- NOC
+    L2B --- NOC
+    FAB --- IOP
+```
+
 Near saturation, latency grows nonlinearly. A chip with twice the SMs and unchanged memory system may deliver far less than twice throughput while consuming much more power.
 
 HBM cost is not just off-chip DRAM capacity. Include PHY area/power, controller logic, package routing, interposer/bridge, stack power, signal integrity, repair/ECC, and thermal coupling. Delivered bandwidth is below pin peak because of command, refresh, bank, read/write turnaround, and access-pattern effects.
+
+**Worked example — HBM bandwidth per pin, and why delivered stays below peak.** Take an HBM3-class stack: it presents a 1024-bit data interface, and each data pin runs at up to 6.4 Gb/s, so one stack peaks at $6.4\ \text{Gb/s}\times1024/8 = 819\ \text{GB/s}$. Six such stacks give $\approx 4.9\ \text{TB/s}$ of pin-peak bandwidth. But command/address cycles, refresh, bank-conflict and read/write turnaround bubbles, and imperfect access patterns typically cap sustained delivery at roughly 80–90% of peak, so a realistic budget is $\approx 4.2\ \text{TB/s}$ (at 85%). That gap is not slack to reclaim later — it is the number a memory-bound roofline actually sees, and it must be carried alongside the PHY area/power and the interposer routing those six edge-mounted stacks demand.
 
 ## 6. Timing paths and floorplan feedback
 
@@ -143,7 +183,7 @@ GPU timing-critical families include:
 - tensor accumulator/writeback;
 - L2/NoC switch allocation and long chip wires.
 
-Replicated regular blocks ease floorplanning, but chip-scale wires, L2/NoC, clock delivery, and power grid can limit frequency. A simulator that assumes one-cycle global communication or unlimited operand bandwidth overstates realizable throughput.
+Replicated regular blocks ease floorplanning, but chip-scale wires, L2/NoC, clock delivery, and power grid can limit frequency. Clock delivery is its own physical problem: a low-skew edge must reach every flip-flop across a reticle-scale die through a balanced tree or mesh whose buffers burn a meaningful share of total dynamic power and set a floor on achievable skew, so a higher target clock is never free even where the logic alone could run faster. A simulator that assumes one-cycle global communication or unlimited operand bandwidth overstates realizable throughput.
 
 ## 7. Area and yield-aware composition
 
@@ -156,6 +196,10 @@ Within an SM,
 $$
 A_{SM}=A_{RF}+A_{shared/L1}+A_{pipelines}+A_{scheduler/control}+A_{local\ interconnect}.
 $$
+
+These terms compete for a hard ceiling. A single lithographic exposure can pattern at most one reticle field — about $26\ \text{mm}\times33\ \text{mm}=858\ \text{mm}^2$ — so a monolithic die physically cannot exceed it. That ceiling, not transistor supply, is what ultimately caps SM count on one die and pushes the largest designs toward multi-die/chiplet composition.
+
+**Worked example — die area from SM count.** With an illustrative $A_{SM}\approx 4\ \text{mm}^2$ and $N_{SM}=128$, the SM array alone is $512\ \text{mm}^2$. Add the rest of the ledger — L2/NoC $\approx 90$, six HBM PHYs $\approx 90$, host/IO $\approx 40$, clock/power/test $\approx 30$, margin $\approx 30$ — for a total near $792\ \text{mm}^2$, comfortably under the reticle. Push to $N_{SM}=160$ and the array alone becomes $640\ \text{mm}^2$; the total climbs past $\approx 920\ \text{mm}^2$ (and the overhead grows too), which no longer fits one exposure. The architect must then shrink $A_{SM}$, cut SM count, wait for a denser process, or split the design across reticle-limited chiplets — a fork the area equation makes visible before any RTL exists.
 
 Array redundancy/repair and SM-level disable strategies affect yield. A design may include spare rows/columns, cache ways, or allow a small number of defective SMs to be fused off into lower product bins.
 
@@ -170,6 +214,8 @@ Hot tensor/FP regions, HBM PHYs, and interconnect can create spatial hotspots. T
 - workload phase changes and power-virus behavior.
 
 Average chip power can be within TDP while a local region violates thermal or current-density limits.
+
+**Worked example — power density.** A 700 W part on an $\approx 800\ \text{mm}^2$ die averages only $\approx 0.9\ \text{W/mm}^2$, but that average hides the risk: a tensor/FP cluster toggling hard can dissipate locally at $\approx 2\times$ the mean ($\approx 1.8\ \text{W/mm}^2$) while idle blocks sit far below it. Junction temperature and metal current density track the local peak, not the chip average — which is why hotspot placement, per-block activity, and current-density-aware power grids matter even when the datasheet TDP looks safe.
 
 ## 9. Worked trade: more tensor cores per SM
 

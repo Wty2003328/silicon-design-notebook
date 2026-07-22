@@ -76,6 +76,24 @@ Microarchitectural state now includes:
 
 This enables fine-grained synchronization but removes implicit warp-synchronous assumptions. Code that exchanges data through shared memory must use an explicit warp or group synchronization primitive when required. The hardware is free to regroup threads differently from older lockstep behavior.
 
+**Worked example — the intra-warp handshake ITS rescues.** This is also why the paragraph above insists on *explicit* synchronization. Give two lanes of one warp a producer/consumer relationship through a shared flag:
+
+```cuda
+__shared__ int data, flag;      // flag initialized to 0
+int lane = threadIdx.x;
+if (lane == 0) {                // producer lane
+    data = produce();
+    __threadfence_block();      // publish data before the flag
+    flag = 1;                   // release the consumer
+} else if (lane == 1) {         // consumer lane
+    while (flag == 0)           // spin until released
+        ;
+    consume(data);
+}
+```
+
+Pre-Volta the `if` and `else if` diverge, and the reconvergence stack runs one side to its post-dominator before the other. Scheduled consumer-first — the order in the §1 diagram — `while (flag == 0)` spins forever: lane 0 is masked off and can never reach `flag = 1`. Volta+ ITS keeps a PC per lane, so it can suspend the stalled consumer, form an issue group containing lane 0, let it publish the flag, and only then resume lane 1; both drain. Note the limit: ITS restores *forward progress*, not memory ordering — the flag still needs the fence (or an atomic) to be seen correctly. Treat the snippet as motivation and prefer `__syncwarp` or a cooperative-group handshake in production code.
+
 ### 2.1 What the scheduler actually chooses
 
 A useful abstraction is two-level selection:
@@ -136,6 +154,28 @@ sequenceDiagram
 ```
 
 The async version removes per-element address/copy instructions and intermediate registers from the lanes, but the destination buffer still cannot be read early or overwritten late. The design therefore trades implicit in-order waiting for explicit ownership and completion state.
+
+Two GPU generations realize this pattern differently, and the single "async copy engine" above hides the split. Ampere's `cp.async` still has *every lane issue its own copy instruction*, but the data streams from global memory straight into shared memory, skipping the register file and the explicit store into shared memory — it removes the register round-trip, not the per-lane address and issue work. Hopper's TMA (§4) goes further: one elected thread launches the whole multidimensional tile from a descriptor, so even per-lane address generation disappears. So read the paragraph above as exact for TMA and approximate for `cp.async` — `cp.async` keeps the lane-side copy instructions that TMA eliminates.
+
+### 3.1 Software pipelining across tiles
+
+Double buffering pays off only when successive tiles *overlap in time*. Software pipelining stages the loop so that while the copy engine fills tile $n{+}1$, the cores compute tile $n$ from the other buffer. Placing the copy stage (global→shared, cost $T_m$) and the compute stage (cost $T_c$) on a common time axis shows the overlap directly:
+
+```text
+Depth-2 double buffer. Each column is one steady-state interval
+of length max(T_m, T_c). cp = copy (global->shared), mm = compute.
+
+          t0       t1       t2       t3       t4
+ copy   : cp 0     cp 1     cp 2     cp 3      .
+ compute:  .       mm 0     mm 1     mm 2     mm 3
+          | fill |   <----- steady ----->   | drain |
+
+At t1 the copy engine fills tile 1 while the cores compute tile 0.
+Double buffering keeps the copy target and the compute source in
+different buffers, so the two stages never touch the same tile.
+```
+
+The unpipelined ends — one copy with nothing yet to compute (fill), one compute with nothing left to copy (drain) — are the $T_{fill}$ and $T_{drain}$ terms of the timing bound in §10.1; the interior retires one tile every $\max(T_m,T_c)$ rather than $T_m+T_c$. Adding the epilogue stage $T_e$ of §6 simply adds a third row and widens the steady interval to $\max(T_m,T_c,T_e)$.
 
 ## 4. Tensor Memory Accelerator
 

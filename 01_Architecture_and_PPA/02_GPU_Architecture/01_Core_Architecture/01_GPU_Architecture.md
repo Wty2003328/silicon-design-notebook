@@ -78,6 +78,22 @@ The result is a machine of **many simple SIMT cores** (Streaming Multiprocessors
 3. **Work distributor → SM.** A global **work distributor** (NVIDIA's GigaThread engine) hands *whole blocks* to SMs that have room. **The block is the unit of dispatch and of resource allocation:** an SM admits a block only if it can *simultaneously* fit that block's registers, shared memory, warp slots, and a block slot — which is exactly the `min` in §7's occupancy formula. Once placed, a block runs to completion on that one SM (its threads share that SM's shared memory and can barrier-synchronize) and never migrates.
 4. **Block → warps → lanes.** The SM splits each resident block into **warps** of 32 threads (§2), and the schedulers (§4) interleave *all* resident warps from *all* resident blocks to hide latency (§1).
 
+Concretely, this hierarchy is exactly what the programmer writes: one kernel body (step 2) in which every thread derives its **own global index** from its block and lane coordinates, then touches its own data — the scalar-per-thread view SIMT exposes (§2).
+
+```cuda
+__global__ void saxpy(int n, float a, const float* x, float* y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;  // this thread's global index
+    if (i < n)                                       // guard the ragged tail block
+        y[i] = a * x[i] + y[i];                      // each lane: its own i, its own data
+}
+// host side: 256 threads/block, ceil-divide the grid to cover all n elements
+int threads = 256;
+int blocks  = (n + threads - 1) / threads;
+saxpy<<<blocks, threads>>>(n, 2.0f, x, y);
+```
+
+The `<<<blocks, threads>>>` launch fixes the grid shape (step 2); `blockIdx*blockDim+threadIdx` is how a lane recovers its slot in the block→warp→lane hierarchy; and the `if (i < n)` guard is block-indivisibility (step 3) made concrete — when $n$ is not a multiple of the block size the final block still dispatches *whole*, running with its surplus lanes masked off. That masked tail is the smallest instance of the packing loss the next paragraph generalizes to occupancy cliffs.
+
 ```mermaid
 flowchart TB
     H["Host program"] --> R["runtime + driver"]
@@ -345,6 +361,43 @@ A GPU's hierarchy is shaped, like everything else, by throughput. From the lane 
 - **Shared memory / L1** — a per-SM banked SRAM, split (configurably, up to ~228 KB as shared memory on Hopper-class parts out of a 256 KB structure) between a **software-managed scratchpad** (explicit reuse/tiling — the programmer stages a tile once and reuses it, saving HBM traffic) and a **hardware L1 cache**. The scratchpad half is a GPU-specific idea: because the compiler/programmer knows the reuse pattern of a GEMM tile, an *addressed* SRAM beats a cache that would thrash.
 - **L2** — one **shared, sliced/banked** cache across all SMs (tens of MB), address-hashed across slices to avoid a few hot slices serializing traffic (partition camping), the on-die analogue of DRAM bank-hashing ([DDR_Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md)); traffic to it crosses the on-chip crossbar/NoC ([Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md)).
 - **HBM** — stacked DRAM behind many controllers, delivering **multi-TB/s** of bandwidth that is a **single pool shared by every SM**. It is the first-class resource of the whole design, and the reason the memory hierarchy exists at all is to keep as much traffic as possible *off* it.
+
+These levels **nest spatially, and the nesting *is* the sharing domain**: each level is shared by — and contended by the traffic of — more lanes than the one it contains, which is exactly why it is larger and slower. A **graphics processing cluster (GPC)** groups several SMs under the chip-wide L2; inside an SM the ~4 sub-partitions each own a register-file slice and 32 lanes. Reading a lane's operand *outward* walks this ladder, each rung wider-scoped and costlier than the last, the final rung off-chip to HBM being the **bandwidth cliff** the whole hierarchy exists to avoid:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 40, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph CHIP["GPU die"]
+      direction TB
+      subgraph GPC["GPC - cluster of several SMs"]
+        direction TB
+        subgraph SM["SM (one throughput core)"]
+          direction TB
+          subgraph SP["Sub-partition (x4)"]
+            direction TB
+            LANE["32 lanes<br/>per-lane private registers"]:::lane
+            RF["Register-file slice<br/>banked, all resident warps"]:::rf
+          end
+          SMEM["Shared memory / L1<br/>per-SM, ~256 KB"]:::smem
+        end
+      end
+      L2["L2 cache<br/>chip-wide, sliced, tens of MB"]:::l2
+    end
+    HBM["HBM - off-chip pool<br/>multi-TB/s, shared by every SM"]:::hbm
+
+    LANE -->|"cheapest, per-thread"| RF
+    RF -->|"per-SM reuse"| SMEM
+    SMEM -->|"cross-SM via NoC"| L2
+    L2 -->|"bandwidth cliff"| HBM
+
+    classDef lane fill:#bbf7d0,stroke:#15803d,color:#000
+    classDef rf fill:#fde68a,stroke:#b45309,color:#000
+    classDef smem fill:#99f6e4,stroke:#047857,color:#000
+    classDef l2 fill:#bae6fd,stroke:#0369a1,color:#000
+    classDef hbm fill:#fca5a5,stroke:#991b1b,color:#000
+```
+
+Read the nested boxes as *scope* (who shares this level) and the downward arrows as the *access ladder* (registers cheapest, HBM dearest). The scope is why the occupancy formula below is a per-SM budget — registers and shared memory are carved up *within one SM*, while every SM competes for the *one* L2 and the *one* HBM pool.
 
 **Occupancy** ties this back to §1. It is the ratio of resident warps to the hardware maximum, and it is *capped by whichever per-SM resource runs out first*:
 

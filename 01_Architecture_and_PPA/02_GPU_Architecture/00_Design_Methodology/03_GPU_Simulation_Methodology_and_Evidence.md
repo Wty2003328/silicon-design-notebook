@@ -12,6 +12,19 @@ flowchart LR
     MET --> VAL["hardware counter and output validation"]
 ```
 
+> **Two complementary views.** The diagram above is the *data path inside one run* — source to validated metrics. The loop below is the *engineer's workflow across a study*: capture one trace, configure a timing model, validate its counters against silicon, correlate the trend, then iterate or reuse. Sections 3–9 detail each stage.
+
+```mermaid
+flowchart LR
+    APP["app plus fixed input"] --> CAP["capture SASS trace on real GPU"]
+    CAP --> MODEL["configure timing model"]
+    MODEL --> RUN["simulate ROI, dump counters"]
+    RUN --> VAL["validate vs silicon counters"]
+    VAL --> CORR["correlate: bias, r, residuals"]
+    CORR -->|"residual too large"| MODEL
+    CORR -->|"within budget"| USE["study new configs"]
+```
+
 > **First-time reader orientation:** GPU simulation has two programs and several instruction forms. Host CPU code allocates memory, transfers data, launches kernels, and synchronizes. Device code is represented as virtual PTX and target machine SASS. An execution-driven simulator interprets a device representation; a trace-driven simulator replays the SASS path captured on real hardware. The artifact boundary determines what can change in simulation.
 
 > **Abbreviation key — skim now and return as needed:** CUDA programming platform; parallel thread execution (PTX); CUDA binary (cubin); CUDA fat binary (fatbin); NVIDIA native GPU machine representation (SASS); NVIDIA binary instrumentation tool (NVBit); streaming multiprocessor (SM); single instruction, multiple threads (SIMT); program counter (PC); high-bandwidth memory (HBM); region of interest (ROI); instructions per cycle (IPC); comma-separated values (CSV); power, performance, and area (PPA).
@@ -57,6 +70,8 @@ The host runtime supplies kernel entry, arguments, grid dimensions, block dimens
 Each block becomes warps. One static SASS instruction can execute many times for many warps. A dynamic warp instruction carries PC/opcode, source/destination information, and an active-lane mask. A memory instruction also carries lane addresses; coalescing converts them into transactions.
 
 ## 3. Execution-driven PTX simulation
+
+**Intuition — re-perform vs replay.** Treat the device program as a recorded performance. *Execution-driven* simulation (this section) **re-performs** it: the model runs the PTX itself, so changing the machine can change the addresses, branch outcomes, and divergence it produces. *Trace-driven* simulation (§4) **replays** a recording captured once on silicon: the SASS instructions, active masks, and addresses are fixed, and only their timing is recomputed. Re-performing reacts to design changes but may lower PTX to machine code differently than real hardware; replaying is fast and instruction-faithful but frozen — it cannot produce a path the recording never took. That trade-off is the spine of this methodology.
 
 In an execution-driven path, intercepted runtime calls create GPU state and the functional frontend interprets PTX threads. It computes:
 
@@ -106,6 +121,16 @@ This record also clarifies abstraction. One warp-level matrix instruction can be
 Each L1 port, L2 slice, NoC link, memory-partition queue, DRAM bank, and return path is a finite-rate server. Requests carry arrival time and wait until a legal service opportunity. Their grant-minus-arrival time is queueing latency; no separate “contention term” is required. For offered rate $\lambda$, service rate $\mu$, and $\rho=\lambda/\mu$, the simple $1/(\mu-\lambda)$ residence-time shape explains the rapid latency rise near saturation, while the event model resolves the actual burst/interleave behavior.
 
 Trace replay is faster largely because it removes functional execution per thread. If $n_{event}$ is timing events per target cycle and $i_{event}$ is host work per event, simulator cost scales roughly with $n_{event}i_{event}$. Captured values, masks, and addresses reduce $i_{event}$; coarser cache/interconnect models reduce $n_{event}$ but can erase the very contention under study. Profile host time and remove fidelity only outside the claim boundary.
+
+### 5.3 Kernel sampling for tractable studies
+
+**What.** Rather than simulate every kernel invocation in detail, simulate a representative *subset* and extrapolate the rest — the GPU analogue of sampled CPU simulation (SimPoint/SMARTS). A single run can issue thousands to millions of launches, and §5.2's per-event cost is paid for each, so a full detailed run can take days to weeks.
+
+**Why.** Most invocations are near-duplicates: the same kernels re-launch across loop iterations with the same shapes and memory behavior, so detailed simulation re-derives the same timing again and again. Sampling spends the budget once per distinct behavior.
+
+*Worked example.* An application issues $N = 12{,}000$ kernel invocations in its measured region; a full detailed run would take about $300$ hours (about $90$ s per invocation). Clustering the invocations by static kernel, launch shape, and dynamic signature yields $K = 40$ distinct behaviors. Simulating one representative per cluster costs $40 \times 90\,\text{s} = 3600\,\text{s} = 1$ hour — an ideal $12{,}000 / 40 = 300\times$ speedup. The realized speedup is smaller: reaching each representative means functionally fast-forwarding past skipped work and warming caches before its ROI, and that overhead — not detailed simulation — then dominates.
+
+**How.** Cluster invocations by static kernel plus launch shape plus a dynamic signature (instruction mix, footprint, divergence); choose one or a few representatives per cluster; fast-forward or restore a checkpoint to reach each representative's architectural state; warm caches and predictors so the ROI is not cold-start biased; simulate the representative in detail; then weight each cluster's per-invocation metrics by its dynamic share and sum to reconstruct application totals. Report the sampling fraction and per-cluster variance with the estimate — repeating one deterministic trace is reproducible but does not by itself bound extrapolation error (§9.1).
 
 ## 6. Measurement boundaries
 
@@ -177,6 +202,18 @@ GPU model errors often enter at different boundaries: compiler/SASS mismatch cha
 A SASS trace can faithfully preserve the captured target instructions, active masks, and addresses while still omitting feedback that would change those values under another cache, memory-consistency, or dynamic-parallelism design. Conversely, an execution-driven PTX model can react to architectural changes but may lower virtual instructions differently from real hardware. State which uncertainty dominates the claim.
 
 Validate trend resolution as well as absolute error. High correlation across configurations can make a consistent timing bias acceptable for ranking; configuration-dependent residuals determine whether two close kernels or designs are distinguishable. Repeating the same deterministic trace does not measure model-form error. Use multiple kernels/shapes, silicon counters, microbenchmarks, and—where available—RTL evidence to bound it.
+
+*Worked example — bias vs correlation.* Five kernels, hardware cycles $H$ against simulated $S$, where the model overpredicts by a constant $15\%$ ($S = 1.15\,H$):
+
+| kernel | $H$ | $S$ | error |
+|---|---|---|---|
+| K1 | 100 | 115 | +15% |
+| K2 | 200 | 230 | +15% |
+| K3 | 400 | 460 | +15% |
+| K4 | 800 | 920 | +15% |
+| K5 | 1600 | 1840 | +15% |
+
+Absolute error is $15\%$ (MAPE), yet the points are perfectly collinear, so Pearson $r = 1.00$ (real data lands near, not at, $1$). The model therefore *ranks* all five kernels correctly, and one $1/1.15$ gain factor removes the bias — a consistent bias is acceptable for ranking. Resolution is the stricter test: if two candidate designs are predicted at $1015$ and $1005$ cycles (about $1\%$ apart) while the model's kernel-to-kernel residual spread is $\pm 3\%$, that gap sits inside the noise and the model cannot reliably call one design faster than the other.
 
 ## 10. GPU simulator/tool selection
 

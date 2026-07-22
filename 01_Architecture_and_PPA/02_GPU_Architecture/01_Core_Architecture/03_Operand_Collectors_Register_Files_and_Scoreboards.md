@@ -56,7 +56,7 @@ Each step trades generality for feasible bandwidth. Banking replaces expensive p
 
 ## 1. Warp state and the scoreboard
 
-A **scoreboard** tracks whether an instruction's dependencies are safe. In a simple design, decoding a destination register marks it pending; writeback clears it. A later instruction reading that register is ineligible while the bit is set.
+A **scoreboard** tracks whether an instruction's dependencies are safe. Intuitively it is a *wet-paint sign* hung on each register the instant a writer issues: any later reader or overwriter must wait until the paint dries — the write completes — and the sign comes down. In a simple design, decoding a destination register marks it pending; writeback clears it. A later instruction reading that register is ineligible while the bit is set.
 
 GPU scoreboards differ from a CPU issue queue in emphasis:
 
@@ -150,6 +150,34 @@ Collectors decouple two mismatched widths:
 
 They also let bank arbitration interleave operands from several instructions. While instruction A waits for a conflicting bank, instruction B may collect from idle banks.
 
+Structurally the collectors are an *array* of units that share the banks through one arbiter, so the datapath is a loop: request the banks, catch returning values into operand slots, and dispatch a unit only once it is full.
+
+```mermaid
+flowchart TB
+    ISS["scheduler issue<br/>allocate a collector unit"] --> CUA
+    subgraph CUA["operand collector units"]
+      direction LR
+      CU0["CU0<br/>op slots + valid bits"]
+      CU1["CU1<br/>op slots + valid bits"]
+      CUk["CUk<br/>op slots + valid bits"]
+    end
+    CUA -->|"pending read requests"| ARB["bank arbiter<br/>one grant per bank per cycle"]
+    ARB --> RFB
+    subgraph RFB["banked register file"]
+      direction LR
+      B0["bank 0"]
+      B1["bank 1"]
+      B2["bank 2"]
+      Bn["bank B-1"]
+    end
+    RFB -->|"read values"| RBX["readback crossbar"]
+    RBX -->|"fill slot, set valid bit"| CUA
+    CUA -->|"all operands valid"| DX["dispatch arbiter + crossbar"]
+    DX --> EXU["ALU / LSU / SFU / matrix"]
+```
+
+The arbiter is the single point that resolves bank conflicts (§4): each cycle it grants at most one read per bank across *all* units, so an operand blocked in one unit never stalls the reads another unit can make from idle banks — the mechanism §4.1 traces cycle by cycle. The sequence in §3.1 is then one unit's view of a single trip around this loop.
+
 A collector entry typically holds:
 
 - warp and instruction identity;
@@ -217,6 +245,33 @@ Hardware can mitigate conflicts with:
 - collector scheduling that steals otherwise idle banks.
 
 AMD-style scalar datapaths make a useful principle explicit: values uniform across a wavefront need not be stored and read 32 or 64 times. A scalar register file and scalar execution unit remove redundant vector RF traffic for addresses, loop bounds, and common control.
+
+### 4.1 A worked bank-conflict trace
+
+$E[U]$ is an average; the price of one *specific* conflict is clearest counted in cycles. Take the common teaching model — $B=4$ banks, one read port each, every access delivering one source register for all active lanes, with $bank(r)=r\bmod 4$ — and two ready warps:
+
+- **warp A** — `FFMA R10, R4, R8, R12` reads R4, R8, R12 $\to$ banks $0,0,0$ (all collide);
+- **warp B** — `FFMA R7, R1, R6, R3` reads R1, R6, R3 $\to$ banks $1,2,3$ (all distinct).
+
+Serve warp A alone: its three sources share bank 0, so the one port serializes them.
+
+| cycle | bank 0 | bank 1 | bank 2 | bank 3 |
+|---|---|---|---|---|
+| 1 | R4 (A) | idle | idle | idle |
+| 2 | R8 (A) | idle | idle | idle |
+| 3 | R12 (A) | idle | idle | idle |
+
+Three reads that ideally land in one cycle take three: **2 cycles lost**, banks 1–3 idle, read-port utilization $3/12=25\%$. No collector can cure this — the collision is intrinsic to A's register *numbers*. Only *bank-aware register allocation* (above) removes it: had the compiler placed A's sources on distinct residues $0,1,2$ (say R4, R9, R14), all three would read in a single cycle.
+
+What the arbiter and the collector array *do* recover is the wasted bandwidth. With both warps live, the arbiter grants banks 1–3 to warp B while A serializes on bank 0 — the *bank stealing* named above:
+
+| cycle | bank 0 | bank 1 | bank 2 | bank 3 | dispatched |
+|---|---|---|---|---|---|
+| 1 | R4 (A) | R1 (B) | R6 (B) | R3 (B) | B ready |
+| 2 | R8 (A) | idle | idle | idle | — |
+| 3 | R12 (A) | idle | idle | idle | A ready |
+
+Both instructions finish collecting in 3 cycles rather than the $3+1=4$ they would need serviced back-to-back, and utilization doubles to $6/12=50\%$. This is the §3 datapath at work: many collector units sharing one arbiter let an independent warp fill the idle banks, so a conflict costs the *conflicting* warp its cycles without stalling the machine.
 
 ## 5. Issue, dispatch, and pipeline specialization
 

@@ -96,17 +96,40 @@ Aggregate branch efficiency should weight by issued lane-slots, not average mask
 
 ## 2. Divergence and reconvergence
 
+**Essence — one program counter, many lanes.** A warp fetches from a single instruction address per cycle, so every active lane must sit at the same instruction. A data-dependent branch that sends some lanes one way and the rest another therefore cannot run both sides at once: the hardware runs one side with the other lanes masked off, then runs the other side. Work that independent cores would do in parallel is *serialized*, and every masked-off lane is a wasted issue slot. *Reconvergence* is the hardware restoring the full lane mask once both sides finish, putting the warp back in lockstep. Picture one tour guide who can point only one way at a time for a group that must stay together: half go left while half wait, then half go right — the group is never more than half-moving.
+
 When lanes choose different control paths, the warp executes path subsets serially under masks, then reconverges. For paths $p$ with instruction counts $I_p$ and active fractions $a_p$, useful lane efficiency is approximately
 
 $$
 \eta_{div}=\frac{\sum_p a_pI_p}{\sum_p I_p}.
 $$
 
+The numerator sums the lane-instructions that do useful work; the denominator sums the issued lane-slots, so $\eta_{div}$ is just the fraction of issued lane-slots that were *not* masked off (a concrete number is worked in §13, Problem 2).
+
 Nested divergence needs a stack/token mechanism or independent thread scheduling state that preserves per-lane PCs and convergence. Loops with lane-dependent trip counts can keep a warp alive for one straggler lane.
+
+The reconvergence stack is what makes serialize-then-merge automatic. On a divergent branch the hardware first records where the paths must merge again — the *reconvergence point*, the branch's immediate post-dominator (the first instruction every lane reaches no matter which side it took) — then runs the divergent sides one at a time, each masked to its own lanes, popping back toward the merge point as each side arrives there:
+
+```mermaid
+flowchart TB
+    Br["divergent branch<br/>active mask splits: some lanes to A, some to B"] --> R["find reconvergence PC<br/>immediate post-dominator of the branch"]
+    R --> Push["push one stack entry per divergent path<br/>each holds: path PC, its lane mask, reconvergence PC"]
+    Push --> Exec["execute top-of-stack entry<br/>only its lanes active, the rest masked off"]
+    Exec --> Q{"this path's PC<br/>= reconvergence PC?"}
+    Q -->|"no"| Exec
+    Q -->|"yes"| Pop["pop this entry"]
+    Pop --> More{"another path entry<br/>still on the stack?"}
+    More -->|"yes"| Exec
+    More -->|"no"| Done["full mask restored<br/>warp reconverged, lanes back in lockstep"]
+```
+
+Independent thread scheduling (see [Independent-Thread Scheduling and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md)) generalizes this by giving each lane its own program counter instead of one stacked mask, so the two sides may interleave; the reconvergence point still marks where the lanes line back up.
 
 Compilers reduce divergence through predication, if-conversion, data layout, and warp-uniform branches. Predication executes both sides for short regions; it trades control overhead for inactive work.
 
 ## 3. Resource-limited occupancy
+
+**Essence — whichever budget runs out first.** Occupancy is just how many warps you fit on an SM, divided by the most it can hold. Each resident block draws on three independent budgets — the register file, shared memory, and the fixed warp/block slots — and residency is capped by whichever budget runs out *first*, like a shipping container limited by weight or volume, whichever binds sooner. Each budget is also handed out in fixed quanta (allocations round *up*), so nudging one register past a quantum boundary can drop a whole block of residency at once: the discrete *occupancy cliff*, not a smooth slope. The formulas below make "whichever runs out first" precise, and §13 Problem 1 walks a full calculation end to end.
 
 For an SM with maximum resident warps $W_{max}$, registers $R_{SM}$, shared memory $S_{SM}$, block slots $B_{max}$, warp size $T_w$, block size $T_b$, registers/thread $r$, and shared memory/block $s$:
 
@@ -395,7 +418,7 @@ A warp executes 20 instructions with all 32 lanes, then two divergent paths of 1
 
 ### Problem 3 — resource trade
 
-Reducing registers from 64 to 48 raises residency from 4 to 5 blocks but adds 20 local-memory operations/thread. The occupancy calculator alone cannot choose. Compare added spill transactions/latency against improved ready-warp and block-tail behavior using counters or simulation.
+Reducing registers from 64 to 48 raises residency from 4 to 5 blocks — assuming registers are the binding resource here (unlike Problem 1, where shared memory also caps residency at four) — but adds 20 local-memory operations/thread. The occupancy calculator alone cannot choose. Compare added spill transactions/latency against improved ready-warp and block-tail behavior using counters or simulation.
 
 ## Cross-references
 

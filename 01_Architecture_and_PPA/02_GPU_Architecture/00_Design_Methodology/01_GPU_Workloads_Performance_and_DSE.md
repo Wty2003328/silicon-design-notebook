@@ -75,6 +75,8 @@ $$
 
 where $R$ denotes registers, $S$ shared memory, and $T$ threads. Occupancy is resident warps divided by architectural warp slots.
 
+**Intuition.** Resident warps are workers clocked in on the SM; occupancy counts them, but only the *eligible* ones can execute this cycle—a crowded floor does nothing if every warp is blocked on the same delivery (one shared dependency).
+
 High occupancy only means more latency-hiding candidates exist. It does not guarantee they are eligible. All warps can wait on the same long scoreboard dependency, barrier, cache miss, or tensor-core result. Conversely, a compute-dense kernel with independent instructions may reach peak at modest occupancy.
 
 Use three distinct measurements:
@@ -85,12 +87,52 @@ Use three distinct measurements:
 
 ## 3. Arithmetic intensity and the GPU roofline
 
+**Intuition.** Arithmetic intensity is the useful work a kernel extracts per byte it moves across a memory boundary—operations per byte. Compute units are cheap and plentiful while moving bytes is slow and scarce, so intensity decides which resource runs out first: reuse each fetched byte in many operations (high intensity) and the math pipelines stay busy behind the memory system; touch each byte only once or twice (low intensity) and those pipelines starve no matter how many exist. The roofline turns this into a single ceiling—bandwidth-limited at low intensity, compute-limited at high—sketched below.
+
 At a named memory boundary,
 
 $$
 I=\frac{N_{ops}}{B},\qquad
 P\le\min(P_{peak},\ I\,BW_{boundary}).
 $$
+
+The two ceilings cross at the **ridge point**
+
+$$
+I_{ridge}=\frac{P_{peak}}{BW_{boundary}},
+$$
+
+the intensity where the bandwidth term $I\,BW$ exactly equals the compute peak. It partitions the model: a kernel with $I<I_{ridge}$ sits on the sloped roof and is **memory-bound** (throughput $\approx I\,BW$, so only more bandwidth, more reuse, or a cheaper datatype raises it), while a kernel with $I>I_{ridge}$ sits on the flat roof and is **compute-bound** (throughput $\approx P_{peak}$, so only faster or additional pipelines raise it). The ridge belongs to the machine at that boundary, not to the kernel—each boundary in the hierarchy has its own. For the machine in the Section 9 worked example (120 tera-operations/s, 3 TB/s), $I_{ridge}=120/3=40$ operations/byte: a kernel must reuse every HBM byte in at least 40 operations to be compute-bound, so that kernel at 10 operations/byte sits far left of the ridge and is firmly memory-bound.
+
+```text
+ throughput P   (log-log)
+   ^
+   |             ______________   P_peak  (compute roof, flat)
+   |            /
+   |           /       compute-bound (P = P_peak)
+   |          /
+   |         /
+   |        /          memory-bound (P = I x BW)
+   |       /
+   |      /
+   +------------+--------------->  arithmetic intensity I
+                |
+             I_ridge = P_peak / BW
+```
+
+Applying the model to a kernel is mechanical: locate its intensity relative to the ridge, read off the bound, and pick levers from the side it lands on.
+
+```mermaid
+flowchart TD
+    K["kernel at one memory boundary"] --> AI["arithmetic intensity: I = ops / bytes moved"]
+    M["machine ceilings: P_peak and BW"] --> RIDGE["ridge: I_ridge = P_peak / BW"]
+    AI --> CMP{"I below I_ridge ?"}
+    RIDGE --> CMP
+    CMP -- "yes" --> MEM["memory-bound: P = I x BW"]
+    CMP -- "no" --> COMP["compute-bound: P = P_peak"]
+    MEM --> FIXM["levers: bandwidth, reuse/tiling, cheaper datatype"]
+    COMP --> FIXC["levers: more or faster pipelines"]
+```
 
 There is not one GPU arithmetic intensity. A tile can have high HBM intensity due to L2/shared-memory reuse while still being limited by shared-memory bank bandwidth or register-file operand delivery. Construct hierarchical rooflines for HBM, L2, L1/shared memory, register file, and specialized pipelines.
 
