@@ -133,7 +133,37 @@ Initially `x=y=0`:
 
 Outcome `r0=0, r1=0` is forbidden under SC: no single total order can place both loads before the other hart's store while preserving both local store→load orders (the two program-order edges and the two load-before-store edges close the cycle $x{=}1 \rightarrow r0{=}y \rightarrow y{=}1 \rightarrow r1{=}x \rightarrow x{=}1$). It is allowed by models that permit a later load to bypass an earlier store to a different address, as ordinary store buffers do.
 
-A full fence between each store and load forbids that bypass/visibility outcome. A fence is therefore an ordering edge, not a “flush all caches” instruction.
+To decode that cycle, name its two edge kinds. A store→load arrow *inside one hart* (`x=1 → r0=y`, and `y=1 → r1=x`) is **program order** (`po`). A load→store arrow *across harts* (`r0=y → y=1`, and `r1=x → x=1`) is **from-read** (`fr`): the load observed memory *before* that store took effect, so it sits earlier in coherence order. SC forbids any cycle in $po \cup fr$, and these four edges close exactly one — so no legal total order exists.
+
+**How a store buffer produces `0/0`.** Each store parks in its own hart's store buffer and drains to coherent memory later; each load goes to memory immediately. Interleave so both loads run before either buffer drains:
+
+| step | Hart 0 | Hart 1 | memory |
+|---|---|---|---|
+| 1 | `x=1` enters SB0 | — | `x=0, y=0` |
+| 2 | — | `y=1` enters SB1 | `x=0, y=0` |
+| 3 | `r0=y` reads **0** | — | `x=0, y=0` |
+| 4 | — | `r1=x` reads **0** | `x=0, y=0` |
+| 5 | SB0 drains | SB1 drains | `x=1, y=1` |
+
+Neither load sees the other's store because that store is still private in a buffer — the store→load edge *to a different address* is exactly what TSO leaves unordered. This is the microarchitectural realization of the `fr` edges above.
+
+```mermaid
+flowchart TB
+    subgraph H0 ["Hart 0"]
+        A0["store x=1"] --> B0["buffer holds x=1"]
+        C0["load r0 = y"]
+    end
+    subgraph H1 ["Hart 1"]
+        A1["store y=1"] --> B1["buffer holds y=1"]
+        C1["load r1 = x"]
+    end
+    B0 -. "drains later" .-> M["memory: x=0, y=0"]
+    B1 -. "drains later" .-> M
+    M -. "y reads 0" .-> C0
+    M -. "x reads 0" .-> C1
+```
+
+A full fence between each store and load forbids that bypass/visibility outcome. A fence is therefore an ordering edge, not a “flush all caches” instruction. Concretely, the fence makes each hart's store drain to memory before that hart's load may issue; the two stores can no longer both be buffered when the loads read, so at least one load observes a `1` and `0/0` cannot occur.
 
 ## 4. Common hardware model shapes
 
@@ -156,6 +186,20 @@ Initially `data=0, flag=0`:
 | `flag = 1` (release) | if `r0==1`, `r1=data` |
 
 Release orders earlier producer operations before the flag publication; acquire orders later consumer operations after observing it. If the consumer reads `flag=1`, it must see `data=42` under the synchronization contract.
+
+In C11 the pair uses explicit memory orders on the flag; `data` stays a plain access because the release/acquire edge is what orders it:
+
+```c
+// Producer
+data = 42;                                             // plain store
+atomic_store_explicit(&flag, 1, memory_order_release); // publishes data first
+
+// Consumer
+if (atomic_load_explicit(&flag, memory_order_acquire)) // observes the release
+    use(data);                                         // guaranteed to read 42
+```
+
+The `release` forbids `data=42` from sinking past the flag store; the matching `acquire` forbids the `use(data)` load from hoisting above the flag load. Weaken either to `memory_order_relaxed` and the edge breaks — the consumer may then see `flag=1` with stale `data=0`.
 
 Microarchitecturally, release may wait until older stores reach the required ordering point before making the release store observable. Acquire may prevent younger loads from becoming irrevocably ordered before the acquire result. It need not stop all speculative execution if violations can be detected and repaired.
 
@@ -209,9 +253,36 @@ The requester obtains exclusive authority, performs the operation, and returns t
 
 Write occurs only if the observed value matches. The comparison and conditional write share the same serialization interval; software sees one success/failure result.
 
+Why one conditional primitive suffices: *any* read-modify-write can be built as a CAS **retry loop** — read the current value, compute a new one, and swap it in only if nothing changed underneath. On failure CAS reloads the current value into `cur`, so the loop simply recomputes and retries:
+
+```c
+// atomic "multiply by 3" — no native AMO for it — via a CAS loop
+uint64_t cur = atomic_load_explicit(&v, memory_order_relaxed);
+uint64_t next;
+do {
+    next = cur * 3;                       // arbitrary RMW computed from cur
+} while (!atomic_compare_exchange_weak_explicit(
+    &v, &cur, next,                       // fail path writes current v into cur
+    memory_order_acq_rel, memory_order_relaxed));
+```
+
+The `_weak` form may fail spuriously, which is harmless inside a loop. A caveat CAS shares with all value-comparison: it cannot tell `A → B → A` from "never changed" (the *ABA* problem), because it inspects only the value, not the history.
+
 ### 9.3 Load-reserved/store-conditional
 
 LR establishes a reservation; SC succeeds only if it remains valid. Conflicting writes and allowed implementation events clear it. Correctness includes forward-progress constraints for constrained loops, reservation granularity, and context-switch behavior.
+
+The same optimistic retry loop as §9.2, but keyed on the reservation rather than a compared value:
+
+```asm
+retry:
+    lr.w   t0, (a0)      # load-reserved: read *a0, arm a reservation
+    addi   t0, t0, 1     # compute new value
+    sc.w   t1, t0, (a0)  # store-conditional: t1 = 0 on success, nonzero if lost
+    bnez   t1, retry     # reservation broken -> retry
+```
+
+Because SC fails on *any* intervening write to the reserved granule — not just a net value change — LR/SC sidesteps the ABA problem that trips CAS: an `A → B → A` sequence still clears the reservation and forces a retry. The cost is the reservation-granularity and forward-progress constraints above.
 
 An atomic's latency includes ownership acquisition, invalidations, operation, acknowledgement, and ordering drains:
 

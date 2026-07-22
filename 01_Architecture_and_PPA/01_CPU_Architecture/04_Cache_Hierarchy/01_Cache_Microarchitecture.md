@@ -127,6 +127,56 @@ $$\text{sets} = \frac{C}{N\,L}, \quad \text{offset} = \log_2 L, \quad \text{inde
 
 *Worked geometry (32 KB, 4-way, 64 B lines, 32-bit address):* sets $= 32768/(4\cdot64) = 128$; offset $= 6$; index $= 7$; tag $= 32-7-6 = 19$. Each line carries $19$ tag $+\,1$ valid $+\,1$ dirty $= 21$ overhead bits against $512$ data bits — about **4 % storage overhead**, the price of being content-addressable rather than a flat array. The tag SRAM is roughly $25\times$ smaller than the data SRAM, and §2 turns that size asymmetry into a timing and a power lever.
 
+**Splitting a concrete address.** Field *widths* are abstract; watch one address flow through them. The three fields answer three questions in order — *which set?* (index), *is a resident line the one I want?* (tag), *which byte of the line?* (offset). Take `0xDEADBEEF` in the same cache (32 KB, 4-way, 64 B lines, 32-bit address):
+
+```text
+address  0xDEADBEEF = 1101 1110 1010 1101 1011 1110 1110 1111   (32 bits)
+
+  tag    = bits 31:13 = 110 1111 0101 0110 1101 = 0x6F56D (456045)
+  index  = bits 12:6  = 111 1011                = 123  -> set 123 of 128
+  offset = bits 5:0   = 10 1111                 = 47   -> byte 47 of 64
+```
+
+So the access probes **set 123**, compares that set's four stored tags against **0x6F56D**, and on a match returns **byte 47** of the winning 64-byte line. The split is lossless — reassembling the fields returns the address, $456045\times2^{13} + 123\times2^{6} + 47 = \text{0xDEADBEEF}$. And because only bits $[12{:}6]$ pick the set, any two addresses differing by a multiple of the **way size** $C/N = 8\text{ KB} = 2^{13}$ share an index and land in the *same* set — the collision that §2 charges as a conflict miss.
+
+**The lookup, structurally.** Those fields drive a set-associative read directly: the index decodes to one set, that set's $N$ ways are read together, $N$ comparators check the stored tags against the address tag *in parallel*, the hit is their OR, the matching one-hot steers the way multiplexer, and the offset finally selects the byte inside the chosen line.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 38, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart TD
+    ADDR["address 0xDEADBEEF"]
+    ADDR --> IX["index 123<br/>bits 12:6"]
+    ADDR --> TG["tag 0x6F56D<br/>bits 31:13"]
+    ADDR --> OF["offset 47<br/>bits 5:0"]
+
+    IX --> DEC["set decoder<br/>pick 1 of 128 sets"]
+    DEC --> SET["set 123<br/>4 ways in parallel"]
+    SET --> W0["way 0<br/>tag | 64B line"]
+    SET --> W1["way 1<br/>tag | 64B line"]
+    SET --> W2["way 2<br/>tag | 64B line"]
+    SET --> W3["way 3<br/>tag | 64B line"]
+
+    TG --> CMP["4 comparators<br/>stored tag =? 0x6F56D"]
+    W0 --> CMP
+    W1 --> CMP
+    W2 --> CMP
+    W3 --> CMP
+
+    CMP --> HIT["OR reduce<br/>hit / miss"]
+    CMP --> SEL["winning way<br/>one-hot select"]
+
+    W0 --> MUX["way MUX"]
+    W1 --> MUX
+    W2 --> MUX
+    W3 --> MUX
+    SEL --> MUX
+    MUX --> BSEL["byte select"]
+    OF --> BSEL
+    BSEL --> OUT["word to core"]
+```
+
+(This is the *organization* of a lookup — how the address fields index the array; §2.2 revisits the same read as a *timing* problem, reading tags and data in parallel to fit one cycle.)
+
 ### 1.5 The VIPT ceiling: how translation caps L1 geometry
 
 Every access on a modern core carries a *virtual* address, but correctness demands a *physical* tag (two virtual pages may alias one physical frame). The translation that produces the physical bits ([TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)) sits in series ahead of a physically-tagged cache — *unless* the cache is indexed with bits translation never changes, so index-and-read can run in parallel with the TLB. That is **virtually-indexed, physically-tagged (VIPT)**: index the set with low bits *now*, compare the physical tag when it arrives. The overlap mechanism and its synonym hazards are owned by [TLB_and_Virtual_Memory §6](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md); what belongs *here* is the geometric constraint it forces on cache size, because it is a fact about the index/offset split of §1.4.

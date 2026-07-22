@@ -73,6 +73,8 @@ If the ROB head is incomplete while younger entries are done, **head-of-line blo
 
 At rename, destination architectural register $a$ changes mapping from old physical $p_{old}$ to new $p_{new}$. The old physical register cannot be freed immediately because older instructions or recovery may still require it.
 
+**Why the wait?** Two independent readers still need $p_{old}$. First, every instruction between the previous definition of $a$ and this one reads $a$ from $p_{old}$; commit is in program order, so all of them are older and have already committed by the time this instruction commits. Second, if this instruction is squashed, recovery must restore $a\to p_{old}$, so its contents must survive. Commit is the first instant when *neither* reader can exist — no surviving instruction still maps $a\to p_{old}$, and the instruction can no longer be squashed — so that is when $p_{old}$ is freed. The mirror image holds under recovery: a *squashed* redefinition never took architectural effect, so recovery frees the register it allocated ($p_{new}$), not $p_{old}$.
+
 At commit of the redefining instruction:
 
 - the committed map for $a$ becomes $p_{new}$;
@@ -97,13 +99,52 @@ Execution detects faults early—illegal instruction, page fault, access fault, 
 
 If multiple instructions fault, program age decides. If one instruction has several internal fault candidates, ISA priority decides. Late responses must carry age/epoch tags so a killed access cannot raise a ghost exception.
 
+The ROB head runs the same decision every cycle — commit, or recover — and the two recovery arms (a fault reaching the head, or a branch resolving wrong) differ only in the squash boundary and the map they restore from.
+
+```mermaid
+flowchart TD
+    Head["ROB head each cycle"] --> Done{"head complete<br/>and fault-free?"}
+    Done -->|"incomplete"| Stall["stall commit<br/>head-of-line block"]
+    Done -->|"yes"| Commit["commit in order<br/>arch map a to p_new<br/>free p_old, drain store"]
+    Commit --> Head
+    Fault["head instr faults"] --> Sq["squash discarded window<br/>fault: head and younger<br/>branch: younger than branch"]
+    Mis["branch resolves wrong"] --> Sq
+    Sq --> Rest["restore map into RAT<br/>fault: from arch/retirement map<br/>branch: from its checkpoint"]
+    Rest --> Recl["reclaim squashed p_new to free list<br/>roll back free-list pointer"]
+    Recl --> Epoch["bump epoch, kill in-flight requests"]
+    Epoch --> Redir["redirect fetch<br/>trap vector or correct target"]
+```
+
+**Worked trace — precise recovery on a page fault.** Start with committed map $x1\to p1,\ x2\to p2,\ x3\to p3,\ x4\to p4,\ x5\to p5$ and free list $\{p6,p7,p8,p9,\dots\}$. Four µops dispatch in program order; `p_new` is popped from the free list at rename, and `p_old` is the destination's previous mapping.
+
+| # | µop | dest: `p_new` (`p_old`) | status at head time |
+|---|---|---|---|
+| i1 | `add x3, x1, x2` | x3: p6 (p3) | complete |
+| i2 | `ld  x4, 0(x3)` | x4: p7 (p4) | **page fault** |
+| i3 | `add x5, x1, x2` | x5: p8 (p5) | complete (speculative) |
+| i4 | `sub x3, x5, x2` | x3: p9 (p6) | complete (speculative) |
+
+i3 and i4 depend only on already-ready values, so they legitimately finished *out of order* — younger than the faulting load, and therefore must not survive. The speculative map now reads $x3\to p9,\ x4\to p7,\ x5\to p8$. Retirement walks the head in order:
+
+1. **i1 is oldest, complete, fault-free → commit.** Committed map $x3: p3\to p6$; **free $p_{old}=p3$**. Committing *before* the trap is what places i1's result into the very map the trap will restore from.
+2. **i2 is now oldest and holds a pending page fault → precise trap.** No older instruction remains to commit, so recovery fires: **squash i2, i3, i4.**
+3. **Restore the speculative map from the committed map:** $x1\to p1,\ x2\to p2,\ x3\to p6,\ x4\to p4,\ x5\to p5$. Speculative-only definitions vanish — $x4,x5$ snap back to $p4,p5$, while $x3$ keeps $p6$ from committed i1.
+4. **Reclaim the squashed destinations** $p7,p8,p9$ to the free list. Their `p_old` values $p4,p5,p6$ are *not* freed — those are the live committed mappings.
+5. **Trap payload:** cause = page fault, faulting address = value in $p6$ ($x3$) $+\,0$, architectural PC = address of i2. Redirect fetch to the trap vector.
+
+The symmetry is the thing to remember: **commit frees `p_old`; squash frees `p_new`.** A committed redefinition retires the value it replaced; a squashed one never took effect, so the register it allocated goes back instead. After recovery each of $p1\dots p9$ is mapped-or-free exactly once ($p1,p2,p4,p5,p6$ mapped; $p3,p7,p8,p9$ free), satisfying the §10 accounting invariant.
+
 ### 4.1 Interrupts
 
 Interrupts are asynchronous but are taken at a defined instruction boundary. The core selects a point where older instructions are committed and younger state can be discarded. Long non-interruptible operations increase interrupt latency; designs may make them restartable or allow bounded interrupt checkpoints.
 
 ## 5. Branch recovery
 
-On a misprediction, preserve instructions older than the branch and remove younger ones. Recovery state includes:
+On a misprediction, preserve instructions older than the branch and remove younger ones.
+
+Unlike a precise exception, which is recognized only when the faulting instruction reaches the ROB head (§4), a misprediction is usually recovered the moment the branch **resolves** in execution — often many cycles before it would retire. That is the payoff of a per-branch checkpoint: recovery restores the map immediately from the snapshot taken at the branch, instead of stalling until the branch drains to the head. The commit-and-recover machinery is otherwise the §4 head logic with the squash boundary moved from the head to the branch.
+
+Recovery state includes:
 
 - rename map/free-list position;
 - global/local branch history and return-stack state;

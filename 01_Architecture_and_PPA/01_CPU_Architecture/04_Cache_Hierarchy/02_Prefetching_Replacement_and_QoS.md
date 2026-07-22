@@ -94,6 +94,41 @@ Next-line predicts $A+B$ after demand address $A$ for line size $B$. A stream de
 
 Track last address and delta for a load PC. If successive deltas match, predict $A+k\Delta$. Confidence prevents one accidental pair from launching a stream. Context may include call path, page, or address region to avoid mixing phases.
 
+**Intuition.** The predictor table (a *reference prediction table*, RPT) is a per-instruction notebook: for each load PC it remembers "where did you touch last time, and by how far did you jump?" A load inside a loop revisits the *same PC* every iteration while its address marches forward, so the address never repeats but the **delta** is stable — that stable delta is the stride. Confidence is a "fool me once" counter: it waits until the same delta repeats a couple of times before trusting it, so one coincidental pair of addresses cannot launch a runaway stream.
+
+Why not just use next-line? Next-line only ever guesses $A+B$ (unit stride). A load walking one *column* of a row-major matrix jumps by a whole row each iteration and defeats next-line every time; the per-PC stride entry simply learns that large delta and prefetches the correct line.
+
+*Worked stride detection* — one load PC, 2-bit confidence, issue $A+\Delta$ once confidence $\ge 2$ (line size 64 B, so a one-line stride is `0x40`):
+
+| # | Load `addr` | `delta` | stored `stride` | conf | Prefetch issued |
+|---|---|---|---|---|---|
+| 1 | `0x1000` | — | — | 0 | none (new entry) |
+| 2 | `0x1040` | `0x40` | `0x40` (new) | 0 | none |
+| 3 | `0x1080` | `0x40` | `0x40` | 1 | none |
+| 4 | `0x10C0` | `0x40` | `0x40` | 2 | `0x1100` |
+| 5 | `0x1100` | `0x40` | `0x40` | 3 | `0x1140` |
+
+Confidence climbs only on *matching* deltas, so the first prefetch waits until access 4. At access 5 the demand for `0x1100` lands on the line prefetched at access 4 — a timely hit. To build more lead, raise the degree $g$ (issue $A+\Delta$ and $A+2\Delta$ together) or the distance $d$ (prefetch $A+d\Delta$); Section 4 sizes both.
+
+**Mechanism.**
+
+```mermaid
+flowchart TB
+    A["load retires: PC, addr"] --> B["index RPT by PC"]
+    B --> C{"entry hit?"}
+    C -- "no" --> D["allocate: last = addr, conf = 0"]
+    C -- "yes" --> E["delta = addr - last"]
+    E --> F{"delta == stride?"}
+    F -- "yes" --> G["conf = min(conf + 1, max)"]
+    F -- "no" --> H["stride = delta, conf = 0"]
+    G --> I{"conf >= threshold?"}
+    H --> I
+    I -- "yes" --> J["issue prefetch: addr + degree * stride"]
+    I -- "no" --> K["last = addr"]
+    J --> K
+    D --> K
+```
+
 ### 3.3 Delta/correlation predictors
 
 Instead of one stride, learn sequences of deltas or transitions between miss addresses. These cover pointer-like or irregular-but-repeating patterns at greater storage and bandwidth risk. Signature/path predictors compress history into a table index; collisions become both accuracy and security concerns.
@@ -155,6 +190,44 @@ True LRU orders ways by recency but scales poorly in ports/state and is not opti
 
 RRIP selects a line predicted distant; if none is maximally distant, all candidates age. Insertion policy determines whether a new line gets probation or immediate protection.
 
+**Intuition — what an RRPV actually means.** Give every line a small 2-bit *re-reference prediction value* (RRPV): a guess at how soon it will be touched again. $0$ means "expect a hit very soon — keep me"; $3$ means "no hit expected — evict me first." A hit is hard proof of near reuse, so it snaps the line to $0$. A freshly inserted line starts at $2$: "probably reused, but unproven" — near enough to survive a moment, far enough that a one-shot scan line drains away without disturbing proven data. Eviction always takes a line already at $3$; if none is at $3$, *every* line ages by $+1$ until one reaches $3$. Aging is therefore lazy — it happens only when a victim is actually needed, not on every access, which is what keeps RRIP cheap versus true LRU.
+
+**SRRIP vs BRRIP vs DRRIP, in one breath.** SRRIP always inserts at $2$. But when the working set is larger than the cache (thrashing), inserting *every* newcomer at $2$ keeps knocking out the incumbents that would have been reused. BRRIP fixes that by inserting almost all lines at $3$ (distant) and only rarely — say $1/32$ of the time — at $2$, so most of the resident set is preserved through the storm. Neither policy wins everywhere, so **DRRIP** holds a contest called *set dueling*: a few *leader* sets permanently run SRRIP, a few permanently run BRRIP, and one saturating counter (PSEL) tracks which leaders are missing less. The many *follower* sets simply adopt the current winner, so the policy re-picks itself each phase at almost no hardware cost.
+
+*Worked SRRIP trace* — one 4-way set, insert at RRPV $2$, a hit sets $0$; victim = first line at $3$, otherwise age every line and rescan:
+
+| Access | Result | Set state (block:RRPV) |
+|---|---|---|
+| A | miss, insert @2 | A:2 |
+| B | miss, insert @2 | A:2 B:2 |
+| C | miss, insert @2 | A:2 B:2 C:2 |
+| D | miss, insert @2 | A:2 B:2 C:2 D:2 |
+| A | **hit**, set @0 | A:0 B:2 C:2 D:2 |
+| E | miss: none at 3, age all → A:1 B:3 C:3 D:3, evict B, insert @2 | A:1 E:2 C:3 D:3 |
+
+Block A, promoted to $0$ by its reuse, rides out the eviction; the oldest un-reused block B is the victim. A long scan of never-reused blocks keeps cycling fresh lines through the RRPV-$3$ slot without ever touching a promoted line — that is exactly the scan resistance LRU lacks.
+
+**Mechanism — one line's RRPV over its lifetime** (SRRIP inserts at $2$, BRRIP mostly at $3$; a hit resets to $0$ from any state; aging raises all lines together, only during a victim search):
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> R2: insert SRRIP
+    [*] --> R3: insert BRRIP mostly
+    R0 : RRPV 0 near
+    R1 : RRPV 1
+    R2 : RRPV 2 insert
+    R3 : RRPV 3 evict first
+    R0 --> R1: age +1
+    R1 --> R2: age +1
+    R2 --> R3: age +1
+    R3 --> [*]: chosen victim
+    R0 --> R0: hit
+    R1 --> R0: hit
+    R2 --> R0: hit
+    R3 --> R0: hit
+```
+
 ## 7. Inclusion, coherence, and replacement constraints
 
 Replacement is not always free to choose any victim:
@@ -182,6 +255,8 @@ $$
 $$
 
 This maximizes aggregate hit utility under the model, but fairness/SLO policy may require minimums or weighted utility.
+
+**Intuition.** Picture each requestor's miss count plotted against the number of ways it holds: the curve falls steeply at first, then flattens into a *knee* once its hot working set fits. $\Delta U_i(w)$ is just the height of the next step down — the misses one more way would erase. Hand each free way to whichever requestor's curve is *currently steepest*, because that way buys the most global hits. A requestor already past its knee gains almost nothing from extra capacity, which is why this greedy per-way auction beats splitting ways evenly — and why a streaming co-runner with a flat miss curve should not be handed half the cache just because it asks for it.
 
 ### 8.2 Controls
 

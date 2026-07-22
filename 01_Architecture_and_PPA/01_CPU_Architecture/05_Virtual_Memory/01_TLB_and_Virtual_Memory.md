@@ -8,7 +8,7 @@
 > level-one cache (L1); level-two cache (L2); level-three cache (L3); Advanced eXtensible Interface (AXI); Advanced High-performance Bus (AHB);
 > Advanced Peripheral Bus (APB); least recently used (LRU); Compute Express Link (CXL); virtual address (VA); physical address (PA);
 > operating system (OS); complementary metal-oxide-semiconductor (CMOS); finite-state machine (FSM); Microprocessor without Interlocked Pipeline Stages (MIPS) architecture; control and status register (CSR);
-> interprocessor interrupt (IPI); non-uniform memory access (NUMA); virtually indexed, physically tagged (VIPT); initiation interval (II); kilobyte (KB);
+> interprocessor interrupt (IPI); non-uniform memory access (NUMA); physically indexed, physically tagged (PIPT); virtually indexed, physically tagged (VIPT); initiation interval (II); kilobyte (KB);
 > megabyte (MB); gigabyte (GB); terabyte (TB).
 
 > **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (pipeline, memory hierarchy), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (set-associative indexing, tag compare), [RISC_V_ISA](../01_Core_Foundations/02_RISC_V_ISA.md) (Sv39, `satp`, `SFENCE.VMA`).
@@ -194,6 +194,25 @@ The walker (PTE size = 8 B) then chases three dependent reads, each at `table_ba
 
 The leaf ends the chase: **`PA = (leaf PPN : offset) = (0xABCD × 0x1000) | 0x2A0 = 0x0ABC_D2A0`.** Three dependent memory reads — at `0x0100_0010`, `0x0120_0028`, `0x0150_0080`, each of which may hit L2/L3 or miss to DRAM (the two bands above) — turned one virtual address into one physical address. Three checks along the way are the fault and fast-path conditions the same walker enforces: a PTE with `V=0` (or the reserved `R=0, W=1`) raises a **page fault**; a leaf found early at level 1 or 2 with non-zero low PPN bits is a **misaligned-superpage** fault; and if `A` is clear (or `D` is clear on a store) the walker must first set it with a write-back before the translation is usable. Swap the level-0 pointer for a leaf *at level 1* and the identical VA resolves in **two** reads to a 2 MB superpage — the early-termination win quantified in §7.
 
+Seen whole, the walk is a strict pointer-chase — each PTE read hands back the base address the *next* read needs, so the three reads cannot overlap, and the leaf PPN concatenated with the untouched offset is the physical address:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 46, "rankSpacing": 52, "htmlLabels": false}}}%%
+flowchart TD
+    SATP["satp.PPN = 0x01000<br/>root base = 0x0100_0000"]
+    R2["Level 2: read PTE at<br/>0x0100_0000 + VPN[2]×8 = 0x0100_0010"]
+    R1["Level 1: read PTE at<br/>0x0120_0000 + VPN[1]×8 = 0x0120_0028"]
+    R0["Level 0: read PTE at<br/>0x0150_0000 + VPN[0]×8 = 0x0150_0080"]
+    PA["PA = leaf PPN : offset<br/>0xABCD : 0x2A0 = 0x0ABC_D2A0"]
+
+    SATP --> R2
+    R2 -->|"non-leaf PTE: PPN 0x1200 is next base"| R1
+    R1 -->|"non-leaf PTE: PPN 0x1500 is next base"| R0
+    R0 -->|"leaf PTE: PPN 0xABCD is frame"| PA
+```
+
+Each downward edge is a data dependency, not just control flow: the address on one node is computed from the PPN read at the previous node, which is why no amount of memory bandwidth shortens the chain — only removing links from it (the page-walk cache, next) can.
+
 ### 5.2 The page-walk cache — exploiting upper-level redundancy
 
 The walk's saving grace is that the top of the tree is enormously **redundant across misses**. The radix structure fans out so widely that one upper-level entry governs a vast region of virtual space: in Sv39 a single level-2 PTE covers 2 MB, a single level-1 PTE covers 1 GB. Every translation whose address falls in that region shares the *same* upper-level PTEs — so across many distinct TLB misses the walker re-reads the identical top-of-tree entries again and again, and only the leaf differs.
@@ -306,7 +325,7 @@ sequenceDiagram
 
 ### 6.1 The conflict
 
-§1 established that translation sits in series ahead of a physically-tagged cache: you need the physical address to compare tags, and translation is what produces it, so naively the load costs TLB *then* cache — two serial latencies on the hottest path in the machine. The only escape is to run the two in *parallel*. But a cache lookup needs address bits to select its set, and translation is precisely the operation that **rewrites the high-order bits** (the page number) while leaving the low-order bits (the page offset) untouched. So the cache wants address bits early, and translation will not release the high ones until it is done. That is the conflict VIPT resolves.
+§1 established that translation sits in series ahead of a physically-tagged cache: you need the physical address to compare tags, and translation is what produces it, so naively the load costs TLB *then* cache — two serial latencies on the hottest path in the machine. Indexing *and* tagging with physical bits — a **physically-indexed, physically-tagged (PIPT)** cache — is exactly this serial arrangement: the cache cannot even pick its set until translation finishes, so the two latencies stack. The only escape is to run the two in *parallel*. But a cache lookup needs address bits to select its set, and translation is precisely the operation that **rewrites the high-order bits** (the page number) while leaving the low-order bits (the page offset) untouched. So the cache wants address bits early, and translation will not release the high ones until it is done. That is the conflict VIPT resolves.
 
 ### 6.2 The resolution and its ceiling
 
@@ -346,7 +365,7 @@ When it does spill ($a>0\Leftrightarrow C>W\times P$), two virtual addresses map
 
 - **Raise associativity** to keep $C\le W\times P$ — Intel Golden Cove runs a 48 KB L1D at 12-way so its index still fits a 4 KB page.
 - **Enlarge the page** to widen the offset — Apple's 16 KB base page is directly motivated by VIPT: a 128 KB, 8-way L1D needs 8 index bits, which fit a 14-bit (16 KB) offset but not a 12-bit (4 KB) one.
-- **Page coloring** (OS) — where the ceiling is violated (ARM Cortex-A78, 64 KB / 4-way on 4 KB pages), the OS constrains physical-frame allocation so the spilled physical bits always equal the virtual ones, forcing all aliases into the same set at the cost of some allocation freedom.
+- **Page coloring** (OS) — where the ceiling is violated (ARM Cortex-A78, 64 KB / 4-way on 4 KB pages: here $a=\log_2\frac{C}{WP}=\log_2\frac{64\text{ KB}}{4\times4\text{ KB}}=2$, so one physical line could otherwise scatter across $2^2=4$ sets), the OS constrains physical-frame allocation so the spilled physical bits always equal the virtual ones, forcing all aliases into the same set at the cost of some allocation freedom.
 
 | Core | L1D | Assoc. | Page | Index fits offset? | How |
 |---|---|:---:|---|:---:|---|

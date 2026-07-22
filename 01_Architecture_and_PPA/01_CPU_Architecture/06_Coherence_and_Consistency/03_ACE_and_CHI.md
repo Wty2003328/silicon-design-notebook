@@ -88,6 +88,34 @@ That is the entire protocol at interconnect level: three request archetypes $\{$
 
 ACE's answer to "find the other copies" is the oldest and simplest one: **ask all of them at once.** It layers three snoop paths onto AXI4 so the interconnect can interrogate every cache — an outbound *snoop-address* path (the interconnect drives a line address into every master), and inbound *snoop-response* and *snoop-data* paths (each master answers "hit/miss, and here is the line if I had it dirty"). The load-bearing idea is not the channel names; it is that **the coherent interconnect is now an active agent** that can pose the "who holds X?" question to the whole cache ensemble and combine the answers. When a core misses, the interconnect broadcasts the snoop, gathers responses, and either forwards a dirty copy cache-to-cache or fetches from memory — enforcing SWMR by construction.
 
+**One read miss, end to end.** Watch a single `ReadShared` play out and hold the picture against §4.4's targeted CHI version — same job, opposite mechanism:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant R as Master 0 (requester)
+    participant IC as Coherent interconnect (ordering point)
+    participant M1 as Master 1
+    participant M2 as Master 2 (holds line dirty)
+    participant MEM as Memory
+    R->>IC: ReadShared (miss, wins address arbitration)
+    Note over IC: no directory, so it must ask everyone
+    IC->>M1: snoop-address (do you hold X?)
+    IC->>M2: snoop-address (do you hold X?)
+    M1-->>IC: snoop-response miss
+    M2-->>IC: snoop-response hit + snoop-data (dirty)
+    alt a peer had it dirty
+        IC-->>R: data (cache-to-cache, no memory)
+    else nobody had it
+        IC->>MEM: read line
+        MEM-->>IC: data
+        IC-->>R: data
+    end
+    Note over IC: N-1 snoops out, N-1 responses back = O(N) fan-out per miss
+```
+
+Because the interconnect keeps no record of who holds the line, *every* miss must fan a snoop out to all $N-1$ other masters and wait for all $N-1$ answers — typically to hear "miss" from almost all of them. That per-miss $O(N)$ fan-out is exactly the term §3.2 multiplies into the $O(N^2)$ wall; CHI's home node (§4.4) deletes the fan-out by looking the sharer up and snooping *only* the one master that actually holds the line.
+
 Two design elements matter conceptually; the rest of ACE's transaction menu is just MESI transitions ([§8](../01_Core_Foundations/01_CPU_Architecture.md)) named for the bus.
 
 - **The bus is the serialization point.** In a snoop system there is no separate directory agent, so obligation (2) of §1 falls to the shared ordering medium itself: whichever request wins arbitration for a line's address is ordered first, and its snoop completes before the next request to that line is presented. Serialization by arbitration is elegant — no extra state — but it is exactly what ties snoop coherence to a *shared* medium, and shared media do not scale (§3).

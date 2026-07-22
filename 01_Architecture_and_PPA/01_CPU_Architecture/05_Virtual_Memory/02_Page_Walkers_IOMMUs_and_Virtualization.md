@@ -159,6 +159,8 @@ Coherence of page-table *data* does not automatically invalidate decoded TLB/PWC
 
 Virtualization often translates guest virtual address (GVA) → guest physical address (GPA) → system physical address (SPA). A naive nested walk can require many accesses: each stage-1 page-table access itself needs stage-2 translation.
 
+Think of it as translation-inside-translation. The stage-1 walker only ever computes *guest*-physical addresses — the guest's private "physical" namespace — and hardware cannot present a GPA to memory. So every pointer the guest walk follows (the table root and each level's next-table pointer) must first be resolved through the stage-2 tables, the way each word of a sentence must be looked up in a dictionary before it means anything. Virtualization therefore does not *add* a fixed translation cost; it *multiplies* one walk by the other.
+
 For $L_1$ stage-1 levels and $L_2$ stage-2 levels, worst-case dependent references (for the translation, before the final data access) approach
 
 $$
@@ -166,6 +168,25 @@ $$
 $$
 
 because each of the $L_1$ stage-1 PTE reads sits at a guest-physical address that itself needs an $L_2$-access stage-2 walk, plus the stage-1 reads and one final guest-physical→system translation (the full count is derived in [TLB and Virtual Memory](01_TLB_and_Virtual_Memory.md) §5.5). For two 4-level trees this is $5\times5-1=24$. Caches reduce average cost but not the structural dependency.
+
+**Worked count — why two 4-level trees cost 24.** Take stage-1 depth $L_1=4$ and stage-2 depth $L_2=4$. The guest walk must dereference five guest-physical addresses: the guest table root, plus the next-table pointer it reads out of each of the four guest levels (the last pointer being the data page). Hardware cannot touch a GPA directly, so each of those five triggers a full four-access stage-2 walk — $(L_1{+}1)\times L_2 = 5\times4 = 20$ host accesses. Add the four guest-PTE reads those walks make reachable: $20+4=24$ dependent references before the data byte. The algebraic forms agree — $L_1L_2+L_1+L_2 = 16+4+4$ and $(L_1{+}1)(L_2{+}1)-1 = 25-1$ — both equal $24$. Against the $L_1=4$ accesses of the same walk *without* virtualization, nesting inflates a cold miss about $6\times$; that gap is exactly what combined GVA→SPA TLB entries and stage-2 walk caches exist to close.
+
+The stage-1/stage-2 interleave that produces those 24 references — each "stage-2 host walk" box is itself $L_2=4$ dependent reads, alternating with the four guest-PTE reads:
+
+```mermaid
+flowchart TB
+    Start(["guest VA; walk base = guest table root (a GPA)"])
+    Start --> HW1["stage-2 host walk = 4 reads<br/>yields SPA of guest L4 table"]
+    HW1 --> R4["read guest L4 PTE"]
+    R4 --> HW2["stage-2 host walk = 4 reads<br/>yields SPA of guest L3 table"]
+    HW2 --> R3["read guest L3 PTE"]
+    R3 --> HW3["stage-2 host walk = 4 reads<br/>yields SPA of guest L2 table"]
+    HW3 --> R2["read guest L2 PTE"]
+    R2 --> HW4["stage-2 host walk = 4 reads<br/>yields SPA of guest L1 table"]
+    HW4 --> R1["read guest L1 PTE (leaf) -> data GPA"]
+    R1 --> HW5["stage-2 host walk = 4 reads<br/>yields SPA of data page"]
+    HW5 --> Data(["data access at final SPA"])
+```
 
 Mitigations:
 

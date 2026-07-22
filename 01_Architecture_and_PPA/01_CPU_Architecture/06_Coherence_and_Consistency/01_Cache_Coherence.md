@@ -95,6 +95,15 @@ MESI is a distributed permission system. The stable state stored beside each cac
 | **S — Shared** | yes | no | yes | yes | drop silently |
 | **I — Invalid** | no | no | — | — | none |
 
+**Read the four states as two yes/no questions** — *am I the only cached copy?* and *is my copy dirty (is memory stale)?* Every stable letter is one cell of that grid:
+
+|  | Clean — memory current | Dirty — memory stale |
+|---|---|---|
+| **Sole copy (exclusive)** | **E** | **M** |
+| **Possibly shared** | **S** | **O** — MOESI, defined next |
+
+`I` is the fifth case: no copy at all. The grid shows why `E` earns a separate letter from `S`: `E` is the *clean, sole-owner* corner, so a later store can slide `E→M` silently — no peer holds the line, so there is nothing to invalidate. A store from `S` cannot skip that step, because another reader may still exist and must be revoked first. The empty *dirty-and-shared* corner is exactly the slot MOESI's `O` fills.
+
 MOESI adds **O — Owned**: a dirty but shared state. One owner remains responsible for supplying the newest data and eventually writing it back, while other caches hold clean shared copies. Owned avoids forcing a memory write on every dirty producer→consumer handoff, at the cost of another stable state and a rule that exactly one dirty owner exists.
 
 ```mermaid
@@ -342,6 +351,47 @@ Snooping discovers holders by asking everyone. A directory remembers holders and
 | sparse directory | pointers for common few-sharer case | $O(K)$, overflow action | home per line | many cores, mostly private data |
 | coarse vector | one bit per group/cluster | targeted within groups, broadcast inside group | hierarchical homes | chiplets/large meshes |
 
+The mechanical difference is *who gets asked*. Snooping broadcasts the request and lets every cache check its own tags in parallel — there is no central record, but the work grows with agent count $N$. A directory keeps a per-line record of exactly who holds the line, so the home messages only the actual holders — $O(K)$ instead of $O(N)$ — paid for with directory storage.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "htmlLabels": false}}}%%
+flowchart TB
+    subgraph SNOOP["Snooping - broadcast to everyone, cost O(N)"]
+        RS["Requester<br/>broadcast GetM"]
+        RS --> P0["Peer 0 snoops"]
+        RS --> P1["Peer 1 snoops"]
+        RS --> P2["Peer 2 snoops"]
+        P0 --> RSP["Holder supplies data<br/>every other copy invalidates"]
+        P1 --> RSP
+        P2 --> RSP
+    end
+    subgraph DIR["Directory - home targets only listed holders, cost O(K)"]
+        RD["Requester<br/>GetM to home"] --> HOME["Home reads entry<br/>state, owner, sharer vector"]
+        HOME --> T1["Invalidate a listed sharer"]
+        HOME --> T2["Recall the listed owner"]
+        T1 --> GR["Home grants<br/>after all acks return"]
+        T2 --> GR
+    end
+```
+
+The record the home reads is one **directory entry** per tracked line. Its width is exactly what the next section sizes:
+
+```text
+Full-map directory entry (one per tracked line):
+
+  +--------+-----------+-----------------------------+
+  | state  |  owner    |        sharer vector        |
+  | ~2 b   |  log2(N)  |            N bits            |
+  +--------+-----------+-----------------------------+
+      |          |                |
+      |          |                +-- bit i = 1 : agent i holds a valid copy
+      |          +------------------- which agent holds the dirty M/O copy
+      +------------------------------ I / S / M as seen at the directory
+
+The N-bit sharer vector is the term that grows with agent count.
+A sparse directory keeps a few owner pointers instead (section 6.2).
+```
+
 ### 6.1 Full-map directory sizing
 
 For $L$ tracked lines and $N$ coherent agents, a full sharer vector needs $L\times N$ bits, plus owner/state/tag overhead. A 64 MiB last-level cache (LLC) with 64-byte lines has
@@ -383,6 +433,23 @@ Coherence operates at line granularity, typically 64 bytes, while software objec
 
 - **True sharing:** two cores access the same bytes and at least one writes. Communication is semantically necessary.
 - **False sharing:** cores write different bytes that occupy the same line. The protocol still transfers exclusive ownership of the entire line, so the line ping-pongs although the variables are logically independent.
+
+```text
+One 64-byte coherence line holding two independent variables:
+
+  byte 0        8                                   63
+   +-----------+-----------+--------------------------+
+   |   ctrA    |   ctrB    |        other data        |
+   +-----------+-----------+--------------------------+
+    ^ only C0 writes
+                ^ only C1 writes
+
+  C0 store ctrA -> needs M on the WHOLE line -> invalidates C1
+  C1 store ctrB -> needs M on the WHOLE line -> invalidates C0
+  ...ownership ping-pongs even though ctrA and ctrB never overlap.
+```
+
+The coherence protocol tracks permission per line, not per variable, so it cannot tell that `ctrA` and `ctrB` are disjoint — it sees two writers contending for one line.
 
 If C0 increments an 8-byte counter in the first half of a line and C1 increments another counter in the second half, every alternating store can require a GetM, a dirty intervention, a 64-byte transfer, and acknowledgements. With one store every 20 cycles per core at 3 GHz, the pair attempts $2\times3\,\text{GHz}/20=300$ million stores/s. If ownership alternates and each transfer moves 64 bytes, data traffic alone approaches
 
