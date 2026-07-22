@@ -82,9 +82,11 @@ $$
 U_{pad}=\frac{\text{useful work at }n}{\text{executed work at }\hat n}.
 $$
 
-For a GEMM dimension directly proportional to work, this can be approximately $n/\hat n$; for attention score work it can approach $(n/\hat n)^2$ (the score matrix is $n\times n$, so its work scales as $n^2$). Consequently, “supports dynamic sequence length” is incomplete without the shape-bound and masking strategy.
+For a GEMM dimension directly proportional to work, this can be approximately $n/\hat n$; for attention score work it can approach $(n/\hat n)^2$ (the score matrix is $n\times n$, so its work scales as $n^2$). For example, a request with $n=300$ tokens dispatched to a $\hat n=512$ bucket wastes little on a projection GEMM ($U_{pad}\approx 300/512=59\%$) but far more on the attention score matrix ($U_{pad}\approx (300/512)^2=34\%$); the quadratic term is why sequence-length bucketing punishes attention hardest. Consequently, “supports dynamic sequence length” is incomplete without the shape-bound and masking strategy.
 
 ### 1.4 Layout is an index map, not cosmetic metadata
+
+Intuitively, layout is the seating chart, not the guest list: the tensor holds the same values, but *which value sits at which physical address* decides whether one hardware access grabs a contiguous burst or scatters across banks. The same $X$ stored row-major versus channel-blocked is like one warehouse shelved by product versus by supplier — identical goods, but "fetch every unit of one product" is a single aisle in the first and a scavenger hunt in the second.
 
 A logical tensor $X[i,j,k]$ may be stored in row-major order, channel-blocked form, head-major form, a tiled hardware-native layout, or a packed quantized representation. A layout map converts logical indices into a physical address:
 
@@ -123,7 +125,35 @@ Calibration is a measurement process: run representative data, collect activatio
 
 Suppose a projection is followed by bias, activation, and quantization. Without fusion, each boundary may materialize a tensor in HBM or shared SRAM. With fusion, the projection accumulator can feed vector operations and write only the final representation.
 
-For intermediate tensor size $B$, eliminating one write/read pair saves roughly $2B$ bytes at that memory level. The theoretical saving is not free. Fusion expands the live range of accumulators and inputs:
+Intuitively, fusion is the difference between filing every rough draft in the cabinet between edits and keeping the page on your desk until it is final: the arithmetic is identical, but the round-trips to slow memory vanish. Each un-fused boundary pays a full write plus a full read of the intermediate; a fused chain reads the operands once, holds every intermediate in the accumulator or a register/SRAM tile, and writes only the result.
+
+~~~mermaid
+flowchart LR
+    subgraph UNF["unfused - every boundary round-trips HBM"]
+        direction LR
+        U0["matmul"] -->|"write B"| UH1[("HBM")]
+        UH1 -->|"read B"| U1["bias"]
+        U1 -->|"write B"| UH2[("HBM")]
+        UH2 -->|"read B"| U2["GELU"]
+        U2 -->|"write B"| UH3[("HBM")]
+        UH3 -->|"read B"| U3["quantize"]
+        U3 -->|"write B/2"| UH4[("HBM int8")]
+    end
+    subgraph FUS["fused - one read, one write"]
+        direction LR
+        FH0[("HBM weights+input")] -->|"read"| F0["matmul"]
+        F0 -->|"accumulator"| F1["bias"]
+        F1 -->|"on-chip"| F2["GELU"]
+        F2 -->|"on-chip"| F3["quantize"]
+        F3 -->|"write B/2"| FH4[("HBM int8")]
+    end
+~~~
+
+For intermediate tensor size $B$, eliminating one write/read pair saves roughly $2B$ bytes at that memory level.
+
+Worked example (one projection epilogue). Take $T=4096$ tokens (say batch 8 × sequence 512, or a 4096-token prefill) and output width $N=4096$ with FP16 intermediates, so each intermediate tensor is $B=4096\times4096\times2=32\ \text{MiB}$. Un-fused, the three boundaries (matmul→bias, bias→GELU, GELU→quantize) each add one write and one read: $6B=192\ \text{MiB}$ of HBM traffic on top of the operand reads and the final int8 write. Fused, those intermediates never leave the chip, so only the int8 result ($B/2=16\ \text{MiB}$, identical either way) is stored. The $192\ \text{MiB}$ saved is roughly $0.1\ \text{ms}$ of pure HBM time at $2\ \text{TB/s}$ per block instance, and — just as important — it raises the epilogue's arithmetic intensity so the matmul stays compute-bound instead of stalling on memory.
+
+The theoretical saving is not free. Fusion expands the live range of accumulators and inputs:
 
 $$
 S_{live}=\sum_i B_i D_i.
@@ -149,6 +179,21 @@ A schedule must answer all of these questions:
 10. Where are cross-core/device collectives inserted?
 
 The result is not just a kernel name. It is a resource-constrained event graph containing transfers, matrix/vector/reduction commands, barriers, collectives, and buffer lifetimes.
+
+Concretely, that event graph is a software pipeline over double-buffered tiles: each tile flows fill → matrix → vector/reduction → drain, and while one buffer is being consumed the DMA engine fills the next, so transfer and compute overlap instead of serializing (question 5). A completion event on each drain proves the buffer is free before a later tile is allowed to refill it — the buffer's *lifetime*, not merely its size, is what memory allocation must respect (question 7), which is why two tiles can share buffer A only if their live ranges do not overlap.
+
+~~~mermaid
+flowchart LR
+    subgraph BA["buffer A lifetime"]
+        F0["fill 0"] --> M0["matmul 0"] --> V0["vector 0"] --> D0["drain 0"]
+    end
+    subgraph BB["buffer B lifetime"]
+        F1["fill 1"] --> M1["matmul 1"] --> V1["vector 1"] --> D1["drain 1"]
+    end
+    M0 -. "compute 0 overlaps fill 1" .-> F1
+    D0 -. "event: A free" .-> F2["fill 2 reuses A"]
+    D1 -. "event: B free" .-> F3["fill 3 reuses B"]
+~~~
 
 ## 5. Dense GEMM and batched GEMM mapping
 

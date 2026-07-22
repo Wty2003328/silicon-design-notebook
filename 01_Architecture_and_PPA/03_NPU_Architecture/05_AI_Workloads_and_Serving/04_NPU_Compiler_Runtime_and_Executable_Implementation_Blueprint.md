@@ -10,17 +10,24 @@ Read [AI Workload and Graph Mapping](01_AI_Workload_and_Graph_Mapping_to_NPUs.md
 
 ## 1. Stack components and ownership
 
+The three nouns in this chapter's title are three *times*: the compiler runs offline, emits one frozen executable, and the runtime consumes it online. The diagram groups the stack by that boundary.
+
 ~~~mermaid
 flowchart LR
-    FW["framework model + parameters"] --> IMP["importer + semantic validator"]
-    IMP --> IR["typed tensor/graph IR"]
-    IR --> PART["capability partition + fallback"]
-    PART --> OPT["precision / fusion / layout / tile / schedule"]
-    OPT --> MEM["buffer lifetime + DMA/event plan"]
-    MEM --> EXE["versioned NPU executable"]
-    EXE --> RT["runtime: contexts / queues / memory / events"]
-    RT --> NPU["firmware + device commands"]
-    PART --> HOST["CPU/GPU fallback runtime"]
+    FW["framework model + parameters"] --> IMP
+    subgraph CT["compile time (offline)"]
+        IMP["importer + semantic validator"] --> IR["typed tensor/graph IR"]
+        IR --> PART["capability partition + fallback"]
+        PART --> OPT["precision / fusion / layout / tile / schedule"]
+        OPT --> MEM["buffer lifetime + DMA/event plan"]
+    end
+    MEM --> EXE["versioned NPU executable (frozen artifact)"]
+    subgraph RUN["run time (online)"]
+        RT["runtime: contexts / queues / memory / events"] --> NPU["firmware + device commands"]
+        HOST["CPU/GPU fallback runtime"]
+    end
+    EXE --> RT
+    PART --> HOST
 ~~~
 
 Importer owns semantic equivalence. Capability database owns legal target operations/limits. Compiler owns partition/transforms/schedule. Packager owns executable identity. Runtime owns live contexts, tensors, commands, dependencies, and faults. Driver/firmware owns queue consumption and device recovery. Fallback coordinator owns cross-device transfer and ordering.

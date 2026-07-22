@@ -111,6 +111,8 @@ Assert that every legal group decodes to the required number of unique in-range 
 
 ## 1. Quantization contract
 
+**Essence.** Reading a real value as an integer code is like reading it off a ruler with a fixed number of ticks. The *scale* $s$ is the real spacing of one tick — the size of a single integer step in the tensor's own units — and the *zero-point* $z$ is the tick number that sits on real $0$. Two knobs, two jobs: $s$ sets how fine the grid is; $z$ slides the grid so an off-center range like $[-1,3]$ still spends every code and keeps real $0$ exact (which matters for zero-padding and ReLU). Quantizing snaps $x$ to the nearest tick and stores the tick number; dequantizing reads that number back as a real value.
+
 Affine quantization maps real value $x$ to integer $q$:
 
 $$
@@ -118,6 +120,38 @@ q=\operatorname{clip}\left(\operatorname{round}\left(\frac{x}{s}\right)+z,\ q_{m
 $$
 
 with scale $s$ and zero-point $z$. Reconstruction is $\hat{x}=s(q-z)$.
+
+**Worked example — from a range to $s$, $z$, and the round-trip error.** A calibration pass reports activation range $[x_{min},x_{max}]=[-1.0,\,3.0]$; the target is unsigned INT8, $[q_{min},q_{max}]=[0,255]$. Spread the range across the codes, then place the tick that lands on real $0$:
+
+$$
+s=\frac{x_{max}-x_{min}}{q_{max}-q_{min}}=\frac{3.0-(-1.0)}{255-0}=\frac{4}{255}\approx0.01569,
+\qquad
+z=\operatorname{round}\!\left(q_{min}-\frac{x_{min}}{s}\right)=\operatorname{round}(63.75)=64.
+$$
+
+Quantize $x=2.0$: $x/s=2.0\times\tfrac{255}{4}=127.5$, so $q=\operatorname{round}(127.5)+64=192$ (in range). Dequantize: $\hat{x}=s(q-z)=\tfrac{4}{255}(192-64)=\tfrac{512}{255}\approx2.0078$. The round-trip error is
+
+$$
+\hat{x}-x=\frac{512}{255}-2=\frac{2}{255}\approx0.0078=\frac{s}{2},
+$$
+
+exactly half a tick — the worst case here, since $2.0$ fell on a tick boundary; every value carries at most this $s/2$ error. Two checks confirm the setup: real $0$ maps to $q=z=64$ and dequantizes to exactly $0$, and the endpoints $-1.0,\,3.0$ map to $0,\,255$, using the full code space.
+
+Because $s=\text{range}/\text{codes}$, both the numerator and the denominator move that $s/2$ error floor. Retargeting the same range to signed INT4 ($[q_{min},q_{max}]=[-8,7]$, 15 steps) spreads it over $255/15\approx17\times$ fewer ticks, enlarging $s$ and the error floor by that factor — which is why INT4 is reserved for error-tolerant tensors. The numerator is the case for *per-channel* scales: a weight channel spanning $[-0.1,0.1]$ must not share one $s$ with a channel spanning $[-8,8]$, or under the wide channel's scale the narrow one collapses onto a handful of codes.
+
+As a datapath, quantize runs this map left-to-right and dequantize runs it right-to-left:
+
+```mermaid
+flowchart LR
+    x["real x"] --> DIV["divide by scale s"]
+    DIV --> RND["round to nearest"]
+    RND --> ADD["add zero-point z"]
+    ADD --> CLIP["clip to code range"]
+    CLIP --> q["stored code q<br/>INT8 or INT4"]
+    q --> SUB["subtract z"]
+    SUB --> MUL["multiply by s"]
+    MUL --> xhat["reconstruct x_hat"]
+```
 
 Granularity options:
 

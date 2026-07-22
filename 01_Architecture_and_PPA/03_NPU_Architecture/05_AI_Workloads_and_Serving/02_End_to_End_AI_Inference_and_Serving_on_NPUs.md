@@ -126,6 +126,22 @@ Accepting every request until memory is exhausted converts a predictable overloa
 
 Static batching waits for a fixed group and runs it to completion. Continuous or iteration-level batching rebuilds the active set at step boundaries: finished sequences leave, new work enters, and remaining sequences continue. It improves occupancy under variable output lengths but requires indirect KV addressing and per-sequence metadata. Orca is a foundational primary example of iteration-level scheduling for generative serving [1].
 
+Intuitively, static batching is a charter bus that waits until every seat is filled, drives the whole group to the final stop, and only then returns for the next group; one short-trip passenger still holds a seat for the entire route. Continuous batching is a bus that at every stop lets off whoever has arrived, boards whoever is waiting, and drives on. Because generation lengths vary widely, the second policy keeps far more seats (NPU lanes) doing useful work per step. The mechanism is therefore a cycle, not a straight line: completed sequences release their lanes and admitted ones fill them at each step boundary.
+
+~~~mermaid
+flowchart TD
+    A["arriving requests"] --> B["admission + KV reserve"]
+    B --> C["waiting queue"]
+    C --> D["scheduler forms batch at step boundary"]
+    R["running sequences"] --> D
+    D --> E["map to shape bucket, pad idle lanes"]
+    E --> F["NPU executes one step: prefill or decode"]
+    F --> G["sample, stop check, stream token"]
+    G --> H{"sequence finished?"}
+    H -->|"continue"| R
+    H -->|"done"| I["release KV pages, close stream"]
+~~~
+
 At a scheduling instant, the engine chooses a batch $\mathcal B$ under constraints such as
 
 $$
@@ -236,6 +252,17 @@ $$
 
 but percentiles must be computed from per-request traces rather than substituting averages into this expression.
 
+**Worked example — why batch size buys throughput, and where it stops.** Model a decode step as memory-bound: the NPU reads the resident weights once for the whole batch, plus each sequence's KV once (the same "read the full resident KV" assumption used in Section 16). Bytes moved per step are then $W+n\,KV_{seq}$ for batch $n$, producing $n$ useful tokens, so bytes per output token are $W/n+KV_{seq}$. The weight term is *shared* and shrinks with batch; the KV term is a *per-sequence floor* that does not. Take the Section 16 model (32 layers, 8 KV heads, $d_h=128$, 2-byte KV) at $S=2048$ cached tokens, so $KV_{seq}=2\times32\times8\times128\times2048\times2\approx0.268$ GB; let weights $W\approx14$ GB (about 7 B parameters at 2 bytes) and HBM bandwidth $B_{HBM}=2\times10^{12}$ B/s. Each step takes $(W+n\,KV_{seq})/B_{HBM}$, and decode throughput is $n$ divided by that time:
+
+| Batch $n$ | Bytes/step | ITL (step time) | Output tokens/s |
+|---|---|---|---|
+| 1 | 14.3 GB | 7.1 ms | ~140 |
+| 16 | 18.3 GB | 9.1 ms | ~1750 |
+| 32 | 22.6 GB | 11.3 ms | ~2830 |
+| 64 | 31.2 GB | 15.6 ms | ~4100 |
+
+Throughput rises about $29\times$ from batch 1 to 64, not $64\times$, while per-token latency (ITL) more than doubles. This is the two batching effects above made numeric: weight cost amortizes toward zero per token ($W/n$), but KV traffic is added, not amortized. As $n$ grows, bytes per token approach the floor $KV_{seq}$, so single-device decode throughput is asymptotically capped near $B_{HBM}/KV_{seq}\approx7500$ tokens/s at this context length, and any real limit is lower once compute, padding, and host gaps are included. Longer contexts raise $KV_{seq}$ and lower that ceiling, which is why GQA, paging, and context limits are throughput levers, not only memory levers.
+
 ## 8. Sampling and speculative decoding
 
 Sampling may include temperature scaling, repetition penalties, masking, top-k/top-p selection, random-number generation, and token decoding. It can run on a CPU, vector engine, or dedicated unit. CPU sampling creates a device-to-host dependency every step unless logits processing is reduced or moved on-device.
@@ -326,7 +353,7 @@ Submission batching reduces doorbells and interrupts but increases waiting. Poll
 
 ## 13. Queueing, overload, and tail latency
 
-Let arrival rate be $\lambda$ requests/s and sustainable service rate be $\mu$. Utilization is $\rho=\lambda/\mu$. As $\rho$ approaches one, queueing latency and sensitivity to service-time variance rise sharply. Real services are not simple single-server queues with memoryless arrivals and service: batching couples requests, lengths are heavy-tailed, and multi-device jobs require synchronized resources. Still, the utilization warning remains fundamental.
+Let arrival rate be $\lambda$ requests/s and sustainable service rate be $\mu$. Utilization is $\rho=\lambda/\mu$. As $\rho$ approaches one, queueing latency and sensitivity to service-time variance rise sharply. To see how sharply, the idealized single-server (M/M/1) queue waits $\rho/(1-\rho)$ service times on average: about $1$ at $\rho=0.5$, $9$ at $\rho=0.9$, and $99$ at $\rho=0.99$, so the last few percent of utilization, not the first ninety, is where latency explodes and headroom must be reserved. Real services are not simple single-server queues with memoryless arrivals and service: batching couples requests, lengths are heavy-tailed, and multi-device jobs require synchronized resources. Still, the utilization warning remains fundamental.
 
 Little's law relates average in-flight requests $L$, arrival rate, and average time in system $W$:
 

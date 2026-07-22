@@ -117,7 +117,23 @@ Quoting 25% from row occupancy alone misses fill/drain. Batching four independen
 
 ## 4. Hierarchical roofline: every memory level can be the roof
 
-For memory level $l$, define operational intensity
+**Start with a single roof.** A roofline plot answers one question for a kernel: *is it limited by doing arithmetic or by moving bytes?* Plot attainable performance $P$ (ops/s) against **operational intensity** $I$ (useful ops per delivered byte). Two ceilings bound every kernel: a flat **compute roof** at peak throughput $P_{peak}$ (you cannot out-run the ALUs), and a slanted **memory roof** $P\le I\cdot BW$ (you cannot compute on bytes faster than they arrive). They meet at the **ridge point** $I_{ridge}=P_{peak}/BW$. Left of the ridge a kernel is memory-bound (raise reuse or bandwidth); right of it, compute-bound (add ALUs or drop precision).
+
+```text
+ attainable P (log)
+   |                _______________  P_peak  (compute roof)
+   |               /
+   |              /  ridge  I = P_peak / BW
+   |             /
+   |            /   (memory roof, slope = BW)
+   |           /
+   +----------+---------------------> operational intensity I (log)
+      memory-bound  |  compute-bound
+```
+
+**Worked single-level example.** Let $P_{peak}=200$ TOPS $=2\times10^{14}$ ops/s and delivered HBM bandwidth $BW=1$ TB/s $=10^{12}$ B/s, so $I_{ridge}=2\times10^{14}/10^{12}=200$ ops/byte. Now place single-token INT8 decode through a $d\times d$ weight matrix on this roofline. Every weight (1 byte) feeds exactly one MAC (2 ops), so intensity is $\approx 2$ ops/byte *independent of $d$* — far left of the ridge. Attainable performance is $\min(P_{peak},\,I\cdot BW)=\min(200,\,2)=2$ TOPS, only **1% of peak**, and runtime is set purely by streaming the weights ($d=4096\Rightarrow 16.8$ MB at $1$ TB/s $=16.8\,\mu s$). Reuse is the cure: batching $B$ tokens through the same resident weights lifts weight-side intensity to $\approx 2B$, crossing the ridge near $B\approx100$ — only past that point can the kernel approach the compute roof. This is exactly why §1 aggregates prefill (high reuse, compute regime) and decode (low reuse, memory regime) as separate rooflines.
+
+**Now every memory level gets its own roof.** A chip is not one roof but a stack: registers/PEs, SRAM, NoC, and HBM each deliver bytes at a different rate, so a kernel can be capped by any level at once. For memory level $l$, define operational intensity
 
 $$
 I_l=\frac{N_{useful\ ops}}{B_l},
@@ -288,6 +304,38 @@ Archive the compiler version, flags, target, graph/weight hash, shape/precision 
 | command/instruction statistics | what does the backend ask hardware to execute? |
 
 Compiler cost models are hypotheses. If the compiler predicts one mapping as faster, compare its estimated cycles/bytes with simulator and hardware evidence. A mismatch can reveal a missing bank conflict, underestimated vector work, inaccurate delivered bandwidth, or poor shape distribution.
+
+### 11.1 Autotuning: how the winning mapping is chosen
+
+**What.** A compiler rarely knows the fastest tile size, dataflow, fusion grouping, or layout up front — the choices interact, and the best one depends on shapes and delivered bandwidth. Autotuning turns mapping into a *search*: generate legal candidates, score each by cost model or by real measurement, and keep the best. It is the schedule-space cousin of place-and-route sweeps or hyperparameter search.
+
+**Why.** §11 called cost models hypotheses. A lone model guess can be off by large factors when it misses a bank conflict or a delivered-bandwidth shortfall (§2, §4), and the *same* kernel often differs several-fold between an untuned default and a tuned schedule. Measuring real candidates closes that gap — and it is why every result must state its autotuning budget and whether a number is best-of-search or default (§16.1); an unreported budget makes a comparison meaningless.
+
+**Worked search.** Reuse the §3 tile ($k=n=128$ on a $128\times128$ array) and let the tuner sweep how many independent 32-row problems it packs into the 128 rows, scoring each candidate with $U_{array}=mnk/(PQ\,C_{wave})$ and $C_{wave}=k+m+n-2$:
+
+| packed problems | active rows $m$ | $C_{wave}$ | $U_{array}$ |
+|---|---|---|---|
+| 1 | 32 | 286 | 11.2% |
+| 2 | 64 | 318 | 20.1% |
+| 4 | 128 | 382 | 33.5% |
+
+The search picks 4 (fill the rows), a 3× gain. But utilization plateaus at 33.5%, not 100%: with $m=n=128$ the fill/drain term $m+n-2=254$ still dwarfs the short $k=128$ reduction, so the *next* productive knob is a longer reduction per tile — at $k=1024$ the same full array reaches $1024/1278\approx80\%$. Bottleneck attribution, not blind enumeration, tells the search which knob to turn next.
+
+**How.** The tuner iterates measure → model → attribute → search until the budget is spent, re-mapping each accepted candidate:
+
+```mermaid
+flowchart TD
+    SEED["seed mapping: tile, dataflow, fusion, layout"] --> COMP["compile candidate to executable"]
+    COMP --> EVAL{"score cheaply or on hardware?"}
+    EVAL -->|"cost model"| MODEL["predict cycles and bytes"]
+    EVAL -->|"real run"| MEAS["profile: trace plus counters"]
+    MODEL --> ATTR["attribute bottleneck: roofline regime, residual"]
+    MEAS --> ATTR
+    ATTR --> SRCH["search: propose next candidate from bottleneck"]
+    SRCH --> BUDGET{"tuning budget left?"}
+    BUDGET -->|"yes"| COMP
+    BUDGET -->|"no"| BEST["emit best measured mapping"]
+```
 
 ## 12. Counter hierarchy and derived metrics
 

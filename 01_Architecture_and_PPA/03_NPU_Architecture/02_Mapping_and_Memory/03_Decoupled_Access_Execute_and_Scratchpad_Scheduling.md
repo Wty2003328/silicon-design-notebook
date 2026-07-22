@@ -50,6 +50,51 @@ flowchart LR
     E --> S
 ```
 
+Before the full machinery, it helps to see the overlap in its smallest form: **double buffering** (ping-pong). Keep two input buffers, $A$ and $B$. While the compute engine drains one, the load DMA fills the other; on the next tile they swap. The consumer never walks out to memory — it only ever reads whichever buffer the producer just handed it. This *is* decoupled access–execute in miniature: an *access* stream (address generation and DMA) and an *execute* stream (the array), each running at its own pace, joined only by buffers and a ready signal.
+
+Analogy: a short-order line where one runner keeps two trays stocked from the pantry and the cook only ever cooks from the full tray. As long as the runner refills the spare tray before the cook empties the current one, the cook never waits on the pantry.
+
+```mermaid
+flowchart LR
+    subgraph s1["slot 1"]
+      a1["load fills A"]
+    end
+    subgraph s2["slot 2"]
+      a2["load fills B"]
+      b2["compute uses A"]
+    end
+    subgraph s3["slot 3"]
+      a3["load fills A"]
+      b3["compute uses B"]
+    end
+    subgraph s4["slot 4"]
+      b4["compute uses A"]
+    end
+    a1 --> a2 --> a3
+    a1 -. "A ready" .-> b2
+    a2 -. "B ready" .-> b3
+    a3 -. "A ready" .-> b4
+```
+
+Solid arrows are the load stream advancing tile by tile; each dotted arrow hands the just-filled buffer to compute one slot later, so $A$ and $B$ alternate and the two engines run concurrently after the first slot.
+
+**When is the load fully hidden?** Let one tile take $T_{load}$ cycles to transfer and $T_{compute}$ cycles to process. One buffer forces them serial, $T_{load}+T_{compute}$ per tile; two buffers slide the next fill *underneath* the current compute, dropping the steady cost to $\max(T_{load},T_{compute})$. The load leaves the critical path exactly when $T_{load}\le T_{compute}$.
+
+Numbers with $T_{load}=4$, $T_{compute}=6$, and $N=8$ tiles:
+
+- **one buffer:** $N(T_{load}+T_{compute})=8\times 10=80$ cycles.
+- **two buffers:** one startup fill, then compute-bound: $T_{load}+N\,T_{compute}=4+8\times 6=52$ cycles.
+
+The $52$ is a $4$-cycle fill of $A$ followed by eight $6$-cycle computes; each concurrent $4$-cycle load finishes with $2$ cycles to spare, so no compute ever stalls. That is a $80/52=1.54\times$ speedup, approaching $10/6\approx1.67\times$ for large $N$. Flip the ratio to $T_{load}=8>T_{compute}=6$ and load becomes the bottleneck at $\max=8$ cycles/tile; now *no* number of buffers helps, because two already let both engines run flat out and the memory pipe cannot deliver faster.
+
+**Prefetch distance — when two buffers are not enough.** Double buffering hides *throughput* (how long a tile occupies the pipe), not *latency* (how long its first byte takes to arrive). If a tile's data takes $L$ cycles to come back after its request — an HBM round trip of, say, $L=240$ — then one-tile lookahead issues that request only $T_{compute}=6$ cycles early, far too late. To keep the array fed, launch each load a *prefetch distance*
+
+$$
+D=\left\lceil \frac{L}{T_{compute}} \right\rceil=\left\lceil \frac{240}{6} \right\rceil=40
+$$
+
+tiles ahead and provision about $D+1$ live buffers (or generations), so $D$ loads stay in flight while one tile is consumed. This is Little's law at tile granularity, $\text{in-flight}=\text{rate}\times\text{latency}$ — the same relation Section 3 applies to individual DMA transactions. Ordinary double buffering is just the special case $L\le T_{compute}$; deep memory pipelines need multi-buffering.
+
 ### 0.1 Build the scheduler by replaying three tiles
 
 Start with a blocking controller and three independent tiles `T0`, `T1`, and `T2`. Each load takes four cycles, matrix compute takes six, and store takes three. The baseline controller reuses one input and one output buffer and executes
@@ -241,6 +286,8 @@ The bank arbiter must coordinate:
 Priority alone can starve a low-priority engine. Weighted round robin, age promotion, or reserved service slots provide forward progress. QoS policy belongs in the architecture because it determines whether a latency-sensitive vector epilogue can be blocked by a long DMA burst.
 
 ## 6. Event scoreboards and command dependencies
+
+**What a scoreboard is, intuitively.** Picture a wall of numbered pigeonholes, one per data item, each showing *empty* or *ready* and holding the list of commands parked on it. A producer that finishes flips its hole to *ready* and wakes everything parked there; a consumer that arrives early simply parks and sleeps. Nothing polls memory and nothing tracks program order — readiness of *named data* is the only currency. It is the bookkeeping a classic CPU scoreboard does for register results, lifted from registers to tensor tiles.
 
 Commands communicate through events rather than physical registers. A command may wait for several predecessor events and signal one or more completions.
 

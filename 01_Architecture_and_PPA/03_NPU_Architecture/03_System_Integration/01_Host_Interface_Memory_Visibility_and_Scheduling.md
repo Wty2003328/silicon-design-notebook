@@ -151,6 +151,20 @@ Verification should inject delay and reordering at every arrow in the sequence, 
 
 ## 1. Submission model
 
+**What a ring actually is.** A command ring is a fixed circular array of descriptor slots in ordinary memory, shared by two parties that never take a lock: the host (producer) appends descriptors at a *producer tail* index, and the device (consumer) fetches them at a *consumer head* index. The indices chase each other around the array — slots between head and tail are published work the device owns, and the rest are free slots the host may fill. Picture a bounded conveyor of mailboxes: the host drops work at one end, the device collects it at the other, and the belt wraps so slots are recycled. Because a recycled slot on lap $k+1$ is bit-identical to lap $k$, the device tells a fresh entry from last lap's leftover using a *phase* (wrap) bit that flips whenever an index passes slot $0$; it consumes an entry only when the phase matches the current lap. The ring is *full* when the tail catches the head, so ring depth caps how many commands can be in flight at once (Problem 4).
+
+Each slot travels one ownership loop, and the two boundaries where ownership changes hands are exactly the ordering points the doorbell and completion must respect:
+
+```mermaid
+stateDiagram-v2
+    Free --> Filled: host writes descriptor fields
+    Filled --> Published: release barrier, advance tail, ring doorbell
+    Published --> InFlight: device fetches and snapshots entry
+    InFlight --> Free: completion written, consumer head advances
+```
+
+Both *Published* and *InFlight* are device-owned; the host may write only *Free* slots. That single rule *is* the ring invariant stated below.
+
 Typical path:
 
 1. software allocates/mappings buffers and command descriptors;

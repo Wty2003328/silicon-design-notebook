@@ -318,6 +318,22 @@ The load-bearing point: **the dataflow changes cycles only modestly (via utiliza
 
 **Timeloop** (MIT, Parashar et al., ISPASS 2019) is the reference *mapper*. It describes the accelerator not as RTL but as an abstract **hierarchy of storage and compute levels** (DRAM, global buffer, PE-local buffers, the arithmetic units), each with a capacity, a fanout (spatial parallelism), and a bandwidth. Given a layer's dimensions and that hardware template, Timeloop constructs the **mapspace** — every legal combination of per-level tile sizes, loop permutations, and spatial partitionings — and searches it (exhaustively for small spaces, or by random/heuristic sampling for large ones). For each candidate mapping it evaluates steps 3–4 of §2 analytically: it computes, per tensor and per level, the exact number of reads/writes/updates (the "action counts") and the cycle count under an idealized bandwidth model, then keeps the mapping that minimizes the chosen objective (energy, energy-delay product, or cycles). **Its output is the optimal mapping plus a full per-level access-count breakdown** — the numerator of every energy term.
 
+**The loop as a picture.** The paragraph above *is* a feedback loop, and seeing it whole makes the rest of §4 legible: the *problem* (a layer's loop nest) and the *architecture template* fix the mapspace; a search samples one mapping; an analytical model turns it into access counts and idealized cycles; Accelergy prices those counts against its reference table; the objective keeps the best survivor and asks the search for the next. The division of labor is the load-bearing part — **Timeloop owns the activity (which accesses happen); Accelergy owns the physics (what each costs)** — and every later box in §4 just quantifies one node of this diagram.
+
+```mermaid
+flowchart TB
+    P["Problem<br/>layer loop nest + shapes"] --> MS["Mapspace<br/>legal tile + order + spatial"]
+    H["Arch template<br/>capacity + fanout + bandwidth"] --> MS
+    MS --> SR["Search heuristic<br/>sample next mapping"]
+    SR --> TL["Timeloop model<br/>access counts + ideal cycles"]
+    ERT["Accelergy ERT<br/>CACTI / plug-ins at tech node"] --> AC["Energy<br/>sum of counts times cost"]
+    TL --> AC
+    AC --> OB{"Objective<br/>energy / EDP / cycles"}
+    OB -->|"keep if best"| BEST["Best mapping so far"]
+    OB -->|"budget remains"| SR
+    BEST --> OUT["Optimal mapping<br/>+ per-level access counts"]
+```
+
 **How big is the mapspace? — the counting argument.** "Searches it" hides an explosion worth quantifying, because the size *is* the reason the tool exists. Fix a layer as a loop nest of $L$ loops with bounds $b_1,\dots,b_L$ over a hierarchy of $S$ storage levels. A mapping is three independent choices, so the mapspace is their product:
 
 - **Tile factorization.** Each loop bound must split into one tile factor per level, $b_i=\prod_{\ell=1}^{S}t_{i,\ell}$ — an *ordered* factorization of $b_i$ into $S$ parts. Count them by stars-and-bars on the prime exponents: if $b_i=\prod_p p^{a_p}$, each prime's $a_p$ copies distribute among $S$ levels in $\binom{a_p+S-1}{S-1}$ ways, so one loop admits $\phi_S(b_i)=\prod_p\binom{a_p+S-1}{S-1}$ factorizations and the tiling subspace is $\prod_{i=1}^{L}\phi_S(b_i)$.
