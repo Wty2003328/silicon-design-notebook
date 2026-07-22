@@ -2,6 +2,8 @@
 
 > **Abbreviation key:** artificial intelligence (AI); central processing unit (CPU); graphics processing unit (GPU); neural processing unit (NPU); service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); key-value (KV) cache; error-correcting code (ECC); continuous integration/continuous deployment (CI/CD).
 
+*What and why: verification, operations, and deployment are one release path—an artifact serves users only after it clears compatibility, tests, and SLO and resilience qualification, and any regression drains live traffic back to a validated rollback. The pipeline below is that path end to end; the sections that follow detail each stage.*
+
 ```mermaid
 flowchart LR
     A["Model, compiler, firmware, driver, and topology artifacts"] --> V["Compatibility and contract validation"]
@@ -83,6 +85,39 @@ A platform release bundle pins model/tokenizer, per-device compilers/engines/ker
 Compatibility is validated across devices and services before placement. Configuration fields have type/unit/bounds/default, scope, version, provenance, and update mode: static, drain-required, epoch-safe, or dynamic. Cross-field validators protect capacity and timeout order. Every request/trace records effective configuration hash.
 
 ## 7. Progressive deployment
+
+The rollout is a gated state machine: each stage promotes only when its gates pass, and once live traffic is present any gate failure or fault drains to a validated rollback rather than advancing.
+
+```mermaid
+stateDiagram-v2
+    state "Offline artifact and device tests" as Offline
+    state "Isolated worker group" as WorkerGroup
+    state "Synthetic smoke" as Smoke
+    state "Shadow traffic" as Shadow
+    state "Small canary" as Canary
+    state "Topology and fault-domain canaries" as DomainCanary
+    state "Traffic and model ramp-up" as RampUp
+    state "Full serving" as FullServing
+    state "Drain" as Drain
+    state "Rollback to previous release" as Rollback
+
+    [*] --> Offline
+    Offline --> WorkerGroup: gate pass
+    WorkerGroup --> Smoke: gate pass
+    Smoke --> Shadow: gate pass
+    Shadow --> Canary: gate pass
+    Canary --> DomainCanary: gate pass
+    DomainCanary --> RampUp: gate pass
+    RampUp --> FullServing: gates hold at load
+    FullServing --> [*]
+
+    Canary --> Drain: gate fail or fault
+    DomainCanary --> Drain: gate fail or fault
+    RampUp --> Drain: gate fail or fault
+    FullServing --> Drain: regression or fault
+    Drain --> Rollback: stop routing, commit state
+    Rollback --> Offline: re-qualify validated release
+```
 
 Progression: offline artifact/device tests → isolated worker group → synthetic smoke → shadow → small canary → topology/failure-domain canaries → increasing traffic/model regimes → full serving. Promotion gates cover correctness/quality, errors, TTFT/TPOT/goodput, capacity/memory, traffic/collectives/state transfer, power/thermal, and control stability.
 

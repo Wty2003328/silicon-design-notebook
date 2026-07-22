@@ -42,6 +42,27 @@ Keep these in one reviewed configuration source and generate block-visible artif
 
 Create a table for every region: base, size, target, aliases, access sizes, cacheability, shareability/coherence, ordering, executable, privilege/security, translation, reset accessibility, power dependency, and behavior for unmapped/illegal access. Check intervals for overlap and address-width truncation.
 
+The table is the static contract; each live transaction resolves against it through the decode decision below, where unmapped or illegal accesses take an explicit error path rather than a silent default. The top-of-page figure shows the standing structure; this one shows the per-transaction path from initiator to target.
+
+```mermaid
+flowchart TD
+    A["Initiator request: address, attributes, security, ID"] --> B["Translate and check: MMU or IOMMU"]
+    B --> C{"Mapped region?"}
+    C -- "No" --> Z["Unmapped: decode error response"]
+    C -- "Yes" --> D{"Size, security, exec legal?"}
+    D -- "No" --> Y["Illegal: fault or error response"]
+    D -- "Yes" --> E["Decode target; apply attributes and alias or coherence rule"]
+    E --> F{"Protocol, width, or clock differ?"}
+    F -- "Yes" --> G["Protocol bridge and adaptation"]
+    F -- "No" --> H["Fabric or NoC route"]
+    G --> H
+    H --> I{"Target class"}
+    I -- "Peripheral" --> J["Memory-mapped register or device"]
+    I -- "Memory" --> K["DDR controller, then DRAM"]
+    J --> L["Response, error, completion to initiator"]
+    K --> L
+```
+
 Distinguish:
 
 - normal memory, which may be cached, combined, speculated, and reordered according to attributes;

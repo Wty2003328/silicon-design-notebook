@@ -19,6 +19,27 @@ flowchart LR
 
 A network on chip (NoC) transports transactions among endpoints while chiplet and I/O links extend transport across different clock, power, trust, and failure domains. The design ideology is **make progress structural and performance policy explicit**. Correctness must not depend on average traffic being low; quality of service (QoS) must not be a priority bit with no admission or bandwidth model.
 
+The sections below detail one mechanism each; they compose into a single integrated interconnect. The map below shows how: network interfaces admit and shape endpoint traffic, a router fabric transports and arbitrates it, I/O bridges attach external devices through translation, and die-to-die links extend the fabric to another chiplet—while QoS regulates admission and arbitration throughout. The top-of-page diagram traces one packet's path through these blocks; this one shows how the blocks are wired together.
+
+```mermaid
+flowchart TB
+    subgraph D0["Die 0 chiplet"]
+        CPU["CPU cluster"] --> NIa["NI: admit and shape"]
+        NPU["NPU or accelerator"] --> NIb["NI: admit and shape"]
+        NIa --> FAB["NoC fabric: routers and arbitration"]
+        NIb --> FAB
+        FAB --> MC["Memory controllers and targets"]
+        FAB <--> IOB["I/O bridge: IOMMU and PCIe/CXL"]
+        FAB --> D2Da["D2D adapter: replay and training"]
+    end
+    DEV["External I/O device"] --> IOB
+    D2Da --> PHY["D2D PHY link"]
+    PHY --> D1["Die 1: remote NoC and targets"]
+    QOS["QoS policy: admission, reservation, arbitration"] -.-> NIa
+    QOS -.-> NIb
+    QOS -.-> FAB
+```
+
 ## 1. Traffic and endpoint contract
 
 Build a traffic-class table. For each request, response, write data, probe, acknowledgement, interrupt, page-fault, debug, and real-time stream, record packet size, source/destination set, injection rate/burst, latency/deadline, ordering, loss/retry, security, and dependency on other classes.

@@ -8,6 +8,8 @@ Full-chip integration is where locally correct blocks encounter incompatible ass
 
 The deliverable is not merely a top-level connection diagram. It is a system specification linking product modes to addresses, protocols, clocks, resets, power, security, interrupts, performance, error handling, software, verification, physical budgets, and first-silicon gates.
 
+These three commitments structure the rest of the blueprint: the contract database and boot dependency graph **generate shared truth** and boot order (sections 1–2); the composed verification ladder and the performance, power, error, observability, and physical closures **verify composed behavior** (sections 3–8); and staged first-silicon gates and the tapeout-readiness checklist **bring up by dependency order** and sign off (sections 9–10).
+
 ## 1. Full-chip contract database
 
 Maintain machine-readable or otherwise single-source reviewed tables for:
