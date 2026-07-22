@@ -70,6 +70,23 @@ Compatibility crosses graph/IR, compiler passes, executable format/commands, cap
 
 ## 8. Rollout and recovery state machine
 
+A model version is promoted left to right through the lifecycle below; the canary gate either advances it to steady serving or rolls the candidate back, and draining is the single exit that frees state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Registered
+    Registered --> Validated: compile / validate
+    Validated --> Staged: bundle assembled
+    Staged --> Loading: load / relocate
+    Loading --> Warming: warm graph
+    Warming --> Canary: sample traffic
+    Canary --> Serving: quality + SLO pass
+    Canary --> Draining: rollback on fail
+    Serving --> Draining: update / drain / rollback
+    Draining --> Retired: quiesce + free state
+    Retired --> [*]
+```
+
 Registered → Compiled/Validated → Staged → Loading/Relocating → Warming → Canary → Serving → Draining → Retired. Each transition has timeout, evidence, cleanup, and rollback. Canary samples supported profiles, rare shapes/fallbacks, quality, errors, and SLO goodput.
 
 Existing requests remain on compatible executable/state. Drain stops admission, completes/cancels/migrates under policy, waits for command/DMA/event quiescence, frees KV/buffers, then unloads. A firmware reset changes epoch and invalidates old completions.

@@ -25,7 +25,28 @@ A scratchpad is explicitly addressed on-chip SRAM, not a hardware-replaced cache
 
 Represent each allocated buffer with base, byte extent, logical shape/layout, bank mapping, element type, owner context, producer event, consumer count, phase/generation, and error/poison. Allocation lifetime begins before the first producer writes and ends only after the last consumer and outstanding DMA access complete. Aliasing is legal only when the compiler proves lifetimes do not overlap or specifies in-place semantics.
 
-For double buffering, phase 0 is filled while phase 1 computes/drains, then ownership swaps after events. A phase bit or generation travels with commands; otherwise a delayed completion from the previous iteration can release the wrong buffer.
+For double buffering, phase 0 is filled while phase 1 computes/drains, then ownership swaps after events. A phase bit or generation travels with commands; otherwise a delayed completion from the previous iteration can release the wrong buffer. The value of the scheme is the *overlap*: one buffer is drained by compute while the other is filled by DMA, and the roles alternate every iteration, so fill latency hides behind the previous drain.
+
+```mermaid
+sequenceDiagram
+    participant DMA as DMA fill
+    participant BufA as buffer A
+    participant BufB as buffer B
+    participant CMP as compute drain
+    DMA->>BufA: fill A first
+    Note over BufA,CMP: event, ownership swap
+    par iteration n
+        CMP->>BufA: drain A
+    and
+        DMA->>BufB: fill B
+    end
+    Note over BufA,CMP: event, ownership swap
+    par iteration n+1
+        CMP->>BufB: drain B
+    and
+        DMA->>BufA: fill A
+    end
+```
 
 Bank mapping should distribute the exact scheduled access vectors. If $p$ consumers each request $w$ bytes/cycle, raw demand is $pw$. Bank bandwidth must cover the worst legal simultaneous pattern or the schedule must include conflict cycles. Padding changes mapping but consumes capacity; compiler cost includes both.
 

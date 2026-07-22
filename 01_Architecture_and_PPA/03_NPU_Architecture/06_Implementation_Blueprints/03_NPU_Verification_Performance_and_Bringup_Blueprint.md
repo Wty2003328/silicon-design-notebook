@@ -158,6 +158,19 @@ Enable in this order:
 
 Each gate has a golden input/output, expected trace/counter ranges, timeout, rollback mode, and owner. Preserve a slow diagnostic mode with one outstanding command/transaction and disabled overlap.
 
+Every gate runs the same monotonic loop: a layer is enabled only after the one below it passes, and any failure or timeout rolls back to the diagnostic mode instead of advancing, so the first failing layer stays isolated and observable.
+
+```mermaid
+flowchart TD
+    ENTER["Enter gate N"] --> GOLD["Drive golden input"]
+    GOLD --> CAP["Capture trace,<br/>counters, output"]
+    CAP --> CHK{"Within expected<br/>ranges before timeout?"}
+    CHK -- "pass" --> ADV["Enable next layer"]
+    ADV --> ENTER
+    CHK -- "fail or timeout" --> RB["Roll back to slow<br/>diagnostic mode"]
+    RB --> TRI["Owner triages<br/>first divergence"]
+```
+
 ## 9. Failure triage
 
 For wrong output, find the first mismatching named tensor/tile and compare compiler IR, descriptor, source bytes, buffer generation, array inputs, accumulator, and conversion. For a hang, inspect the oldest command, missing dependency event, allocated resources, oldest DMA, credits, bank ownership, and reset/power epochs. For low performance, compare actual operations/bytes and each latency component to the model before changing hardware.

@@ -94,6 +94,26 @@ A practical compute tile contains:
 - output packing/quantization;
 - command sequencer and event interface.
 
+These layers wire into one producer-to-consumer path: the sequencer decodes the commands the compiler emitted (Sections 2–3) and gates each stage against fill/drain events.
+
+~~~mermaid
+flowchart TB
+    CMD["commands + descriptors<br/>(compiler output)"] --> SEQ["sequencer +<br/>event interface"]
+    DMAI["input DMA"] --> AB["activation buffer<br/>(banked)"]
+    DMAI --> WB["weight buffer<br/>(banked)"]
+    AB --> DIST["distribution /<br/>systolic links"]
+    WB --> DIST
+    DIST --> PE["PE array"]
+    PE --> ACC["accumulator SRAM<br/>(wide precision)"]
+    ACC --> RED["reduction network<br/>(sums / maxima)"]
+    RED --> VEC["vector / special-function<br/>(activation, norm)"]
+    VEC --> PACK["output packing +<br/>quantization"]
+    PACK --> DMAO["output DMA"]
+    SEQ -. "gate launch" .-> PE
+    SEQ -. "fill event" .-> DMAI
+    SEQ -. "drain event" .-> DMAO
+~~~
+
 Specify ownership transfer. A DMA engine writes a buffer while it owns the producer phase; compute may read only after the arrival event. Compute owns accumulator regions until a drain event. Output DMA may consume only after finalization/quantization. Double buffers alternate epochs so producer and consumer never address the same physical bank region simultaneously unless multiport behavior is designed.
 
 ## 6. Numerical implementation contract

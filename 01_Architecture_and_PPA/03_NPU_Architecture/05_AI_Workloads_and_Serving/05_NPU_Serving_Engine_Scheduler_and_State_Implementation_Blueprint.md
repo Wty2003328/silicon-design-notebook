@@ -40,6 +40,26 @@ For each worker, track capacity totals, reserved, live, pending-free, and failur
 
 ## 4. Scheduler epoch
 
+The engine runs as an event-driven control loop. Each epoch first drains finished work and reclaims its resources, then admits and submits new work, so this tick sees freed KV, slots, and command/event entries before it reserves against them. The steps below trace one epoch; the loop returns to wait when there is nothing runnable.
+
+```mermaid
+flowchart TD
+    WAKE["wake on completion, arrival, or deadline"]
+    RECON["drain completions, reconcile ledger"]
+    PUB["publish outputs and KV, advance state"]
+    CLASS["classify queue by phase, profile, deadline, tenant"]
+    POL["enforce SLO and starvation policy"]
+    FORM["form batches and prefill chunks"]
+    RESV["verify residency, reserve KV, slots, commands, workspace"]
+    BIND["bind tensors, page tables, deps, fallback"]
+    SUB["submit to runtime, record invocation generation"]
+    ARM["arm next wake timer"]
+
+    WAKE --> RECON --> PUB --> CLASS --> POL --> FORM --> RESV --> BIND --> SUB --> ARM
+    ARM -. "next epoch" .-> WAKE
+    PUB -. "freed resources" .-> RESV
+```
+
 1. consume completion/fault/cancel events and reconcile resource ledger;
 2. publish valid outputs/KV and advance request state;
 3. classify queued requests by phase/profile/deadline/tenant/model;
