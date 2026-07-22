@@ -84,6 +84,27 @@ A topology is a single choice trading three quantities that cannot all be optimi
 | 2-D torus | 4 | $k$ | $2k\,b$ | wraparound halves diameter; long wrap wires → folded |
 | Fat-tree / flattened butterfly | high | $\sim\!\log N$ | high | low diameter, costly high-radix routers |
 
+Before the counting arguments, here is the object they describe. Cut the nodes into two equal halves; the links the cut severs *are* the bisection — the throughput ceiling of §1. A mesh's cut lands squarely on one link per row:
+
+```text
+   4x4 mesh (k=4, N=16). Each [R] = 5-port router (N/S/E/W + Local
+   tile); every link is a short wire to a physical neighbour.
+
+      [R]───[R]─┊─[R]───[R]     row 0
+       │     │  ┊  │     │
+      [R]───[R]─┊─[R]───[R]     row 1     ┊ = the halving cut
+       │     │  ┊  │     │
+      [R]───[R]─┊─[R]───[R]     row 2     it severs 1 link/row
+       │     │  ┊  │     │
+      [R]───[R]─┊─[R]───[R]     row 3     => k = 4 links cross
+      └─ left ─┘┊└─ right ─┘
+       half (8) ┊  half (8)
+
+   Those k links ARE the bisection:  B_b = k * b = sqrt(N) * b.
+```
+
+Read the cut down the middle: it crosses $k=\sqrt N$ links, so $B_b=k\,b$ — and that same $\sqrt N$ is what makes the mesh wireable on a planar die (the argument below). The counting arguments now just make each column of the table precise.
+
 **Deriving the four metrics from first principles.** Each cell above is a short counting argument, not a lookup — and doing them once is what shows *why* the mesh's numbers are the ones a planar die can afford. Bisection is a *min-cut* count (fewest links whose removal splits the nodes into equal halves), diameter a *longest-shortest-path* count, and $\bar h$ an *average shortest-path* under uniform-random traffic.
 
 - **Ring** ($N$ nodes, bidirectional, degree 2). Splitting the ring into two equal arcs severs exactly the **two** links joining the arc ends, so $B_b = 2b$ — constant in $N$, the throughput floor. The farthest pair sits $N/2$ links apart going the short way, so $D = N/2$. For the mean, from any node $2$ nodes lie at each distance $1..\tfrac N2{-}1$ and one at $\tfrac N2$:
@@ -139,7 +160,7 @@ where $h$ = hops, $t_r$ = per-router delay, $L_{pkt}$ = packet size, $b$ = link 
 
 **Wormhole's disease: head-of-line blocking.** A wormhole packet whose head is blocked leaves its body *occupying channels across several routers at once*. Any other packet needing one of those physical links is stuck behind it — even if its own path is entirely clear. One blocked packet idles links it is not even using. This head-of-line (HoL) blocking is the direct motivation for virtual channels, and the raw material of deadlock (§4).
 
-**Virtual channels: decoupling buffer ownership from link ownership.** Give each physical link several independent flit-buffer queues — virtual channels (VCs) — and arbitrate which VC drives the wire *per cycle*. A blocked packet now parks its body in *its* VC's buffers while another VC keeps the physical link busy. VCs break the identification of "holding a buffer" with "holding the link" that caused HoL blocking — and that one mechanism buys three distinct things interviewers like to enumerate:
+**Virtual channels: decoupling buffer ownership from link ownership.** Give each physical link several independent flit-buffer queues — virtual channels (VCs) — and arbitrate which VC drives the wire *per cycle*. The intuition is a single-lane bridge fronted by several independent waiting lanes: a car stalled in one lane no longer blocks the others, though only one lane actually crosses the bridge each cycle. A blocked packet now parks its body in *its* VC's buffers while another VC keeps the physical link busy. VCs break the identification of "holding a buffer" with "holding the link" that caused HoL blocking — and that one mechanism buys three distinct things interviewers like to enumerate:
 
 1. **Throughput / HoL relief** — a blocked VC no longer idles the link; 2–4 VCs typically recover **+20–40 %** saturation throughput.
 2. **Deadlock avoidance** — escape / dateline VCs break cyclic channel dependencies (§4). A *correctness* use, not performance.
@@ -165,7 +186,20 @@ Routing chooses each packet's path; the theorem is that *some* path-choice polic
 - **Oblivious (Valiant):** route via a *random* intermediate node — balances *any* traffic pattern at 2× average hops; the basis of worst-case throughput guarantees.
 - **Adaptive:** choose among productive (minimal-adaptive) or all (fully-adaptive) output ports by local congestion (credit counts). Best load balance, but it must *re-prove* deadlock freedom and it breaks in-order delivery (the protocol layer must tolerate reordering or carry per-flow order).
 
-**Deadlock as cyclic resource dependence — the theory.** Deadlock needs the classic four conditions: mutual exclusion, hold-and-wait, no preemption, circular wait. A wormhole packet holds its buffers/channels exclusively, waits while holding them, and cannot be preempted (you may not drop it) — so three of the four are structural and permanent. The **only** removable condition is *circular wait*. Formalize it as the **channel dependency graph (CDG)**: a node per channel, and an edge $c_i \to c_j$ whenever a packet can hold $c_i$ while requesting $c_j$.
+**Deadlock as cyclic resource dependence — the theory.** The intuition is gridlock at a four-way intersection: four cars each edge into the box, each blocked by the car ahead, none able to back out — every car waits on the space the next car occupies, in a closed ring, so no one ever moves again. A wormhole network wedges the same way, with held channels in place of intersection boxes. Deadlock needs the classic four conditions: mutual exclusion, hold-and-wait, no preemption, circular wait. A wormhole packet holds its buffers/channels exclusively, waits while holding them, and cannot be preempted (you may not drop it) — so three of the four are structural and permanent. The **only** removable condition is *circular wait*. Formalize it as the **channel dependency graph (CDG)**: a node per channel, and an edge $c_i \to c_j$ whenever a packet can hold $c_i$ while requesting $c_j$. Draw the dependencies of one such jam and the shape is unmistakable — a ring. (This is exactly the four-packet case built in §10 Problem 3, each packet holding the link the next one needs.)
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "dagre", "nodeSpacing": 40, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart TB
+    c1["c1 = East link<br/>held by pkt A"] -->|"A needs c2"| c2["c2 = North link<br/>held by pkt B"]
+    c2 -->|"B needs c3"| c3["c3 = West link<br/>held by pkt C"]
+    c3 -->|"C needs c4"| c4["c4 = South link<br/>held by pkt D"]
+    c4 -->|"D needs c1"| c1
+    classDef ch fill:#fee2e2,stroke:#b91c1c,color:#000
+    class c1,c2,c3,c4 ch
+```
+
+Break any single edge — forbid the turn that draws it, or hand the blocked packet an escape VC to drain onto — and the ring cannot close. That "no closed ring of waits" condition is the entire content of the theorem:
 
 > **Dally–Seitz theorem.** A routing function is deadlock-free **iff** its channel dependency graph is acyclic (over the resources packets can wait on).
 

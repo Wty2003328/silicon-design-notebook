@@ -109,6 +109,28 @@ That is a combinational cycle with no register in it, and such a loop has no wel
 
 The minimal repair is to break exactly one arc — make one signal unconditional — which removes the cycle and leaves a well-posed synchronous update. The spec breaks the *source's* arc (`VALID` ⊥ `READY`) rather than the sink's for a definite reason: the source is the party that already *knows* whether it has data, so committing costs it nothing, whereas letting `READY` remain free to depend on `VALID` is what allows the sink to gate acceptance on real buffer space (the register slice, below). The companion **stability rule** — once `VALID` is asserted, the source holds it and the payload constant until the handshake completes — closes the last hole: it guarantees the offered beat cannot evaporate while the sink deliberates, so "the sink may take its time" never costs a lost transfer.
 
+**Concretely, in RTL.** The whole primitive is a handful of lines. The transfer is one `AND`; the asymmetry and stability rules are just a statement about *which signals are registered*. Every AMBA channel — `AW`/`W`/`AR` driven by the master, `B`/`R` driven by the slave — is one instance of exactly this source side:
+
+```systemverilog
+// One VALID/READY channel, source side (a single elastic slot).
+// A beat moves only on a clock edge where BOTH sides are high:
+wire accept = VALID & READY;                  // the transfer predicate -- an AND
+wire load   = have_data & (~VALID | accept);  // (re)fill the slot only when it is free
+
+always_ff @(posedge ACLK)
+  if (!ARESETn)    VALID <= 1'b0;
+  else if (load)   VALID <= 1'b1;             // commit: raise VALID once data exists...
+  else if (accept) VALID <= 1'b0;             // ...clear only after the beat is taken
+
+always_ff @(posedge ACLK)
+  if (load) PAYLOAD <= next_beat;             // payload changes only on (re)load, so
+                                              // while (VALID && !READY) it holds stable
+// VALID and PAYLOAD are flop outputs: they cannot COMBINATIONALLY chase READY, which
+// is exactly the asymmetry rule that keeps the handshake free of a combinational loop.
+```
+
+Trace the three cases and the two rules fall out: with `VALID` high and `READY` low, `accept` and `load` are both `0`, so the flop holds `VALID` and `PAYLOAD` unchanged (stability); with both high and more data waiting, `load` stays `1`, so a fresh beat streams every cycle (100% throughput, no bubble); and because `VALID` is a register, its value this cycle never depends on `READY` this cycle (no loop). This one pattern, replicated per channel and buffered by the skid slice below, is the *entire* structural vocabulary of the fabric.
+
 **Backpressure.** `READY` low is the sink saying *"not yet."* It propagates upstream: a stalled consumer deasserts `READY`, its producer's buffer fills and it deasserts *its* `READY`, and the stall ripples back to the origin with no data lost. This is the same producer/consumer discipline as a pipeline stall ([CPU_Architecture](../../01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md)) — a bus is just a very long, buffered pipeline.
 
 **The elastic-buffer knee — why a register slice costs exactly one cycle and needs exactly two entries.** A `READY` that is combinational from `VALID` adds zero latency but threads a long timing path straight through the sink — often, once you chain fabric stages, the critical path of the whole interconnect. Registering `READY` breaks that path, but the flop makes the producer see the consumer's stall *one cycle late*, and that one cycle of blindness is the crux. In the cycle after the consumer deasserts, the producer — not yet informed — launches one more beat. To avoid dropping it the stage must be able to hold **two** beats: the one it is currently presenting, plus the one "skid" beat that arrives during the blind cycle. Hence the canonical **skid buffer / register slice** is a *2*-entry elastic buffer — the *minimum* structure that simultaneously registers both directions (one cycle of added latency, timing closed) **and** sustains 100% throughput (the second slot catches the in-flight beat, so no bubble is ever inserted by a transient stall).
@@ -134,6 +156,22 @@ Read this as *five concerns that have independent timing, so they get independen
 - **Read/write are full-duplex.** A read and a write can be in flight in the same cycle; there is no bus-turnaround bubble between a read and a write as on a shared tri-state bus.
 - **Address runs ahead of data.** Because AW/AR handshake independently of W/R, the master can pour addresses into the fabric before any data returns — the precondition for outstanding transactions (§4).
 - **Write completion is decoupled.** The separate B channel lets a master fire a write and pick up its acknowledgment later, rather than stalling the data path waiting for a status code.
+
+**How the five channels compose one transaction.** The table lists the channels; the missing intuition is how they group. A *read* uses **two** channels — one `AR` address handshake, then the `R` data stream returning under it. A *write* uses **three** — `AW` (address) and `W` (data) flowing *independently* toward the slave, then a single `B` acknowledgement coming back. The return channels (`R`, `B`) are what let latency be a runtime property (§2): the master fires the address and picks the response up whenever it arrives, tagged to the right transaction (§4). Each arrow below is itself a VALID/READY stream from the RTL above.
+
+```mermaid
+sequenceDiagram
+    participant M as Master
+    participant S as Slave
+    Note over M,S: READ uses two channels (AR then R)
+    M->>S: AR address, len, id
+    S-->>M: R beat 0
+    S-->>M: R beat n with RLAST
+    Note over M,S: WRITE uses three channels (AW, W, then B)
+    M->>S: AW address, len, id
+    M->>S: W beats, WLAST on last, independent of AW
+    S-->>M: B response OK or error
+```
 
 **The bus-utilization argument — quantifying the gain over a shared phase.** Put a number on what each coupling costs. Model every transaction as a dead latency $L$ (address accepted → first data beat returned) followed by $n$ data beats, and measure utilization $\eta$ = fraction of cycles the *data* wires actually move data.
 

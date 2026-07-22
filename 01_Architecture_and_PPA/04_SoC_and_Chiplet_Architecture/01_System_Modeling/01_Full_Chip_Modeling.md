@@ -446,6 +446,63 @@ The state required to enable this is a compact system ledger: live jobs and pred
 
 **Replay and verification contract.** A reproducible job result needs workload/phase and random-seed hashes, contract/config version, address map, initial cache/memory state, queue depths, arbitration policies, per-domain clock/power tables, thermal initial state and epoch, plus the ordered external event stream. Preserve milestone timestamps `{doorbell, first DMA issue, first/last data, first compute, output visible, interrupt, CPU consume}` and resource stall/activity counters. Assert conservation from admitted job → one completion/error, DMA request → one response, bytes injected → delivered/dropped-by-declared-fault, and energy total → sum of block/uncore/delivery terms. Validate the isolated leaves first, then a single-agent composed trace, then the CPU+NPU contention trace, and finally the governor/thermal transient; a final throughput number without this evidence chain cannot identify which layer created it.
 
+### 3.2 The virtual platform: TLM levels and temporal decoupling
+
+§3.1 traced a job through the model as though the model simply *exists*. It does not — someone builds it as a program you can boot real firmware on, fast enough to be useful. That program is the **virtual platform (VP)**: the whole SoC — cores, accelerators, NoC, memory, peripherals — rendered as software modules wired together so that *unmodified* target binaries (boot ROM, drivers, OS, application) execute on it *before any RTL or silicon exists*. It is the executable embodiment of everything above.
+
+**What it is — a flight simulator for the chip.** Each block is a model object: a CPU is an instruction-set simulator (ISS) that fetches and runs the real binary; a memory is an array with an access latency; the NoC is a router that forwards *transactions*. The software inside cannot tell it is not silicon — same registers, same memory map (§8), same interrupts — yet the whole platform runs on a laptop, pauses on any event, and exposes every internal to a debugger. That is what makes it the vehicle for **hardware/software co-design**: firmware and driver teams develop and debug against the VP — including the entire §7 boot chain — often a year or more before parts return, so software bring-up *overlaps* silicon design instead of serializing after it. The "before RTL exists" promise of §0 is cashed here.
+
+**Why not just simulate the RTL? — speed.** Cycle-accurate RTL of a full chip runs at roughly $1$–$10^3$ target-Hz; booting an OS is billions of instructions, which would take weeks to years, so RTL can *never* run real software. A VP must reach **MHz to hundreds of MHz** of simulated clock, and the only way there is to stop modeling *wires* and start modeling *transactions*: rather than toggle RAS/CAS/DQ across dozens of cycles to move a cache line, one function call moves 64 bytes with a single latency annotation. Trading per-signal, per-cycle detail for per-transaction detail is exactly **transaction-level modeling (TLM)** — the timing/functional sibling of the *power* calibration ladder of §1.2, the same speed-vs-accuracy trade applied to time instead of energy.
+
+**How — TLM-2.0 constructs and the abstraction ladder.** The Accellera SystemC TLM-2.0 standard fixes the interfaces so any modeler's master can drive any modeler's slave:
+
+- **Generic payload** — one standard transaction object (command, address, data pointer, length, byte-enables, response status) that every block speaks.
+- **Sockets** — an *initiator* socket on a master binds to a *target* socket on a slave; the NoC/bus is itself a module, targets on one face and initiators on the other, routing each payload by address (the decode of §8).
+- **Blocking vs non-blocking transport** — `b_transport` carries a whole transaction with one delay (fast); `nb_transport` splits it into phases (`BEGIN_REQ -> END_REQ -> BEGIN_RESP -> END_RESP`) that expose pipelining and arbitration (accurate).
+
+Those two transport styles anchor a **fidelity ladder**, and choosing where to sit on it is the single most consequential VP decision:
+
+| Level | Transport / timing | Sim speed | What it is for |
+|---|---|---|---|
+| Untimed / programmer's view (PV) | functional, no time | fastest | golden functional reference |
+| **Loosely-timed (LT)** | `b_transport`, one delay + temporal decoupling + DMI | MHz–100s MHz | boot software, HW/SW co-design, coarse perf |
+| **Approximately-timed (AT)** | `nb_transport`, four phases | ~100 kHz–MHz | contention/queueing (§2) — performance work |
+| Cycle-accurate (CA) | per-cycle | slowest | signoff-grade timing |
+
+Two tricks buy the LT row its orders of magnitude. **Direct memory interface (DMI):** for a plain RAM region the target hands the initiator a raw pointer plus an access latency, so subsequent fetches and loads bypass the whole transport call chain and hit host memory at native speed. **Temporal decoupling** (the big one): in a discrete-event kernel an initiator that yields to the scheduler after *every* instruction pays the context-switch cost every instruction, and that overhead dwarfs the work — so instead each initiator runs *ahead* of global simulated time by up to a **time quantum** $Q$, executing a whole batch locally and synchronizing with the kernel only when its accumulated local time reaches $Q$. One sync is then amortized over an entire quantum of work.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    CPU["CPU ISS<br/>b_transport + DMI"] -->|"init socket"| BUS
+    NPU["NPU model<br/>burst b_transport"] -->|"init socket"| BUS
+    DMA["DMA engine<br/>burst b_transport"] -->|"init socket"| BUS
+    BUS["Interconnect / NoC model<br/>route generic payload by address"]
+    BUS -->|"target socket"| MEM["Memory model<br/>DRAM / SRAM"]
+    BUS -->|"target socket"| PER["Peripherals<br/>MMIO registers"]
+    CPU -. "DMI pointer, skip transport" .-> MEM
+    QK["Quantum keeper + SystemC kernel"] -. "sync each quantum, advance time" .-> CPU
+    QK -. "sync each quantum" .-> NPU
+    QK -. "sync each quantum" .-> DMA
+    classDef i fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef b fill:#dcfce7,stroke:#15803d,color:#000
+    classDef t fill:#fde68a,stroke:#b45309,color:#000
+    classDef k fill:#e5e7eb,stroke:#4b5563,color:#000
+    class CPU,NPU,DMA i
+    class BUS b
+    class MEM,PER t
+    class QK k
+```
+
+*Worked number — the temporal-decoupling speedup (illustrative host-time costs).* Let the host spend $t_{\text{insn}}=5$ ns simulating one instruction's function and $t_{\text{sync}}=500$ ns on one kernel synchronization (yield → schedule → resume). At a $1$ GHz target with IPC $1$, one instruction advances *simulated* time by $1$ ns, so a quantum $Q=1\ \mu s$ holds $n=Q/(1\ \text{ns})=1000$ instructions between syncs.
+
+- **No decoupling** ($n=1$): every instruction pays a sync — $t_{\text{insn}}+t_{\text{sync}}=505$ ns of host time each, i.e. $\approx 2.0$ MIPS.
+- **$Q=1\ \mu s$** ($n=1000$): the sync is shared over $1000$ instructions — $t_{\text{insn}}+t_{\text{sync}}/n=5+0.5=5.5$ ns each, i.e. $\approx 182$ MIPS.
+
+The speedup is $505/5.5\approx 92\times$; the ceiling as $Q\to\infty$ is $(t_{\text{insn}}+t_{\text{sync}})/t_{\text{insn}}=505/5=101\times$, so a $1\ \mu s$ quantum already banks $91\%$ of everything available and doubling it to $2\ \mu s$ creeps only to $96\times$. That is sharply diminishing return against a *linearly* growing cost: inside a quantum the initiators do not see each other's writes in time order, so any two masters can be skewed by up to $Q$. A CPU polling a flag an NPU sets may observe it as much as $Q$ late — invisible to functional bring-up, poison to a §2 contention measurement. **So LT with a large quantum boots the OS; a §2 performance number demands a small quantum or AT** — the same fidelity dial as §1.2, set per question.
+
+> **Auditor's red flag:** quoting cycle-level latency or a contention curve off a loosely-timed, temporally-decoupled VP — the quantum has already blurred inter-master timing by up to $Q$, so those numbers require AT (or CA), never raw LT.
+
 ---
 
 ## 4. One equation, three architectures

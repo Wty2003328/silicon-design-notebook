@@ -40,6 +40,8 @@ A credit represents one available downstream buffer slot. Sending consumes a cre
 
 A packet is divided into flits. In wormhole switching, the head flit acquires channels while trailing flits occupy buffers along the path. If the head blocks, the packet can hold several upstream channels, creating a chain of dependencies.
 
+**Where wormhole sits, and why it holds channels.** Three switching disciplines trade buffering against latency. *Store-and-forward* waits for a whole packet to arrive at each router before forwarding it: the packet occupies exactly one router at a time, spans no links, and forms no cross-router chain — but every hop pays the full serialization delay and every router needs a whole-packet buffer. *Virtual cut-through* forwards the head as soon as the next router can accept the entire packet, cutting per-hop latency while still reserving a full-packet buffer. *Wormhole* forwards flit by flit and reserves only flit-sized buffers, so the head streams ahead while the body stays strung across several routers and links. Small buffers and low latency are the payoff; one packet holding a chain of channels is the hazard that the rest of this page must prove cannot close into a cycle.
+
 For packet size $P$ bits, flit width $F$ bits, $H$ hops, router latency $L_r$, and link latency $L_l$, zero-load latency approximates
 
 $$
@@ -60,7 +62,7 @@ $$
 
 with the exact partition depending on where link pipeline slots are counted.
 
-Round-trip credit latency $L_c$ sets a bandwidth-delay product. To sustain one flit/cycle on a VC without credit bubbles,
+Round-trip credit latency $L_c$ sets a bandwidth-delay product. Intuitively this is a pipeline: after sending a flit you cannot reuse its buffer slot until that slot's credit returns $L_c$ cycles later, so one VC must own enough slots to bridge the whole round trip or it stalls waiting on its own credits. To sustain one flit/cycle on a VC without credit bubbles,
 
 $$
 B_{VC}\gtrsim L_c
@@ -96,6 +98,32 @@ flowchart LR
 ```
 
 Turn-model routing forbids selected turns to break cycles while retaining some adaptivity. The proof must include all topology wraparound links, local injection/ejection, and VC transitions.
+
+### 4.1 The turn model: forbid the fewest turns that break every cycle
+
+**What.** Dimension-order routing is safe but blunt — it forbids *every* turn from a column direction back into a row direction, erasing all path choice. The turn model asks the cheaper question: what is the *smallest* set of turns to prohibit so that no cyclic channel dependency can form? In a 2D mesh a packet can make eight distinct 90-degree turns, and those eight turns compose exactly two abstract loops, one clockwise and one counter-clockwise. A routing deadlock must circle one of these loops, so breaking each loop once suffices.
+
+**Why.** Every prohibited turn is lost adaptivity. XY routing prohibits four turns (both column→row turns, from N and from S) and keeps no path choice; the turn model prohibits only two — one per loop — leaving six legal turns and therefore real freedom to steer around congestion or a fault while the dependency graph stays acyclic. Glass and Ni's *west-first* variant forbids the two turns that end heading west (N→W and S→W): a packet takes all of its westward hops first, then may still choose among the remaining directions.
+
+**How.** Each abstract loop is a directed four-cycle of turns; deleting one edge from each opens both. West-first deletes S→W from the clockwise loop and N→W from the counter-clockwise loop, so no packet can traverse a full turn cycle around a mesh face.
+
+```mermaid
+flowchart LR
+    subgraph CW["clockwise turn loop"]
+        aN["N"] -->|"N to E"| aE["E"]
+        aE -->|"E to S"| aS["S"]
+        aS -. "S to W forbidden" .-> aW["W"]
+        aW -->|"W to N"| aN
+    end
+    subgraph CCW["counter-clockwise turn loop"]
+        bE["E"] -->|"E to N"| bN["N"]
+        bN -. "N to W forbidden" .-> bW["W"]
+        bW -->|"W to S"| bS["S"]
+        bS -->|"S to E"| bE
+    end
+```
+
+North-last (forbid N→E, N→W) and negative-first (forbid E→S, N→W) break the same two loops with different turn pairs, trading which traffic patterns keep their diagonal shortcuts. Whichever variant is chosen, the deadlock proof must still cover wraparound links, injection/ejection turns, and VC transitions.
 
 ## 5. Adaptive routing and escape resources
 

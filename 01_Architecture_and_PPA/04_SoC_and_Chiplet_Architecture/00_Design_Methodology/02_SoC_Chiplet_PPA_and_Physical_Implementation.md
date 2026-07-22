@@ -150,6 +150,61 @@ $$
 
 though real models include clustering and redundancy. Smaller chiplets may improve per-die yield while package assembly yield/cost becomes important.
 
+Read the exponent as a defect count. If killer defects fall randomly and independently at density $D_0$, the number landing on a die of area $A$ is Poisson with mean $D_0A$, and the die survives only if *zero* land on it — probability $e^{-D_0A}$. Yield therefore decays exponentially, not linearly, with area, so one big die is punished far more than the sum of its parts. That is the case for partitioning: splitting area $A$ into $n$ chiplets turns a single all-or-nothing $e^{-D_0A}$ into $n$ independent $e^{-D_0A/n}$ pieces, discarding only the defective small dies instead of a whole large one. The counter-pressure is that every cut adds a die-to-die PHY, interposer area, and an assembly step with its own yield, so partitioning wins only when the silicon-yield saving outweighs the packaging added — a balance §11 works in numbers.
+
+The two structural pictures behind that trade:
+
+**Top view — where blocks sit, and where the partition cuts.** PHYs hug the die edge near their bumps, compute clusters and distributed last-level cache fill the interior on the NoC mesh, and the partition slices along low-traffic seams so each cut becomes a die-to-die (D2D) link.
+
+```mermaid
+flowchart TB
+  subgraph MONO["monolithic floorplan (top view)"]
+    direction TB
+    N0["north I/O ring<br/>DDR / PCIe / CXL PHY at edge bumps"]
+    subgraph CORE0["interior"]
+      direction LR
+      A0["compute<br/>cluster"]
+      LLC0["distributed<br/>LLC + NoC mesh"]
+      A1["compute<br/>cluster"]
+    end
+    S0["south I/O ring<br/>USB / storage / D2D stubs"]
+    N0 --- CORE0
+    CORE0 --- S0
+  end
+  subgraph PART["chiplet partition (top view)"]
+    direction LR
+    C0["compute<br/>chiplet 0"]
+    C1["compute<br/>chiplet 1"]
+    IO["I/O die<br/>all PHYs + mem ctrl"]
+    C2["compute<br/>chiplet 2"]
+    C3["compute<br/>chiplet 3"]
+    C0 <-->|"D2D"| IO
+    C1 <-->|"D2D"| IO
+    C2 <-->|"D2D"| IO
+    C3 <-->|"D2D"| IO
+  end
+  MONO ==>|"cut at low-traffic seams;<br/>each seam becomes a D2D link"| PART
+```
+
+**Side view — the chiplet-on-interposer stack.** Each cut costs a physical hop down through microbumps into a silicon interposer that carries the D2D wires and TSVs, then C4 bumps to the substrate and BGA to the board — the package resources a block diagram hides.
+
+```mermaid
+flowchart TB
+  subgraph DIES["chiplet tier (side view)"]
+    direction LR
+    D0["compute<br/>chiplet (N5)"]
+    D1["compute<br/>chiplet (N5)"]
+    D2["I/O die (N12)<br/>DDR / PCIe / CXL PHY"]
+  end
+  D0 <-->|"D2D PHY"| D1
+  D1 <-->|"D2D PHY"| D2
+  DIES --- MB["microbumps ~45 um pitch"]
+  MB --- INT["silicon interposer<br/>D2D routing + TSVs"]
+  INT --- C4["C4 bumps ~150 um pitch"]
+  C4 --- SUB["package substrate<br/>power + slow I/O escape"]
+  SUB --- BGA["BGA to board"]
+```
+
 ## 7. Clock, voltage, and power-state architecture
 
 Multiple domains require clock/reset crossings, synchronizers/FIFOs, isolation, retention, level shifters, and sequencing. DVFS saves power only if workload slack and transition latency support it. Power-gating saves leakage but costs wake energy/time and state retention/reinitialization.
@@ -421,6 +476,24 @@ A 600 mm² monolithic compute die is partitioned into four 140 mm² compute chip
 - package/interposer area, assembly and known-good-die test;
 - I/O-die bottleneck and power delivery;
 - thermal distribution and process-node costs.
+
+*Worked numbers — cost per good die.* Take defect density $D_0=0.15$ per cm² (a large die on a maturing node) and good-silicon cost $c$ per mm² — the wafer price amortized over usable area, roughly $c\approx\$0.25$/mm² at a leading node. Poisson yield $Y=e^{-D_0A}$ gives cost per good die $=Ac/Y$:
+
+| die | $A$ (mm²) | $Y=e^{-D_0A}$ | cost / good die |
+|---|---|---|---|
+| monolith | 600 | $e^{-0.90}=0.41$ | \$369 |
+| compute chiplet | 140 | $e^{-0.21}=0.81$ | \$43 |
+| I/O die | 90 | $e^{-0.135}=0.87$ | \$26 |
+
+One monolith is a single good 600 mm² die: **\$369**. The chiplet system needs four good compute chiplets ($4\times\$43\approx\$172$) plus one good I/O die (\$26) — about \$198 of known-good silicon — then interposer and assembly. Charge \$50 for interposer/bonding/substrate at an assembly yield $Y_{asm}=0.97$ (good dies can still be lost in bonding):
+
+$$
+C_{chiplet}=\frac{198+50}{0.97}\approx\$256.
+$$
+
+Chiplets come out ~30% cheaper here, even though they consume 650 mm² of raw silicon against the monolith's 600. The saving is pure yield: cutting the die turns one all-or-nothing $e^{-0.90}=0.41$ into small $e^{-0.21}=0.81$ pieces, so a wafer of mostly-scrapped large dies becomes a wafer of mostly-good small ones and only the bad small pieces are thrown away.
+
+The sign flips with defect density. On a mature node at $D_0=0.05$ per cm² the monolith yield rises to $e^{-0.30}=0.74$ (good die \$203), while the chiplet system barely improves yet still owes the fixed \$50 and 3% assembly loss, landing near \$231 — now the **monolith wins**. That crossover is the whole lesson: partitioning pays when $D_0A$ is large (big or reticle-limited dies, immature or bleeding-edge process) and loses when yield is already high and packaging overhead cannot be repaid. This is a first-order model: it omits per-die test cost, interposer yield, defect clustering, and redundancy; clustering and spare-row/spare-core redundancy both lift large-die yield above the naive $e^{-D_0A}$ and shift the crossover, so a real decision uses measured defect and repair models, not Poisson alone.
 
 If the workload keeps most traffic local, partitioning can win cost/yield. If coherence and shared-memory traffic repeatedly cross the package, PHY energy/latency and I/O-die contention can erase it. The traffic-placement model and physical package estimate must be solved together.
 

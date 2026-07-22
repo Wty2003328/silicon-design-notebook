@@ -23,6 +23,24 @@ flowchart LR
 
 This feedback path is the simulation: a delayed memory or link completion changes when the modeled agent can issue later work, so final results must be reduced from causally ordered events rather than independent component estimates.
 
+The diagram above is the data path *inside* one run. The one below is the engineer's *workflow* for building and defending a study; the sections that follow walk it in order, and the validation loop at the end is what decides when a model may be trusted.
+
+```mermaid
+flowchart TD
+    CLAIM["System claim to defend"] --> BND["Pick model boundary (sec 0)"]
+    BND --> LAD["Set fidelity per component (sec 0.1)"]
+    LAD --> FRZ["Freeze full experiment (sec 1)"]
+    FRZ --> CON["Fix interface contracts (sec 2)"]
+    CON --> CMP["Compose, map work to events (sec 3)"]
+    CMP --> RUN["Run engine through ROI (sec 3.1, 9)"]
+    RUN --> RED["Reduce events to metrics (sec 10)"]
+    RED --> VAL["Conserve and validate (sec 11)"]
+    VAL --> Q{"Residual below design effect?"}
+    Q -->|"yes"| PKG["Package result (sec 13)"]
+    Q -->|"no"| ESC["Raise implicated fidelity (sec 11.1)"]
+    ESC --> LAD
+```
+
 ## 0. Choose the model boundary from the system claim
 
 | Claim | Required boundary |
@@ -52,6 +70,17 @@ Do not use a fixed trace to claim closed-loop application slowdown when slower s
 Moving downward retains more state and usually reduces simulated target cycles per host second. A practical system study mixes rungs: a functional CPU and device model can boot software while a selected NoC/DRAM path is approximately timed; a detailed CPU interval can use functional peripherals; a calibrated analytical model can sweep thousands of chiplet placements before a few event-level candidates. The boundary is valid only if discarded state cannot change the decision.
 
 The often-quoted speedups are workload and implementation dependent, but the ordering is robust: loosely timed virtual platforms can be hundreds or thousands of times faster than RTL, while application-scale execution-driven cycle models are commonly orders of magnitude slower than native execution. Always measure model throughput on the actual workload and report which components dominate host time.
+
+**Worked example — fidelity buys observability at a cost.** Say the claim needs application runtime for a 100 ms use-case phase on a 2 GHz core, i.e. $2\times10^{8}$ target cycles, with results due within one shift ($\approx 8$ h $= 2.9\times10^{4}$ host s). Using illustrative rates for the CPU-plus-memory path (measure your own):
+
+| Rung driving the hot path | Rate (cycles/host s) | Host time for the phase |
+|---|---|---|
+| loosely timed TLM | $2\times10^{8}$ | 1 s |
+| approximately timed TLM | $2\times10^{6}$ | 100 s |
+| event/cycle model | $2\times10^{4}$ | $10^{4}$ s $\approx$ 2.8 h |
+| RTL/emulation (software) | $2\times10^{2}$ | $10^{6}$ s $\approx$ 11.6 days |
+
+The event/cycle model still fits the shift, so a per-cycle contention claim is affordable across the whole phase; full RTL of the same phase ($\approx$ 11.6 days) is not. So mix rungs: boot and fast-forward on the loosely timed platform, run the phase at event/cycle fidelity ($\approx$ 2.8 h), and spend a separate RTL/emulation window only on a short 1 ms calibration ROI ($2\times10^{6}$ cycles $\approx$ 2.8 h at the RTL rate) to anchor the event model. The study lands in a day; a full-phase RTL run never would. This is the "pay only for state the claim observes" rule applied to a schedule, not just to accuracy.
 
 ## 1. Freeze the complete system experiment
 
@@ -228,6 +257,8 @@ Validate bottom-up and end-to-end: protocol microtests, NoC traffic patterns, DR
 ### 11.1 SoC composition error budget
 
 Component accuracy does not guarantee system accuracy. A CPU, NoC, and DRAM model can each match isolated tests yet produce the wrong coupled result if their adapter loses backpressure, changes address mapping, double-counts latency, ignores clock-domain crossings, or uses inconsistent byte/transaction definitions. Treat each interface contract as its own validation object.
+
+**Worked example — the error lives in the interface, not the parts.** A core caps outstanding reads at $N=8$ (its MSHRs); the memory channel serves one read every $S=50$ ns, so its throughput ceiling is $1/S=20$ M reads/s. Close the loop and the core self-throttles: at the ceiling it holds exactly 8 requests in flight, and by Little's law each read's latency is $N\cdot S=8\times50=400$ ns. Now drive the *same* memory model with an open-loop generator pinned at $\lambda=19$ M/s ($\rho=0.95$). Treating the queue as $M/M/1$, mean latency is $S/(1-\rho)=50/0.05=1000$ ns with $\rho/(1-\rho)=19$ requests in flight on average. Each model is correct in isolation, yet the open-loop composition reports $2.5\times$ the latency and 19 concurrent reads — impossible for an 8-MSHR core, and exactly what the outstanding-requests conservation check (Section 11) flags. Restoring backpressure caps in-flight requests at 8 and the number falls back in line. No component parameter was wrong; the dropped feedback across the interface was.
 
 Separate workload concurrency error, component parameter error, interface/composition error, sampling error, and structural omission. Tail latency is especially sensitive to rare alignment of bursts, refresh, coherence, and power-state transitions; an average-rate traffic generator cannot validate a percentile or deadline claim. A fixed open-loop trace also cannot reproduce throttling that changes later injection.
 

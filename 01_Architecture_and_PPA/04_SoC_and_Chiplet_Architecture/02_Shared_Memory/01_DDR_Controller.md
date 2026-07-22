@@ -36,9 +36,43 @@ Four properties of the device each break a clause of the flat-RAM contract, and 
 
 Collapse the four obligations and the controller is one thing: **a constraint-satisfaction scheduler over a stateful, timed automaton.** Each bank is a small state machine with an open-row register; each cycle the controller must, among all pending requests, find the commands that are *legal now* (all timers satisfied, bank in the right state) and pick the one that best serves throughput without starving anyone or missing a refresh deadline. Every named block in a real controller — bank-state table, timing checker, refresh engine, FR-FCFS arbiter, write batcher, ECC path — is a piece of that one sentence. The rest of this page derives them.
 
+Wired together, those blocks are one datapath. Hold this map in mind as each later section derives one block of it: solid arrows trace a request from a requestor down to the DRAM devices and the data back up, while the dotted arrows are the live per-bank state — open row, timers, refresh deadline — the arbiter consults every cycle to choose a command that is *legal now*.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart TB
+    REQ["Requestors CPU / GPU / DMA<br/>on AXI / CHI"] --> ING["Ingress + address map<br/>decode ch / rank / bg / bank / row / col"]
+    ING --> RQ["Read queue"]
+    ING --> WQ["Write queue<br/>(write batcher)"]
+    RQ --> SCH{"FR-FCFS arbiter<br/>row-hit first, then oldest"}
+    WQ --> SCH
+    BST["Bank-state table<br/>open row per bank"] -.-> SCH
+    TMG["Timing checker<br/>per-bank / rank timers"] -.-> SCH
+    REF["Refresh engine<br/>deadline + RFM"] -.-> SCH
+    SCH -->|"legal command"| BFSM["Per-bank state machines<br/>Idle / Active"]
+    BFSM -.->|"update open row"| BST
+    BFSM --> PHY["PHY: cmd bus + DQ / DQS<br/>DLL, ODT"]
+    PHY -->|"cmd + write data"| DRAM[("DRAM devices")]
+    DRAM -->|"read data"| PHY
+    PHY --> ECC["ECC decode / correct"]
+    ECC --> RSPQ["Response queue<br/>reorder by ID"]
+    RSPQ --> REQ
+```
+
 ---
 
 ## 2. The bank as a state machine, and the row buffer's three cases
+
+**Where a bank sits — the parallelism hierarchy.** This section zooms into one bank, so first fix what a bank is *inside*. A memory **channel** is one command+data bus pair; it drives one or more **ranks** (a set of DRAM chips selected together and clocked as a unit); each chip is divided into **bank groups** (the §3 $t_{CCD\_L}$-vs-$t_{CCD\_S}$ boundary), each group into **banks**, and each bank is a 2-D array of **rows × columns** fronted by the single row buffer of §2.1. A physical address (§4.3) selects a channel, rank, bank group, and bank, then a row and column *within* that bank. The point that carries the rest of the page: banks, bank groups, ranks, and channels are *independent copies* of the machinery below, and that replication is the bank-level parallelism §7.2 shows is mandatory to hide one bank's $t_{RC}$. (DDR5 additionally splits each 64-bit channel into two independent 32-bit **subchannels**, §9.1, each with its own scheduler.)
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 40, "htmlLabels": false}}}%%
+flowchart TB
+    CH["Channel<br/>one command + data bus"] --> RK["Rank<br/>chips clocked as a unit"]
+    RK --> BG["Bank group"]
+    BG --> BK["Bank<br/>2-D array of rows x columns"]
+    BK --> RB["Row buffer<br/>sense-amp array, one open row"]
+```
 
 ### 2.1 Why the row buffer exists at all
 
