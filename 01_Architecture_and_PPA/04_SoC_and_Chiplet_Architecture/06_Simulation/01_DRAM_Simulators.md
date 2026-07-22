@@ -7,7 +7,7 @@
 > reliability, availability, and serviceability (RAS); finite-state machine (FSM); exclusive OR (XOR); input/output (I/O); kilobyte (KB);
 > gigabyte (GB).
 
-> **Prerequisites:** [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (the event engine, trace- vs execution-driven, the queueing backbone in §7), [Memory](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) (the 1T1C cell, sense amp, and refresh *physics* these tools abstract), [DDR_Controller](../02_Shared_Memory/01_DDR_Controller.md) (Joint Electron Device Engineering Council (JEDEC) timing, row-buffer policies, first-ready, first-come, first-served (FR-FCFS), and bandwidth math).
+> **Prerequisites:** [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (the discrete-event engine and queueing backbone in §3.1, trace- vs execution-driven in §3), [Memory](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) (the 1T1C cell, sense amp, and refresh *physics* these tools abstract), [DDR_Controller](../02_Shared_Memory/01_DDR_Controller.md) (Joint Electron Device Engineering Council (JEDEC) timing, row-buffer policies, first-ready, first-come, first-served (FR-FCFS), and bandwidth math).
 > **Hands off to:** [Full_Chip_Modeling](../01_System_Modeling/01_Full_Chip_Modeling.md) (how a DRAM model plugs into a perf→power→thermal chip flow), and the gem5 / GPU / accelerator pages that consume a DRAM model as their memory backend.
 
 ---
@@ -65,6 +65,22 @@ where $K_C$ = number of timing guards constraining $C$, drawn from the ~15 JEDEC
 ## 2. The bank/rank/channel hierarchy as nested state machines
 
 Every simulator here represents the DRAM as a tree of FSMs. Ramulator makes this explicit and general: the device is a **lookup-table-based finite-state machine** where each node (rank, bank-group, bank, row) has a *state* (`Closed`, `Opened`, `Refreshing`, `PowerDown`, …) and, crucially, a **per-node table of "next-earliest-cycle" timestamps**, one entry per command type. DRAMSim3 uses a "generic parameterized DRAM bank model which takes DRAM timing and organization inputs" and instantiates the same tree per protocol.
+
+A single bank *is* one such FSM — the "Bank / row-buffer FSMs" box of the §0 system view, opened up. Its states, the command that drives each transition, and the JEDEC guard (§3) that decides when the transition becomes *legal*:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Opened : ACT, legal tRP after PRE
+    Opened --> Opened : RD or WR, tRCD after ACT then tCCD
+    Opened --> Closed : PRE, tRAS after ACT
+    Closed --> Refreshing : REF every tREFI
+    Refreshing --> Closed : bank free after tRFC
+    Closed --> PowerDown : CKE low
+    PowerDown --> Closed : CKE high
+```
+
+Each edge is one command, and the three cost cases of §4 are just *paths* through this graph: a **row hit** is the `Opened` self-loop (pay $t_{CL}$ only); a **row-empty** access is `Closed → Opened →` self-loop (adds $t_{RCD}$); a **row conflict** is the full lap `Opened → Closed → Opened →` self-loop (adds $t_{RP}+t_{RCD}$). Closed-page auto-precharge fuses the read with its `PRE`; `PowerDown` is the idle state whose residency §9 bills for energy. The guard on each edge is exactly what the readiness check below tests.
 
 The core loop each cycle is a **readiness check**, not a computation of latency:
 
@@ -286,7 +302,20 @@ Model the channel as a single server. Requests arrive at rate $\lambda$; the cha
 
 $$\bar{L} \;\approx\; L_{\text{service}} \cdot \frac{1}{1-\rho},$$
 
-so latency is roughly flat at low load and **runs to the knee as $\rho \to 1$** — exactly the $\sim 1/(1-\rho)$ law of [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md). The entire value of a cycle-level DRAM model is that it computes the *true* $\mu_{\text{eff}}$, which is **far below the peak data-bus rate** because every non-ideal event steals service time:
+so latency is roughly flat at low load and **runs to the knee as $\rho \to 1$** — exactly the $\sim 1/(1-\rho)$ law of [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md).
+
+**Watch the knee — the flat model's error is a curve, not a constant.** Hold service at the unloaded mean $\bar L_{\text{svc}}\approx 28$ ns (§0) and read $\bar L=\bar L_{\text{svc}}/(1-\rho)$ across offered load; a flat model calibrated to that same idle mean reports 28 ns at *every* load:
+
+| Offered load $\rho$ | Timing model $\bar L = 28/(1-\rho)$ | Flat model | Under-report |
+|---|---|---|---|
+| 0.30 | 40 ns | 28 ns | 1.4× |
+| 0.60 | 70 ns | 28 ns | 2.5× |
+| 0.85 | 187 ns | 28 ns | 6.7× |
+| 0.95 | 560 ns | 28 ns | 20× |
+
+The two agree while the channel is idle and diverge without bound exactly where a memory-bound study is decided — the §0 error argument, now a curve.
+
+The entire value of a cycle-level DRAM model is that it computes the *true* $\mu_{\text{eff}}$, which is **far below the peak data-bus rate** because every non-ideal event steals service time:
 
 $$\mu_{\text{eff}} \;=\; \mu_{\text{peak}} \cdot \underbrace{(1 - o_{\text{refresh}})}_{t_{RFC}/t_{REFI}} \cdot \underbrace{(1 - o_{\text{turnaround}})}_{\text{rd/wr }t_{WTR}} \cdot \underbrace{g(\text{row-hit rate},\ \text{bank parallelism},\ t_{FAW})}_{\text{ACT/PRE overheads}}$$
 
@@ -399,7 +428,7 @@ The ladder spans **two orders of magnitude**: one all-bank refresh (57 nJ) costs
 ## Cross-references
 
 - **Down the stack:** [Memory](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) (the 1T1C cell, sense amp, and refresh physics collapsed into these timing constants), [DDR_Controller](../02_Shared_Memory/01_DDR_Controller.md) (§2.2 the three-case FSM latencies this page *computes* as timestamp differences, §3 timing derivations + the $t_{FAW}$ power-grid physics, §4 row-buffer policy math, §5 the $\bar L(h)$ FR-FCFS payoff, §6 the refresh density tax this page re-derives in joules, §7.2 the bank-parallelism Little's law, §7.3 the loaded-latency $1/(1-\rho)$ law — this page *runs* what those sections *derive*), [OoO_Execution](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (the ROB whose stalls turn memory latency into system time).
-- **Up the stack:** [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (the event engine §3, trace-vs-execution §4, and the queueing backbone §7 this page instantiates), [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md) (which mounts Ramulator/DRAMSim3 as its memory backend), [Full_Chip_Modeling](../01_System_Modeling/01_Full_Chip_Modeling.md) (composing the DRAM model into a perf→power→thermal chip flow; its McPAT §1.1 is the logic-side twin of the §9 activity × per-event-energy method), [Block_Activity_and_Power](../../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the same time-in-state × current accounting applied to logic blocks), [Root Index](../../../Index.md).
+- **Up the stack:** [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (the discrete-event engine §3.1, trace-vs-execution §3, and the queueing backbone §3.1 this page instantiates), [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md) (which mounts Ramulator/DRAMSim3 as its memory backend), [Full_Chip_Modeling](../01_System_Modeling/01_Full_Chip_Modeling.md) (composing the DRAM model into a perf→power→thermal chip flow; its McPAT §1.1 is the logic-side twin of the §9 activity × per-event-energy method), [Block_Activity_and_Power](../../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the same time-in-state × current accounting applied to logic blocks), [Root Index](../../../Index.md).
 - **Sibling:** [GPU_Simulators](../../02_GPU_Architecture/04_Simulation/01_GPU_Simulators.md) (whose GDDR/HBM tier is the same kind of model, wider and hotter).
 
 ---

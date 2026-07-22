@@ -264,6 +264,60 @@ $$
 T_{message}\ge L_{software}+L_{NIC}+L_{fabric}+\frac{M}{B_{effective}}.
 $$
 
+### 7.4 Heterogeneous engines on one package
+
+The sections above treated the accelerators as copies of one device. A serving SoC or chiplet package is usually *heterogeneous*: a CPU, one or more NPUs, a GPU, and often media or digital-signal blocks share a common memory pool. The same $T_{message}$ accounting just introduced now governs the handoffs *between engine types*, not only between replicas of one type.
+
+Intuitively the package is a team of specialists passing a single baton. Each engine runs the leg of the request it is fastest at, then leaves its result—a tensor—in shared memory for the next engine to pick up. On a unified-memory SoC that handoff can be a *descriptor* (a pointer plus shape, precision, and layout), so no payload bytes move: the handoff is zero-copy. When the next engine sits on a different chiplet without a shared coherent view of that buffer, the identical logical handoff becomes a real copy across the die-to-die (D2D) link—and for a large tensor the copy, not the compute, can set the stage time.
+
+Placement matters because no single engine is best at every operator. Tokenization, sampling, stop-rule checks, and scheduler control are branch-heavy and latency-bound, which suits the CPU. Dense low-precision matrix multiplies such as vision or audio encode map onto an NPU's systolic arrays. Large, dynamically shaped attention and flexible custom kernels favor the GPU. Pinning every stage to one engine idles the others and serializes work that could pipeline; but moving a tensor to the "better" engine spends D2D bandwidth and latency. Placement is therefore an optimization against movement cost, not a free upgrade.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 60, "htmlLabels": false}}}%%
+flowchart LR
+    Req["Request in"]
+    subgraph CPUC["CPU chiplet"]
+      Tok["Tokenize + admit<br/>build batch"]
+      Smp["Sample + detokenize<br/>stop rules"]
+    end
+    subgraph NPUC["NPU chiplet"]
+      Enc["Vision / audio encode<br/>dense low-precision"]
+    end
+    subgraph GPUC["GPU chiplet"]
+      PF["Prefill<br/>matrix-matrix"]
+      DC["Decode step<br/>matrix-vector + KV"]
+    end
+    SM["Shared memory pool<br/>activations + KV + logits"]
+    Out["Stream out"]
+    Req --> Tok
+    Tok -->|"token ids"| SM
+    SM -->|"pixels"| Enc
+    Enc -->|"features"| SM
+    SM -->|"prompt"| PF
+    PF -->|"write KV"| SM
+    SM -->|"read KV"| DC
+    DC -->|"logits"| SM
+    SM -->|"logits"| Smp
+    Smp -->|"next token"| DC
+    Smp --> Out
+```
+
+Every solid arrow into or out of the shared pool is one of those handoffs: a descriptor pass (zero-copy) when producer and consumer share a coherent view of the buffer, or a D2D copy when they do not. The decode loop is the tight cycle GPU → logits → CPU sample → next token → GPU; if sampling runs on the CPU rather than on the device and that per-token hop crosses a chiplet boundary each iteration, its fixed latency lands directly on time per output token.
+
+**Worked placement budget (cross-chiplet round trip).** Suppose the runtime can run one operator—say a fused encode block—two ways. Keep it on the GPU chiplet where the activation already lives at $T_{GPU}=200\ \mu s$, or offload it to a faster NPU chiplet at $T_{NPU}=80\ \mu s$ of compute, which requires shipping the $M=32$ MB activation across the D2D link and returning the result. With effective D2D bandwidth $B_{d2d}=400$ GB/s and a lumped one-way link-plus-setup latency $L_{d2d}=0.5\ \mu s$, one crossing costs
+
+$$
+L_{d2d}+\frac{M}{B_{d2d}}=0.5+\frac{32\times10^{6}}{400\times10^{9}}\ \text{s}=0.5+80=80.5\ \mu s,
+$$
+
+so the round trip adds $2\times80.5=161\ \mu s$. Single-operator offload then costs $T_{NPU}+161=241\ \mu s$, worse than $T_{GPU}=200\ \mu s$: the copy erases the $120\ \mu s$ compute win, and the "faster" engine loses. Offload pays only when the copy amortizes over several ops that keep the tensor resident on the NPU. For $n$ consecutive resident ops the break-even is
+
+$$
+n^{*}=\frac{2\left(L_{d2d}+M/B_{d2d}\right)}{T_{GPU}-T_{NPU}}=\frac{161}{200-80}\approx1.34,
+$$
+
+so $n\ge 2$ fused ops make offload win—at $n=2$, offload is $161+2\times80=321\ \mu s$ against $2\times200=400\ \mu s$ on the GPU. The lesson echoes scale-up versus scale-out above: move a tensor to another engine only when the compute saved outweighs the movement, which usually means keeping it resident and fusing a chain rather than round-tripping per operator. (This round trip is two-way because the result returns; the KV handoff of the disaggregation section below is one-way because the state stays with the decode worker.)
+
 ---
 
 ## 8. Disaggregated prefill and decode

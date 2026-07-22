@@ -113,6 +113,24 @@ Universal Chiplet Interconnect Express (UCIe) standardizes die-to-die physical/l
 | physical | lanes, training, repair, clocking, electrical signaling |
 | management/DFx | discovery, test, telemetry, reset, power, debug |
 
+The layers are peers across the boundary: each die's layer cooperates with the *same* layer on the far die — the protocol layer reconstructs transactions, the adapters exchange retry and flow control between themselves, and the two PHYs train and repair the lanes. The physical link splits into a wide **mainband** (data plus a forwarded clock) and a small always-on **sideband** that trains the link and negotiates parameters before any protocol traffic flows.
+
+```mermaid
+flowchart LR
+    subgraph DIEA["die A"]
+        direction TB
+        PA["protocol: PCIe / CXL / streaming"] --> AA["D2D adapter: flit, CRC/retry, arb/mux"]
+        AA --> HA["PHY: train, repair, signaling"]
+    end
+    subgraph DIEB["die B"]
+        direction TB
+        HB["PHY: train, repair, signaling"] --> AB["D2D adapter: flit, CRC/retry, arb/mux"]
+        AB --> PB["protocol: PCIe / CXL / streaming"]
+    end
+    HA -- "mainband: data lanes + fwd clock + valid" --> HB
+    HA -. "sideband: training + parameters" .-> HB
+```
+
 The exact feature set depends on specification version and package class. Architecture models should parameterize lane count, data rate, flit overhead, retry buffer, training, and repair rather than hard-coding a headline bandwidth.
 
 Effective bandwidth:
@@ -122,6 +140,10 @@ BW_{eff}=N_{lane}R_{lane}\eta_{encoding}\eta_{flit}\eta_{protocol}\eta_{retry}.
 $$
 
 Small coherence/control packets can have lower efficiency than large streaming transfers because headers/CRC/flow-control consume a larger fraction.
+
+**Beachfront (shoreline) bandwidth density.** The formula above gives *total* link bandwidth, but a chiplet can only place die-to-die bumps along its **die edge**, so the scarce resource is edge length — not the lane count you can name on paper. Beachfront density measures bandwidth per millimeter of edge: with micro-bumps at pitch $p$ in $r$ rows within the edge band and a signal fraction $f$ (the rest carry power, ground, and clock), signal lanes per mm $= f\,r\,(1000/p)$ for $p$ in $\mu\text{m}$, so density $= f\,r\,(1000/p)\,R$ at per-lane rate $R$. *Illustrative:* $p=45\,\mu\text{m}$, $r=4$, $f=0.5$, $R=16$ Gb/s gives $0.5\times4\times(1000/45)\times16 \approx 711$ Gb/s/mm $\approx 89$ GB/s per mm of edge, so a chiplet with 8 mm of usable edge is capped near 710 GB/s however many lanes the logic wants. The only levers up are tighter pitch (advanced-package micro-bumps or hybrid bonding, §11.1) or higher per-lane rate $R$ — which is why edge and bump bandwidth is a first-class partition constraint (§11), not a packaging afterthought.
+
+**Beyond UCIe.** UCIe is one die-to-die standard, not the only one: Bunch of Wires (BoW, an Open Compute Project PHY) targets simpler organic packages with parallel single-ended wires, trading UCIe's richer adapter, repair, and protocol-mapping feature set for lower complexity and cost. The stack framework above still applies — parameterize the PHY rather than assume a specific one.
 
 ## 5. Link latency and credit sizing
 
@@ -255,6 +277,8 @@ $$
 
 Capacity-only data may remain remote; hot latency-sensitive data may migrate or be replicated under consistency constraints.
 
+*Worked latency adder.* Representative idle load-to-use numbers make the inequality concrete. Local DDR5 is $L_{local}\approx 90$ ns; direct-attached CXL.mem is $L_{remote}\approx 220$ ns (about $2.4\times$), because the load crosses $L_{D2D}$ (§5) twice plus the device-side memory controller, and a switch hop adds roughly 50–100 ns more. The per-access penalty of staying remote is therefore $L_{remote}-L_{local}\approx 130$ ns. If migrating a page costs $L_{copy}+L_{coherence}+L_{mapping}\approx 2\,\mu\text{s}$ (copy the page, rebuild mappings, settle coherence), break-even is $N_{reuse} > 2000/130 \approx 15$ touches before migration pays. Cold capacity data touched a handful of times stays remote; a hot line reused dozens of times migrates — the same break-even shape as the §7.2 bias flip ($N>L_{flip}/\Delta$), because a tier migration *is* a per-page ownership move.
+
 ### 7.1 The three multiplexed sub-protocols: CXL.io, CXL.cache, CXL.mem
 
 CXL earns its place by carrying **three protocols on one physical link**, because one device edge has three unlike needs and neither separate links (wasted pins) nor a single tunnel (wrong latency/overhead) serves all three:
@@ -266,6 +290,22 @@ CXL earns its place by carrying **three protocols on one physical link**, becaus
 | **CXL.mem** | host accesses device-attached memory (master-to-subordinate, M2S, reads/writes; subordinate-to-master, S2M, data) | device memory is subordinate; the host home resolves coherence; optional metadata + poison |
 
 **Mechanism — one link, dynamic multiplex.** A flex-bus arbitration multiplexer (ARB/MUX) interleaves .cache and .mem on a **latency-optimized fixed-format flit** with .io on the **PCIe transaction-layer packet (TLP)** format, choosing per flit. The coherent classes share a slim, fixed header to minimize per-message overhead; .io keeps the full PCIe packet because it must stay enumeration-compatible with existing software. **Why not tunnel everything over .io?** Tie it to §4's efficiency identity $BW_{eff}=N_{lane}R_{lane}\eta_{encoding}\eta_{flit}\eta_{protocol}\eta_{retry}$: a small coherent message pays a much smaller header on the .cache/.mem flit path than as a PCIe TLP. *Worked number:* a 64-byte line as a PCIe memory-write TLP carries roughly 24–30 B of header/sequence/framing → $\eta_{protocol}\approx 64/(64{+}28)\approx 70\%$; as a CXL.mem flit slot the header is a few bytes → $\eta_{protocol}\gtrsim 90\%$. That ~20-point efficiency gap on line-grained coherent traffic — exactly the "small coherence/control packets have lower efficiency" remark of §4 — is why .cache/.mem exist as distinct formats rather than riding .io.
+
+Structurally, the two coherent protocols converge on the slim flit link layer while .io keeps the full PCIe path, and the ARB/MUX chooses per flit onto one shared Flex Bus PHY:
+
+```mermaid
+flowchart TB
+    IO["CXL.io: enumerate, config, DMA, hot-plug"]
+    CACHE["CXL.cache: device caches host memory"]
+    MEM["CXL.mem: host reads device memory"]
+    IO --> TLP["PCIe transaction + data-link layers, TLP format"]
+    CACHE --> FLIT["CXL.cache/.mem link layer, slim fixed flit"]
+    MEM --> FLIT
+    TLP --> MUX["ARB/MUX: choose format per flit"]
+    FLIT --> MUX
+    MUX --> PHY["Flex Bus physical layer: logical + analog"]
+    PHY --> LINK["one shared off-package link"]
+```
 
 **Device types (needed for §7.2).** The sub-protocol mix defines the device class: **Type-1** = .io + .cache (an accelerator with no local memory that coherently caches host memory — e.g. a coherent network adapter); **Type-2** = .io + .cache + .mem (an accelerator *with* device-attached memory that both caches host memory and exposes its own — e.g. a GPU or FPGA); **Type-3** = .io + .mem (a pure memory expander or pool, the §8 case). **Trade-off / when the simpler option wins:** a memory expander needs only .io + .mem — adding .cache would force a coherent agent's snoop/response machinery onto a device that never caches host memory, pure waste; and a streaming accelerator that only bulk-reads host data can often use plain PCIe DMA with no .cache at all. Spend a coherent sub-protocol only where the access pattern needs its granularity.
 

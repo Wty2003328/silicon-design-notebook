@@ -74,6 +74,23 @@ Monitoring identity should be separable from control identity: several cores may
 
 ## 3. Arbitration mechanisms
 
+Every arbitration point shares one anatomy: each traffic class has its own queue, an optional **regulator** shapes how large a burst that class may release (the token bucket of §4), and an **arbiter** applies exactly one policy to pick a single winner per cycle. The schemes below differ only in the rule inside that arbiter box — fixed priority, round-robin, weighted/deficit, or age/deadline are alternative policies, not alternative structures.
+
+```mermaid
+flowchart LR
+    Q0["class 0 queue: control / latency"] --> R0["regulator (r,b)"]
+    Q1["class 1 queue: bandwidth"] --> R1["regulator (r,b)"]
+    Q2["class 2 queue: best effort"] --> R2["regulator (r,b)"]
+    R0 --> ARB{"arbiter policy"}
+    R1 --> ARB
+    R2 --> ARB
+    ARB -->|"one grant per cycle"| OUT["downstream port / link"]
+    POL["QoS policy: weights, thresholds, age, budgets"] --> ARB
+    POL --> R0
+    POL --> R1
+    POL --> R2
+```
+
 ### Fixed priority
 
 Low latency for critical traffic, but starvation unless aging or budgets constrain it.
@@ -117,6 +134,10 @@ Sources of non-preemptive blocking:
 
 Admission control limits offered load so reservations are feasible. Burstiness needs token-bucket parameters $(r,b)$: long-term rate $r$ and burst $b$. A rate guarantee without a burst bound cannot guarantee finite short-window latency.
 
+**Token bucket, intuitively.** Picture a bucket filled with tokens (one token per byte of credit) at a steady rate $r$, holding at most $b$. A request spends tokens equal to its size; an empty bucket makes it wait. Sitting idle refills the bucket, so a class that has been quiet may release a burst of up to $b$ at once — its reward for saving credit — after which it is throttled to exactly the drip rate $r$. The burst cap is what makes interference finite: the most any class can inject in a window of length $T$ is bounded by $b + rT$, an arrival curve downstream stages can size buffers and latency against.
+
+*Worked number.* Take $r = 20$ GB/s and $b = 4$ KB. Because $20\text{ GB/s} \times 1\,\mu\text{s} = 20\text{ KB}$, any 1 µs window admits at most $b + rT = 4 + 20 = 24$ KB — an idle class may burst 4 KB immediately, then sustains 20 GB/s. Drop $b$ and the same 20 GB/s-average source could legally deliver a megabyte in one cycle, so a latency-critical neighbor sharing the next queue faces unbounded short-window backlog: the concrete failure the burst bound prevents.
+
 ## 5. Ordering domains and IDs
 
 Transaction protocols often allow out-of-order completion across IDs while preserving order within defined ID/address/domain combinations. More IDs increase MLP but enlarge reorder buffers at bridges/targets.
@@ -133,6 +154,8 @@ Document each operation's completion meaning. “Write response received” migh
 
 Responses returning out of order need source-side tags and reorder semantics. Never infer age from arrival order after adaptive routing or independent channels.
 
+**Worked example — same ID versus different ID.** A producer must land a data payload *before* it sets a `ready` flag the consumer polls. Give both writes the same ordering ID (say `AWID=7`) to a common destination and the fabric must present them in issue order: the flag can never overtake the payload, and no barrier is needed. Give them different IDs (`AWID=7` payload, `AWID=8` flag) and that guarantee vanishes — the two IDs may complete in either order, so on separate queues or adaptive routes the flag can land first. The consumer then observes `ready=1` and reads stale payload. The remedies are the three levers of this section: reuse one ordering ID, insert a barrier between the writes, or lean on same-path posted-write ordering (the trick §14 uses to make a message-signalled interrupt need no explicit fence). This is precisely why arrival order across IDs proves nothing about age.
+
 ## 6. Coherent versus noncoherent I/O
 
 ### Noncoherent DMA
@@ -148,6 +171,21 @@ Device requests enter the coherent domain so homes/snoop filters resolve CPU cac
 A device cache can hold shared/owned lines and respond to probes. It needs transaction capacity, eviction/writeback, reset/error behavior, and deadlock-safe request/response resources like any other coherent agent.
 
 Coherence scope may be inner, outer, system, or device-specific. “Coherent” must state which agents and memory types participate.
+
+**Protocol names for the three modes.** In Arm AMBA terms the taxonomy above has standard names, and naming the snoop *direction* is the quickest way to keep them straight. Noncoherent DMA is a **no-snoop** access (plain AXI, or ACE-Lite with coherency disabled): the device reaches memory directly and software does the cache maintenance. I/O coherent is **one-way (unidirectional) snoop**, the domain of an **ACE-Lite** master (CHI RN-I): its read or write makes the home snoop the fully coherent CPU caches so the device always sees the current copy — but the device exposes no snoop input, so it is never snooped back. Coherence flows *toward* the device, not *from* it. Device cache coherent is **two-way snoop**, a full **ACE** master (CHI RN-F): its cache holds shareable lines and answers snoops like any CPU. The asymmetry is the whole point — one-way snoop buys correct visibility for a cacheless or write-through device without the writeback, eviction, and deadlock-avoidance burden of being a snoopable agent. The coherent read path is then just device → home → one-way snoop of the CPUs → LLC/memory → device:
+
+```mermaid
+flowchart LR
+    DEV["I/O device read (ACE-Lite, no snoopable cache)"] --> HN["interconnect home / snoop filter"]
+    HN -->|"one-way snoop"| CPU["fully coherent CPU caches"]
+    CPU -->|"dirty data or clean ack"| HN
+    HN -->|"on miss, fetch"| LLC["LLC / memory"]
+    LLC --> HN
+    HN -->|"current data"| DEV
+    NS["no-snoop / DMA: snoop skipped; software cleans + invalidates first"] -.-> HN
+```
+
+Section 6.1 traces that one-way-snoop path in full; the no-snoop path is the manual-maintenance baseline it replaces.
 
 ### 6.1 Follow one coherent device read: ordering, service class, and fault are one contract
 

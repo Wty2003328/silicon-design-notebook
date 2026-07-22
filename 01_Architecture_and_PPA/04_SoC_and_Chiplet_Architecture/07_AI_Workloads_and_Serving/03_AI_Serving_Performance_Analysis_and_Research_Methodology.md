@@ -84,6 +84,8 @@ $$
 M_{KV,r}=2L H_{kv}D_h s_{kv}S_r,
 $$
 
+where the factor $2$ stores one key and one value vector per position, $L$ is the number of attention layers, $H_{kv}$ the number of key/value heads (fewer than the query heads under grouped/multi-query attention), $D_h$ the per-head dimension, and $s_{kv}$ the bytes per stored element (2 for FP16). The essence: KV grows *linearly* with context length and with concurrency, and unlike weights it is private to each request — so it, not the weight footprint, usually sets the concurrency ceiling $B_{max}$ below. For $L=32$, $H_{kv}=8$, $D_h=128$, $s_{kv}=2$, one 2048-token request holds $2\cdot32\cdot8\cdot128\cdot2\cdot2048=256$ MiB of KV; a device with a few tens of gigabytes free after weights therefore admits only order-100 such requests, and drains faster as contexts grow.
+
 and total resident KV is $\sum_r M_{KV,r}$ plus allocator metadata/internal fragmentation. Prefix sharing subtracts only physically shared blocks; beam/speculative branches may use copy-on-write and later diverge.
 
 The concurrency capacity bound is
@@ -128,6 +130,14 @@ T_p\ge\max\left(\frac{O_p}{P_{eff,p}},
 $$
 
 Prefill's larger matrices often raise $O/Q_{HBM}$; decode at small batch often streams weights for little token progress. KV attention can add context-length-dependent HBM bytes. Quantization reduces weight bytes but adds scale/metadata/dequantization work and may change the executable kernel/peak.
+
+**Reading the bound — arithmetic intensity and the ridge.** Each term inside the $\max$ is a time floor imposed by one resource; which term wins is decided by *arithmetic intensity* $I=O_p/Q_p$, the operations issued per byte moved. A resource running at $P_{eff}$ operations/s and $B_{eff}$ bytes/s is saturated first when $I$ sits below its *ridge point* $I_{ridge}=P_{eff}/B_{eff}$: below the ridge the phase is bandwidth-bound (bytes cannot arrive fast enough to feed the units), above it compute-bound (the units cannot consume the bytes already on hand). Analogy: a factory is capped either by machine speed or by how fast trucks deliver raw material; batching reuses one weight delivery across many tokens, i.e., loads more work onto each truck.
+
+**Worked example (illustrative order-of-magnitude — use operator-derived counts for a research claim, section 3.1).** Take a 7-billion-parameter dense decoder in FP16 (2 bytes/weight, so 14 GB of weights) on an engine with $P_{eff}=100$ TFLOP/s $=10^{14}$ FLOP/s and $B_{HBM,eff}=1$ TB/s $=10^{12}$ B/s, giving $I_{ridge}=100$ FLOP/byte.
+
+- **Decode, batch 1.** One token touches every weight once for $\approx 2P=1.4\times10^{10}$ FLOP while moving the full 14 GB (ignoring the smaller context-dependent KV bytes), so $I\approx 1$ FLOP/byte $\ll 100$. Time floors: compute $1.4\times10^{10}/10^{14}=0.14$ ms versus HBM $1.4\times10^{10}/10^{12}=14$ ms. The $\max$ is 14 ms, so decode is **bandwidth-bound**, tensor units near $1\%$ utilized; the $\approx14$ ms TPOT floor ($\approx71$ tok/s) is set by weight streaming, and a faster tensor unit buys nothing.
+- **Prefill, 512 tokens.** The prompt reuses one weight read across all 512 tokens: $O\approx 2P\times512=7.17\times10^{12}$ FLOP against the same 14 GB, so $I\approx512\gg100$. The compute floor $7.17\times10^{12}/10^{14}=71.7$ ms dominates the unchanged 14 ms HBM floor, so prefill is **compute-bound**. Same weights, same silicon, opposite bottleneck — which is why prefill and decode must be attributed as separate phases, not one averaged number.
+- **Why batch decode.** Reading weights once and reusing them across $b$ concurrent tokens makes $I\approx b$, so reaching the ridge needs $b\approx100$. That is the quantitative reason decode throughput lives or dies on batch size — while per-request KV bytes (section 2.2) grow with $b$ and eventually cap how far batching can lift $I$.
 
 ### 3.3 Utilization decomposition
 
@@ -302,6 +312,24 @@ Reconcile:
 - energy integrates measured power over the exact benchmark window.
 
 Conservation failures often reveal dropped trace events, wrong scope, sampling gaps, or double counting before they reveal hardware behavior.
+
+### 8.3 The attribution loop
+
+Attribution is not a single pass from counter to cause; it is a loop that exits only when a controlled ablation moves the predicted bound. The evidence ladder (8.1) supplies the hypothesis, the conservation checks (8.2) gate whether the measurement is even trustworthy before it is interpreted, and the ablation confirms or refutes the mechanism. Two back-edges keep the loop honest: when bookkeeping fails to close, fix the instrument rather than the model; when the predicted counter does not move under the ablation, the hypothesis named the wrong rung and must be revised.
+
+```mermaid
+flowchart TD
+    SYM["Symptom<br/>SLO miss, high TPOT, low goodput"] --> HYP["Hypothesis via evidence ladder<br/>name the suspected rung"]
+    HYP --> PRED["Prediction<br/>which counter must move, by how much"]
+    PRED --> CONS{"Conservation<br/>checks close?"}
+    CONS -- "no" --> FIX["Fix scope, sampling,<br/>dropped or double-counted events"]
+    FIX --> SYM
+    CONS -- "yes" --> ABL["Ablation<br/>change one knob: batch, quant, placement"]
+    ABL --> MOVE{"Bound moves<br/>as predicted?"}
+    MOVE -- "no" --> REV["Revise model or hypothesis<br/>wrong rung or hidden term"]
+    REV --> HYP
+    MOVE -- "yes" --> CONC["Confirmed cause<br/>plus generality caveat"]
+```
 
 ---
 

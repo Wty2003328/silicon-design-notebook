@@ -67,6 +67,24 @@ The registry stores manifests and immutable shards; distribution resolves neares
 
 Residency states Registered → Fetching → Verified → Transforming → Loading → GroupForming → Warming → Ready, with Failed and Draining/Unloaded. A group is not routable when only some ranks have weights or collectives. Loading consumes storage, PCIe/fabric, host memory, HBM, CPU transformation, and temporary duplicate capacity; placement includes this transient peak.
 
+~~~mermaid
+stateDiagram-v2
+    [*] --> Registered
+    Registered --> Fetching
+    Fetching --> Verified
+    Verified --> Transforming: versioned build
+    Transforming --> Loading
+    Loading --> GroupForming
+    GroupForming --> Warming
+    Warming --> Ready: all ranks warm
+    Ready --> Draining: scale-in or rollout
+    Draining --> Unloaded
+    Unloaded --> [*]
+    Verified --> Failed: bad checksum or signature
+    Loading --> Failed: resource error
+    Failed --> [*]
+~~~
+
 Content-addressed caches key source and transformed artifacts by all semantic/layout/compiler/target inputs. Eviction respects active references and rollout predecessor.
 
 ## 6. Unified runtime and driver boundary

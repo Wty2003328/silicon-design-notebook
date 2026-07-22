@@ -59,7 +59,7 @@ $$
 I_j=\frac{O}{Q_j}, \qquad P\le\min\left(P_{compute}, B_1I_1,B_2I_2,\ldots,B_nI_n\right).
 $$
 
-`O` is useful operations. Levels can include register file, scratchpad/shared memory, cache, on-chip SRAM, NoC, HBM, DDR/CXL memory, die-to-die link, and network. A kernel can sit above the HBM ridge point but below the NoC ridge point if its tiling eliminates HBM traffic while exchanging partial sums excessively on chip.
+`O` is useful operations. Levels can include register file, scratchpad/shared memory, cache, on-chip SRAM, NoC, HBM, DDR/CXL memory, die-to-die link, and network. The **ridge point** of level $j$ is the arithmetic intensity $I_j=P_{compute}/B_j$ where that level stops binding: below it the level's bandwidth caps throughput, above it compute does. A kernel can sit above the HBM ridge point but below the NoC ridge point if its tiling eliminates HBM traffic while exchanging partial sums excessively on chip.
 
 Use delivered bandwidth measured under the relevant access pattern. Random embedding reads, synchronized collective bursts, and long sequential weight streams achieve different fractions of the same peak interface.
 
@@ -102,6 +102,19 @@ Prefix caching changes KV from private transient state to reusable shared state.
 ### 3.4 Embeddings and retrieval state
 
 Large recommendation tables or retrieval indexes can exceed HBM by far. Accesses are sparse and data-dependent, so sequential bandwidth is the wrong predictor. Relevant mechanisms include cache admission for hot rows, pooled DDR or CXL memory, near-memory reduction, request coalescing, software prefetch, huge pages/TLB reach, and RDMA fetch. Tail latency follows the slowest required row/partition unless requests can tolerate approximation or missing features.
+
+### 3.5 Worked example: the decode bandwidth budget
+
+The single most useful memory estimate in serving falls straight out of weights being read-only and reuse-poor during autoregressive decode: at batch size one, generating each token reads essentially the *entire* weight set once, because every weight feeds exactly one multiply for that token and nothing reuses it. The floor on time per token is therefore weight bytes over delivered HBM bandwidth.
+
+Take a 7-billion-parameter model at 2 bytes each, so $M_{weights}=14$ GB, on a device delivering $B_{HBM}=2$ TB/s:
+
+$$
+t_{token}\ge\frac{M_{weights}}{B_{HBM}}=\frac{14\ \text{GB}}{2\ \text{TB/s}}=7\ \text{ms}
+\;\Rightarrow\;\text{throughput}\le\frac{1}{7\ \text{ms}}\approx 143\ \text{tokens/s}.
+$$
+
+Compute is nearly idle: batch-one decode does roughly one operation per weight byte read, far to the left of every ridge point, so raising peak operations changes nothing. This is why decode is bandwidth-bound and why serving *batches* it. Running $b$ sequences in one step reads the weights once but emits $b$ tokens, lifting the weight roof to about $b\times143$ tokens/s—until arithmetic intensity crosses the compute ridge point, or until the KV cache takes over. KV reads are *not* amortized by batching: each sequence streams its own growing history, so at long context the KV bytes read per step, not the weights, set the budget, and the paging mechanics of Section 3.3 come to dominate the weight-placement choices of Section 3.1.
 
 ---
 
@@ -170,6 +183,56 @@ MoE routing sends tokens to selected expert owners and returns results, commonly
 ### 5.4 Data parallelism
 
 Inference replicas minimize cross-request communication and scale throughput until shared storage, host, NIC, or power limits dominate. Training adds gradient synchronization; optimizer and parameter sharding alter communication and memory. Always specify whether “data parallel” refers to independent inference replicas or synchronized training workers.
+
+### 5.5 Worked example: mapping a decoder layer to memory and the NoC
+
+Sections 2 and 9 treat traffic per level as *given*. This example shows how a mapping *produces* those numbers, so the roofline inputs stop being magic. Map one transformer decoder layer under tensor parallelism across $N=8$ compute chiplets in a package. Each chiplet holds a distinct weight shard in its local HBM, so weights never cross the package—only activations do, through two all-reduces per layer (one after the attention output projection, one after the FFN down projection).
+
+```mermaid
+flowchart TB
+    subgraph CHIP["One compute chiplet (1 of 8)"]
+        direction TB
+        HBM["Local HBM<br/>weight shard plus KV"]
+        SR["SRAM tiles<br/>activations, partial sums"]
+        X["Input activation<br/>b x d_model"]
+        QKV["QKV proj<br/>tensor engine"]
+        ATT["Attention<br/>vector engine"]
+        OUT["Out proj<br/>tensor engine"]
+        FF1["FFN up<br/>tensor engine"]
+        FF2["FFN down<br/>tensor engine"]
+        AR1(["All-reduce 1"])
+        AR2(["All-reduce 2"])
+        Y["Output activation"]
+        X --> QKV --> ATT --> OUT --> AR1 --> FF1 --> FF2 --> AR2 --> Y
+        HBM -. "weight stream to tiles" .-> QKV
+        HBM -. "weight stream to tiles" .-> OUT
+        HBM -. "weight stream to tiles" .-> FF1
+        HBM -. "weight stream to tiles" .-> FF2
+        HBM -. "read and append KV" .-> ATT
+        SR --- QKV
+        SR --- FF1
+    end
+    FAB{{"Die-to-die fabric<br/>reduction class"}}
+    AR1 == "cross-chiplet reduce" ==> FAB
+    AR2 == "cross-chiplet reduce" ==> FAB
+```
+
+Read the diagram as three overlaid maps. The **spine** is the model graph. Solid taps into it are **on-chiplet memory** traffic: weight shards stream from local HBM to the tensor engine, and the KV cache is read and appended in attention. The two heavy edges are the only **cross-chiplet** traffic—the reductions of Section 4.2, carried by the fabric's reduction class.
+
+Now the numbers. Let hidden size $d=8192$, precision 2 bytes, and a decode step of $b=512$ tokens. Each all-reduce operates on the layer activation, so its payload is
+
+$$
+M=b\cdot d\cdot 2=512\times 8192\times 2=8.39\ \text{MB}.
+$$
+
+Using the ring volume from Section 5.1, each chiplet moves $V_{ring}=2\frac{N-1}{N}M=1.75\times 8.39\ \text{MB}=14.7$ MB per all-reduce, and two all-reduces make $29.4$ MB per chiplet per layer cross the fabric. If that fabric delivers $0.5$ TB/s per chiplet and the collective is *not* overlapped, the exposed time is $14.7\ \text{MB}/0.5\ \text{TB/s}\approx 29\ \mu\text{s}$ per all-reduce. Across $L=80$ layers this compounds:
+
+$$
+Q_{fabric}\approx 80\times 29.4\ \text{MB}=2.35\ \text{GB/step},\qquad
+T_{collective}\approx 80\times 2\times 29\ \mu\text{s}\approx 4.7\ \text{ms/step (if fully exposed)}.
+$$
+
+Two levers follow immediately. First, the all-reduce payload $M$ does not shrink as you add chiplets (ring volume per participant tends to $2M$), while local compute per chiplet falls about $1/N$; past some $N$ the near-constant collective outlasts the shrinking compute and the fabric becomes the roof—the tradeoff Section 5.1 states abstractly. Second, if compute overlaps the reductions (Section 7.3 places tightly-coupled chiplets on the strongest links so it can), $T_{collective}$ hides behind $T_{local\ compute}$ and the fabric stops being the roof. This is the same exposed-versus-hidden distinction that flips the decision in Section 9.
 
 ---
 

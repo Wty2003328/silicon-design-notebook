@@ -36,6 +36,31 @@ Backpressure propagates from output client → worker output buffers → decode 
 
 States include Received, Routed, Reserved, Preprocessing, Prefilling, HandoffPreparing, Transferring, DecodeReserved, DecodeReady, Decoding, Streaming, Completed, plus Canceling/Failed. Every transition appends or updates an authoritative state record under the chosen durability scope.
 
+The happy-path lifecycle below shows where each commit point makes work authoritative (the five commits are defined immediately after):
+
+~~~mermaid
+stateDiagram-v2
+    [*] --> Received
+    Received --> Routed
+    Routed --> Reserved : admission commit
+    Reserved --> Preprocessing
+    Preprocessing --> Prefilling
+    Prefilling --> HandoffPreparing : prefill commit
+    HandoffPreparing --> Transferring
+    Transferring --> DecodeReserved : handoff commit
+    DecodeReserved --> DecodeReady
+    DecodeReady --> Decoding
+    Decoding --> Decoding : token commit
+    Decoding --> Streaming
+    Streaming --> Streaming : response commit
+    Streaming --> Completed
+    Completed --> [*]
+    Decoding --> Canceling
+    Canceling --> Failed
+    Failed --> [*]
+    note right of Canceling : any state may enter Canceling or Failed on cancel or fault
+~~~
+
 Stateless retry is possible before expensive state creation. After prefill/KV, retry requires an authoritative state owner or recomputation. The protocol defines commit points:
 
 - admission commit: worker accepts responsibility/resources;
