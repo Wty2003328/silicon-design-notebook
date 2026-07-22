@@ -53,6 +53,52 @@ The timing model is the shared middle: either frontend supplies the next dynamic
 
 The relationship is the key fact: **Accel-Sim is not a new timing model — it is a new *front-end and validation harness* around GPGPU-Sim's timing core.** GPGPU-Sim answers "run this CUDA and time it"; Accel-Sim answers "replay this *real SASS trace* — including closed-source cuBLAS/cuDNN kernels — through a tuned, silicon-validated version of that same timing core." Sections 2–3 describe the shared timing model; §5 is the paradigm trade-off that motivated Accel-Sim.
 
+**The whole framework on one page.** Both tools are one spine with two interchangeable front-ends: a front-end supplies a *dynamic warp-instruction stream* — the shared interface `(PC, active mask, operands, addresses)` — and the common **GPGPU-Sim 4.0 timing model** turns that stream into cycles and counters, which then feed the power model (§7) and the silicon-validation harness (§8). Every later section is one box in this picture: the SIMT core and memory tiers are §2–§3, the two front-ends are §5, the stat reduction is §6.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "htmlLabels": false}}}%%
+flowchart TD
+    CU["CUDA kernel"]:::in
+    HW0["real GPU + NVBit tracer"]:::in
+
+    subgraph FE["front-ends (interchangeable)"]
+      PTX["execution-driven (GPGPU-Sim)<br/>functionally execute PTX per thread<br/>produces values, addresses, masks"]:::fe
+      TR["trace-driven (Accel-Sim)<br/>replay recorded SASS trace<br/>addresses and masks already recorded"]:::fe
+    end
+
+    STREAM["dynamic warp-instruction stream<br/>PC, active mask, operands, addresses<br/>(the shared interface)"]:::mid
+
+    subgraph TM["shared timing model = GPGPU-Sim 4.0 core"]
+      CORE["SIMT core<br/>fetch / schedule / scoreboard<br/>SIMT stack / operand collector / exec units"]:::tm
+      L1M["per-SM memory<br/>coalescer / L1 / MSHR"]:::tm
+      IC["interconnect<br/>NoC (BookSim) or crossbar"]:::tm
+      L2D["shared tier<br/>L2 slices + DRAM (GDDR/HBM)"]:::tm
+      CORE --> L1M --> IC --> L2D
+    end
+
+    ST["counters give stats<br/>IPC, achieved BW, occupancy"]:::out
+    PW["power model<br/>GPUWattch / AccelWattch"]:::out
+    VAL["validate vs silicon counters<br/>Nsight / nvprof: residuals"]:::val
+
+    CU --> PTX
+    HW0 --> TR
+    PTX --> STREAM
+    TR --> STREAM
+    STREAM --> CORE
+    L2D --> ST
+    ST -->|"activity counts"| PW
+    ST --> VAL
+
+    classDef in fill:#e9d5ff,stroke:#6b21a8,color:#000
+    classDef fe fill:#fde68a,stroke:#b45309,color:#000
+    classDef mid fill:#fbcfe8,stroke:#9d174d,color:#000
+    classDef tm fill:#bbf7d0,stroke:#15803d,color:#000
+    classDef out fill:#bae6fd,stroke:#0369a1,color:#000
+    classDef val fill:#fecaca,stroke:#b91c1c,color:#000
+```
+
+**Swapping the front-end never changes the timing model** — which is why a SASS trace and a PTX run are comparable in *cycles* (identical core), and why supporting a new GPU generation is a front-end/config change, not a timing rewrite (§5.2, §8).
+
 ---
 
 ## 2. The SIMT core timing model
@@ -68,6 +114,31 @@ The heart of both tools is the **SIMT core** (GPGPU-Sim calls it a *shader core*
 - **Writeback** frees scoreboard entries and wakes dependent warps.
 
 **The point of this model is the same as an OoO core model's ([OoO_Execution](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md)): throughput is set by whichever structure saturates first** — not enough eligible warps (low occupancy)? scheduler starved on scoreboard stalls? operand-collector bank conflicts? execution-unit initiation-interval limited? The simulator tells you *which*, which is the whole reason to run it over a roofline estimate.
+
+**What the per-GPU config file actually is — grounding the abstract "config."** Every structure above is a knob in a flat parameter file; a *named GPU configuration* (Accel-Sim ships e.g. `SM7_QV100` for Volta, `SM75_RTX2060` for Turing) is a curated set of these values. This is the "config" that §6.3's `run_simulations.py` selects, and it is what §8 warns is *not itself validation*. A schematic excerpt — flag names real, values illustrative:
+
+```text
+# --- timing config: instantiate one SM and the memory system ---
+-gpgpu_n_clusters 80              # SMs = clusters x cores_per_cluster
+-gpgpu_n_cores_per_cluster 1
+-gpgpu_shader_core_pipeline 2048:32    # max threads/SM : warp size
+-gpgpu_shader_registers 65536          # RF slots/SM -> caps resident warps (§2.2)
+-gpgpu_num_sched_per_core 4            # schedulers/SM -> IPC ceiling 4/SM (§6)
+-gpgpu_scheduler gto                   # gto | lrr | two_level (§2.1)
+-gpgpu_sub_core_model 1                # partitioned SM, Volta+ (§2)
+-gpgpu_cache:dl1  ...                  # L1 geometry: sectored 128B lines, MSHR count (§3.2)
+-gpgpu_cache:dl2  ...                  # L2 geometry: sectored, IPOLY hash (§3.3)
+-gpgpu_n_mem 32                        # memory channels / HBM partitions (§3)
+-gpgpu_dram_scheduler 1                # 0 = FIFO, 1 = FR-FCFS (§3)
+-gpgpu_clock_domains 1447:1447:1447:850   # core:icnt:L2:dram MHz -> the f in BW/power (§6,§7)
+
+# --- SASS ISA-def (trace path): opcode -> exec unit + (latency, initiation) ---
+-trace_opcode_latency_initiation_int    4,1
+-trace_opcode_latency_initiation_sp     4,1
+-trace_opcode_latency_initiation_tensor 64,64     # HMMA pipe (§4)
+```
+
+Reading it back onto the model closes the loop between §2's structure list and the sections that follow: the register and scheduler lines *are* the occupancy caps of §2.2; the scheduler-policy line is the GTO/LRR choice of §2.1; the cache lines set the MSHR ceiling of §3.2 and the IPOLY hash of §3.3; the clock line is the $f$ that converts cycles to seconds and watts (§6, §7). The trace-driven **ISA-def** is literally the "opcode→EU map" of §5 — a new generation edits this table, not the C++ (§5, item 4) — which is also why an Ampere *config can exist* long before any of its numbers are fit to Ampere silicon (§8).
 
 ### 2.1 How the model advances one warp per cycle — the scheduler loop, derived
 

@@ -163,6 +163,40 @@ $$q=\left\lfloor s/P_t\right\rfloor,\qquad o=s\bmod P_t,$$
 
 then `physical_block = table[q]` and offset $o$ selects the token slot. This permits non-contiguous growth and prompt-prefix sharing, but paged attention kernels must gather across physical blocks.
 
+The block table is the indirection that makes paging work: logically contiguous positions map to physically scattered blocks, so a sequence grows one block at a time and shares blocks with others without ever needing one contiguous reservation.
+
+```mermaid
+flowchart LR
+    subgraph LOG["sequence logical view"]
+      L0["tokens 0-15<br/>logical blk 0"]
+      L1["tokens 16-31<br/>logical blk 1"]
+      L2["tokens 32-47<br/>logical blk 2"]
+    end
+    subgraph TAB["per-sequence block table"]
+      T0["idx 0 to phys 7"]
+      T1["idx 1 to phys 2"]
+      T2["idx 2 to phys 9"]
+    end
+    subgraph POOL["physical KV pool in HBM"]
+      P2["phys blk 2"]
+      P7["phys blk 7"]
+      P9["phys blk 9"]
+    end
+    L0 --> T0 --> P7
+    L1 --> T1 --> P2
+    L2 --> T2 --> P9
+```
+
+**Worked example — how big is the KV cache?** Each token stores one key and one value vector per layer per KV head, so the per-token cost is
+
+$$C_{token}=2\,n_{layers}\,n_{kv}\,d_{head}\,b\ \text{bytes},$$
+
+where the leading $2$ counts K and V, $n_{kv}$ is the number of key/value heads (grouped-query attention makes this far smaller than the query-head count), $d_{head}$ is the head dimension, and $b$ is bytes per element. For a 70B-class model with $n_{layers}=80$, $n_{kv}=8$, $d_{head}=128$, and fp16 ($b=2$):
+
+$$C_{token}=2\times80\times8\times128\times2\ \text{bytes}=320\ \text{KiB/token},$$
+
+that is 327,680 bytes for every token of every sequence. A single 2,048-token sequence therefore pins $320\ \text{KiB}\times2048=640\ \text{MiB}$ (0.625 GiB) of HBM, so a 40 GiB KV pool holds only about $40/0.625=64$ such sequences, and with $P_t=16$ each physical block is $16\times320\ \text{KiB}=5\ \text{MiB}$. This $C_{token}$ is exactly the per-token cost behind the admission reservation $C_i$ above and the disaggregation payload $Q_{transfer}$ later, and it is why KV capacity — not weight size — usually caps concurrency. Had the model kept 64 KV heads instead of 8 (no grouped-query attention), $C_{token}$ would be $2.5\ \text{MiB/token}$ and the same pool would hold just 8 sequences: grouped-query attention is a serving lever, not only a quality knob.
+
 ### 5.2 Prefix caching
 
 If requests share an identical token prefix under the same model, adapter, and relevant execution state, they can reference existing KV blocks. Correct cache identity must include every factor that changes KV values, not merely token text. Benefits depend on hit probability and prefix length:
@@ -198,6 +232,23 @@ After prefill produces first logits, sampling selects a token. Each subsequent i
 
 Decode is a **closed feedback loop**: sampled token $j$ is needed to compute token $j+1$. Kernel parallelism cannot remove this dependency across ordinary autoregressive steps.
 
+One iteration reads the weights and every active sequence's KV pages, advances all sequences by a single token, writes the new K/V back, then loops on the token it just produced. The read/write traffic, not the arithmetic, sets the pace:
+
+```mermaid
+flowchart TD
+    Start(["decode step begins"]) --> Reclaim["free finished<br/>KV blocks"]
+    Reclaim --> Admit["admit new work<br/>within memory + SLO budget"]
+    Admit --> Build["build batch:<br/>prefill chunks + decode tokens"]
+    Build --> Meta["pack positions,<br/>block tables, lengths"]
+    Meta --> Step["one model<br/>forward step"]
+    HBM[("HBM:<br/>weights + KV pages")] -. read .-> Step
+    Step --> Append["append new K and V<br/>to KV pages"]
+    Append -. write .-> HBM
+    Append --> Sample["sample token j"]
+    Sample --> Emit["stream tokens,<br/>free finished seqs"]
+    Emit -->|"token j feeds step j+1"| Reclaim
+```
+
 ### 6.1 Continuous batching
 
 Static batching holds a fixed request set until all finish, wasting slots behind short sequences. Continuous batching rebuilds the active set each iteration. A completed sequence leaves immediately; a waiting request may enter at the next scheduling point.
@@ -219,6 +270,17 @@ This raises utilization but makes shape and metadata dynamic. The scheduler trad
 - more prefills → lower waiting TTFT but more decode interference;
 - more decode priority → stable TPOT but growing prefill queue.
 
+**Worked example — why batching helps decode.** A decode step is weight-bound: it reads the whole weight set from HBM to advance each sequence by one token. Batching $B$ sequences reads those weights *once* and reuses them across all $B$ tokens, so throughput can climb far faster than per-token latency. Take an illustrative single GPU whose weights read $\approx40$ GB per step over a 2.0 TB/s HBM, where each resident sequence adds $\approx0.6$ GB of KV read per step (a few-thousand-token context); ignore compute, launch, and sampling:
+
+| batch $B$ | HBM read per step | step time | decode throughput |
+|---|---|---|---|
+| 1 | 40 + 0.6 = 40.6 GB | 20.3 ms | 49 tok/s |
+| 8 | 40 + 4.8 = 44.8 GB | 22.4 ms | 357 tok/s |
+| 32 | 40 + 19.2 = 59.2 GB | 29.6 ms | 1,081 tok/s |
+| 64 | 40 + 38.4 = 78.4 GB | 39.2 ms | 1,633 tok/s |
+
+From $B=1$ to $B=8$ throughput rises about $7\times$ while step time grows only $\sim10\%$: the single weight read is amortized across the batch. By $B=64$ the KV traffic (38.4 GB) rivals the weights (40 GB), step time nearly doubles, and further batching mostly trades TPOT for little extra throughput — the memory-bound knee where continuous batching stops being free and the scheduler must weigh the latency tail against the gain.
+
 ## 7. Prefill/decode interference on one GPU
 
 Prefill is often matrix-compute/power intensive; decode is often HBM intensive and latency sensitive. Co-locating them can be complementary, but only if hardware scheduling and resource demands allow overlap. They may interfere through:
@@ -235,6 +297,8 @@ Chunked prefill caps the tokens processed in one iteration. If chunk size is $C$
 ## 8. Speculative decoding changes the unit of work
 
 A small draft model proposes $\gamma$ tokens. The target model scores the whole proposed continuation in a more parallel forward pass. An acceptance/rejection rule emits a prefix of accepted tokens while preserving the target distribution for exact speculative sampling.
+
+**Why it can win:** an ordinary decode step is memory-bound — most of its time reads the weights once to produce a single token, as the batching example above shows. Verifying $\gamma$ proposed tokens in one target forward pass reads those weights *the same single time*, so a run of correct guesses emits several tokens for roughly the cost of one. Speculation amortizes the weight sweep along the *sequence* dimension, exactly as batching amortizes it along the *batch* dimension; the small draft model adds only a light serial weight read. The win shrinks when acceptance is low (verification spent on rejected tokens) or when the batch is already large enough to be compute-bound, because then the weight read is no longer the bottleneck worth amortizing.
 
 Expected accepted draft tokens under a simplified independent acceptance probability $a$ are
 

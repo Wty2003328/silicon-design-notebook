@@ -68,6 +68,8 @@ The residual and normalization kernels have $O(Md)$ work and $O(Md)$ bytes. They
 
 ## 3. GEMM mapping: from tiles to matrix pipelines
 
+**Intuition first.** Two facts make GEMM hard: the three matrices rarely fit together in fast memory, yet each operand is reused heavily — every element of $A$ feeds $N$ outputs and every element of $B$ feeds $M$ outputs. A kernel that streamed operands from HBM per multiply would refetch the same values thousands of times and stall on bandwidth. *Tiling* captures that reuse: cut the output into blocks, and for each block bring in only the matching strip of $A$ and strip of $B$, hold them in shared memory, and keep a running accumulator on chip while the tensor cores grind through the block. It is the matrix version of carrying one shelf of references to your desk, using it for every problem that needs it, then reshelving once — instead of walking to the library per lookup.
+
 Consider $C_{M\times N}=A_{M\times K}B_{K\times N}$. A high-performance kernel partitions the output into thread-block tiles $B_M\times B_N$ and iterates over $K$ in chunks $B_K$:
 
 1. a producer warp or warp group loads $A$ and $B$ tiles from HBM/L2 into shared memory;
@@ -76,6 +78,28 @@ Consider $C_{M\times N}=A_{M\times K}B_{K\times N}$. A high-performance kernel p
 4. consumer warps load matrix fragments and issue MMA operations;
 5. accumulators remain in registers or a matrix-adjacent storage structure while the $K$ loop advances;
 6. an epilogue applies bias, activation, scale, residual, or type conversion and stores $C$.
+
+The dataflow that realizes those steps — and the loop that overlaps operand delivery with matrix issue — is:
+
+```mermaid
+flowchart TB
+    HBM["HBM / L2<br/>A and B operand tiles"]
+    SMEM["shared memory<br/>double-buffered A, B strips"]
+    REG["register fragments<br/>per-warp MMA operands"]
+    TC["tensor core<br/>MMA m16n8k16"]
+    ACC["accumulator registers<br/>running C tile"]
+    EPI["fused epilogue<br/>bias, activation, scale, cast"]
+    OUT["HBM<br/>output C tile"]
+    HBM -->|"bulk async copy"| SMEM
+    SMEM -->|"load fragments"| REG
+    REG --> TC
+    TC -->|"accumulate"| ACC
+    ACC -->|"advance K, refill"| SMEM
+    ACC -->|"K loop done"| EPI
+    EPI --> OUT
+```
+
+The critical detail is the back edge: while the tensor cores consume the current strip, the async-copy engine is already refilling the other buffer with the next $K$ chunk, so operand delivery and matrix issue overlap instead of serializing. The accumulator never leaves registers until the $K$ loop drains into the epilogue.
 
 The ideal steady-state tile interval is
 
@@ -94,6 +118,8 @@ Ignoring cache effects, one tile performs $2B_MB_NB_K$ FLOPs and loads about $b(
 $$I_{tile}\approx\frac{2B_MB_N}{b(B_M+B_N)}.$$
 
 For square tiles this grows with tile width. The equation explains why on-chip SRAM and register capacity indirectly buy compute utilization: they make larger reusable tiles possible. It also explains why a matrix engine cannot be evaluated separately from its operand-delivery system.
+
+**Worked example (tile → MMA shape → FLOP/byte).** Take a $128\times128$ output tile with $B_K=32$ and FP16 operands ($b=2$). Per $K$-chunk it does $2\cdot128\cdot128\cdot32=1.05\times10^{6}$ FLOPs and reads $2\,(128\cdot32+32\cdot128)=16{,}384$ operand bytes, so $I_{tile}=1.05\times10^{6}/16{,}384=64$ FLOP/byte — matching $2\cdot128\cdot128/\bigl(2\cdot256\bigr)$, and independent of $B_K$ (it cancels, so $B_K$ buys pipeline depth, not reuse). Now decompose the tile onto a real tensor-core instruction: an Ampere-class warp-level `mma.sync.m16n8k16` computes a $16\times8$ output fragment over $K=16$, i.e. $2\cdot16\cdot8\cdot16=4096$ FLOP each. Covering the tile takes $(128/16)(128/8)(32/16)=8\cdot16\cdot2=256$ MMAs, and $256\cdot4096=1.05\times10^{6}$ FLOP closes the accounting. Shrinking the tile to $64\times64$ halves $I_{tile}$ to $2\cdot64\cdot64/(2\cdot128)=32$ FLOP/byte: the same math per output, but each fetched strip now feeds half as many MACs, so operand-delivery pressure doubles. This is why Hopper warp-group `wgmma` (m64n$N$k16) and Blackwell `tcgen05` widen the native instruction shape — a bigger MMA fragment amortizes each operand fetch over more accumulate work, and the tile sizes that keep those engines fed keep growing.
 
 ### 3.2 Matrix versus SIMT pipelines
 

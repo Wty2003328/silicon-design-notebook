@@ -86,13 +86,35 @@ For compute duration $T_c$ and communication duration $T_m$, ideal overlap is $\
 
 $$\eta_{overlap}=\frac{T_c+T_m-T_{joint}}{\min(T_c,T_m)},\quad 0\le\eta_{overlap}\le1$$
 
-when the measurement obeys the simple two-task model. Report why overlap is incomplete: dependency tail, shared HBM/L2, SM use by collectives, insufficient channels, or scheduling gaps.
+when the measurement obeys the simple two-task model. Read the endpoints: $\eta_{overlap}=1$ means the shorter task hid entirely behind the longer one ($T_{joint}=\max(T_c,T_m)$, perfect overlap), while $\eta_{overlap}=0$ means the two ran back-to-back ($T_{joint}=T_c+T_m$, no overlap at all). Report why overlap is incomplete: dependency tail, shared HBM/L2, SM use by collectives, insufficient channels, or scheduling gaps.
 
 ## 3. Multi-level roofline analysis
+
+**What it is.** A kernel's attainable speed is capped by whichever is scarcer: the arithmetic pipes or the bytes feeding them. The roofline draws both ceilings — a flat *compute roof* and a sloped *memory roof* (height $=$ bandwidth $\times$ intensity) — against **operational intensity** $I$ (useful FLOP per byte actually moved). Find where your kernel's $I$ lands on the horizontal axis, read off the lowest roof directly above it, and the vertical gap from your measured point up to that roof is the speedup still on the table. Everything below is that one picture made precise, then replicated per memory tier.
 
 For work $F$ and bytes $Q_k$ crossing tier $k$, operational intensity is $I_k=F/Q_k$. Performance is bounded by
 
 $$P\le\min\left(P_{compute},\;I_{L1}BW_{L1},\;I_{L2}BW_{L2},\;I_{HBM}BW_{HBM},\;I_{fabric}BW_{fabric}\right).$$
+
+The shape is two straight lines on log-log axes: a diagonal memory roof that rises with intensity until it meets the flat compute roof at the **ridge point** $I^*$. Left of the ridge you are on the slope (memory-bound); right of it you are under the flat roof (compute-bound). The single point marked below is the worked kernel of §3.4:
+
+```text
+  attainable FLOP/s  (log-log axes)
+       |                          ______________  compute roof (990 TFLOP/s)
+       |                         /
+       |                        /  <-- ridge  I* = 990 / 3.35 = 296 FLOP/byte
+       |       memory roof     /
+       |       slope = BW     /
+       |                    _/
+   107 |- - - - - - - - -*_/          * = decode GEMM of 3.4
+       |              _/  :               I = 32 FLOP/byte -> memory-bound
+       |            _/    :               ceiling = 32 x 3.35 = 107 TFLOP/s
+       |          _/      :               (11% of compute peak)
+       |     ___/         :
+       |__/______________ :______________________________________
+                        I=32          I*=296     operational intensity
+       |<--------- memory-bound ------->|<----- compute-bound ----->|
+```
 
 Use **measured physical traffic** for each tier, not tensor sizes alone. Cache reuse means L2 and HBM bytes differ. Sector overfetch means physical bytes exceed useful tensor bytes. Collectives read/write local HBM in addition to fabric payload.
 
@@ -123,6 +145,25 @@ Then compare the model to profiler bytes. A discrepancy is useful: it reveals ca
 
 One perturbation is insufficient; use several orthogonal tests.
 
+### 3.4 Speed-of-light: achieved fraction of peak, with a worked example
+
+**What.** Nsight Compute's "speed-of-light" (SOL) summary reports the achieved throughput of the two headline resources — the SM (compute) pipes and the memory system — each as a percentage of its hardware peak. It is the roofline collapsed into two numbers: the higher percentage names the resource you are closest to saturating, and the gap from it to 100% is the headroom left on that resource. Read SOL first; it tells you which roof to chase before you open a single warp-level counter.
+
+**Worked example** (representative H100-class GPU: about $990$ TFLOP/s BF16 tensor, about $3.35$ TB/s HBM). A decode linear layer multiplies a batch of $B=32$ token vectors by an $8192\times8192$ BF16 weight matrix ($2$ bytes/element). Weights are read from HBM once and reused across the batch:
+
+- work $F = 2BKN = 2\cdot32\cdot8192\cdot8192 \approx 4.29$ GFLOP;
+- HBM bytes $Q = 2KN \approx 134$ MB (weights dominate; the $\approx1$ MB of activations is negligible);
+- operational intensity $I = F/Q \approx 32$ FLOP/byte (it equals $B$ whenever weights are the reused operand).
+
+The ridge is $I^* = 990/3.35 \approx 296$ FLOP/byte. Since $32 \ll 296$ the kernel is **memory-bound**: the memory roof caps it at $I\cdot BW = 32\cdot3.35 \approx 107$ TFLOP/s, only $11\%$ of compute peak. The bandwidth-limited time floor is $Q/BW = 134\text{ MB}/3.35\text{ TB/s} \approx 40\ \mu s$.
+
+Now suppose the profiled kernel actually runs in $62\ \mu s$. Then:
+
+- achieved compute $= F/t = 4.29\text{ GFLOP}/62\ \mu s \approx 69$ TFLOP/s, so **compute SOL $\approx 7\%$**;
+- achieved bandwidth $= Q/t = 134\text{ MB}/62\ \mu s \approx 2.16$ TB/s, so **memory SOL $\approx 65\%$** (equivalently, the $40\ \mu s$ floor over the $62\ \mu s$ measured).
+
+**Dominant limiter and the fix.** Memory SOL ($65\%$) dwarfs compute SOL ($7\%$), so this is a memory problem — yet $65\%$ is *not* saturated, so the kernel is memory-*latency* bound, not bandwidth bound. The dominant warp stall will read **long scoreboard** (warps parked on outstanding global/HBM loads, per §9). By Little's law (§4), holding peak bandwidth requires enough bytes in flight to cover HBM latency; $65\%$ means too few requests are outstanding. The fix raises memory-level parallelism — higher occupancy, wider or vectorized loads, or software-pipelined asynchronous copies — driving memory SOL toward $100\%$ and the time toward the $40\ \mu s$ floor. Contrast the saturated case: had memory SOL already read $\approx95\%$, more parallelism would buy nothing and the only remaining lever is to move fewer bytes (fuse the epilogue, quantize the weights, improve reuse). Same stall name, opposite fix — exactly why §9.1 insists on pairing a stall reason with achieved traffic before acting.
+
 ## 4. Concurrency, occupancy, and latency hiding
 
 Occupancy is resident warps divided by architectural capacity. It is limited by registers, shared memory, blocks, and warp slots. It does not guarantee eligible warps or useful issue.
@@ -130,6 +171,8 @@ Occupancy is resident warps divided by architectural capacity. It is limited by 
 Little's law gives the outstanding work needed to sustain request rate $\lambda$ across latency $L$:
 
 $$N_{outstanding}\ge\lambda L.$$
+
+Intuitively, to keep a pipeline of latency $L$ busy at rate $\lambda$ you must have $\lambda L$ operations in flight at every instant — the memory-system analogue of keeping bandwidth $\times$ round-trip latency worth of bytes outstanding to saturate a link. Fewer in flight and the resource idles between completions, which is precisely the $65\%$ memory-SOL shortfall diagnosed in §3.4.
 
 Apply it to memory transactions, asynchronous tiles, collectives, and service requests. Diagnose three distinct shortages:
 
@@ -222,6 +265,22 @@ Sweep offered load, not just batch. Plot:
 The sustainable operating point lies before the latency knee, not at maximum raw throughput.
 
 ## 8. Profiling workflow: descend one level at a time
+
+Each level below is more expensive to collect and more perturbing to timing than the one above, so open a deeper level only after the level above has localized *where* to look — counters on the wrong kernel answer the wrong question. Each arrow narrows scope; a failed prediction at the bottom sends you back to the top with a sharper question.
+
+```mermaid
+flowchart TB
+    S1["service trace<br/>who owns the tail"]
+    S2["system timeline<br/>which kernel is critical"]
+    S3["kernel profile<br/>counters for one hypothesis"]
+    S4["microbenchmarks<br/>ceilings and calibration"]
+    S5["model and validation<br/>predict unseen cases"]
+    S1 -->|"localize population"| S2
+    S2 -->|"localize kernel"| S3
+    S3 -->|"quantify mechanism"| S4
+    S4 -->|"calibrate"| S5
+    S5 -->|"prediction fails"| S1
+```
 
 ### Stage 1 — service trace
 

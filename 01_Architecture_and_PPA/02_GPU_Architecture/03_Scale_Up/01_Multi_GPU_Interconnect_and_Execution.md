@@ -73,6 +73,34 @@ $$
 
 A single “fabric bandwidth” number hides oversubscription and nonuniform paths. Build a topology matrix and identify bisection cuts (partitions splitting the device set into two halves) used by each collective.
 
+### 1.1 NVLink and NVSwitch: the concrete fast fabric
+
+**Essence:** PCIe is the shared public road every device uses to reach the host; NVLink is a set of private high-bandwidth bridges laid directly between GPUs, bypassing the host and running roughly an order of magnitude faster. One NVLink is a point-to-point bidirectional link built from several high-speed serial lanes, and each GPU exposes many NVLink ports whose bandwidth can be bonded toward a single peer or spread across several. Aggregate per-GPU NVLink bandwidth has grown across generations — from a few hundred GB/s on early parts toward the low terabytes-per-second on recent ones — against tens of GB/s for a PCIe link.
+
+**Why a switch:** with direct links alone, a GPU reaches only as many peers as it has ports; a larger group falls back to multi-hop paths and shared links, so pairwise bandwidth turns nonuniform — exactly the topology-matrix and bisection-cut problem above, and the reason a plain ring or mesh forces collectives to be topology-aware. **NVSwitch** removes the "not everyone has a direct link" constraint.
+
+**Mechanism:** NVSwitch is a crossbar switch. Each GPU's NVLink ports connect into the switch rather than to peers directly, and the switch forwards any port to any port, so every GPU reaches every other at full NVLink bandwidth with uniform latency — a non-blocking all-to-all domain in which the topology matrix collapses to near-uniform entries. Several NVSwitch chips supply the port count for a node, and an NVLink switch system extends the same all-to-all across nodes into one larger NVLink domain of many GPUs.
+
+```mermaid
+flowchart LR
+    subgraph Direct["Direct NVLink only"]
+        D0["GPU 0"] <--> D1["GPU 1"]
+        D1 <--> D2["GPU 2"]
+        D2 <--> D3["GPU 3"]
+        D3 <--> D0
+        D0 -. "no direct link<br/>2 hops, shares links" .- D2
+    end
+    subgraph Switched["Through NVSwitch"]
+        X["NVSwitch crossbar<br/>any port to any port"]
+        S0["GPU 0"] <--> X
+        S1["GPU 1"] <--> X
+        S2["GPU 2"] <--> X
+        S3["GPU 3"] <--> X
+    end
+```
+
+Left: a four-GPU ring leaves GPU 0 and GPU 2 with no direct link, so their traffic takes two hops and shares edges with other pairs — nonuniform entries in the topology matrix. Right: through the switch every pair is one uniform hop, which is what lets a large ring or all-to-all run at full bandwidth without hand-tuning placement.
+
 ## 2. Communication cost model
 
 The alpha–beta model for message size $n$ bytes is
@@ -101,13 +129,25 @@ The decomposition must fit memory and minimize communication on slow topology le
 
 ### 4.1 Ring all-reduce
 
-Reduce-scatter plus all-gather around $P$ participants. Each sends approximately
+**Essence:** arrange the $P$ GPUs in a circle and split each GPU's tensor into $P$ chunks. In the reduce-scatter phase a chunk moves one hop per step and is summed into the local chunk on arrival, so after $P-1$ steps each GPU owns exactly one fully reduced chunk. The all-gather phase then walks those finished chunks around the same circle until every GPU holds all of them. Every link carries a chunk on every step of both phases — nothing sits idle — which is the source of the ring's bandwidth efficiency.
+
+Quantifying that, each GPU sends approximately
 
 $$
 V_{ring}=2\frac{P-1}{P}N
 $$
 
-bytes for tensor size $N$, with $2(P-1)$ steps. Each of the two phases runs $P-1$ steps that each move an $N/P$ chunk, giving $(P-1)N/P$ bytes per phase. It is bandwidth-efficient for large messages but latency grows with $P$.
+bytes for tensor size $N$, over $2(P-1)$ steps. Each phase runs $P-1$ steps that each move an $N/P$ chunk, i.e. $(P-1)N/P$ bytes per phase, and the two phases sum to $V_{ring}$.
+
+The coefficient rewards a second look. As $P$ grows, $2\frac{P-1}{P}N \to 2N$: the bytes each GPU sends stop growing with the group — every GPU essentially ships its data out once and receives the finished result once. That $P$-independence is what makes the ring *bandwidth-optimal*; a naive gather-to-one-then-broadcast scheme would instead force $O(PN)$ bytes through a single link.
+
+Turning volume into time with the alpha–beta model of Section 2 (one $\alpha$ per step, $\beta=1/BW_{effective}$ per byte):
+
+$$
+T_{ring}\approx 2(P-1)\,\alpha \;+\; 2\frac{P-1}{P}\frac{N}{BW_{effective}}.
+$$
+
+The startup term grows linearly with $P$; the bandwidth term is nearly $P$-independent. A small tensor is therefore dominated by $2(P-1)\alpha$ — where a tree or hierarchical scheme wins — while a large tensor rides the bandwidth-optimal second term. It is bandwidth-efficient for large messages but latency grows with $P$. Section 14, Problem 1 puts numbers on both terms.
 
 Track one chunk in a four-GPU ring. The reduce-scatter phase accumulates one contribution at each hop until one GPU owns the reduced chunk; the all-gather phase circulates that completed chunk so every GPU receives it. Other chunks execute the same path in a pipelined rotation.
 

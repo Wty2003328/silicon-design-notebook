@@ -1,5 +1,7 @@
 # GPU Serving-Engine, Scheduler, and KV-State Implementation Blueprint
 
+A serving engine turns arriving requests into streamed tokens by repeating one scheduler iteration at a time; the loop below is that single iteration end to end, and Section 4 expands each stage.
+
 ```mermaid
 flowchart LR
     ARR["arrivals + completions + cancellations"] --> ADM["admission + capacity reserve"]

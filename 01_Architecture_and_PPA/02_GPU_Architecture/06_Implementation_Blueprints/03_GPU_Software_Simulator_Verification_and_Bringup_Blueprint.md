@@ -8,6 +8,20 @@ A GPU does not execute a model or source-level kernel directly. A compiler selec
 
 The design ideology is **make every transformation inspectable**. Preserve a stable identity from source operation to compiled instruction, command, warp instruction, memory transaction, and reported counter. This is also how simulation is validated: final runtime alone is insufficient if the intermediate work differs.
 
+Read the whole blueprint as one loop—**build an inspectable model, validate it against a trusted reference, then correlate silicon against that validated model during bring-up**—so the simulator becomes the golden model hardware is measured against, not a throwaway estimate. The diagram below maps that flow; Section 1 onward fills in each stage. (This is the methodology; the data-path diagram in Section 1 is a different view—how one launch flows through the stack at run time.)
+
+~~~mermaid
+flowchart TD
+    CAP["Capture inputs<br/>source, options, seeds"] --> FUNC["Functional exec<br/>what happens"]
+    FUNC --> TIME["Timing exec<br/>when it happens"]
+    TIME --> AGG["Aggregate<br/>final metrics"]
+    AGG --> LAD["Calibration ladder<br/>semantics to applications"]
+    LAD --> CORR{"Sim vs reference<br/>instr, bytes, counters, result"}
+    CORR -->|"mismatch"| FUNC
+    CORR -->|"validated"| GATE["Bring-up gates<br/>command to full workload"]
+    GATE -->|"same binary and input"| CORR
+~~~
+
 ## 1. Complete software-to-hardware contract
 
 ~~~mermaid

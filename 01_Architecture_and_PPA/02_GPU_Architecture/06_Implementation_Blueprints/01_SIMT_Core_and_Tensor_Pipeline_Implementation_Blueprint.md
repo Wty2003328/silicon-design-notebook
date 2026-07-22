@@ -89,6 +89,27 @@ Backpressure must propagate without losing warp state: full operand collectors p
 
 A matrix/tensor instruction often spans many lanes and cycles. Specify the logical matrix fragments each lane supplies, register encoding, internal tile decomposition, accumulator ownership, pipeline latency/initiation interval, supported mixed precision, and writeback grouping. “One tensor operation” at the ISA may expand into repeated sub-array operations.
 
+Structurally the pipeline couples an asynchronous operand-staging producer to the multiply-accumulate consumer, gated by a wait on data arrival:
+
+~~~mermaid
+flowchart LR
+    subgraph PROD["async producer"]
+      GMEM["global memory"] --> ACE["async copy engine"]
+      ACE --> SMEM["shared memory, double buffered"]
+    end
+    subgraph CONS["multiply-accumulate consumer"]
+      FRAG["fragment staging per lane"] --> DEC["tile decomposition"]
+      DEC --> MAC["multiply-accumulate array"]
+      ACC["accumulator tile"] --> MAC
+      MAC --> ACC
+      ACC --> WB["writeback grouping"]
+    end
+    SMEM --> WAIT["wait for arrival"]
+    WAIT --> FRAG
+    REG["registers"] --> FRAG
+    WB --> REG
+~~~
+
 For an array with $M\times N$ multiply-accumulate units at clock $f$, peak multiply-accumulate rate is
 
 $$T_{MAC}=MNf\eta_{issue},$$

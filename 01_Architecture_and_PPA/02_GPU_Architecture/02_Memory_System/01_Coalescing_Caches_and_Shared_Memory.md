@@ -57,6 +57,8 @@ Shared memory is different: it is on-chip storage explicitly used by a thread bl
 
 ## 1. Coalescing and sector utilization
 
+**Intuitively:** DRAM and the caches never move an isolated byte — they move data only in fixed-size aligned blocks (sectors, e.g. 32 bytes; a cache line is a few sectors). Coalescing is the hardware packing a warp's 32 lane requests into as few of those blocks as possible. Neighboring lanes wanting neighboring bytes ride in the same block, so a handful of blocks serve the whole warp; lanes wanting scattered bytes each drag in a separate block whose extra bytes are fetched and then thrown away. The efficiency metric below just counts that waste.
+
 For an active warp, group requested bytes by aligned transaction segment/sector. The number of transactions depends on address distribution, element size, alignment, and architecture granularity.
 
 Define byte efficiency
@@ -68,6 +70,26 @@ $$
 Adjacent 4-byte lane accesses from a 32-thread warp touch 128 useful bytes. With 32-byte transaction sectors and suitable alignment, four sectors provide 100% byte utilization. A 4-byte misalignment can require five sectors, reducing utilization to 80% even though addresses remain contiguous.
 
 For stride $s$ bytes between lanes, touched span is roughly $(W-1)s+E$. Once lanes fall in distinct sectors, transaction count approaches active-lane count and useful bandwidth collapses.
+
+Putting the three regimes side by side (32 lanes, 4-byte `float`s, 32-byte sectors, $b$ a sector-aligned base address; the segment of an address is $\lfloor\text{addr}/32\rfloor$ and hardware emits one transaction per distinct segment touched):
+
+| Access pattern | Lane $i$ address | Distinct segments | Bytes moved | $\eta_{bytes}$ |
+|---|---|---|---|---|
+| contiguous, aligned | $b+4i$ | 4 | 128 | 100% |
+| contiguous, $+4$ B misaligned | $b+4+4i$ | 5 | 160 | 80% |
+| strided by 128 B | $b+128i$ | 32 | 1024 | 12.5% |
+
+All three request the same 128 useful bytes. The strided kernel moves $8\times$ the traffic purely because each lane lands in its own sector, so 28 of every 32 fetched bytes are discarded — a bandwidth loss no downstream cache can recover.
+
+The mechanism is a per-lane segment index followed by a dedup: lanes that compute the same segment collapse into one transaction, so the transaction count — and therefore bytes moved — is just the number of distinct segments the warp touches.
+
+```mermaid
+flowchart LR
+    LA["32 lane addresses<br/>one per active lane"] --> SEG["each lane computes<br/>segment = addr div 32"]
+    SEG --> GRP["group lanes<br/>sharing a segment id"]
+    GRP --> TX["emit one transaction<br/>per distinct segment"]
+    TX --> EFF["moved = segments x 32 B<br/>eta = useful div moved"]
+```
 
 ## 2. Coalescer microarchitecture
 
@@ -116,6 +138,8 @@ Replay is a resource protocol, not permission to duplicate architectural effects
 
 Shared memory is banked on-chip SRAM allocated per block. Software/compiler explicitly stages tiles, avoiding tag/replacement overhead and making reuse predictable.
 
+**Intuitively:** picture the $B$ banks as $B$ parallel service windows, each handing out one word per cycle. A warp arrives as up to 32 requests at once. If the requested words fall in 32 different banks, every window works in parallel and the warp is served in one cycle; if several requested words share a bank, that window serves them one after another and the access stretches to as many cycles as the busiest bank has distinct words. The address-to-bank rule below decides who ends up queued behind whom.
+
 If $B$ banks serve one word/cycle and lane $i$ accesses word address $a_i$, bank is commonly $a_i\bmod B$ (details vary). A request with $k$ distinct addresses in one bank needs up to $k$ serialized bank services; broadcasts of one address may be optimized.
 
 Bank-conflict degree
@@ -125,6 +149,8 @@ d=\max_b |\{\text{distinct requested words mapping to bank }b\}|
 $$
 
 sets the idealized service multiplier. Padding a 2D tile changes row stride and can remove power-of-two conflicts.
+
+**Worked example — column access of a $32\times32$ tile.** Declare `__shared__ float tile[32][32]` (32 banks, 4-byte words, so bank $=\text{word index}\bmod 32$). A warp reads down one column, lane $i$ taking `tile[i][k]` for a fixed $k$. Its word index is $32i+k$, so its bank is $(32i+k)\bmod 32 = k$ — **every lane hits bank $k$**. That is a 32-way conflict: the request serializes into 32 bank cycles instead of 1. Pad the row to 33 words, `__shared__ float tile[32][33]`: now `tile[i][k]` sits at word index $33i+k$ with bank $(33i+k)\bmod 32 = (i+k)\bmod 32$, distinct for every lane $i$ — conflict-free, back to a single cycle. The pad wastes one word per row (32 floats, 128 B per tile) and converts a $32\times$ slowdown into none. The diagram below traces exactly this stride-32 versus stride-33 mapping.
 
 ```mermaid
 flowchart TB

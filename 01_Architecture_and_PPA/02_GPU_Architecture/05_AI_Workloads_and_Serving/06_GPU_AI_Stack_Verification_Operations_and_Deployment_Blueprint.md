@@ -12,7 +12,7 @@ flowchart LR
     SERVE -. "incident snapshot" .-> CONC
 ```
 
-> **Abbreviation key:** graphics processing unit (GPU); artificial intelligence (AI); key-value (KV) cache; service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); high-bandwidth memory (HBM); continuous integration/continuous deployment (CI/CD).
+> **Abbreviation key:** graphics processing unit (GPU); artificial intelligence (AI); intermediate representation (IR); key-value (KV) cache; service-level objective (SLO); time to first token (TTFT); time per output token (TPOT); high-bandwidth memory (HBM); continuous integration/continuous deployment (CI/CD).
 
 ## 0. Purpose and design ideology
 

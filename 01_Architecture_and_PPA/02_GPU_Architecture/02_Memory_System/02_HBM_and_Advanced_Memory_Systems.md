@@ -73,6 +73,14 @@ where command scheduling, row locality, read/write turnarounds, refresh, channel
 
 A design with 1.2 TB/s nominal bandwidth and 65% aggregate efficiency delivers 780 GB/s. Roofline calculations should use achieved bandwidth for the target access pattern, not the product headline.
 
+**Worked example — from one channel to a whole GPU.** Take an HBM3E-class stack: each of $C=16$ channels is $W=64$ data bits wide and every data pin runs at $R=9.6$ Gb/s.
+
+- *Per channel:* $64\times 9.6/8 = 76.8$ GB/s.
+- *Per stack:* $16\times 76.8 = 1228.8$ GB/s $\approx 1.23$ TB/s. This equals the lumped form $1024\times 9.6/8$, because the 16 channels simply partition the same 1024 data wires — which is why $W$ in $BW_{peak}=WRC/8$ can be read *either* as one channel's 64 bits with $C=16$, *or* as the full 1024-bit bus with $C=1$. The product $WC=1024$ is what sets the rate.
+- *Per GPU ($S=8$ stacks):* $8\times 1228.8 = 9830.4$ GB/s $\approx 9.8$ TB/s peak.
+
+That 9.8 TB/s is a ceiling. Feed it through the $BW_{ach}$ chain above: well-mapped streaming might hold $\eta\approx 0.80$ ($\approx 7.9$ TB/s), while random, poorly-mapped access can sink to the $\approx 0.65$ design point ($\approx 6.4$ TB/s). Stack count sets the ceiling; the efficiencies decide how much of it a workload actually sees.
+
 ## 2. Stack organization
 
 HBM stacks multiple DRAM dies above a base/interface die or logic base using microbumps and through-silicon vias (TSVs). The package/interposer supplies thousands of short connections to the compute die.
@@ -84,6 +92,29 @@ $$
 $$
 
 Pseudochannels split command/address control while sharing parts of the physical interface, increasing request concurrency and reducing the chance one long access stream blocks another. The exact organization is generation-specific; controllers must be parameterized rather than embedding one layout.
+
+**Reading the stack physically.** Picture the stack as a short tower: each DRAM die is a floor of banks, the through-silicon vias (TSVs) are elevator shafts carrying data straight down through every floor to the base die (the lobby), and the silicon interposer is a dense mat of short wires that carries the ~1024 signals sideways into the compute die's PHY. Bandwidth comes from thousands of these short parallel wires, not from clocking any one of them especially fast.
+
+```mermaid
+flowchart TB
+    subgraph STACK["one HBM stack (4-16 DRAM dies)"]
+      direction TB
+      D3["DRAM die (top)<br/>banks + row buffers"]
+      D2["DRAM die"]
+      D1["DRAM die"]
+      D0["DRAM die (bottom)"]
+      BASE["base / logic die<br/>PHY fanout, test, repair"]
+      D3 -->|"TSVs + microbumps"| D2
+      D2 -->|"TSVs"| D1
+      D1 -->|"TSVs"| D0
+      D0 -->|"TSVs"| BASE
+    end
+    BASE ==>|"1024 data bits = 16 channels x 64"| INT["silicon interposer<br/>fine-pitch wiring"]
+    INT ==> PHY["compute-die HBM PHY<br/>per-channel I/O + controllers"]
+    PHY ==> MC["to memory controllers / NoC / LLC"]
+```
+
+Each channel is an independent command/data interface with its own banks; pseudochannels split that interface so two request streams overlap. The TSVs carry every channel straight down to the base die, while *which* dies host a given channel's banks is generation-specific. The practical consequence: capacity scales with die count and bandwidth scales with channel count and pin rate, so the two can be grown independently.
 
 ## 3. Latency: many parallel queues, not an L1 cache
 
@@ -173,6 +204,20 @@ sequenceDiagram
 ```
 
 The waveform is qualitative; exact cycles depend on the HBM generation and speed bin. Refresh can hold `BANK_OK` low before `PRE/ACT`, and a thermal controller can reduce command/data opportunities or lower the interface rate. ECC checking sits after the burst; a correctable error may add decode/correction latency, while an uncorrectable error returns poison/fault status instead of silently releasing normal data.
+
+### 5.2 Row hit, miss, and conflict in numbers
+
+§5.1 showed *why* FR-FCFS prizes an open row; here is the cost with representative HBM core timings (exact values are speed-bin and generation specific): $t_{RCD}\approx 14$ ns (activate-to-column), $t_{RP}\approx 14$ ns (precharge), column latency $\text{CL}\approx 14$ ns, and $t_{RAS}\approx 32$ ns, so a full row cycle is $t_{RC}=t_{RAS}+t_{RP}\approx 46$ ns.
+
+| Case | Row state | Commands before data | First-word latency |
+|---|---|---|---|
+| Row hit | correct row already open | READ | $\text{CL}\approx 14$ ns |
+| Empty | bank closed | ACT, READ | $t_{RCD}+\text{CL}\approx 28$ ns |
+| Conflict | wrong row open | PRE, ACT, READ | $t_{RP}+t_{RCD}+\text{CL}\approx 42$ ns |
+
+A conflict costs about $3\times$ a hit. Over a stream with row-hit probability $h$ (treating misses pessimistically as conflicts), mean first-word latency is $\bar L = h\cdot\text{CL} + (1-h)(t_{RP}+t_{RCD}+\text{CL})$: at $h=0.9$, $\bar L\approx 16.8$ ns; at $h=0.5$, $\bar L\approx 28$ ns — a $1.7\times$ swing. That swing *is* the $\eta_{row}$ term of §1 made concrete.
+
+For **bandwidth** the same timings bite differently. A bank cannot begin a new row for $\approx t_{RC}=46$ ns around each activation, so one bank streaming random rows sits idle most of the time. Sustained bandwidth therefore needs many banks (HBM provides 16–32 per channel) activated out of phase: while one bank cycles its row, its siblings deliver bursts. This is exactly why the hierarchy of §2 multiplies banks rather than widening one — parallel banks, not a faster bank, hide $t_{RC}$.
 
 ## 6. Memory-level parallelism must reach the stack
 
@@ -280,6 +325,8 @@ ECC protection has several possible boundaries. On-die correction may repair cel
 Stacked dies impede heat removal, while the neighboring GPU/NPU is often the package hotspot. DRAM temperature increases refresh demand and leakage; controllers may throttle or change refresh behavior.
 
 These effects feed the scheduler directly rather than appearing only as a power report. A refresh deadline temporarily removes a bank, pseudochannel, or larger domain from the legal-command set. Higher-temperature refresh shortens the useful service interval; thermal throttling may insert command gaps or select a lower data rate. Both reduce $\eta_{refresh}$ or $\eta_{thermal}$ in §1 and increase queue residence, so a temperature rise can lower achieved bandwidth even when the offered request stream is unchanged.
+
+**Refresh in numbers.** Cells leak, so every row must be refreshed within a retention window. With an average refresh interval $t_{REFI}\approx 3.9$ µs and a refresh command that keeps its target busy for $t_{RFC}\approx 350$ ns (representative for a high-density stack), the bandwidth lost to refresh is roughly $t_{RFC}/t_{REFI}=350/3900\approx 9\%$, i.e. $\eta_{refresh}\approx 0.91$. Above about 85 °C the retention window halves, so JEDEC halves $t_{REFI}$ to $1.95$ µs; the overhead doubles to $350/1950\approx 18\%$ and $\eta_{refresh}$ falls to $\approx 0.82$ — a bandwidth loss driven purely by temperature, before any explicit throttling. HBM blunts this with per-bank refresh (one bank refreshes while its siblings stream), which is why the scheduler models a refresh as removing one bank from the legal set rather than stalling the whole channel.
 
 Power includes:
 

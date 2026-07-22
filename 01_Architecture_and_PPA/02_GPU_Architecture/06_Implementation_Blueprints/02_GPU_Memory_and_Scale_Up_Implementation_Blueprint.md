@@ -1,5 +1,7 @@
 # GPU Memory and Scale-Up Implementation Blueprint
 
+*This blueprint builds the GPU memory-and-scale-up datapath — the flow below traces one memory request from per-lane addresses through the coalescer, caches, and on-chip network out to HBM or a peer GPU, then back to the requesting lanes.*
+
 ```mermaid
 flowchart LR
     LANE["per-lane addresses + masks"] --> COAL["coalescer: line/sector transactions"]

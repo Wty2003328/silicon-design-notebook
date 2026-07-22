@@ -13,13 +13,20 @@ Read [AI Workload and Operator Mapping](01_AI_Workload_and_Operator_Mapping.md) 
 ~~~mermaid
 flowchart LR
     FW["framework graph + parameters"] --> CAP["capture/export + guards"]
-    CAP --> IR["semantic tensor IR"]
-    IR --> OPT["decompose / fuse / layout / precision"]
-    OPT --> LOW["GPU schedule + kernel IR"]
-    LOW --> BIN["kernel code objects + engine plan"]
-    BIN --> RT["runtime: allocator / streams / events / graphs"]
-    RT --> DRV["driver context + command queues"]
-    DRV --> GPU["SIMT / tensor / memory / collectives"]
+    subgraph AOT["ahead-of-time compile (frozen into the release)"]
+        CAP --> IR["semantic tensor IR"]
+        IR --> OPT["decompose / fuse / layout / precision"]
+        OPT --> LOW["GPU schedule + kernel IR"]
+        LOW --> BIN["kernel code objects + engine plan"]
+    end
+    subgraph RUN["per-invocation runtime"]
+        RT["runtime: allocator / streams / events / graphs"]
+        DRV["driver context + command queues"]
+        GPU["SIMT / tensor / memory / collectives"]
+    end
+    BIN --> RT
+    RT --> DRV
+    DRV --> GPU
 ~~~
 
 The release contains a source-model manifest, captured graph and guard set, compiler configuration, optimized IR, engine/execution plan, kernel code objects, constant/packed weights, shape profiles, workspace bound, target GPU/driver requirements, numerical contract, and validation evidence. Hash every input that changes generated work.
