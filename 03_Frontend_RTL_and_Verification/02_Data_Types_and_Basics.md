@@ -63,6 +63,8 @@ Z is a *drive* state, not an unknown: the simulator knows *exactly* that the wir
 
 So X is a **debugging signal, not a real value**. Its purpose is to make "the design has not defined this bit" visible on a waveform instead of silently reading as some plausible number.
 
+**X versus Z in one line — the pair most often confused:** Z is a statement about *drive* (the simulator knows the wire is undriven and floating); X is a statement about *knowledge* (the simulator cannot prove the level is 0 or 1). Z is certain and electrical; X is uncertain and epistemic. They touch only at a gate input, where *reading* a floating Z as a logic level yields X — a known-undriven wire becomes an unknown value the moment logic tries to interpret it.
+
 ### 2.3 The value lattice and the net resolution function
 
 Order the four values by **how much the simulator knows** about the wire. The three definite drive states — $0$, $1$, and the definite-undriven $Z$ — are fully known; $X$ sits above them as "could be either logic level":
@@ -85,6 +87,13 @@ That is the entire semantics of a wire: a driver overrides a float, disagreement
 
 The deepest idea on this page is that X is a **three-valued abstraction of a two-valued reality**, and *no single propagation rule for it is both safe and precise*. This is why X is simultaneously your best bug-catcher and a notorious source of both false alarms and hidden bugs.
 
+**First, plainly — what each term means and how they differ.** Both are ways the simulator's single X-per-bit can *lie* about the real circuit, but they lie in opposite directions:
+
+- **X-pessimism** — the simulator treats X as a genuine *third value*, distinct from 0 and 1, so **any operation that touches an X yields X**. The unknown then propagates even through logic where real hardware would resolve to a definite level: a *gate-level* 2:1 mux with `sel = X` outputs X even when both data inputs are 1, and a reconvergent `a & ~a` (or `a ^ a`) reads X even though the silicon is always 0. Pessimism **over-reports** unknowns — it invents an X the hardware never has.
+- **X-optimism** — the simulator collapses an X to a *definite* 0 or 1 where the real hardware could genuinely be undetermined, so it **hides** the unknown. Behavioral RTL `if (sel)` with `sel = X` quietly takes the `else`; a `case` on an X selector falls to `default`; either way a clean, plausible value lands on the waveform. Optimism **under-reports** unknowns — it erases an X the hardware really has.
+
+**The one-line contrast:** *pessimism cries wolf* — a false X, safe but noisy, and typical of **gate-level** sim; *optimism hides the wolf* — a real X wearing a clean value, quiet but dangerous, and typical of **RTL behavioral** sim. That asymmetry is the whole reason gate-level simulation exists: being pessimistic, it re-exposes exactly the unknowns that optimistic RTL sim quietly swallowed. The rest of this section makes each precise.
+
 ### 3.1 The formal picture
 
 Interpret each bit's value as the **set of concrete logic values it might really be**: $0 \mapsto \{0\}$, $1 \mapsto \{1\}$, and $X \mapsto \{0,1\}$. The *true* behavior of a gate $g$ over uncertainty is the image of that set,
@@ -97,7 +106,7 @@ and the honest answer is "the output is unknown **iff** $\hat g$ can produce bot
 
 ### 3.2 X-pessimism: sound but imprecise (cries wolf)
 
-In **data** logic the simulator over-approximates. Some gates recover precision — $0 \,\&\, X = 0$ and $1 \,|\, X = 1$ are computed correctly, because the controlling input decides the output regardless of the unknown. But reconvergent unknowns lose:
+**Plainly: pessimism is the simulator treating X as a distinct third value, so any operation touching X returns X — over-reporting unknowns the hardware would actually resolve.** In **data** logic the simulator over-approximates. Some gates recover precision — $0 \,\&\, X = 0$ and $1 \,|\, X = 1$ are computed correctly, because the controlling input decides the output regardless of the unknown. But reconvergent unknowns lose:
 
 $$
 a \oplus a \;\text{ with } a = X:\quad \underbrace{\{0{\oplus}0,\, 1{\oplus}1\} = \{0\}}_{\text{true: always 0}} \;\neq\; \underbrace{X \oplus X = X}_{\text{simulator}}
@@ -107,13 +116,41 @@ The simulator, having already forgotten that the two operands are the *same* $a$
 
 ### 3.3 X-optimism: precise but unsound (hides bugs)
 
-In **control** logic the simulator does the opposite and it is far more dangerous. An `if`/`case` is *procedural selection*: the simulator evaluates the condition to a single branch, and an $X$ condition is treated as false, so it takes the `else`/`default`:
+**Plainly: optimism is the simulator collapsing an X to a definite 0 or 1, so a genuinely undetermined result is hidden behind a clean value.** In **control** logic the simulator does the opposite and it is far more dangerous. An `if`/`case` is *procedural selection*: the simulator evaluates the condition to a single branch, and an $X$ condition is treated as false, so it takes the `else`/`default`. The module below **compiles and runs** (`iverilog -g2012`) — both the `if` and the `case` swallow the X and print a clean 0, exactly masking the bug:
 
-```verilog
-logic sel, a, b, y;
-always_comb
-    if (sel) y = a;   // sel === X  -> simulator takes the ELSE path
-    else     y = b;   // ...silently commits to y = b, a definite value
+```systemverilog
+module x_optimism_demo;
+    logic       sel;
+    logic [1:0] op;
+    logic       a, b, y_if, y_case;
+
+    // X-OPTIMISM #1: an X condition silently takes the else branch
+    always_comb begin
+        if (sel) y_if = a;   // sel === x -> sim does NOT pick the 'then' arm
+        else     y_if = b;   // ...it commits to the ELSE: y_if = b, a clean value
+    end
+
+    // X-OPTIMISM #2: an X case selector silently falls to default
+    always_comb begin
+        case (op)
+            2'b00:   y_case = a;
+            2'b01:   y_case = b;
+            default: y_case = 1'b0;   // op === xx -> lands here, a clean 0
+        endcase
+    end
+
+    initial begin
+        a = 1'b1; b = 1'b0;
+        sel = 1'bx;              // undriven select
+        op  = 2'bxx;             // undriven selector
+        #1;
+        // Real hardware: y could be a OR b (unknown). The sim hides that:
+        $display("sel=x -> y_if   = %b (took else, real X invisible)", y_if);
+        $display("op=xx -> y_case = %b (took default, real X invisible)", y_case);
+    end
+endmodule
+// prints:  sel=x -> y_if   = 0 (took else, real X invisible)
+//          op=xx -> y_case = 0 (took default, real X invisible)
 ```
 
 The sim **under-approximates**: it commits to *one* concrete outcome ($\text{sim} \subseteq \text{true}$) when the honest answer is "$y$ could be $a$ or $b$, unknown which." It is **precise-looking but unsound** — the waveform shows a clean, plausible $y$, so a real bug (an undriven `sel`) is **invisible**. Meanwhile the *synthesized* circuit is a continuous mux: put X on its select and X propagates to the output. So RTL simulation (optimistic) and gate-level simulation (pessimistic) **disagree exactly on X through control**, which is precisely the X-discrepancy that [Gate_Level_Sim_and_Emulation](13_Gate_Level_Sim_and_Emulation.md) exists to expose.

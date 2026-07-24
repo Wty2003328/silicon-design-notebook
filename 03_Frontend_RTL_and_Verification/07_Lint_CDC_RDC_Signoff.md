@@ -37,9 +37,24 @@ By Rice's theorem, exact detection of nontrivial semantic properties is undecida
 
 **Why "prove absence" strictly dominates "search with tests" for the metastability class.** The event that triggers a metastable capture is not a digital input at all — it is an analog timing coincidence with a per-cycle probability so small that the MTBF is *years* (model in [Async_Design_and_CDC](06_Async_Design_and_CDC.md) §2). No finite simulation samples a years-mean continuous-time event, and the event is not in the RTL model to begin with. For this class, search is not merely incomplete — it is **structurally blind**: *no* stimulus makes an unsynchronized crossing fail in RTL simulation. The only sound signoff is to prove, structurally, that the synchronizer is present. Hold this one idea and the rest of the page is its consequences.
 
+### 1.1 Lint vs CDC vs RDC vs STA — four static gates, four different questions
+
+Before the details, the whole page in one table. All four run without stimulus; each proves a *different* property in a *different* dimension. STA — the one people confuse with CDC — is listed for contrast.
+
+| Static gate | Proves, over all inputs, with no stimulus | Dimension it works in |
+|---|---|---|
+| **Lint** | RTL stays in the safe synthesizable subset: no inferred latch, no silent truncation, single-driver nets, complete sensitivity | source structure |
+| **CDC** | every *asynchronous clock* crossing ends in a recognized synchronizer, with a correct multi-bit protocol | clock |
+| **RDC** | every *asynchronous reset* crossing is protected (reset the destination, sequence, or isolate) | reset |
+| **STA** (contrast, not this page) | every *synchronous* path meets setup/hold margin; asynchronous crossings are *cut* as false paths | timing margin |
+
+The load-bearing contrast: **STA and CDC are opposites that partition the design.** STA proves margin on the synchronous paths it keeps; CDC proves safety on the asynchronous paths STA discards as false paths. Every path is either STA's job or CDC's — a crossing dropped by *both* is the classic bug that appears only in silicon.
+
 ---
 
 ## 2. Lint — proving a class of RTL defects absent at the source
+
+**Lint is static structural analysis of the RTL source: it needs no stimulus, no clock, and no testbench.** It reads the elaborated code and proves — for all inputs at once — that each module stays inside the safe *synthesizable subset*, the constructs that map to the hardware you meant. Every category below is one such structural property, decidable from the code alone.
 
 The RTL-to-hardware mapping is many-to-one and lossy: the *same* legal SystemVerilog can synthesize to a flop, a latch, or a wire depending on subtle completeness properties of the code ([RTL_Design_Methodology](01_RTL_Design_Methodology.md)). A whole bug class is therefore "the hardware you inferred is not the hardware you meant," and its defining feature is that each instance is **decidable from the code's structure alone** — you never need to run it. Lint is the static proof that the RTL stays inside the safe synthesizable subset. Read the categories not as a style checklist but as *properties being proved*:
 
@@ -53,9 +68,111 @@ Every one of these is provable in seconds over the *entire* module, for *all* in
 
 **Methodology, trimmed to essentials.** Running *all* available rules drowns real defects in noise — that is the false-positive problem of §1 in miniature, so real flows run a **curated ruleset** tuned to the project. The deliverable is **lint-clean with a reviewed waiver list**: every violation either fixed or explicitly waived with justification. "Lint-clean" is part of the RTL hand-off contract ([RTL_Design_Methodology](01_RTL_Design_Methodology.md)).
 
+### 2.1 Recognizing the four smells — GOOD vs BAD RTL
+
+The categories above are easier to fix than to spot. Each pair below is one intent written two ways. Every BAD module *compiles cleanly* — `iverilog -g2012 -Wall` reports no error and no warning on any of them — so the compiler will never stop you. Only a lint tool flags them, which is the entire reason lint is a separate gate.
+
+**Inferred latch — incomplete `if` in `always_comb`.**
+
+```systemverilog
+// BAD: y is unassigned when sel==0, so synthesis infers a level-sensitive latch
+module latch_bad (input logic sel, input logic [3:0] a, output logic [3:0] y);
+  always_comb begin
+    if (sel) y = a;
+  end
+endmodule
+```
+
+```systemverilog
+// FIXED: a default assignment makes every path assign y -> pure combinational
+module latch_good (input logic sel, input logic [3:0] a, output logic [3:0] y);
+  always_comb begin
+    y = '0;
+    if (sel) y = a;
+  end
+endmodule
+```
+
+Smell: a variable left unassigned on some branch. Fix: a default assignment first (or a full `else` / `default:`).
+
+**Width truncation and signedness mismatch.**
+
+```systemverilog
+// BAD: a*b is 16 bits wide; assigning to an 8-bit target silently drops the top 8 bits
+module width_bad (input logic [7:0] a, input logic [7:0] b, output logic [7:0] p);
+  assign p = a * b;
+endmodule
+```
+
+```systemverilog
+// FIXED: size the target to hold the full product
+module width_good (input logic [7:0] a, input logic [7:0] b, output logic [15:0] p);
+  assign p = a * b;
+endmodule
+```
+
+```systemverilog
+// BAD: b is unsigned, so a+b evaluates unsigned and the sign of a is lost
+module sign_bad (input logic signed [7:0] a, input logic [7:0] b, output logic signed [8:0] y);
+  assign y = a + b;
+endmodule
+```
+
+```systemverilog
+// FIXED: extend b into a signed 9-bit value so both operands are signed
+module sign_good (input logic signed [7:0] a, input logic [7:0] b, output logic signed [8:0] y);
+  assign y = a + signed'({1'b0, b});
+endmodule
+```
+
+Smell: operand widths or signedness that disagree with the target. Fix: size the target and make signedness explicit.
+
+**Multiply-driven net.**
+
+```systemverilog
+// BAD: two continuous drivers on y -> contention; the net resolves to x
+module mdn_bad (input logic a, input logic b, output wire y);
+  assign y = a;
+  assign y = b;
+endmodule
+```
+
+```systemverilog
+// FIXED: exactly one driver chooses the value
+module mdn_good (input logic a, input logic b, input logic sel, output logic y);
+  assign y = sel ? a : b;
+endmodule
+```
+
+Smell: a net with two structural drivers (two `assign`s, or two `always` blocks writing it). Fix: collapse to a single driver.
+
+**Incomplete sensitivity list — `@(a)` vs `always_comb`.**
+
+```systemverilog
+// BAD: b is read but missing from the list -> sim ignores b's changes; synth still ANDs it
+module sens_bad (input logic a, input logic b, output logic y);
+  always @(a) begin
+    y = a & b;
+  end
+endmodule
+```
+
+```systemverilog
+// FIXED: always_comb infers sensitivity over the whole read-set (sim matches synth)
+module sens_good (input logic a, input logic b, output logic y);
+  always_comb y = a & b;
+endmodule
+```
+
+Smell: a hand-written `@(...)` that omits a signal the block reads, so simulation and synthesis disagree. Fix: `always_comb` (or `@*`).
+
+Compile status: all ten modules build with `iverilog -g2012` (exit 0); the five BAD modules stay error- and warning-free even under `-Wall`, so lint — not the compiler — is what catches every one.
+
 ---
 
 ## 3. CDC static verification — proving every crossing safe over all inputs
+
+**CDC verification proves that every asynchronous clock crossing is correctly synchronized** — a structural-plus-functional property, established over all inputs with no stimulus. It is not timing analysis. **Contrast with STA:** static timing analysis proves synchronous paths meet setup/hold and deliberately *excludes* asynchronous crossings by cutting them as false paths, so STA is silent on exactly the paths CDC exists to check. STA asks *does this synchronous path meet timing?*; CDC asks *is this asynchronous path synchronized at all?* One proves margin on the paths you keep; the other proves safety on the paths timing discards.
 
 Clock-domain crossings are the paradigm case of §1's un-searchable bug. The proof obligation decomposes into four steps of increasing difficulty; each is something simulation *cannot* deliver.
 
@@ -109,6 +226,8 @@ The signoff deliverable is a report classifying every crossing as *synchronized 
 ---
 
 ## 4. RDC — the same proof obligation, in the reset dimension
+
+**Plain definition: a reset-domain crossing (RDC) is a path where a flop controlled by one asynchronous reset feeds a flop controlled by a different, independently-asserted reset.** It is CDC's twin in another dimension — **CDC's asynchronous edge is a clock edge; RDC's is a reset assertion** — and everything below is that analogy made precise.
 
 Reset-domain crossing (RDC) is CDC's structural twin, and the insight is that **an asynchronous reset assertion is itself an asynchronous edge**. When reset $A$ asserts, every flop it resets drives its output low *mid-cycle*, asynchronously to any running clock. If a flop reset by $A$ feeds a flop that is *not* currently in reset, the destination samples an asynchronous transition and can go metastable — the exact CDC failure mode, but launched by a *reset event* rather than a clock edge.
 

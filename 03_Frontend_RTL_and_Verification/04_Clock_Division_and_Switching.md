@@ -63,6 +63,8 @@ Everything below is one argument: how to move the frequency or the source **with
 
 ## 2. Integer division: borrowing the source's clean edges
 
+**Plainly: an integer clock divider is one or more flip-flops that pass through every $N$-th edge of a faster source, emitting a clock at $f_{in}/N$ whose edges are all *inherited* from the source rather than newly built.** That inheritance — not any clever gating — is what makes it glitch-free; the rest of this section is why.
+
 Impose the §1 constraint and the divider designs itself. We need an output at $f_{in}/N$ whose *every* edge is clean. There are only two ways to make an edge:
 
 - **Manufacture it** with combinational logic (gates, delay lines). Every manufactured edge is a candidate glitch and its timing drifts with PVT. Forbidden by §1.
@@ -86,6 +88,48 @@ The load-bearing points, not the RTL:
 - Even division gets 50% duty for free because "high $N$, low $N$" is symmetric. Odd division cannot (§4); that broken symmetry is the whole difficulty of odd and fractional division.
 
 *Essential state: a $\lceil\log_2 N\rceil$-bit counter plus one output flop. Everything else in a production divider macro is reset, enable, and the ratio register.*
+
+### 2.1 The RTL: the toggle atom and the programmable even divider
+
+**`div2` is the atom — one flop fed its own inverse. `div2n` wraps a modulo-$N$ counter around that same toggle**, so it emits an edge only every $N$ source edges; the two differ only in *how often the toggle fires*, never in how the edge is made. Both take the output straight off a flop — never off a combinational decode of the counter bits — so every edge is an inherited source edge. (Both modules compile clean under `iverilog -g2012`.)
+
+```systemverilog
+// divide-by-2: one toggle flop, 50% duty by construction (f_out = f_in/2)
+module div2 (
+    input  logic clk_in,
+    input  logic rst_n,
+    output logic clk_out
+);
+    always_ff @(posedge clk_in or negedge rst_n)
+        if (!rst_n) clk_out <= 1'b0;
+        else        clk_out <= ~clk_out;   // D = ~Q
+endmodule
+```
+
+```systemverilog
+// divide-by-2N: modulo-N counter feeding the same toggle atom
+module div2n #(
+    parameter int N = 4                    // f_out = f_in / (2*N)
+) (
+    input  logic clk_in,
+    input  logic rst_n,
+    output logic clk_out
+);
+    localparam int CW = (N < 2) ? 1 : $clog2(N);
+    logic [CW-1:0] cnt;
+    always_ff @(posedge clk_in or negedge rst_n) begin
+        if (!rst_n) begin
+            cnt     <= '0;
+            clk_out <= 1'b0;
+        end else if (cnt == N-1) begin
+            cnt     <= '0;
+            clk_out <= ~clk_out;           // toggle every N source edges
+        end else begin
+            cnt     <= cnt + 1'b1;
+        end
+    end
+endmodule
+```
 
 ---
 
@@ -119,6 +163,44 @@ $$
 
 The high time becomes exactly $N/2$ input periods, so the duty is 50% for any odd $N$. That single identity *is* the trick — not a page of hand-traced waveforms.
 
+**Two odd-divide options, stated plainly, then the difference.** A *single-edge* odd divider is one counter clocked on the rising edge only: small and glitch-free, but its duty is fixed at $\lfloor N/2\rfloor/N$ (never 50%). A *dual-edge* odd divider is that same counter built **twice**, once per clock edge, their one-in-$N$ high windows OR-ed: it reaches exactly 50%, but costs a second counter *and* a negedge timing domain. The difference is purely duty-vs-cost — reach for the dual-edge version only when something downstream is level- or dual-edge-sensitive.
+
+The dual-edge div-by-3 as RTL. The `negedge clk` copy and the OR are **structural** — a second clock-edge personality and one combinational node on the clock net, not ordinary logic — so both must be declared to STA and the two halves skew-matched:
+
+```systemverilog
+// odd divide-by-3 with ~50% duty (iverilog-verified: 30 ns period, 15/15 ns high/low)
+module div3_50 (
+    input  logic clk,
+    input  logic rst_n,
+    output logic clk_out
+);
+    logic [1:0] pos_cnt, neg_cnt;
+
+    always_ff @(posedge clk or negedge rst_n)      // posedge divide-by-3
+        if (!rst_n)               pos_cnt <= 2'd0;
+        else if (pos_cnt == 2'd2) pos_cnt <= 2'd0;
+        else                      pos_cnt <= pos_cnt + 2'd1;
+
+    always_ff @(negedge clk or negedge rst_n)      // negedge copy, shifted T/2
+        if (!rst_n)               neg_cnt <= 2'd0;
+        else if (neg_cnt == 2'd2) neg_cnt <= 2'd0;
+        else                      neg_cnt <= neg_cnt + 2'd1;
+
+    // each term is high 1 of 3 periods; the negedge term is shifted T/2, so the
+    // union spans N/2 = 1.5 periods -> exactly 50% duty
+    assign clk_out = (pos_cnt == 2'd2) | (neg_cnt == 2'd2);
+endmodule
+```
+
+The union that yields the 50% duty, drawn on the two edges (each column is half a source period):
+
+```text
+clk      ‾_‾_‾_‾_‾_‾_‾_
+pos==2   ____‾‾____‾‾__   posedge div-3: high 1 of 3 periods
+neg==2   ___‾‾____‾‾___   negedge copy: identical, shifted T/2
+clk_out  ___‾‾‾___‾‾‾__   OR -> high 1.5, low 1.5  =  50% duty
+```
+
 But read the cost, because it is why the trick is used sparingly:
 
 | Cost of the dual-edge 50% divider | Why it hurts |
@@ -134,7 +216,66 @@ So the honest answer to "how do I get an odd divide with 50% duty" is often **do
 
 ## 5. Fractional division: trading exactness for jitter
 
+**Plainly: a fractional divider produces a non-integer *average* ratio by dithering between two adjacent integer divides ($N$ and $N{+}1$), a phase accumulator deciding cycle-by-cycle which to use — so the average period is exact while no individual period ever is.**
+
 Non-integer ratios force a deeper compromise. You cannot count a fractional number of edges, so a fractional divider *cannot* produce a uniform period at all — it can only hit the target period *on average* by **alternating between two integer divisions.** Divide-by-3.5 alternates ÷3 and ÷4; divide-by-10.5 alternates ÷10 and ÷11. An accumulator (a first-order sigma-delta) chooses each cycle: add the fraction every output period, divide by $N{+}1$ on the cycles it overflows and by $N$ otherwise. Over $F$ cycles it selects $N{+}1$ exactly $K$ times, giving mean ratio $N+K/F$.
+
+The accumulator as a datapath: each output period the phase register `acc` adds `frac`; its carry-out picks $N{+}1$ for the *next* period while the low bits carry the remainder forward, so the long-run average lands exactly on $N + \text{frac}/2^{W}$.
+
+```mermaid
+flowchart LR
+    FRAC["frac"] --> ADD["acc + frac"]
+    ACC["acc<br/>phase reg"] --> ADD
+    ADD -->|"low bits<br/>remainder"| ACC
+    ADD -->|"carry"| EXT["extra:<br/>use N+1"]
+    EXT --> MOD["modulus<br/>N or N+1"]
+    MOD --> CMP["counter == modulus-1"]
+    CLK["clk_in"] --> CMP
+    CMP --> OUT["clk_out edge"]
+```
+
+The RTL, output taken off a flop at each period boundary (iverilog-verified: $N{=}4$, `frac`$= 128/256$ gives an average period of exactly $4.5\times$ the input):
+
+```systemverilog
+// fractional divider: phase accumulator dithers divide-by-N and divide-by-(N+1)
+module frac_div #(
+    parameter int N     = 4,               // average ratio = N + frac/2**ACC_W
+    parameter int ACC_W = 8
+) (
+    input  logic             clk_in,
+    input  logic             rst_n,
+    input  logic [ACC_W-1:0] frac,         // fractional numerator (over 2**ACC_W)
+    output logic             clk_out
+);
+    localparam int CW = $clog2(N+2);
+    logic [CW-1:0]    cnt;
+    logic [ACC_W-1:0] acc;
+    logic             extra;                // 1 => stretch this period to N+1
+    logic [ACC_W:0]   sum;                  // acc + frac, carry-out in bit ACC_W
+    logic [CW-1:0]    modulus;
+
+    assign sum     = {1'b0, acc} + {1'b0, frac};
+    assign modulus = extra ? (N+1) : N;
+
+    always_ff @(posedge clk_in or negedge rst_n) begin
+        if (!rst_n) begin
+            cnt     <= '0;
+            acc     <= '0;
+            extra   <= 1'b0;
+            clk_out <= 1'b0;
+        end else if (cnt == modulus - 1) begin
+            cnt     <= '0;
+            acc     <= sum[ACC_W-1:0];      // keep the fractional remainder
+            extra   <= sum[ACC_W];          // carry -> next period is N+1
+            clk_out <= 1'b1;                // period boundary: launch high
+        end else begin
+            cnt     <= cnt + 1'b1;
+            if (cnt == (modulus >> 1) - 1)
+                clk_out <= 1'b0;            // mid-period: launch low
+        end
+    end
+endmodule
+```
 
 The average is exact. **The instantaneous period is never right**, and that — not any implementation flaw — is the fundamental cost:
 
@@ -168,6 +309,8 @@ The rule the numbers dictate: **use a divider for integer sub-clocks of an alrea
 
 Selecting between two clocks looks like a one-line mux. It is the single most dangerous line in clock design.
 
+**Plainly: a glitch-free clock mux selects between two *running* clocks without ever emitting a partial pulse.** It replaces the naive combinational select with a per-branch enable that changes only while its own clock is low, so no in-flight pulse is ever cut and the two clocks are never both live on the merge.
+
 ### 6.1 Why the combinational mux is forbidden — derive the runt
 
 `clk_out = sel ? clk_b : clk_a` glitches because **`sel` is asynchronous to both clocks** — it comes from control logic in some *third* domain and can change at any instant. Suppose the mux is passing `clk_a` (currently high) and `sel` flips to select `clk_b` (currently low) partway through `clk_a`'s high phase. The output is yanked low the instant `sel` changes, cutting `clk_a`'s high phase short and manufacturing a pulse whose width is "time from `sel` change until now" — **anywhere from 0 to a full half-period:**
@@ -199,6 +342,67 @@ en_a=0, en_b=1   →  clk_out = clk_b     (running on B)
 ```
 
 During the dead time the output simply holds low — **no edges, which is always safe:** downstream flops just don't clock for a few cycles. The mux never emits a short pulse because it never changes an enable except while that clock is low, and never has both enables live together. That is the whole correctness argument; the exact gate count is incidental.
+
+### 6.3 The glitch-free mux as RTL
+
+**In one line: two clocks, each AND-gated by an enable that is re-timed onto *its own* clock (a 2-flop synchronizer) and cross-coupled so it can arm only while the other branch is fully off; OR the two gated clocks together.** The AND-with-a-clock and the OR are **structural** gated-clock nodes — CTS and STA treat them as clock elements, not ordinary logic. The second synchronizer flop is on `negedge` so each enable changes only while its clock is *low*, which is exactly what stops the AND from chopping a pulse (§6.1).
+
+```mermaid
+flowchart LR
+    SEL["sel<br/>async"]
+    subgraph GA["branch A on clk_a"]
+        S1A["FF1<br/>posedge"] --> ENA["FF2 negedge<br/>en_a"]
+    end
+    subgraph GB["branch B on clk_b"]
+        S1B["FF1<br/>posedge"] --> ENB["FF2 negedge<br/>en_b"]
+    end
+    SEL --> S1A
+    SEL --> S1B
+    ENB -->|"~en_b arms A"| S1A
+    ENA -->|"~en_a arms B"| S1B
+    CLKA["clk_a"] --> AA["and"]
+    ENA --> AA
+    CLKB["clk_b"] --> AB["and"]
+    ENB --> AB
+    AA --> OG["or"]
+    AB --> OG
+    OG --> OUT["clk_out"]
+```
+
+At reset branch A is the live default (`en_a` resets to 1) — the §7 rule that the reset-default clock be one guaranteed running. (Verified with `iverilog -g2012`: after an asynchronous `sel` change the output hands over and keeps toggling.)
+
+```systemverilog
+// glitch-free 2-input clock mux (Cummings-style enable synchronizers)
+module glitchfree_mux2 (
+    input  logic clk_a,
+    input  logic clk_b,
+    input  logic rst_n,
+    input  logic sel,          // 0 -> clk_a, 1 -> clk_b  (asynchronous)
+    output logic clk_out
+);
+    logic s1a, en_a;           // branch-A enable: 2-flop synchronizer
+    logic s1b, en_b;           // branch-B enable: 2-flop synchronizer
+
+    // Branch A -- default-selected at reset; arms only while B is fully off
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) s1a <= 1'b1;
+        else        s1a <= ~sel & ~en_b;
+    always_ff @(negedge clk_a or negedge rst_n)   // retime into clk_a-low phase
+        if (!rst_n) en_a <= 1'b1;
+        else        en_a <= s1a;
+
+    // Branch B -- off at reset; arms only while A is fully off
+    always_ff @(posedge clk_b or negedge rst_n)
+        if (!rst_n) s1b <= 1'b0;
+        else        s1b <= sel & ~en_a;
+    always_ff @(negedge clk_b or negedge rst_n)   // retime into clk_b-low phase
+        if (!rst_n) en_b <= 1'b0;
+        else        en_b <= s1b;
+
+    // gate-then-OR: each enable moves only while its clock is low -> no runt
+    assign clk_out = (clk_a & en_a) | (clk_b & en_b);
+endmodule
+```
 
 ---
 
@@ -240,6 +444,56 @@ Switching fast→slow: (1) glitch-free-switch the CPU onto the ring oscillator (
 Gating a clock off to save power — dynamic power $\propto \alpha C V^2 f$, and gating drives the activity factor $\alpha\to 0$ for the idle flops *and their local clock tree* — is the muxing problem reduced to one input: change what drives the clock net **only while the clock is low.**
 
 The naive version, `gated = clk & en`, has the identical §6.1 disease. If `en` (out of some flop) changes while `clk` is **high**, the AND chops the high phase into a runt. The fix is the synchronizer idea, made cheaper because `en` already lives in this clock's domain: latch `en` in a **level-sensitive latch that is transparent while `clk` is low** (a negative-level latch), then AND the *latched* enable with the clock. Because the latch is opaque during the high phase, `en` cannot move the AND's output mid-pulse; any enable change is absorbed while the clock is low and only takes effect at the next low→high edge. This latch-plus-AND is the **integrated clock-gating (ICG) cell** — one characterised standard cell, not something to assemble from RTL.
+
+**The behavioral model vs the real cell — the distinction to hold.** The RTL below is a *model* of what the ICG does (a negative-level latch feeding an AND), fine for simulation and for *understanding* the enable timing. The *implementation* is an **explicit instantiation of the vendor ICG cell**, never inferred glue — because only the library cell is characterised for the clock-gating check and laid out to balance the clock arc.
+
+```mermaid
+flowchart LR
+    EN["en"] --> LAT["level latch<br/>transparent while clk low"]
+    TE["test_en"] --> LAT
+    CLK["clk"] --> LAT
+    LAT -->|"en_latched"| AG["and"]
+    CLK --> AG
+    AG --> GCLK["gclk"]
+```
+
+```systemverilog
+// Behavioral MODEL of an ICG cell. In production you INSTANTIATE the
+// characterised library cell instead, e.g.:
+//   CKLNQD4 u_icg (.CP(clk), .E(en), .TE(test_en), .Q(gclk));
+module icg (
+    input  logic clk,
+    input  logic en,          // enable, from this clock's own domain
+    input  logic test_en,     // scan/test-mode force-on
+    output logic gclk
+);
+    logic en_latched;
+    // negative-level latch: transparent while clk == 0, opaque while clk == 1
+    always_latch
+        if (!clk) en_latched = en | test_en;
+    assign gclk = clk & en_latched;   // enable can only move while clk is low
+endmodule
+```
+
+Instantiating it on a register bank — `gclk` is a **gated clock** (a structural clock node, not ordinary logic), so the ICG, not this `always_ff`, is what CTS balances and STA checks:
+
+```systemverilog
+module gated_reg #(parameter int W = 8) (
+    input  logic         clk,
+    input  logic         rst_n,
+    input  logic         en,
+    input  logic [W-1:0] d,
+    output logic [W-1:0] q
+);
+    logic gclk;
+    icg u_icg (.clk(clk), .en(en), .test_en(1'b0), .gclk(gclk));
+    always_ff @(posedge gclk or negedge rst_n)   // gated clock (structural)
+        if (!rst_n) q <= '0;
+        else        q <= d;               // captured only on enabled cycles
+endmodule
+```
+
+(Verified with `iverilog -g2012`: an `en` change mid-high-phase yields only clean, full `gclk` pulses — no runt.)
 
 **Why the ICG cell rather than ad-hoc gating** — the trade-off in three parts:
 

@@ -232,6 +232,192 @@ where $B$ = burst length (words), $f_{wr},f_{rd}$ = write/read throughputs, and 
 
 **The trade-off is throughput/decoupling vs area.** The FIFO sustains one transfer per clock in each domain with no handshake latency, and it tolerates arbitrary frequency and phase relationships — but it costs a dual-port RAM plus two Gray+synchronizer pointer paths (and Gray→binary converters if you want a numeric fill level). Reach for it when data streams; reach for the handshake (§6) when transfers are occasional and area matters.
 
+### 7.1 The RTL: the composition made concrete
+
+**The whole FIFO is five small synthesizable modules.** A top level wires them together; a dual-port RAM holds the data; one reusable 2-flop synchronizer (instanced twice) crosses each Gray pointer; and one pointer+flag block per domain generates a pointer and a flag. Each piece maps directly onto the block diagram above — every domain emits its own Gray pointer, receives the *other* domain's Gray pointer through a synchronizer, and produces one flag. `DEPTH` is a power of two, `ADDR_W = log2(DEPTH)`, and every pointer is `ADDR_W+1` bits wide: the extra wrap bit derived above.
+
+Two pointers live in each domain, and the contrast between them is the entire trick. **The binary pointer indexes the RAM and performs the +1 arithmetic; the Gray pointer is a re-encoding of that same count used for nothing except crossing to the other domain.** They are never interchanged — the RAM is never addressed by Gray, and a synchronizer never carries binary — because only the Gray form is Hamming-1 per step and therefore safe to sample mid-flight (§5).
+
+```systemverilog
+// ---------------------------------------------------------------------------
+// Top level: dual-clock async FIFO. DEPTH must be a power of two.
+// ---------------------------------------------------------------------------
+module async_fifo #(
+    parameter int WIDTH  = 8,
+    parameter int DEPTH  = 16,
+    parameter int ADDR_W = 4          // ADDR_W = log2(DEPTH); pointers are ADDR_W+1 bits
+) (
+    // write domain
+    input  logic             wr_clk,
+    input  logic             wr_rst_n,
+    input  logic             wr_en,
+    input  logic [WIDTH-1:0] wr_data,
+    output logic             full,
+    // read domain
+    input  logic             rd_clk,
+    input  logic             rd_rst_n,
+    input  logic             rd_en,
+    output logic [WIDTH-1:0] rd_data,
+    output logic             empty
+);
+    logic [ADDR_W:0]   wr_gray, rd_gray;          // (ADDR_W+1)-bit Gray pointers
+    logic [ADDR_W:0]   wr_gray_sync, rd_gray_sync; // each crossed by a 2-FF sync
+    logic [ADDR_W-1:0] wr_addr, rd_addr;          // ADDR_W-bit RAM addresses
+
+    // cross the write Gray pointer into the read domain
+    sync_2ff #(.WIDTH(ADDR_W+1)) u_sync_w2r (
+        .clk(rd_clk), .rst_n(rd_rst_n), .d(wr_gray), .q(wr_gray_sync));
+
+    // cross the read Gray pointer into the write domain
+    sync_2ff #(.WIDTH(ADDR_W+1)) u_sync_r2w (
+        .clk(wr_clk), .rst_n(wr_rst_n), .d(rd_gray), .q(rd_gray_sync));
+
+    // write pointer + full flag (write domain)
+    wptr_full #(.ADDR_W(ADDR_W)) u_wptr (
+        .wr_clk(wr_clk), .wr_rst_n(wr_rst_n), .wr_en(wr_en),
+        .rd_gray_sync(rd_gray_sync),
+        .wr_gray(wr_gray), .wr_addr(wr_addr), .full(full));
+
+    // read pointer + empty flag (read domain)
+    rptr_empty #(.ADDR_W(ADDR_W)) u_rptr (
+        .rd_clk(rd_clk), .rd_rst_n(rd_rst_n), .rd_en(rd_en),
+        .wr_gray_sync(wr_gray_sync),
+        .rd_gray(rd_gray), .rd_addr(rd_addr), .empty(empty));
+
+    // dual-port RAM: write port on wr_clk, read port on rd_clk
+    fifo_mem #(.WIDTH(WIDTH), .DEPTH(DEPTH), .ADDR_W(ADDR_W)) u_mem (
+        .wr_clk(wr_clk), .wr_en(wr_en & ~full), .wr_addr(wr_addr), .wr_data(wr_data),
+        .rd_clk(rd_clk), .rd_en(rd_en & ~empty), .rd_addr(rd_addr), .rd_data(rd_data));
+endmodule
+
+// ---------------------------------------------------------------------------
+// N-bit 2-flop synchronizer (one instance per crossed Gray pointer).
+// ---------------------------------------------------------------------------
+module sync_2ff #(
+    parameter int WIDTH = 5
+) (
+    input  logic             clk,
+    input  logic             rst_n,
+    input  logic [WIDTH-1:0] d,     // Gray pointer from the other domain
+    output logic [WIDTH-1:0] q      // synchronized into this domain
+);
+    logic [WIDTH-1:0] meta;         // first (sacrificial) stage
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) begin
+            meta <= '0;
+            q    <= '0;
+        end else begin
+            meta <= d;              // may go metastable
+            q    <= meta;           // settled one clock later
+        end
+endmodule
+
+// ---------------------------------------------------------------------------
+// Dual-port RAM: synchronous write on wr_clk, synchronous read on rd_clk.
+// Read data is registered, so a word requested when empty is low appears on
+// rd_data one rd_clk edge later (standard-FIFO read latency).
+// ---------------------------------------------------------------------------
+module fifo_mem #(
+    parameter int WIDTH  = 8,
+    parameter int DEPTH  = 16,
+    parameter int ADDR_W = 4
+) (
+    input  logic              wr_clk,
+    input  logic              wr_en,       // already gated with ~full by the top
+    input  logic [ADDR_W-1:0] wr_addr,
+    input  logic [WIDTH-1:0]  wr_data,
+    input  logic              rd_clk,
+    input  logic              rd_en,        // already gated with ~empty by the top
+    input  logic [ADDR_W-1:0] rd_addr,
+    output logic [WIDTH-1:0]  rd_data
+);
+    logic [WIDTH-1:0] mem [0:DEPTH-1];       // the storage array (a reg array)
+    always_ff @(posedge wr_clk)
+        if (wr_en) mem[wr_addr] <= wr_data;  // write port
+    always_ff @(posedge rd_clk)
+        if (rd_en) rd_data <= mem[rd_addr];  // read port
+endmodule
+
+// ---------------------------------------------------------------------------
+// Write pointer + full flag (write domain).
+// Binary pointer indexes the RAM and does the arithmetic; Gray pointer only
+// ever crosses to the read domain. full = writer exactly one lap ahead.
+// ---------------------------------------------------------------------------
+module wptr_full #(
+    parameter int ADDR_W = 4
+) (
+    input  logic              wr_clk,
+    input  logic              wr_rst_n,
+    input  logic              wr_en,
+    input  logic [ADDR_W:0]   rd_gray_sync,  // read Gray ptr synced into wr domain
+    output logic [ADDR_W:0]   wr_gray,        // write Gray ptr (to reader)
+    output logic [ADDR_W-1:0] wr_addr,        // RAM write address (low bits)
+    output logic              full
+);
+    logic [ADDR_W:0] wr_bin;                  // (ADDR_W+1)-bit binary pointer
+    logic [ADDR_W:0] wr_bin_next, wr_gray_next;
+
+    always_ff @(posedge wr_clk or negedge wr_rst_n)
+        if (!wr_rst_n) begin
+            wr_bin  <= '0;
+            wr_gray <= '0;
+        end else begin
+            wr_bin  <= wr_bin_next;
+            wr_gray <= wr_gray_next;
+        end
+
+    assign wr_addr      = wr_bin[ADDR_W-1:0];
+    assign wr_bin_next  = wr_bin + (wr_en & ~full);
+    assign wr_gray_next = (wr_bin_next >> 1) ^ wr_bin_next;   // binary -> Gray
+
+    // full when next write Gray == read Gray with top TWO bits inverted (ADDR_W>=2)
+    always_ff @(posedge wr_clk or negedge wr_rst_n)
+        if (!wr_rst_n) full <= 1'b0;
+        else           full <= (wr_gray_next ==
+                                {~rd_gray_sync[ADDR_W:ADDR_W-1], rd_gray_sync[ADDR_W-2:0]});
+endmodule
+
+// ---------------------------------------------------------------------------
+// Read pointer + empty flag (read domain).
+// empty = reader has caught the writer (Gray pointers equal).
+// ---------------------------------------------------------------------------
+module rptr_empty #(
+    parameter int ADDR_W = 4
+) (
+    input  logic              rd_clk,
+    input  logic              rd_rst_n,
+    input  logic              rd_en,
+    input  logic [ADDR_W:0]   wr_gray_sync,  // write Gray ptr synced into rd domain
+    output logic [ADDR_W:0]   rd_gray,        // read Gray ptr (to writer)
+    output logic [ADDR_W-1:0] rd_addr,        // RAM read address (low bits)
+    output logic              empty
+);
+    logic [ADDR_W:0] rd_bin;                  // (ADDR_W+1)-bit binary pointer
+    logic [ADDR_W:0] rd_bin_next, rd_gray_next;
+
+    always_ff @(posedge rd_clk or negedge rd_rst_n)
+        if (!rd_rst_n) begin
+            rd_bin  <= '0;
+            rd_gray <= '0;
+        end else begin
+            rd_bin  <= rd_bin_next;
+            rd_gray <= rd_gray_next;
+        end
+
+    assign rd_addr      = rd_bin[ADDR_W-1:0];
+    assign rd_bin_next  = rd_bin + (rd_en & ~empty);
+    assign rd_gray_next = (rd_bin_next >> 1) ^ rd_bin_next;   // binary -> Gray
+
+    always_ff @(posedge rd_clk or negedge rd_rst_n)
+        if (!rd_rst_n) empty <= 1'b1;
+        else           empty <= (rd_gray_next == wr_gray_sync);
+endmodule
+```
+
+**Why `full` and `empty` are not symmetric — the one confusable pair here.** Both are Gray comparisons against a *synchronized* (therefore lagging) pointer, so both err only in the safe direction; but they are computed differently and in opposite domains. **`empty` is plain Gray equality** — `rd_gray_next == wr_gray_sync`, in the read domain: the reader has drawn level with the writer on the *same* lap. **`full` is Gray equality with the top two bits inverted** — `wr_gray_next == {~rd_gray_sync top two, rest}`, in the write domain: the writer is one lap ahead at the same slot. The inverted top two bits *are* the wrap bit expressed in Gray (the derivation above): empty is "same lap, same slot," full is "next lap, same slot." Confusing the two — using plain equality for `full` — is the classic bug that makes a FIFO report full one lap early or never.
+
+**Read-latency note.** The read port is registered on `rd_clk`, so a word requested while `empty` is low lands on `rd_data` one read-clock edge later (standard-FIFO timing). Deleting the read register and using a combinational read — `assign rd_data = mem[rd_addr];` — instead gives first-word-fall-through (data already present when `empty` falls), trading the register for a combinational RAM read path. Either is correct; they differ only in when `rd_data` is valid relative to `rd_en`.
+
 ---
 
 ## 8. Pulse and toggle synchronizers
@@ -253,15 +439,29 @@ The toggle level persists until the next event, so the destination cannot miss i
 
 ## 9. Reset-domain crossing and the reset synchronizer
 
-Reset is a CDC signal too, and it fails in a way that is invisible until silicon: an asynchronous reset release that violates a flop's recovery/removal window drives it *metastable coming out of reset*, and if different flops in a domain then leave reset on different cycles, the state machine boots into an inconsistent state and hangs. (A real 1-in-1000 boot hang traced to a reset crossing with no synchronizer — §10.) The canonical answer is **assert asynchronously, deassert synchronously**:
+Reset is a CDC signal too, and it fails in a way that is invisible until silicon: an asynchronous reset release that violates a flop's recovery/removal window drives it *metastable coming out of reset*, and if different flops in a domain then leave reset on different cycles, the state machine boots into an inconsistent state and hangs. (A real 1-in-1000 boot hang traced to a reset crossing with no synchronizer — §10.) The canonical answer is **assert asynchronously, deassert synchronously**.
 
-```verilog
-// Async assert (works even with a dead/unstable clock); sync deassert
-// (all flops leave reset on the SAME edge → no recovery/removal race)
-always @(posedge clk or negedge async_rst_n)
-    if (!async_rst_n) rst_pipe <= 2'b0;          // immediate assert
-    else              rst_pipe <= {rst_pipe[0], 1'b1};  // clean release, 2 cyc later
-// sync_rst_n = rst_pipe[MSB]
+**What a reset synchronizer is, plainly.** It is a 2-FF synchronizer (§3) applied to the reset net, with the data input hard-wired to `1`. Both flops take the raw asynchronous reset as their *asynchronous clear*, so pulling reset low clears the whole chain **immediately, clock or no clock** (async assert); when reset releases, a `1` walks up the chain one clock edge at a time, so the output reset releases two edges later and every flop in the domain leaves reset on that **one common edge** (sync deassert). The first flop absorbs any recovery/removal metastability on the release exactly as FF1 absorbs setup/hold metastability in an ordinary data synchronizer — nothing downstream sees the unresolved node.
+
+```systemverilog
+// Reset synchronizer: a short flop chain whose data input is tied to 1 and
+// whose asynchronous clear is the raw reset. Assert is async (reset low clears
+// every stage immediately, clock or no clock); deassert is sync (a 1 walks up
+// the chain, so the output releases STAGES edges later and every downstream
+// flop leaves reset on one common edge).
+module reset_sync #(
+    parameter int STAGES = 2
+) (
+    input  logic clk,
+    input  logic async_rst_n,   // active-low async reset in
+    output logic sync_rst_n     // active-low reset out (async assert, sync deassert)
+);
+    logic [STAGES-1:0] rst_pipe;
+    always_ff @(posedge clk or negedge async_rst_n)
+        if (!async_rst_n) rst_pipe <= '0;                        // async assert
+        else              rst_pipe <= {rst_pipe[STAGES-2:0], 1'b1}; // sync release
+    assign sync_rst_n = rst_pipe[STAGES-1];
+endmodule
 ```
 
 - **Assert must be async** so reset takes effect even at power-on when the clock has not yet started — a synchronous-only reset could never be captured with a dead clock.

@@ -165,6 +165,85 @@ $$
 
 Violate it and the flop can go metastable on the way *out* of reset — which is why the de-assertion must be synchronized while the assertion, being unconditional, need not be. The synchronizer mechanics and the MTBF math live in [Async_Design_and_CDC](06_Async_Design_and_CDC.md); here the point is *why* the standard scheme is the standard: it is the only one that is simultaneously power-on-safe (async assert), metastability-safe (sync release), and DFT-friendly. Crossing a **reset domain** demands the same discipline as a clock-domain crossing — plan it, don't let it happen. Scan and ATPG add the final constraint (hold reset inactive during shift, make async resets test-controllable), which is why many test methodologies lean toward synchronous or explicitly testable async reset ([DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md)).
 
+### 5.1 The three reset styles as RTL, side by side
+
+Plainly, what each one **is**:
+
+- **Synchronous reset** — reset is *sampled like an ordinary data input*; the flop only looks at it on the clock edge, so `rst_n` is **not** in the sensitivity list and becomes a mux feeding the flop's D cone.
+- **Asynchronous reset** — reset drives the flop's *dedicated clear pin*; it acts the instant it asserts, independent of the clock, so `rst_n` **is** in the sensitivity list (`or negedge rst_n`).
+- **Async-assert, sync-de-assert** — an async-reset flop whose *release* is first passed through a two-flop **reset synchronizer**, so assertion is immediate (clock-free) while de-assertion lands cleanly on a clock edge.
+
+The whole difference is two lines of each block — the **sensitivity list** and the **reset branch**.
+
+**(1) Synchronous**
+
+```systemverilog
+module ff_sync_reset (input logic clk, rst_n, en, d, output logic q);
+    // rst_n NOT in the list -> reset sampled like data (a mux into q's cone)
+    always_ff @(posedge clk)
+        if (!rst_n) q <= 1'b0;
+        else if (en) q <= d;
+endmodule
+```
+
+**(2) Asynchronous**
+
+```systemverilog
+module ff_async_reset (input logic clk, rst_n, en, d, output logic q);
+    // rst_n IN the list -> dedicated async clear pin (acts off-clock)
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) q <= 1'b0;
+        else if (en) q <= d;
+endmodule
+```
+
+**(3) Async-assert, sync-de-assert** *(the standard)*
+
+```systemverilog
+module reset_sync (input logic clk, input logic arst_n, output logic rst_n);
+    logic meta;                                    // 2-flop synchronizer
+    always_ff @(posedge clk or negedge arst_n)
+        if (!arst_n) begin meta <= 1'b0; rst_n <= 1'b0; end  // assert now (async)
+        else         begin meta <= 1'b1; rst_n <= meta;  end  // release over 2 clks
+endmodule
+
+module ff_async_reset_synced (input logic clk, arst_n, en, d, output logic q);
+    logic rst_n;
+    reset_sync u_rs (.clk(clk), .arst_n(arst_n), .rst_n(rst_n)); // sync the release
+    always_ff @(posedge clk or negedge rst_n)      // async-reset flop, clean release
+        if (!rst_n) q <= 1'b0;
+        else if (en) q <= d;
+endmodule
+```
+
+Reading across, only the list and the reset branch move:
+
+| Style | Sensitivity list | Reset branch fires | The trade |
+|---|---|---|---|
+| Synchronous | `@(posedge clk)` | only *at* the edge | mux on the data path (area + a little delay); needs a running clock; can miss a sub-cycle pulse; cleanest STA and scan |
+| Asynchronous | `@(posedge clk or negedge rst_n)` | *immediately* | free on the data path; works before the clock exists; but the *release* can go **metastable**, and DFT must control the clear |
+| Async / sync | flop is `@(posedge clk or negedge rst_n)`, driven by the synchronizer | immediate assert, edge-aligned release | keeps async's power-on safety, removes the metastable release; costs one synchronizer + recovery/removal STA per domain |
+
+The synchronizer is the picture below: an assert punches through both flops asynchronously, but a de-assert has to *walk in* through them on `clk`, so `rst_n` can only rise on a clock edge — the metastability-safe release §5 requires.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "htmlLabels": false}}}%%
+flowchart LR
+    TIE["tie 1"]
+    F1["FF meta<br/>async clear"]
+    F2["FF rst_n<br/>async clear"]
+    DST["downstream<br/>async-reset flops"]
+    ARST["arst_n<br/>raw async reset"]
+    CLK["clk"]
+    TIE --> F1
+    F1 --> F2
+    F2 --> DST
+    ARST -. "assert clears now" .-> F1
+    ARST -. "assert clears now" .-> F2
+    CLK -. "clock" .-> F1
+    CLK -. "clock" .-> F2
+```
+
 ---
 
 ## 6. FSM coding styles: one vs two vs three processes
@@ -187,6 +266,110 @@ A **Mealy** (two-process) output is a combinational function of state *and* curr
 
 Where real designs land follows from that table: **two-process for most control** (clean, one comb block to watch); **one-process / registered outputs when the output sits on a critical path or drives a chip boundary or wide fanout** (you *want* it registered and glitch-free, and you design for the extra cycle); **three-process for large FSMs under active change**, where readability and independent output registering pay for the extra block. The one-process style's total latch-immunity is worth internalizing as the cleanest illustration of §2: *same missing assignment, opposite hardware, decided entirely by which kind of process it lives in.*
 
+### 6.1 The same FSM in one, two, and three processes
+
+The running example is a three-state req/ack handshake: **IDLE** waits for `req`, **BUSY** works until `done`, **DONE** pulses `ack` and returns to IDLE. `busy` is high in BUSY, `ack` in DONE. Every version below builds *this* machine; only the process partition changes.
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> BUSY: req
+    BUSY --> BUSY: wait while not done
+    BUSY --> DONE: done
+    DONE --> IDLE
+```
+
+Plainly, what each style **is**:
+
+- **One-process** — state register, next-state logic, and outputs *all* inside one `always_ff`, so outputs come out **registered** (a flop, never a latch).
+- **Two-process** — one `always_ff` holds the state; one `always_comb` computes next-state **and** outputs, so outputs are **combinational**.
+- **Three-process** — `always_ff` for state, `always_comb` for next-state only, and a **third** block for outputs (registered *or* combinational, chosen independently).
+
+**One-process.** Set an output when you *transition into* the state it belongs to, so the registered value lands aligned with the state:
+
+```systemverilog
+module fsm_1proc (
+    input  logic clk, rst_n, req, done,
+    output logic busy, ack
+);
+    typedef enum logic [1:0] {IDLE, BUSY, DONE} state_t;
+    state_t state;
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) begin
+            state <= IDLE; busy <= 1'b0; ack <= 1'b0;
+        end else begin
+            busy <= 1'b0; ack <= 1'b0;                 // registered-output defaults
+            case (state)
+                IDLE: if (req)  begin state <= BUSY; busy <= 1'b1; end
+                BUSY: if (done) begin state <= DONE; ack  <= 1'b1; end
+                      else                                busy <= 1'b1;
+                DONE:                 state <= IDLE;
+                default:              state <= IDLE;
+            endcase
+        end
+endmodule
+```
+
+**Two-process** *(the default).* State in the flop; next-state and outputs share one comb block. The defaults on its first lines (`next = state; busy = 0; ack = 0;`) are what keep that block latch-free (§2):
+
+```systemverilog
+module fsm_2proc (
+    input  logic clk, rst_n, req, done,
+    output logic busy, ack
+);
+    typedef enum logic [1:0] {IDLE, BUSY, DONE} state_t;
+    state_t state, next;
+    always_ff @(posedge clk or negedge rst_n)        // process 1: state register
+        if (!rst_n) state <= IDLE;
+        else        state <= next;
+    always_comb begin                                // process 2: next-state AND outputs
+        next = state;                 // default: hold
+        busy = 1'b0;                  // default outputs -> no latch
+        ack  = 1'b0;
+        case (state)
+            IDLE: if (req)  next = BUSY;
+            BUSY: begin busy = 1'b1; if (done) next = DONE; end
+            DONE: begin ack  = 1'b1;           next = IDLE; end
+            default:                           next = IDLE;
+        endcase
+    end
+endmodule
+```
+
+Outputs here are Moore (decoded from `state`). Move an output assignment inside an input-qualified branch — e.g. `if (done) ack = 1'b1;` in BUSY — and it becomes **Mealy**: same-cycle, but glitch-prone and its cone stacks onto whatever it feeds.
+
+**Three-process.** Next-state and outputs live in separate blocks; here the outputs are registered by decoding `next` (swap that block for an `always_comb` decoding `state` to get combinational outputs instead):
+
+```systemverilog
+module fsm_3proc (
+    input  logic clk, rst_n, req, done,
+    output logic busy, ack
+);
+    typedef enum logic [1:0] {IDLE, BUSY, DONE} state_t;
+    state_t state, next;
+    always_ff @(posedge clk or negedge rst_n)        // process 1: state register
+        if (!rst_n) state <= IDLE;
+        else        state <= next;
+    always_comb begin                                // process 2: next-state only
+        next = state;
+        case (state)
+            IDLE: if (req)  next = BUSY;
+            BUSY: if (done) next = DONE;
+            DONE:           next = IDLE;
+            default:        next = IDLE;
+        endcase
+    end
+    always_ff @(posedge clk or negedge rst_n)        // process 3: outputs (registered)
+        if (!rst_n) begin busy <= 1'b0; ack <= 1'b0; end
+        else begin
+            busy <= (next == BUSY);
+            ack  <= (next == DONE);
+        end
+endmodule
+```
+
+All three compile together and, driven by shared stimulus, produce identical `busy`/`ack` every cycle — the partition trades *latch risk, output timing, and readability* (the table above), not the logic.
+
 ---
 
 ## 7. Structural discipline as consequences, not a checklist
@@ -198,6 +381,69 @@ Every remaining "rule" is one more reading of "what hardware does this text infe
 - **No multiply-driven nets.** A net is the output of *exactly one* gate. Two processes assigning the same signal wires two gate outputs together — a short (bus contention), not a value — so $\delta$ stops being single-valued and synthesis cannot pick a driver. Rule: **one signal, one owning `always` block** (true tri-state buses are the sole, explicit exception).
 - **Datapath / control separation.** Not aesthetics — *verifiability* and *inference quality*. The **datapath** (registers, ALUs, muxes, FIFOs) is wide, regular, arithmetic; written with operators the synthesizer maps to library [adders/multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md), it should be exercised with directed/random *data*. The **control** (the FSMs) is a small state space you can cover exhaustively or formally. Tangle them and you get RTL that is *neither*: the control space explodes past exhaustive coverage and the arithmetic stops synthesizing as clean regular structure. Separation lets each half be checked by the method that fits it.
 - **Register block outputs; pipeline to hit frequency.** Registering a block's outputs presents a clean setup boundary, so integration STA is not a thicket of cross-block combinational paths. If a cone is too long for the target period, cut it with a pipeline register and manage the added latency with `valid`/back-pressure — the standard latency-for-frequency trade.
+
+### 7.1 Clock gating in RTL: the enable that becomes an ICG
+
+An **integrated clock-gating (ICG) cell** is a low-transparent latch that captures the enable while the clock is low, ANDed with the clock — so the gated clock changes only when the enable is already stable, and never glitches. You rarely hand-write it: either write a plain **clock enable** and let synthesis insert the ICG, or instantiate a library ICG explicitly.
+
+```systemverilog
+module use_enable (
+    input  logic clk, rst_n, en, d,
+    output logic q
+);
+    // enable in the DATA path: STA-trivial; synthesis may insert an ICG here
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) q <= 1'b0;
+        else if (en) q <= d;
+endmodule
+```
+
+What clock-gating synthesis drops in — and what you instantiate yourself if you gate a generated clock — is the ICG: a latch plus an AND, with `test_en` OR'd in so scan can force the clock on.
+
+```systemverilog
+module icg (
+    input  logic clk, en, test_en,
+    output logic gclk
+);
+    // WRONG (for contrast):  assign gclk = clk & en;   // en glitch -> false edge
+    logic en_latched;
+    always_latch
+        if (!clk) en_latched <= en | test_en;  // sample enable while clk is low
+    assign gclk = clk & en_latched;            // glitch-free gated clock
+endmodule
+```
+
+The one thing never to do is `assign gclk = clk & en;` on a raw net: `en` can move mid-phase and that edge looks exactly like a clock edge to every downstream flop (this section's *nothing combinational on the clock net*). The latch is precisely what makes the ICG glitch-free.
+
+### 7.2 Cutting a long path: pipeline register + carry valid
+
+When a combinational cone is too long for the target period, **split it with a pipeline register and send a `valid` bit down the pipe beside the data**, so consumers know which cycles carry real results. It buys frequency for one cycle of added latency:
+
+```systemverilog
+module pipe_cut (
+    input  logic clk, rst_n, in_valid,
+    input  logic [15:0] a, b,
+    output logic out_valid,
+    output logic [31:0] result
+);
+    logic [31:0] stage1;
+    logic        stage1_valid;
+    always_ff @(posedge clk or negedge rst_n)      // stage 1: half the cone
+        if (!rst_n) begin stage1 <= '0; stage1_valid <= 1'b0; end
+        else begin
+            stage1       <= a * b;                 // was part of one long path
+            stage1_valid <= in_valid;              // valid rides with the data
+        end
+    always_ff @(posedge clk or negedge rst_n)      // stage 2: the rest, 1 cycle later
+        if (!rst_n) begin result <= '0; out_valid <= 1'b0; end
+        else begin
+            result    <= stage1 + 32'd1;
+            out_valid <= stage1_valid;
+        end
+endmodule
+```
+
+That is the idea in miniature. The fuller treatment — retiming, back-pressure, and skid buffers — belongs in a dedicated pipelining-patterns page; the reflex to keep here is *long path → insert a flop, and never let the data outrun its `valid`.*
 
 **What "done" means.** RTL is not finished when it simulates — under §4 a passing sim does not even guarantee the *gates* match. It is done when it is provably inside the contract: **lint-clean** (no inferred latches, no incomplete sensitivity, no multiple drivers), **CDC/RDC-clean**, **coverage-closed** ([Verification_Planning_and_Coverage_Closure](11_Verification_Planning_and_Coverage_Closure.md)), and **synthesizable within the timing/area budget** ([Lint_CDC_RDC_Signoff](07_Lint_CDC_RDC_Signoff.md)). That bundle is the handoff to [synthesis](../04_Synthesis/01_Synthesis_and_Optimization.md).
 
