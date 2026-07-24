@@ -23,6 +23,8 @@ The organizing idea of the page is the tension buried in that last clause. Cover
 
 ## 1. The verification plan: drawing the map
 
+**A verification plan (vplan) is the explicit mapping from each design feature or requirement to the specific coverage points and checks that will prove it was exercised — and exercised correctly.** That is the whole definition: not a test list, not a schedule, not a coverage report, but the *feature → (stimulus, check, coverage bin, priority)* table, written from the spec *before* any test runs, that fixes what "done" means. Everything below is a consequence of that one definition.
+
 The vplan exists because of a structural asymmetry in how coverage works. **Code** coverage is instrumented automatically — the tool watches every line and toggle whether you asked or not. **Functional** coverage does not exist until an engineer writes a cover bin, so it measures exactly one thing: *"did stimulus hit the scenarios I thought to model?"* A scenario nobody modeled contributes nothing to the coverage denominator, so it can **never appear as a hole**. Functional coverage is therefore structurally incapable of reporting its own blind spots. The map cannot show you the parts of the territory you failed to survey.
 
 That is the whole reason planning precedes stimulus. *What to model* is the load-bearing intellectual decision, and it must be made deliberately from the specification, before a single test is written — because whatever the plan omits, no amount of simulation will ever flag. The vplan is the executable definition of "done," and its completeness caps what coverage can ever tell you.
@@ -51,6 +53,8 @@ The right granularity puts a bin wherever a *miss* would correspond to a plausib
 ---
 
 ## 2. Coverage as sampling the target space
+
+**State the difference before using either word: coverage is not completeness.** *Coverage* is a **sampled proxy** — the fraction of the scenarios you *modeled* that stimulus actually reached. *Completeness* is the real goal — whether everything that matters was actually checked. The two diverge constantly: coverage can read 100 % while completeness fails, because a hit bin means only *reached*, never *checked correctly*, and the map silently omits whatever the vplan never modeled. Coverage is the instrument; completeness is the target it can only approximate — and the gap between them is the whole subject of §5.1.
 
 Once the map is drawn, coverage is the measurement of how much of it stimulus has visited. It comes in flavors because each is blind to what the others catch, and the differences are best read as *what each metric can and cannot logically tell you.*
 
@@ -94,6 +98,8 @@ so the run length to close the tail scales as $1/p_{\min}$. Halving the rarest b
 ---
 
 ## 3. The closure loop and its long tail
+
+**Coverage closure is the process of driving measured coverage up to its planned target and justifying, in writing, every bin left open.** The *closure loop* is the machinery that does it: **run → merge → rank holes → triage each hole → act**, repeated until no *unjustified* hole remains. So "closed" means *target reached, or every remaining gap waived with a stated reason* — never merely the number 100 %. The diagram below is a single turn of that loop.
 
 Closure is the feedback controller that drives measured coverage to the vplan target. Each turn of the loop runs a regression, *merges* coverage across every seed and test (a bin hit by any run is covered), finds the remaining holes, and acts to close them:
 
@@ -145,6 +151,19 @@ This *is* what commercial **test grading / ranking** does: sort seeds by margina
 
 ## 4. Directed vs constrained-random: closing the last holes
 
+**Directed testing and constrained-random are two ways to generate stimulus, and they go blind in opposite places.** *Directed* — you hand-write each scenario: deterministic, repeatable, the fastest way to hit a *known* corner, but blind to anything you did not think to write. *Constrained-random (CR)* — you constrain a random generator and let it search: it finds the *unknown-unknowns* and buys breadth almost for free, but reaches a specific rare corner only after enormous run lengths. Neither is "better" — they cover different parts of the space, and the choice is set by cost, not taste:
+
+| Axis | Directed | Constrained-random (CR) |
+|---|---|---|
+| You write | the exact scenario, by hand | constraints on a generator |
+| Result | deterministic, repeatable | a new scenario per seed |
+| Strong at | known corners, reset/init, smoke | unknown-unknowns, breadth |
+| Blind to | anything unmodeled | economically-rare bins |
+| Cost to hit bin $i$ | flat $c_d$ (authoring) | $c_{\text{sim}}/p_i$ — explodes down the tail |
+| Wins when | $p_i < c_{\text{sim}}/c_d$ (rare corner) | $p_i$ large (common head) |
+
+The mnemonic that falls out — **random for the fat head, directed for the stubborn tail** — is quantified below.
+
 The two stimulus styles have opposite cost structures, and §2.1 tells you exactly where each wins. Let $c_{\text{sim}}$ be the cost of one simulated transaction and $c_d$ the cost of a directed test (engineer time to author *and* maintain it). Hitting a bin of probability $p_i$ by random takes $\approx 1/p_i$ transactions, so
 
 $$
@@ -180,6 +199,23 @@ $$
 where $\mu(t)$ = cumulative defects found by effort $t$, $a$ = total latent defects, $b$ = per-defect detection rate. The *instantaneous discovery rate* $d\mu/dt$ decays exponentially, and its decay is the real "done" signal: you stop when new bugs have become rare enough that the expected time to the next one exceeds your remaining schedule. This answers *"is the sampling still turning up defects?"*
 
 ### 5.1 Why both — the orthogonality
+
+**The two signals answer different questions, so you must read them on two axes at once.** *Coverage completeness* answers "did I sample the whole map I drew?"; the *bug-discovery rate* answers "is that sampling still turning up defects?" A block is done **only in the one quadrant where both agree** — the other three each look done on a single axis and are not:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    S1{"Coverage complete?<br/>(every planned bin hit or waived)"}:::q
+    S1 -->|no, and bugs still found| KEEP["Mid-verification<br/>keep running - not done"]:::warn
+    S1 -->|no, but bug curve flat| TRAP2["FALSE done (Signal 2 alone)<br/>quiet only means the stimulus<br/>for the open bins never ran"]:::bad
+    S1 -->|yes| S2{"Bug-discovery rate<br/>decayed to ~zero?"}:::q
+    S2 -->|no, bugs still surfacing| TRAP1["FALSE done (Signal 1 alone)<br/>bins too coarse - bugs live<br/>between and beyond them; refine model"]:::bad
+    S2 -->|yes| DONE["SIGNOFF<br/>both signals agree"]:::good
+    classDef q fill:#bae6fd,stroke:#0369a1,color:#000
+    classDef good fill:#c7d2fe,stroke:#4338ca,color:#000
+    classDef warn fill:#fde68a,stroke:#b45309,color:#000
+    classDef bad fill:#fecaca,stroke:#991b1b,color:#000
+```
 
 The two signals are orthogonal because each has a failure mode the other catches, and the two failure modes are precisely the two ways "done" goes wrong:
 

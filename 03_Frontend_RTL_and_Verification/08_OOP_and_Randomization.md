@@ -69,6 +69,8 @@ So random wins asymptotically not because it is smarter per test — it is *dumb
 
 ## 2. Constrained randomization: sampling the legal subspace
 
+**Define it first:** *constrained randomization is generating legal test stimulus by having a solver assign values to the `rand`/`randc` members of a class subject to user-written **constraints**.* You write the constraints — the relations that declare which combinations are legal — and each `randomize()` call returns one point drawn from the set they permit. The rest of this section is how that draw is confined to the legal region, steered inside it, and made to fail loudly when no legal point exists.
+
 Raw randomness is almost never *legal*. A uniformly random 32-bit "AXI control word" violates alignment, hits reserved encodings, and breaks burst rules — the legal subset is a vanishing fraction of $2^{32}$. Illegal stimulus is worse than useless: it either trips the checker on inputs the spec forbids (false failures that burn debug time) or is silently dropped by the DUT (a wasted cycle). So the draw must be *confined to the legal region*.
 
 A **constraint** is a relation the draw must satisfy. The set of constraints defines a region of the variable space, and `randomize()` returns a point sampled from it:
@@ -114,6 +116,18 @@ if (!txn.randomize() with { addr inside {[200:255]}; })  // hard beats soft
 ```
 
 ### 2.2 rand vs randc: the cost of "no repeats"
+
+**`rand` is** a random modifier that draws its member *independently* on every `randomize()` — a memoryless draw *with* replacement, so the same value can appear twice in a row. **`randc` is** *random-cyclic*: it draws a random permutation of the member's entire range and returns each value exactly once before any value repeats — a draw *without* replacement. **The difference is** memory: `rand` remembers nothing, so any value is always possible; `randc` remembers what it has emitted this cycle and guarantees a full no-repeat sweep before it reshuffles into a fresh permutation.
+
+```systemverilog
+class stim;
+  rand  bit [7:0] data;   // rand : independent each draw, with replacement (may repeat)
+  randc bit [2:0] chan;   // randc: each of the 8 values once per sweep, then reshuffles
+endclass
+// 8 successive randomize() calls make chan visit channels 0..7 in some order, no repeat;
+// data may repeat freely. (rand/randc declarations compile under iverilog -g2012; the
+// randomize() draw itself is simulator-only -- iverilog does not solve/randomize.)
+```
 
 `rand` is memoryless, so seeing *every* value of a $w$-bit field ($R = 2^{w}$ values) takes, by coupon-collector (§5), about $R\ln R$ draws, and any particular value may be missed for a long time ($\Pr[\text{miss in } n] = (1-1/R)^{n}$). `randc` guarantees each value exactly once per $R$ draws — a full sweep, zero repeats — which is what you want for arbiter channels, decode selects, and small opcode fields. The price is memory: `randc` must *remember* which values it has already emitted this cycle, so it carries
 
@@ -161,6 +175,28 @@ The size of $\mathcal{S}$ relative to the true legal space is where constrained-
 
 The target is $\mathcal{S} =$ exactly the legal space. The constraint set is therefore a *model of legality* to be reviewed with the same care as the checker — not boilerplate. Getting it wrong fails quietly in one direction (missed coverage) and loudly in the other (false fails).
 
+### 3.4 Constraint vs assertion: generate legal vs check legal
+
+These two are constantly confused because both are Boolean relations over signals — but they sit on opposite sides of the DUT. **A constraint is** a *generator-side* relation the solver must *satisfy while building* stimulus: it shapes the inputs *going into* the DUT so they come out legal. **An assertion is** a *checker-side* relation the tool *evaluates against behavior that already happened*: it flags a violation *coming out of* the DUT or its interfaces. **The difference is direction:** a constraint *produces* legal values (an input generator, and it can never "fail" a test); an assertion *observes* values and *reports* an illegal one (an output monitor, and it can never create stimulus). The very same relation $1 \le \text{len} \le 8$ is a *constraint* when it bounds what you drive and an *assertion* when it checks what you saw.
+
+```systemverilog
+// CHECKER side: an immediate assertion inspects a value already produced.
+module check_len;
+  int len;
+  initial begin
+    len = 5;
+    assert (len >= 1 && len <= 8)                       // never generates; only checks
+      else $error("len=%0d violates the 1..8 legal range", len);
+    $display("len=%0d passed the check", len);
+  end
+endmodule
+// The GENERATOR-side twin is the `constraint legal { len inside {[1:8]}; }` block in the
+// class of section 2 -- same relation, opposite role. This immediate assert compiles under
+// iverilog -g2012; class constraints and concurrent assertions are simulator-only.
+```
+
+Assertions are developed in full in [Assertions_and_Coverage](09_Assertions_and_Coverage.md); here they matter only as the *checking* counterpart to the *generating* constraints of this page.
+
 ---
 
 ## 4. Why OOP for the testbench: reuse and extensibility under change
@@ -181,6 +217,8 @@ Because a scoreboard must keep an *independent* snapshot to compare later, copyi
 
 ### 4.2 Inheritance + polymorphism: specialize without touching the base
 
+**Definitions first. Inheritance is** deriving a new class from an existing one (`class D extends B`) so `D` starts with all of `B`'s members and adds or overrides only what differs — reuse *by extension*. **Polymorphism is** invoking a method through a base-class handle and having the *object's actual type* decide which version runs; a **`virtual`** method is what turns that run-time resolution on. Together they let one environment, written against base types, execute derived behavior it was never edited to know about.
+
 Build the transaction (or component) once as a base; a variant *extends* it — adds an error field, overrides a compare — without re-touching the proven base. That is reuse by extension. But it only pays if the environment, written against the *base* type, actually runs the *derived* behavior at run time. That requires dynamic dispatch: a **`virtual`** method resolves by the **object's** real type, not the **handle's** declared type.
 
 ```verilog
@@ -192,6 +230,8 @@ a.speak_virtual();         // virtual     → object type → Dog version  (RIGH
 This is the load-bearing mechanic of the whole methodology: the environment holds `base_txn` / `base_driver` handles but must invoke `error_txn::compare` / `my_driver::drive`. Forget `virtual` and dispatch falls back to the handle type — the base version runs and the specialization is *silently ignored*, one of the most common testbench bugs.
 
 ### 4.3 The factory: making construction itself overridable
+
+**The problem the factory solves, first:** *swap in a derived type at a construction site you are not allowed to edit.* Virtual methods already route *calls* to a derived override, but *something* still has to `new` the right type — and that `new` sits inside the reusable component (the VIP/driver) you must not touch. **The factory is** the indirection that fixes exactly this: components create objects by asking a central *registry* (`type_id::create`) instead of calling `new`, and a test re-points that registry from outside (`set_type_override`), so `create` starts handing back the derived type — with no edit to the instantiation site.
 
 Polymorphism routes *calls* to the right override, but *someone* still has to `new` the right type — and that `new` lives *inside* the reusable component you must not edit. A driver hard-coding `txn = new()` always builds a `base_txn`; to inject an `error_txn` you would have to modify VIP source, exactly what reuse forbids. The **factory** breaks this: components construct through a registry, and a test *registers an override* from the outside.
 
@@ -212,6 +252,71 @@ The layering is not free. Indirection makes control flow harder to follow; facto
 - The same machinery is **overhead** for a one-off 200-line block test that will never be extended; a flat, lightly-randomized testbench is the correct, cheaper choice.
 
 Match the abstraction to how many times the code will be reused and re-specialized — not to methodology fashion.
+
+### 4.5 Class vs module: dynamic TB objects vs static hardware
+
+The testbench is built from *classes*; the DUT is built from *modules*, and the two are not interchangeable. **A class is** a dynamic type: its objects are *constructed at run time* with `new`, live on the heap, are reached through handles, and can be created and garbage-collected per transaction — which is exactly why stimulus and scoreboard data are classes. **A module is** a static type: it is *elaborated once* before time zero into a fixed hierarchy of signals that exists for the entire simulation — which is what hardware is. **The difference is** lifetime and allocation: a class is dynamic, heap-allocated, run-time `new`, unbounded in count — for the *testbench*; a module is static, elaborated at compile time, fixed in count — for the *hardware*. You cannot `new` a module or clock a class.
+
+```systemverilog
+// module = static hardware: elaborated once at compile time, exists for the whole sim
+module counter #(parameter W = 8) (input logic clk, output logic [W-1:0] q);
+  logic [W-1:0] c = '0;
+  always_ff @(posedge clk) c <= c + 1'b1;
+  assign q = c;
+endmodule
+
+// class = dynamic object: allocated at run time on the heap, lives only in the TB
+class transaction;
+  bit [7:0] addr;
+  function new(bit [7:0] a); addr = a; endfunction
+endclass
+
+module tb;
+  transaction t;                    // a handle -- null until constructed
+  initial begin
+    t = new(8'h20);                 // built at run time, not elaborated
+    $display("txn addr=%0h", t.addr);
+  end
+endmodule
+// compiles under: iverilog -g2012 -o /dev/null <file>
+```
+
+### 4.6 Inheritance vs composition: two ways to assemble a component
+
+Both build a complex testbench component out of simpler pieces, and choosing wrong makes the testbench rigid. **Inheritance is** an *IS-A* relationship: a class *extends* another and specializes it (`error_txn` IS-A `base_txn`) — use it when the derived thing is a *substitutable variant* of the base, because the §4.2/§4.3 override-through-a-base-handle path depends on exactly that. **Composition is** a *HAS-A* relationship: a class *contains* other objects as members and delegates to them (a `driver` HAS-A `fifo_model`, a mailbox) — use it to *assemble* a component from collaborators that are not variants of it. **The difference is** substitutability vs assembly: reach for inheritance only when you need an override to swap through a base handle; reach for composition (the usual default) when you just need to *hold and use* another object. Sharing code through deep `extends` chains that are not true IS-A is a classic testbench smell — composition keeps the pieces loosely coupled.
+
+```systemverilog
+// INHERITANCE (IS-A): error_txn extends base_txn and overrides a virtual method
+class base_txn;
+  virtual function string kind(); return "base"; endfunction
+endclass
+class error_txn extends base_txn;
+  virtual function string kind(); return "error"; endfunction
+endclass
+
+// COMPOSITION (HAS-A): a driver OWNS a fifo_model -- assembled, not extended
+class fifo_model;
+  int depth;
+endclass
+class driver;
+  fifo_model fm;                  // HAS-A: a member handle to a separate object
+endclass
+
+module tb;
+  base_txn   b;
+  driver     d;
+  fifo_model f;
+  initial begin
+    b = error_txn::new();         // base handle, derived object (IS-A, substitutable)
+    d = new();
+    f = new();  f.depth = 16;
+    d.fm = f;                     // wire the owned sub-object in (HAS-A)
+    $display("dispatch -> %s", b.kind());          // virtual dispatch -> error
+    $display("driver HAS-A fifo, depth=%0d", f.depth);
+  end
+endmodule
+// compiles under: iverilog -g2012 -o /dev/null <file>
+```
 
 ---
 
@@ -280,6 +385,10 @@ Reproducibility is what makes constrained-random *debuggable at all* — it is t
 | Coverage closure | coupon-collector $C\ln C$; rarest bin $\sim 1/p_{\min}$ dominates the tail | §5.1 |
 | Reproducibility | one root seed ⇒ deterministic replay; thread + type stability | §6 |
 | `pre/post_randomize` | hooks around the solve: set state before, derive fields (checksums) after | §2.1 |
+| `rand` vs `randc` | rand = independent draw *with* replacement (may repeat); randc = full no-repeat sweep *without* replacement | §2.2 |
+| Constraint vs assertion | constraint *generates* legal input (solver-side, in); assertion *checks* observed behavior (monitor-side, out) | §3.4 |
+| Class vs module | class = dynamic, heap, run-time `new`, for the TB; module = static, elaborated once, for the HW | §4.5 |
+| Inheritance vs composition | inheritance = IS-A (substitutable variant); composition = HAS-A (assembled collaborator, the default) | §4.6 |
 
 ---
 

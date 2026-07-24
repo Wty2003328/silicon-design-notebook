@@ -92,6 +92,14 @@ Two families of property matter, and they need different machinery:
 
 The symbolic solution to safety is the reachability fixpoint of §1: iterate $R_{i+1} = R_i \cup \operatorname{Image}(R_i, T)$ until $R_{i+1} = R_i$, then test $R \cap \neg P$. Done with BDDs this is *symbolic model checking* — exact, canonical, but it dies when the BDD for $R$ blows up (below). The modern engines avoid ever building $R$ explicitly.
 
+**The three safety engines, conclusion-first — same question ("can any reachable state be bad?"), different reach:**
+
+- **BMC (§3.1)** — *unroll the design $k$ cycles and SAT-check for a violation within those $k$.* Finds shallow bugs fast; proves nothing beyond depth $k$.
+- **k-induction (§3.2)** — *bolt an inductive step onto that same unrolling so a bounded check becomes an all-time proof.* Can prove unbounded safety — when the property is $k$-inductive.
+- **IC3 / PDR (§3.3)** — *prove the same all-time safety without unrolling at all,* by discovering an inductive invariant incrementally.
+
+The next three subsections are exactly these, in order; §3.4 then pins down what "bounded" versus "full" each one buys.
+
 ### 3.1 BMC: unroll the transition relation and hand it to SAT
 
 Bounded model checking asks the strictly easier question "is there a bad state reachable **within $k$ cycles**?" and encodes it directly as one satisfiability problem by unrolling $T$:
@@ -144,6 +152,74 @@ The single most important distinction to state cleanly at a review:
 | Fails by | Bug just past the bound | Non-convergence (needs strengthening/abstraction) |
 
 The design decision is **bug-hunting formal vs full-proof signoff**, and it has a clean cost model. Empirically bug depth is front-loaded — most real bugs manifest within a few transactions of reset — so the probability that BMC to depth $k$ catches a given bug rises steeply with $k$ and then saturates, while SAT solve time grows with the unrolled formula size $\propto k\cdot|T|$, usually super-linearly. So in *bug-hunting mode* you push $k$ until either the property converts to an unbounded proof or solve time explodes, and you accept the bounded result: a bounded proof to a depth of (reset depth + a few times the deepest transaction) catches essentially every real bug, which is why BMC alone is a huge net even before any full proof. In *signoff mode* you spend the extra effort — strengthening invariants, abstraction — to convert the properties that actually gate tape-out into unbounded proofs, and you argue explicitly for any property left bounded (tool reports "PROVEN at depth 42" for unbounded vs "bounded to 100" for the rest). "Always aim for unbounded, budget for bounded" is the whole policy.
+
+### 3.5 One property wrapper: what the formal tool actually consumes
+
+Everything above is machinery for *discharging* properties; here is what a property *is*. Three keywords carry the entire formal vocabulary and do three different jobs — define them plainly before reading any wrapper:
+
+- **`assert`** — a **proof obligation**. The tool must show it holds on *every* reachable state (safety) or *every* fair infinite run (liveness), or hand back a counterexample. This is the thing being proven.
+- **`assume`** — a **constraint on the tool**, not a check on the DUT. It restricts the inputs to the legal environment (§4); the tool takes it as given. A wrong `assume` silently weakens every `assert` in the run.
+- **`cover`** — a **question**, not a claim: "is this scenario reachable at all?" Reachable is the *good* answer (the space is alive, non-vacuous); unreachable means the assumes strangled it (§4).
+
+A safety `assert` and a liveness `assert` differ only in the *shape of the counterexample* the tool returns — a finite trace to a bad state versus an infinite lasso that starves the good event forever (§3):
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart TD
+    ASM["assume<br/>(carve inputs down to<br/>the legal environment)"] --> RS["reachable states R<br/>under those inputs"]
+    RS --> ASF["assert / SAFETY<br/>no bad state in R"]
+    RS --> ASL["assert / LIVENESS<br/>good event on every fair run"]
+    RS --> COV["cover<br/>is this scenario in R?"]
+    ASF -->|fails| FIN["finite counterexample<br/>(k-cycle trace to the bad state)"]
+    ASL -->|fails| LAS["infinite counterexample<br/>(lasso: a loop that starves it)"]
+    COV -->|unreachable| VAC["vacuity alarm:<br/>an assume is too strong"]
+```
+
+Concretely, all four kinds land in one small wrapper bound to an $N$-way arbiter — the canonical small-$n$, deep-corner block of §2. This is *what the tool reads*: no stimulus, no clock generator, just the environment model plus the obligations.
+
+```systemverilog
+// fv_arbiter.sv -- formal property wrapper for an N-way arbiter.
+// Bind to the DUT; the formal tool consumes the assume/assert/cover below.
+// The concurrent properties are FORMAL-tool-only: Icarus is a simulator
+// front end and does not implement concurrent_assertion_item, so they sit
+// behind `ifdef FORMAL (the same idiom riscv-formal/picorv32 use) and the
+// bare skeleton still compiles with
+//   iverilog -g2012 -o /dev/null fv_arbiter.sv
+module fv_arbiter #(parameter int N = 4) (
+    input logic         clk,
+    input logic         rst_n,
+    input logic [N-1:0] req,     // one bit per requester
+    input logic [N-1:0] grant    // grant vector from the arbiter
+);
+
+`ifdef FORMAL
+    // ASSUME: input constraint the tool MAY take for granted.
+    // A requester holds req until granted (no glitch-and-drop).
+    m_req_stable: assume property (@(posedge clk) disable iff (!rst_n)
+        (req[0] && !grant[0]) |=> req[0]);
+
+    // SAFETY: mutual exclusion -- at most one grant. Finite counterexample.
+    a_onehot: assert property (@(posedge clk) disable iff (!rst_n)
+        $onehot0(grant));
+
+    // SAFETY: never grant an idle channel.
+    a_no_spurious: assert property (@(posedge clk) disable iff (!rst_n)
+        (grant & ~req) == '0);
+
+    // LIVENESS: a held request is eventually granted (no starvation).
+    // Counterexample is an infinite lasso trace; needs a fairness constraint.
+    a_no_starve: assert property (@(posedge clk) disable iff (!rst_n)
+        req[0] |-> s_eventually grant[0]);
+
+    // COVER: reachability / vacuity guard -- can the top channel ever win?
+    c_grant_hi: cover property (@(posedge clk) disable iff (!rst_n)
+        grant[N-1]);
+`endif
+
+endmodule
+```
+
+Read it as the page in miniature: `m_req_stable` is the environment model of §4 — drop it and `a_no_starve` gets a trivial "the request just vanished" counterexample, an *under-constrained* false CEX; `a_onehot` / `a_no_spurious` are the §3 safety bread-and-butter a BMC run refutes with a one-cycle trace; `a_no_starve` is the expensive §3 liveness property whose proof needs fairness and a lasso search; and `c_grant_hi` is the §4 vacuity guard — if it returns unreachable, an `assume` is too strong and the green asserts mean nothing. **Compile status:** the module skeleton compiles clean under `iverilog -g2012 -o /dev/null fv_arbiter.sv` (exit 0); the four concurrent properties are syntactically faithful SVA that a real formal tool (JasperGold, VC Formal, SymbiYosys) consumes but Icarus — a simulator front end — does not, which is exactly why they sit behind the `ifdef FORMAL` guard.
 
 ---
 

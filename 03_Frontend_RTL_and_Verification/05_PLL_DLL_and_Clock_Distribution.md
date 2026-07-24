@@ -20,6 +20,8 @@ Two derivations carry the page. The PLL is derived as a **linear feedback loop**
 
 ## 1. The PLL as a feedback control loop
 
+**Plainly, before the derivation: a PLL is a feedback loop that locks its output's phase and frequency to a reference.** It compares the two edges in a phase-frequency detector, filters the resulting error into a slow control voltage, and steers a voltage-controlled oscillator (VCO) with it; a $\div N$ divider in the feedback path is what makes the output a chosen *multiple* of the reference frequency rather than a copy. That one sentence already names every block in the diagram below — detector, filter, VCO, divider — and the rest of this section is just the argument for why each one must be present.
+
 Start from the requirement and let the structure fall out: *make a fast on-die oscillator track a slow, clean reference so its output equals a rational multiple of the reference, with the reference's long-term accuracy.* A feedback loop that does this needs, of necessity, five things — a way to **measure** how far off it is, a way to **remember and smooth** that measurement, a way to **act** on it by changing frequency, and a way to **scale** the comparison so the answer is a *multiple*, not a copy.
 
 | The loop must… | …so it needs | Block |
@@ -117,6 +119,14 @@ Jitter is the whole reason a PLL is hard: multiplying frequency is trivial; mult
 
 ### 3.1 Three ways to measure the same edge wander
 
+All three metrics below describe the *same* wandering edge; they differ only in what each measures it against, so define them plainly first:
+
+- **Period jitter** — how far a *single* clock period deviates from the ideal period ($T_n-T_{ideal}$). It answers "does this one cycle meet timing?"
+- **Cycle-to-cycle jitter** — how much *adjacent* periods differ from *each other* ($T_{n+1}-T_n$). It is the most local view and tracks fast (VCO) noise; because it is a difference of neighbours, slow drift cancels and it cannot grow without bound.
+- **Accumulated (long-term) jitter** — how far the edge has drifted from where an ideal clock would have placed it after *many* cycles (the running sum of period errors). It answers "is the edge still aligned to something far away in time?" — a SerDes eye, an ADC aperture.
+
+**Contrast:** period jitter measures one cycle against the *ideal*; cycle-to-cycle measures one cycle against its *neighbour* (a difference — bounded); accumulated measures the edge against the ideal over a *long span* (a sum — it grows, and §3.2 is why a VCO makes it grow as $\sqrt{N}$). Same wander, three yardsticks: absolute-single, relative-adjacent, absolute-cumulative.
+
 | Metric | Definition | What it stresses |
 |---|---|---|
 | **Period jitter** $J_{per}$ | $T_n - T_{ideal}$ | whether *one* cycle meets timing |
@@ -191,6 +201,8 @@ The lever tying it together is **$K_{vco}$**. A high $K_{vco}$ (ring) buys a wid
 
 ## 5. The DLL: phase alignment without an oscillator
 
+**Plainly: a DLL locks a controlled delay line to exactly one reference period, aligning the output's phase to the reference — and nothing more.** It does *not* synthesise a new frequency ($f_{out}=f_{ref}$ always), and because it holds no VCO or oscillator — only a delay line that shifts edges that already exist — it has no integrating phase state, so its jitter does not accumulate. The cleanest way to read it: a PLL with the VCO deleted, which removes both of the VCO's properties at once — the ability to multiply frequency *and* the tendency to accumulate jitter.
+
 The DLL answers a narrower question — *align a clock's phase to a reference* — and answers it by deleting the one block that causes the PLL all its trouble. Replace the VCO with a **voltage-controlled delay line (VCDL)**: instead of turning voltage into frequency, it imposes a controlled *delay* on edges that already exist.
 
 ```mermaid
@@ -229,7 +241,7 @@ Because the delay line has no oscillator, its output frequency *is* its input fr
 
 ## 6. PLL vs DLL: the trade-off
 
-Every row below is a restatement of "the DLL removed the VCO integrator" (§1.3, §5).
+**In one line: a PLL multiplies frequency and, through its VCO, accumulates jitter; a DLL only deskews — it does not accumulate jitter, but it cannot multiply.** That single opposition — oscillator in the loop versus delay line in the loop — generates every row of the table. Every row below is a restatement of "the DLL removed the VCO integrator" (§1.3, §5).
 
 | | **DLL** | **PLL** |
 |---|---|---|

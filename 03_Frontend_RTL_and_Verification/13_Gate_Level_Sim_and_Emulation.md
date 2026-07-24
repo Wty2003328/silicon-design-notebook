@@ -6,6 +6,8 @@
 
 ---
 
+> **Plain definition — Gate-level simulation (GLS).** GLS *is* running a simulation of the **post-synthesis (and optionally post-layout) gate netlist** — the actual library cells (`AND`/`OR`/flops) the fab will build, not the RTL — in a **four-state** (`0/1/X/Z`) event simulator, **optionally with real cell and interconnect delays back-annotated from an SDF file**. You run it to catch exactly what RTL simulation structurally cannot: real power-up/`X` behavior (§2), timing-as-*function* (§3), and post-scan-insertion DFT (design-for-test) behavior (§4). Everything below elaborates this one sentence.
+
 ## 0. Why this page exists
 
 RTL simulation is the workhorse of functional verification, and it is **abstract by design**: it runs a zero-delay, often two-state, conveniently-initialized model of the designer's *intent*. That abstraction is exactly what makes it fast and debuggable — and exactly why it leaves two classes of confidence it cannot give you.
@@ -25,6 +27,8 @@ Get this decomposition right and GLS stops being "slow RTL sim" and becomes a *t
 ---
 
 ## 1. What RTL simulation structurally cannot prove
+
+> **Confusable pair — RTL sim vs GLS, stated plainly.** *RTL simulation* runs the **behavioral intent** model: fast, total visibility, the right home for functional coverage — but it **cannot** prove the shipped netlist matches, **cannot** show real timing, and **hides** `X`/reset reality (optimism, §2.1). *GLS* runs the **actual gate netlist**, four-state and optionally timed — so it **can** prove power-up/`X` behavior, timing-as-function, and scan/DFT dynamics, but is 10–1000× slower (§5) and so **cannot** practically carry coverage. Rule of thumb: RTL sim proves *function at volume*; GLS proves *the residue volume-sim can't reach*. Neither substitutes for the other.
 
 Before asking what GLS *does*, ask what confidence is *missing* after a clean RTL regression. Three things, each a direct consequence of an abstraction RTL sim makes for speed:
 
@@ -68,6 +72,12 @@ case (sel) 1'b0: ...; 1'b1: ...; endcase   // sel === X matches nothing -> defau
 
 The lesson is conceptual, not a semantics argument: **neither model is silicon.** RTL optimism *hides* real unknowns; gate pessimism *invents* unknowns that are not there. You do not pick the "right" one — you **eliminate the source of `X`** (reset discipline, §2.2) so both models converge on the same defined behavior, and you lean on tooling (X-propagation-aware or formal X-analysis) rather than eyeballing waveforms.
 
+> **Recap — X-optimism vs X-pessimism, one line each** (the four-state system itself lives in [Data_Types_and_Basics](02_Data_Types_and_Basics.md) §3):
+> - **X-optimism** — the model collapses an unknown into a *definite* value the hardware would not (an `X` select quietly picks a branch). Shown by **RTL sim**; it *hides* real power-up bugs — it **under-reports** `X`.
+> - **X-pessimism** — the model emits `X` even where the real gate would resolve definitely (a mux with `sel === X` but both data inputs 1 still outputs `X`). Shown by **gate-level sim**; it *invents* `X`-floods — it **over-reports** `X`.
+>
+> Mnemonic (from [02_Data_Types](02_Data_Types_and_Basics.md)): *optimism hides the wolf; pessimism cries wolf.*
+
 ### 2.2 Reset coverage as an X-flood reachability check
 
 Why RTL hides reset bugs: simulators may run two-state (every bit starts 0), `initial`/variable initializers seed known values, and testbenches force-assert reset — all conveniences absent from silicon, where every flop without an explicit reset powers up unknown. An under-reset design can therefore pass RTL for years.
@@ -79,6 +89,23 @@ The deep point: GLS turns X-pessimism from a nuisance into a **tool**. The pessi
 ---
 
 ## 3. Real-delay GLS: what STA cannot see because it is static
+
+> **Plain definition — SDF back-annotation.** **SDF (Standard Delay Format, IEEE 1497)** is a text file of per-cell and per-interconnect delays (min/typ/max), produced by timing tools from the real cells and extracted parasitics. **Back-annotation** is the act of the simulator *reading that file and overriding each netlist cell's and net's delay* with those real numbers before the run — so gates switch with physical propagation delay instead of zero delay. It is the **same** delay data [STA](../06_Signoff/01_STA.md) consumes; GLS differs only in that it drives *functional stimulus* through it.
+
+Concretely, delays live on a cell's `specify` arcs, and back-annotation (`$sdf_annotate`) overrides those arcs at load time:
+
+```systemverilog
+// A gate-level cell carries per-arc delays in a specify block. Timed GLS reads
+// an SDF file and back-annotates (overrides) these path delays onto each cell:
+//   $sdf_annotate("cells.sdf", u_and);  // called in the testbench, per instance
+module AND2 (input logic a, b, output logic y);
+  assign y = a & b;
+  specify
+    (a => y) = 0.100;   // placeholder arc delay; SDF back-annotation overrides it
+    (b => y) = 0.100;
+  endspecify
+endmodule
+```
 
 STA checks that every path *has margin*; it says nothing about what the circuit *does* when signals actually move. Full-timing GLS back-annotates real delays — from **SDF (Standard Delay Format)**, the min/typ/max cell and interconnect delays that [STA](../06_Signoff/01_STA.md) also consumes — and runs functional stimulus through them. That catches the class of bug that is timing-dependent *in function*:
 
@@ -92,6 +119,13 @@ The complementarity worth memorizing: **STA is exhaustive over paths but blind t
 
 GLS is not one thing; the delay model is a knob trading fidelity against speed and setup:
 
+> **Confusable trio — zero-delay vs unit-delay vs SDF GLS, each defined:**
+> - **Zero-delay GLS** — gates evaluate in delta cycles with *no* advance of time, exactly like RTL; every signal jumps straight to its settled value. Proves connectivity, `X`/reset propagation, and scan shift; **cannot** show a glitch.
+> - **Unit-delay GLS** — every gate is given *one* arbitrary, uniform time unit of delay. Gross orderings, glitches, and races now appear **without** needing SDF, but the delay numbers are fictional, so no timing result is trustworthy.
+> - **Full-timing (SDF) GLS** — real min/typ/max delays back-annotated from SDF (§3); the **only** mode whose timing is physically meaningful.
+>
+> **Contrast:** the single axis is *delay realism* — none → fake-but-nonzero → real. Fidelity and bug-class reach climb zero → unit → SDF; speed, robustness, and ease of setup fall the same way. The table below prices each rung.
+
 | Mode | Delay model | Finds | Cost |
 |---|---|---|---|
 | **Zero-delay** | none (delta cycles, like RTL) | netlist connectivity, `X`/reset propagation, scan shift, DFT | cheapest; but zero-delay *races* need care |
@@ -103,6 +137,28 @@ The rule of thumb falls straight out: run the **bulk** of GLS (reset, `X`, scan)
 ---
 
 ## 4. Scan, DFT, and post-scan-insertion correctness
+
+> **Plain definition — scan / DFT.** **DFT (design-for-test)** is logic added purely to make the *manufactured* chip testable on an ATE (automatic test equipment) tester. **Scan** is the dominant DFT style: every functional flop is replaced by a **scan flop** — a flop with a mux on its D input that selects either normal functional data or a **scan-in** bit from the previous flop — so in *test mode* all flops stitch into one giant shift register (a **scan chain**). That lets the tester shift an arbitrary state in, pulse the clock once to *capture*, and shift the result out, turning otherwise-buried sequential state into something controllable and observable from a few pins ([DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md)).
+
+The scan flop is exactly this added test mux in front of an ordinary flop:
+
+```systemverilog
+// Scan insertion substitutes this mux-D structure for every functional flop.
+module scan_dff (
+  input  logic clk,
+  input  logic rst_n,
+  input  logic d,        // functional data
+  input  logic scan_in,  // scan-out of the previous chain cell
+  input  logic scan_en,  // 1 = shift (test), 0 = capture (functional)
+  output logic q         // feeds the next cell's scan_in
+);
+  logic mux_d;
+  assign mux_d = scan_en ? scan_in : d;   // the added test mux
+  always_ff @(posedge clk or negedge rst_n)
+    if (!rst_n) q <= 1'b0;
+    else        q <= mux_d;
+endmodule
+```
 
 Scan insertion rebuilds every flop as a scan flop (functional data muxed with a scan-in) and stitches them into shift chains ([DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md)). This structure **does not exist in the RTL**, so it is unverifiable there by definition — and it is critical, because a broken scan chain means an untestable chip. GLS is where the netlist-only, *dynamic* checks live:
 

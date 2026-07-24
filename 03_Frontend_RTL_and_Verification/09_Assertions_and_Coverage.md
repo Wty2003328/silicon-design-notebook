@@ -72,6 +72,8 @@ Because it is always on, an assertion is checked under *every* stimulus the regr
 
 ### 2.2 Immediate vs concurrent — two evaluation models
 
+**Plainly: an *immediate* assertion is a procedural check that fires the instant control reaches it — an `if` with a built-in failure, evaluated *now* inside an `always`/`initial` block. A *concurrent* assertion is a clocked property that samples its signals in the preponed region and checks a *temporal sequence* over cycles.** Immediate answers "is this true right now, at this point in the code?"; concurrent answers "does this pattern hold over time?". Reach for immediate as point-in-time sanity inside a process (an argument or state check); reach for concurrent for anything that spans clock edges — protocol, handshake, latency, sequencing.
+
 There are exactly two kinds, and the split is *when the check is evaluated*:
 
 | | Immediate | Concurrent |
@@ -82,6 +84,17 @@ There are exactly two kinds, and the split is *when the check is evaluated*:
 | Expresses | "this condition holds at this instant" | "this pattern holds *over time*" |
 | Typical use | argument/state sanity inside a process | protocol, handshake, latency, sequencing |
 
+*Immediate: a procedural check inside `always`, evaluated the instant control reaches it — this one compiles under a lightweight simulator (`iverilog -g2012`):*
+
+```systemverilog
+module fifo_imm_chk (input logic clk, input logic full, input logic wr_en);
+  // Procedural: fires the instant control reaches it, exactly like an if-check.
+  always @(posedge clk)
+    assert (!(full && wr_en))
+      else $error("write while full at %0t", $time);
+endmodule
+```
+
 Immediate assertions answer a point-in-time question and are subject to the same delta-cycle glitches as any combinational read — which is why the *deferred* forms (`assert #0`, `assert final`) exist: they postpone the check until values have settled, so a transient mid-cycle value cannot raise a false failure. Keep that as the one rule worth memorizing about immediate assertions; everything interesting lives in the concurrent form.
 
 The concurrent form needs a race-free notion of "the value." SystemVerilog resolves the race between *the checker reading a signal* and *the RTL updating it* by defining that a concurrent assertion evaluates on **sampled** values — the value as of just before the clock edge (the Preponed region), not the value being computed at the edge. So an assertion always sees the pre-edge, stable image of the design, and can never race the assignment it is checking:
@@ -90,6 +103,8 @@ The concurrent form needs a race-free notion of "the value." SystemVerilog resol
 // Sees data's value from BEFORE this edge's non-blocking update — deterministic.
 property p_hold; @(posedge clk) (valid && !ready) |-> ##1 (data == $past(data)); endproperty
 ```
+
+(This concurrent form is a full-SVA construct: it needs a simulator/formal tool — VCS, Questa, Xcelium, or a formal engine. A lightweight compiler such as Icarus `iverilog` rejects `property` / `assert property`; only the *immediate* form above compiles there. Every concurrent example on this page is therefore tool-only.)
 
 That is the entire reason "sampled values / preponed region" exists; the region-by-region scheduler walk in the old page was mechanism without motive.
 
@@ -105,6 +120,8 @@ Two ideas compose to fill it:
 
 - **Sequences** describe a *pattern over cycles*: "`req` now, then within 1–5 cycles `ack`." The temporal glue is delay (`##N`, `##[M:N]`) and repetition (a signal held or recurring for several cycles). You do not need the operator zoo to reason about assertions — you need the intuition that a sequence is a *timed pattern*, matched against the waveform as time advances.
 - **Implication** (`|->` overlapping, `|=>` next-cycle) turns a pattern into a *conditional obligation*: "**whenever** the antecedent matches, the consequent is **required** to follow." `|=>` is just `|-> ##1`. The antecedent is a trigger; the consequent is the promise.
+
+*A complete concurrent property — antecedent `req` implies `ack` somewhere in a 1-to-5-cycle window:*
 
 ```systemverilog
 // "Every request is acknowledged within 1 to 5 cycles."
@@ -150,6 +167,36 @@ The **bind** construct is the plumbing that makes all three practical without to
 bind fifo_rtl fifo_assertions u_chk (.*);   // checker instantiated inside every fifo_rtl, source untouched
 ```
 
+### 2.6 `assert` vs `assume` vs `cover` — three verbs on one property
+
+**Plainly: `assert` *checks* a property (the tool must show it holds; a violation is a failure), `assume` *constrains* the environment (the property is taken as given — a precondition the inputs are promised to obey), and `cover` *measures* that a scenario actually occurred (no pass/fail — just a witness that the behavior was reached).** One property text can carry any of the three verbs; the verb decides *who is obligated* and *what a "failure" means*.
+
+- **`assert`** — an obligation on the **design**. "The DUT must guarantee this." A counterexample is a bug (or a wrong assertion).
+- **`assume`** — an obligation on the **environment**. "The inputs will obey this." In *formal* it prunes the input space to legal stimulus, so the proof only considers reachable behavior — a *false* assumption silently hides bugs, the sharpest footgun in formal. In *simulation* an `assume` is usually also checked, so an illegal stimulus is flagged, but its role is still to state a precondition, not a DUT rule.
+- **`cover`** — no obligation at all. "Did this ever happen?" It records a hit count; a never-hit `cover` is the vacuity alarm of §2.3.
+
+The three interlock. An `assume` on one block's inputs is an `assert` the neighboring block (or the driver) must honor — that is the **assume-guarantee** contract that lets formal decompose a chip. And a `cover` that never fires warns that a same-worded `assert` may be passing *vacuously*: the checker and the witness are two verbs on the same property (§5).
+
+| Directive | Question | Obligation on | On "failure" |
+|---|---|---|---|
+| `assert` | must this always hold? | the **design** | reports a violation / counterexample |
+| `assume` | may I take this as given? | the **environment** (inputs) | constrains stimulus (formal); usually also checked (sim) |
+| `cover` | did this ever happen? | nobody — it is a **witness** | none; records a hit, or flags never-hit |
+
+*All three verbs on one `req`/`ack`/`gnt` interface — a design obligation, an input precondition, and a witness (concurrent form, so it needs a full SVA tool; `iverilog` compiles only the immediate form in §2.2):*
+
+```systemverilog
+module req_ack_directives (input logic clk, input logic req, input logic ack, input logic gnt);
+  // assert: the DUT MUST answer every req within 1-5 cycles (a design obligation).
+  a_liveness: assert property (@(posedge clk) req |-> ##[1:5] ack)
+    else $error("req not acked in window");
+  // assume: the ENVIRONMENT promises req holds until ack (a precondition on inputs).
+  m_req_hold: assume property (@(posedge clk) (req && !ack) |=> req);
+  // cover: witness that a back-to-back grant scenario was actually exercised.
+  c_b2b:      cover  property (@(posedge clk) gnt ##1 gnt);
+endmodule
+```
+
 ---
 
 ## 3. Where assertions pay — the trade-off
@@ -167,6 +214,8 @@ Against that, the payoff is bug localization (§1.1) plus formal-readiness (§2.
 | **FIFOs / queues** | a small set of always-true structural rules | never write when `full`, never read when `empty`, count consistency |
 | **Arbiters** | mutual-exclusion + fairness, both temporal | at-most-one grant (one-hot), grant only if requested, no starvation (bounded) |
 | **One-hot / X-freedom** | a per-cycle sanity invariant | `$onehot(state)`, `!$isunknown(bus)` on qualified cycles |
+
+*The three canonical control-logic invariants as concurrent assertions — arbiter one-hot grant, FIFO no-overflow, handshake valid-stable:*
 
 ```systemverilog
 property p_mutex;     @(posedge clk) disable iff(!rst_n) |grant |-> $onehot(grant); endproperty   // arbiter
@@ -196,6 +245,8 @@ The entire subtlety is *what you put in $\mathcal{B}$*, and that splits coverage
 
 ### 4.2 Code coverage: structural, automatic, necessary — not sufficient
 
+**Plainly: code coverage asks whether the stimulus *executed the RTL* — its lines, branches, conditions, toggles, and FSM arcs.** The tool instruments the code automatically, so the measurement is objective and effectively free; its blind spot is that it certifies only that logic *ran*, never that running it was *correct*, nor that the *right* behavior even exists in the RTL to be run.
+
 Code coverage takes $\mathcal{B}$ to be structural events the tool extracts *for free* from the RTL:
 
 - **Line** — each statement executed.
@@ -218,11 +269,15 @@ That gap — bugs of omission and of unchecked execution — is exactly what fun
 
 ### 4.3 Functional coverage: intent, hand-written, the design-scenario question
 
+**Plainly: functional coverage asks whether the *scenarios you care about actually happened* — the opcode mixes, the corner combinations, the state sequences a spec-literate engineer would enumerate.** It is written by hand from intent, independent of how the RTL is coded, so it sees behaviors that structure cannot (including ones the RTL forgot to implement) — at the price of being only as complete as the list you thought to write.
+
 Functional coverage makes $\mathcal{B}$ the set of **design-intent scenarios**, written by hand from the spec, independent of how the RTL is coded:
 
 - **Coverpoint** — sample a variable and bin its values (`opcode`, `burst_len`, `addr` region), including transitions (`IDLE => ACTIVE => DONE`).
 - **Covergroup** — a bundle of coverpoints sampled together at a meaningful event (a transaction complete, a clock edge).
 - **Cross** — the *combination* space: did we see every (opcode × size), every (state × interrupt)? Crosses are where the real corners hide, and where the *explosion* lives.
+
+*A hand-written covergroup sampled at transaction complete — two binned coverpoints and their cross:*
 
 ```systemverilog
 covergroup cg_txn @(txn_done);
@@ -292,6 +347,8 @@ Two coverage constructs correspond to the two assertion styles, closing the symm
 - **`cover property`** measures that a *temporal* scenario occurred (a handshake completed, a back-to-back burst happened) — the coverage dual of a concurrent assertion, and the tool for killing vacuity.
 - **`covergroup`** measures that a *value/state* scenario occurred (this opcode, this cross) — the sampled, data-oriented axis.
 
+*`cover property` recording that two back-to-back handshake beats were actually exercised — the temporal dual of the concurrent assertion:*
+
 ```systemverilog
 cover property (@(posedge clk) (vld && rdy) ##1 (vld && rdy));   // back-to-back beats actually happened
 ```
@@ -306,6 +363,7 @@ A property with an assertion *and* a cover on its antecedent is the fully-formed
 |---|---|---|
 | Immediate vs concurrent | procedural *now* vs temporal *over a clock* | the two evaluation models (§2.2) |
 | Deferred immediate | `assert #0` / `assert final` | glitch-free combinational check (§2.2) |
+| `assert` / `assume` / `cover` | check · constrain · witness | three directives on one property (§2.6) |
 | Sampled values | Preponed (pre-edge) region | race-free vs RTL updates (§2.2) |
 | Implication | `\|->` same cycle · `\|=>` next cycle (`= \|-> ##1`) | conditional obligation (§2.3) |
 | Vacuous pass | antecedent never fires ⇒ trivially true | guard with a `cover` on the antecedent (§2.3) |

@@ -27,6 +27,8 @@ Hold onto that third point. Every structural feature below — the regions, the 
 
 ## 2. The stratified event queue and the delta cycle
 
+**Define first.** The *stratified event queue* is the ordered set of buckets ("regions") into which the simulator drops every action scheduled at the current instant, then empties in one fixed order — so the outcome never depends on which process it happened to run first. A *delta cycle* is one zero-time sweep through those buckets: it advances **no** simulation time but lets zero-delay logic take a single settling step. *The difference from ordinary time:* a delta cycle repeats at the **same** instant $T$ (pure bookkeeping), whereas simulation time $T$ moves forward only once every region is empty. Two of the regions do all the work on this page — *Active* is where blocking `=`, right-hand-side evaluation, and combinational settling happen **immediately**; *NBA* (the non-blocking-assignment region) is where the deferred left-hand side of every `<=` is **committed at the end of the slot**, after all Active work; *the difference between them is simply now vs end-of-slot.*
+
 Within one simulation time $T$, the scheduler does not run processes in a free-for-all. It sorts every pending action into a **fixed total order of regions** and executes region by region. The conceptual order (not the exhaustive LRM list) is:
 
 ```mermaid
@@ -58,6 +60,8 @@ where $s$ ranges over signals, $T$ = simulation time, $\delta_k$ = delta index w
 ---
 
 ## 3. Blocking vs non-blocking: the central theorem
+
+**Define first.** A *blocking* assignment `=` updates its left-hand side **immediately and in program order**: it runs like a statement in C, so every later statement in the same process sees the new value. A *non-blocking* assignment `<=` **samples its right-hand side now but defers the left-hand-side update to the end of the time step** (the NBA region), so every `<=` evaluated on the same clock edge reads the **old** values and they all update **together**. *The difference:* `=` is read-after-write **within** the process (sequential, order-sensitive); `<=` is **sample-all-then-update-all** — precisely what a bank of parallel flip-flops does on one edge. *The rule that falls out:* clocked/sequential logic → `<=`; combinational logic → `=`. Everything below *derives* those two sentences from the region model of §2.
 
 This is the concept the whole page is built to explain, and it is a direct consequence of §2 — not a convention to memorise.
 
@@ -125,11 +129,20 @@ always @(*)  r2 = lookup(addr);  // sensitive to addr ONLY, and never fires at t
 
 **`always_latch`.** Declares an intentional level-sensitive latch (an `if` with no `else`), which silences the accidental-latch lint that `always_comb` would raise for the same code. Its value is purely the *stated intent*.
 
+```systemverilog
+// Intent: hold q when en is low. always_latch makes the missing else deliberate, not a bug.
+module latch_hold (input logic en, d, output logic q);
+  always_latch if (en) q = d;  // level-sensitive; the same code in always_comb would lint as an accidental latch
+endmodule
+```
+
 **Sensitivity semantics.** `@(posedge/negedge sig)` is edge-triggered (a flop/synchroniser); `@(*)` and `always_comb` are level-sensitive (combinational). Detailed inference — what maps to a flop, a latch, a mux — lives in [RTL_Design_Methodology](01_RTL_Design_Methodology.md); here the point is only that the process *keyword* is a machine-checkable promise about which region behaviour and which hardware you intend.
 
 ---
 
 ## 6. Concurrency: fork/join and process control
+
+**Define first.** `fork … join` runs the statements between them as independent, concurrent child processes; the *join* keyword is the barrier that decides when the **parent** may continue. `join` waits for **all** children to finish; `join_any` waits for the **first** (the siblings keep running); `join_none` waits for **none** — the parent continues at once and the children run when it next blocks or ends. *The only difference among the three is the barrier:* all / first / none.
 
 A testbench is itself concurrent — a driver, a monitor, a scoreboard, and several timeout watchers all live at once. `fork` spawns its statements as independent child processes into the scheduler; the **`join` variant is the synchronisation barrier**, and choosing it is a pure sync-cost-vs-parallelism trade:
 
@@ -151,9 +164,25 @@ The fix is an `automatic` copy per iteration — a per-activation variable so ea
 
 **Process control.** `disable fork` kills *all* child processes of the **current** process — including background monitors spawned earlier in the same scope, which is usually too much. Wrapping the region to isolate (`fork begin … disable fork; end join`) creates a fresh parent whose only children are the ones you mean to reap. A `process` handle (`process::self()`) is the reflective control — `status()`, `suspend()`, `kill()` — used to build watchdogs and timeouts; the class-thread patterns that use it belong to [OOP_and_Randomization](08_OOP_and_Randomization.md) and [UVM_Methodology](10_UVM_Methodology.md).
 
+```systemverilog
+// sim-only (testbench threads; no hardware). join_any + disable fork = a timeout barrier.
+module fork_demo;
+task automatic work(int id, int dly);
+    #dly $display("[%0t] child %0d finished", $time, id);
+endtask
+initial begin
+    fork work(0, 30); work(1, 10); join_any  // parent resumes when the FIRST child finishes
+    disable fork;                             // reap the still-running sibling (child 0)
+    fork work(2, 20); work(3, 40); join       // parent resumes only when BOTH finish
+end
+endmodule
+```
+
 ---
 
 ## 7. Inter-process communication: one need, one primitive
+
+**Define first.** An *event* is a memoryless notification object: one process pulses it (`->`), another wakes on it (`@` / `wait`); it carries **no data** and keeps **no history**. A *mailbox* is a typed, blocking message queue that hands **data** from one process to another and throttles a too-fast producer when it fills. A *semaphore* is a pool of `N` interchangeable keys that processes check out and return, arbitrating access to a shared resource. *The difference:* an event signals **that** something happened, a mailbox delivers **what** happened (with built-in flow control), a semaphore grants **permission** to proceed (only while a key is free).
 
 Once threads are concurrent they need three *orthogonal* services, and SystemVerilog gives one primitive to each. Read the table as a derivation — the need dictates the shape:
 
@@ -176,7 +205,32 @@ Two fixes, both region-based: `wait(ev.triggered)` reads a flag that persists fo
 
 **Mailbox — typed hand-off with back-pressure.** A parameterised `mailbox #(T)` is a type-safe queue. Unbounded (`new()`) never blocks on `put`; bounded (`new(N)`) blocks `put` when full and `get` when empty — and that blocking *is* flow control: a fast producer is throttled to the consumer's rate with no extra handshake logic. (`try_put`/`try_get`/`peek` are the non-blocking probes.) Prefer the parameterised form; the unparameterised mailbox accepts any type and defers the mismatch to a runtime error.
 
+```systemverilog
+// sim-only (class-based; no hardware). Bounded mailbox: the blocking put() IS the flow control.
+mailbox #(int) mbx = new(2);                  // capacity 2; new() with no arg = unbounded
+fork
+    begin : producer
+        for (int i = 0; i < 4; i++) mbx.put(i);   // put() blocks while the box is full
+    end
+    begin : consumer
+        int v;
+        repeat (4) begin #20; mbx.get(v); end     // get() blocks while the box is empty
+    end
+join
+```
+
 **Semaphore — arbitration over interchangeable resources.** `new(N)` holds `N` keys; `get(k)` blocks until `k` are free, `put(k)` returns them. `N=1` is a mutex; `N>1` is a resource pool (e.g. two shared bus slots among four agents). The failure mode is not the primitive but the *protocol*: acquiring two semaphores in opposite orders in two threads deadlocks. The standard prevention is a global lock order — always acquire `A` before `B` — which no primitive can enforce for you.
+
+```systemverilog
+// sim-only (class-based; no hardware). new(1) = mutex; new(N) = pool of N interchangeable keys.
+semaphore bus = new(1);
+task automatic drive(int id);
+    bus.get(1);                               // block until a key is free
+    #10 $display("[%0t] agent %0d owns the bus", $time, id);
+    bus.put(1);                               // return the key
+endtask
+initial fork drive(0); drive(1); join         // serialised: one agent holds the bus at a time
+```
 
 **Choosing between them.** Need to know an instant occurred, with no payload → **event**. Need to move data and rate-match producer to consumer → **mailbox** (its bounded blocking subsumes an event's "ready" signalling *and* carries the data). Need to cap concurrent access to `k` identical resources → **semaphore**. A mailbox can emulate an event (put a token) or a semaphore (pre-fill `N` tokens), but the purpose-built primitive states intent and avoids reinventing back-pressure or key accounting.
 
@@ -208,6 +262,22 @@ Two rules here are pure scheduler consequences, worth keeping when the rest is t
 **Function = zero time; task = may consume time.** A `function` cannot contain anything that suspends the process — no `#delay`, `@event`, `wait`, or `fork…join` — because it must return within the *same* region it was called from; it therefore may be called from `always_comb`. A `task` may consume time and so may only be called from a time-consuming context. A `void function` is still a function (zero-time), not a task in disguise. This is why combinational logic can call helper functions but never tasks.
 
 **Automatic vs static = reentrancy under concurrency.** Module-level tasks/functions default to **static** — one shared copy of their locals. Two concurrent activations (two `fork` calls, or a task called each clock) then *collide* on those locals, corrupting each other's state. Declaring them `automatic` gives each activation its own stack frame. Class methods are automatic by default (each object call is independent); program-block subprograms too. The rule: **anything that can be active in more than one process at once must be `automatic`** — the same reason the fork-loop copy in §6 must be `automatic`.
+
+```systemverilog
+// static: ONE shared 'acc' -> two concurrent activations corrupt each other's running sum.
+module reentrancy_demo;
+task static bad(int n);
+    int acc; acc = 0;
+    for (int k = 0; k < n; k++) begin acc += k; #1; end   // #1 lets a sibling interleave
+endtask
+// automatic: each activation gets its OWN 'acc' -> reentrant, safe under fork.
+task automatic good(int n);
+    int acc; acc = 0;
+    for (int k = 0; k < n; k++) begin acc += k; #1; end
+endtask
+initial fork good(3); good(5); join   // two live activations; independent state, no collision
+endmodule
+```
 
 ---
 

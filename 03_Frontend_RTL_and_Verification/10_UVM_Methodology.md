@@ -47,6 +47,30 @@ $$
 
 The whole "is UVM worth it" question is this one inequality: UVM pays once a piece is reused often enough that its cheaper, standardized integration repays the up-front conformance overhead (§9 puts numbers on it). The corollary is the deeper point about *why standardization beats cleverness*: the value of a convention grows with the size of the ecosystem that shares it. A UVM agent is worth more than an equally good bespoke one because the rest of the world already knows how to connect to it — the payoff is a network effect, not an implementation trick.
 
+### 1.2 The vocabulary in one line each
+
+The rest of this page *derives* the pieces (§2–§8); this table states each one first, in a single line, so the names are never in doubt before the argument arrives. The one distinction to fix immediately is the base class: everything below is either a **component** (a permanent node in the tree that runs phases) or an **object** (transient payload that flows through ports). That split is §3, and it is the backbone of the two "confusable pairs" below.
+
+| Piece | Base | One-line definition |
+|---|---|---|
+| **agent** | component | the reusable bundle for **one** interface — sequencer + driver + monitor + config — shipped as VIP (§2). |
+| **driver** | component | turns one transaction into pin-level protocol timing; the *only* place timing lives (§7). |
+| **monitor** | component | reconstructs transactions by *watching* pins and broadcasts them; never drives (§2, §6). |
+| **sequencer** | component | arbitrates among running sequences and hands the driver one transaction at a time (§7). |
+| **sequence** | object | a transient scenario procedure that generates transactions and runs *on* a sequencer (§7). |
+| **sequence item** | object | the transaction payload — one abstract operation, e.g. an AXI write of addr/data (§3). |
+| **factory** | mechanism | constructs by *name* so a test can substitute a derived type without editing the env (§5.1). |
+| **phasing** | mechanism | the synchronized `build` → `connect` → `run` schedule across the whole tree (§4). |
+| **config DB** | mechanism | set a value high in the tree, get it deep — no threading through constructors (§5.2). |
+| **TLM port / export** | mechanism | a method-call link: the **port** *calls* the method, the **export/imp** *implements* it (§6). |
+| **RAL** | model | names registers/fields independently of the bus that carries the access (§8). |
+
+**Three pairs people conflate** — resolve them once, up front:
+
+- **sequence vs sequencer.** The *sequence* is the stimulus scenario: a transient `uvm_object`, created and dropped per run, that decides *what* to send. The *sequencer* is a permanent `uvm_component` in the tree that *arbitrates* among concurrent sequences and feeds their items to the driver. One sequencer runs an open-ended library of sequences over its life. Mnemonic: the sequenc**er** is the machine, the sequence is the program it runs.
+- **`uvm_object` vs `uvm_component`.** A component is quasi-static *structure* — built once at time 0, holds a fixed parent/child slot, runs phases (driver, monitor, agent, env, test). An object is transient *payload* — no tree slot, no phases, created and discarded mid-run, travels through ports (items, sequences, config objects). Test: if it has a fixed place and runs phases it is a component; if it *flows*, it is an object.
+- **TLM `put` vs `get`.** Both move one transaction across a 1:1 blocking port; they differ only in *who initiates*. `put(t)` — the **producer** pushes into the consumer. `get(t)` — the **consumer** pulls from the producer. The driver↔sequencer link is a *pull*: the driver `get`s the next item exactly when it is ready (§7). Push vs pull = which side controls *when* the handoff happens.
+
 ---
 
 ## 2. Separation of concerns: deriving the component architecture
@@ -321,6 +345,116 @@ The `` `uvm_field_int `` family auto-generates `copy`/`compare`/`print`/`pack` b
 ### 9.5 Why standardization, not cleverness, is the point
 
 Every mechanism above can be reproduced with mailboxes, events, and fork/join ([03](03_Procedural_Processes_and_IPC.md)). UVM's contribution is not a faster or more elegant primitive — it is a **Schelling point**: a convention adopted widely enough that a bus agent from one vendor, a scoreboard from another team, and your own sequences interoperate without negotiation. Its value scales with the ecosystem, not the code — which is why a merely-adequate standard displaced every clever in-house methodology before it (VMM, OVM, eRM), and why "knows UVM" is a hiring line item rather than a nice-to-have.
+
+---
+
+## 10. Putting it together: an AXI4-Lite agent skeleton
+
+Sections 2–7 introduced the pieces one at a time; this section shows them **connected** for one concrete protocol — an AXI4-Lite write master. It is the AXI4-Lite realization of the generic `axi_agent` in §4 and the bare driver loop in §7, filled in just far enough to trace a single transaction from sequence to pins and back.
+
+> **Read this as an illustrative skeleton, not a drop-in agent.** The `uvm_*` base classes require a UVM-aware simulator (VCS / Questa / Xcelium) and **will not compile under iverilog**. The snippet is kept syntactically faithful but is a *coherent slice*, not an exhaustive VIP: it does writes only (no read `AR`/`R` channels), no error injection, no reset sequencing, and it elides the monitor body and the `axil_if` interface definition. Treat it as the map that connects §2–§7, then reach for real VIP in production.
+
+AXI4-Lite's write is three independent VALID/READY handshakes — **AW** (address), **W** (data), **B** (response) — and the driver's whole job is to run them in a legal order while the rest of the environment stays protocol-agnostic:
+
+```mermaid
+sequenceDiagram
+    participant D as axil_driver
+    participant S as DUT slave
+    Note over D,S: write = AW + W + B, three VALID/READY handshakes
+    D->>S: AWVALID, AWADDR
+    D->>S: WVALID, WDATA, WSTRB
+    S-->>D: AWREADY
+    S-->>D: WREADY
+    S-->>D: BVALID, BRESP
+    D->>S: BREADY
+```
+
+```systemverilog
+// ===== ILLUSTRATIVE UVM SKELETON -- does NOT compile under iverilog =====
+// Connects the pieces of Sections 2-7 for an AXI4-Lite write master.
+// Coherent slice, NOT exhaustive: writes only; monitor body + axil_if elided.
+
+// (1) transaction: the payload OBJECT (uvm_object, Section 3) -------------------
+class axil_item extends uvm_sequence_item;
+  rand bit [31:0] addr;
+  rand bit [31:0] data;
+  rand bit [3:0]  strb;
+  bit      [1:0]  resp;                 // driver writes the B-channel response back
+  `uvm_object_utils(axil_item)
+  function new(string name = "axil_item"); super.new(name); endfunction
+endclass
+
+// (2) sequence: the scenario OBJECT, runs ON a sequencer (Section 7) ------------
+class axil_write_seq extends uvm_sequence #(axil_item);
+  `uvm_object_utils(axil_write_seq)
+  function new(string name = "axil_write_seq"); super.new(name); endfunction
+  task body();
+    axil_item req = axil_item::type_id::create("req");  // factory-create, Section 5.1
+    start_item(req);                                    // request a sequencer slot
+    assert(req.randomize() with { strb == 4'hF; });     // late randomize, Section 7
+    finish_item(req);                                   // hand over; blocks till item_done
+  endtask
+endclass
+
+// (3) driver: the ONLY place protocol timing lives (Sections 2, 7) -------------
+class axil_driver extends uvm_driver #(axil_item);
+  `uvm_component_utils(axil_driver)
+  virtual axil_if vif;                                  // delivered by config DB, Section 5.2
+  function new(string name, uvm_component parent); super.new(name, parent); endfunction
+  function void build_phase(uvm_phase phase);
+    if (!uvm_config_db#(virtual axil_if)::get(this, "", "vif", vif))
+      `uvm_fatal("NOVIF", "axil_if not set")
+  endfunction
+  task run_phase(uvm_phase phase);
+    vif.awvalid <= 0; vif.wvalid <= 0; vif.bready <= 0;
+    forever begin
+      axil_item req;
+      seq_item_port.get_next_item(req);                 // PULL from sequencer (Sections 6, 7)
+      drive_write(req);
+      seq_item_port.item_done();                        // release finish_item (forget => hang)
+    end
+  endtask
+  // AXI4-Lite write: AW and W handshake independently, then the B response.
+  task drive_write(axil_item req);
+    @(posedge vif.clk);
+    fork                                                // AW and W may complete in any order
+      begin vif.awaddr <= req.addr; vif.awvalid <= 1;
+            do @(posedge vif.clk); while (!vif.awready);
+            vif.awvalid <= 0; end
+      begin vif.wdata <= req.data; vif.wstrb <= req.strb; vif.wvalid <= 1;
+            do @(posedge vif.clk); while (!vif.wready);
+            vif.wvalid <= 0; end
+    join
+    vif.bready <= 1;                                     // accept the write response
+    do @(posedge vif.clk); while (!vif.bvalid);
+    req.resp = vif.bresp;                               // same handle => response flows back (Sec 7)
+    vif.bready <= 0;
+  endtask
+endclass
+
+// (4) agent: wires sequencer -> driver, plus the monitor (Sections 2, 4) -------
+class axil_agent extends uvm_agent;
+  `uvm_component_utils(axil_agent)
+  axil_driver                drv;
+  uvm_sequencer #(axil_item) sqr;
+  axil_monitor               mon;                       // reconstructs + broadcasts (Section 6)
+  function new(string name, uvm_component parent); super.new(name, parent); endfunction
+  function void build_phase(uvm_phase phase);           // top-down
+    mon = axil_monitor::type_id::create("mon", this);   // always present (active OR passive)
+    if (get_is_active() == UVM_ACTIVE) begin
+      drv = axil_driver::type_id::create("drv", this);
+      sqr = uvm_sequencer#(axil_item)::type_id::create("sqr", this);
+    end
+  endfunction
+  function void connect_phase(uvm_phase phase);          // bottom-up, after all builds
+    if (get_is_active() == UVM_ACTIVE)
+      drv.seq_item_port.connect(sqr.seq_item_export);    // the PULL handshake of Section 7
+    // mon's analysis port is connected by the ENV to scoreboard + coverage (Section 6)
+  endfunction
+endclass
+```
+
+Trace one transaction and every seam on this page shows up exactly once: the **sequence** (object) randomizes an `axil_item` (object) and `finish_item`s it; the **sequencer** (component) arbitrates and the **driver** (component) `get`s it by *pull*; the driver alone knows AW/W/B timing; the `resp` field rides the **same handle** back; and the **agent** wired all of it in `connect_phase`, after `build_phase` created it — where, active or passive, the **monitor** is always present to broadcast to whoever subscribes. That single path is the architecture of §2 made concrete.
 
 ---
 
