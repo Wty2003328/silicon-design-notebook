@@ -25,6 +25,8 @@
 3. [Operand Collectors, Register Files, and Scoreboards](03_Operand_Collectors_Register_Files_and_Scoreboards.md) — banked operand delivery, dispatch, writeback, and replay.
 4. [Independent Threads and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md) — sub-warp control, TMA, transaction barriers, warp specialization, clusters, and distributed shared memory.
 
+The complete compute-and-memory block hierarchy and the CUDA grid/block/warp/thread mapping are introduced in [GPU Architecture §1.2](01_GPU_Architecture.md#12-complete-gpu-hierarchy--the-memory-blocks-around-the-compute-array) before the specialist pages.
+
 **Hands off to:** [GPU Memory System](../02_Memory_System/00_Index.md), then [AI Workloads and Serving](../05_AI_Workloads_and_Serving/00_Index.md) for model/operator mapping and end-to-end inference.
 
 ---

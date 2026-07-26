@@ -13,6 +13,7 @@
 
 > **Prerequisites:** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) §8–§9 (the architectural coherence/consistency contract), [Cache_Coherence](01_Cache_Coherence.md) (stable/transient controller states, races, directory formats, and correctness), [AHB_AXI_APB](../../04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) (AXI4 channels and handshake, the substrate ACE extends), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) §8 (private caches, MSHRs, and inclusion).
 > **Hands off to:** [Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (the mesh, routing, flow control, and deadlock the CHI protocol rides on), [DDR_Controller](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md) (the memory subordinate at the far end), [GPU_Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) & [NPU_Accelerators](../../03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) (coherence *clients* over CXL).
+> **Deep-dive coverage:** §§12–13 teach ACE and CHI implementation in this chapter, including channels/flits, endpoint tables, canonical message flows, transient races, deadlock analysis, assertions, and bring-up debugging.
 
 ---
 
@@ -542,6 +543,953 @@ Read it as one decision. A mobile SoC with a 2–8 core cluster sits *below* the
 **3 — DCT latency payoff.** Cache-to-cache misses are 25 % of coherence misses on a 64-core server; non-DCT cache-to-cache costs 60 ns (data through the home), DCT costs 22 ns. If coherence misses are 30 % of all LLC misses at 5 M misses/s, cache-to-cache misses are $5\text{M}\times0.30\times0.25 = 375$k/s, and DCT saves $(60-22)\,\text{ns} \times 375\text{k} \approx 14$ ms/s of aggregate latency — plus it removes those transfers from the home node's data path entirely, which is often the larger win because it *unclogs the serialization point* (§4.1) rather than merely speeding one transfer.
 
 **4 — Snoop vs directory, per miss: 4-core SoC vs 64-core server.** Count messages per coherence miss, $M_{\text{snoop}}=2(N-1)$ vs $M_{\text{dir}}=2+2\bar{K}$ (§3.2, §4). *4-core mobile cluster* ($\bar{K}\approx1.5$): snoop $=2(3)=6$, directory $\approx 2+3=5$ — a near tie, and the directory would still owe an $N$-bit vector per line plus a third hop, so the SoC keeps **ACE** and pays nothing for a directory it does not need; aggregate snoop load $N^2 r = 16r$ sits trivially under any bus. *64-core server* ($\bar{K}\approx2$): snoop $=2(63)=126$, directory $\approx 2+4=6$ — **21× fewer** messages per miss, and aggregate snoop load $N^2 r = 4096r$ has long since blown past the shared medium (the $N\!\approx\!8$ ceiling of problem 1). Broadcast is infeasible at any latency, so the server takes **CHI**, pays the $O(N)$-per-line directory storage (spendable, §5.1) and the home hop (clawed back by DCT, problem 3). One trade-off curve; the core count reads off the point.
+
+---
+
+---
+
+## 12. AMBA ACE — Designing a Snoop-Coherent AXI System
+
+> **Audience:** a designer who understands AXI handshakes and MESI/MOESI states but has not implemented a coherent interface.
+>
+> **Scope:** ACE's architectural purpose, interface channels and attributes, cache-line permissions, snoop controller structure, end-to-end transaction flows, ordering/completion, ACE-Lite, verification, and debug. Opcode and field encodings vary by edition; use the exact IHI 0022 issue selected by the project.
+
+> **Prerequisites:** [Cache Coherence](01_Cache_Coherence.md), [Memory Consistency and Atomics](02_Memory_Consistency_and_Atomics.md), and [the AXI designer section](../../04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md).
+>
+> **Official specification:** Arm, [AMBA AXI and ACE Protocol Specification, IHI 0022, latest edition](https://developer.arm.com/documentation/ihi0022/latest).
+
+---
+
+### 12.0 What ACE adds to AXI
+
+AXI can deliver a load or store to memory, but it cannot answer:
+
+- Does another cache hold a newer dirty copy?
+- May this requester obtain write permission?
+- Which copies must be invalidated first?
+- Has a cache maintenance operation reached the required point?
+
+ACE adds coherence semantics and three snoop channels around the AXI read/write channels:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart LR
+    subgraph CM["Fully coherent manager<br/>CPU cluster / coherent accelerator"]
+      REQ["AXI AR/AW/W<br/>coherent request attributes"]
+      SC["snoop controller<br/>tag lookup, transient states,<br/>dirty-data response"]
+      ACK["completion acknowledgement"]
+    end
+    subgraph IC["ACE coherent interconnect"]
+      ORD["point of coherence / serialization"]
+      SF["optional snoop filter"]
+    end
+    REQ --> ORD
+    ORD -->|"AC: snoop address + opcode"| SC
+    SC -->|"CR: snoop response"| ORD
+    SC -->|"CD: snoop data, if required"| ORD
+    ORD -->|"AXI R/B completion/data"| REQ
+    ACK --> ORD
+```
+
+- **AC**: interconnect → coherent manager, snoop address/control.
+- **CR**: coherent manager → interconnect, snoop response/status.
+- **CD**: coherent manager → interconnect, snoop data when the cache supplies a line.
+- **AR/AW attributes**: tell the interconnect whether the request is `ReadShared`, `ReadUnique`, a writeback, cache maintenance, barrier, DVM operation, and so on.
+- **completion acknowledgements**: tell the interconnect when a requester has accepted the coherent completion so transaction resources and ordering state can be released.
+
+ACE is still a snoop-based system: the interconnect asks relevant coherent caches about an address. A snoop filter can suppress caches known not to contain the line, but the coherency point remains the coordinator.
+
+---
+
+### 12.1 The invariant behind every opcode
+
+For one cache line, track two independent questions:
+
+1. **Multiplicity:** is the requester the only cached copy (**Unique**) or can others also hold it (**Shared**)?
+2. **Responsibility:** is memory current (**Clean**) or does some cache own a newer value (**Dirty**)?
+
+That creates four valid cached permission states plus Invalid:
+
+| ACE conceptual state | MOESI analogy | May read? | May write silently? | Memory current? |
+|---|---|---:|---:|---:|
+| Invalid | I | no | no | maybe |
+| SharedClean | S | yes | no | yes |
+| SharedDirty | O | yes | no | no; one owner must supply/clean |
+| UniqueClean | E | yes | yes, becoming dirty | yes |
+| UniqueDirty | M | yes | yes | no; this cache owns newest data |
+
+Not every implementation exposes these exact names internally, but it must preserve the same invariants:
+
+- **SWMR:** either many readers or one writer, never both;
+- **data-value:** a read returns the value of the latest write in the coherence order;
+- at most one dirty owner;
+- dirty eviction cannot lose the newest value;
+- write permission is not granted until conflicting sharers/owners are resolved.
+
+ACE opcodes are messages that move a line through this permission lattice.
+
+---
+
+### 12.2 Interface groups a designer must recognize
+
+#### 12.2.1 Coherent request attributes on AR/AW
+
+Alongside the normal AXI ID/address/burst/protection fields, ACE adds fields that describe:
+
+- **snoop transaction type** (`ARSNOOP/AWSNOOP` family);
+- **shareability domain** (`ARDOMAIN/AWDOMAIN`);
+- **barrier/ordering class** where supported;
+- cache maintenance, DVM, stash, persistence, or other edition-specific behavior.
+
+The requester's cache state and intended action determine the opcode. Examples of intent:
+
+| Intent | Typical transaction family |
+|---|---|
+| obtain a readable possibly-shared copy | coherent read such as `ReadShared`/`ReadClean` |
+| obtain sole write permission, with data | `ReadUnique` |
+| obtain sole permission when data is already local | `MakeUnique`/upgrade family |
+| evict dirty data | `WriteBack` family |
+| push dirty data while retaining a clean copy | `WriteClean` family |
+| install/overwrite a whole line with unique ownership | unique write family |
+| clean or invalidate caches | cache-maintenance operation |
+
+The exact distinction among opcodes matters for performance and legal final state. Never reduce them to “read” and “write” in the coherence controller.
+
+#### 12.2.2 AC snoop address channel
+
+The interconnect sends a line address, snoop opcode, protection/security context, and optional attributes. The cache must accept only when it has resources for:
+
+- snoop tag lookup;
+- transient-state conflict handling;
+- possible dirty-data readout;
+- CR response and possible CD response.
+
+Asserting `ACREADY` without reserving those resources can deadlock later if CR/CD cannot be produced.
+
+#### 12.2.3 CR snoop response
+
+CR reports facts such as:
+
+- whether the line was present/shared;
+- whether data will be transferred;
+- whether dirty responsibility is passed;
+- whether the snoop encountered an error;
+- edition-specific uniqueness/dirty-state information.
+
+CR is not the cache-line payload. It tells the interconnect how to interpret the transaction and whether CD is coming.
+
+#### 12.2.4 CD snoop data
+
+CD carries cache-line data, commonly over multiple beats with a final-beat marker. The response controller must preserve the snooped line snapshot while CD is backpressured. If CR promises data, the required CD transfer must eventually occur exactly once.
+
+---
+
+### 12.3 Hardware hierarchy inside a coherent manager
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart TB
+    CORE["cores / load-store queues"] --> L1["private L1 caches"]
+    L1 --> L2["shared/private L2 bank"]
+    L2 --> MISS["miss + eviction queues<br/>MSHRs / writeback buffer"]
+    MISS --> REQ["ACE request engine<br/>opcode + domain selection"]
+    AC["AC snoop input"] --> SQ["snoop request queue"]
+    SQ --> ARB["tag/data-array arbitration"]
+    ARB --> TAG["tag + stable/transient state lookup"]
+    TAG --> CONFLICT["transient conflict resolver<br/>miss vs snoop vs eviction"]
+    CONFLICT --> STATE["state/ownership update"]
+    CONFLICT --> CR["CR response queue"]
+    CONFLICT --> DATA["dirty data capture buffer"]
+    DATA --> CD["CD response queue"]
+    REQ --> AXI["AR/AW/W output"]
+    CR --> ACE["ACE interconnect"]
+    CD --> ACE
+    ACE --> RSP["R/B + completion tracking"]
+    RSP --> MISS
+```
+
+The cache cannot treat a snoop as a normal second read port. It needs transient states for races such as:
+
+- local `ReadUnique` outstanding while a peer snoops the same line;
+- eviction selected while an invalidating snoop arrives;
+- dirty data being written back while another requester reads it;
+- fill data received but not yet installed when a snoop hits the line;
+- CR accepted while CD remains stalled.
+
+A **line transaction table** or MSHR entry serializes these events per line. Stable MESI/MOESI states are insufficient; transient states own in-flight messages and buffers.
+
+---
+
+### 12.4 End-to-end flows
+
+#### 12.4.1 ReadShared, memory is current
+
+```mermaid
+sequenceDiagram
+    participant A as Requester A
+    participant I as ACE interconnect
+    participant B as Peer cache B
+    participant M as Memory
+    A->>I: AR ReadShared(line X)
+    I->>B: AC snoop X
+    B-->>I: CR not present / no data
+    I->>M: memory read X
+    M-->>I: data X
+    I-->>A: R data, shared/clean outcome
+    A-->>I: completion acknowledgement if required
+```
+
+The requester installs a shared clean line. A snoop filter may omit B if it knows B cannot contain X.
+
+#### 12.4.2 ReadShared, peer owns dirty data
+
+```mermaid
+sequenceDiagram
+    participant A as Requester A
+    participant I as ACE interconnect
+    participant B as Dirty owner B
+    participant M as Memory
+    A->>I: AR ReadShared(X)
+    I->>B: AC request shared copy
+    B-->>I: CR data transfer, dirty/shared outcome
+    B-->>I: CD newest data X
+    I-->>A: R newest data X
+    I->>M: optional/update path required by final dirty ownership
+    A-->>I: completion acknowledgement
+```
+
+The critical fact is that memory may be stale, so B—not memory—must supply the data. Depending on the transaction and final ownership, B can retain shared-dirty responsibility or pass/clean it according to the protocol outcome.
+
+#### 12.4.3 ReadUnique for a store miss
+
+```mermaid
+sequenceDiagram
+    participant A as Writer A
+    participant I as ACE interconnect
+    participant B as Sharer B
+    participant C as Sharer C
+    A->>I: AR ReadUnique(X)
+    par invalidate sharers
+      I->>B: AC invalidating snoop X
+      I->>C: AC invalidating snoop X
+    end
+    B-->>I: CR invalidated, no data
+    C-->>I: CR invalidated, no data
+    I-->>A: R data + unique permission
+    A-->>I: completion acknowledgement
+    Note over A: local store may now modify line silently
+```
+
+The interconnect must not grant unique permission before all conflicting copies are resolved. If a peer is dirty, its CD data becomes the value delivered to A.
+
+#### 12.4.4 Dirty eviction
+
+The cache allocates a writeback-buffer entry containing the entire line and its address, sends the coherent write transaction, streams W data, and retains ownership of that buffer until the B/coherent completion permits retirement. Clearing the tag before the writeback data is safely owned elsewhere risks losing the only current copy.
+
+---
+
+### 12.5 Ordering and completion
+
+Coherent completion has more meaning than “data arrived.”
+
+The requester can need to distinguish:
+
+- request accepted by the interface;
+- snoops launched;
+- conflicting copies invalidated;
+- data returned;
+- response accepted;
+- transaction reached the required ordering/visibility point;
+- completion acknowledged and interconnect resources released.
+
+`RACK/WACK`-class acknowledgement behavior exists so the interconnect knows the requester has accepted the completion and can retire snoop/ordering state. The exact requirement depends on transaction type and edition.
+
+Memory barriers and cache maintenance rely on these points. A barrier cannot complete merely because its own small message crossed the pins; all accesses in its required domain must have reached the specified observation point.
+
+---
+
+### 12.6 Snoop filters and scalability
+
+Without knowledge of cache contents, the interconnect broadcasts a snoop to every coherent cache. A snoop filter stores an approximate or exact directory:
+
+$$\text{line address} \rightarrow \text{possible sharer set / owner hint}$$
+
+It can safely suppress a snoop only when it is certain the cache does not hold the line. A false positive wastes a snoop; a false negative violates coherence.
+
+Filter design choices:
+
+- inclusive versus non-inclusive relation to tracked caches;
+- exact sharer vector versus coarse region/cluster bits;
+- capacity and eviction behavior;
+- handling of cache reset/power-down;
+- update timing relative to line allocation and eviction;
+- recovery from parity/ECC errors.
+
+ACE scales well for a modest number of coherent clusters. When node count and physical distance make broadcast and same-cycle channel timing expensive, CHI moves to directory-routed packet messages.
+
+---
+
+### 12.7 ACE-Lite and I/O coherency
+
+ACE-Lite is for agents such as DMA engines or accelerators that issue coherent transactions but are not full snoopable caches in the ACE sense. Typical use:
+
+- a device read observes dirty CPU cache data;
+- a device write causes CPU cached copies to be invalidated or updated by system coherence;
+- software avoids explicit clean/invalidate sequences for shared buffers.
+
+ACE-Lite capability is not “full ACE with fewer pins.” The system must state:
+
+- whether the agent allocates coherent cache lines;
+- which transaction types it can issue;
+- whether it can receive any snoop/DVM traffic;
+- how device-side buffers participate in ordering;
+- which shareability/security domains are supported.
+
+---
+
+### 12.8 Deadlock and resource provisioning
+
+ACE has independent AXI and snoop channels, but transaction dependencies cross them. For example:
+
+1. interconnect sends AC;
+2. cache must produce CR and perhaps CD;
+3. cache might need an internal data-array port or eviction buffer;
+4. requester waits for R while holding an MSHR.
+
+Safe designs:
+
+- reserve CR/CD capacity before accepting AC;
+- give snoops priority sufficient to drain coherence dependencies;
+- avoid holding a cache-array lock while waiting for a channel that needs the same lock to progress;
+- size writeback and snoop-data buffers for worst legal contention;
+- keep request and response buffering independent enough to break cycles;
+- document fairness assumptions and prove liveness under them.
+
+Backpressure is legal; circular ownership of finite buffers is not.
+
+---
+
+### 12.9 Verification plan
+
+#### 12.9.1 Safety invariants
+
+For every line:
+
+- at most one cache has unique permission;
+- unique and shared copies do not coexist illegally;
+- at most one dirty responsibility exists;
+- returned data equals the latest coherent write;
+- dirty eviction retains data until accepted elsewhere;
+- an invalidated cache cannot later supply/use the old copy;
+- CR promises of data match exactly one legal CD response;
+- stable payload rules hold on AC/CR/CD and AXI channels.
+
+#### 12.9.2 Litmus transactions
+
+Run directed races, not only isolated opcodes:
+
+- two simultaneous `ReadUnique` requests to one line;
+- `ReadShared` versus dirty eviction;
+- local store/upgrade versus invalidating snoop;
+- cache maintenance versus fill;
+- line in every stable state receiving every relevant snoop class;
+- CR accepted but CD stalled for many cycles;
+- requester response stalled while more snoops arrive;
+- cache reset/power-down with clean, dirty, and transient lines;
+- security-domain mismatch and error propagation.
+
+#### 12.9.3 Scoreboard model
+
+Maintain a reference line record:
+
+```text
+{latest_value, memory_value, dirty_owner, sharer_set, in_flight_owner, transaction_age}
+```
+
+Update it only at modeled coherence serialization points. Compare each read response and permission transition. This model catches errors that a channel-only protocol checker cannot.
+
+#### 12.9.4 Liveness
+
+Under fair arbitration and eventually-ready endpoints:
+
+- every accepted AC gets CR and any promised CD;
+- every accepted coherent request completes or returns an error/retry behavior permitted by the profile;
+- per-line transient state eventually returns to a stable state;
+- snoops cannot starve behind local misses;
+- completion acknowledgements release every transaction entry exactly once.
+
+---
+
+### 12.10 Debugging a coherent failure
+
+Start with one cache-line address and build a message timeline:
+
+| Time | Node | Message/channel | Stable state before | Transient owner | State after | Data source |
+|---|---|---|---|---|---|---|
+
+Then ask:
+
+1. Which node serialized the line?
+2. What permissions existed before the request?
+3. Which caches were snooped, and did the filter omit any incorrectly?
+4. Did each CR accurately describe presence, dirty responsibility, and data transfer?
+5. If memory was stale, which CD supplied the newest data?
+6. When was unique permission granted relative to invalidation responses?
+7. Were R/B and completion acknowledgements matched to the right transaction?
+8. Which transient entry/buffer should have been released?
+
+| Symptom | Likely first hypothesis |
+|---|---|
+| stale read only when peer modified line | dirty owner not snooped or CD ignored |
+| two cores both write silently | unique permission granted before all invalidations |
+| hang with snoop backpressure | AC accepted without CR/CD resource reservation |
+| corruption on eviction race | tag/state cleared before writeback ownership transferred |
+| maintenance occasionally returns early | completion point confused with request acceptance |
+| works until cache powers down | snoop-filter state not invalidated/quiesced |
+
+---
+
+### 12.11 Designer sign-off checklist
+
+- [ ] AXI/ACE edition, transaction/opcode subset, domains, and optional fields are frozen.
+- [ ] Stable and transient cache states cover every local/snoop race.
+- [ ] AC acceptance reserves tag/data/CR/CD resources.
+- [ ] CR status and CD presence/beat count agree for every snoop outcome.
+- [ ] Unique permission waits for all required invalidations and newest data.
+- [ ] Dirty data remains owned until another architectural owner accepts it.
+- [ ] Barrier, maintenance, DVM, and completion-ack ordering points are explicit.
+- [ ] Snoop-filter false negatives are structurally impossible and power/reset updates are safe.
+- [ ] Channel properties, line-level invariant model, race coverage, and liveness proofs pass.
+
+---
+
+### 12.12 What changes in CHI
+
+ACE attaches coherence to AXI-style channels around a snoop coordinator. §13 (CHI designer deep dive) makes requesters, home nodes, and subordinates explicit packet endpoints, routes coherence through a scalable fabric, and replaces same-interface backpressure with credit-controlled links.
+
+---
+
+## 13. AMBA CHI — Requesters, Home Nodes, Flits, and Directory Coherence
+
+> **Audience:** a designer who understands cache coherence and ACE and now needs a scalable coherent-mesh mental model.
+>
+> **Scope:** CHI node roles, protocol/link layering, message channels, IDs and ownership, home-node directory behavior, canonical flows, credits/retry, ordering, endpoint microarchitecture, verification, performance, and debug. CHI has several issues and feature profiles; field widths and opcode availability are configuration-dependent.
+
+> **Prerequisites:** §12 (ACE designer deep dive) and [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md).
+>
+> **Official specification:** Arm, [AMBA 5 CHI Architecture Specification, IHI 0050, latest edition](https://developer.arm.com/documentation/ihi0050/latest).
+
+---
+
+### 13.0 The mental-model shift
+
+ACE asks, “How does a coherent cache attach to a coherent interconnect?” CHI asks, “How do many coherent agents exchange routed messages through a scalable fabric?”
+
+Three logical roles replace the impression of one shared bus:
+
+- **Requester Node (RN):** originates reads, writes, atomics, maintenance, and DVM requests; a fully coherent RN has a snoopable cache.
+- **Home Node (HN):** serialization/ordering point for an address region; owns directory/snoop-filter decisions and often a system-level cache.
+- **Subordinate Node (SN):** final memory or I/O target, such as a memory controller.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph RN0["RN-F: CPU cluster"]
+      C0["private/shared caches"]
+      RT0["request + snoop transaction tables"]
+    end
+    subgraph RN1["RN-F: CPU/GPU/accelerator"]
+      C1["coherent cache"]
+      RT1["request + snoop transaction tables"]
+    end
+    subgraph MESH["CHI packet fabric"]
+      R0["router"] --- R1["router"] --- R2["router"]
+      R0 --- R3["router"] --- R4["router"] --- R5["router"]
+    end
+    subgraph HN["HN-F tile"]
+      DIR["directory / snoop filter"]
+      SLC["optional system-level cache"]
+      HT["home transaction table"]
+    end
+    subgraph SN["SN-F tile"]
+      MC["memory scheduler/controller"]
+    end
+    RT0 --> R0
+    RT1 --> R2
+    R4 --> HT
+    HT --> DIR
+    HT --> SLC
+    R5 --> MC
+    MC --> HBM["DDR / HBM"]
+```
+
+The address map or hash selects the home. The home is not necessarily the memory controller physically nearest the data; it is the coherence serialization point that knows who may have the line.
+
+---
+
+### 13.1 Node roles and common profiles
+
+Names differ across CHI issues/configurations, but the stable conceptual categories are:
+
+| Role | Responsibility |
+|---|---|
+| fully coherent RN | cacheable requester, receives snoops, can hold clean/dirty lines |
+| I/O-coherent or non-snoopable RN | originates coherent/non-coherent I/O accesses with a restricted capability set |
+| fully coherent HN | directory/snoop filter, per-line serialization, coherent response orchestration, often SLC |
+| I/O home | ordering/routing for non-fully-coherent address regions |
+| memory SN | memory-controller endpoint for normal memory |
+| peripheral/system SN | endpoint for I/O/system address regions |
+| miscellaneous/system node | DVM/system-control responsibilities in configurations that define one |
+
+Do not infer node behavior from the suffix alone. The interface configuration advertises supported protocol features, data widths, IDs, snoop capability, direct data transfer, atomics, stash, persistence, and other options.
+
+---
+
+### 13.2 CHI is layered
+
+#### 13.2.1 Protocol layer
+
+Defines:
+
+- request opcodes and expected responses;
+- cache-line permissions and state transitions;
+- node responsibilities;
+- transaction ordering and completion;
+- retry, acknowledgement, and error rules.
+
+#### 13.2.2 Network/link transport
+
+Carries protocol messages as flits between node IDs. Each link has transmit/receive sides, activation state, and credit-based flow control. Routers may be mesh, ring, crossbar, or another topology as long as transport obligations are met.
+
+#### 13.2.3 Physical implementation
+
+Wires, repeaters, clocking, CDC, pipeline stages, die-to-die adaptation, parity/ECC/CRC, and power management. These change latency and reliability but must preserve the protocol.
+
+Layering lets the same coherent semantics run over different fabrics. It also means a protocol-correct endpoint can still deadlock in an incorrectly provisioned network, and a deadlock-free router can still participate in a protocol resource cycle. Both levels need proof.
+
+---
+
+### 13.3 Four message-channel classes
+
+| Channel | Typical direction/role | Example content |
+|---|---|---|
+| `REQ` | RN → HN/SN | read, write, atomic, maintenance request |
+| `SNP` | HN → snoopable RN | query, invalidate, clean, forward request |
+| `RSP` | any required response path | completion, snoop response, retry acknowledgement, database-ID response |
+| `DAT` | any data-bearing path | completion data, snoop-response data, write data |
+
+Each message contains routing and transaction fields plus opcode-specific payload. Logical channel separation prevents a large data stream from sharing exactly the same endpoint queue as small control messages, but full deadlock freedom still depends on independent buffering/virtual channels, routing, endpoint resource rules, and fairness in the selected implementation.
+
+#### 13.3.1 Credit flow control
+
+The receiver advertises link-layer credits representing available receive buffers. The sender spends one credit per transmitted flit and regains credits as the receiver releases buffers.
+
+```mermaid
+sequenceDiagram
+    participant TX as Transmitter
+    participant RX as Receiver
+    RX-->>TX: grant N credits
+    TX->>RX: flit 0, consume credit
+    TX->>RX: flit 1, consume credit
+    Note over TX: stop if local credit count reaches zero
+    RX-->>TX: return credit after buffer release
+    TX->>RX: next flit
+```
+
+Credit correctness invariants:
+
+$$
+0 \le C_{\text{sender}} \le C_{\text{advertised}}
+$$
+
+and every accepted flit eventually causes exactly one credit return when its receive slot is freed. A lost credit creates a permanent throughput leak; a duplicate credit permits buffer overflow.
+
+---
+
+### 13.4 Transaction identity and ownership
+
+CHI messages can traverse different paths and return out of order, so a transaction cannot be identified by timing. Common identity/route concepts include:
+
+- source and target node IDs;
+- source-allocated transaction ID;
+- return node/transaction identity for responses;
+- home identity;
+- data-buffer ID (DBID) or equivalent resource token for a receiver-provided write-data buffer;
+- opcode, address, beat/data ID, and response state;
+- acknowledgement expectation.
+
+The exact fields vary by issue, but the ownership discipline is constant:
+
+1. the requester allocates a transaction-table entry before REQ;
+2. the home allocates home-transaction state before accepting/processing;
+3. a write-data receiver can allocate a DBID and return it to tell the sender where/how to label DAT;
+4. each node releases its entry only at the protocol-defined completion/acknowledgement point.
+
+Never key state only by address: two legal transactions to the same line can exist in a queued/serialized relationship, and different requesters can reuse the same small TxnID simultaneously.
+
+---
+
+### 13.5 Home-node hardware
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart LR
+    REQ["REQ ingress<br/>credit + decode"] --> HAT["home address table / hash"]
+    HAT --> TT["home transaction table<br/>line lock, requester ID,<br/>opcode, expected responses"]
+    TT --> DIR["directory / snoop filter<br/>sharers + dirty owner"]
+    TT --> SLC["system-level cache tags/data"]
+    DIR --> SP["snoop planner<br/>target set + opcode"]
+    SP --> SNP["SNP egress queues"]
+    RSPIN["RSP from RNs/SNs"] --> COL["response collector<br/>pending-node bitmap"]
+    DATIN["DAT from RNs/SNs"] --> DATA["data buffer / ECC"]
+    COL --> TT
+    DATA --> TT
+    TT --> OUT["RSP/DAT completion queues"]
+    TT --> MEM["SN request/write-data queues"]
+```
+
+#### 13.5.1 Directory entry
+
+A conceptual directory record is:
+
+```text
+{valid, sharer_set, dirty_owner, memory_current, state, parity/ECC}
+```
+
+Large systems compress or sparsify the sharer representation. Whatever encoding is used, it must never omit a possible sharer. Directory eviction itself can require snoops or state spill because dropping a live entry without reconciling cached copies loses coherence knowledge.
+
+#### 13.5.2 Home transaction table
+
+One entry tracks an in-flight operation:
+
+```text
+{line, requester, requester_txn_id, opcode, order,
+ expected_snoop_responses, data_source, dbid,
+ response_state, completion_ack_expected, error_state}
+```
+
+A per-line lock or conflict detector serializes incompatible operations while allowing unrelated lines to proceed. Table capacity is a primary performance/PPA parameter.
+
+---
+
+### 13.6 Canonical read flows
+
+#### 13.6.1 Clean miss served by memory/SLC
+
+```mermaid
+sequenceDiagram
+    participant R as RN requester
+    participant H as HN home
+    participant S as SN memory
+    R->>H: REQ ReadShared(X, TxnID=t)
+    H->>H: directory lookup: no dirty owner
+    alt SLC hit
+      H-->>R: DAT CompData(X, t)
+    else memory required
+      H->>S: memory read X
+      S-->>H: DAT memory data X
+      H-->>R: DAT CompData(X, t)
+    end
+    R-->>H: RSP CompAck when required
+    H->>H: release home transaction
+```
+
+#### 13.6.2 Dirty peer supplies data
+
+```mermaid
+sequenceDiagram
+    participant A as RN requester A
+    participant H as HN home
+    participant B as RN dirty owner B
+    A->>H: REQ ReadShared(X)
+    H->>B: SNP request X
+    B-->>H: RSP snoop status
+    alt direct data transfer enabled
+      B-->>A: DAT forwarded completion data, opcode per flow
+      A-->>H: RSP CompAck / completion indication
+    else data through home
+      B-->>H: DAT SnpRespData newest X
+      H-->>A: DAT CompData newest X
+      A-->>H: RSP CompAck
+    end
+    H->>H: update directory final owner/sharers
+```
+
+Direct data transfer (DCT) removes the home from the data path but not from coherence serialization. The home still collects the information needed to update directory state and close the transaction.
+
+#### 13.6.3 ReadUnique / ownership acquisition
+
+The home identifies all sharers and any dirty owner, sends invalidating/forward snoops, collects every required response and newest data, then grants unique permission. The request cannot complete as unique while an unaccounted sharer can still legally use the old copy.
+
+---
+
+### 13.7 Canonical write flow and DBID
+
+A separated write request and write data need explicit receiver storage ownership:
+
+```mermaid
+sequenceDiagram
+    participant R as RN writer
+    participant H as HN home
+    participant S as SN / data receiver
+    R->>H: REQ Write*(X, TxnID=t)
+    H->>H: resolve coherence and choose receiver
+    H-->>R: RSP DBIDResp(dbid=d, target=S)
+    R->>S: DAT write data tagged with d
+    S-->>H: RSP write completion
+    H-->>R: RSP Comp
+    R-->>H: RSP CompAck if required
+```
+
+The DBID is a promise that the receiver has a buffer for the data. It prevents the sender from injecting a cache line that has nowhere to land. The sender must not reuse the DBID/transaction entry before the required completion.
+
+Write opcodes distinguish full/partial line, unique/eviction/writeback intent, and allocation/coherence behavior. Partial writes can require read-modify-write or byte enables at the final target; full-line writes can avoid fetching old data.
+
+---
+
+### 13.8 Retry without uncontrolled livelock
+
+A home may lack a transaction-table or other resource. CHI retry is a protocol-controlled sequence rather than “send again whenever.”
+
+Conceptually:
+
+1. HN returns a retry acknowledgement with a retry-credit class/type.
+2. RN records that the original attempt did not allocate normal transaction progress.
+3. HN later grants a matching protocol credit when the relevant resource is available.
+4. RN retries only after receiving that grant and follows the specified identity/order rules.
+
+This throttles retries and prevents a swarm of requesters from continuously re-flooding a full home. Verification must ensure one retry grant authorizes only the permitted retry use and cannot be lost/duplicated.
+
+---
+
+### 13.9 Ordering and completion
+
+Network arrival order is not architectural order. Routers can choose different paths; channels are independent; one transaction can wait for snoops while another hits in SLC.
+
+Ordering is created by:
+
+- the home serialization point for a line/address region;
+- requester ordering rules and order fields;
+- barriers and DVM operations;
+- response/completion types;
+- explicit completion acknowledgement when the home must know the requester consumed the result.
+
+Distinguish:
+
+| Milestone | Meaning |
+|---|---|
+| link acceptance | next hop owns a flit buffer |
+| request accepted | protocol endpoint allocated/recognized the request |
+| data delivered | requester received data beats |
+| coherence permission established | snoops/directory outcome permits final state |
+| completion returned | requester may observe the defined completion |
+| completion acknowledged | home can release state that depended on requester acceptance |
+| ordered/visible | transaction reached the point required by its ordering class |
+
+Barriers and maintenance operations must be tied to the last row required by their semantics, not the first convenient response.
+
+---
+
+### 13.10 Cache-line state and races
+
+CHI's stable cache states can be understood as:
+
+| State | Unique? | Dirty? | Meaning |
+|---|---:|---:|---|
+| I | — | — | no valid copy |
+| SC | no | no | shared, memory current |
+| SD | no | yes | shared with this cache responsible for dirty data |
+| UC | yes | no | only cached copy, memory current |
+| UD | yes | yes | only cached copy, cache owns newest data |
+
+Endpoints need transient states around them, such as:
+
+- waiting for CompData;
+- waiting for snoop responses;
+- data received, CompAck not sent;
+- write DBID received, DAT not sent;
+- snooped while fill/eviction/upgrade is in progress;
+- retry acknowledged, waiting for retry grant.
+
+The transaction table—not the five stable-state bits—carries correctness through these races.
+
+---
+
+### 13.11 Deadlock analysis
+
+Build a resource-dependency graph whose nodes include:
+
+- RN request-table entry;
+- HN transaction-table entry;
+- directory/SLC port;
+- snoop queue;
+- RN snoop-response/data buffer;
+- DAT/RSP egress queue;
+- SN request/data buffer;
+- link credit/virtual-channel buffer.
+
+Add an edge A → B when progress while holding A requires acquiring B. A cycle is a potential deadlock. Repairs include:
+
+- reserve downstream/response resources before accepting a request;
+- separate request, snoop, response, and data buffers/virtual channels as required;
+- permit responses to drain even under request congestion;
+- avoid holding directory locks while waiting for a queue that needs the same lock;
+- use retry before allocating a partial set of resources;
+- define arbitration fairness.
+
+“The network routes without cyclic channel dependencies” is necessary but not sufficient; endpoint transaction tables can close a cycle outside the routers.
+
+---
+
+### 13.12 Performance and sizing
+
+#### 13.12.1 Home throughput
+
+If a home has `T` transaction entries and average occupancy time `L_H` cycles, its sustainable acceptance rate is bounded by:
+
+$$
+\lambda_H \le \frac{T}{L_H}
+$$
+
+before directory/SLC bandwidth limits. DCT reduces data-path load and often transaction lifetime, while extra snoops increase it.
+
+#### 13.12.2 Directory bandwidth
+
+Every coherent request needs at least a directory lookup, and many need an update. Bank the directory by line-address hash and analyze hot-address/false-sharing cases, not only uniform random traffic.
+
+#### 13.12.3 Link utilization
+
+Separate small control flits from full-line data:
+
+$$
+BW_{\text{link}} =
+\lambda_{\text{REQ}}b_{\text{REQ}}+
+\lambda_{\text{SNP}}b_{\text{SNP}}+
+\lambda_{\text{RSP}}b_{\text{RSP}}+
+\lambda_{\text{DAT}}b_{\text{DAT}}
+$$
+
+Dirty sharing and false sharing can multiply SNP/RSP/DAT traffic even when application useful bytes are small.
+
+#### 13.12.4 Address-to-home hashing
+
+A poor hash creates a hot home or SLC bank. Verify sequential, page-strided, interleaved-channel, and adversarial power-of-two address patterns. Home hashing must also align with memory interleave and NUMA/software placement policy.
+
+---
+
+### 13.13 Verification strategy
+
+#### 13.13.1 Link/channel checks
+
+- no flit sent without credit;
+- credits never underflow/overflow and return exactly once;
+- flit fields stable for the required transfer interval;
+- link activate/deactivate/quiesce does not lose flits;
+- parity/ECC/CRC and poison behavior match the profile.
+
+#### 13.13.2 Transaction conservation
+
+For each node:
+
+$$
+\text{allocated entries}
+=
+\text{active entries}
++\text{legally completed/released entries}
+$$
+
+Every response references a live source transaction; every DBID belongs to one allocated receiver buffer; every expected snoop responder clears one pending bit exactly once.
+
+#### 13.13.3 Coherence reference model
+
+Track per line:
+
+```text
+{latest_value, memory_value, home, sharers, dirty_owner,
+ unique_owner, pending_transactions, ordering_epoch}
+```
+
+Check SWMR, latest-data delivery, directory agreement, final cache states, and serialization.
+
+#### 13.13.4 Races and faults
+
+Cover:
+
+- two/three requesters racing for unique permission;
+- dirty owner replacement during a peer read;
+- DCT versus home-routed data;
+- partial/full write, atomic, stash, maintenance, DVM, persistence features that are enabled;
+- retry at every allocation point;
+- credit starvation/backpressure on each channel independently;
+- directory/SLC ECC error and poisoned data;
+- node reset, link down, power quiesce, and D2D fault with transactions active;
+- TxnID reuse at different nodes and wraparound;
+- home-hash hotspots and transaction-table full conditions.
+
+#### 13.13.5 Liveness
+
+With explicit fair-routing/fair-arbitration and eventually-responsive memory assumptions:
+
+- accepted non-retried request eventually completes or reports an allowed error;
+- retry-acknowledged request eventually receives usable retry permission if resources recover;
+- every snoop receives its required response/data;
+- every CompAck-expected transaction eventually releases the home entry;
+- credits and DBIDs eventually return;
+- per-line serialization cannot starve an older request indefinitely.
+
+---
+
+### 13.14 Debugging a CHI failure
+
+Capture decoded messages, not only raw flits. Build one row per message:
+
+| Time | Src→Tgt | Channel | Opcode | TxnID/DBID | Address | Response state | Credits before/after |
+|---|---|---|---|---|---|---|---|
+
+Then reconstruct ownership:
+
+1. Which address hash selected the home?
+2. What directory entry did the home read?
+3. Which home-transaction entry owns the line?
+4. Which snoops were launched and which responses remain pending?
+5. Where is the newest data: RN, SLC, SN, or an in-flight DAT buffer?
+6. If DCT occurred, did home and requester both receive the closure information they need?
+7. Which completion/CompAck/DBID/credit should release each held resource?
+8. Is the stall a legal backpressure interval or a closed resource cycle?
+
+| Symptom | First hypothesis |
+|---|---|
+| response arrives but requester cannot match it | wrong source/return TxnID or premature ID reuse |
+| home table fills permanently | missing CompAck, snoop response, retry closure, or release condition |
+| data corruption only with DCT | data routed correctly but home metadata/completion not closed |
+| link stops after long stress | leaked credit |
+| buffer overflow | duplicate/early credit or acceptance without capacity |
+| stale data after directory eviction | live sharer/dirty owner omitted during replacement |
+| livelock under saturation | uncontrolled retry or unfair per-line/home arbitration |
+
+---
+
+### 13.15 Designer sign-off checklist
+
+- [ ] CHI issue/profile, node types, feature set, widths, IDs, and topology are fixed.
+- [ ] Address-to-home mapping and directory representation are documented and verified.
+- [ ] RN/HN/SN transaction tables own every in-flight message and release exactly once.
+- [ ] REQ/SNP/RSP/DAT buffers, link credits, and virtual channels satisfy deadlock analysis.
+- [ ] DBID, TxnID, return routing, beat/data ID, and CompAck lifetimes are proven.
+- [ ] Directory and endpoint transient states cover all request/snoop/eviction/fill races.
+- [ ] DCT and home-routed flows deliver the same architectural value and final permissions.
+- [ ] Retry is protocol-credit-controlled and cannot livelock under fair resource recovery.
+- [ ] Ordering, barriers, DVM, maintenance, atomics, persistence, security, and errors have explicit completion points.
+- [ ] Link, transaction, coherence, fault, performance, and liveness verification all pass.
+
+---
+
+### 13.16 Reading map
+
+- the conceptual material in §§0–11: why broadcast snoops give way to directory coherence.
+- §12 (ACE designer deep dive): the channel-attached snoop protocol that motivates CHI.
+- [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md): routing, virtual channels, credits, and topology.
+- [Cache Coherence](01_Cache_Coherence.md): stable/transient state safety and liveness.
 
 ---
 

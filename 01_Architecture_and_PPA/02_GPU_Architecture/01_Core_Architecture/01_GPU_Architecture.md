@@ -114,6 +114,99 @@ Notice the two different scheduling levels. The chip-level distributor places **
 
 So the "**block slots**", "**blocks**", and "**warps/block**" that appear in the occupancy formula (§7) are not free knobs — they are this dispatch hierarchy: the launch carves the grid into blocks, the work distributor packs blocks onto SMs subject to the resource `min`, and each block becomes the warps the scheduler feeds. It is also why a kernel with oversized blocks or heavy per-thread resource use launches at low occupancy — the distributor cannot fit enough blocks onto each SM. [End-to-End GPU AI Inference and Serving](../05_AI_Workloads_and_Serving/02_End_to_End_GPU_AI_Inference_and_Serving.md) follows the host/runtime queue through model steps; the hardware fact is that a GPU is a **queue-fed, block-granular work engine** attached to a CPU.
 
+### 1.2 Complete GPU hierarchy — the memory blocks around the compute array
+
+The previous figure follows *work*. A complete GPU also needs the structures that move, translate, cache, route, protect, and store data. The following is a representative NVIDIA-style compute GPU; GPC/TPC/SM counts and the internal partitioning vary by product.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 34, "rankSpacing": 42, "htmlLabels": false}}}%%
+flowchart TB
+    HOST["host CPU + system memory"] -->|"commands, arguments, DMA descriptors"| HOSTIF["PCIe / coherent C2C / NVLink host interface"]
+
+    subgraph GPU["GPU device / package"]
+      direction TB
+      FE["front end<br/>doorbells, command processor,<br/>contexts, streams, launch descriptors"]
+      WD["work distributor<br/>grid / cluster / CTA allocation"]
+      CE["copy / DMA engines"]
+      GMMU["GMMU, TLB hierarchy, page walkers<br/>translation, protection, fault/replay"]
+      PEER["NVLink / peer-fabric engines"]
+
+      subgraph CA["compute array"]
+        direction LR
+        subgraph G0["GPC 0"]
+          T0["TPC(s)"]
+          S00["SM"]
+          S01["SM"]
+          CI0["cluster/SM interconnect"]
+          T0 --- S00
+          T0 --- S01
+          S00 --- CI0
+          S01 --- CI0
+        end
+        GN["GPC 1 ... GPC N<br/>TPCs + SMs + local distribution"]
+      end
+
+      NOC["partitioned crossbar / NoC<br/>address routing, arbitration,<br/>return routing, atomics"]
+
+      subgraph MP["memory partitions, repeated"]
+        direction LR
+        L2S["L2 slice<br/>tags, data, MSHRs"]
+        CMP["compression / atomic /<br/>format logic as implemented"]
+        MC["HBM controller<br/>queues, channel scheduler,<br/>refresh, ECC/RAS"]
+        L2S --> CMP --> MC
+      end
+
+      PWR["clock, power, thermal, reset,<br/>telemetry and RAS control"]
+    end
+
+    HOSTIF --> FE
+    FE --> WD
+    WD --> CA
+    CE <--> HOSTIF
+    CE <--> NOC
+    GMMU <--> NOC
+    PEER <--> NOC
+    CA <--> NOC
+    NOC <--> MP
+    MC <--> HBM["HBM stacks<br/>channels + pseudo-channels"]
+    PEER <--> REM["peer GPUs / NVSwitch"]
+```
+
+Read it in three planes:
+
+- **Control plane:** host interface → command processor → work distributor decides *which block becomes resident where*.
+- **Execution plane:** GPC/TPC/SM hierarchy fetches and issues instructions to scalar, tensor, load/store, and special-function pipelines.
+- **Memory plane:** SM requests cross a NoC to an address-owned L2 slice; an L2 miss goes through its memory partition/controller to HBM. GMMU/TLBs translate virtual addresses, copy engines move bulk data, and peer engines route remote-GPU traffic.
+
+The software-to-hardware mapping is therefore deliberately **not** one-to-one:
+
+| Programming object | Hardware realization |
+|---|---|
+| CUDA stream | front-end command/dependency state; not an SM |
+| kernel/grid | launch descriptor plus a dynamically shrinking set of undispatched blocks |
+| block/CTA | a resource reservation that remains on one SM; several blocks may share one SM |
+| optional cluster | several blocks co-scheduled within one GPC on supported hardware |
+| warp | hardware scheduling state for 32 consecutive thread IDs |
+| CUDA thread | architectural PC/predicate/register state; **not a permanently assigned CUDA core** |
+| scalar instruction | active lanes time-multiplexed onto compatible FP/INT/SFU/LSU pipelines |
+| matrix instruction | cooperative warp/warp-group operands executed by tensor pipelines |
+
+The thread/core distinction is load-bearing. A single thread may use an integer lane for address arithmetic, an LSU for a load, an FP lane for an add, and a tensor pipeline as one participant in a cooperative MMA. Conversely, the same physical FP lanes execute instructions from many different resident warps over time. What remains resident is **state** (registers, PCs, masks, scoreboard bits), not an exclusive physical ALU.
+
+The memory names also mix software address spaces with hardware:
+
+| CUDA-visible name | Physical meaning |
+|---|---|
+| per-thread registers | allocated in a banked SM register file; compiler spills go to local address space |
+| local memory | logically private but normally backed by device memory and cached—“local” does not mean on-chip |
+| `__shared__` memory | block-owned allocation in the SM's software-addressed shared SRAM |
+| distributed shared memory | remote access to member blocks' separate SM shared memories inside a co-scheduled cluster |
+| global/device memory | virtual address space usually backed by HBM, but it may map to peer/system memory |
+| L1/TEX and L2 | hardware-managed caches, not storage declared by a CUDA qualifier |
+| unified memory | virtual-memory placement/migration/coherence policy, not a new physical memory tier |
+
+Trace one `x = a[i]` load: 32 threads compute 32 addresses → one warp load issues → the LSU applies the active mask and coalesces addresses into sector requests → TLB/L1 lookup → NoC routes misses to the owning L2 slice → the memory controller schedules HBM on an L2 miss → returning sectors are matched to the warp, destination register, and lanes → the scoreboard clears and dependent instructions become eligible. Software chooses `i` and the layout; hardware performs the coalescing, caching, routing, scheduling, and return matching.
+
 ---
 
 ## 2. SIMT — amortizing the front end over 32 lanes

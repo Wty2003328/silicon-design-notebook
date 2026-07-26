@@ -13,6 +13,7 @@
 
 > **Prerequisites:** [CPU_Architecture](../../01_CPU_Architecture/01_Core_Foundations/01_CPU_Architecture.md) (pipelining, stalls, the handshake discipline), [OoO_Execution](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (outstanding transactions, MLP, latency hiding — the same idea applied to a wire).
 > **Hands off to:** [ACE_and_CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) (coherence riding on AXI's channels), [Network_on_Chip](../04_On_Chip_Networks/01_Network_on_Chip.md) (the packet fabric that replaces the crossbar at scale), [DDR_Controller](../02_Shared_Memory/01_DDR_Controller.md) (the memory the widest AXI port feeds), [Async_Design_and_CDC](../../../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (the metastability/FIFO physics behind CDC bridges).
+> **Deep-dive coverage:** §§14–16 teach APB, AHB/AHB-Lite, and AXI in this chapter, including signal timing, endpoint microarchitecture, assertions, verification, and waveform-debug workflows.
 
 ---
 
@@ -543,6 +544,1368 @@ The AMBA fabric of §1–§8 moves high-bandwidth parallel traffic on-die. But a
 | UART | 2 | none (baud) | none (point-to-point) | full | ≤ a few Mbaud | one link, no clock wire |
 
 The through-line with §6's tiering: **spend wires and protocol complexity only where bandwidth demands it.** I2C minimizes pins at the cost of speed and per-byte overhead; SPI spends pins for raw full-duplex throughput; UART drops even the clock wire for the simplest possible link. On a real SoC (system-on-chip) all three hang off an APB (Advanced Peripheral Bus) peripheral segment, each behind a small controller a CPU programs over the fabric — bridging the low-speed serial world into the high-speed parallel one of §1.
+
+---
+
+---
+
+## 14. AMBA APB — From a Register Access to a Correct Peripheral
+
+> **Audience:** a new IC designer who can read synchronous RTL but has not yet integrated a bus peripheral.
+>
+> **Scope:** APB transfer semantics, signal ownership, slave and bridge microarchitecture, wait states, errors, low-power behavior, assertions, verification, and debug. This chapter teaches the stable design ideas shared by APB generations. Optional signals vary by APB edition; check the exact interface profile used by the project.
+
+> **Prerequisites:** [On-Chip Transaction Protocols](01_AHB_AXI_APB.md) §1–§2 for memory-mapped addressing and the general idea of flow control.
+>
+> **Official specification:** Arm, [AMBA APB Protocol Specification, IHI 0024, latest edition](https://developer.arm.com/documentation/ihi0024/latest).
+
+---
+
+### 14.0 Mental model: APB is a timed register transaction
+
+APB is deliberately not a high-throughput transport. It is a small, synchronous interface for control/status registers and low-bandwidth peripherals such as timers, GPIO, UART control, watchdogs, clock controllers, and power controllers.
+
+One APB transfer has exactly two logical phases:
+
+1. **SETUP:** the requester presents the address, direction, write data, byte enables, and attributes and selects one peripheral.
+2. **ACCESS:** the requester asserts `PENABLE`. The peripheral completes when `PREADY=1`; otherwise the ACCESS phase repeats as wait states.
+
+There is no burst, transaction ID, response reordering, or multiple outstanding work. That is not a deficiency. It is the reason an APB register block can be extremely small, easy to clock-gate, and easy to verify.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart LR
+    AXI["AXI/AHB system fabric"] --> BR["APB bridge<br/>request holding register<br/>address decode<br/>response adapter"]
+    BR -->|"PADDR, PWRITE, PWDATA,<br/>PSTRB, PSEL, PENABLE"| DEC["APB peripheral"]
+    DEC --> REG["register decode"]
+    REG --> CTRL["control flops<br/>enable / mode / threshold"]
+    REG --> STAT["status mux<br/>counter / IRQ / error state"]
+    REG --> FIFO["optional data FIFO"]
+    DEC -->|"PRDATA, PREADY, PSLVERR"| BR
+```
+
+**Hardware versus software.** The APB wires, bridge, decoder, control flops, and status mux are hardware. The *register map* is a hardware/software contract: hardware invents addresses and bit behavior; firmware uses loads and stores to control it. APB never knows that software named a bit `UART_ENABLE`. It only moves a read or write to an address.
+
+---
+
+### 14.1 Signal ownership and the information each signal carries
+
+#### 14.1.1 Required transaction signals
+
+| Signal | Owner | Meaning and design rule |
+|---|---|---|
+| `PCLK` | clock source | All APB transfers are sampled on its rising edge. |
+| `PRESETn` | reset source | Active-low reset. Reset behavior of user-visible registers is part of the peripheral specification. |
+| `PADDR` | requester/bridge | Byte address of the register access; stable from SETUP through the final ACCESS cycle. |
+| `PSELx` | bridge decoder | One-hot or one-cold-peripheral select generated from `PADDR`; asserted in SETUP and held through ACCESS. |
+| `PENABLE` | requester/bridge | Low in SETUP, high in ACCESS. It is a phase marker, not a general valid signal. |
+| `PWRITE` | requester/bridge | `1` for a write and `0` for a read; stable throughout the transfer. |
+| `PWDATA` | requester/bridge | Write payload; meaningful for writes and stable throughout the transfer. |
+| `PRDATA` | peripheral | Read payload; sampled by the requester when the transfer completes. |
+| `PREADY` | peripheral | `1` completes the ACCESS phase; `0` inserts a wait state. A simple always-ready slave ties it high. |
+| `PSLVERR` | peripheral | Error indication sampled only on the completing ACCESS cycle. Keep it low at other times. |
+
+#### 14.1.2 Common later-edition signals
+
+| Signal | Purpose |
+|---|---|
+| `PSTRB` | One bit per write-data byte. A set bit means that byte lane is valid and may update state. It is meaningful only on writes. |
+| `PPROT` | Access attributes such as privileged/unprivileged, secure/non-secure, and instruction/data. Decode only attributes the peripheral actually enforces. |
+| `PWAKEUP` | Optional activity indication used to wake a clock- or power-managed receiver before a transfer. |
+| user sidebands | Optional project-defined metadata. Their meaning and stability rules must be documented at the integration boundary. |
+
+**Naming trap:** `PSEL` says *which peripheral is participating*; `PENABLE` says *which phase the selected transfer is in*. A slave must not treat `PENABLE` alone as a request because it can be high while some other APB slave is selected.
+
+The only safe write-enable is:
+
+```systemverilog
+apb_write_fire = PSEL && PENABLE && PREADY && PWRITE;
+apb_read_fire  = PSEL && PENABLE && PREADY && !PWRITE;
+```
+
+---
+
+### 14.2 The three-state protocol machine
+
+The bus controller is most easily understood as this state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> SETUP: request available
+    SETUP --> ACCESS: next rising edge
+    ACCESS --> ACCESS: PREADY = 0
+    ACCESS --> SETUP: PREADY = 1 and next request
+    ACCESS --> IDLE: PREADY = 1 and no next request
+```
+
+- **IDLE:** no transfer. `PSEL=0`, `PENABLE=0`.
+- **SETUP:** `PSEL=1`, `PENABLE=0`. Address/control/write data become valid.
+- **ACCESS:** `PSEL=1`, `PENABLE=1`. If `PREADY=0`, all requester-owned transfer signals remain stable. If `PREADY=1`, the transfer completes on that rising edge.
+
+#### 14.2.1 Zero-wait read
+
+```wavedrom
+{ "signal": [
+  { "name": "PCLK",    "wave": "p....." },
+  { "name": "PSEL",    "wave": "01.0.." },
+  { "name": "PENABLE", "wave": "0.10.." },
+  { "name": "PADDR",   "wave": "x3.x..", "data": ["0x20"] },
+  { "name": "PWRITE",  "wave": "x0.x.." },
+  { "name": "PREADY",  "wave": "1....." },
+  { "name": "PRDATA",  "wave": "x.4x..", "data": ["status"] },
+  { "name": "complete","wave": "0.10.." }
+], "head": { "text": "SETUP is followed by one ACCESS cycle; completion is PSEL & PENABLE & PREADY" } }
+```
+
+Minimum transfer latency is therefore two APB cycles: one SETUP plus one ACCESS.
+
+#### 14.2.2 Wait-state read
+
+```wavedrom
+{ "signal": [
+  { "name": "PCLK",    "wave": "p......." },
+  { "name": "PSEL",    "wave": "01....0." },
+  { "name": "PENABLE", "wave": "0.1...0." },
+  { "name": "PADDR",   "wave": "x3....x.", "data": ["0x84 held"] },
+  { "name": "PWRITE",  "wave": "x0....x." },
+  { "name": "PREADY",  "wave": "1.0..1.." },
+  { "name": "PRDATA",  "wave": "x....4x.", "data": ["FIFO data"] },
+  { "name": "complete","wave": "0....10." }
+], "head": { "text": "During ACCESS wait states, address/control remain stable; read data is sampled only on completion" } }
+```
+
+The peripheral can use wait states to:
+
+- wait for a slow internal register bank or clock domain;
+- wait for FIFO data or space, if the register contract permits blocking;
+- sequence a protected or indirect register access;
+- wake a locally gated clock.
+
+**Selection boundary:** do not use unlimited APB wait states to hide a long operation such as flash erase. Prefer a command register plus `BUSY/DONE/ERROR` status, so the fabric is not occupied for thousands of cycles and software can time out explicitly.
+
+#### 14.2.3 Back-to-back accesses
+
+Even when two transfers target the same peripheral, every transfer gets its own SETUP cycle. After the first completion, `PENABLE` must go low for the next SETUP. `PSEL` may remain asserted when the next transfer selects the same slave; address/control may change only for that new SETUP.
+
+If the next transfer targets a different peripheral, the old `PSELx` deasserts and the new select asserts during the next SETUP. There is still no ACCESS-to-ACCESS shortcut.
+
+---
+
+### 14.3 Designing an APB slave
+
+#### 14.3.1 Minimum microarchitecture
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart LR
+    BUS["APB input"] --> QUAL["transfer qualify<br/>PSEL & PENABLE"]
+    BUS --> ADEC["word-address decode"]
+    BUS --> WMASK["PSTRB to bit mask"]
+    ADEC --> WMUX["write-enable matrix"]
+    WMASK --> WMUX
+    QUAL --> WMUX
+    WMUX --> RW["RW control registers"]
+    WMUX --> W1C["W1C status registers"]
+    WMUX --> CMD["pulse/command registers"]
+    RW --> RMUX["read-data mux"]
+    W1C --> RMUX
+    CMD --> RMUX
+    LIVE["live hardware status"] --> RMUX
+    RMUX --> OUT["PRDATA"]
+    ERR["alignment / unmapped / permission check"] --> OUT2["PSLVERR"]
+    LAT["ready generator"] --> OUT3["PREADY"]
+```
+
+The address decode normally ignores the low `log2(DATA_BYTES)` address bits because registers are word-aligned. If byte or halfword accesses are legal, `PSTRB` determines which bytes update.
+
+#### 14.3.2 Register behavior classes
+
+| Class | Read behavior | Write behavior | Common use |
+|---|---|---|---|
+| `RO` | return hardware state | ignore or error | identification, live status |
+| `RW` | return stored value | selected bytes replace stored bits | enable, mode, threshold |
+| `WO` | return zero/undefined documented value | launch command | FIFO push, start pulse |
+| `W1C` | return latched status | writing `1` clears corresponding bit | interrupt/error status |
+| `W1S` | return latched state | writing `1` sets corresponding bit | event injection, enables |
+| read-to-clear | read current state | completing read clears it | use sparingly; reads gain side effects |
+| self-clearing | return pulse or busy state | write starts one-cycle/internal pulse | reset/start commands |
+
+The protocol tells you *when* a read or write occurs. The register specification tells you *what that operation means*. Verification must cover both.
+
+#### 14.3.3 Synthesizable slave skeleton
+
+```systemverilog
+logic        apb_fire, wr_fire;
+logic [31:0] byte_mask;
+
+assign PREADY   = 1'b1;  // zero-wait peripheral
+assign apb_fire = PSEL && PENABLE && PREADY;
+assign wr_fire  = apb_fire && PWRITE;
+
+always_comb begin
+  byte_mask = {
+    {8{PSTRB[3]}}, {8{PSTRB[2]}}, {8{PSTRB[1]}}, {8{PSTRB[0]}}
+  };
+end
+
+always_ff @(posedge PCLK or negedge PRESETn) begin
+  if (!PRESETn) begin
+    ctrl_q <= 32'h0000_0000;
+    irq_q  <= 1'b0;
+  end else begin
+    if (wr_fire && PADDR[11:2] == 10'h000)
+      ctrl_q <= (ctrl_q & ~byte_mask) | (PWDATA & byte_mask);
+
+    // W1C: hardware set and software clear need an explicit priority rule.
+    irq_q <= (irq_q | irq_set_hw) &
+             ~(wr_fire && PADDR[11:2] == 10'h001 && PWDATA[0] && PSTRB[0]);
+  end
+end
+
+always_comb begin
+  PRDATA  = 32'h0000_0000;
+  PSLVERR = 1'b0;
+  unique case (PADDR[11:2])
+    10'h000: PRDATA = ctrl_q;
+    10'h001: PRDATA = {31'b0, irq_q};
+    10'h002: PRDATA = peripheral_id;
+    default: begin
+      PRDATA  = 32'h0000_0000;
+      PSLVERR = PSEL && PENABLE; // sampled only when PREADY=1
+    end
+  endcase
+end
+```
+
+This example intentionally keeps `PREADY=1`. If latency is variable, register the request on SETUP, launch the internal operation once, hold the request context, and raise `PREADY` only when the result is available. Never relaunch the internal operation on every ACCESS wait cycle.
+
+#### 14.3.4 Side-effect and concurrency traps
+
+- **Write only on completion.** Updating on `PSEL && PWRITE` writes once in SETUP and again in every wait state.
+- **Read side effects only on completion.** A read-to-clear register must clear on `apb_read_fire`, not when its address first appears.
+- **Define hardware-set versus software-clear priority.** Interrupt status often changes from both domains in the same cycle.
+- **Respect `PSTRB`.** Ignoring byte strobes corrupts neighboring fields during byte writes.
+- **Return deterministic data for reserved addresses.** Zero plus `PSLVERR` is easier to debug than X-propagation, unless the SoC error policy requires another behavior.
+- **Do not cross clocks by sampling APB signals directly.** Use a request/response CDC bridge or an asynchronous FIFO/handshake. APB itself is synchronous to `PCLK`.
+
+---
+
+### 14.4 Designing the AXI/AHB-to-APB bridge
+
+The bridge converts an elastic, possibly pipelined upstream transaction into one serialized APB transfer. Its minimum state is:
+
+1. capture one upstream request;
+2. decode the APB slave and drive SETUP;
+3. drive ACCESS and wait for `PREADY`;
+4. translate `PRDATA/PSLVERR` into the upstream response;
+5. release the buffered request only after that response is accepted.
+
+```mermaid
+stateDiagram-v2
+    [*] --> EMPTY
+    EMPTY --> SETUP: capture upstream request
+    SETUP --> ACCESS: drive PSEL, then PENABLE
+    ACCESS --> ACCESS: PREADY = 0
+    ACCESS --> RESP: PREADY = 1
+    RESP --> EMPTY: upstream accepts response
+```
+
+#### 14.4.1 Why buffering is mandatory
+
+An AXI write address and write data can arrive independently. The bridge must not start APB until it owns both. An AXI read may remain outstanding while the APB slave waits. Upstream payloads cannot simply be wired combinationally to APB because the upstream source is allowed to move on after its handshake. Therefore the bridge needs holding registers for address, direction, write data, byte strobes, protection attributes, and the upstream transaction identity needed to form the response.
+
+#### 14.4.2 Throughput and queue sizing
+
+For zero-wait APB, a serialized transfer takes two APB clocks, so the raw upper bound is:
+
+$$
+T_{\text{APB,max}}=\frac{f_{\text{PCLK}}\cdot W_{\text{data}}}{2}
+$$
+
+before protocol overhead and register semantics. At 100 MHz and 32 bits, this is 200 MB/s theoretical, but APB is normally used far below that. If upstream traffic can burst, the bridge needs buffering or must backpressure the upstream interface. A deeper queue absorbs bursts but does not increase APB service rate.
+
+#### 14.4.3 Error translation
+
+`PSLVERR` is a one-transfer error. The bridge maps it to the upstream error response (`SLVERR` in AXI, `ERROR` in AHB-Lite). Decode misses are often generated by the bridge itself rather than by a selected APB peripheral. Timeouts are an SoC policy, not an APB protocol feature; if implemented, the bridge should report the timeout address and selected slave in sticky diagnostic registers.
+
+---
+
+### 14.5 Verification properties that define a correct APB interface
+
+These properties are more valuable than a large random test alone because they state the protocol invariants directly.
+
+```systemverilog
+// SETUP must advance to ACCESS.
+apb_setup_to_access:
+  assert property (@(posedge PCLK) disable iff (!PRESETn)
+    PSEL && !PENABLE |=> PSEL && PENABLE);
+
+// A waiting ACCESS holds all requester-owned transfer information.
+apb_wait_stable:
+  assert property (@(posedge PCLK) disable iff (!PRESETn)
+    PSEL && PENABLE && !PREADY |=>
+      PSEL && PENABLE &&
+      $stable({PADDR, PWRITE, PWDATA, PSTRB, PPROT}));
+
+// Controller-level property: an ACCESS phase has some selected slave.
+// Use the full PSEL vector here; PENABLE can be high while this individual
+// slave's PSEL bit is low because another slave is selected.
+apb_enable_requires_some_select:
+  assert property (@(posedge PCLK) disable iff (!PRESETn)
+    PENABLE |-> (|PSEL_VECTOR));
+
+apb_select_is_onehot:
+  assert property (@(posedge PCLK) disable iff (!PRESETn)
+    $onehot0(PSEL_VECTOR));
+
+// Error is meaningful only on a completing ACCESS.
+apb_error_only_on_completion:
+  assert property (@(posedge PCLK) disable iff (!PRESETn)
+    PSLVERR |-> PSEL && PENABLE && PREADY);
+```
+
+For a slave, also prove:
+
+- exactly one architectural side effect per completed write;
+- no side effect during SETUP or a wait state;
+- every supported address returns the specified reset and live values;
+- byte writes modify only selected byte lanes;
+- reserved bits read as the documented value and ignore/reject writes;
+- every accepted transfer eventually completes, assuming the internal operation eventually completes;
+- reset cannot leave a half-issued command or an interrupt spuriously asserted.
+
+#### 14.5.1 Coverage plan
+
+Cross at least:
+
+- read/write × every address class;
+- zero wait / one wait / many waits;
+- legal / unmapped / protection error;
+- every `PSTRB` pattern the system permits;
+- back-to-back same-slave / different-slave;
+- reset in IDLE, SETUP, ACCESS, and response return;
+- simultaneous hardware and software updates to status bits.
+
+---
+
+### 14.6 Debugging from a waveform
+
+Use this fixed order:
+
+1. **Was the intended `PSELx` asserted?** If not, debug the bridge address map.
+2. **Was there one SETUP cycle with `PENABLE=0`?** If not, the controller state machine is wrong.
+3. **Did ACCESS begin with `PENABLE=1` and stable payload?**
+4. **If `PREADY=0`, did address/control/data stay stable?**
+5. **On the completing edge, what were `PRDATA` and `PSLVERR`?**
+6. **Did the register side effect occur exactly once at that edge?**
+7. **Did the bridge return the matching upstream response?**
+
+Common symptoms:
+
+| Symptom | Likely cause |
+|---|---|
+| register writes twice | side effect qualified by `PSEL` rather than completion |
+| first read works, next read is stale | read mux registered at wrong phase or request relaunched |
+| bus hangs forever | slave never raises `PREADY`, lost CDC response, or bridge selected an unpowered block |
+| neighboring byte fields change | `PSTRB` ignored or mask constructed incorrectly |
+| wrong peripheral responds | overlapping address windows or non-one-hot `PSELx` decode |
+| error seen one transfer late | `PSLVERR` registered/qualified outside the final ACCESS cycle |
+
+---
+
+### 14.7 Designer sign-off checklist
+
+- [ ] Exact APB edition/profile and optional signals are written in the interface specification.
+- [ ] Address map, alignment, endianness, reset values, reserved bits, and access types are documented.
+- [ ] `PSEL` and `PENABLE` phase behavior is correct for zero-wait, wait-state, and back-to-back transfers.
+- [ ] All requester-owned signals remain stable during wait states.
+- [ ] Side effects occur only on `PSEL && PENABLE && PREADY`.
+- [ ] `PSTRB`, privilege/security attributes, and illegal accesses have explicit behavior.
+- [ ] CDC, clock gating, power isolation, and timeout ownership are defined outside the protocol.
+- [ ] Assertions run at block and SoC level; register-model tests agree with RTL.
+- [ ] Firmware-visible diagnostics identify decode errors, slave errors, and timeouts.
+
+---
+
+### 14.8 What to learn next
+
+APB teaches phase-correct register access. §15 (AHB and AHB-Lite) adds an overlapped address/data pipeline and bursts. §16 (AXI) separates the pipeline into five independently backpressured channels and adds IDs and multiple outstanding transactions.
+
+---
+
+## 15. AMBA AHB and AHB-Lite — The Two-Phase Pipelined Bus
+
+> **Audience:** a new RTL or SoC designer moving from simple peripheral buses to a pipelined memory bus.
+>
+> **Scope:** AHB-Lite endpoint design first, then the arbitration features of full AHB. Signal availability differs by AHB edition and profile; use the project interface specification as the final contract.
+
+> **Prerequisites:** §14 (APB) for synchronous register transactions.
+>
+> **Official specification:** Arm, [AMBA AHB Protocol Specification, IHI 0033, latest edition](https://developer.arm.com/documentation/ihi0033/latest).
+
+---
+
+### 15.0 The one idea that makes AHB faster than APB
+
+AHB overlaps the **address phase of transfer N+1** with the **data phase of transfer N**. Address/control and data use different bus resources, so after filling the pipeline a new transfer can complete every clock.
+
+```wavedrom
+{ "signal": [
+  { "name": "HCLK",          "wave": "p......" },
+  { "name": "address phase", "wave": "x345x..", "data": ["A0", "A1", "A2"] },
+  { "name": "data phase",    "wave": "x.678x.", "data": ["D0", "D1", "D2"] },
+  { "name": "HREADY",        "wave": "1......" }
+], "head": { "text": "AHB pipeline: address N+1 overlaps data N" } }
+```
+
+This overlap creates the central reasoning rule:
+
+> At any clock, the address/control signals describe the *next* transfer, while `HWDATA/HRDATA/HRESP` describe the *previous accepted* transfer.
+
+Most first AHB bugs come from forgetting that these two phases belong to different transactions.
+
+AHB-Lite has one manager and removes arbitration. Full AHB adds multiple managers, grants, locks, and—in older profiles—more complex retry/split responses. Endpoint designers should learn AHB-Lite first because the transfer pipeline is the same.
+
+---
+
+### 15.1 Signal groups and ownership
+
+#### 15.1.1 Manager-to-subordinate address/control
+
+| Signal | Meaning |
+|---|---|
+| `HADDR` | byte address for the address phase |
+| `HTRANS` | transfer type: `IDLE`, `BUSY`, `NONSEQ`, or `SEQ` |
+| `HWRITE` | write (`1`) or read (`0`) |
+| `HSIZE` | bytes per transfer, encoded as $\log_2(\text{bytes})$ |
+| `HBURST` | single, incrementing, or wrapping burst and fixed length where applicable |
+| `HPROT` | access attributes such as data/instruction, privilege, bufferability, cacheability; later editions add attributes |
+| `HMASTLOCK` | locked sequence indication where supported |
+| `HWDATA` | write data for the data phase, one cycle after its address/control phase |
+
+#### 15.1.2 Interconnect/subordinate-to-manager
+
+| Signal | Meaning |
+|---|---|
+| `HSELx` | address decoder selected this subordinate for the current address phase |
+| `HRDATA` | read data for the current data phase |
+| `HREADYOUT` | selected subordinate completes (`1`) or extends (`0`) the current data phase |
+| `HREADY` | interconnect feedback seen by all participants after selecting/multiplexing the active `HREADYOUT` |
+| `HRESP` | response status. AHB-Lite uses success/error; full/older AHB profiles can have additional responses. |
+
+The interconnect must pipeline the selected-slave identity from the address phase into the data phase so it chooses the correct `HRDATA`, `HREADYOUT`, and `HRESP`.
+
+#### 15.1.3 Transfer-type encoding
+
+| `HTRANS` | Valid transfer? | Meaning |
+|---|---:|---|
+| `IDLE` | no | no data transfer; subordinate must respond success with no side effect |
+| `BUSY` | no | manager pauses inside a burst while retaining burst context |
+| `NONSEQ` | yes | first transfer of a burst or an unrelated single transfer |
+| `SEQ` | yes | subsequent transfer whose address follows the active burst rules |
+
+`HTRANS[1]=1` is a convenient valid-transfer test for `NONSEQ` or `SEQ`, but a subordinate must still qualify it with `HSEL` and the accepted address phase.
+
+---
+
+### 15.2 What `HREADY` really means
+
+`HREADY=1` on a rising edge performs two jobs simultaneously:
+
+1. it completes the current data phase;
+2. it accepts the address/control phase currently on the bus.
+
+When `HREADY=0`, the current data phase is extended and the address/control phase cannot advance. The manager holds the address/control transfer stable until `HREADY` returns high.
+
+```wavedrom
+{ "signal": [
+  { "name": "HCLK",   "wave": "p........" },
+  { "name": "HADDR",  "wave": "x34...5x.", "data": ["A0", "A1 held", "A2"] },
+  { "name": "HTRANS", "wave": "x34...5x.", "data": ["NONSEQ", "SEQ held", "SEQ"] },
+  { "name": "HRDATA", "wave": "x.6...7x.", "data": ["D0 waits", "D1"] },
+  { "name": "HREADY", "wave": "1.0..1..." },
+  { "name": "done",   "wave": "0....1..." }
+], "head": { "text": "A wait state stretches the data phase and freezes the following address phase" } }
+```
+
+**Causal trace:**
+
+- `A0` is accepted when `HREADY=1`.
+- Its data phase begins next cycle.
+- The subordinate lowers `HREADYOUT`; the interconnect presents `HREADY=0`.
+- `A1`, which was trying to occupy the next address phase, must remain stable.
+- When `HREADY` rises, `D0` completes and `A1` is accepted on the same edge.
+
+This global pipeline stall is AHB's scaling limit: one slow selected transfer prevents unrelated progress on that bus layer. Multi-layer AHB or a crossbar reduces contention by providing several independent paths, but an individual path still obeys this rule.
+
+---
+
+### 15.3 Reads, writes, and the address/data phase alignment
+
+#### 15.3.1 Read
+
+During address phase N, the manager drives `HADDR`, `HTRANS`, `HWRITE=0`, `HSIZE`, `HBURST`, and attributes. The selected subordinate returns `HRDATA` during the following data phase. Data is sampled only when `HREADY=1`.
+
+#### 15.3.2 Write
+
+The manager drives write address/control in address phase N, then drives the corresponding `HWDATA` in data phase N+1. `HWDATA` must remain stable while that data phase is extended.
+
+```wavedrom
+{ "signal": [
+  { "name": "HCLK",   "wave": "p......" },
+  { "name": "HADDR",  "wave": "x34x...", "data": ["WA", "RA"] },
+  { "name": "HWRITE", "wave": "x10x..." },
+  { "name": "HWDATA", "wave": "x.5x...", "data": ["WD"] },
+  { "name": "HRDATA", "wave": "x..6x..", "data": ["RD"] },
+  { "name": "HREADY", "wave": "1......" }
+], "head": { "text": "Write data follows its write address by one accepted pipeline phase" } }
+```
+
+**Implementation trap:** do not decode the current `HADDR` to qualify the current `HWDATA`. Pipeline the accepted write address/control (or at least decoded write enables and lane mask) into a data-phase register.
+
+---
+
+### 15.4 Bursts and address generation
+
+AHB bursts amortize arbitration and describe a sequence with `HBURST`, `HSIZE`, and the first address.
+
+| `HBURST` family | Length | Address behavior |
+|---|---:|---|
+| `SINGLE` | 1 | one `NONSEQ` transfer |
+| `INCR` | undefined until terminated | address increments by beat size |
+| `INCR4/8/16` | 4/8/16 | fixed-length incrementing |
+| `WRAP4/8/16` | 4/8/16 | increments inside an aligned wrap region |
+
+For beat size $B=2^{HSIZE}$ bytes:
+
+$$A_{i+1}=A_i+B$$
+
+for an incrementing burst. For an $N$-beat wrapping burst, the wrap region has $N\cdot B$ bytes and base:
+
+$$
+A_{\text{wrap}}=\left\lfloor\frac{A_0}{N B}\right\rfloor N B
+$$
+
+The next address wraps from the last byte of that region back to `A_wrap`.
+
+Example: `WRAP4`, 4-byte beats, start `0x3C`. Region size is 16 B and base is `0x30`, so addresses are `0x3C, 0x30, 0x34, 0x38`.
+
+#### 15.4.1 Burst obligations
+
+- first valid beat is `NONSEQ`; following beats are `SEQ`;
+- address increments by the transfer size, not by bus width;
+- control describing the burst remains consistent;
+- a `BUSY` cycle may pause but does not end the burst;
+- subordinate selection and system address-map boundaries can constrain legal burst placement;
+- the manager must not claim a fixed-length burst and terminate it early except where the specification permits an error/abort behavior.
+
+---
+
+### 15.5 Subordinate microarchitecture
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart LR
+    AP["address phase<br/>HSEL HTRANS HADDR<br/>HWRITE HSIZE"] --> ACCEPT["accept when HREADY=1"]
+    ACCEPT --> PIPE["data-phase context register<br/>valid, offset, write, size,<br/>attributes, byte-lane mask"]
+    PIPE --> CTRL["operation controller"]
+    CTRL --> SRAM["SRAM / register bank / FIFO"]
+    SRAM --> RESP["HRDATA<br/>HREADYOUT<br/>HRESP"]
+    CTRL --> RESP
+```
+
+#### 15.5.1 Address-phase capture
+
+```systemverilog
+wire addr_accept = HSEL && HTRANS[1] && HREADY;
+
+always_ff @(posedge HCLK or negedge HRESETn) begin
+  if (!HRESETn) begin
+    d_valid_q <= 1'b0;
+  end else if (HREADY) begin
+    d_valid_q <= HSEL && HTRANS[1];
+    d_addr_q  <= HADDR;
+    d_write_q <= HWRITE;
+    d_size_q  <= HSIZE;
+    d_prot_q  <= HPROT;
+  end
+end
+```
+
+The context advances only when `HREADY=1`, because that is when the address phase is accepted. During a wait state, the data-phase context must remain unchanged.
+
+#### 15.5.2 Data-phase completion
+
+For a zero-wait register block, `HREADYOUT=1` and response/data are combinational from the registered data-phase context. For SRAM or a slow operation:
+
+1. capture the address phase;
+2. start the operation once;
+3. drive `HREADYOUT=0` while it runs;
+4. present stable `HRDATA/HRESP`;
+5. raise `HREADYOUT=1` to complete.
+
+Writes update storage only on the completing data-phase edge:
+
+```systemverilog
+wire data_fire = d_valid_q && HREADY; // selected HREADY after response mux
+wire write_fire = data_fire && d_write_q && (HRESP == OKAY);
+```
+
+The exact internal qualify signal depends on where the subordinate sits relative to the interconnect response mux, but the architectural rule is invariant: one side effect for one successfully completed data phase.
+
+#### 15.5.3 Byte lanes, alignment, and endianness
+
+AHB uses `HSIZE` plus low address bits to identify active byte lanes. A 32-bit bus can legally carry byte, halfword, or word transfers if the endpoint supports them. The design must document:
+
+- permitted sizes;
+- alignment requirements and error behavior;
+- mapping between address bits and byte lanes;
+- byte order;
+- behavior when a transfer crosses the native data-word boundary.
+
+Do not silently alias misaligned addresses unless that is an intentional system contract.
+
+---
+
+### 15.6 Response and error behavior
+
+AHB-Lite provides success and error behavior. An error response is not merely an error bit; its timing lets the manager cancel or replace the following speculative address phase. Implement the response sequence required by the selected AHB edition/profile, including the specified multi-cycle behavior where applicable.
+
+For design review, separate three questions:
+
+1. **Protocol response:** are `HREADYOUT/HRESP` legal cycle by cycle?
+2. **Architectural effect:** did a failed write leave state unchanged?
+3. **System policy:** where is the fault logged and how does software learn its address and source?
+
+A default subordinate should terminate unmapped transfers with an error rather than allowing the bus to hang.
+
+---
+
+### 15.7 Full AHB: arbitration, ownership, and locks
+
+AHB-Lite assumes one manager. Full AHB adds an arbiter and signals such as bus request/grant and current-master identity.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart LR
+    M0["manager 0"] --> ARB["arbiter<br/>requests, priority,<br/>fairness, lock ownership"]
+    M1["manager 1"] --> ARB
+    MN["manager N"] --> ARB
+    ARB --> MUX["address/control/data mux"]
+    MUX --> BUS["shared AHB bus"]
+    BUS --> S0["subordinate 0"]
+    BUS --> S1["subordinate 1"]
+```
+
+The arbiter may decide the next owner while the current transfer's data phase finishes, but ownership changes only at a legal transfer boundary. A manager must observe its grant before driving a non-IDLE transfer.
+
+#### 15.7.1 Locked sequences
+
+A locked sequence prevents another manager from taking the shared bus between related transfers. It does **not by itself** define a software atomic operation; the memory system and endpoint must also provide the required atomicity and ordering. Locks reduce concurrency and can create starvation if misused, so modern systems often prefer exclusive monitors or protocol-native atomics.
+
+#### 15.7.2 Why AXI replaced full AHB for high-performance fabrics
+
+AHB has:
+
+- one shared address/control stream;
+- a globally coupled address/data pipeline;
+- no transaction IDs;
+- no general multiple-outstanding/out-of-order completion model.
+
+It can achieve one beat per cycle on a local path, but a long-latency access stalls that path. AXI keeps the one-beat-per-cycle goal while decoupling reads, writes, addresses, data, responses, and transaction identity.
+
+---
+
+### 15.8 Bridges and clock-domain boundaries
+
+#### 15.8.1 AHB-to-APB
+
+The bridge captures an accepted AHB address phase, stalls the AHB data phase, performs APB SETUP and ACCESS, then completes AHB with the APB data/error. The minimum latency exceeds a normal AHB target because APB itself requires two phases.
+
+#### 15.8.2 AHB clock-domain crossing
+
+AHB's pipelined phases must not be sampled asynchronously. A CDC bridge:
+
+- captures the complete request context;
+- transfers it with a safe toggle/handshake or asynchronous FIFO;
+- holds the AHB data phase with `HREADYOUT=0`;
+- returns a synchronized response;
+- guarantees reset cannot duplicate or lose the outstanding request.
+
+Because AHB-Lite has at most the current pipeline transfer on a path, the bridge is simpler than a multi-ID AXI CDC, but request/response conservation must still be proved.
+
+---
+
+### 15.9 Protocol assertions and verification plan
+
+```systemverilog
+// A stalled address phase remains stable.
+ahb_control_stable_while_waiting:
+  assert property (@(posedge HCLK) disable iff (!HRESETn)
+    !HREADY |=> $stable({HADDR, HTRANS, HWRITE, HSIZE, HBURST, HPROT}));
+
+// A stalled write data phase remains stable.
+ahb_wdata_stable_while_waiting:
+  assert property (@(posedge HCLK) disable iff (!HRESETn)
+    d_valid_q && d_write_q && !HREADY |=> $stable(HWDATA));
+
+// SEQ must have active burst context established by NONSEQ.
+ahb_seq_requires_burst:
+  assert property (@(posedge HCLK) disable iff (!HRESETn)
+    HREADY && HTRANS == SEQ |-> burst_active_q);
+```
+
+Scoreboard every accepted address phase into a queue containing address, direction, size, attributes, expected data, and expected response. Retire from the queue only when the corresponding data phase completes. This makes the address/data offset explicit in the testbench.
+
+Cover:
+
+- single read/write, every supported size and alignment;
+- zero, one, and long wait sequences;
+- back-to-back read/read, write/write, read/write, write/read;
+- all supported burst encodings, wrap boundary, `BUSY` insertion;
+- error on first/middle/last burst beat;
+- reset during wait and at transfer boundaries;
+- full-AHB grant changes, fairness, and locks if implemented;
+- decode miss and powered-down subordinate behavior.
+
+---
+
+### 15.10 Waveform debug checklist
+
+For a failed transfer, annotate two rows: **address phase owner** and **data phase owner**. Then ask:
+
+1. Was `HTRANS` valid and accepted with `HREADY=1`?
+2. Which slave did `HSEL` select in that address phase?
+3. One accepted phase later, did the interconnect select that slave's response?
+4. For a write, did the correct `HWDATA` align with the pipelined write context?
+5. During `HREADY=0`, did address/control and data remain stable?
+6. Did the subordinate complete exactly once and return the intended response?
+7. In a burst, was the first beat `NONSEQ`, the rest `SEQ`, and each address correct?
+
+| Symptom | Likely cause |
+|---|---|
+| write lands at next address | current `HADDR` used with previous `HWDATA` |
+| read data from wrong slave | `HSEL` not pipelined into response mux |
+| burst corrupts at wrap | wrap-region math used bus width instead of `HSIZE` |
+| duplicate operation after wait | internal request launched every stalled cycle |
+| bus locks after decode miss | no default error subordinate |
+| intermittent CDC failure | direct sampling or reset mismatch across the bridge |
+
+---
+
+### 15.11 Designer sign-off checklist
+
+- [ ] AHB edition, AHB-Lite/full profile, widths, optional attributes, and response set are fixed.
+- [ ] Address phase and data phase are represented by separate RTL state/context.
+- [ ] `HREADY` gating is applied to every pipeline state update.
+- [ ] Wait-state stability holds for address/control and write data.
+- [ ] Burst generation, wrapping, size, alignment, and termination are verified.
+- [ ] Error response timing and no-side-effect behavior match the profile.
+- [ ] Decoder, response mux, and default subordinate pipeline selection consistently.
+- [ ] Arbitration fairness, ownership transfer, and locks are proven if full AHB is used.
+- [ ] CDC and power-domain behavior preserve exactly-once request/response semantics.
+
+---
+
+### 15.12 What to learn next
+
+§16 (AXI) keeps pipelining but removes AHB's global coupling: each direction and phase receives its own VALID/READY channel, and IDs allow many transactions to be outstanding.
+
+---
+
+## 16. AMBA AXI — From Five Handshakes to a High-Performance Endpoint
+
+> **Audience:** a new IC designer who needs to design, integrate, verify, or debug AXI4/AXI5-class memory-mapped interfaces.
+>
+> **Scope:** the stable AXI memory-mapped model—channels, payload stability, bursts, byte lanes, IDs, ordering, outstanding work, endpoint/fabric microarchitecture, bridges, verification, and performance. Later AXI editions add optional features; never infer support from the bus name alone.
+
+> **Prerequisites:** [On-Chip Transaction Protocols](01_AHB_AXI_APB.md) §2–§5 and §15 (AHB and AHB-Lite).
+>
+> **Official specifications:** Arm, [AMBA AXI and ACE Protocol Specification, IHI 0022, latest edition](https://developer.arm.com/documentation/ihi0022/latest); Arm, [AMBA AXI-Stream Protocol Specification, IHI 0051, latest edition](https://developer.arm.com/documentation/ihi0051/latest).
+
+---
+
+### 16.0 The contract in one picture
+
+AXI is not one request bus. It is five independent, unidirectional VALID/READY channels:
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart LR
+    subgraph M["Manager / initiator"]
+      MT["transaction issue queues<br/>ID allocation<br/>write-data steering<br/>response retirement"]
+    end
+    subgraph S["Subordinate / target"]
+      ST["AW queue + W queue<br/>AR queue<br/>burst engines<br/>ID-tagged response queues"]
+    end
+    MT -->|"AW: write address + attributes"| ST
+    MT -->|"W: write data + byte strobes"| ST
+    ST -->|"B: one write response per burst"| MT
+    MT -->|"AR: read address + attributes"| ST
+    ST -->|"R: read data beats + response"| MT
+```
+
+Each arrow has its own `VALID`, `READY`, and payload. A beat transfers on a rising edge iff both are high. The five channels can stall independently.
+
+This structure enables:
+
+- simultaneous reads and writes;
+- addresses to run ahead of returned data;
+- multiple transactions to be outstanding;
+- independent pipelining/register slicing;
+- variable-latency targets;
+- response reordering where IDs permit it.
+
+It also creates the obligations that dominate AXI RTL: correlate independent write address/data, preserve payload under backpressure, count burst beats, track IDs, enforce ordering, and reserve response capacity before accepting more work.
+
+---
+
+### 16.1 Channel signal dictionary
+
+The `x` in `Ax*` below means the corresponding field exists on both `AW*` and `AR*`.
+
+#### 16.1.1 Global
+
+| Signal | Meaning |
+|---|---|
+| `ACLK` | interface clock |
+| `ARESETn` | active-low reset; interfaces normally drive `xVALID` low after reset |
+
+#### 16.1.2 Write address: AW
+
+| Signal | Meaning |
+|---|---|
+| `AWVALID/AWREADY` | write-address handshake |
+| `AWADDR` | first byte address |
+| `AWID` | transaction identity |
+| `AWLEN` | beats minus one; burst has `AWLEN+1` beats |
+| `AWSIZE` | $\log_2$ bytes per beat |
+| `AWBURST` | `FIXED`, `INCR`, or `WRAP` |
+| `AWLOCK` | exclusive/locked-access information supported by the profile |
+| `AWCACHE` | memory/cache behavior attributes |
+| `AWPROT` | privilege, security, and instruction/data attributes |
+| `AWQOS`, `AWREGION` | QoS hint and region identifier where implemented |
+| optional sidebands | edition/profile-specific atomic, domain, trace, tag, user, or other attributes |
+
+#### 16.1.3 Write data: W
+
+| Signal | Meaning |
+|---|---|
+| `WVALID/WREADY` | write-data handshake |
+| `WDATA` | data beat |
+| `WSTRB` | one valid bit per byte lane |
+| `WLAST` | marks the final beat of the burst |
+| `WUSER` | optional user metadata |
+
+**AXI4 rule:** there is no `WID`. Write data is not interleaved between write transactions. The manager presents W bursts in the order required by the accepted write-address stream on that connection. An interconnect that combines managers must maintain its own source/route context.
+
+#### 16.1.4 Write response: B
+
+| Signal | Meaning |
+|---|---|
+| `BVALID/BREADY` | write-response handshake |
+| `BID` | identifies the completed write transaction |
+| `BRESP` | `OKAY`, `EXOKAY`, `SLVERR`, or `DECERR` as applicable |
+
+There is one B response for the entire write burst, not one per W beat.
+
+#### 16.1.5 Read address: AR
+
+AR has the read counterparts `ARVALID/ARREADY`, `ARADDR`, `ARID`, `ARLEN`, `ARSIZE`, `ARBURST`, `ARLOCK`, `ARCACHE`, `ARPROT`, `ARQOS`, `ARREGION`, plus optional profile fields.
+
+#### 16.1.6 Read data: R
+
+| Signal | Meaning |
+|---|---|
+| `RVALID/RREADY` | read-data handshake |
+| `RID` | identity of the read transaction producing this beat |
+| `RDATA` | returned data |
+| `RRESP` | response for this beat |
+| `RLAST` | final beat of that read burst |
+
+Read data from different IDs may be interleaved/reordered where the profile, interconnect, and endpoints permit it. Beats within one burst remain ordered.
+
+---
+
+### 16.2 The handshake laws
+
+Every channel obeys the same four laws:
+
+1. transfer occurs only on `VALID && READY`;
+2. a source must assert `VALID` without waiting for `READY`;
+3. after asserting `VALID`, the source holds `VALID` and payload stable until transfer;
+4. channel handshakes are independent unless an explicit protocol dependency says otherwise.
+
+```wavedrom
+{ "signal": [
+  { "name": "ACLK",    "wave": "p......." },
+  { "name": "xVALID",  "wave": "0.1....0" },
+  { "name": "xREADY",  "wave": "0...1..0" },
+  { "name": "payload", "wave": "x.3....x", "data": ["must remain stable"] },
+  { "name": "fire",    "wave": "0...1..0" }
+], "head": { "text": "The source owns VALID and payload; the sink owns READY" } }
+```
+
+Canonical assertion for each source channel:
+
+```systemverilog
+assert property (@(posedge ACLK) disable iff (!ARESETn)
+  xVALID && !xREADY |=> xVALID && $stable(xPAYLOAD));
+```
+
+#### 16.2.1 No combinational paths across an interface
+
+A robust AXI interface avoids combinational input-to-output paths that create long timing arcs or loops through connected components. Register slices/skid buffers preserve one beat per cycle while breaking timing. A two-entry elastic slice is the normal minimum when backpressure itself is registered.
+
+#### 16.2.2 Reset
+
+During/after reset, source `xVALID` outputs must be deasserted according to the selected protocol reset rule. `xREADY` can usually take either value, but keeping it low until local state is initialized simplifies integration. Resetting one clock or power domain independently requires a bridge-level flush or quiesce protocol; AXI alone cannot make an already accepted transaction disappear safely.
+
+---
+
+### 16.3 Read transaction: end to end
+
+```mermaid
+sequenceDiagram
+    participant M as Manager
+    participant F as Interconnect
+    participant S as Subordinate
+    M->>F: AR(ID=5, addr, len=3, size=3)
+    F->>S: routed AR
+    Note over M,S: other AR/AW traffic can proceed while memory works
+    S-->>F: R(ID=5, beat 0, RLAST=0)
+    F-->>M: R beat 0
+    S-->>F: R(ID=5, beat 1, RLAST=0)
+    F-->>M: R beat 1
+    S-->>F: R(ID=5, beat 2, RLAST=0)
+    F-->>M: R beat 2
+    S-->>F: R(ID=5, beat 3, RLAST=1)
+    F-->>M: final R beat
+```
+
+The manager allocates an ID/scoreboard entry before presenting AR. After the AR handshake, it is free to issue more addresses. Each accepted R beat:
+
+- finds the scoreboard entry by `RID`;
+- writes/forwards data to the correct destination;
+- records `RRESP`;
+- increments the received-beat count;
+- retires the transaction only when the expected final beat handshakes with `RLAST=1`.
+
+**Never retire on `RVALID` alone.** If `RREADY=0`, the same beat is merely being offered and has not transferred.
+
+---
+
+### 16.4 Write transaction: two independent inputs, one completion
+
+```mermaid
+sequenceDiagram
+    participant M as Manager
+    participant S as Subordinate
+    par independent address channel
+      M->>S: AW(ID=2, addr, len=1)
+    and independent data channel
+      M->>S: W(beat 0, WLAST=0)
+      M->>S: W(beat 1, WLAST=1)
+    end
+    Note over S: commit only after address and all data are correlated
+    S-->>M: B(ID=2, BRESP=OKAY)
+```
+
+The subordinate cannot assume AW arrives before W. Legal designs buffer whichever arrives first. A minimal write receiver therefore has:
+
+- an AW FIFO containing address, ID, burst geometry, and attributes;
+- a W FIFO or streaming buffer containing data, strobes, and `WLAST`;
+- a pairing/burst engine that associates the next W stream with the correct accepted AW;
+- storage/commit logic;
+- a B-response FIFO.
+
+**Dependency rule:** the subordinate must not assert `BVALID` until it has accepted the write address and every required write-data beat, and any other completion condition required by the profile is met. The manager should normally be able to accept B independently of issuing more writes.
+
+#### 16.4.1 Coupled acceptance pattern: legal in principle, usually a poor endpoint
+
+```systemverilog
+// Couples the two handshakes and accepts only when both payloads are present.
+assign AWREADY = WVALID && have_space;
+assign WREADY  = AWVALID && have_space;
+```
+
+A compliant AXI source asserts each `VALID` without waiting for its own `READY`, so this pattern is not by itself a protocol deadlock. It is nevertheless usually undesirable: it removes independent buffering, can create long combinational paths, prevents acceptance of whichever channel arrives first, and makes throughput sensitive to alignment of AW and W. The robust receiver buffers AW and W independently, then pairs them internally. A true deadlock appears only when this coupling joins other illegal source dependencies or finite-buffer cycles.
+
+---
+
+### 16.5 Burst geometry
+
+For `LEN=L`, a burst contains:
+
+$$N=L+1 \text{ beats}$$
+
+For `SIZE=S`, each beat transfers:
+
+$$B=2^S \text{ bytes}$$
+
+#### 16.5.1 Address sequence
+
+- `FIXED`: every beat uses the same address; useful for FIFO-style ports.
+- `INCR`: address advances by `B` bytes per beat.
+- `WRAP`: address advances inside an aligned region of `N·B` bytes and wraps to the region base.
+
+For an incrementing burst:
+
+$$A_i=A_0+iB$$
+
+For a wrapping burst:
+
+$$
+A_{\text{wrap}}=\left\lfloor\frac{A_0}{N B}\right\rfloor N B,\qquad
+A_i=A_{\text{wrap}}+\big((A_0-A_{\text{wrap}}+iB)\bmod NB\big)
+$$
+
+WRAP supports only the lengths and alignment rules permitted by the specification (commonly 2, 4, 8, or 16 beats).
+
+#### 16.5.2 4-KiB boundary rule
+
+An AXI burst must not cross a 4-KiB address boundary. A practical check is:
+
+$$
+\left\lfloor \frac{A_0}{4096}\right\rfloor
+=
+\left\lfloor \frac{A_{\text{last-byte}}}{4096}\right\rfloor
+$$
+
+where `A_last-byte` accounts for every beat and byte lane. The rule prevents one burst from straddling decode/translation boundaries inside an interconnect.
+
+#### 16.5.3 `WLAST/RLAST` are checks, not replacements for counters
+
+The receiver knows the expected beat count from `AxLEN`. It should count accepted beats and compare the final count with `xLAST`. This catches early/late `LAST` instead of allowing a malformed source to corrupt queue alignment.
+
+---
+
+### 16.6 Narrow and unaligned transfers
+
+The data bus might be 16 bytes wide while `AxSIZE` requests only 4 bytes per beat. The low address bits select the active lane region; `WSTRB` identifies which write bytes are valid.
+
+For every write beat:
+
+- no strobe may assert outside the legal byte lanes for the beat address/size;
+- bytes with `WSTRB=0` must not change storage;
+- the next beat address follows burst geometry even if only part of the data bus is used.
+
+An unaligned start address can cause the first/last beat to use only part of a bus word. Whether a component supports all legal unaligned patterns is an interface-profile question. A narrow peripheral bridge may reject or split them.
+
+**Endianness is not solved by the bus name.** The mapping between byte address, byte lane, and software value must be defined by the system architecture and endpoint.
+
+---
+
+### 16.7 Responses and error containment
+
+| Response | General meaning |
+|---|---|
+| `OKAY` | normal success |
+| `EXOKAY` | successful exclusive access where applicable |
+| `SLVERR` | request reached a target, which reported an execution/access error |
+| `DECERR` | interconnect could not decode/route the request or policy denied routing |
+
+For reads, each beat carries `RRESP`; an implementation must define how errors affect remaining beats while still returning a protocol-legal burst. For writes, one `BRESP` summarizes the burst.
+
+Protocol completion and architectural success are different:
+
+- a transaction can complete with an error;
+- a failed write must follow the target's defined side-effect policy;
+- error logging should retain address, source/ID, attributes, and response;
+- a timeout is a system/fabric feature, not one of the five channel handshakes.
+
+---
+
+### 16.8 IDs, ordering, and reordering
+
+An AXI ID names an **ordering stream**, not necessarily a CPU thread, cache line, or physical queue.
+
+#### 16.8.1 Core rules to reason with
+
+- responses belonging to one transaction use its ID;
+- beats within one burst stay in beat order;
+- transactions with the same ID are subject to same-ID ordering requirements;
+- transactions with different IDs may complete out of order when all components support it;
+- AXI4 write data cannot be interleaved among AW transactions because W has no ID;
+- an interconnect that widens IDs with a source-port prefix can preserve uniqueness while routing responses back.
+
+Always consult the exact edition/profile for read/write ordering interactions, barriers, domains, and optional features. Do not replace those rules with the slogan “different IDs reorder.”
+
+#### 16.8.2 Manager scoreboard
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart LR
+    REQ["load/store/DMA requests"] --> ALLOC["allocate ID + entry"]
+    ALLOC --> ISSUE["AR/AW issue queues"]
+    ALLOC --> SB["outstanding table<br/>ID, destination, beats,<br/>ordering domain, error state"]
+    ISSUE --> FAB["AXI fabric"]
+    FAB --> RESP["R/B response"]
+    RESP --> LOOK["ID lookup + beat check"]
+    LOOK --> SB
+    LOOK --> RET["retire / wake consumer"]
+```
+
+The table must be large enough for accepted-but-not-retired transactions. If it has `D` entries, the manager deasserts `ARREADY/AWVALID` upstream or stops issuing before the `(D+1)`th transaction. Overflow is a correctness bug, not merely a performance loss.
+
+#### 16.8.3 Subordinate reorder buffer
+
+A DRAM controller may service requests in bank/row order. It tracks request ID, burst position, and route, then emits responses in an order legal for those IDs. Same-ID ordering may require holding a completed younger request behind an older one. That holding storage is the physical cost of the ordering contract.
+
+---
+
+### 16.9 Outstanding depth and performance
+
+If round-trip latency is `L` cycles and one request launches every `I` cycles, Little's law gives the minimum concurrency to avoid an issue bubble:
+
+$$
+N_{\text{outstanding}}\gtrsim \left\lceil\frac{L}{I}\right\rceil
+$$
+
+Example: a memory path returns the first read beat 120 cycles after AR and can accept one AR every 2 cycles. Roughly 60 outstanding reads are required to keep address issue continuously busy.
+
+For a burst with `N` beats on a data bus of `W` bytes at clock `f`, ideal payload rate is:
+
+$$
+BW_{\text{peak}}=Wf
+$$
+
+Actual utilization is reduced by:
+
+- gaps where `RVALID` or `WVALID` is low;
+- backpressure where `RREADY` or `WREADY` is low;
+- narrow transfers and sparse `WSTRB`;
+- short bursts and address/response overhead;
+- ordering head-of-line blocking;
+- arbitration, CDC, width conversion, and target service time.
+
+Track separate metrics for address acceptance, data-channel occupancy, bytes with valid strobes, response latency by ID, and queue-full stalls. A single “AXI busy” counter hides the bottleneck.
+
+---
+
+### 16.10 Endpoint microarchitecture
+
+#### 16.10.1 High-performance subordinate
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
+flowchart TB
+    subgraph ING["independent ingress"]
+      AWQ["AW FIFO"]
+      WQ["W FIFO"]
+      ARQ["AR FIFO"]
+    end
+    AWQ --> WP["write pairing + burst counter"]
+    WQ --> WP
+    ARQ --> RP["read burst expander"]
+    WP --> POL["permission / alignment / decode"]
+    RP --> POL
+    POL --> SCHED["bank/port scheduler"]
+    SCHED --> MEM["SRAM / cache / DRAM backend"]
+    MEM --> RQ["ID-tagged R FIFO<br/>beat count + RLAST"]
+    MEM --> BQ["ID-tagged B FIFO"]
+```
+
+Before raising `AWREADY` or `ARREADY`, the endpoint must know it can eventually store all required transaction context and produce a response without circular waiting. Conservative designs reserve response-queue space on address acceptance.
+
+#### 16.10.2 AXI4-Lite register endpoint
+
+AXI4-Lite removes bursts and IDs but still has five independent channels. A correct write register block still must accept AW and W in either order and generate exactly one B response after both handshakes. AXI4-Lite is not “APB with VALID/READY”; it retains independent address/data timing.
+
+Minimal state:
+
+- `aw_full` + captured address;
+- `w_full` + captured data/strobes;
+- one write commit pulse when both full and no B pending;
+- one B response slot;
+- one AR capture/response slot.
+
+#### 16.10.3 Manager
+
+A manager needs:
+
+- request queues and an ID allocator;
+- burst splitter/address generator;
+- AW-to-W order tracking;
+- W-data source buffering;
+- outstanding read/write scoreboard;
+- R/B error accumulation and retirement;
+- limits for each downstream destination to prevent congestion collapse.
+
+---
+
+### 16.11 Fabric operations
+
+An AXI interconnect performs:
+
+1. address decode and access-policy check;
+2. arbitration among managers targeting one subordinate;
+3. routing and source-ID extension;
+4. independent buffering for all five channels;
+5. response routing by stored route/extended ID;
+6. optional width, clock, protocol, and power-domain conversion;
+7. QoS scheduling without violating ordering.
+
+#### 16.11.1 Width conversion
+
+Downsizing a 128-bit beat to a 32-bit target can create four downstream beats; upsizing can combine aligned narrow beats. The converter must recompute address lanes, strobes, burst length, `LAST`, and responses and must handle unaligned boundaries. It is a transaction transformer, not a wire adapter.
+
+#### 16.11.2 Clock conversion
+
+Each channel requires an asynchronous FIFO or equivalent CDC structure. Because channels are independent, their depths can differ, but cross-channel transaction dependencies still need capacity analysis. Reset/flush must account for accepted requests on one side and undelivered responses on the other.
+
+#### 16.11.3 AXI-to-APB
+
+The bridge serializes AXI traffic, holds AW/W until paired, converts one AXI-Lite access into APB SETUP/ACCESS, and holds B/R until the AXI manager accepts it. A bridge may accept several upstream requests, but APB service remains one transfer at a time; buffer depth absorbs bursts but cannot change that throughput limit.
+
+---
+
+### 16.12 Exclusives, atomics, barriers, and attributes
+
+These features are often misunderstood because software intent, protocol transport, and target implementation are separate layers.
+
+- **Exclusive access:** a manager performs an exclusive read and later exclusive write. A monitor tracks whether the reservation remains valid. The response reports whether the exclusive write succeeded. It is not enough merely to transport `AxLOCK`; the system must place the monitor correctly and define invalidating events.
+- **Atomic transaction:** supported in later profiles as a target-executed read-modify-write. The target/serialization point must implement the operation and return the required original/result data.
+- **Barrier/order transaction:** constrains observation relative to other accesses. Every interconnect stage must propagate/enforce the ordering domain.
+- **Cache/protection/QoS attributes:** are requests to system policy, not magic performance switches. A target that ignores an optional hint should document that; security attributes must be enforced at a trusted boundary.
+
+Interface capability discovery is essential. Two ports both labeled “AXI” can legally support different widths, ID counts, burst types, atomics, user fields, and coherency behavior.
+
+---
+
+### 16.13 AXI memory-mapped versus AXI-Stream
+
+AXI-Stream is a separate protocol for ordered data packets without addresses.
+
+| Memory-mapped AXI | AXI-Stream |
+|---|---|
+| five channels | one primary VALID/READY stream |
+| addresses and read/write semantics | no address or read response |
+| bursts tied to memory locations | packets/frames marked by `TLAST` |
+| byte lanes with `WSTRB` | byte qualifiers such as `TKEEP/TSTRB` |
+| IDs express transaction ordering | `TID/TDEST` label streams/destinations |
+
+Do not connect them by renaming signals. A DMA engine is the semantic bridge: it generates memory addresses on one side and packets on the other.
+
+---
+
+### 16.14 Verification: invariants before stimulus
+
+#### 16.14.1 Channel properties
+
+For AW, W, B, AR, and R:
+
+- `VALID`/payload stable under stall;
+- no transfer counted without `VALID && READY`;
+- reset clears source-valid state;
+- accepted beats are neither lost nor duplicated.
+
+#### 16.14.2 Burst properties
+
+```systemverilog
+// Example: WLAST agrees with the accepted-beat counter.
+assert property (@(posedge ACLK) disable iff (!ARESETn)
+  WVALID && WREADY |-> WLAST == (w_beat_q == w_len_q));
+
+// A burst does not cross 4 KiB.
+assert property (@(posedge ACLK) disable iff (!ARESETn)
+  AWVALID && AWREADY |->
+    AWADDR[ADDR_W-1:12] == calculated_last_byte(AWADDR, AWLEN, AWSIZE, AWBURST)[ADDR_W-1:12]);
+```
+
+Also prove:
+
+- one B per accepted AW burst and all its W beats;
+- exactly `ARLEN+1` R transfers per accepted AR;
+- `RLAST` and `WLAST` at the expected beat;
+- legal burst/size/alignment/strobe combinations;
+- response IDs were allocated and are not retired twice;
+- same-ID ordering and all selected ordering-domain rules;
+- no write commits before address/data correlation and policy checks.
+
+#### 16.14.3 Liveness and capacity
+
+Under explicit fairness assumptions:
+
+- every accepted address eventually receives the required response;
+- a full queue eventually drains if downstream accepts;
+- AW/W independent arrival cannot deadlock;
+- backpressure cycles do not form across channels or fabric ports;
+- credits/entries reserved on acceptance are eventually released exactly once.
+
+#### 16.14.4 Coverage matrix
+
+Cross:
+
+- channel order (`AW` first, `W` first, same cycle);
+- each channel independently stalled;
+- burst type × length × size × alignment;
+- sparse strobes and narrow transfers;
+- same/different IDs and reordered target completion;
+- success, slave error, decode error, exclusive success/failure;
+- queue almost-full/full transitions;
+- reset/quiesce/power events with transactions at every stage;
+- width/clock/protocol bridge boundaries.
+
+Use protocol VIP, but retain local assertions: VIP finds illegal pins; block properties find lost internal ownership.
+
+---
+
+### 16.15 Waveform debug procedure
+
+Do not visually follow all five channels at once. Build a transaction ledger:
+
+| Event | Cycle | ID | Address | Beat | `LAST` | Response |
+|---|---:|---:|---:|---:|---:|---|
+| AW/AR accepted | | | | | | |
+| W/R beat accepted | | | | | | |
+| B accepted | | | | | | |
+
+Then check conservation:
+
+$$
+\text{accepted requests}
+=
+\text{completed responses}
++\text{currently outstanding}
+$$
+
+For writes, separately conserve AW transactions and W beats.
+
+Common failures:
+
+| Symptom | Root cause to test first |
+|---|---|
+| AXI-Lite write hangs | AW/W receiver assumes a fixed arrival order |
+| data changes under stall | payload generated combinationally from advancing state |
+| wrong `BID/RID` | route/ID metadata not stored with backend request |
+| early `BVALID` | generated after AW or first W beat rather than full burst acceptance |
+| one burst poisons next | incorrect `LAST` count or W stream paired to wrong AW |
+| rare corruption at page edge | 4-KiB rule or width-converter lane math |
+| deadlock only under load | response buffer not reserved, channel dependency cycle |
+| performance far below bus width | short bursts, narrow strobes, READY bubbles, or too few outstanding IDs |
+
+---
+
+### 16.16 Designer sign-off checklist
+
+- [ ] Exact AXI edition/profile, widths, IDs, optional signals, and supported transactions are documented.
+- [ ] All five channels satisfy stall stability and reset rules independently.
+- [ ] AW and W can arrive in either order; AXI4 W bursts are never illegally interleaved.
+- [ ] Burst count, size, address, wrap, alignment, 4-KiB boundary, strobes, and `LAST` are checked.
+- [ ] ID allocation, route metadata, response matching, and same-ID ordering are proven.
+- [ ] Queue depth/capacity guarantees prevent request-response dependency deadlock.
+- [ ] Errors, exclusives/atomics, barriers, security, and QoS have explicit end-to-end owners.
+- [ ] Width, clock, power, and protocol bridges preserve exactly-once semantics.
+- [ ] Performance counters identify address, data, response, ordering, and target bottlenecks separately.
+- [ ] Assertions, scoreboard, VIP, formal checks, and SoC stress all pass.
+
+---
+
+### 16.17 Reading path to coherency
+
+AXI moves data correctly but does not by itself keep private caches coherent. [the ACE designer section](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) extends the transaction model with snoop requests/responses/data. [the CHI designer section](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) replaces the shared-channel model with packetized, credit-controlled messages around directory home nodes.
 
 ---
 

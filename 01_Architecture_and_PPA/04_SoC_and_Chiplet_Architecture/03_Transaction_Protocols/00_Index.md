@@ -18,9 +18,9 @@
 
 ## Reading order
 
-1. [On-Chip Interconnect — AXI, AHB, APB](01_AHB_AXI_APB.md).
+1. [On-Chip Interconnect — AXI, AHB, APB](01_AHB_AXI_APB.md) — a single chapter covering first principles and complete designer deep dives: APB SETUP/ACCESS timing and peripheral RTL; AHB/AHB-Lite pipelining, `HREADY`, bursts, and arbitration; AXI channels, IDs, ordering, endpoint/fabric microarchitecture, bridges, verification, and waveform debug.
 
-**Hands off to:** CPU-owned [ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) for coherence, and [On-Chip Networks](../04_On_Chip_Networks/00_Index.md) for scalable transport.
+**Hands off to:** CPU-owned [ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) for coherence concepts and full designer deep dives; [On-Chip Networks](../04_On_Chip_Networks/00_Index.md) for scalable transport.
 
 ---
 

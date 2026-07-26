@@ -20,7 +20,7 @@
 
 1. [Cache Coherence](01_Cache_Coherence.md) — permissions, transient states, directories, races, safety, liveness.
 2. [Memory Consistency and Atomics](02_Memory_Consistency_and_Atomics.md) — ordering models, litmus tests, fences, atomic serialization.
-3. [ACE and CHI](03_ACE_and_CHI.md) — CPU coherence messages on a real scalable interconnect.
+3. [ACE and CHI](03_ACE_and_CHI.md) — one complete chapter from the broadcast-to-directory motivation through ACE channels and snoop-controller design, CHI nodes/flits/credits/home-node hardware, canonical flows, transient races, deadlock, verification, and debug.
 
 **Hands off to:** [SoC On-Chip Networks](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/00_Index.md) for generic transport.
 
