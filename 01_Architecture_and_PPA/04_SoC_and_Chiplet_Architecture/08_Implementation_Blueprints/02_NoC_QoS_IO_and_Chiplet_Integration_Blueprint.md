@@ -316,17 +316,234 @@ I/O coherence requires a named home/serialization point and device cache-mainten
 
 ## 7. Chiplet and die-to-die link
 
-A chiplet boundary needs logical protocol adapter, packet/replay layer, link training, lane/physical layer, clocking, power management, test, security, and package assumptions. Universal Chiplet Interconnect Express (UCIe) is one possible standard boundary; the implementation still chooses protocol profile, width, rate, lanes, repair, and power states.
+The interconnect does not stop at the on-die network. A transaction can leave the source NoC, cross a chiplet package link, a board/rack scale-up link, or a host I/O/coherent link, enter a switch, then enter the destination chip's NoC. Each boundary changes latency, width, clocking, reliability, trust, and sometimes the memory semantics.
 
-Link state includes training phase, negotiated width/rate, lane map/repair, sequence numbers, replay buffer, acknowledgement, cyclic-redundancy-check status, retry count, timeout, credit state, power state, and epoch. Error detection may trigger replay; forward error correction (FEC) trades latency/area/power for corrected error rate. Define the residual-error and link-failure response.
+### 7.1 Four different inter-chip boundaries
 
-Usable link bandwidth is
+| Boundary | Representative technology | Typical physical reach | Primary semantic goal |
+|---|---|---|---|
+| same-package die-to-die | UCIe, BoW, proprietary parallel PHY | millimeters/centimeters in one package | make several dies behave like one SoC |
+| CPU/device I/O or coherent memory | PCIe, CXL | board/backplane/cable | enumerate devices, DMA, cache/memory semantics |
+| accelerator scale-up | NVLink/NVSwitch class, Infinity Fabric/xGMI class, UALink | board to rack/pod | low-latency peer load/store, atomics, DMA, collectives |
+| cluster scale-out | InfiniBand, RoCE/Ultra Ethernet class | rack to data center | message/RDMA transport across failure and routing domains |
 
-$$B_{useful}=N_{lanes}R_{lane}\eta_{encoding}\eta_{packet}\eta_{retry},$$
+These are not interchangeable bandwidth pipes. UCIe standardizes a chiplet link and protocol mappings; CXL defines host/device cache and memory roles; accelerator scale-up fabrics optimize peer memory operations; RDMA fabrics expose queue/message/one-sided operations. A bridge must explicitly state where one contract terminates and the next begins.
 
-and latency includes adapters, serialization, pipeline, flight, retiming, retry/FEC, and remote NoC/target. A die split saves yield/reticle constraints but turns local wires into energy-intensive serialized traffic. Partition high-bandwidth, fine-grained, latency-sensitive loops carefully.
+### 7.2 Complete endpoint stack
 
-Reset/failure is distributed. On one die reset, stop injection, quiesce or terminate outstanding transactions, exchange epochs, retrain/reinitialize credits, invalidate stale remote state as required, and report lost work. Link-down behavior must not leave coherence ownership on an unreachable die without a system recovery strategy.
+```mermaid
+flowchart LR
+    subgraph A["Source chip"]
+        MA["CPU/GPU/DMA memory agent"] --> NA["On-die NoC interface<br/>IDs, order, home route"]
+        NA --> PA["Inter-chip protocol mapper<br/>read/write/atomic/message"]
+        PA --> QA["Traffic-class and VC queues"]
+        QA --> LA["Link layer<br/>sequence, CRC, replay, credits"]
+        LA --> PHA["PHY<br/>lanes, deskew, equalization, FEC"]
+    end
+    PHA <--> MED["Package traces, cable,<br/>retimer, or switch fabric"]
+    subgraph B["Destination chip"]
+        PHB["PHY"] --> LB["Link layer<br/>duplicate suppression"]
+        LB --> PB["Protocol reconstruction<br/>translation + protection"]
+        PB --> NB["Destination NoC interface"]
+        NB --> HB["Home/L2/memory/DMA target"]
+    end
+    MED <--> PHB
+    ACK["Completion returns through an<br/>independent response path"] -.-> HB
+    ACK -.-> MA
+```
+
+An endpoint entry has more state than an on-die router:
+
+```text
+source context, process/device ID, and transaction ID
+remote chip/node/address-space destination
+operation, size, byte mask, atomic and ordering attributes
+protocol/traffic class and end-to-end sequence
+packet/flit count and destination buffer reservation
+link sequence, exact replay copy, retry count
+credit/VC ownership and switch route
+translation/protection/key state
+completion bitmap, poison/error, timeout, and epoch
+```
+
+Transaction identity survives end to end so the requester can complete exactly once. **Link sequence identity is hop-local** and exists only for CRC/replay. Reusing one field for both creates either duplicated architectural operations or unreclaimable replay state.
+
+### 7.3 Packetization, width conversion, and ordering
+
+The source mapper can:
+
+- tunnel the on-die protocol unchanged;
+- terminate it and translate to remote read/write/atomic messages;
+- convert a coherent request into an explicitly noncoherent peer/DMA operation;
+- aggregate small transactions into a larger fabric packet;
+- split one cache-line request across narrower lanes or maximum payloads.
+
+Every conversion retains byte validity, operation identity, security/process identity, and the strongest required ordering. If adaptive routes or multiple bonded links can reorder packets, carry an end-to-end sequence and use a reorder buffer at the semantic endpoint. Do not serialize unrelated addresses merely because they share a link.
+
+A remote write can pass these milestones:
+
+```text
+accepted by source NI
+accepted into link replay buffer
+received without link error
+accepted by destination protocol endpoint
+ordered at destination home/memory
+visible to the named remote scope
+completion delivered to source
+```
+
+Software-visible completion must name one of the final milestones. A link ACK proves only correct receipt by the adjacent link layer; it is not a memory fence or proof that remote data is visible.
+
+### 7.4 Link layer: credits, CRC, replay, and duplicate suppression
+
+For each virtual channel, the transmitter retains an immutable copy until acknowledged. A simple selective/go-back replay model keeps:
+
+```text
+tx_next_sequence
+oldest_unacknowledged_sequence
+retry_buffer[sequence] = exact encoded flit
+rx_next_expected_sequence or receive window bitmap
+credit count per VC
+link/session epoch
+```
+
+On CRC/framing failure the receiver does not expose the bad packet upward. It requests replay from a known sequence. The receiver accepts each sequence at most once; a replayed duplicate is acknowledged but not delivered twice.
+
+Acknowledgements and credits have different meanings:
+
+- **ACK:** the peer accepted this sequence without detectable corruption, so retry storage may retire;
+- **credit:** one downstream buffer slot is reusable, so a new flit may be sent.
+
+They may share an encoded control message, but their accounting must remain independent. A receive buffer can be validly occupied after ACK, so returning its credit at ACK time may overflow it.
+
+### 7.5 PHY and lane hardware
+
+Same-package links often use many short, lower-rate parallel lanes with a forwarded clock. Off-package links use fewer high-rate SerDes lanes. A physical endpoint can contain:
+
+- transmit serializer/gearbox, lane striping, polarity/lane mapping, drivers and pre-emphasis;
+- receive termination, clock/data recovery or forwarded-clock capture, CTLE/DFE, deserializer;
+- alignment markers, lane deskew FIFOs, lane bonding;
+- FEC encoder/decoder where the channel error budget requires it;
+- training pattern generation/checking, margin measurement, calibration;
+- spare-lane repair, down-width/down-rate operation, retimer support;
+- analog/digital loopback, PRBS/BERT, eye/margin telemetry.
+
+Parallel die-to-die PHYs trade bump/edge area for lower serialization and energy. Long-reach PAM4 SerDes trades pins for more equalization, coding, latency, and power. The architecture must budget **bandwidth density (GB/s/mm of die edge)** and **energy per delivered bit**, not only raw gigatransfers.
+
+Usable one-direction bandwidth is
+
+$$
+B_{useful}=N_{lanes}R_{lane}
+\eta_{mod/encoding}\eta_{FEC}\eta_{flit}
+\eta_{protocol}\eta_{retry},
+$$
+
+where the product notation means every efficiency factor multiplies the raw lane rate. Report direction explicitly; summing transmit and receive as “bidirectional bandwidth” can make a link appear twice as fast as the one-way transfer an algorithm needs.
+
+### 7.6 Bring-up and link state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Detect
+    Detect --> Sideband: "power/reset and peer present"
+    Sideband --> Train: "exchange version, profile, width/rate"
+    Train --> Deskew: "CDR/forwarded clock locked"
+    Deskew --> LinkInit: "lanes mapped/repaired, FEC framed"
+    LinkInit --> ProtocolInit: "sequence/credits/epoch synchronized"
+    ProtocolInit --> Active: "routes and traffic classes enabled"
+    Active --> Retrain: "margin degradation or lane fault"
+    Retrain --> Active: "same session safely restored"
+    Active --> Quiesce: "power change, reset, fatal timeout"
+    Quiesce --> Detect: "old transactions resolved"
+```
+
+Do not initialize transmitter credits until the receiver confirms its buffers and epoch are ready. Rate/width fallback changes serialization, credit round trip, and QoS; performance models and timeout values must update with the negotiated state.
+
+### 7.7 Remote memory, atomics, and coherence
+
+The endpoint must define one of these ownership models:
+
+1. **hardware coherent:** remote requests join a home/directory protocol; dirty owners, probes, and acknowledgements cross the fabric;
+2. **I/O coherent at each system node:** a peer operation reaches the most recent copy inside the destination node, while cross-node cached copies are managed by software;
+3. **noncoherent peer/DMA:** software flushes/invalidates and transfers buffer ownership at synchronization boundaries;
+4. **message-only:** packets carry application/runtime messages, not load/store semantics.
+
+Memory semantics do not imply full snoop coherence. For example, a scale-up protocol can provide remote reads/writes/atomics and destination-node I/O coherence while requiring software to prevent stale peer caches. Conversely, a CXL or coherent chiplet profile can name a host/home agent and carry coherent cache/memory transactions.
+
+Remote atomics require a serialization point at the destination memory/home. The response must distinguish “operation never executed” from “executed but response was lost”; otherwise replay can increment twice. Scope/release/acquire semantics determine which earlier writes and later reads are ordered around that remote serialization point.
+
+### 7.8 Switches, routing, and fabric management
+
+A direct mesh gives predictable one-hop peers but consumes many endpoint ports. A switched fabric shares ports and can provide larger reach:
+
+```mermaid
+flowchart TB
+    A0["Accelerator 0"] --> L0["Leaf switch 0"]
+    A1["Accelerator 1"] --> L0
+    A2["Accelerator 2"] --> L1["Leaf switch 1"]
+    A3["Accelerator 3"] --> L1
+    L0 <--> S0["Spine switch 0"]
+    L0 <--> S1["Spine switch 1"]
+    L1 <--> S0
+    L1 <--> S1
+```
+
+For every source–destination pair specify path selection, multipath striping, packet-order behavior, virtual channels, bisection bandwidth, and failure reroute. A switch contains ingress link endpoints, packet validation, routing-table lookup, per-class buffers, crossbar/scheduler, egress link endpoints, telemetry, and management—not just a crossbar drawing.
+
+A fabric manager discovers endpoints and links, assigns addresses/routes/partitions/keys, programs switches, and monitors health. The data plane may continue on an established configuration if management is temporarily unavailable, but composition, recovery, or reallocation can fail; define that availability contract.
+
+Collective offload optionally adds reduction/multicast engines. A reduction slot holds operation, datatype, group/epoch, expected contributor bitmap/count, partial accumulator, destination tree, timeout, and error. It must not mix two collective generations or let one missing member block unrelated groups forever.
+
+### 7.9 Bandwidth-delay product and worked sizing
+
+End-to-end latency includes:
+
+$$
+L_{remote}=L_{srcNoC}+L_{srcAdapter}+L_{link/switch}
++L_{dstAdapter}+L_{dstNoC}+L_{target}+L_{response}.
+$$
+
+To sustain one-direction bandwidth $B$ across request-to-credit or request-to-response latency $L$, the endpoint needs approximately
+
+$$
+W_{outstanding}\ge BL
+$$
+
+bytes of usable outstanding window, distributed across transaction IDs, replay storage, switch credits, destination queues, and return buffers. If any stage provisions less, it becomes the real bandwidth limit.
+
+Example: 200 GB/s with a 500 ns end-to-end credit/response loop needs about 100 KB in flight. With 256-byte payloads that is roughly 391 concurrent payloads before headroom. Providing 512 request IDs but only 32 KB of replay/data buffer still cannot fill the link.
+
+For a transfer of $M$ bytes across a path with delivered bandwidth $B_d$ and fixed latency $L_0$:
+
+$$T(M)\approx L_0+\frac{M}{B_d}.$$
+
+Small synchronization and tensor-parallel messages are latency-dominated; large checkpoint or gradient transfers are bandwidth-dominated. Topology-aware software must use the measured path rather than the raw lane number.
+
+### 7.10 Fault containment, verification, and counters
+
+On link-down or peer reset:
+
+1. stop new injection and mark routes unavailable;
+2. retain/snapshot transaction and replay state;
+3. determine whether the peer kept the same session epoch;
+4. replay only when accepted-sequence state is unambiguous;
+5. otherwise abort into the protocol layer and resolve old operations;
+6. recover dirty coherence ownership or contain the affected domain;
+7. retrain, rebuild credits/routes, then reopen admission.
+
+Security covers endpoint identity, address/process isolation, routing tables, management firmware, debug, replay/integrity protection, optional link encryption/authentication, and zeroization before reassignment.
+
+Verify:
+
+- no packet or architectural operation is lost, duplicated, misrouted, or exposed with bad integrity;
+- ACK/replay/credit invariants across corruption, retry, wrap, and epoch change;
+- every width/rate/lane-repair state and deskew boundary;
+- ordering and atomic exactly-once behavior across multipath/replay;
+- coherent dirty-owner loss and noncoherent ownership transfer;
+- switch congestion, head-of-line blocking, reroute, multicast/reduction generation;
+- independent clock/reset/power transitions and fatal fault containment.
+
+Counters include raw/useful bytes, encoding/FEC/protocol overhead, lane margin/error/FEC correction, CRC/replay bytes, per-VC credits/occupancy, outstanding/reorder/retry high-water marks, route/hop/switch queue latency, remote atomics, collective slots, retraining/down-width time, link epochs, timeouts, and aborted/recovered transactions.
 
 ## 8. Physical, package, and thermal consequences
 
@@ -375,8 +592,10 @@ Build:
 4. endpoint QoS plus admission under overload;
 5. clock/power crossings and resets;
 6. IOMMU and I/O protocol bridges;
-7. one die-to-die link with training/replay;
-8. full topology, adaptive routes, lane repair, and failure recovery.
+7. one die-to-die link with training, credits, CRC/replay, and epoch recovery;
+8. protected remote reads/writes/atomics through both endpoint NoCs;
+9. one switch stage with routing, partitioning, congestion, multipath, and collective generation state;
+10. full on-die/inter-chip topology with adaptive routes, lane repair, power/reset, and failure containment.
 
 The layer is reconstructable when routes, buffers, credits, dependencies, service policies, translation, remote ordering, link errors, epochs, and physical limits are all explicit.
 
@@ -386,6 +605,10 @@ The layer is reconstructable when routes, buffers, credits, dependencies, servic
 2. J. Duato, S. Yalamanchili, and L. Ni, *Interconnection Networks: An Engineering Approach*, Morgan Kaufmann, 2003.
 3. Arm, [AMBA CHI Architecture Specification](https://developer.arm.com/documentation/ihi0050/latest/) — packetized coherent request/response/data/snoop channels, node roles, credits, ordering, and progress.
 4. RISC-V International, [RISC-V IOMMU Architecture Specification](https://docs.riscv.org/reference/iommu/) — I/O translation and queue/interface requirements at the fabric boundary.
+5. UCIe Consortium, [UCIe Specification 3.0](https://www.uciexpress.org/specifications) — same-package D2D physical/link/manageability and protocol mappings.
+6. PCI-SIG, [PCI Express Base Specification Revision 7.0](https://pcisig.com/PCIExpress/Spec/Base/_7.0) — I/O transaction, FLIT/link, PHY, ordering, credit, and error model.
+7. Compute Express Link Consortium, [CXL Specification 4.0](https://computeexpresslink.org/) — host/device I/O, cache, memory, switching, pooling, and fabric-management semantics.
+8. UALink Consortium, [UALink Specifications](https://ualinkconsortium.org/specification/) — accelerator scale-up memory operations, link/PHY, chiplet, and management profiles.
 
 ---
 

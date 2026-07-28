@@ -34,7 +34,7 @@ flowchart LR
 | 2 | [Shared Memory](02_Shared_Memory/00_Index.md) | 1 | DDR commands, scheduling, refresh, errors, delivered bandwidth |
 | 3 | [Transaction Protocols](03_Transaction_Protocols/00_Index.md) | 1 | APB/AHB/AXI channels, handshakes, IDs, bursts, bridges |
 | 4 | [On-Chip Networks](04_On_Chip_Networks/00_Index.md) | 2 | topology, routers, routing, flow control, deadlock/liveness |
-| 5 | [I/O and Chiplets](05_IO_and_Chiplets/00_Index.md) | 2 | end-to-end QoS/order, device visibility, CXL/UCIe partitioning |
+| 5 | [I/O and Chiplets](05_IO_and_Chiplets/00_Index.md) | 2 | end-to-end QoS/order, device visibility, CXL/UCIe partitioning, accelerator scale-up links/switches, remote memory/atomics, and inter-chip recovery |
 | 6 | [SoC Memory Simulation](06_Simulation/00_Index.md) | 1 | executable DRAM timing, scheduling, and power models |
 | 7 | [AI Workloads and Serving](07_AI_Workloads_and_Serving/00_Index.md) | 6 | inference/mapping/research plus heterogeneous AI control plane, distributed data/state plane, validation, operations, and deployment |
 | 8 | [Implementation Blueprints](08_Implementation_Blueprints/00_Index.md) | 3 | address/protocol/memory, NoC/QoS/I/O/chiplet, and full-chip verification/bring-up specifications |

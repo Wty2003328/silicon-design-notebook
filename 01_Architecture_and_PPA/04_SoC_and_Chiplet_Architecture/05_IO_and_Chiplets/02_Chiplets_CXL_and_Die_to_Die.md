@@ -328,6 +328,139 @@ stateDiagram-v2
 $$N\,\Delta > L_{flip}\quad\Longleftrightarrow\quad N > \frac{L_{flip}}{\Delta},$$
 the same shape as §7's tiered-memory migration inequality $N_{reuse}(L_{remote}-L_{local})>L_{copy}+L_{coherence}+L_{mapping}$ — a bias flip is a per-page ownership migration. *Worked number:* with $L_{flip}\approx 2\,\mu\text{s}$ (barrier plus flushing ~64 lines/page across the link) and a snoop penalty $\Delta\approx 200\,\text{ns}$ avoided per access, break-even is $N>10$ accesses per page. A kernel touching a page thousands of times obviously runs device-biased; a page the host reads once or twice stays host-biased. Frequent flips reproduce coherence **ownership thrash** (the dirty-owner ping-pong of §6.1), so the driver/operating system keeps bias stable within a phase and flips only at phase boundaries. **Trade-off / when the simpler option wins:** host bias everywhere is the simplest, always-correct model (coherent, host always current) and is right when reuse is low or the data is genuinely host-shared; device bias adds explicit flush/barrier management and driver phase-tracking and repays only for the compute phase of a bandwidth-bound kernel. When reuse is uncertain, host bias wins because the flip is not amortized.
 
+### 7.3 Inter-chip accelerator scale-up is a third semantic class
+
+CXL is centered on host/device I/O, cache, and memory roles. Accelerator scale-up fabrics instead connect peer GPUs/NPUs through direct links or switches and optimize frequent remote memory operations, atomics, and collectives. Representative proprietary families include NVLink/NVSwitch and Infinity Fabric/xGMI; UALink defines an open accelerator scale-up protocol. Their exact operations and coherence guarantees differ by version.
+
+Do not collapse these into “coherent links”:
+
+| Property | Same-package coherent D2D | CXL host/device fabric | Accelerator scale-up | RDMA scale-out |
+|---|---|---|---|---|
+| natural initiator | cache/home agent | host or CXL device | peer accelerator | NIC queue pair |
+| basic operation | coherence message | `.io`, `.cache`, `.mem` | remote read/write/atomic/DMA | send/receive, RDMA read/write/atomic |
+| coherence authority | distributed/home directory | named host/home role | protocol-specific; often software across peers | software ownership/message completion |
+| typical granularity | line/flit | line/memory request/TLP | cache line or larger transfer | packet/message |
+| management | package firmware | enumeration + fabric manager | fabric manager/runtime | subnet/network manager |
+
+Memory semantics alone do not mean a snooping, fully hardware-coherent cache domain. UALink 1.0, for example, provides peer reads, writes, atomics, and an I/O-coherency contract inside the destination system node while software maintains coherence among accelerator caches across nodes. The design must state which cached copies are invalidated by hardware and which phase boundary/cache operation software owns.
+
+### 7.4 Scale-up endpoint microarchitecture
+
+```mermaid
+flowchart LR
+    CORE["GPU/NPU cores, DMA,<br/>collective engine"] --> GMMU["Address translation<br/>local versus remote"]
+    GMMU --> ORD["Memory-order and scope tracker"]
+    ORD --> REM["Remote operation builder<br/>read/write/atomic/message"]
+    REM --> TXQ["Per-class TX queues<br/>request, response, data, control"]
+    TXQ --> RT["Destination/route selection<br/>striping and sequence"]
+    RT --> LL["Link layer<br/>credits, CRC, replay, encryption"]
+    LL --> PHY["SerDes/PHY lanes"]
+    PHY --> SW["Direct peer or switch fabric"]
+    SW --> RPHY["Remote PHY/link endpoint"]
+    RPHY --> RX["Protection + duplicate check<br/>operation reconstruction"]
+    RX --> HOME["Remote L2/home/memory<br/>or collective target"]
+```
+
+Per outstanding remote operation retain:
+
+```text
+source accelerator/context and remote destination
+local virtual address, translated remote address/handle
+operation, size, byte mask, atomic operand
+ordering semantic and scope/domain
+end-to-end transaction/sequence ID
+route/plane/striping choice
+packet/response bitmap and timeout
+link/replay epoch, error/poison, completion state
+```
+
+Address translation can use a partitioned global address-space scheme: software imports a remote allocation, the source MMU maps a local virtual range to `{destination accelerator, remote address/handle, permissions}`, and the destination validates the exporter/importer identity before touching memory. A raw remote physical address without protection, lifetime, and revocation state is not a secure programming model.
+
+### 7.5 Follow one remote atomic
+
+Suppose accelerator A performs a release-qualified fetch-add on a counter in accelerator B's memory:
+
+1. A's memory-order tracker waits until selected older writes reach the required source/fabric ordering point.
+2. Address translation resolves the pointer to destination B and checks remote-atomic permission.
+3. The endpoint allocates transaction `T90`, records the old-value destination register, and packetizes the request.
+4. Each link hop uses its own sequence/CRC/replay identity; switches route by destination and traffic class.
+5. B validates source/process/key and sends the operation to the home/L2 atomic queue for that address.
+6. The home serializes against overlapping operations, reads `old`, writes `old+operand` exactly once, and forms a response carrying `old`.
+7. A matches `T90`, completes acquire-side obligations if requested, writes the result register, and retires the operation.
+
+```mermaid
+sequenceDiagram
+    participant A as "accelerator A"
+    participant EA as "A scale-up endpoint"
+    participant S as "switch fabric"
+    participant EB as "B endpoint"
+    participant H as "B home/atomic unit"
+    A->>EA: "release fetch_add(remote counter), allocate T90"
+    Note over EA: "older release set reaches ordering point"
+    EA->>S: "AtomicAdd(T90, B, address, operand)"
+    S->>EB: "routed packet; hop replay is invisible above link layer"
+    EB->>H: "authorize and serialize"
+    H->>H: "old=counter; counter=old+operand exactly once"
+    H-->>EB: "AtomicResp(T90, old)"
+    EB-->>S: "response"
+    S-->>EA: "response"
+    EA-->>A: "match T90, satisfy acquire if any, return old"
+```
+
+If a link retries before B accepts the request, the atomic is not performed. If B performed it but the response is lost, A must not blindly resend as a new atomic. End-to-end duplicate identity or a terminal “performed/not performed” recovery protocol is mandatory for non-idempotent operations.
+
+### 7.6 Switch, topology, and collective hardware
+
+A scale-up switch has ingress PHY/link endpoints, request validation, route/partition lookup, per-class/VC buffers, crossbar or multistage switching, schedulers, egress endpoints, and a management/telemetry processor. A topology can be:
+
+- direct all-to-all for a small fixed accelerator count;
+- one switch stage for uniform reach;
+- leaf/spine or multistage for more endpoints;
+- several parallel planes striped by address, packet, or collective chunk;
+- hierarchical: coherent inside a node, software-coherent scale-up across nodes.
+
+Bisection—not sum of port rates—sets all-to-all throughput. For traffic demand $D_{sd}$ and route incidence $R_{sd,l}$, the load on link $l$ is
+
+$$L_l=\sum_{s,d}D_{sd}R_{sd,l}.$$
+
+The fabric is nonblocking for a claimed traffic set only when every legal simultaneous permutation can be routed without oversubscribing an internal cut. “Every endpoint has 1 TB/s of ports” does not prove 1 TB/s between every pair simultaneously.
+
+Optional collective offload can combine contributions in switches. A reduction context stores group/collective ID, generation, datatype/op, chunk offset, contributor bitmap/count, partial accumulator, output tree, timeout, and error. The switch cannot mix generation `k+1` with late packets from `k`; reset/reroute must abort or reconstruct the exact contributor set.
+
+### 7.7 Software/hardware boundary
+
+Hardware supplies:
+
+- link discovery, routes, partitions, protection, remote read/write/atomic, completion/error;
+- memory ordering and cache-maintenance primitives;
+- peer DMA and optionally switch collective operations;
+- counters for topology and failure.
+
+System software supplies:
+
+- remote-memory allocation/import/export and lifetime;
+- topology discovery and process isolation;
+- cache ownership transitions when the fabric is not fully snoop coherent;
+- choice among direct peer access, staged copy, collective library, or RDMA;
+- path/plane-aware scheduling and failover;
+- kernel/stream/event dependencies around remote operations.
+
+A CUDA/HIP/NCCL-style collective call is not a wire operation. The library chooses ring/tree/switch offload, divides the tensor into chunks, assigns channels/planes, launches copy/reduce kernels or engines, and converts device completion into stream semantics. The hardware must expose enough independent queues and ordering domains for communication to overlap compute without one global fence.
+
+### 7.8 Inter-chip design checklist
+
+- Which semantic class terminates at each boundary: coherence, CXL, peer memory, or message/RDMA?
+- What is the destination ordering/atomic serialization point?
+- Are cached peer copies maintained by hardware or software?
+- How do virtual/process addresses become protected remote addresses and how are mappings revoked?
+- Are ACK, credit, architectural completion, and cache visibility distinguished?
+- What outstanding/replay/reorder window is required by $B\times RTT$?
+- Which traffic classes/VCs guarantee request/response/control progress?
+- What bisection is guaranteed for collectives and all-to-all, not just endpoint injection?
+- Can a lost response duplicate a remote atomic or DMA write?
+- What happens to dirty data, collective generations, and imported mappings after peer reset/link loss?
+- Which firmware/fabric-manager actions are required before the data plane becomes usable?
+
 ## 8. Memory pooling and sharing
 
 Pooling raises utilization by assigning memory capacity dynamically among hosts/devices. Architecture questions:
@@ -457,10 +590,12 @@ An eight-chiplet system with eight cores/chiplet could track 64 core sharers glo
 ## References
 
 1. UCIe Consortium, [UCIe Specifications](https://www.uciexpress.org/specifications).
-2. Compute Express Link Consortium, [CXL Specification](https://computeexpresslink.org/).
+2. Compute Express Link Consortium, [CXL Specification 4.0](https://computeexpresslink.org/).
 3. R. St. Amant et al., “Die-to-Die Interconnects and Chiplet-Based Systems,” IEEE Micro.
 4. Arm, [Chiplet System Architecture overview](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-a-profile-architecture-developments-2024).
-5. [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md) and its primary references.
+5. UALink Consortium, [UALink Specifications](https://ualinkconsortium.org/specification/) — accelerator remote reads/writes/atomics, software coherence, switch/link, chiplet, and management profiles.
+6. PCI-SIG, [PCI Express Base Specification Revision 7.0](https://pcisig.com/PCIExpress/Spec/Base/_7.0).
+7. [IC Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md) and its primary references.
 
 ---
 

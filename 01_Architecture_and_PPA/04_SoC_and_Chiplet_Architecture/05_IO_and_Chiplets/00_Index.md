@@ -11,6 +11,8 @@
 | input/output (I/O) | communication with devices outside a processor core |
 | quality of service (QoS) | policy for latency, bandwidth, priority, or fairness |
 | chiplet | one die designed to compose with other dies in a package |
+| accelerator scale-up | low-latency peer-memory/atomic/collective fabric among GPUs or NPUs |
+| link replay | hop-local retransmission after CRC/integrity failure |
 | Compute Express Link (CXL) | cache-coherent and memory-semantic link protocol |
 | Universal Chiplet Interconnect Express (UCIe) | die-to-die physical/protocol standard |
 | pooling | several hosts or devices share provisioned memory capacity |
@@ -18,7 +20,7 @@
 ## Reading order
 
 1. [QoS, Ordering, and I/O Coherence](01_QoS_Ordering_and_IO_Coherence.md).
-2. [Chiplets, CXL, and Die-to-Die](02_Chiplets_CXL_and_Die_to_Die.md).
+2. [Chiplets, CXL, and Die-to-Die](02_Chiplets_CXL_and_Die_to_Die.md) — same-package UCIe/D2D, CXL host/device fabrics, and accelerator scale-up endpoints/switches with remote memory, atomics, software coherence, collectives, and recovery.
 
 **Hands off to:** packaging, signal/power integrity, thermal design, firmware, and system software.
 
