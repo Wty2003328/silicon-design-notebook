@@ -108,7 +108,219 @@ Queue sizing uses offered rate and service time, then burst analysis. Little’s
 
 State the policy at every shared queue: fixed priority, round-robin, age, weighted share, deadline, or a hybrid. Fixed priority can protect boot/debug or real-time traffic but needs an aging or reserved-service rule for lower classes. Round-robin prevents simple starvation but ignores transaction cost; byte- or credit-based deficit accounting is fairer when bursts differ. Admission limits per initiator keep one master from consuming all IDs or data buffers. The selected policy must name its protected use case, maximum blocking assumption, counters, and workload that loses.
 
-## 6. DDR controller reconstruction
+## 6. Direct memory access engine: from descriptor to visible completion
+
+A direct memory access (DMA) engine is a programmable transaction generator. Software describes movement; hardware fetches the description, generates addresses, issues many reads and writes, absorbs variable latency, and reports completion. The CPU is removed from the **per-byte** loop, not from setup, ownership, protection, and completion.
+
+Do not confuse four related blocks:
+
+| Block | Typical job | Who issues work? | Address pattern |
+|---|---|---|---|
+| simple register DMA | one contiguous copy/fill | driver writes registers | one-dimensional |
+| scatter-gather DMA | linked/ring descriptors | driver/producer posts descriptors | many segments |
+| tensor/strided DMA | tile movement and layout transform | kernel, firmware, or command processor | 2D/3D/ND, strides |
+| IOMMU | translate/protect device requests | DMA presents an I/O virtual address | not a data mover |
+
+### 6.1 Programmer-visible contract
+
+A minimal channel exposes control, status, descriptor-base/head/tail, interrupt configuration, and fault registers. A production engine normally consumes a descriptor ring so software can queue work without waiting for every transfer.
+
+One representative descriptor is:
+
+```text
+source_address
+destination_address
+x_bytes
+y_count, source_y_stride, destination_y_stride
+z_count, source_z_stride, destination_z_stride
+source/destination address spaces and cache attributes
+source/destination requester or process IDs
+maximum burst, transfer width, endian/swap/packing mode
+interrupt, fence-before, fence-after, coherent/noncoherent mode
+next pointer or ring phase bit
+software cookie
+```
+
+The format must define byte order, alignment, reserved bits, legal zero lengths, maximum counts/strides, address overflow, chaining, and whether a descriptor can cross a page or cache line. Hardware must first copy or otherwise stabilize all fields it uses; rereading a descriptor while software modifies it creates a time-of-check/time-of-use race.
+
+For a producer ring:
+
+1. software writes descriptor contents;
+2. software performs the required release/cache-maintenance operation;
+3. software updates the tail or writes a doorbell;
+4. DMA fetches only entries made visible before that publication;
+5. DMA writes completion status/data;
+6. DMA performs the specified completion ordering;
+7. DMA updates completion head and optionally raises an interrupt;
+8. software uses an acquire operation before consuming completion/data.
+
+Head/tail wrap needs either one unused slot, a generation/phase bit, or unbounded counters. Equality alone cannot distinguish empty from full after wrap.
+
+### 6.2 Hardware decomposition
+
+```mermaid
+flowchart LR
+    SW["Driver / command producer<br/>descriptors + doorbell"] --> CSR["CSR, ring head/tail,<br/>channel and security state"]
+    CSR --> DF["Descriptor fetch,<br/>prefetch, validate"]
+    DF --> SCH["Channel scheduler<br/>QoS + outstanding limits"]
+    SCH --> AGU["1D/2D/3D address generators<br/>boundary and burst splitter"]
+    AGU --> XL["IOMMU request +<br/>translation cache"]
+    XL --> RI["Read issue table<br/>transaction IDs"]
+    RI --> FAB["AXI/CHI/NoC/interconnect"]
+    FAB --> RB["Read-return reorder/<br/>data/byte-valid buffers"]
+    RB --> CVT["Width, alignment, endian,<br/>pack/unpack, optional transform"]
+    CVT --> WI["Write issue +<br/>write-response tracker"]
+    WI --> FAB
+    WI --> CMP["Completion sequencer<br/>status, interrupt, head"]
+    FLT["Fault/timeout/reset controller"] --> DF
+    FLT --> RI
+    FLT --> WI
+    FLT --> CMP
+```
+
+The blocks are intentionally decoupled:
+
+- **descriptor frontend:** fetches ahead, validates immutable local copies, and converts commands into internal work records;
+- **channel scheduler:** shares read IDs, buffers, and bandwidth among channels without starvation;
+- **address-generation units (AGUs):** maintain nested-loop counters and source/destination strides;
+- **burst splitter:** respects protocol maximums, alignment, page/4-KiB boundaries where required, target windows, and wrap rules;
+- **translation frontend:** attaches device/process identity and caches IOMMU translations;
+- **read issue table:** maps fabric IDs to descriptor, offset, length, and retry epoch;
+- **data/reorder buffers:** hold returned bytes until the corresponding destination range can be written;
+- **write engine:** chooses legal strobes/bursts and tracks write responses;
+- **completion engine:** waits for all required descendants and publishes one architectural result.
+
+The DMA must never rely on read responses returning in request order unless the interconnect contract guarantees it. A tag table may accept out-of-order responses and either write each correctly tagged segment immediately or reorder them when transformation/stream semantics require order.
+
+### 6.3 Address generation and burst construction
+
+For a three-dimensional copy, a source byte address can be generated as
+
+$$
+A_s(i,j,k)=base_s+i+jS_{sy}+kS_{sz},
+$$
+
+with analogous destination strides. Here $i$ spans `x_bytes`, $j<y_count$, and $k<z_count`. Counters increment with carry; at each row/plane boundary the AGU adds the programmed stride. Check the **full widened sum** before truncating to the physical/I/O virtual address width.
+
+At each step:
+
+1. find bytes to the next source alignment/boundary;
+2. find bytes to the next destination alignment/boundary;
+3. cap by protocol maximum burst and remaining row bytes;
+4. choose a common legal chunk;
+5. generate byte strobes for the first/last unaligned beats;
+6. record exactly which destination bytes the returned data owns.
+
+A width converter needs a byte-valid mask and position metadata. For example, copying 11 bytes from an address offset by 3 into a 128-bit destination beat cannot be implemented by shifting data alone; first/last strobes must ensure neighboring bytes are untouched. If the target lacks byte enables, a read-modify-write is necessary and is not safe against another writer unless atomic exclusion is provided.
+
+### 6.4 Outstanding transactions and buffer sizing
+
+To sustain useful bandwidth $B$ with round-trip latency $L$, at least
+
+$$
+N_{bytes,\ outstanding}\ge B L
+$$
+
+must be in flight. If each read burst carries $C$ useful bytes, the request count is roughly $\lceil BL/C\rceil$, plus headroom for arbitration and variance. Example: 64 GB/s and 250 ns require about 16 KiB of outstanding read data; eight 256-byte requests are only 2 KiB and cannot cover that latency.
+
+Read and write sides are coupled by finite data buffers. Admission requires space for every accepted read response—even if the destination stalls. Safe approaches reserve return-buffer capacity per read, issue only when credits exist, and release the reservation after the last corresponding write consumes it. Otherwise the DMA can fill memory with reads whose responses have nowhere to go and block the writes required to free space.
+
+Per-channel outstanding caps prevent one long copy from monopolizing all IDs. Weighted or deficit arbitration should charge bytes rather than commands when burst sizes differ.
+
+### 6.5 Completion, visibility, fences, and coherence
+
+Three completion notions are different:
+
+1. **read complete:** source bytes reached the DMA;
+2. **write accepted:** destination fabric accepted the write;
+3. **architectural transfer complete:** all destination writes reached the contract's visibility point, and status publication is ordered after them.
+
+A completion record or interrupt must use the third. On a posted-write fabric, “write request sent” is too early; the DMA may need write responses, a barrier transaction, or a platform-defined ordering point before publishing completion.
+
+For coherent DMA, transactions participate in the coherence domain and use the correct share/cache attributes. For noncoherent DMA:
+
+- before device reads, software cleans dirty CPU cache lines and orders that maintenance before the doorbell;
+- before CPU reads device-written data, software waits for DMA completion, invalidates stale CPU lines as required, then performs an acquire;
+- ownership of shared buffers must be explicit so CPU and DMA do not concurrently modify the same cache line.
+
+Descriptor, payload, completion, and MMIO doorbell can each occupy different ordering domains. Specify the entire chain; a device interrupt alone is not automatically a memory fence.
+
+### 6.6 IOMMU, virtualization, and page faults
+
+Each DMA request carries a device/requester ID and, when supported, a process address-space ID. The IOMMU selects a device context, performs one- or two-stage translation and permission checks, and returns physical address plus memory attributes. A DMA-side translation lookaside buffer caches results but must obey IOMMU invalidation generations.
+
+A burst that crosses a page can map to noncontiguous physical pages, so split before or during translation. Do not translate only the first byte and assume physical contiguity.
+
+For a recoverable page fault, the DMA retains enough state to resume exactly:
+
+```text
+descriptor identity and immutable copy
+source/destination logical offset
+nested-loop counters
+which reads were issued and which data returned
+which writes became visible
+translation/request epoch
+faulting address, access type, requester/process ID
+```
+
+Software may resolve the fault and issue a page-response/resume command. The engine must not duplicate already visible writes on replay. If recoverable faults are unsupported, abort the descriptor at a documented partial-completion boundary and report how many bytes may have changed.
+
+Security checks include descriptor fetches themselves, not just payload. One guest/channel must not alter another's descriptor ring, consume all shared resources, reuse stale translations after reassignment, or receive another channel's completion.
+
+### 6.7 Errors, reset, and partial completion
+
+Define outcomes for descriptor-format error, address overflow, translation/protection fault, read/write error, poison/ECC, timeout, interconnect retry, target reset, and channel abort. For each, specify:
+
+- whether later requests stop;
+- whether in-flight writes drain or are discarded;
+- exact/upper-bound bytes transferred;
+- completion/error record contents;
+- interrupt behavior;
+- whether and where software may resume.
+
+Copies are generally not transactional: an error can leave a partially updated destination. Software that needs all-or-nothing behavior writes into a private buffer and publishes a pointer/version only after successful completion.
+
+Reset uses epochs. Stop new descriptor admission, decide whether accepted work drains or aborts, consume/reject late responses by old epoch, clear reservations/IDs only when safe, and publish terminal errors if software is expected to recover. Reusing a fabric ID immediately after reset without filtering late responses can corrupt unrelated new work.
+
+### 6.8 Worked descriptor walk
+
+Copy a `64 × 32` byte tile from rows spaced 128 bytes apart to tightly packed rows:
+
+```text
+x_bytes = 64
+y_count = 32
+src_y_stride = 128
+dst_y_stride = 64
+```
+
+For row `j`, the AGUs generate `src + 128j` and `dst + 64j`. With a legal 64-byte burst and aligned bases, the engine issues one read and one write per row. Up to eight rows may be in flight:
+
+```text
+read tag 0 -> descriptor D, row 0 -> data slot 0
+...
+read tag 7 -> descriptor D, row 7 -> data slot 7
+```
+
+If row 3 returns first, tag 3 directs its 64 bytes to the row-3 destination. The engine may issue that write immediately because rows do not overlap, while the completion counter remains incomplete until all 32 write responses/order events close their bits. Only then does it write `D.status=success`, advance the completion head, and signal the interrupt.
+
+### 6.9 DMA verification and observability
+
+Fundamental assertions:
+
+- every accepted source byte maps to exactly one intended destination byte;
+- no destination byte outside the descriptor mask is modified;
+- no read is issued without reserved return-buffer space;
+- IDs/tags are not reused while a response can still arrive;
+- completion cannot precede every required write visibility event;
+- descriptor and payload accesses pass translation/protection with the right identity;
+- abort/reset/retry cannot duplicate a non-idempotent visible write;
+- ring head never consumes an unpublished descriptor.
+
+Use randomized alignment, sizes, strides, page/burst/cache-line boundaries, response reordering, backpressure, IOMMU invalidations/faults, coherent/noncoherent modes, errors, aborts, and reset. A byte-addressed scoreboard should model memory before/after and independently predict legal partial completion.
+
+Counters: descriptors/bytes, useful versus fabric bytes, average/tail queue latency, outstanding reads/writes, buffer occupancy/full cycles, burst-size distribution, translation hit/walk/fault, source/destination stalls, reorder occupancy, bandwidth per channel, completion latency, retries/timeouts, and error causes.
+
+## 7. DDR controller reconstruction
 
 A double data rate (DDR) memory subsystem comprises frontend request queues, address mapping, read/write scheduling, bank/row state, command timing, data-path buffers, refresh/power management, ECC, and a physical interface (PHY).
 
@@ -126,7 +338,7 @@ where each efficiency has a counter-based definition. Peak pin bandwidth alone i
 
 ECC flow specifies where check bits live, correction latency, poison propagation, scrub, address/ syndrome capture, interrupt severity, and behavior on partial writes. A partial write may need read-modify-write to generate correct ECC, consuming bandwidth and creating atomicity requirements.
 
-## 7. Clock, reset, and power crossings
+## 8. Clock, reset, and power crossings
 
 For every crossing, record source/destination domains, signal type, rate, data coherence requirement, synchronizer/FIFO/handshake, reset relationship, constraints, and verification. Single control bits can use synchronizers if pulse width and coherency permit; multibit data usually needs handshake or asynchronous FIFO. Gray pointers do not make arbitrary multibit buses coherent.
 
@@ -141,7 +353,7 @@ Power-domain crossings need isolation value/timing, level shifting direction, re
 
 Wake reverses dependencies: valid supply, restore/reinitialize, clock/reset release, protocol credit/identity synchronization, isolation release, then admission. See [Low-Power Architecture](../../../02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md) and [UPF/CPF](../../../02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md).
 
-## 8. Verification and staged build/integration
+## 9. Verification and staged build/integration
 
 Generate connectivity/address/attribute checks from the memory-map database. Use protocol assertions at every endpoint and after every bridge. Scoreboard byte values and transaction identities end to end under random backpressure/reordering. Test unmapped/security/device accesses, every burst/width boundary, ID exhaustion, reset mid-transaction, timeout/error, fences/atomics, cache-maintenance/DMA, ECC, refresh, and power transitions.
 
@@ -157,6 +369,12 @@ Integrate in this order:
 8. full concurrent-use-case traffic.
 
 The design is reconstructable when every address has one meaning, every transaction byte/ID has an owner, every ordering point is named, buffer dependencies are proven safe, DDR scheduling is executable, and reset/power cannot strand old identities.
+
+## References
+
+1. Arm, [AMBA AXI and ACE Protocol Specification](https://developer.arm.com/documentation/ihi0022/latest/) — channels, bursts, IDs, responses, ordering, and atomic/coherent attributes.
+2. RISC-V International, [RISC-V IOMMU Architecture Specification](https://docs.riscv.org/reference/iommu/) — device/process contexts, translation, invalidation, fault and page-request queues, and hardware integration guidance.
+3. Arm, [CoreLink DMA-330 DMA Controller Technical Reference Manual](https://developer.arm.com/documentation/ddi0424/latest/) — a concrete multichannel programmable DMA architecture.
 
 ---
 

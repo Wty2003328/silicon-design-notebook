@@ -228,30 +228,205 @@ Do not infer consistency solely from MESI state. A line may be coherent while wr
 
 ## 8. Fences are parameterized ordering operations
 
-A fence can be understood as ordering predecessor classes before successor classes. In RISC-V, predecessor/successor sets distinguish reads, writes, input, and output. Implementations may map different combinations to different drain/serialization actions.
+A fence is not “flush the cache.” It creates selected **before → after** edges between memory events. In RISC-V, `FENCE pred,succ` independently selects predecessor and successor classes from read (`R`), write (`W`), device input (`I`), and device output (`O`). For example, a write-to-write fence orders earlier stores before later stores without necessarily waiting for unrelated earlier loads. Other ISAs encode common acquire, release, full-system, load-only, store-only, or device-shareability combinations rather than exposing the same bit fields.
 
-Possible machinery:
+Keep four different actions separate:
 
-- block younger memory issue until older sets complete;
-- allow issue but prevent retirement/visibility;
-- drain committed store buffer to a coherence ordering point;
-- wait for outstanding invalidation/atomic acknowledgements;
-- order device I/O separately from cacheable memory;
-- serialize translation or instruction-stream updates with dedicated operations.
+| Operation | What it guarantees | What it does **not** necessarily do |
+|---|---|---|
+| compiler barrier | constrains compiler motion | emit a hardware ordering instruction |
+| acquire/release operation | one-sided ordering around one load/store/RMW | order unrelated operations in both directions |
+| architectural fence | orders named event classes in a named domain | write dirty cache lines to DRAM |
+| cache/translation/instruction maintenance | changes cache, TLB, or instruction visibility | replace the ISA memory-order edge |
 
-Over-implementing every fence as a full pipeline/cache drain is correct but can be catastrophically slow. Under-implementing one creates rare cross-core failures.
+An instruction-cache synchronization operation such as RISC-V `FENCE.I`, a TLB invalidation sequence, and a data-memory fence therefore have different completion ledgers even if a simple core serializes all three.
+
+### 8.1 Turn the ISA sentence into obligations
+
+At decode, convert a fence into a fence micro-operation carrying:
+
+```text
+rob_age
+pred_mask = {R,W,I,O}
+succ_mask = {R,W,I,O}
+scope/domain
+strength = acquire | release | acq_rel | sequentially-consistent
+instruction/translation/cache-maintenance subtype
+epoch
+```
+
+The fence's age divides memory operations into older predecessors and younger successors. An implementation then defines an **ordering point** for every class. Examples are “load value is irrevocably validated,” “store has reached the coherence serialization point,” “MMIO write response has returned from the device domain,” and “all invalidation acknowledgements have arrived.” “Request left the LSU” is usually too early; “data reached DRAM cells” is usually unnecessarily late.
+
+```mermaid
+flowchart LR
+    D["Decode fence<br/>age, pred, succ, scope"] --> FQ["Fence/ordering queue entry"]
+    FQ --> OL["Older-load ledger<br/>executed + validated?"]
+    FQ --> OS["Older-store ledger<br/>committed + ordered?"]
+    FQ --> IO["I/O ledger<br/>device completion?"]
+    FQ --> AT["Atomic/coherence ledger<br/>serialization + acks?"]
+    OL --> DONE{"Every selected<br/>predecessor satisfied?"}
+    OS --> DONE
+    IO --> DONE
+    AT --> DONE
+    DONE -- "no" --> HOLD["Hold selected younger issue<br/>or prevent it becoming observable"]
+    DONE -- "yes" --> REL["Release selected successors<br/>and mark fence complete"]
+```
+
+The ledger can be implemented with age comparisons over load/store queues, snapshot counters, sequence numbers, or per-domain outstanding counters. A useful counter scheme snapshots the number of relevant operations accepted before the fence and advances a completion sequence only when holes close; a simple count alone is unsafe if completions reorder.
+
+### 8.2 A practical fence state machine
+
+A conservative but understandable implementation is:
+
+1. **allocate:** insert the fence in the reorder buffer (ROB) and ordering queue;
+2. **stop selected successors:** prevent younger operations in `succ_mask` from passing the fence;
+3. **wait for retirement eligibility:** all older instructions are non-faulting, so stores counted by the fence cannot later be killed;
+4. **drain/validate selected predecessors:** wait for required load validation, store-buffer serialization, atomic completion, and I/O acknowledgements;
+5. **perform special maintenance:** for an instruction/TLB/cache-maintenance subtype, issue the required invalidates and wait for their acknowledgements;
+6. **complete and retire:** advance the fence epoch and release the selected successors.
+
+```text
+IDLE -> ALLOCATED -> WAIT_OLDER_SAFE -> WAIT_ORDER_POINTS
+     -> [WAIT_MAINTENANCE] -> COMPLETE -> IDLE
+```
+
+This state machine needs explicit handling for squash, trap, reset, and debug halt. A squashed fence cannot release a successor from a newer epoch. An interrupt may be taken before the fence retires only if the implementation can preserve precise state and later re-execute the fence; it cannot silently declare its obligations complete.
+
+The conservative design blocks successor issue. A higher-performance design may execute younger loads speculatively, but it must not let them create an architecturally visible result forbidden by the fence. It retains their load-queue entries, snoop-validation state, and replay path until the fence completes.
+
+### 8.3 Store-buffer draining: “accepted” is not “visible”
+
+Suppose a release store publishes a flag after two ordinary stores:
+
+```text
+S0: data[0] = A
+S1: data[1] = B
+R : flag    = 1    // release
+```
+
+It is insufficient for `S0` and `S1` merely to occupy the store buffer. The release store must not become visible before the two data stores reach the ordering point required by the ISA and shareability domain. The store buffer can attach a monotonically increasing sequence:
+
+| Entry | Sequence | Committed | Ownership/data accepted | Globally ordered |
+|---|---:|---:|---:|---:|
+| `S0` | 40 | yes | yes | yes |
+| `S1` | 41 | yes | pending | no |
+| release `R` | 42 | yes | not issued | no |
+
+`R` remains blocked until the contiguous ordered sequence reaches 41. If stores to different cache lines issue out of order internally, a completion bitmap plus a “highest contiguous completed sequence” prevents a younger completion from hiding an older hole.
+
+For a write-back cache, globally ordered does **not** mean the line has been written to DRAM. It normally means the coherence system has established the write's architecturally required visibility/ownership point. For noncoherent memory or MMIO, the point may instead be a bridge, device, or explicit completion response.
+
+### 8.4 Acquire, release, full, and sequentially consistent forms
+
+- A **release** prevents selected earlier events from appearing after the release operation. It commonly constrains the store buffer before the release publication.
+- An **acquire** prevents selected later events from appearing before an observed acquire. Younger loads may execute speculatively only if the core can validate/replay them.
+- An **acquire-release** RMW applies both sides around one atomic serialization point.
+- A **sequentially consistent (SC)** operation participates in the language/ISA's stronger global ordering rules. Implementations often need an SC-order token, a sufficiently strong fence pattern, or a serialization point shared by SC operations—not merely local queue draining.
+
+Do not implement these names by folklore. Start from the precise ISA preserved-program-order and propagation requirements, then prove the selected microarchitectural actions imply them. RISC-V's `aq`/`rl` bits, Arm load-acquire/store-release instructions, and x86 locked operations have different architectural wording even when source-language compilers use them for similar C/C++ constructs.
+
+### 8.5 Scope and cumulativity
+
+Ordering has a domain: one core, one coherence cluster, all coherent agents, or the system including devices. A narrow-scope fence can complete at a local point; a system-scope fence may need traffic to cross the last-level cache, I/O coherence point, or bridge.
+
+A **cumulative** fence may also carry forward observations made by this hart. In a three-party handoff, hart B reads data written by hart A, executes a cumulative fence, then publishes to hart C. The system must not let C observe B's publication while missing the A data that B carried forward. This is why the fence controller needs domain/protocol knowledge rather than only an empty local store buffer.
+
+### 8.6 Fence performance without weakening semantics
+
+Safe optimizations include:
+
+- implement predecessor/successor masks rather than treating every fence as full;
+- snapshot sequence numbers so the fence waits only for older operations;
+- let unrelated arithmetic and provably safe memory operations execute;
+- combine adjacent compatible fences before either has taken effect;
+- keep separate ordering domains so network/storage traffic does not delay an unrelated GPU or CPU domain;
+- expose memory synchronization domains or traffic classes when the architecture permits;
+- complete at the earliest architecturally sufficient ordering point.
+
+Performance counters should distinguish time waiting for retirement, load validation, store-buffer holes, ownership/invalidation acknowledgements, MMIO, atomics, and translation/cache maintenance. “Fence stalls” alone cannot identify the fix.
+
+### 8.7 Fence design and verification checklist
+
+- Is each ISA fence encoding decoded to the correct predecessor, successor, scope, and strength?
+- Is the ordering point for cacheable memory, noncoherent memory, and device I/O named?
+- Can an older operation still fault, replay, or be killed after the fence considers it complete?
+- Are split accesses and bridge-generated child transactions all counted?
+- Does completion wait for holes rather than just the number of responses?
+- Are speculative younger loads retained and invalidated/replayed when required?
+- Do reset epochs prevent stale acknowledgements completing a new fence?
+- Does a system-scope fence include DMA/device/coherence traffic required by the contract?
+
+Assertions should state the architectural consequence: if a fence retires, no selected successor can be observed before any selected predecessor. Internal “queue empty” assertions are supporting facts, not the specification.
+
+Over-implementing every fence as a full pipeline and cache drain may be correct but extremely slow. Under-implementing one produces rare failures that appear only with the right cache misses, snoops, bridge buffering, and compiler motion.
 
 ## 9. Atomics and their serialization point
 
-An atomic read-modify-write reads a value and conditionally/unconditionally writes a new value without another observer intervening at that location. It needs one serialization point, often cache ownership or a home-node atomic engine.
+An atomic read-modify-write (RMW) reads a value and conditionally or unconditionally writes a new value without an intervening write to the atomicity granule. **Atomicity and ordering are separate:** a relaxed atomic still has an indivisible per-location RMW, while acquire/release/SC qualifiers add cross-location edges.
 
-### 9.1 AMOs / fetch operations
+The architectural operand may be one byte, word, or doubleword; the coherence ownership granule may be an entire cache line. The specification must define supported alignment, crossing behavior, byte enables, sign extension, fault atomicity, and the interaction of smaller overlapping atomics. Never silently split an architecturally atomic operand into two independently visible bus transactions.
 
-The requester obtains exclusive authority, performs the operation, and returns the old value. Acquire/release annotations add cross-address ordering around the atomic.
+### 9.1 Choose the serialization location
 
-### 9.2 Compare-and-swap
+```mermaid
+flowchart LR
+    LSU["LSU atomic entry<br/>address, operand, op, order, age"] --> TLB["Translate + permission"]
+    TLB --> CHOOSE{"Implementation point"}
+    CHOOSE --> L1["Requester-side RMW<br/>obtain exclusive line,<br/>lock local line, compute, write"]
+    CHOOSE --> HOME["Home/L2 atomic engine<br/>route command to owner,<br/>serialize at directory slice"]
+    L1 --> RESP["Old value / success + completion"]
+    HOME --> RESP
+    RESP --> ROB["Write result, satisfy order,<br/>retire precisely"]
+```
 
-Write occurs only if the observed value matches. The comparison and conditional write share the same serialization interval; software sees one success/failure result.
+1. **Requester-side atomic:** acquire exclusive ownership, prevent local eviction/snoop intervention during the RMW interval, read the line, execute the operation, update ECC/data, then unlock. This reuses the L1 datapath but may move a hot line among requesters.
+2. **Home-node atomic:** route an atomic command to the address's home/L2 slice, serialize it in an atomic queue, fetch or recall the current data, compute/update there, and return the old value. This avoids ownership ping-pong for some traffic but adds operation hardware, queues, and protocol states at every home.
+
+“Lock the bus” is neither necessary nor scalable. The real requirement is one serialization point for conflicting operations plus protocol exclusion around it.
+
+A useful atomic entry holds:
+
+```text
+ROB age and destination tag
+virtual/physical address and byte mask
+operation and source operand(s)
+ordering strength and scope
+translation/protection status
+coherence transaction ID and retry epoch
+old value, computed value, compare result
+exclusive/line-lock/serialization ownership
+exception, poison, and completion state
+```
+
+The entry stays alive until the result is safe to publish, all architecturally required ordering obligations are satisfied, and a precise exception can no longer replace it.
+
+### 9.2 AMOs / fetch operations
+
+For fetch-add, swap, bitwise, signed/unsigned min/max, or another atomic memory operation (AMO), the serialization engine performs:
+
+1. translate and check the complete operand before changing memory;
+2. acquire exclusive authority or enter the home atomic queue;
+3. read and ECC-check the old operand;
+4. compute `new = f(old, source)` in a narrow integer datapath;
+5. merge enabled bytes, regenerate ECC, and commit the line update;
+6. return `old` to the destination register;
+7. satisfy release before, acquire after, or SC obligations;
+8. release the line/queue entry.
+
+Only step 5 is the memory update, but the indivisible interval includes whatever protocol exclusion is needed to ensure no conflicting observer can intervene between steps 3 and 5. A retry response before serialization is harmless; retrying after an update without a duplicate-suppression rule would apply an increment twice. Protocols therefore need a clear “not performed / performed” boundary, unique request identity where replay exists, or a rule that completed non-idempotent atomics are never blindly retried.
+
+### 9.3 Compare-and-swap
+
+Compare-and-swap (CAS) writes only when the observed value equals the expected value. The read, comparison, and conditional write share one serialization interval:
+
+```text
+old = memory[address]              // while holding atomic authority
+match = (old == expected)
+if match: memory[address] = desired
+return old and/or match
+```
+
+On comparison failure, no data update occurs, but the operation was still an atomic read and may still carry acquire semantics. The cache controller must not generate a dirty write merely because the CAS command reached an exclusive state; update/ECC/dirty bits are gated by `match`.
 
 Why one conditional primitive suffices: *any* read-modify-write can be built as a CAS **retry loop** — read the current value, compute a new one, and swap it in only if nothing changed underneath. On failure CAS reloads the current value into `cur`, so the loop simply recomputes and retries:
 
@@ -268,11 +443,32 @@ do {
 
 The `_weak` form may fail spuriously, which is harmless inside a loop. A caveat CAS shares with all value-comparison: it cannot tell `A → B → A` from "never changed" (the *ABA* problem), because it inspects only the value, not the history.
 
-### 9.3 Load-reserved/store-conditional
+### 9.4 Load-reserved/store-conditional
 
-LR establishes a reservation; SC succeeds only if it remains valid. Conflicting writes and allowed implementation events clear it. Correctness includes forward-progress constraints for constrained loops, reservation granularity, and context-switch behavior.
+Load-reserved (LR) establishes a reservation; store-conditional (SC) succeeds only if it remains valid. A reservation monitor is explicit hardware state, not a lock held from LR to SC:
 
-The same optimistic retry loop as §9.2, but keyed on the reservation rather than a compared value:
+| Reservation field | Purpose |
+|---|---|
+| valid | whether an SC is eligible |
+| physical address/tag | location or reservation granule |
+| size/byte range | overlap check |
+| hart/thread/context identity | prevents one context using another's reservation |
+| coherence/reset epoch | rejects stale completions |
+| optional version | detects a conflicting write event |
+
+LR behaves like a load and records the reservation after translation. The cache/coherence system sends conflicting write/invalidate/evict events to the monitor. SC translates again, checks address/context/reservation, and conditionally enters the atomic update path. Whether SC succeeds must be decided at a point that cannot race with a conflicting coherence write.
+
+Common reservation-clearing events include:
+
+- a conflicting coherent write or invalidation to the reservation granule;
+- eviction, replacement, or loss of monitored coherence state;
+- another LR/SC as specified by the ISA;
+- trap return, context switch, debug, reset, or explicit software action;
+- implementation events explicitly allowed by the architecture.
+
+Spurious SC failure is permitted by some architectures, but constrained LR/SC loops receive forward-progress guarantees. Hardware should record failure causes—conflict, eviction, context, address mismatch, resource/retry, or spurious—because a single failure counter cannot distinguish real sharing from a broken monitor.
+
+The same optimistic retry loop as §9.3, but keyed on the reservation rather than a compared value:
 
 ```asm
 retry:
@@ -283,6 +479,67 @@ retry:
 ```
 
 Because SC fails on *any* intervening write to the reserved granule — not just a net value change — LR/SC sidesteps the ABA problem that trips CAS: an `A → B → A` sequence still clears the reservation and forces a retry. The cost is the reservation-granularity and forward-progress constraints above.
+
+### 9.5 Ordering qualifiers around the serialization point
+
+Represent the atomic as three conceptual events:
+
+```text
+[release obligations] -> [per-location serialization/update] -> [acquire obligations]
+```
+
+- relaxed: only the middle event;
+- release: selected older operations reach their ordering points before the middle event;
+- acquire: selected younger operations cannot become observably ordered before the returned atomic event;
+- acquire-release: both;
+- sequentially consistent: both plus participation in the architecture/language's SC-order constraints.
+
+The LSU can reuse the fence ledger from §8. Release-qualified atomics wait for the predecessor snapshot before requesting serialization; acquire-qualified atomics hold or validate younger successors until the atomic response and required scope event. This sharing avoids two subtly different definitions of “ordered.”
+
+### 9.6 Contention, fairness, and forward progress
+
+A contended cache line is a serial server. With service time $S$ and average queue depth $q$, the best-case throughput is about $1/S$, while request latency grows with queueing. More requesters do not create more per-line bandwidth.
+
+Hardware mechanisms include:
+
+- a FIFO or age-based home atomic queue;
+- fair ownership arbitration rather than repeated victory by the nearest core;
+- negative acknowledgement with randomized/exponential backoff;
+- combining only when the ISA result permits it—ordinary fetch-add returns a distinct old value to each requester, so combining must reconstruct those results exactly;
+- line-local throttling so one hot address does not consume every miss-status or response entry;
+- priority inheritance or bounded service for synchronization used by real-time agents.
+
+Livelock tests must include two or more requesters losing ownership repeatedly, snoop pressure, replacement, and a nearly full response network. Fair router arbitration is not enough if the cache controller continually rejects the same atomic.
+
+### 9.7 Precise faults, cancellation, and reset
+
+Perform translation, alignment, access permission, and supported-size checks before the memory update. An uncorrectable data error, bus error, or page fault must have an architectural outcome defined by the ISA/platform; the design must never update memory and then report the operation as unperformed.
+
+Once an atomic passes its no-return serialization/update point, a pipeline squash cannot cancel the memory effect. Therefore the core normally waits until the atomic is the oldest safe instruction before allowing the irreversible update, or retains enough retirement state to guarantee that it will commit. Responses carry transaction and reset epochs so an old completion cannot update a newly reused ROB destination.
+
+### 9.8 Atomic verification plan
+
+Use reference-model and adversarial tests:
+
+- all operation/size/alignment/byte-mask cases, including signed min/max boundaries;
+- two atomics to the same operand and overlapping subwords;
+- atomic versus ordinary loads/stores and cache-line eviction;
+- CAS success/failure and “failure must not dirty data”;
+- LR/SC conflicts at every cycle, granule boundaries, traps, context switches, and forward-progress loops;
+- acquire/release message-passing litmus tests around successful and failed operations;
+- retries, duplicate responses, poison/ECC, reset, and backpressure;
+- home/requester races, invalidation acknowledgements, and two physical aliases.
+
+Core assertions:
+
+```text
+no two successful conflicting RMW intervals overlap
+each successful RMW returns the value immediately preceding its serialization point
+failed CAS/SC performs no memory update
+an atomic memory update occurs at most once per architectural instruction
+SC success implies a valid matching reservation with no intervening conflict
+retired acquire/release/SC atomics have satisfied the §8 ordering ledger
+```
 
 An atomic's latency includes ownership acquisition, invalidations, operation, acknowledgement, and ordering drains:
 
@@ -486,9 +743,11 @@ Cross-references: [Cache Coherence](01_Cache_Coherence.md) supplies the conflict
 
 1. RISC-V International, [RVWMO Memory Consistency Model](https://docs.riscv.org/reference/isa/unpriv/rvwmo.html).
 2. RISC-V International, [Formal Memory Model Specifications](https://docs.riscv.org/reference/isa/unpriv/mm-formal.html).
-3. P. Sewell et al., “x86-TSO: A Rigorous and Usable Programmer's Model for x86 Multiprocessors,” CACM 2010.
-4. S. Adve and K. Gharachorloo, “Shared Memory Consistency Models: A Tutorial,” *Computer*, 1996.
-5. J. Alglave et al., “Herding Cats: Modelling, Simulation, Testing, and Data Mining for Weak Memory,” TOPLAS 2014.
+3. RISC-V International, [Unprivileged ISA Specification, “A” Extension](https://docs.riscv.org/reference/isa/unpriv/a-st-ext.html) — AMOs, LR/SC, acquire/release bits, and forward progress.
+4. Arm, [Armv8-A Memory Model Guide](https://developer.arm.com/documentation/102336/latest/) — memory types, observers, barriers, acquire/release, and ordering examples.
+5. P. Sewell et al., “x86-TSO: A Rigorous and Usable Programmer's Model for x86 Multiprocessors,” CACM 2010.
+6. S. Adve and K. Gharachorloo, “Shared Memory Consistency Models: A Tutorial,” *Computer*, 1996.
+7. J. Alglave et al., “Herding Cats: Modelling, Simulation, Testing, and Data Mining for Weak Memory,” TOPLAS 2014.
 
 ---
 
