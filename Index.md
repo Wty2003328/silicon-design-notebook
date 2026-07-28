@@ -40,7 +40,7 @@ Use the [Research-Depth and Evidence Standard](Research_Depth_and_Evidence_Stand
 | [01 · CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) | MOSFET, inverter VTC, noise margins, delay, logic families, I/O signaling standards (LVCMOS/SSTL/POD/LVDS/CML), latch-up, ESD, FinFET, 6T SRAM, leakage |
 | [02 · Logic Building Blocks](00_Fundamentals/02_Logic_Building_Blocks.md) | MUX, Shannon expansion, encoders/decoders, latch vs FF (transistor-level), metastability, FSMs, gray code, hazards, FIFO depth |
 | [03 · Adders and Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md) | half/full adder → CLA, carry-select, carry-skip, prefix (Kogge-Stone), CSA, Booth, Wallace/Dadda |
-| [04 · Floating Point](00_Fundamentals/04_Floating_Point.md) | IEEE-754, add/mul pipelines, GRS + rounding modes, SRT/Newton-Raphson/Goldschmidt division, FMA microarchitecture, AI formats (BF16/FP8/MX) |
+| [04 · Floating Point](00_Fundamentals/04_Floating_Point.md) | From CLA/CRA to IEEE-754 add, multiply, FMA, SRT/Newton divide, sqrt/rsqrt, conversions, comparisons, SFUs, GRS rounding, flags, verification, and AI formats (BF16/FP8/MX) |
 | [05 · SystemC and TLM](00_Fundamentals/05_SystemC_and_TLM.md) | SystemC discrete-event kernel (evaluate–update, delta cycles, notification phases), modules/processes/channels, bit-accurate types; TLM-2.0 generic payload, sockets, blocking/non-blocking 4-phase transport, DMI, LT/AT coding styles + temporal decoupling |
 
 ---

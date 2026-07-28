@@ -1,4 +1,4 @@
-# Floating Point — The Range/Precision Trade and Its Hardware
+# Floating Point — From a Carry Adder to Add, Multiply, FMA, Divide, and SFUs
 
 ```mermaid
 flowchart LR
@@ -10,6 +10,8 @@ flowchart LR
 > **Hands off to:** [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) and [GPU_Architecture](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) (where these formats become MAC density and TOPS), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §7 (the FPU/FMA/divide latency menu the scheduler reasons about).
 
 **First-use vocabulary.** A **floating-point unit (FPU)** executes floating-point arithmetic. A **unit in the last place (ULP)** is the spacing between adjacent representable numbers near a value. **Guard, round, and sticky (GRS)** are the three summary bits used to decide rounding. **Round to nearest, ties to even (RNE)** is IEEE 754's usual rounding rule. A **fused multiply-add (FMA)** computes a product plus an addend with one final rounding. **NaN** means “not a number.” **Flush to zero (FTZ)** and **denormals are zero (DAZ)** replace tiny subnormal results or inputs with zero. A **multiply–accumulate (MAC)** repeatedly forms products and adds them into a running sum.
+
+> **Assumed starting point:** you know a ripple-carry adder (RCA, also called a carry-ripple adder or CRA), a carry-lookahead adder (CLA), two's-complement subtraction, multiplexers, and registers. That is enough. An FP adder is not a mysterious new kind of adder: it is a CLA/parallel-prefix adder surrounded by exponent comparison, a barrel shifter, leading-zero logic, rounding, and special-case control. An FP multiplier similarly wraps an unsigned integer multiplier with sign/exponent/normalization logic.
 
 ---
 
@@ -121,12 +123,12 @@ where $\epsilon$ = **machine epsilon**, the gap between $1.0$ and the next large
 **The rounding-error model.** Round-to-nearest maps any real $x$ (in range) to the closest float, so it errs by at most half a ULP:
 
 $$
-|fl(x)-x| \;\le\; \tfrac12\,\mathrm{ULP}(x) \;=\; \underbrace{2^{-p}}_{\;u\;}\,|x| \;=\; \tfrac12\,\epsilon\,|x|,
+|fl(x)-x| \;\le\; \tfrac12\,\mathrm{ULP}(x) \;\le\; \underbrace{2^{-p}}_{\;u\;}\,|x| \;=\; \tfrac12\,\epsilon\,|x|,
 \qquad\Longleftrightarrow\qquad
 fl(x) = x(1+\delta),\ \ |\delta|\le u,
 $$
 
-where $u=\tfrac12\epsilon=2^{-p}$ = **unit roundoff**. This is the load-bearing theorem of the whole field: **every basic operation returns its exact result perturbed by a relative error no larger than $2^{-p}$.** Why $2^{-p}$ and not something workload-dependent? Because normalization guarantees $p$ significant bits *regardless of magnitude*, so the worst-case relative error is a property of the format alone. Precision, in one number, is $p$; move one bit from mantissa to exponent and $u$ doubles.
+where $u=\tfrac12\epsilon=2^{-p}$ is **unit roundoff**. The relative model applies when the exact result and its rounded value remain in the normal finite range. Near zero, gradual underflow is better described by an absolute-error bound; overflow and exceptional values need separate cases. Within that normal range, a correctly rounded basic operation behaves as though its exact real result were perturbed by at most $u$ in relative terms.
 
 **The canonical formats as points on the trade.** Read this table as *allocations*, not layouts — the last two columns are the whole story:
 
@@ -156,29 +158,29 @@ $$
 
 **Subnormals** (exponent field all-zeros, hidden bit $0$, value $0.f\times 2^{\,e_{\min}}$) fill the gap with values evenly spaced by the *smallest* ULP, $2^{\,e_{\min}-(p-1)}$ — the same spacing as just above $e_{\min}$. Underflow becomes **gradual**: a result drifting below the normal range loses precision one bit at a time instead of collapsing to zero in one step, and $a\ne b\Rightarrow a-b\ne0$ is restored. This is not pedantry — it is what makes `if (a != b) x = 1/(a-b);` safe.
 
-**The hardware cost, and why throughput chips cheat.** A subnormal has *no* guaranteed leading 1, so it carries a variable number of leading zeros. That forces the FPU to run a leading-zero count and a variable pre/post-normalization shift on the underflow path, and to denormalize *before* the final rounding (else a shift after rounding double-rounds). Handled in full hardware this is a real area adder for a case most code rarely hits, so designs choose:
+**The hardware cost and implementation choices.** A subnormal has *no* guaranteed leading 1, so it carries a variable number of leading zeros. Supporting it can require leading-zero detection, variable pre-normalization, and a right-shift-jam into the subnormal result range before final rounding. Implementations choose among:
 
-| Strategy | Subnormal latency | Area | IEEE-correct | Who ships it |
-|---|---|---|---|---|
-| Full hardware | no penalty | $+10\text{–}25\%$ FPU | yes | server/HPC CPUs |
-| Microcode/trap assist | $+50\text{–}150$ cyc | minimal | yes | many x86 FPUs |
-| **Flush-to-zero (FTZ/DAZ)** | no penalty | *smaller* (no case) | **no** | GPUs, DSPs, most AI datapaths |
+| Strategy | Datapath consequence | Architectural consequence |
+|---|---|---|
+| full-rate hardware | normalize/denormalize and round in the normal pipeline | gradual underflow supported at normal throughput |
+| slower assist/path | reuse or iterate normalization hardware | IEEE-style result is possible with data-dependent latency |
+| **DAZ / FTZ profile** | treat subnormal inputs as zero and/or flush tiny results | simpler/faster contract, but not full gradual-underflow behavior |
 
-FTZ simply forces subnormal inputs and results to zero. It abandons gradual underflow to delete the whole special case — an acceptable trade in ML, where a value at $10^{-38}$ is noise anyway, and the reason near-zero denormals essentially do not exist inside a tensor core.
+**DAZ** (denormals are zero) applies to inputs; **FTZ** (flush to zero) applies to tiny results. A design may support one, both, or neither. Their area, timing, and energy effect depends on whether normalization hardware is already shared with other operations, so it must be measured in the actual implementation. The instruction/profile must expose this behavior because some algorithms depend on gradual underflow.
 
 ---
 
 ## 4. Rounding: the half-ULP guarantee, and unbiased rounding
 
-**Three bits round infinitely-precise results correctly.** After an aligned add or a $p\times p$ multiply the exact result can have an arbitrarily long tail below the $p$-bit significand. Remarkably, the correct round-to-nearest decision needs only three summary bits of that tail: the **Guard** (first bit past the retained significand), **Round** (second), and **Sticky** (the OR of *all* remaining bits). Sticky is the trick — it compresses the entire infinite tail into one bit answering "is anything nonzero below the round bit?", which is all any rounding rule needs to distinguish *exactly half* from *more/less than half*. For round-to-nearest-even the entire decision is one gate:
+**Three summary bits decide final rounding.** Once an operation has preserved enough exact/internal information to reach its final rounding boundary, the decision needs only the **Guard** bit (first below the retained significand), **Round** bit (second), and **Sticky** bit (OR of everything lower or previously discarded). Sticky distinguishes an exact half from a value above it. For round-to-nearest-even:
 
 $$
 \text{round\_up} \;=\; G \cdot \big(R \lor S \lor \text{LSB}\big),
 $$
 
-where LSB = least-significant retained bit. $G{=}0$: tail below half, truncate. $G{=}1$ with $R\lor S$: above half, round up. $G{=}1,\,R{=}S{=}0$: an exact tie, broken toward even (round up only if LSB is 1). The directed modes ($+\infty$, $-\infty$, toward-zero) reuse the same three bits with the sign; only their boolean differs. This is why FP datapaths carry exactly three extra bits and no more — a fact worth keeping when everything else about rounding can be re-derived.
+where LSB is the least-significant retained bit. $G{=}0$: below half. $G{=}1$ with $R\lor S$: above half. $G{=}1,\,R{=}S{=}0$: an exact tie, incremented only when LSB is 1 so the result becomes even. The final rounder needs only these summaries, but the operation core may need many more internal bits—an FMA keeps a full product, and a divider uses a nonzero remainder to form sticky.
 
-**Why ties go to even.** Naïve "round half up" always pushes ties in the $+$ direction, injecting a systematic bias of $+\tfrac14\,\mathrm{ULP}$ per rounded tie — a DC offset that, summed over billions of operations, walks the result away from truth. Round-to-nearest-**even** sends half the ties up and half down (the neighbor with LSB $0$), so the tie bias is zero and rounding error behaves like zero-mean noise. Over a long accumulation, unbiased is worth far more than any single rounding's accuracy.
+**Why ties go to even.** A rule that always sends exact midpoint cases toward the larger magnitude introduces a systematic direction into repeated tie-heavy calculations. Round-to-nearest-even selects the neighbor whose retained LSB is 0, so it does not always move ties in one magnitude direction. This reduces statistical bias; it does not guarantee zero error for an arbitrary, nonuniform data set.
 
 **Stochastic rounding — buying unbiasedness back at low precision.** In deep-precision formats a subtler bias dominates: when a weight $w$ in BF16/FP8 is updated by a gradient $g$ smaller than $\tfrac12\,\mathrm{ULP}(w)$, deterministic rounding maps $w+g\mapsto w$ **every time** — the update vanishes and training *stagnates* even though millions of such updates should have moved $w$. **Stochastic rounding** rounds $x$ up with probability equal to its fractional position between the two neighbors,
 
@@ -220,7 +222,7 @@ $$
 with a **single** rounding of the *exact* product-plus-addend, versus $fl(fl(a\cdot b)+c)$'s two. This matters for three compounding reasons:
 
 1. **Accuracy per term.** A dot product accumulated with FMA rounds once per term, not twice, roughly halving the error constant; more importantly the intermediate product is never truncated to $p$ bits before it is added.
-2. **Error-free transforms.** Because the product is kept exact internally, $p=fl(a\cdot b)$ and $e=\text{fma}(a,b,-p)$ together give $a\cdot b = p+e$ **exactly** — the rounding error is *recovered as a number*. This "2Product" is the foundation of compensated (Kahan) summation and double-double arithmetic (§6).
+2. **Error-free transforms.** Under the usual finite/no-underflow assumptions, $p=fl(a\cdot b)$ and $e=\text{fma}(a,b,-p)$ give $a\cdot b=p+e$ exactly: the product rounding error is recovered as a representable number. This `TwoProduct` primitive supports compensated dot products and double-double arithmetic. Kahan summation instead compensates addition error with a `TwoSum`-like update.
 3. **Cheap iterative refinement.** Newton/Goldschmidt reciprocal and square-root steps are chains of $\text{fma}(-b,x,1)$ that would lose their meaning if the product were pre-rounded.
 
 **An FMA rounding difference, by hand.** Take a 3-significant-digit toy float and compute $a\cdot b+c$ with $a=b=9.99,\ c=-99.8$; the exact product is $99.8001$.
@@ -228,13 +230,13 @@ with a **single** rounding of the *exact* product-plus-addend, versus $fl(fl(a\c
 - **Separate**, $fl(fl(a\cdot b)+c)$: round the product first, $fl(99.8001)=99.8$, then $99.8-99.8=0$ — the result vanishes.
 - **Fused**, $fl(a\cdot b+c)$: keep the product exact, $99.8001-99.8=0.0001$, round once to $1.00\times10^{-4}$.
 
-The true answer is $0.0001$; the separate path lost it *entirely* by truncating the product to the format before $c$ could cancel the leading digits, while the FMA's single rounding kept it. This is the "never round the intermediate product" point made numeric — and exactly why the §8.2 datapath carries the full $2p$-bit product into the add.
+The true answer is $0.0001$; the separate path lost it *entirely* by truncating the product to the format before $c$ could cancel the leading digits, while the FMA's single rounding kept it. This is the "never round the intermediate product" point made numeric — and exactly why the §8.3 datapath carries the full $2p$-bit product into the add.
 
-**Why the FMA is area-expensive.** The addend $c$ must align against the *full* $2p$-bit product before rounding, so the internal adder spans product width plus alignment range — roughly $3p$ bits (about 74 for FP32, 161 for FP64) against a bare FP adder's $p{+}3$. That wide carry-propagate add is usually the FMA's critical path and buys it $\sim 1{-}2$ cycles of latency over a plain multiply. Designs pay it anyway because one fused instruction with one rounding is both faster and *more accurate* than two — which is why the FMA, not the standalone multiply-then-add, is the primitive every modern datapath exposes. The multiplier tree feeding it (radix-4 Booth → Dadda → sparse-prefix CPA) is derived in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §7.
+**Why the FMA costs more than a bare multiplier.** The addend $c$ must align against the full $2p$-bit product before rounding. The internal fixed-point window, alignment network, cancellation handling, final CPA, and normalization logic are therefore wider than the destination significand. Exact width and pipeline latency depend on format support, subnormal policy, alignment scheme, and timing target; determine them from the chosen architecture and synthesis, not a universal cycle count. The multiplier tree feeding it is derived in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §7.
 
 ---
 
-## 6. The hardware cost: everything scales with mantissa width squared
+## 6. The hardware cost: the significand multiplier scales roughly with width squared
 
 Here is why the whole industry moved to low precision. Decompose an FP multiplier:
 
@@ -246,17 +248,17 @@ $$
 A_{\text{mul}} \;\sim\; p^2, \qquad E_{\text{mul}} \;\sim\; p^2,
 $$
 
-where $p$ = significand width. The exponent — the thing that buys *range* — is almost free; the mantissa — the thing that buys *precision* — is quadratically expensive. **Cutting precision is the single most powerful area/energy lever in an arithmetic datapath**, and it cuts quadratically:
+where $p$ is significand width. This is a model of the **partial-product core**, not the whole FP lane. Exponent/classification logic, alignment, accumulation, rounding, registers, clocking, and routing do not shrink as $p^2$. Cutting precision creates large multiplier-density headroom, but realized lane density must include those fixed and linear-width costs:
 
-| Format | $p$ | $p^2$ (mantissa mult.) | vs FP32 | MACs in FP32's area |
-|---|---|---|---|---|
-| FP32 | 24 | 576 | $1\times$ | $1\times$ |
-| TF32 / FP16 | 11 | 121 | $0.21\times$ | $\sim4.8\times$ |
-| BF16 | 8 | 64 | $0.11\times$ | $\sim9\times$ |
-| FP8 E4M3 | 4 | 16 | $0.028\times$ | $\sim36\times$ |
-| FP8 E5M2 | 3 | 9 | $0.016\times$ | $\sim64\times$ |
+| Format | $p$ | $p^2$ partial-product bits | FP32 core ratio | Ideal inverse core ratio |
+|---|---:|---:|---:|---:|
+| FP32 | 24 | 576 | $1$ | $1\times$ |
+| TF32 / FP16 | 11 | 121 | $0.210$ | $4.76\times$ |
+| BF16 | 8 | 64 | $0.111$ | $9\times$ |
+| FP8 E4M3 | 4 | 16 | $0.0278$ | $36\times$ |
+| FP8 E5M2 | 3 | 9 | $0.0156$ | $64\times$ |
 
-Nine BF16 multipliers or thirty-six FP8 multipliers fit where one FP32 multiplier sat — *this* is the arithmetic behind the headline TOPS of AI chips, and it comes almost entirely from shrinking $p$ (the roughly-constant 8-bit exponent rides along cheaply). The full-datapath overhead (align shifter, LZC, rounding, special-case logic) makes an FP32 add $\sim12\times$ and an FP32 multiply $\sim40\times$ the area of the corresponding INT32 op, but those adders are linear in $p$; the $p^2$ multiplier is what dominates and what reduced precision attacks.
+The last column is an **upper opportunity from the multiplier core only**. It does not mean 9 complete BF16 MAC lanes or 36 complete FP8 lanes fit in one FP32 MAC area. Accumulator ports/width, format muxing, issue bandwidth, wiring, and power can dominate at low precision. Use synthesized/post-route lane area and measured power to turn the $p^2$ opportunity into a product claim.
 
 **But you cannot reduce the accumulator the same way.** Sum $n$ products each carrying relative error $\le u$. Worst-case error accumulates linearly and, for rounding that behaves like zero-mean noise, in RMS as a random walk:
 
@@ -267,7 +269,7 @@ $$
 \quad\text{(stochastic)},
 $$
 
-where $t_i$ = the terms and $u$ = the *accumulator's* unit roundoff. Two consequences. First, error grows with $n$, so the accumulator's $u$ must be small enough that $n\,u\ll1$ over the longest reduction — a 4096-long dot product in FP8 ($u=2^{-4}$) would be pure noise. Second, **swamping**: once the running sum greatly exceeds the next term, that term falls entirely below the sum's ULP and rounds away — adding it in the *product's* precision loses it completely. The fix is structural and universal: **multiply in low precision, accumulate in a wide one.** Every tensor core takes BF16/FP8/INT8 inputs and accumulates in FP32; the accumulator keeps the range and the $n\,u$ headroom the cheap multiplier cannot. Kahan (compensated) summation is the software mirror — it uses the §5 error-free transform to capture each addition's lost low bits and fold them back, making an $n$-term sum behave like $O(u)$ instead of $O(n\,u)$. The MAC array that arranges this in space is [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) §2; the carry-save accumulation inside it is [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §6.
+where $t_i$ are terms and $u$ is the accumulator's unit roundoff. Error grows with reduction length and conditioning, so directly accumulating a long dot product at FP8 input precision is usually unacceptable. **Swamping** occurs when the next term lies below the running sum's ULP and rounds away. Hardware therefore commonly multiplies at low precision and accumulates in a wider floating-point or fixed-point representation, often FP32-like but always defined by the instruction. Kahan/compensated summation is a software-side technique for recovering lost addition information; exact error bounds still depend on the summation algorithm and data. The MAC array is covered in [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) §2.
 
 ---
 
@@ -280,7 +282,7 @@ With the cost model in hand, every modern format is a *deliberate* point on the 
 Walking the line from FP32 outward:
 
 - **TF32 (NVIDIA, Ampere+).** Keep FP32's 8-bit exponent (full range, drop-in) but truncate the mantissa to 10 bits, so the multiplier is $11\times11$ instead of $24\times24$ ($\sim4.8\times$ smaller) — while **accumulating in FP32**. A matmul silently runs on the tensor cores at a few-times-FP32 throughput with $\sim3$ decimal digits, no code change. TF32 is the purest illustration that *range is cheap and mantissa is what you pay for*.
-- **FP16 vs BF16 — the training-format decision.** FP16 keeps 10 mantissa bits but only a 5-bit exponent (max $\approx65504$); training gradients routinely exceed that, so FP16 training needs **loss scaling** (multiply the loss up before the backward pass, divide out after) to keep gradients off the overflow/underflow rails. **BF16** instead keeps FP32's 8-bit exponent and spends only 7 bits on mantissa: gradients never overflow, **no loss scaling**, and the coarse mantissa even acts as mild regularization. That is why BF16 became the training default — Google TPU (v2, 2017), NVIDIA A100 (2020), and essentially every framework's mixed-precision path. The FP32 master weights still hold the precision; BF16 supplies the cheap range-preserving multiply.
+- **FP16 vs BF16 — the training-format decision.** FP16 keeps 10 fraction bits but only a 5-bit exponent (maximum finite 65,504), so mixed-precision FP16 training often uses loss scaling to avoid gradient underflow. **BF16** keeps FP32's 8-bit exponent and spends only 7 bits on the fraction, greatly reducing the need for loss scaling while giving up precision. Overflow is still possible and algorithm-dependent; wider accumulators/master state remain important.
 - **FP8 E4M3 vs E5M2 — the same choice at 8 bits.** The OCP FP8 standard (2022; NVIDIA, AMD, Intel, Arm, others) ships *both* on purpose. **E4M3** (4-bit exp, 3-bit mantissa, range $\pm448$) has the extra mantissa bit — used for **forward-pass weights and activations**, which need precision within a bounded range. **E5M2** (5-bit exp, 2-bit mantissa, range $\pm5.7\times10^4$) has the extra exponent bit — used for **backward-pass gradients**, which need range above all. NVIDIA Hopper H100 (2022), AMD MI300, and Intel Gaudi run FP8 tensor cores that switch format by tensor/phase — the datapath literally re-allocates the bit between range and precision per operation.
 - **MXFP / microscaling (OCP MX, 2023) — factoring range out of the element.** Below 8 bits, a per-element exponent is too coarse to carry both range and precision. Microscaling shares **one 8-bit scale across a block of 32 elements**; each element stores only its value *relative to the block*, so the block scale reconstitutes the dynamic range the tiny per-element field lost, and every element bit goes to precision:
 
@@ -293,24 +295,29 @@ so MXFP4 costs $4.25$ bits/element yet spans a useful range. Variants MXFP8/6/4 
 
 | Workload | Format | Why (range vs precision) |
 |---|---|---|
-| Training, general | BF16 (FP32 master) | gradients need FP32 range; no loss scaling |
+| Training, general | BF16 (often wider master/accumulation) | wide exponent reduces loss-scaling pressure |
 | Training, aggressive | FP8 E4M3 fwd / E5M2 bwd | per-phase range/precision split; FP32 accumulate |
 | Frontier low-bit training/inference | MXFP8 / MXFP6 / MXFP4 | shared scale restores range below 8 bits |
 | Inference, accuracy | FP16 or INT8 | bounded activations; calibrated |
-| Inference, throughput | FP8 / MXFP4 / INT4 | max MAC density, accuracy loss $1\text{–}3\%$ tolerable |
+| Inference, throughput | FP8 / MXFP4 / INT4 | density opportunity; accuracy requires calibration/QAT and workload validation |
 | Scientific / HPC | FP64 | convergence needs $\sim16$ digits |
 
-Two rules survive every format above and are the takeaways to keep: **the multiplier shrinks as $p^2$ (§6), and the accumulator stays wide (FP32) no matter how small the inputs get.** How these formats turn into MAC density, TOPS, and roofline behavior is [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) and [GPU_Architecture](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md); this page's job is the arithmetic that makes them safe.
+Two rules survive every format above and are the takeaways to keep: **the multiplier shrinks roughly as $p^2$ (§6), and long reductions normally use an accumulator wider than their inputs—often FP32 or an equivalent wide fixed-point accumulator.** How these formats turn into MAC density, TOPS, and roofline behavior is [NPU_Accelerators](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md) and [GPU_Architecture](../01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md); this page's job is the arithmetic that makes them safe.
 
 ---
 
-## 8. Operations: multiply, add, divide, and the elementary functions
+## 8. Operations: build the complete arithmetic unit from integer blocks
 
-The mechanisms follow from the format; none needs a pipeline dump.
+Every operation uses the same outer shell:
 
-**Multiply** is the easy one because the format *is* multiplicative: sign $=s_a\oplus s_b$, exponent $=e_a+e_b-\text{bias}$, significand $=m_a\cdot m_b\in[1,4)$ (one possible normalize bit), then round (§4). The $p\times p$ significand multiply is the entire cost and the entire $p^2$ story of §6.
+1. **unpack and classify** the encoded operands;
+2. convert finite values to an internal sign, signed exponent, and explicit significand;
+3. perform an exact or sufficiently wide integer operation;
+4. normalize the raw result;
+5. round once to the destination format;
+6. select special-case results, raise flags, and pack the bits.
 
-**Add** is the hard one because it is *not* aligned to the format: the smaller operand must be shifted to the larger's exponent (a barrel shift — the wide, expensive stage), then added, then re-normalized (the leading-zero-count + shift that cancellation, §5, makes large). Alignment and normalization are the two costs, they trade against the exponent difference, and the dual-path adder (§5) exists to never pay both at once.
+The CLA/CRA is step 3 for addition. The multiplier tree is step 3 for multiplication. FMA widens step 3 so the product and addend meet before rounding. Divide, square root, and elementary functions repeat a smaller multiply/add step across several cycles.
 
 ### 8.1 A floating-point addition, exactly as hardware performs it
 
@@ -338,8 +345,8 @@ The concrete adder pipeline is therefore a composition of hardware already deriv
 
 ```mermaid
 flowchart LR
-  UN["classify<br/>and unpack"] -->|fields| CMP["exponent<br/>compare"] -->|Δe| SHR["right barrel<br/>shift + sticky"] -->|aligned| ADD["add/subtract<br/>significands"] --> RAW["raw sum,<br/>continued below"]
-  FA["from add<br/>above"] --> LZD["leading-zero<br/>detect + shift"] -->|normalized + GRS| RND["GRS decision<br/>+ increment"] -->|rounded| PACK["flags<br/>and pack"]
+  UN["classify<br/>and unpack"] -->|fields| CMP["exponent<br/>compare"] -->|Δe| SHR["right barrel<br/>shift + sticky"] -->|aligned| ADD["add/subtract<br/>significands"] --> RAW["raw sum"]
+  RAW --> LZD["leading-zero<br/>detect + shift"] -->|normalized + GRS| RND["GRS decision<br/>+ increment"] -->|rounded| PACK["flags<br/>and pack"]
   UN -.->|signs and special-case class| PACK
 ```
 
@@ -362,7 +369,228 @@ This figure is a **hardware ownership map**, not a promise that each box is exac
 
 **Verification obligations.** Compare the packed result and all exception flags against a bit-exact reference model for every supported rounding mode. Bias random tests toward exponent differences near $0$, $1$, $p$, and greater than $p$; opposite-sign operands that cancel to zero or one ULP; exact-half GRS patterns; largest finite operands; the normal/subnormal boundary; both signed zeros; and every infinity/NaN combination. Also assert that a stalled pipeline preserves the operands, rounding mode, and transaction tag together—an arithmetically correct result attached to the wrong instruction is still a design failure.
 
-### 8.2 Why a fused multiply-add is physically different from “multiplier then adder”
+#### 8.1.1 What changes around the CLA/CRA
+
+Suppose the destination has precision $p$, counting the hidden bit. A useful teaching implementation carries `p+3` low-order bits through the main add: the retained $p$ bits plus G, R, and S. It normally also carries one high-order bit for an addition carry. The core can therefore be pictured as:
+
+| Structure | Width/role | What you already know |
+|---|---|---|
+| exponent subtractor | roughly $k+1$ signed bits | a small CLA computes $E_a-E_b$ |
+| magnitude swap mux | whole unpacked operand | comparator + mux |
+| right barrel shifter | $p+3$ bits plus sticky OR | mux tree controlled by $|\Delta E|$ |
+| significand add/subtract | roughly $p+4$ bits | CLA or parallel-prefix CPA; subtraction is invert + carry-in 1 |
+| leading-zero counter | roughly $\lceil\log_2(p+4)\rceil$ output bits | priority-encoder tree |
+| left normalization shifter | roughly $p+4$ bits | another barrel shifter |
+| round incrementer | $p$ bits | add one when the rounding equation says so |
+| pack/special mux | encoded result width | control decode + mux |
+
+The FP difficulty is therefore **data preparation and post-processing**, not the carry equation. The expensive path in a simple adder is:
+
+$$
+\Delta E\ \text{CLA}
+\ \text{right barrel shift}
+\ \text{significand CLA}
+\ \text{LZC}
+\ \text{left barrel shift}
+\ \text{round increment}.
+$$
+
+That chain is why an FP add is pipelined and why high-frequency designs split it into close and far paths.
+
+#### 8.1.2 A complete finite-add algorithm
+
+For operands $A$ and $B$, use this exact sequence:
+
+1. **Decode each exponent field.**
+   - Normal: hidden bit is 1 and internal exponent is $E-\text{bias}$.
+   - Subnormal: hidden bit is 0 and the effective exponent is $e_{\min}$.
+   - Exponent all zero with fraction zero: signed zero.
+   - Exponent all one: infinity or NaN.
+2. **Handle the special-case table** before the normal datapath commits a result.
+3. **Compare magnitudes** and swap the finite inputs so $|A|\ge|B|$. This makes the result sign known for an effective subtraction.
+4. **Compute** $\Delta E=e_A-e_B\ge0$.
+5. **Extend** each significand on the right with three zeros for GRS.
+6. **Align $B$ right by $\Delta E$.** If the shift exceeds the datapath width, the shifted value becomes zero but sticky is the OR of every discarded 1. A saturating shift control avoids building useless shift distances.
+7. **Choose add or subtract.**
+   - Equal signs: add magnitudes; result sign is their sign.
+   - Different signs: subtract aligned $B$ from $A$; result sign is the sign of the larger magnitude.
+8. **Normalize.**
+   - Same-sign addition may produce `10.x`; shift right one and increment the exponent.
+   - Opposite-sign cancellation may produce leading zeros; count them, shift left, and decrement the exponent, stopping at the subnormal exponent floor.
+   - An exact zero uses the architecture's signed-zero rule.
+9. **Round** using the destination LSB and GRS.
+10. **Repair a rounding carry.** If `1.111... + 1 ULP` becomes `10.000...`, shift right and increment the exponent again.
+11. **Detect overflow/underflow/inexact**, choose infinity or maximum finite according to the rounding mode, and pack.
+
+This is implementable as control around a familiar adder. In pseudocode-like RTL notation:
+
+```text
+ua, ub = unpack_and_classify(a, b)
+if special_case(ua, ub, op): return special_result_and_flags
+hi, lo = order_by_magnitude(ua, ub)
+delta = hi.exp - lo.exp
+lo_aligned, sticky = shift_right_jam(lo.sig << 3, delta)
+raw = (same_sign ? add : subtract)(hi.sig << 3, lo_aligned)
+norm_sig, norm_exp = normalize(raw, hi.exp)
+rounded, carry, inexact = round(norm_sig, sign, rounding_mode)
+return pack(rounded, norm_exp + carry, sign, flags)
+```
+
+`shift_right_jam` means “right shift and jam every discarded 1 into the sticky bit.” A plain logical right shift is insufficient: two inputs with identical retained bits but different discarded tails can round differently.
+
+#### 8.1.3 All common rounding modes as increment equations
+
+Let
+
+$$
+D=G\lor R\lor S
+$$
+
+mean that some discarded bit is nonzero, let $L$ be the retained LSB, and let $s$ be the result sign. The increment sent to the $p$-bit round adder is:
+
+| Mode | Increment condition | Intuition |
+|---|---|---|
+| RNE: nearest, ties even | $G\land(R\lor S\lor L)$ | above half, or exact half toward the even neighbor |
+| RTZ: toward zero | $0$ | truncate magnitude |
+| RUP: toward $+\infty$ | $\lnot s\land D$ | increment only a positive inexact result |
+| RDN: toward $-\infty$ | $s\land D$ | increment only a negative inexact result |
+| RMM/ties-away | $G$ | half or above goes to larger magnitude |
+
+`NX` (inexact) is $D$ for the final rounding boundary. Overflow and underflow have additional range tests; the inexact bit must travel with them. Whether tininess is detected before or after rounding is an architectural choice that must match the selected standard/ISA profile; many modern ISA profiles use **after rounding**.
+
+#### 8.1.4 Worked add that creates a rounding carry
+
+Use precision $p=4$ (hidden bit plus three stored fraction bits):
+
+$$
+A=1.101_2\times2^3=13,\qquad
+B=1.011_2\times2^1=2.75.
+$$
+
+Alignment shifts $B$ right by two:
+
+```text
+A                    1.10100 × 2^3
+B aligned            0.01011 × 2^3
+exact raw sum         1.11111 × 2^3
+retain p=4            1.111 | G=1 R=1 S=0
+```
+
+RNE increments because the discarded tail is above half. The retained `1.111` plus one ULP becomes `10.000`, so rounding itself creates a normalization carry:
+
+$$
+10.000_2\times2^3=1.000_2\times2^4=16.
+$$
+
+The exact answer is $15.75$ and the two neighboring $p=4$ values are $15$ and $16$, so $16$ is correct. This is why rounding cannot be bolted on after exponent packing: the round increment can change the exponent.
+
+#### 8.1.5 Special-case precedence for add/subtract
+
+The bypass controller should decide these before enabling the wide datapath:
+
+| Inputs/operation | Result | Flag |
+|---|---|---|
+| signaling NaN present | quiet NaN | invalid |
+| quiet NaN present | propagated/canonical quiet NaN per profile | normally none |
+| $+\infty+(-\infty)$ or $\infty-\infty$ | quiet NaN | invalid |
+| one infinity with no invalid conflict | that signed infinity | none |
+| zero plus finite | finite, subject to signed-zero rules | none |
+| exact finite cancellation | signed zero selected by rounding/profile rules | none |
+
+Do not let “NaN bypass” mean “ignore every other invalid condition.” The ISA can require an invalid flag for a particular invalid arithmetic combination even when another operand is a quiet NaN; FMA has an important example in §8.3.
+
+### 8.2 Floating-point multiplication — wrap an integer multiplier correctly
+
+Multiplication is simpler than addition because normalized significands are already aligned:
+
+$$
+A=(-1)^{s_a}m_a2^{e_a},\qquad
+B=(-1)^{s_b}m_b2^{e_b}.
+$$
+
+For finite nonzero operands,
+
+$$
+s_z=s_a\oplus s_b,\qquad
+e_z=e_a+e_b,\qquad
+m_z=m_a m_b.
+$$
+
+The datapath is:
+
+```mermaid
+flowchart LR
+  U["unpack + classify<br/>restore hidden bits"] --> SX["sign XOR"]
+  U --> EA["signed exponent add"]
+  U --> IM["p × p unsigned<br/>integer multiplier"]
+  IM --> PP["2p-bit product"]
+  PP --> N["0/1-bit normalize<br/>and exponent adjust"]
+  N --> G["select p bits<br/>and form GRS"]
+  G --> R["round; repair carry"]
+  SX --> P["special-case select<br/>flags + pack"]
+  EA --> P
+  R --> P
+```
+
+Here the integer multiplier may be an array, Booth-recoded tree, or library macro. Floating-point logic does not change its partial-product arithmetic; it changes how operands enter and how the $2p$-bit product leaves.
+
+#### 8.2.1 Exact stage-by-stage algorithm
+
+1. Classify operands and normalize supported subnormals internally.
+2. XOR signs.
+3. Add **unbiased signed exponents** in at least $k+2$ bits so temporary overflow/underflow is representable.
+4. Multiply the two explicit $p$-bit significands to a full $2p$-bit product. Never truncate at the multiplier output.
+5. For normals, $m_am_b\in[1,4)$. If the product begins `10` or `11`, shift right one and increment the exponent; if it begins `01`, it is already in `[1,2)`.
+6. Select the leading $p$ bits. The next bit is G, the following bit is R, and the OR of every remaining bit is S.
+7. Round in the requested mode; repair a rounding carry.
+8. Create a subnormal by a right-shift-jam if the exponent is below $e_{\min}$, then round at the final position.
+9. Select overflow behavior and pack.
+
+#### 8.2.2 Worked binary multiply
+
+Again take $p=4$:
+
+$$
+A=1.101_2\times2^2=6.5,\qquad
+B=1.110_2\times2^{-1}=0.875.
+$$
+
+The exponent sum is $2+(-1)=1$. The unsigned integer multiplier computes the exact significand product:
+
+$$
+1.101_2\times1.110_2=10.11011_2.
+$$
+
+Because the product is at least 2, normalize right and increment the exponent:
+
+```text
+raw                 10.11011 × 2^1
+normalized           1.011011 × 2^2
+retain p=4           1.011 | G=0 R=1 S=1
+```
+
+RNE does not increment when $G=0$, so the packed value is
+
+$$
+1.011_2\times2^2=5.5.
+$$
+
+The exact product is $5.6875$. At exponent 2, one ULP for $p=4$ is $0.5$, and the error $0.1875<0.25=\tfrac12\text{ULP}$.
+
+#### 8.2.3 Special-case precedence for multiply
+
+| Inputs | Result | Flag |
+|---|---|---|
+| signaling NaN | quiet NaN | invalid |
+| quiet NaN | quiet NaN per propagation policy | normally none |
+| $0\times\infty$ or $\infty\times0$ | quiet NaN | invalid |
+| infinity × finite nonzero | signed infinity | none |
+| zero × finite | signed zero using sign XOR | none |
+| finite nonzero × finite nonzero | normal datapath | range/inexact as produced |
+
+Clock- or operand-gate the integer multiplier when the special-case path wins; otherwise NaNs and zeros waste most of the FPU's switching energy.
+
+### 8.3 Why a fused multiply-add is physically different from “multiplier then adder”
 
 ```mermaid
 flowchart LR
@@ -384,49 +612,307 @@ flowchart LR
 
 The upper path destroys low product bits before $c$ arrives; no later adder can reconstruct them. The lower path retains the full product, aligns $c$ to that wider internal scale, inserts it alongside the multiplier's partial-product rows in carry-save form (or into an equivalent wide adder), performs one final carry-propagate addition, then normalizes and rounds. Replicating an FMA therefore requires a wider internal format and a single rounding boundary—not merely issuing a multiply and an add in adjacent cycles.
 
-**Divide and square root** are not polynomial in the operands, so they are slow and come in two families. **Digit recurrence (SRT)** retires a couple of quotient bits per step from a redundant partial remainder — inherently serial (each step depends on the last), which is why divide is $\sim10\text{–}40$ cycles, non-pipelined, and scheduled around rather than sped up (see the divide argument in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §7 and the latency menu in [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) §7). **Multiplicative (Newton–Raphson / Goldschmidt)** instead refines a reciprocal from a small seed LUT, **doubling the correct bits each iteration** — quadratic convergence, because the error obeys
+#### 8.3.1 The fused finite datapath
+
+For $Z=A\times B+C$:
+
+1. Unpack and classify all three operands.
+2. Form the product sign $s_p=s_a\oplus s_b$ and a wide signed product exponent.
+3. Generate the exact $2p$-bit significand product. A Booth/compressor design can leave it as two carry-save rows rather than resolving it immediately with a CPA.
+4. Convert $C$ to the product's binary-point position. This may require a wide right-shift-jam; $C$ has only $p$ significant bits, but it must be placed in the same approximately $2p$-bit fixed-point window as the unrounded product.
+5. If the effective signs differ, complement the subtracted operand and inject its two's-complement correction bit into the compressor tree.
+6. Compress product rows, aligned $C$, and correction bits to two rows.
+7. Resolve the two rows once with a wide CPA while a leading-zero anticipator predicts cancellation.
+8. Normalize the product-plus-addend.
+9. Form final GRS, round **once**, repair a rounding carry, set flags, and pack.
+
+The key internal invariant is:
+
+> No bit that could affect the correctly rounded value of the exact $A\times B+C$ may be discarded before the one architectural rounding point.
+
+The product exponent and $C$ exponent can differ far more than the width finally retained. Real implementations cap the physical shift at the internal window width and jam all lower information into sticky. This is the same saturation trick as an FP adder, but the window is wider.
+
+#### 8.3.2 FMA special cases are not “multiply cases, then add cases”
+
+The three-operand controller evaluates the fused operation as one operation:
+
+| Condition | Result | Flag |
+|---|---|---|
+| signaling NaN input | quiet NaN | invalid |
+| $0\times\infty$ or $\infty\times0$ | quiet NaN | invalid, even for profiles that also see a quiet-NaN addend |
+| infinite product plus opposite-signed infinite $C$ | quiet NaN | invalid |
+| infinite product with no conflict | product infinity | none |
+| finite product plus infinite $C$ | $C$ infinity | none |
+| quiet NaN with no higher-priority profile rule | quiet NaN | normally none |
+| all finite | fused datapath | range/inexact as produced |
+
+This precedence must be verified directly. Reusing a separate multiplier's “special result” and feeding that rounded result to an adder is both numerically wrong and capable of producing the wrong flag.
+
+#### 8.3.3 Worked binary example: why one rounding changes the answer
+
+Use $p=4$ and choose representable operands
 
 $$
-e_{i+1} = B\,e_i^{2}\quad(\text{Newton, } X_{i+1}=X_i(2-B X_i)),
+A=B=1.111_2=1.875,\qquad C=-1.110_2\times2^1=-3.5.
 $$
 
-Why the square: write the error as $e_i=1/B-X_i$ and substitute $X_i=1/B-e_i$ into the iteration — $X_{i+1}=(1/B-e_i)(1+Be_i)=1/B-Be_i^{2}$, so $e_{i+1}=Be_i^{2}$. The error *squares* each step, so the count of correct bits doubles. So an 8-bit seed reaches FP32 in 2 iterations and FP64 in 3, each iteration a pair of FMAs (§5). Historical footnote worth its one sentence: the 1994 **Pentium FDIV bug** was five missing entries in exactly the SRT quotient-selection table above — a reminder that the recurrence's lookup table must be *formally* verified, because a handful of wrong entries produce errors in one division in nine billion.
+The exact product is:
 
-Synthesizable IP for all of this exists off the shelf — Synopsys **DesignWare** (`DW_fp_*`), Berkeley **HardFloat** (the RISC-V BOOM/Rocket FPUs), and **FloPoCo** for FPGA — parameterized by $(k,p)$ and pipeline depth, where deeper pipelines buy frequency at the cost of latency exactly as in [Adders_and_Multipliers](03_Adders_and_Multipliers.md) §8.
+$$
+AB=11.100001_2=3.515625.
+$$
 
-### 8.3 Elementary functions: range reduction, polynomials, tables, and CORDIC
+A separate multiply retains `1.110 | G=0 R=0 S=1` at exponent 1 and rounds to $3.5$. Adding $C=-3.5$ then returns zero. The fused path instead subtracts while the low product bit is still present:
+
+$$
+11.100001_2-11.100000_2=0.000001_2=2^{-6}.
+$$
+
+The exact nonzero result is representable. This is cancellation inside the FMA, and it proves why the low product bits must survive until $C$ is aligned.
+
+### 8.4 Floating-point division and reciprocal
+
+For finite nonzero operands,
+
+$$
+\frac{A}{B}
+=(-1)^{s_a\oplus s_b}
+\left(\frac{m_a}{m_b}\right)
+2^{e_a-e_b}.
+$$
+
+Sign and exponent are easy. The significand quotient is the difficult part, and it is built from comparison, add/subtract, shifts, and registers—the blocks a CLA/CRA student already knows.
+
+```mermaid
+flowchart LR
+  U["unpack + classify"] --> E["sign XOR;<br/>signed exponent subtract"]
+  U --> N["normalize significands<br/>to a bounded interval"]
+  N --> Q["quotient engine:<br/>digit recurrence or reciprocal refinement"]
+  Q --> C["remainder/correction<br/>and GRS"]
+  C --> R["normalize + round"]
+  E --> P["special-case select<br/>flags + pack"]
+  R --> P
+```
+
+#### 8.4.1 Start from binary long division
+
+Integer restoring division generates one quotient bit per step:
+
+1. Shift the partial remainder left and bring down the next numerator bit.
+2. Subtract the divisor using a CLA.
+3. If the subtraction is nonnegative, keep it and emit quotient bit 1.
+4. If it is negative, restore the old remainder and emit 0.
+
+The recurrence is
+
+$$
+R_{i+1}=2R_i-q_{i+1}D,\qquad q_{i+1}\in\{0,1\}.
+$$
+
+The comparator is usually the subtractor's sign/carry result, and the “restore or keep” choice is a mux. One quotient bit per cycle gives a small unit and latency proportional to precision.
+
+**Non-restoring division** avoids the explicit restore. It permits a signed partial remainder; the next step adds $D$ after a negative remainder and subtracts $D$ after a positive one. A final correction converts the signed-digit decisions to the ordinary binary quotient.
+
+#### 8.4.2 SRT: generate more bits with redundant digits
+
+Sweeney–Robertson–Tocher (SRT) division generalizes the recurrence:
+
+$$
+R_{i+1}=rR_i-q_{i+1}D.
+$$
+
+For radix $r=4$, each iteration nominally produces two quotient bits and chooses
+
+$$
+q_{i+1}\in\{-2,-1,0,+1,+2\}.
+$$
+
+Why allow negative quotient digits? Redundancy makes several digits valid for overlapping ranges of $R_i/D$. The selection logic can inspect only a few leading bits of the partial remainder and divisor instead of performing a full-width compare. Hardware then:
+
+1. keeps $R_i$ as carry-save `(sum, carry)` rows so each iteration avoids a full carry propagation;
+2. uses a small quotient-digit selection table;
+3. selects $0,\pm D,\pm2D$ with shifts, inversion, and muxes;
+4. updates the carry-save remainder;
+5. converts redundant quotient digits to binary **on the fly**;
+6. performs a final remainder correction.
+
+The historical Pentium FDIV failure came from missing entries in an SRT selection table. The design lesson is current: prove the digit-selection bounds and table completeness, not merely millions of random divisions.
+
+To round correctly, generate at least the destination precision plus guard information. A nonzero final remainder contributes to sticky: even if all explicitly generated tail bits are zero, $R_{\text{final}}\ne0$ means the quotient is inexact.
+
+#### 8.4.3 Newton–Raphson reciprocal: turn divide into multiplies/FMAs
+
+Normalize $B$ into a small interval and obtain an initial reciprocal estimate $X_0$ from a ROM indexed by leading significand bits. Iterate
+
+$$
+X_{i+1}=X_i(2-BX_i).
+$$
+
+Define $e_i=1-BX_i$. Then
+
+$$
+e_{i+1}=e_i^2,
+$$
+
+so the number of correct bits approximately doubles each iteration. A seed with about 8 correct bits needs roughly two refinements for FP32-class precision and three for FP64-class precision, but the exact internal precision and final correction depend on the rounding contract. Compute the final quotient as $A X_n$.
+
+An FMA evaluates the residual accurately:
+
+$$
+t_i=\operatorname{fma}(-B,X_i,1),\qquad
+X_{i+1}=\operatorname{fma}(X_i,t_i,X_i).
+$$
+
+**Goldschmidt** instead multiplies numerator and denominator by common factors that drive the denominator toward 1. Its independent multiplies pipeline well, but it is less self-correcting under finite rounding. Both methods reuse the multiplier/FMA array rather than dedicating a long digit-recurrence datapath.
+
+| Divider | Main hardware | Latency/throughput character | Best fit |
+|---|---|---|---|
+| radix-2 restoring/non-restoring | one add/subtract + remainder register | about one bit/cycle; very small | embedded/area-first |
+| radix-4 SRT | CSA remainder, digit table, multiple selector | about two bits/iteration | general CPU divide/sqrt unit |
+| Newton reciprocal | seed ROM + multiplier/FMA | few high-work iterations; reusable pipe | throughput FPUs/GPUs |
+| Goldschmidt | seed ROM + parallel multipliers | pipeline-friendly | vector/tensor throughput |
+
+Special cases include $0/0$ and $\infty/\infty$ → invalid NaN; finite nonzero divided by zero → signed infinity and divide-by-zero; zero divided by finite → signed zero; finite divided by infinity → signed zero; infinity divided by finite → signed infinity.
+
+### 8.5 Square root and reciprocal square root
+
+For a finite positive normal
+
+$$
+X=m\,2^e,
+$$
+
+make $e$ even. If $e$ is odd, shift the significand so
+
+$$
+X=(2m)\,2^{e-1}.
+$$
+
+Then
+
+$$
+\sqrt X=\sqrt{m'}\,2^{e'/2},
+$$
+
+so exponent work is a parity test, optional one-bit significand shift, and an arithmetic divide-by-two. The root significand remains.
+
+#### 8.5.1 Digit-recurrence square root
+
+Binary long square root consumes the radicand in **pairs of bits** because each root bit corresponds to a power of four. If $Q_i$ is the partial root and $R_i$ the partial remainder:
+
+1. shift $R_i$ left by two and bring down the next radicand pair;
+2. form the trial divisor derived from $(2Q_i+1)$ at the proper position;
+3. subtract it with a CLA;
+4. keep the subtraction and append root bit 1 if nonnegative; otherwise restore and append 0.
+
+This is the square-root analogue of restoring division: shift, subtract, sign test, mux, register. SRT-style redundant digits can accelerate it and allow a shared iterative divide/sqrt engine.
+
+#### 8.5.2 Newton reciprocal-square-root
+
+A throughput design often finds $Y\approx1/\sqrt X$:
+
+$$
+Y_{i+1}
+=\frac12Y_i\left(3-XY_i^2\right).
+$$
+
+A ROM seed supplies the first bits; each iteration roughly doubles the correct bits. Then:
+
+$$
+\sqrt X=X\,Y_n.
+$$
+
+The iteration maps naturally to FMAs:
+
+```text
+t  = fma(-x, y*y, 3)       // 3 - x*y^2
+y' = 0.5 * y * t
+```
+
+Powers of two such as `0.5` can be exponent adjustments. A correctly rounded `sqrt` still needs extra internal bits and a final residual test. Bracket the exact root by adjacent candidates $z_\text{lo}$ and $z_\text{hi}$, then for RNE compare $X$ against the exact squared midpoint $((z_\text{lo}+z_\text{hi})/2)^2$ and break an exact tie toward the even significand. An approximate `rsqrt` instruction can stop earlier and expose a looser ULP contract.
+
+Special cases: $\sqrt{+0}=+0$, $\sqrt{-0}=-0$ in IEEE-style arithmetic; $\sqrt{+\infty}=+\infty$; a negative finite nonzero input or $-\infty$ produces invalid NaN; NaNs follow the selected propagation policy.
+
+### 8.6 Conversions, comparisons, min/max, and sign operations
+
+These are common enough to deserve their own hardware rather than software sequences.
+
+#### 8.6.1 Integer to floating point
+
+For a signed integer:
+
+1. Record the sign and form the absolute magnitude with a two's-complement negator.
+2. Leading-zero-count the magnitude.
+3. The highest 1 position becomes the unbiased exponent.
+4. Left-shift to put that 1 in the hidden-bit position.
+5. If the integer has more than $p$ significant bits, form GRS from the discarded low bits and round.
+6. Repair a rounding carry and pack.
+
+Integers with magnitude below $2^p$ are exact because every bit fits in the significand.
+
+#### 8.6.2 Floating point to integer
+
+1. Reject/handle NaN and infinity according to the ISA's invalid-result policy.
+2. Use the exponent to place the binary point.
+3. Left-shift for a large integral magnitude or right-shift-jam when fractional bits must be discarded.
+4. Round to an integer using the selected rounding mode.
+5. Apply the sign and check signed/unsigned range.
+
+The ISA must define out-of-range behavior: indefinite value, saturation, or another selected result. “Just drop the exponent” is not a conversion.
+
+#### 8.6.3 Format widening and narrowing
+
+- **Widening** such as FP16→FP32 is exact for finite IEEE binary formats: rebias the exponent and append fraction zeros. Normalize a source subnormal if the internal representation requires it.
+- **Narrowing** such as FP32→FP16 is a complete rounding operation with overflow, underflow, subnormal, NaN, and flag behavior.
+- **FMA through a wider format is not automatically equivalent.** Widening BF16 operands, doing FP32 FMA, then narrowing can double-round relative to a native BF16-destination fused operation unless the intermediate precision/rounding rules are chosen carefully.
+
+#### 8.6.4 Compare and min/max
+
+For non-NaNs:
+
+- `+0` and `-0` compare equal.
+- Two positive finite encodings compare lexicographically by exponent then fraction.
+- Two negative values reverse the magnitude comparison.
+- Any negative finite value is less than any positive finite value.
+- NaN is unordered for ordinary numeric comparisons; signaling vs quiet comparisons decide whether invalid is raised.
+
+`min`/`max` are not merely a comparator plus mux until the architecture defines NaN and signed-zero behavior. IEEE-754-2019-style minimum/maximum operations and older “minimum-number” variants differ in how they treat a single NaN. Implement the ISA's named operation, not a generic block called `min`.
+
+`abs`, `neg`, and `copySign` are sign-field operations for ordinary encodings. Whether they quiet a signaling NaN or raise a flag depends on the instruction definition; a raw sign-bit XOR and an IEEE arithmetic operation are not automatically the same contract.
+
+### 8.7 Elementary functions: range reduction, polynomials, tables, and CORDIC
 
 Divide and $\sqrt{\ }$ are the first members of a larger family — $\exp,\log,\sin,\cos,2^x,\log_2 x,1/x,1/\sqrt{x}$ — that no single multiply-add computes. Their hardware (a GPU's **special-function unit (SFU)**, a DSP's transcendental block, an NPU's activation/exponential unit) is built from one recipe in three steps, and the real design choice lives in step 2.
 
-**The recipe: reduce → approximate → reconstruct.** A polynomial or table accurate over the whole real line is hopeless — it would need astronomically many terms. So every unit first **range-reduces** the argument to a small interval using the function's own identity, approximates there, then reconstructs:
+**The recipe: reduce → approximate → reconstruct.** A practical fixed-size polynomial or table cannot cover an unbounded input range at uniform high precision. A hardware unit therefore range-reduces the argument to a small interval using the function's identity, approximates there, then reconstructs:
 
-- $e^x$: write $x=k\ln2+r$ with $k=\mathrm{round}(x/\ln2)$ and $r\in[-\tfrac{\ln2}{2},\tfrac{\ln2}{2}]$; then $e^x=2^k e^r$, where $2^k$ is a free exponent add and only $e^r$ on the tiny interval is approximated ($2^x$ splits as $2^{\lfloor x\rfloor}2^{\{x\}}$ the same way).
-- $\log_2(m\cdot2^e)=e+\log_2 m$ with $m\in[1,2)$: the exponent $e$ is extracted for free, only $\log_2 m$ on $[1,2)$ is approximated.
+- $e^x$: write $x=k\ln2+r$ with $k=\mathrm{round}(x/\ln2)$ and $r\in[-\tfrac{\ln2}{2},\tfrac{\ln2}{2}]$; then $e^x=2^k e^r$. Reconstruction by $2^k$ is mostly exponent/range logic.
+- $\log_2(m\cdot2^e)=e+\log_2 m$ with $m\in[1,2)$: decode $e$ from the input and approximate only $\log_2m$ on $[1,2)$.
 - $\sin,\cos$: reduce $x$ modulo $\pi/2$ and track the quadrant. For **large** arguments this subtraction *is* the whole difficulty — $x-N\tfrac{\pi}{2}$ catastrophically cancels (§5) unless $\pi/2$ is carried to extra precision (the Payne–Hanek reduction). Range reduction, not the polynomial, is where transcendental units are most often wrong.
 
-*Why the split is free, and why big trig arguments are not.* Each reduction rests on a functional identity that pushes the "hard" part onto an **integer that FP stores exactly**. For $e^x$, with $k=\operatorname{round}(x/\ln2)$ and $r=x-k\ln2$,
+*Why exponent reconstruction is cheap, and why big trig arguments are not.* Each reduction uses a functional identity to move part of the work into an integer exponent. For $e^x$, with $k=\operatorname{round}(x/\ln2)$ and $r=x-k\ln2$,
 $$e^x=e^{k\ln2+r}=(e^{\ln2})^k e^r=2^k e^r,$$
-and $2^k$ is *never computed* — it is added into the result's exponent field. The entire transcendental difficulty is now compressed onto $e^r$ over a width-$\ln2\approx0.69$ interval, where a short polynomial suffices. $\log$ is the mirror image: a float already *is* $x=m\cdot2^e$, so $\log_2 x=e+\log_2 m$ reads $e$ straight out of the exponent field and leaves only $\log_2 m$ on $[1,2)$. Trig is the hard case precisely because $\pi/2$ is irrational: to get $r=x-N\tfrac{\pi}{2}$ to $p$ good bits you subtract two numbers whose leading bits agree, so if $x\approx10^{22}$ the nearest multiple of $\pi/2$ matches $x$ in $\sim70$ bits and a naive FP64 subtraction (53 bits) returns *zero* correct bits of $r$. Payne–Hanek stores $\tfrac{2}{\pi}$ to hundreds of bits and multiplies only the bits of $x$ that survive, recovering $r$ exactly — the cost hides in the reducer, not the polynomial.
+and multiplication by $2^k$ is normally an exponent adjustment plus range handling. The approximation is now confined to $e^r$ over a width-$\ln2\approx0.69$ interval. $\log$ is the mirror image: a float already *is* $x=m\cdot2^e$, so $\log_2 x=e+\log_2 m$ reads $e$ from the decoded exponent and leaves only $\log_2 m$ on $[1,2)$. Trig is harder because $\pi/2$ is irrational: for a huge $x$, forming $r=x-N\tfrac{\pi}{2}$ cancels many leading bits, so destination-width constants and subtraction may leave too few accurate remainder bits. Payne–Hanek-style reduction stores enough bits of $2/\pi$ and performs extended fixed-point work to recover the remainder to the promised accuracy. The cost hides in the reducer, not just the polynomial.
 
-**Step 2 — three ways to approximate on the reduced interval**, and this is the architectural decision. The overview: a **minimax polynomial** (FMA-only, cheapest when a multiplier exists), a **table with interpolation** (SRAM for arithmetic, the GPU-SFU choice), or **CORDIC** (shifts-and-adds, no multiplier). Each is derived below.
+**Step 2 — three ways to approximate on the reduced interval**, and this is the architectural decision. The overview: a **minimax polynomial** (FMA-friendly when a multiplier exists), a **table with interpolation** (trades ROM/SRAM for arithmetic), or **CORDIC** (shifts and adds, no general multiplier). Each is derived below.
 
-**Polynomial approximation — why minimax, not Taylor.** On a small interval $[a,b]$, approximate $f$ by a degree-$n$ polynomial. Taylor matches $f$ and its derivatives *at one point* $c$, so its error $f-p=\frac{f^{(n+1)}(\xi)}{(n+1)!}(x-c)^{n+1}$ is tiny near $c$ and **piles up at the far end** — you spend precision where you do not need it. The **minimax** polynomial minimises the *worst-case* error instead, and Chebyshev's **equioscillation theorem** pins it down: $p$ is optimal iff its error curve hits its maximum magnitude at $\ge n+2$ points with *alternating* sign. The intuition is a balance argument — if one peak were taller than its neighbours you could tilt a coefficient to shave the tall peak and raise a short one, lowering the max; at the optimum all peaks are equal. The **Remez exchange** algorithm computes it: pick $n+2$ reference points, solve the linear system forcing equal-magnitude alternating error there, move each reference to the local error extremum, repeat (a few iterations). The payoff is concrete: minimax reaches a target error **1–2 degrees below** Taylor, and each degree is one fewer FMA of latency. Evaluate with **Horner** ($c_0+x(c_1+x(c_2+\cdots))$ — $n$ dependent FMAs, minimum hardware) or **Estrin** (even/odd split evaluated in parallel — more FMAs, less depth) when latency dominates.
+**Polynomial approximation — why minimax, not Taylor.** On a small interval $[a,b]$, approximate $f$ by a degree-$n$ polynomial. Taylor matches $f$ and its derivatives *at one point* $c$, so its error is usually smallest near $c$ and less balanced at the interval edges. A **minimax** polynomial instead minimizes the maximum absolute error on the selected interval. Under the usual conditions, the optimum error equioscillates at $n+2$ points; the **Remez exchange** algorithm iteratively solves for those coefficients. Minimax often meets a worst-case target at lower degree than a same-center Taylor series, but the difference depends on the function, interval, coefficient quantization, and evaluation rounding. Evaluate with **Horner** ($c_0+x(c_1+x(c_2+\cdots))$ — $n$ dependent FMAs, low hardware demand) or **Estrin** (parallel power groups — more multipliers, less dependency depth) when latency dominates.
 
 **Tables plus interpolation — trading SRAM for arithmetic.** Split the reduced argument into high bits $x_h$ (a table index) and low bits $x_\ell$. Tabulate $f$ (and derivatives) at each $x_h$ and finish with a short interpolation in $x_\ell$. A degree-$d$ interpolation over a subinterval of width $h=2^{-b}$ ($b$ index bits) has error
 $$|f-p|\ \lesssim\ \frac{h^{\,d+1}}{(d+1)!}\,\max|f^{(d+1)}|,$$
 so **each added index bit cuts the error by $2^{\,d+1}$** — with quadratic interpolation ($d=2$) one more table bit buys 3 bits of accuracy. That single inequality *is* the SFU design knob: spend SRAM (index bits) or spend arithmetic (interpolation degree). The Oberman–Siu GPU SFU sits at $d=2$ with small tables, reaching single precision in one narrow multiply. *Why add-only tables exist:* at low precision drop the multiplier with a **bipartite** table — split $x=x_h+x_m+x_\ell$ and expand $f(x)\approx f(x_h+x_m)+x_\ell f'(x_h)$; the second term depends only on the coarse $x_h$ and on $x_\ell$ (not $x_m$), so it is a *small* table $b(x_h,x_\ell)$. Thus $f\approx a(x_h,x_m)+b(x_h,x_\ell)$: **two lookups and an add, no multiply.** Multipartite tables extend this to more terms for more bits — how tiny fixed-function and low-precision NPU activation units evaluate $\exp$/$\sigma$ with only adders.
 
-**CORDIC — rotating a vector with only shifts and adds.** Worth deriving because it needs **no multiplier**, which is why it rules FPGA/DSP transcendental blocks. Rotating $(x,y)$ by $\theta$ is $x'=x\cos\theta-y\sin\theta,\ y'=x\sin\theta+y\cos\theta$. Factor out $\cos\theta$: $x'=\cos\theta\,(x-y\tan\theta),\ y'=\cos\theta\,(y+x\tan\theta)$. Now **choose the micro-rotation angles so $\tan\alpha_i=2^{-i}$**; then $x\tan\alpha_i=x\cdot2^{-i}$ is a **right shift**, and step $i$ is
+**CORDIC — rotating a vector with only shifts and adds.** CORDIC is attractive when a general multiplier is unavailable or busy. Rotating $(x,y)$ by $\theta$ is $x'=x\cos\theta-y\sin\theta,\ y'=x\sin\theta+y\cos\theta$. Factor out $\cos\theta$: $x'=\cos\theta\,(x-y\tan\theta),\ y'=\cos\theta\,(y+x\tan\theta)$. Now **choose the micro-rotation angles so $\tan\alpha_i=2^{-i}$**; then $x\tan\alpha_i=x\cdot2^{-i}$ is a **right shift**, and step $i$ is
 $$x_{i+1}=x_i-d_i\,y_i\,2^{-i},\quad y_{i+1}=y_i+d_i\,x_i\,2^{-i},\quad z_{i+1}=z_i-d_i\,\alpha_i,\qquad d_i=\pm1,$$
-with $z$ an angle accumulator and the $\alpha_i=\arctan2^{-i}$ read from a tiny ROM. The $\cos\alpha_i$ factors are positive constants, so they pull out of the entire iteration as one fixed **gain** $K=\prod_i\cos\alpha_i=\prod_i(1+2^{-2i})^{-1/2}\approx0.6073$, applied once at the end. *Why it converges:* the step angles obey $\alpha_i>\sum_{j>i}\alpha_j$ (the remaining steps can always undo an overshoot), so greedily taking $d_i=\operatorname{sign}(z_i)$ drives the residual angle to zero and adds **one accuracy bit per step**. Feed a target angle in $z$ and read $(\cos,\sin)$ off $(x,y)$ (*rotation mode*); or drive $y\to0$ and read magnitude and $\arctan$ (*vectoring mode*). Walther's generalisation replaces the $2^{-i}$ shift with a hyperbolic recurrence for $\exp,\log,\sinh,\cosh,\sqrt{\ }$, and a degenerate linear mode gives multiply/divide — **one datapath, three function families, zero multipliers**, at one-bit-per-cycle latency.
+with $z$ an angle accumulator and the $\alpha_i=\arctan2^{-i}$ read from a tiny ROM. The $\cos\alpha_i$ factors combine into a known **gain** $K=\prod_i\cos\alpha_i=\prod_i(1+2^{-2i})^{-1/2}\approx0.6073$ for the usual circular sequence; pre-scale the input or correct the output. Within its convergence interval, choosing $d_i$ from the residual sign drives $z$ toward zero, while range reduction handles angles outside that interval. Each circular iteration contributes roughly one accuracy bit after initial transients. Feed a target angle in $z$ and read $(\cos,\sin)$ off $(x,y)$ (*rotation mode*), or drive $y\to0$ and read magnitude and angle (*vectoring mode*). Linear and hyperbolic variants reuse the shift/add structure for other function families; hyperbolic CORDIC needs a modified schedule with repeated indices.
 
 **The reciprocal/root family is special: seed, then square the error.** These are done by a self-correcting iteration that converges *quadratically* — **doubling the correct bits every step**. For $1/B$, apply Newton's method to $f(X)=\tfrac1X-B=0$; since $f'(X)=-1/X^2$, the update collapses to **multiplies only**:
 $$X_{k+1}=X_k\,(2-B\,X_k).$$
 Track the error $e_k=1-B X_k$; then
 $$1-B X_{k+1}=1-B X_k(2-B X_k)=1-2B X_k+(B X_k)^2=(1-B X_k)^2,$$
-so $e_{k+1}=e_k^{\,2}$: an $8$-bit seed becomes $16$, then $32$, then $64$ correct bits, reaching FP32 in **2** iterations and FP64 in **3**. That is why an SFU's job is often just to emit a good *seed* and let the FMA pipeline finish. **Goldschmidt** is the same convergence rearranged so the two multiplies per step are independent (better pipelining), trading away self-correction — its rounding errors accumulate, so the final step needs care. Square root uses the same trick on $f(X)=\tfrac1{X^2}-B$ to get $1/\sqrt B$ (then one multiply by $B$ gives $\sqrt B$), dodging a divide entirely. *Why the famous $\mathtt{0x5f3759df}$ hack seeds $1/\sqrt x$:* a float $x=2^{e}(1+m)$ has integer encoding $I\approx2^{23}(e+m+127)\approx2^{23}(\log_2 x+127)$ because $\log_2(1+m)\approx m$ — the *bits* are nearly linear in $\log_2 x$. Wanting $\log_2 x^{-1/2}=-\tfrac12\log_2 x$ is a **negate-and-halve in log space**, which on the integer is exactly `i = 0x5f3759df - (i>>1)`: the shift halves, the subtract negates and re-centres, and the magic constant absorbs the $\log_2(1+m)\approx m$ bias — a few correct bits, refined by one Newton step. It is the archetype: cheap seed, quadratic iteration.
+so $e_{k+1}=e_k^{\,2}$ in exact arithmetic: a seed with about 8 correct relative-error bits can grow to roughly 16, then 32, then 64 before finite-precision effects. An SFU may therefore emit a seed and let a wider FMA pipeline refine it; the required iteration count still depends on seed quality, internal rounding, and the final contract. **Goldschmidt** rearranges the convergence so multiplies can proceed in parallel, but finite-rounding errors in multiple state variables require care. Square root uses a related reciprocal-root iteration and one final multiply. The famous `0x5f3759df` software trick is an example of this broad idea—obtain a rough reciprocal-root seed from the float encoding, then refine—but production hardware normally uses a characterized table or polynomial seed with an explicit error proof.
 
-**Accuracy is an architectural specification, not an afterthought.** The unit's contract — its **ULP error bound**, whether it is **monotonic** (the approximation never *decreases* where the true function increases, so comparisons and lookups built on it stay consistent), whether it is correctly rounded ($<0.5$ ULP) or merely *faithful* ($\le1$ ULP — off by at most one representable step), and how it handles $0,\infty,$ NaN and out-of-domain inputs ($\log$ of a negative) — is fixed at design time and trades directly against area and latency. A GPU's fast `__expf` (a few ULP, one SFU pass) and a correctly-rounded `libm exp` ($<0.5$ ULP, a longer compensated polynomial) are *different hardware/software contracts for the same function*, chosen by whether the workload is a neural-net activation (loose) or a scientific kernel (tight) — the same "accuracy policy is part of architecture" point the NPU exponential unit makes ([Transformer and Attention Engine Microarchitecture](../01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/03_Transformer_and_Attention_Engine_Microarchitecture.md)).
+**Accuracy is an architectural specification, not an afterthought.** The unit's contract — its **ULP error bound**, whether it is **monotonic**, whether it is correctly rounded (nearest-mode error at most $0.5$ ULP, with a defined tie rule) or merely *faithful* (one of the two neighboring representable values), and how it handles $0,\infty,$ NaN and out-of-domain inputs — is fixed at design time and trades directly against area and latency. An approximate GPU instruction and a correctly rounded software/library sequence are different contracts for the same mathematical function. The ISA, compiler, RTL reference, and workload-quality tests must agree on which one is implemented.
 
 | Method | Ops used | Latency | Area | Best when |
 |---|---|---|---|---|
@@ -435,17 +921,118 @@ so $e_{k+1}=e_k^{\,2}$: an $8$-bit seed becomes $16$, then $32$, then $64$ corre
 | CORDIC | adds + shifts | ∝ precision | tiny, no MUL | no spare multiplier (FPGA/DSP) |
 | Newton / Goldschmidt | FMA + seed LUT | 2–3 × FMA | seed table | reciprocal, sqrt, rsqrt |
 
+#### 8.7.1 Map common functions onto the recipe
+
+| Function | Range reduction | Approximation core | Reconstruction |
+|---|---|---|---|
+| reciprocal $1/x$ | normalize $x=m2^e$ | seed + Newton/Goldschmidt on $m$ | negate exponent |
+| reciprocal root $1/\sqrt{x}$ | normalize and make exponent even | seed + Newton rsqrt | halve/negate exponent |
+| $\exp_2(x)$ | $x=k+f$, small $f$ | table/polynomial for $2^f$ | add $k$ to exponent |
+| $\exp(x)$ | $x=k\ln2+r$ | table/polynomial for $e^r$ | exponent shift by $k$ |
+| $\log_2(x)$ | $x=m2^e$ | table/polynomial for $\log_2m$ | add integer $e$ |
+| $\sin,\cos$ | quadrant + remainder modulo $\pi/2$ | odd/even minimax polynomial or CORDIC | swap/sign from quadrant |
+| $\tanh(x)$ | symmetry; clamp large $|x|$ | direct polynomial/table or exponential identity | restore sign |
+| sigmoid $\sigma(x)$ | symmetry $\sigma(-x)=1-\sigma(x)$; clamp tails | exponential + reciprocal or direct table | complement for negative side |
+| GELU/erf | symmetry and bounded central interval | polynomial/table | tail saturation |
+
+For AI activation units, exact IEEE rounding is often not the contract. The specification may instead give a maximum absolute/relative/ULP error and monotonicity requirement. The RTL, reference model, and model-quality validation must all use the same contract.
+
+### 8.8 How the operations share one FPU
+
+A complete FPU rarely duplicates unpacking, classification, rounding, and packing for every function. It shares the shell and places different engines behind it:
+
+```mermaid
+flowchart TB
+  REQ["request: op, operands,<br/>format, rounding mode, tag"] --> UC["unpack + classify<br/>special-case predecode"]
+  UC --> AF["add/sub/FMA<br/>fixed-latency pipeline"]
+  UC --> MP["multiply<br/>fixed-latency pipeline"]
+  UC --> DS["divide/sqrt<br/>iterative state machine"]
+  UC --> CV["convert/compare/minmax<br/>short pipeline"]
+  UC --> SF["SFU: reciprocal/rsqrt/<br/>exp/log/trig/activation"]
+  AF --> RP["shared or replicated<br/>normalize/round/pack"]
+  MP --> RP
+  DS --> RP
+  CV --> OUT["response arbiter:<br/>result, flags, tag"]
+  SF --> RP
+  RP --> OUT
+```
+
+**What must travel with the data.** Every pipeline register or iterative-state entry carries:
+
+- operation and destination format;
+- rounding mode and subnormal policy;
+- sign/exponent/significand state;
+- special-class bits and pending exception bits;
+- destination/tag so the response returns to the right instruction;
+- valid, kill/flush, and backpressure state.
+
+Fixed-latency add/multiply/FMA pipes can accept one independent operation each cycle once full. An iterative divide/sqrt unit may accept a new operation only when its state machine or context slot is free. A vector design may instantiate several small engines, interleave multiple contexts through one iterative engine, or use reciprocal estimates plus the FMA lanes. Latency, initiation interval, and number of contexts are separate architecture parameters.
+
+**Rounder sharing is a queueing problem.** If add and multiply can finish in the same cycle, one shared round/pack block needs arbitration and enough buffering to prevent either producer from losing a result. Replicating rounders costs area but removes that conflict. A designer must prove both arithmetic correctness and response conservation:
+
+$$
+\#\text{accepted operations}
+=\#\text{retired results}+\#\text{live operations}+\#\text{killed operations}.
+$$
+
+### 8.9 Verification and sign-off for a real FP block
+
+Random real numbers are a weak FP test because most do not land on the boundaries that control hardware. Verification needs a bit-exact reference such as Berkeley SoftFloat/TestFloat or an independently coded arbitrary-precision model, plus directed structure-aware stimulus.
+
+#### 8.9.1 Directed classes
+
+For every supported operation, cross:
+
+- operand class: normal, subnormal, zero, infinity, quiet NaN, signaling NaN;
+- both signs, including both signed zeros;
+- every rounding mode;
+- exact and inexact results;
+- normal↔subnormal, maximum-finite↔infinity, and rounding-carry boundaries;
+- exponent differences $0,1,p,p+1$, and much larger than the datapath width;
+- cancellation shifts $0,1,p-1,p$, including exact zero;
+- exact-half tails with retained LSB 0 and 1;
+- FMA invalid combinations and product/addend cancellation;
+- division quotient-table boundaries, zero divisors, and nonzero remainders;
+- square inputs around perfect squares and their adjacent representable values;
+- conversion values around integer limits and half-integers;
+- SFU segment boundaries, extrema of approximation error, huge trig arguments, and saturation thresholds.
+
+#### 8.9.2 Useful assertions
+
+- Once an input transfer occurs, its operands, mode, format, tag, and class bits remain associated until response or kill.
+- Exactly one of finite/zero/infinity/NaN result classes is selected.
+- A finite normal packed result has a nonzero exponent field; a subnormal has hidden bit zero by construction.
+- Sticky equals the OR of every bit discarded by all previous alignment/range shifts.
+- If GRS is zero, no rounding mode may change the finite significand.
+- RNE exact ties produce an even retained LSB.
+- FMA has one and only one architectural rounding boundary.
+- An iterative divider never overwrites a live remainder/context.
+- A response cannot appear without an accepted, non-killed request.
+
+#### 8.9.3 Formal and mathematical checks
+
+Formal proof is especially valuable for small parameterizations:
+
+- exhaustively prove a toy format such as $(k,p)=(4,4)$ against an integer/rational reference;
+- prove the round-increment equations for all `L,G,R,S,sign,mode`;
+- prove leading-zero count and shift reconstruction;
+- prove SRT digit-selection bounds preserve the remainder invariant;
+- prove special-case priority independently of the finite datapath;
+- use monotonicity and symmetry properties for SFUs, then separately bound approximation error.
+
+After block-level proof, run long randomized streams with stalls, flushes, simultaneous completions, resets, and clock/power transitions. Arithmetic tests alone will not find a correct result delivered with the wrong tag.
+
 ---
 
 ## 9. Special values: keeping the algebra total
 
-The reserved exponent codes (all-ones) exist so that arithmetic is **closed** — every operation returns *something*, so the hardware never has to trap mid-datapath. Three cases, one idea:
+Reserved exponent codes let ordinary arithmetic produce a defined data result plus status flags for exceptional conditions. An ISA may still choose traps or software handling around those flags. Three important classes are:
 
-- **$\pm\infty$** (exp all-ones, fraction $0$) is the saturating result of overflow and of $x/0$. It lets a computation run past an overflow and report a recognizable result rather than a wrong finite one.
-- **NaN** (exp all-ones, fraction $\ne0$) is the result of the genuinely undefined — $0/0$, $\infty-\infty$, $\sqrt{-1}$ — and it **propagates**: any operation with a NaN input yields NaN, so a single undefined value taints the downstream result instead of silently corrupting it. (The fraction's top bit distinguishes *quiet* NaNs, which propagate silently, from *signaling* NaNs, which raise an invalid-operation flag first — the mechanism behind "poison a buffer with sNaN to catch uninitialized reads.") NaN is also *unordered*: every comparison with it is false, so `x != x` is the canonical NaN test and any sort assuming trichotomy must special-case it.
+- **$\pm\infty$** (exp all-ones, fraction $0$) represents mathematical infinities, division of finite nonzero by zero, and some overflow results. Directed rounding can select maximum finite instead of infinity on overflow.
+- **NaN** (exp all-ones, fraction $\ne0$) represents invalid operations such as $0/0$, $\infty-\infty$, and $\sqrt{-1}$. Arithmetic propagation, payload choice, signaling behavior, and comparison flags follow the selected standard/ISA profile. NaN is unordered for ordinary comparisons, so `x != x` is a common NaN test.
 - **$\pm0$** — signed zero — records the *direction* from which a value underflowed, which matters at branch cuts: $1/(+0)=+\infty$ but $1/(-0)=-\infty$, and $\sqrt{-1\pm 0i}$ lands on opposite sides. It costs a few gates of sign logic and $+0=-0$ compares true.
 
-These are not a rules table to memorize; they are three encodings that make the FP number system *total*, so the pipeline can produce a defined answer for every input without stalling to a handler.
+These encodings keep exceptional data flowing through a pipelined interface while flags record what occurred. The exact result/flag priority still belongs in the operation's special-case table.
 
 ---
 
@@ -463,13 +1050,12 @@ These are not a rules table to memorize; they are three encodings that make the 
 | TF32 | 1 · 8 · 10 (19 b) | FP32 range, FP32 accumulate |
 | FP8 E4M3 / E5M2 | $\pm448$ / $\pm5.7\times10^4$ | fwd-weights / gradients |
 | MX block | 32 elems · 1 shared 8-b scale | MXFP4 $=4.25$ b/elem |
-| Multiplier area / energy | $\propto p^{2}$ | BF16 $\sim9\times$, FP8 $\sim36\times$ denser than FP32 |
+| Significand partial-product count | proportional to $p^{2}$ before recoding | a core reason narrow formats improve multiplier density; whole-unit scaling is smaller |
 | Rounding bound | $\lvert fl(x)-x\rvert\le 2^{-p}\lvert x\rvert$ | RNE, half a ULP |
-| GRS bits | 3 (Guard, Round, Sticky) | suffice for all modes |
-| FP32 add / mul latency | $3\text{–}5$ / $4\text{–}5$ cyc | pipelined |
-| FP32 FMA latency | $4\text{–}7$ cyc | wide $\sim3p$-bit adder |
-| FP32 divide / sqrt | $14\text{–}28$ cyc | serial SRT, non-pipelined |
-| Accumulator rule | inputs low-precision, **sum in FP32** | error grows as $\sqrt{n}\,u$ |
+| GRS bits | 3 (Guard, Round, Sticky) | suffice for the standard binary rounding decisions |
+| Add/multiply/FMA latency | implementation-dependent | fixed-latency pipelines can still accept one operation/cycle |
+| Divide/sqrt latency | implementation-dependent, commonly iterative | precision and radix/iteration set the cycle count |
+| Accumulator rule | inputs may be narrow; **sum wider** | error and swamping grow with reduction length |
 
 ---
 
@@ -483,7 +1069,7 @@ These are not a rules table to memorize; they are three encodings that make the 
 
 ## References
 
-1. IEEE, *Standard for Floating-Point Arithmetic (IEEE 754-2019).* The normative source for formats, rounding, subnormals, and special values.
+1. IEEE, [*Standard for Floating-Point Arithmetic (IEEE 754-2019)*](https://standards.ieee.org/ieee/754/6210/). The active normative standard for formats, operations, rounding, exceptions, and default handling.
 2. Goldberg, D., "What Every Computer Scientist Should Know About Floating-Point Arithmetic," *ACM Computing Surveys*, 23(1), 1991. The ULP/epsilon and cancellation models of §2–§5.
 3. Higham, N.J., *Accuracy and Stability of Numerical Algorithms*, 2nd ed., SIAM, 2002. Error-growth, compensated summation, and the FMA error-free transform of §5–§6.
 4. Muller, J.-M. et al., *Handbook of Floating-Point Arithmetic*, 2nd ed., Birkhäuser, 2018. Dual-path adder, GRS rounding, SRT/Goldschmidt division.
@@ -491,6 +1077,9 @@ These are not a rules table to memorize; they are three encodings that make the 
 6. Micikevicius, P. et al., "FP8 Formats for Deep Learning," arXiv:2209.05433, 2022. The E4M3/E5M2 split.
 7. Open Compute Project, *OCP Microscaling (MX) Formats Specification v1.0*, 2023. The block-scaled MXFP formats of §7.
 8. Gupta, S. et al., "Deep Learning with Limited Numerical Precision," ICML 2015. Stochastic rounding for low-precision training (§4).
-9. Muller, J.-M., *Elementary Functions: Algorithms and Implementation*, 3rd ed., Birkhäuser, 2016. Range reduction, minimax/Remez, table methods, and CORDIC of §8.3.
-10. Oberman, S.F. and Siu, M.Y., "A High-Performance Area-Efficient Multifunction Interpolator," *IEEE Symposium on Computer Arithmetic (ARITH-17)*, 2005. The quadratic-interpolation GPU SFU of §8.3.
-11. Walther, J.S., "A unified algorithm for elementary functions," *AFIPS Spring Joint Computer Conference*, 1971. The unified circular/linear/hyperbolic CORDIC of §8.3.
+9. Hauser, J., [*Berkeley HardFloat Verilog Modules*](https://www.jhauser.us/arithmetic/HardFloat-1/doc/HardFloat-Verilog.html) and [*TestFloat/SoftFloat*](https://www.jhauser.us/arithmetic/). Parameterized add, multiply, FMA, divide/sqrt, conversion, comparison, rounding, and differential-test references.
+10. RISC-V International, [*“F” Extension for Single-Precision Floating-Point*](https://docs.riscv.org/reference/isa/unpriv/f-st-ext.html) and [*Zfa Additional Floating-Point Instructions*](https://docs.riscv.org/reference/isa/unpriv/zfa.html). Concrete rounding-mode, flag, FMA, comparison, min/max, and conversion contracts.
+11. NVIDIA, [*Parallel Thread Execution ISA — Floating-Point Instructions*](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html). Architectural examples of correctly rounded and approximate reciprocal, root, exponential, logarithmic, trigonometric, and activation operations.
+12. Muller, J.-M., *Elementary Functions: Algorithms and Implementation*, 3rd ed., Birkhäuser, 2016. Range reduction, minimax/Remez, table methods, and CORDIC of §8.7.
+13. Oberman, S.F. and Siu, M.Y., "A High-Performance Area-Efficient Multifunction Interpolator," *IEEE Symposium on Computer Arithmetic (ARITH-17)*, 2005. A table/interpolation SFU design referenced in §8.7.
+14. Walther, J.S., "A unified algorithm for elementary functions," *AFIPS Spring Joint Computer Conference*, 1971. The unified circular/linear/hyperbolic CORDIC of §8.7.
