@@ -25,7 +25,7 @@ The single habit this page installs: **before you believe an accelerator PPA num
 Every accelerator model consumes the same three objects: a workload, a hardware template, and a mapping. Analytical tools count reuse and transfers; cycle models schedule array and memory events; operator/system models compose kernels and collectives. All should converge on latency and energy with explicit provenance.
 
 ```mermaid
-flowchart LR
+flowchart TB
     W["Workload<br/>layer / graph / shapes"] --> M["Mapping<br/>tile + loop order + dataflow"]
     H["Hardware<br/>array + buffers + links"] --> M
     M --> A{"Model fidelity"}
@@ -419,13 +419,278 @@ The v3 paper's headline is a direct lesson in *why* you need the cycle rung: on 
 
 The single-layer tools above answer "how good is this mapping on this array?" They do not answer "how does a 70B-parameter model, sharded tensor/pipeline/data-parallel across a 64-chip pod, meet a latency SLO at what power and carbon?" That is the **operator-level industrial** rung, whose unit of reasoning is the whole model graph and whose scope is the chip, the pod, and the datacenter.
 
-**NeuSim** (UIUC PlatformX) is the notebook's worked reference for this rung. The architecture-owned [NPU workload and performance methods](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md) supply its systolic, vector, memory-roofline, graph, and collective equations; this section explains how an operator-level tool composes those equations into a performance→power→carbon→service-level-objective (SLO) study. NeuSim is *not* cycle-accurate: per operator, compute time comes from closed-form systolic/vector models rather than a time-stepped array. Its value is at the graph-and-system scope that the single-layer tools cannot reach:
+**NeuSim** (UIUC PlatformX) is the notebook's worked reference for this rung. The description below follows the public source at commit [`58fbd3f`](https://github.com/platformxlab/NeuSim/tree/58fbd3f3579079046a2f433517029389646229a0), not a generic roofline simulator that happens to have the same name. That distinction matters because a hardware designer must know exactly which blocks are modeled, what state each model retains, and where an apparently physical block is only a bandwidth equation.
 
-- It emits **per-operator** execution time, FLOPS, and memory traffic, and **classifies each operator SA-/VU-/HBM-bound** automatically — the §2.4 bottleneck taxonomy as a direct output rather than a hand calculation.
-- It models the **inter-chip interconnect (ICI)** and collectives (AllReduce over a 2D/3D torus), so multi-chip parallelism strategies (TP/PP/DP/EP — tensor/pipeline/data/expert parallelism) are first-class.
-- It overlays **power, carbon (embodied + operational), and SLO filtering**, making it a datacenter-scale DSE tool, not a microarchitecture tool.
+NeuSim is **analytical and operator-level, not RTL, transaction-level, or cycle-accurate**. It represents an NPU as systolic arrays (called SA or MXU in different fields), vector units (VU/VPU), vector memory (Vmem/SRAM), HBM, and inter-chip links. A model-specific front end produces an ordered list of tensor `Operator` objects; the back end derives a component time for each operator and normally assumes those component times overlap. The result is fast enough for model-, pod-, power-, carbon-, and SLO-scale design-space exploration, but it cannot reveal a bank conflict, SRAM arbitration bubble, DMA descriptor stall, NoC head-of-line blocking event, or systolic-array waveform.
 
-So NeuSim complements, rather than competes with, §4–6: you would still use Timeloop/SCALE-Sim to characterize *one* operator on *one* array, then feed those per-operator characterizations into a NeuSim-style graph/pod model. It is the accelerator analogue of "leaf models composed into a full chip" ([Full_Chip_Modeling §4](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md)), operator-level and carbon-aware.
+### 7.1 The complete modeled machine
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 34, "rankSpacing": 44, "htmlLabels": false}}}%%
+flowchart LR
+    CFG["model + chip + system JSON"] --> GEN["model-specific graph generator"]
+    HLO["standalone HLO text parser"] -. "not wired into the main run path" .-> IR
+    GEN --> IR["ordered Operator IR<br/>shape, dtype, axes, count, TP/PP/DP/EP"]
+
+    subgraph CHIP["one analytical NPU chip"]
+        HBM["HBM<br/>capacity, bandwidth, fixed latency"]
+        DMA["DMA effect<br/>bytes moved + assumed overlap"]
+        VM["Vmem / SRAM<br/>capacity, ports, analytical bandwidth"]
+        SA["N systolic arrays<br/>D by D PEs"]
+        VU["N vector units<br/>8 by 128 SIMD lanes"]
+        ICI["ICI / DCN / PCIe fields<br/>bandwidth + latency"]
+        HBM --> DMA --> VM
+        VM --> SA
+        VM --> VU
+        ICI <--> VM
+    end
+
+    IR --> TILE["axis decode + tile search"]
+    TILE --> SA
+    TILE --> VU
+    TILE --> HBM
+    TILE --> ICI
+    SA --> MAX["per-op maximum<br/>SA, VU, Vmem, HBM, ICI"]
+    VU --> MAX
+    VM --> MAX
+    HBM --> MAX
+    ICI --> MAX
+    MAX --> GRAPH["count-weighted graph / pipeline aggregation"]
+    MAX --> PWR["static + dynamic energy<br/>PG and DVFS overlays"]
+    GRAPH --> SLO["latency, throughput, OOM, SLO"]
+    PWR --> CARB["operational + embodied carbon"]
+```
+
+Read the solid arrows as equations, **not buses implemented in a cycle model**. The table is the quickest way to keep the abstraction boundary straight:
+
+| Hardware block | State/parameters NeuSim retains | What the equation represents | What is not represented |
+|---|---|---|---|
+| **SA/MXU** | number of arrays $N_\text{SA}$, square dimension $D$, frequency $f$ | padded count of $D\times D\times D$ matrix tiles, pipeline fill/drain, sharing across arrays | PE registers, operand skew cycle by cycle, accumulator width, backpressure, bubbles, clock gating logic |
+| **VU/VPU** | $N_\text{VU}$ and a fixed $8\times128$ SIMD geometry | heuristic vector-instruction counts divided by aggregate lanes and frequency | instruction issue, register-file ports, reduction tree depth, transcendental implementation, hazards |
+| **Vmem/SRAM** | capacity in MiB, number of VU ports, derived bandwidth | whether a candidate tile fits and an aggregate bandwidth-time estimate | banks, address mapping, arbitration, read/write conflicts, ECC, SRAM compiler timing |
+| **HBM** | capacity, peak/effective bandwidth, one fixed latency | total HBM bytes divided by bandwidth, bounded below by latency | channels/pseudochannels, row buffers, commands, refresh, FR-FCFS, queueing |
+| **DMA** | no independent DMA object in the current execution model | tensor traffic is charged to HBM/Vmem and hidden by a `max` overlap when possible | descriptors, burst splitting, outstanding IDs, reorder buffers, AXI handshakes, engine occupancy |
+| **ICI** | link bandwidth, latency, 2D/3D torus-derived bisection bandwidth | point-to-point transfers and analytical AllReduce/AllGather/ReduceScatter/AllToAll time | routers, virtual channels, routing, packetization, credits, contention, faults |
+| **DCN / PCIe** | separate bandwidth/latency configuration fields and some output statistics | coarse pipeline-stage or KV-swap transfer time | a complete fabric/NIC/PCIe protocol model; current compatibility paths sometimes reuse ICI fields |
+| **Power** | per-component static power; dynamic W, W/GB/s, PG and DVFS settings | $E=P\,t$ using analytical active times and utilization factors | netlist capacitance, glitches, IR drop, temperature feedback, SRAM macro characterization |
+| **Carbon/SLO** | embodied carbon, grid carbon intensity, PUE, duty cycle, lifetime, request target | post-processing of throughput and average power | datacenter scheduling transients or cooling/thermal dynamics |
+
+This is the right mental model: NeuSim is a **composition of leaf cost functions**. It complements §4–6; Timeloop or SCALE-Sim characterizes a leaf more deeply, and NeuSim carries a calibrated leaf cost across a whole graph and pod.
+
+### 7.2 The operator IR — what crosses the software/hardware boundary
+
+The central object is [`Operator`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/frontend/Operator.py). Its *semantic* fields describe what software asks the machine to do:
+
+- `name`, `description`, `opcode`, `opcode_type`, and `op_type` identify the mathematical operation and whether NeuSim routes it to MXU, VPU, or communication.
+- input/output `Tensor`s carry a `dtype` and a list of `Axis` objects. An axis stores its name, global size, position, parallelism factors, and tile size.
+- for an axis of global size $S$ with parallel factors $p_0,p_1,\ldots$, the number of shards is $P=\prod_i p_i$, local shard size is $\lceil S/P\rceil$, and local tile count is $\lceil\lceil S/P\rceil/T\rceil$.
+- `count` compresses repeated work. NeuSim does not have to instantiate 80 identical transformer layers or 512 decode steps: one operator row can carry their repetition count.
+- `fusion_id` records graph grouping/identity, while the performance fields record the modeled SA, VU, Vmem, HBM, ICI, DCN, PCIe, traffic, FLOP, tile, utilization, power, and energy results.
+
+The opcode classifier recognizes Conv2D; Einsum/MatMul/BatchMatMul; FlashAttention; LayerNorm/GroupNorm/RMSNorm/Softmax/Add/Mul/Abs; up/down-sampling; embedding-bag; and collective operations. Anything outside the implemented cases needs either an explicit cost supplied by the caller or a new back-end handler. **An operator name by itself is not a hardware model**: shapes, dimension labels, datatype, memory placement, sharding, and repetition count are what turn the name into traffic and time.
+
+### 7.3 How operators are actually “extracted”
+
+“Extracted” is easy to misread. In the main public workflow, NeuSim does **not** attach hooks to arbitrary PyTorch, import an arbitrary ONNX graph, or automatically lower CUDA kernels. It *constructs* the graph from a model description:
+
+1. `run_sim.py` loads a model JSON, a chip JSON, and a system JSON, then merges them with the chosen batch size and parallelism configuration.
+2. It selects a handwritten generator: `LLMOpsGenerator`/`DeepSeekOpsGenerator`, `DLRMOpsGenerator`, `DiTOpsGenerator`, or `GLIGENOpsGenerator`.
+3. The generator computes local dimensions from TP/PP/DP/EP and calls operator factories such as `create_einsum_op`, `create_unary_op`, `create_multi_head_attention`, `create_ffn`, or a collective creator.
+4. Those factories create `Operator`, `Tensor`, and `Axis` objects, assign FLOP/weight/traffic metadata, and attach `count`.
+5. `fill_operators_execution_info` turns that semantic list into hardware costs and exports per-operator CSV plus aggregate JSON.
+
+For an LLM, let global microbatch be $B_\mu$, data parallel degree $d$, tensor parallel degree $t$, ICI and DCN pipeline degrees $p_i,p_d$, model width $D_m$, head count $H$, and layer count $L$. The generator first derives
+
+$$B_\text{local}=\left\lceil\frac{B_\mu}{d}\right\rceil,\quad
+D_\text{local}=\left\lceil\frac{D_m}{t}\right\rceil,\quad
+H_\text{local}=\left\lceil\frac{H}{t}\right\rceil,\quad
+L_\text{local}=\left\lceil\frac{L}{p_i p_d}\right\rceil.$$
+
+It then emits, in order, optional KV-swap and pipeline receive operators, input LayerNorm, attention projection/score/softmax/value/output operators, FFN operators, the required TP collectives, and optional pipeline sends. Prefill uses the input sequence length and generally assigns `count=L_local`; decode uses `decode_width` for the new query work and compresses repeated token steps with counts involving $L_\text{local}S_\text{out}$. In MoE models, the generator additionally emits router work, dispatch/combine AllToAll, hot and remaining expert GEMMs, and an explicit receiver-skew factor for load imbalance.
+
+**Worked extraction of the hardware dimensions.** Suppose a generated operator contains
+
+$$A[B,M,K]\times W[B,K,N]\rightarrow C[B,M,N].$$
+
+NeuSim compares the *axis names*, not merely their positions:
+
+- axes in both inputs **and** output are batch axes $\Rightarrow B$;
+- axes in both inputs but absent from output are reduction axes $\Rightarrow K$;
+- axes in the left input and output but not the right input form $M$;
+- axes in the right input and output but not the left input form $N$.
+
+Multiple axes of one class are multiplied. Thus an attention einsum can retain named batch, sequence, head, and head-dimension axes in the IR while the SA back end receives the aggregate $B,M,N,K$ it needs. A convolution takes another route: the parser identifies batch/input-channel/output-channel/kernel/output-spatial axes, then lowers it to $M=OC$, $K=IC\cdot KH\cdot KW$, and $N=B\cdot OH\cdot OW$.
+
+There are two auxiliary paths, but neither should be confused with arbitrary graph extraction:
+
+- A user can construct one `Operator` directly or reload a NeuSim/TF-Sim-compatible CSV row through `Operator.from_csv_dict`.
+- The repository includes an [`xla_hlo_parser`](https://github.com/platformxlab/NeuSim/tree/58fbd3f3579079046a2f433517029389646229a0/neusim/xla_hlo_parser) that parses optimized HLO text modules, tensor layouts/tiles, tuples, instructions, fusion/while call targets, convolution dimension labels, and windows. At this audited commit, however, `parseHLOModel` has no caller outside the parser/tests and the parser documentation still marks trace generation and supported-instruction integration as TODOs. The main back end instead builds a **synthetic HLO instruction/module from each already-created Operator** so it can reuse HLO-like axis analysis. Therefore, describe HLO parsing as a partial compatibility/development facility, not the production operator-extraction pipeline.
+
+This separation is architecturally important. The handwritten generator is effectively a compact compiler cost-IR builder. If its assumed graph, fusion boundary, sharding, datatype, or count differs from the real compiler executable, every later hardware equation can be internally correct and the final answer can still be wrong.
+
+### 7.4 SA/MXU model — padded tiles and fill/drain
+
+For batch GEMM $[B,M,K]\times[B,K,N]$, one modeled MXU operation covers a padded $D\times D\times D$ block. The number of array operations is
+
+$$\boxed{N_\text{MXU}=B\cdot
+\left(\left\lceil M/D\right\rceil\right)\cdot
+\left(\left\lceil N/D\right\rceil\right)\cdot
+\left(\left\lceil K/D\right\rceil\right)}.$$
+
+The padding is real in the model: a $129\times129$ edge already requires four $128\times128$ output tiles. With frequency $f$ in GHz (cycles/ns) and $N_\text{SA}$ arrays, the current source computes
+
+$$t_\text{SA}=\max\left(
+\left\lceil\frac{100(D/128)}{f}\right\rceil,
+\left\lceil\frac{(N_\text{MXU}+2)D}{N_\text{SA}f}\right\rceil,
+1\right)\ \text{ns}.$$
+
+The first term is a minimum push/matmul/pop pipeline interval; `+2` is the fill/drain allowance; division by $N_\text{SA}$ assumes ideal distribution across identical arrays. NeuSim also charges VU work for accumulation at approximately
+
+$$N_{\text{VU,acc}}=N_\text{MXU}\left\lceil(D/128)\cdot8\cdot2\right\rceil.$$
+
+For a small GEMM it evaluates three $8\times128$ VU tilings and charges separate multiply and add instructions. With `use_vu_for_small_matmul`, it switches fully to VU only when the MXU path is **more than four times** the VU path—not whenever VU is merely faster. This is a policy heuristic, not a property of an actual scheduler.
+
+Conv2D uses the $M=OC$, $K=IC\,KH\,KW$, $N=B\,OH\,OW$ unrolling above. FlashAttention separately counts the $QK^\mathsf{T}$ and $PV$ SA matmuls and adds VU softmax work; it assumes about four vector operations per attention-score element. These models include dimensional padding but not the internal RTL choices that determine accumulator precision, forwarding, SRAM banking, or array stalls.
+
+### 7.5 VU/VPU model — a throughput quotient, not an instruction pipeline
+
+The configured peak is $N_\text{VU}\times8\times128$ scalar lanes per cycle. For a vector operation with $E$ elements and heuristic work factor $c$, the useful form is
+
+$$t_\text{VU}\approx
+\left\lceil\frac{cE}{N_\text{VU}\cdot8\cdot128}\right\rceil\frac{1}{f}.$$
+
+Current factors are 8 for LayerNorm/GroupNorm, 6 for RMSNorm, 4 for Softmax, and 1 for Add/Mul/Abs/pointwise multiply. Average pooling charges input aggregation plus one divide per output; nearest-neighbor upsample is treated as a copy with zero compute. ReduceScatter and AllReduce charge their reduction FLOPs to the VU; pure transfers and AllGather charge zero compute.
+
+For an RTL designer, $c$ is the missing microarchitecture compressed into one integer. It stands in for such things as reduction passes, reciprocal/square-root/exp approximations, and lane utilization. It does **not** specify whether `exp` is a polynomial, table, or special-function pipe; how a cross-lane reduction tree is staged; how many register-file operands issue per cycle; or whether LayerNorm rereads partial statistics. Those questions require a calibrated kernel model or a lower-level simulator.
+
+There is also a source-level consistency check to make before calibration: the elementwise helper converts cycles to nanoseconds by dividing by $f$, whereas the current collective-reduction helper returns its lane quotient without that frequency conversion. If collective reduction compute is material in a study, normalize that convention and add a frequency-sweep regression.
+
+### 7.6 Vmem/SRAM model — capacity-constrained analytical tiling
+
+Vmem is not just another roofline bandwidth: its capacity changes HBM traffic by changing reuse. The chip configuration derives
+
+$$\beta_\text{Vmem}=N_\text{ports}\,f\,(8\cdot128)\,(4\ \text{B})$$
+
+in GB/s. For GEMM, NeuSim first checks whether the complete left input, right input, and output fit. Otherwise it enumerates factor candidates $(M_t,N_t,K_t)$ satisfying
+
+$$M_tK_t\,b_A+K_tN_t\,b_B+M_tN_t\,b_C\le C_\text{Vmem}.$$
+
+It initially requires more than ten MXU tile operations—an analytical double-buffering heuristic intended to hide a 500 ns HBM latency—and relaxes that threshold only if no candidate fits. A candidate is scored by
+
+$$t_\text{candidate}=\max(t_\text{MXU},t_\text{HBM}),$$
+
+with preference rules for operation count, traffic, and tile bytes. For batch GEMM, the resulting approximate HBM traffic is
+
+$$Q_\text{HBM}=BMN\,b_C+
+\left\lceil\frac{BKMN}{N_t}\right\rceil b_A+
+\left\lceil\frac{BKMN}{M_t}\right\rceil b_B.$$
+
+The equation shows exactly why larger $N_t$ reuses the left tile and larger $M_t$ reuses the right tile.
+
+FlashAttention fixes query-row tile $B_r=D$ and chooses the largest key/value-column tile $B_c$ that fits
+
+$$\left(2B_cd_h+B_rd_h+2B_cB_r\right)b\le C_\text{Vmem}.$$
+
+Its traffic reads K/V once per KV head and rereads/writes Q/output once per $B_c$ tile and Q head. Conv2D enumerates factors of $B,IC,OC,OH,OW$; kernel $KH,KW$ remains untiled, while stride and the input halo determine the real input footprint. Non-MXU operators normally fall back to the sum of all input and output tensor bytes.
+
+After traffic selection, NeuSim also computes an aggregate SRAM service time:
+
+$$t_\text{Vmem}=
+\frac{t_\text{engine}\beta_\text{engine}
++t_\text{HBM}\beta_\text{HBM}}
+{\beta_\text{Vmem}},$$
+
+where the engine is SA for MXU ops and VU for vector ops. This is a demand/bandwidth estimate, not bank-level scheduling. The source derives $\beta_\text{SA}=(D+D)\cdot2\text{ B}\cdot N_\text{SA}f$ and a fixed-geometry VU bandwidth; both should be calibrated to the real operand/result ports before architectural signoff.
+
+### 7.7 HBM and DMA — traffic plus idealized overlap
+
+Given the selected traffic $Q$, HBM time is
+
+$$t_\text{HBM}=
+\begin{cases}
+0, & Q=0\\[2mm]
+\max\left(\left\lceil Q/\beta_\text{HBM}\right\rceil,\ L_\text{HBM}\right), & Q>0,
+\end{cases}$$
+
+with unit conversion from configured GiB/s to bytes/ns. Notice that fixed latency is a **floor**, not added to serialization time. HBM capacity participates in memory-footprint/OOM tests and optional KV-cache swapping, but performance has no channel, bank, row-buffer, refresh, or controller-queue state. The delivered bandwidth parameter must therefore absorb all of those effects.
+
+There is no separately scheduled DMA engine in the current performance loop. “DMA” means that the tile model produces bytes, HBM/Vmem equations price them, and the final `max` assumes those transfers can overlap compute. It does not prove that hardware has enough descriptors, outstanding reads, AXI IDs, burst length, return buffering, or double-buffer space to realize that overlap. A designer should translate each analytical transfer into a concrete DMA schedule and check
+
+$$N_\text{outstanding}\ge
+\left\lceil\frac{\beta_\text{target}L_\text{round-trip}}{\text{bytes per burst}}\right\rceil,$$
+
+plus buffer ping-pong and address-generation timing, before treating NeuSim's HBM time as achievable.
+
+### 7.8 ICI, collectives, DCN, and PCIe
+
+For a point-to-point tensor of $Q$ bytes,
+
+$$t_\text{P2P}=\max\left(\left\lceil Q/\beta_\text{ICI}\right\rceil,\ L_\text{ICI}\right).$$
+
+For 2D/3D torus configurations, the utility code factorizes chip count into axes as square/cubic as possible. It estimates per-chip bisection bandwidth from link bandwidth and the minimum-cut surface. Parallelism degrees are then mapped heuristically to physical axes, prioritizing TP and limiting PP to one axis.
+
+Collective factories calculate per-chip traffic and compare a bandwidth term with an algorithmic step-latency floor:
+
+- AllGather and ReduceScatter use roughly $(P-1)L$;
+- AllReduce uses roughly $2(P-1)L$;
+- AllToAll uses $(P-1)L$ and can multiply the bandwidth term by the hottest receiver's MoE incast/outcast skew;
+- ReduceScatter/AllReduce additionally create VU reduction work; AllGather, AllToAll, and pipeline transfers have no compute.
+
+The hierarchical traffic helper can be written exactly. For parallel axes $p_0,\ldots,p_{A-1}$, let $x_0$ be the local element count entering a reduce-scatter stage:
+
+$$Q_\text{RS,elem}=\sum_{j=0}^{A-1}x_j,\qquad
+x_{j+1}=\left\lceil x_j/p_j\right\rceil.$$
+
+The implementation models AllReduce traffic as $2Q_\text{RS,elem}$ and computes AllGather with the same recurrence in reverse-size form, starting from the local element count multiplied by $P=\prod_jp_j$. These element counts are multiplied by datatype bytes and assigned symmetrically to inbound and outbound traffic. AllToAll instead assigns one complete local tensor in each direction; its load-imbalance factor stretches the bandwidth term at the hottest endpoint.
+
+The time is therefore of the form
+
+$$t_\text{collective}=\max\left(
+\left\lceil Q_\text{per-chip}/\sum_a\beta_a\right\rceil,
+N_\text{steps}L_\text{ICI}
+\right),$$
+
+not a packet simulation. There is no simultaneous-collective contention, routing, virtual channel, credit, serialization granularity, or link failure.
+
+Two current-code caveats are important when interpreting inter-chip results. First, comments in the collective factories explicitly note that DCN time can be included in the ICI field and that per-axis DCN latency still needs separation. Pipeline operators may be classified as DCN by their description while using the common transfer creator. Second, KV-cache swap fills PCIe statistics but also reuses ICI traffic/time fields for compatibility; the main maximum consumes the ICI time. Treat ICI/DCN/PCIe breakdowns as coarse analytical accounting until those paths are separated and validated against the deployed fabric.
+
+### 7.9 Per-operator composition, graph aggregation, and power
+
+The actual execution-time loop in [`op_analysis_lib.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/frontend/op_analysis_lib.py) is:
+
+$$t_\text{compute}=\max(t_\text{SA},t_\text{VU}),$$
+
+$$\boxed{t_\text{op}=\max(t_\text{SA},t_\text{VU},t_\text{Vmem},t_\text{HBM},t_\text{ICI})}.$$
+
+This is an **ideal overlap contract**: all five clocks start together and the slowest finishes the operator. It is not automatically true for a dependency such as HBM read $\rightarrow$ SA compute $\rightarrow$ HBM write. The tile traffic formulas partially account for data reuse, but the maximum still omits prologue/epilogue and imperfect double buffering. Also note that a Vmem-limited operator is currently reported under the `"Compute"` bounded-by label, so the human must inspect `vmem_time_ns` rather than trust that label alone.
+
+At graph level, ordinary operator rows are accumulated in list order as
+
+$$T_\text{non-PP}=\sum_i \text{count}_i\,t_i.$$
+
+Pipeline transfers are identified by strings in `Description`, accumulated separately, and the chip total uses a heuristic maximum between non-pipeline work and pipeline ICI time. This is not a general DAG/resource scheduler: there are no explicit dependency edges, multiple in-flight requests, queue depths, or resource reservations. `count` is a multiplication, not a loop-carried timing simulation.
+
+Power is a second pass. Chip configuration contains per-SA/per-VU/component static powers, SA/VU/Vmem dynamic power, HBM and ICI W/(GB/s), and “other” power. Conceptually,
+
+$$E_\text{dyn,c}=P_\text{dyn,c}\,t_\text{active,c}\,U_c,\qquad
+E_\text{static,c}=P_\text{static,c}\,t_\text{on,c},$$
+
+with utilization on compute engines, component-specific active time, and PG policy deciding whether idle intervals remain powered. DVFS scales active time with frequency and dynamic power approximately with $V^2f$, then includes regulator-transition time/efficiency. Power-gating policies choose instruction/operator/application temporal granularity and PE/ALU/partition/component spatial granularity, plus residual sleep power and wake delay.
+
+**Implementation audit before trusting energy.** In this source snapshot, the non-DVFS dynamic-energy path obtains `dynamic_power_sa_W` and `dynamic_power_vu_W` properties that are already array-count totals, then multiplies them by `num_sa`/`num_vu` again in the energy expression. A hardware team should confirm the intended per-unit versus total convention and regression-test it before using absolute joules. This is exactly why an architecture notebook must show code-level model ownership rather than repeat a headline “power-aware” claim.
+
+Finally, the carbon pass combines measured/modelled goodput, duty cycle, PUE, average/idle power, grid carbon intensity, lifetime, and `num_chips × embodied_carbon_per_chip`. It is a system accounting layer downstream of performance and power; it adds no missing microarchitectural timing fidelity.
+
+### 7.10 What a new hardware designer should validate
+
+Before using a NeuSim result to choose RTL parameters, perform four closure checks:
+
+1. **Graph closure:** compare the generated operator list, shapes, dtypes, sharding, fusion, and counts with a real compiler dump. This is the operator-extraction risk.
+2. **Leaf closure:** sweep representative $M,N,K$, vector lengths, convolution shapes, and attention sequence lengths against RTL/emulation/silicon; fit effective SA/VU rates and HBM/ICI bandwidth rather than entering peaks.
+3. **Overlap closure:** draw the DMA-buffer-SA/VU schedule for at least one tile and prove the assumed maximum is attainable, including first-fill/last-drain and outstanding-transaction limits.
+4. **Energy closure:** resolve per-unit versus aggregate power conventions, use macro/netlist data where available, and check that component energies sum to measured board/chip power over the same interval.
+
+NeuSim's great value is **fast composition and sensitivity**, not automatic truth. It tells the designer which assumption dominates a model-scale result; lower-level evidence must then validate that assumption.
 
 **One layer, three paradigms — where they converge, and where they disagree diagnostically.** Run the *same* §4/§6 layer through all three rungs ($M{=}N{=}K{=}256$, OS, $Q_{\text{DRAM}}=327{,}680$ B, $D{=}128$ at $1$ GHz; $T_{\text{compute}}=2048$ cyc $=2.05\,\mu$s; demand $160$ GB/s) and watch what each reports:
 
@@ -433,9 +698,9 @@ So NeuSim complements, rather than competes with, §4–6: you would still use T
 |---|---|---|---|
 | **Analytical mapping** (Timeloop+Accelergy) | $\max(T_{\text{compute}},\,Q/\beta_{\text{peak}})=\max(2.05,\,2.62)=2.62\,\mu$s; energy from the §4 dot product | access counts ÷ *peak* per-level BW ($\beta_{\text{peak}}{=}125$ GB/s) | ~µs/mapping → sweep $10^{5}$–$10^{6}$ maps |
 | **Cycle-accurate** (SCALE-Sim v3) | $Q/\beta_{\text{delivered}}=327{,}680/100\,\text{GB/s}=3.28\,\mu$s; $\text{stall}=1229$ cyc | steps array vs Ramulator; delivered $\beta{\approx}80\%$ of peak (FR-FCFS + refresh) | ms–s/layer → one array |
-| **Operator-level** (NeuSim) | $t_{\text{op}}=\max(t_{\text{SA}},t_{\text{mem}})=\max(2.05,\,3.28)=3.28\,\mu$s, **HBM-bound** | one roofline maximum per operator with a calibrated per-core bandwidth cap ([hierarchical roofline](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#4-hierarchical-roofline-and-operational-intensity)) | ~µs/op → whole graph, pod-scale |
+| **Operator-level** (NeuSim) | if Vmem/ICI are below the two shown terms, $t_{\text{op}}=\max(t_{\text{SA}},t_{\text{VU}},t_{\text{Vmem}},t_{\text{HBM}},t_{\text{ICI}})=\max(2.05,\,3.28,\ldots)=3.28\,\mu$s, **HBM-bound** | analytical component maximum with a calibrated HBM bandwidth cap ([hierarchical roofline](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#4-hierarchical-roofline-and-operational-intensity)) | ~µs/op → whole graph, pod-scale |
 
-The pattern, not the digits, is the lesson. **Timeloop is optimistic** ($2.62\,\mu$s): it has a bandwidth model, so it *does* see the layer as memory-bound, but it prices DRAM at *peak* and cannot know the channel delivers only $\sim\!80\%$ of it—the [NPU simulation methodology](../00_Design_Methodology/03_NPU_Simulation_Methodology_and_Evidence.md) "contention emerges from shared resources" effect (bank conflicts, refresh, FR-FCFS) that a peak-bandwidth quotient structurally cannot express, and precisely the $\sim\!20\%$ ($\to25\%$ longer wall-clock) the §6 stall makes real. **NeuSim recovers the cycle-accurate truth** ($3.28\,\mu$s) *without stepping a cycle*, because its per-operator $\max(t_{\text{SA}},t_{\text{mem}})$ is the [hierarchical roofline](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#4-hierarchical-roofline-and-operational-intensity) with a per-core bandwidth cap calibrated to delivered bandwidth. It can then price every operator across a pod using the [matrix/vector balance](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#6-vector-reduction-and-special-function-balance), [graph schedule](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#9-graph-completion-is-a-dependencyresource-schedule), and [ring-collective model](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#91-scale-out-communication-belongs-in-the-npu-workload-model). What NeuSim still cannot see is *why* the cap is $0.8\times$: the intra-DRAM scheduling detail that only SCALE-Sim's Ramulator resolves. Thus the three are **not competing estimates of one number—they are blind to different things**, and their disagreement localizes the missing physics. The deliberate trade is to buy graph-and-pod reach with calibrated analytical component models and step real cycles only where contention determines those calibration values.
+The pattern, not the digits, is the lesson. **Timeloop is optimistic** ($2.62\,\mu$s): it has a bandwidth model, so it *does* see the layer as memory-bound, but it prices DRAM at *peak* and cannot know the channel delivers only $\sim\!80\%$ of it—the [NPU simulation methodology](../00_Design_Methodology/03_NPU_Simulation_Methodology_and_Evidence.md) "contention emerges from shared resources" effect (bank conflicts, refresh, FR-FCFS) that a peak-bandwidth quotient structurally cannot express, and precisely the $\sim\!20\%$ ($\to25\%$ longer wall-clock) the §6 stall makes real. **NeuSim can match the cycle-level result** ($3.28\,\mu$s) *without stepping a cycle only when* its configured bandwidth is calibrated to that delivered value and its overlap assumption holds. Its full per-operator maximum can then price every operator across a pod using the [matrix/vector balance](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md#6-vector-reduction-and-special-function-balance), graph aggregation, and analytical collective models. What NeuSim still cannot see is *why* the cap is $0.8\times$: the intra-DRAM scheduling detail that only a controller/cycle model resolves. Thus the three are **not competing estimates of one number—they are blind to different things**, and their disagreement localizes the missing physics. The deliberate trade is to buy graph-and-pod reach with calibrated analytical component models and step real cycles only where contention determines those calibration values.
 
 **ONNXim** (POSTECH, Ham et al., IEEE Computer Architecture Letters 2024, [arXiv:2406.08051](https://arxiv.org/abs/2406.08051)) occupies the same operator-level rung but with a sharper focus: **fast, cycle-level multi-core NPU simulation for DNN inference serving**, especially multi-tenant. Its inputs are ONNX model graphs (framework-agnostic, no per-kernel reimplementation). Its key modeling choice is a *deliberate asymmetry* of fidelity: it **abstracts compute** (a tensor tile from on-chip scratchpad has a deterministic compute latency, so the array is not time-stepped internally) but keeps **cycle-level DRAM and NoC** models, because in a multi-tenant NPU running several models at once the thing that actually determines performance is *contention* for shared memory and interconnect — exactly what a functional or purely analytical model would miss ([NPU simulation methodology](../00_Design_Methodology/03_NPU_Simulation_Methodology_and_Evidence.md): "contention emerges from shared event resources"). That asymmetry is why it reports up to **384× faster** simulation than Accel-Sim while still capturing the interference that matters. Use ONNXim when the question is scheduling/interference across concurrent DNNs on a many-core NPU; use SCALE-Sim when the question is one array's internal stall behavior.
 
@@ -462,6 +727,7 @@ The **384×** is the event-count face of the same argument. A $D{=}128$ array re
 | Timeloop access count | $N_{t,\ell}^{\text{fill}}=(\text{above}\cap\text{idx})\times\text{footprint}$; reuse $=$ MACs$/N$ | the numerator of every energy term (§4) |
 | Timeloop→Accelergy energy | $E=\sum_{c,a}N_{c,a}e_{c,a}$; DRAM term dominates the *mapping-dependent* part | activity × per-event energy for accelerators (§4) |
 | SCALE-Sim stall | $\max(0,\ Q_{\text{DRAM}}f/\beta-T_{\text{compute}})$ | emergent when demand $>$ delivered BW (§6) |
+| NeuSim operator time | $\max(t_\text{SA},t_\text{VU},t_\text{Vmem},t_\text{HBM},t_\text{ICI})$ | fast composition, but assumes component overlap (§7.9) |
 | Three-paradigm convergence | analytical ≈ operator-level (peak/capped BW); cycle-accurate $+\sim\!20\%$ (FR-FCFS/refresh) | disagreement *localizes* the missing physics (§7) |
 
 ---
@@ -480,5 +746,5 @@ The **384×** is the event-count face of the same argument. A $D{=}128$ array re
 - R. Ramachandran et al., "SCALE-Sim v3: A modular cycle-accurate systolic accelerator simulator for end-to-end system analysis," ISPASS 2025 — [arXiv:2504.15377](https://arxiv.org/abs/2504.15377), [github.com/scalesim-project/scale-sim-v3](https://github.com/scalesim-project/scale-sim-v3).
 - A. Samajdar et al., "A Systematic Methodology for Characterizing Scalability of DNN Accelerators using SCALE-Sim," ISPASS 2020 — [github.com/scalesim-project/SCALE-Sim](https://github.com/scalesim-project/SCALE-Sim).
 - H. Ham et al., "ONNXim: A Fast, Cycle-level Multi-core NPU Simulator," IEEE CAL 2024 — [arXiv:2406.08051](https://arxiv.org/abs/2406.08051), [github.com/PSAL-POSTECH/ONNXim](https://github.com/PSAL-POSTECH/ONNXim).
-- NeuSim (UIUC PlatformX) — [github.com/platformxlab/NeuSim](https://github.com/platformxlab/NeuSim) (full treatment in [NPU workload and performance methods](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md)).
+- NeuSim (UIUC PlatformX) — [source snapshot used for §7](https://github.com/platformxlab/NeuSim/tree/58fbd3f3579079046a2f433517029389646229a0), especially [`Operator.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/frontend/Operator.py), [`op_analysis_lib.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/frontend/op_analysis_lib.py), and [`npusim_lib.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/backend/npusim_lib.py).
 - Y.-H. Chen, J. Emer, V. Sze, "Eyeriss: A Spatial Architecture for Energy-Efficient Dataflow for CNNs (row-stationary)," ISCA 2016.
