@@ -1,9 +1,15 @@
 # Floating Point — From a Carry Adder to Add, Multiply, FMA, Divide, and SFUs
 
 ```mermaid
-flowchart LR
-  IN["encoded operands"] --> UN["unpack: sign,<br/>exponent, significand"] --> SP["classify: zero,<br/>subnormal, inf / NaN"] --> AL["compare exponents,<br/>then align"] --> CB["continued below:<br/>aligned operands"]
-  FA["from alignment<br/>above"] --> OP["add / multiply /<br/>fused operation"] --> NO["normalize +<br/>LZ detect"] --> RN["GRS +<br/>rounding mode"] --> PK["flags, overflow /<br/>underflow, pack"] --> ER["encoded result"]
+flowchart TB
+  IN["encoded operands"] --> UN["unpack sign, exponent,<br/>and significand"]
+  UN --> SP["classify zero, subnormal,<br/>infinity, and NaN"]
+  SP --> PRE["operation-specific preparation:<br/>compare/align or exponent arithmetic"]
+  PRE --> OP["integer arithmetic core:<br/>CLA, multiplier tree, or iterative engine"]
+  OP --> NO["normalize result<br/>and detect leading zeros"]
+  NO --> RN["form GRS bits<br/>and apply rounding mode"]
+  RN --> PK["select special result,<br/>raise flags, and pack"]
+  PK --> ER["encoded result"]
 ```
 
 > **Prerequisites:** [Adders_and_Multipliers](03_Adders_and_Multipliers.md) (the mantissa $p\times p$ multiplier, the final CPA, and the SRT/Goldschmidt recurrences this page reuses), [Logic_Building_Blocks](02_Logic_Building_Blocks.md) (barrel shifter, leading-zero count, priority encoder), [CMOS_Fundamentals](01_CMOS_Fundamentals.md) (the area→energy argument behind §6).
@@ -344,7 +350,7 @@ The same hardware must also survive a case where alignment loses visible digits.
 The concrete adder pipeline is therefore a composition of hardware already derived in the preceding pages:
 
 ```mermaid
-flowchart LR
+flowchart TB
   UN["classify<br/>and unpack"] -->|fields| CMP["exponent<br/>compare"] -->|Δe| SHR["right barrel<br/>shift + sticky"] -->|aligned| ADD["add/subtract<br/>significands"] --> RAW["raw sum"]
   RAW --> LZD["leading-zero<br/>detect + shift"] -->|normalized + GRS| RND["GRS decision<br/>+ increment"] -->|rounded| PACK["flags<br/>and pack"]
   UN -.->|signs and special-case class| PACK
@@ -352,17 +358,17 @@ flowchart LR
 
 This figure is a **hardware ownership map**, not a promise that each box is exactly one cycle. Pipeline registers are inserted to balance the delay of the barrel shifter, significand adder, normalization network, and round incrementer. A typical five-stage implementation might schedule the same transaction like this:
 
-```wavedrom
-{ "signal": [
-  { "name": "cycle",        "wave": "p......" },
-  { "name": "input valid",  "wave": "010...." },
-  { "name": "unpack",       "wave": "x3x....", "data": ["a,b"] },
-  { "name": "align",        "wave": "x.3x...", "data": ["delta-e=2"] },
-  { "name": "add",          "wave": "x..3x..", "data": ["1.11100"] },
-  { "name": "normalize",    "wave": "x...3x.", "data": ["shift 0"] },
-  { "name": "round / pack", "wave": "x....3x", "data": ["1.875"] },
-  { "name": "output valid", "wave": "0....10" }
-], "head": { "text": "One FP add moving through a five-stage pipeline; later independent operations may enter every cycle" } }
+```mermaid
+flowchart TB
+  C0["cycle n — input valid<br/>unpack a and b"] --> R0[["pipeline register 0<br/>fields + class + tag"]]
+  R0 --> C1["cycle n+1<br/>compare exponents and align; Δe = 2"]
+  C1 --> R1[["pipeline register 1<br/>aligned significands + sticky"]]
+  R1 --> C2["cycle n+2<br/>CLA add; raw sum = 1.11100"]
+  C2 --> R2[["pipeline register 2<br/>sum + sign + exponent"]]
+  R2 --> C3["cycle n+3<br/>normalize; shift = 0"]
+  C3 --> R3[["pipeline register 3<br/>normalized value + GRS"]]
+  R3 --> C4["cycle n+4<br/>round and pack = 1.875"]
+  C4 --> OV["cycle n+5 — output valid<br/>result + flags + tag"]
 ```
 
 **Implementation tradeoffs.** A single path is smaller and easier to verify, but it puts a full alignment shifter and a full normalization shifter in series. A far/close dual path evaluates the likely normalization cases in parallel and multiplexes the answer, shortening the clock period at extra area and switching energy. A leading-zero anticipator predicts the cancellation shift in parallel with subtraction, accepting a possible one-bit correction to remove a serial leading-zero count. Pipeline depth improves clock frequency and throughput but increases latency, bypass complexity, exception bookkeeping, and energy in registers and clock trees.
@@ -604,7 +610,7 @@ $$
 The datapath is:
 
 ```mermaid
-flowchart LR
+flowchart TB
   U["unpack + classify<br/>restore hidden bits"] --> SX["sign XOR"]
   U --> EA["signed exponent add"]
   U --> IM["p × p unsigned<br/>integer multiplier"]
@@ -873,7 +879,7 @@ $$
 Sign and exponent are easy. The significand quotient is the difficult part, and it is built from comparison, add/subtract, shifts, and registers—the blocks a CLA/CRA student already knows.
 
 ```mermaid
-flowchart LR
+flowchart TB
   U["unpack + classify"] --> E["sign XOR;<br/>signed exponent subtract"]
   U --> N["normalize significands<br/>to a bounded interval"]
   N --> Q["quotient engine:<br/>digit recurrence or reciprocal refinement"]
