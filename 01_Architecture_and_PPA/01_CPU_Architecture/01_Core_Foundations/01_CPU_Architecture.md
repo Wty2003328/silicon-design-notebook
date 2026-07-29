@@ -386,7 +386,7 @@ where ILP = the instruction-level parallelism the window exposes. General-purpos
 | 4 | 2.2 | 0.55 | 16 | 0.14 |
 | 8 | 2.6 | 0.33 | 64 | 0.041 |
 
-Doubling 4→8 wide lifts IPC only $2.2\to2.6$ (**+18%**) while the quadratic structures **quadruple** (16→64); lane efficiency falls 55%→33% and IPC-per-unit-cost drops ~3.4×. The perf/area/watt optimum therefore sits at modest width — the quantitative reason real cores cluster at **4–8-wide** and lean on micro-op fusion (above) and SMT (§10) to raise *effective* width without paying the full $w^{2}$.
+Doubling 4→8 wide lifts IPC only $2.2\to2.6$ (**+18%**) while the quadratic structures **quadruple** (16→64); lane efficiency falls 55%→33% and IPC-per-unit-cost drops ~3.4×. The perf/area/watt optimum therefore sits at modest width — the quantitative reason real cores cluster at **4–8-wide** and lean on micro-op fusion (above) and SMT (§11) to raise *effective* width without paying the full $w^{2}$.
 
 Everything from here on is the *system* the core runs inside.
 
@@ -640,7 +640,141 @@ The design lesson is the direct trade: **stronger models cost performance** (les
 
 ---
 
-## 10. Simultaneous multithreading: replicate state, share the engine
+## 10. DMA from the CPU architecture perspective — control, protection, and visibility
+
+The first hardware-design fact is easy to miss: **a conventional CPU core does not copy DMA payload bytes.** A platform DMA engine, storage controller, NIC, GPU, or other bus master reads and writes memory beside the cores. The CPU participates through four interfaces: it constructs work descriptors, publishes a doorbell, supplies translation/protection state through the IOMMU, and observes completion through memory plus an interrupt or poll. A CPU-integrated data mover such as Intel DSA is a fifth possibility, but even it is a queue-fed device near the coherent fabric—not a sequence of ordinary loads and stores flowing through the core's LSQ.
+
+```mermaid
+flowchart TB
+    APP["Application / runtime<br/>owns source and destination"]
+    DRV["Driver or privileged runtime<br/>pins/maps pages, builds descriptor"]
+    CORE["CPU core<br/>stores, release fence,<br/>MMIO doorbell, acquire"]
+    WQ["DMA work queue<br/>head/tail + phase"]
+    ENG["DMA engine<br/>fetch, schedule, AGU,<br/>read/write tracking"]
+    IOMMU["IOMMU / SMMU<br/>RID/PASID context,<br/>IOTLB + page walks"]
+    COH["Coherent home agent<br/>or noncoherent bridge"]
+    MEM["LLC / memory controller / DRAM"]
+    CMP["Completion record<br/>MSI/MSI-X or polling"]
+
+    APP --> DRV --> CORE
+    CORE -->|"descriptor stores"| WQ
+    CORE -->|"doorbell write"| ENG
+    WQ -->|"descriptor fetch"| ENG
+    ENG -->|"IOVA + identity"| IOMMU
+    IOMMU --> COH --> MEM
+    MEM --> COH --> ENG
+    ENG -->|"status after destination visibility"| CMP
+    CMP --> CORE
+```
+
+The generic engine internals—descriptor stabilization, multidimensional AGUs, burst splitting, read-return buffers, write tracking, errors, and reset—are built in [SoC DMA §6](../../04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md#6-direct-memory-access-engine-from-descriptor-to-visible-completion). This section owns what changes when that engine shares a memory system with CPU cores.
+
+### 10.1 The complete producer-to-consumer transaction
+
+Suppose software wants a NIC or platform DMA to read `src`, write `dst`, and then set completion `done`. The hardware-visible sequence is:
+
+1. **Map and authorize.** The operating system pins or otherwise makes the pages resident, installs IOMMU mappings, assigns the device requester ID (RID) and optional process address-space ID (PASID), and gives the device I/O virtual addresses—not arbitrary physical memory.
+2. **Construct an immutable descriptor.** CPU stores fill source, destination, length/strides, access attributes, completion address, and a software cookie. Hardware must fetch a stable snapshot; software must not rewrite a live descriptor.
+3. **Publish.** A **release** operation orders prior descriptor and source-buffer stores before the MMIO doorbell or queue-tail update. On a noncoherent path, cache clean/writeback occurs before that release. The doorbell is a notification, not the mechanism that magically flushes cached data.
+4. **Fetch and translate.** The DMA frontend reads the descriptor, attaches RID/PASID, consults its IOTLB or the IOMMU, splits at page and fabric boundaries, and reserves tags plus return-buffer space before issuing reads.
+5. **Move.** Reads may return out of order. A tag entry carries descriptor ID, byte offset, length, destination, and retry epoch so returned data reaches the correct destination beat. Writes enter the coherent home agent or the noncoherent memory path.
+6. **Reach the visibility point.** “Last write request transmitted” is not completion. All writes must reach the platform-defined point from which the intended observer can obtain the new bytes; posted bridges may require a write response, barrier, or ordering read.
+7. **Publish completion.** The engine stores the completion record after payload visibility, then optionally emits MSI/MSI-X. The interrupt routes through the interrupt controller, wakes a core, and names a queue—not necessarily one descriptor.
+8. **Consume.** The driver polls or handles the interrupt, performs an **acquire** before reading status/payload, invalidates stale lines first if the device is noncoherent, and then returns buffer ownership to software.
+
+That sequence is a hardware protocol. Omitting either publication edge creates a real bug: without release, the device can observe a new tail and old descriptor bytes; without acquire, the CPU can observe `done=1` and still use a stale destination line.
+
+### 10.2 What state is implemented in silicon
+
+| Hardware structure | Minimum state | Why the CPU architecture needs it |
+|---|---|---|
+| doorbell/queue CSR | base, size, head, tail, phase, enable, owner | converts ordered MMIO stores into admitted work |
+| descriptor cache | immutable local descriptor copy, valid/error bits | prevents time-of-check/time-of-use changes by a CPU |
+| channel scheduler | requester/context, priority, byte deficit, outstanding cap | isolates processes and prevents one queue monopolizing memory |
+| translation frontend | RID/PASID, IOTLB tag/data, permission, invalidation generation | binds every descriptor and payload access to an address space |
+| read tracker | fabric ID, descriptor, logical offset, length, buffer credit, epoch | accepts out-of-order and late responses safely |
+| payload buffer | data, byte-valid mask, destination offset, ECC/poison | decouples source reads from stalled destination writes |
+| write/completion tracker | issued/acknowledged/visible bitmaps, status, interrupt vector | forbids early completion and duplicate writes on replay |
+
+The core itself needs no new per-byte datapath for an ordinary DMA. It needs correct memory-type rules, MMIO ordering, cache-maintenance instructions where coherence is absent, interrupt delivery, and fences whose completion condition includes the required domains. Conversely, adding a DMA beside the LLC does not make it coherent automatically: the engine must issue coherent transaction types and participate at a home/snoop point capable of finding dirty CPU lines.
+
+### 10.3 Coherent versus noncoherent attachment
+
+There are two valid designs and one invalid half-design:
+
+- **Coherent DMA.** Device reads snoop or otherwise reach the latest dirty CPU cache copy; device writes invalidate/update cached copies according to the protocol. Software still needs release/acquire ordering, but normally not explicit clean/invalidate. Hardware cost is request-node state, snoop bandwidth, directory pressure, and deadlock-safe response capacity.
+- **Noncoherent DMA.** The path sees memory but not private dirty/stale cache lines. Before a device read, software cleans source and descriptor lines; after a device write and completion, software invalidates destination lines before consuming them. Hardware is simpler, while software ownership granularity becomes at least a cache line.
+- **Incorrect hybrid.** Marking payload coherent while fetching descriptors or writing completion noncoherently silently breaks the queue. Descriptor, payload, and completion are three separate streams; the specification must assign attributes to each.
+
+False sharing matters even without two CPU writers. If `done` shares a line with DMA-written payload or unrelated CPU state, the device and core can bounce ownership or an invalidate can discard a CPU modification. Align ownership hand-off records to cache-line boundaries and forbid simultaneous writers.
+
+### 10.4 IOMMU, ATS, faults, and teardown
+
+The IOMMU is a protection/translation pipeline, not the DMA engine. A request carries `(RID, PASID, IOVA, access type)`; the IOMMU selects a device/process context, checks permissions, performs one- or two-stage page-table walks, and returns physical address plus memory attributes. DMA-side IOTLB entries cache that result and carry an invalidation generation. Address Translation Services (ATS), when present, let the endpoint cache translations, which moves invalidation responsibility across the link; the device must acknowledge invalidation before the OS reuses a physical page.
+
+A page-crossing burst must be split because adjacent I/O virtual pages need not be physically adjacent. For a recoverable page request, retain descriptor identity, logical byte offset, already-visible write bitmap, nested-loop counters, and translation epoch. Replay may reissue a read, but it must not duplicate a non-idempotent visible write. During process teardown:
+
+1. stop new queue admission;
+2. drain or abort accepted work with a defined partial-completion contract;
+3. invalidate device/IOMMU translation caches and wait for acknowledgement;
+4. only then unpin and reassign the pages and PASID.
+
+This ordering prevents a late DMA from writing memory that has already been given to another process—the device analogue of a use-after-free.
+
+### 10.5 CPU-integrated data movers are queue accelerators, not load/store instructions
+
+A CPU package may integrate a data-movement accelerator for copy, fill, compare, CRC, or memory transformation. Software submits a work descriptor to a **dedicated or shared work queue**; a portal/doorbell store admits it. The accelerator arbitrates work, fetches cache-coherent operands, writes a completion record, and may raise an interrupt. With shared queues, an atomic enqueue or hardware-managed producer portal prevents two cores from claiming the same slot. PASID tags keep process virtual address spaces distinct.
+
+The distinction from an ISA vector copy is physical:
+
+| Vector load/store loop | Integrated DMA/data mover |
+|---|---|
+| occupies decode, rename, ROB, LSQ, vector RF, and execution bandwidth | occupies descriptor, IOMMU, fabric, and DMA-buffer resources |
+| faults and retires instruction by instruction | reports descriptor-level completion/partial completion |
+| naturally ordered by the core memory model | must be joined to the core model through publish/complete fences |
+| good for short copies already near the core | amortizes setup on large or batched transfers and can overlap CPU work |
+
+Do not route tiny copies blindly to DMA: if fixed submission plus completion cost is $t_0$ and DMA bandwidth is $B_D$, while a CPU loop sustains $B_C$, offload wins only when
+
+$$
+t_0+\frac{S}{B_D}<\frac{S}{B_C}
+\quad\Longrightarrow\quad
+S>\frac{t_0}{1/B_C-1/B_D}\qquad(B_D>B_C).
+$$
+
+The threshold is workload- and locality-dependent; descriptor batching lowers $t_0$ per operation.
+
+### 10.6 Size the engine from latency, not peak bus width
+
+For payload bandwidth $B$ and end-to-end read latency $L$, the engine needs at least
+
+$$
+Q_{\text{live}}\ge BL,\qquad
+N_{\text{read}}\ge \left\lceil\frac{BL}{C}\right\rceil
+$$
+
+live bytes and requests, where $C$ is useful bytes per request. At 100 GB/s and 250 ns, $BL=25$ kB. With 256-byte reads the theoretical floor is $\lceil25{,}000/256\rceil=98$ live requests; 32 tags cap the path near $32(256)/250\text{ ns}=32.8$ GB/s regardless of a 100-GB/s fabric. Allocate payload-buffer credits before reads, include IOMMU miss latency and arbitration in $L$, and provision separate response/completion capacity so requests cannot consume the buffers needed to retire them.
+
+CPU-visible counters should expose submitted/completed descriptors, useful/fabric bytes, read/write outstanding high-water marks, payload-buffer full cycles, IOTLB hit/walk/fault, coherent snoops/retries, queue latency, interrupt coalescing, and completion-to-interrupt latency. Without them, a stalled DMA is indistinguishable from a CPU, IOMMU, fabric, or DRAM bottleneck.
+
+### 10.7 Verification properties at the CPU boundary
+
+Minimum assertions and tests:
+
+- a doorbell cannot make descriptor bytes older than the required release visible to the engine;
+- every accepted byte is translated and authorized under the descriptor's captured RID/PASID;
+- no read issues without response-buffer reservation, and no fabric ID is reused before all old-epoch responses die;
+- completion and MSI cannot precede the destination visibility event;
+- after the specified acquire/cache maintenance, a CPU load observes every successfully completed DMA write;
+- abort, IOMMU invalidation, process exit, hot reset, and late response cannot write reassigned memory;
+- coherent mode and noncoherent clean/invalidate mode produce identical architectural bytes;
+- randomized cache-line/page/burst crossings, out-of-order responses, backpressure, faults, and concurrent CPU ownership changes preserve the contract.
+
+The central invariant is: **the CPU may hand ownership to a DMA only through an ordered publication edge, and the DMA may hand it back only through an ordered completion edge.** Everything else—rings, interrupts, PASIDs, IOTLBs, and coherent transactions—exists to implement those two edges at speed.
+
+---
+
+## 11. Simultaneous multithreading: replicate state, share the engine
 
 A single thread rarely sustains a wide core's peak IPC — it stalls on misses, mispredicts, and dependency chains, leaving execution ports idle. **SMT fills those idle slots** by running $t$ threads over one out-of-order datapath, so that when one thread stalls another's ready instructions use the ports. The organizing principle is one line: **replicate the architectural state that gives each thread its identity; share the throughput engine that SMT exists to keep busy.** The invariant preserved is that each thread's architectural state evolves exactly as if it ran alone — thread-ID tags on every shared entry keep the threads from aliasing.
 
@@ -676,11 +810,11 @@ $$
 
 *Worked number.* A 4-wide core at single-thread IPC $1.4$ has $u = 1.4/4 = 0.35$, idle fraction $0.65$, so the SMT-2 ceiling is $1/0.35 = 2.9\times$. With a realized $\alpha = 0.30$ (contention keeps most but not all of the headroom), aggregate speedup is $1 + 0.30 = 1.30\times$ → aggregate IPC $1.82$, utilization $0.35 \to 0.46$. Per thread: $1.30/2 = 0.65$, so each thread runs at **65% of its solo speed** while the pair delivers **1.30×** — the Golden-Cove/Zen operating point of the table below, comfortably under the $2.9\times$ ceiling because contention, not the slot count, binds first.
 
-**Vendor positions map directly onto that ceiling.** Intel and AMD ship SMT-2 (Golden Cove **1.25–1.35×**, Zen 4 **1.20–1.30×**); IBM POWER10 pushes SMT-8 (**1.6–2.2×**) for throughput-oriented server workloads with abundant idle slots. **Apple ships no SMT at all** — its very wide single-thread cores (8-wide decode, ~600-entry ROB) already extract most of the available ILP, and two independent non-SMT cores in the same area give more predictable performance while avoiding the shared-state side-channels of §11. The choice is thus workload- and security-driven, not merely a transistor count.
+**Vendor positions map directly onto that ceiling.** Intel and AMD ship SMT-2 (Golden Cove **1.25–1.35×**, Zen 4 **1.20–1.30×**); IBM POWER10 pushes SMT-8 (**1.6–2.2×**) for throughput-oriented server workloads with abundant idle slots. **Apple ships no SMT at all** — its very wide single-thread cores (8-wide decode, ~600-entry ROB) already extract most of the available ILP, and two independent non-SMT cores in the same area give more predictable performance while avoiding the shared-state side-channels of §12. The choice is thus workload- and security-driven, not merely a transistor count.
 
 ---
 
-## 11. Speculative-execution security: the invariant speculation breaks
+## 12. Speculative-execution security: the invariant speculation breaks
 
 Speculation (branch prediction, out-of-order loads) rests on an assumption the whole machine is built around: **wrong-path work is invisible once squashed.** Architecturally that is true — a mispredicted path's register and memory writes are rolled back at commit. The Spectre/Meltdown class of attacks (2018) proved the assumption false at the *microarchitectural* level: speculation leaves footprints — cache lines filled, TLB entries installed, predictor state updated — that rollback does **not** undo. Those footprints are readable through timing, so a covert channel (usually cache-hit-versus-miss latency) can exfiltrate a secret that was touched only during the transient, "never-committed" window.
 
@@ -704,7 +838,7 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 
 ---
 
-## 12. Numbers to memorize
+## 13. Numbers to memorize
 
 | Parameter | Typical | Range | Why this value (section) |
 |---|---|---|---|
@@ -728,15 +862,16 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 | MOESI / MESIF | 5 states | — | Owned = dirty c2c; Forward = 1 responder (§8.2) |
 | Snoop scaling limit | ~8–16 cores | — | $O(N^2)$ broadcast bandwidth (§8.4) |
 | Coherence-miss (ping-pong) | ~100–200 cyc | — | true/false-sharing tax per write (§8.5) |
-| SMT-2 speedup | 1.2–1.35× | 1.1–1.4× | $1+\alpha(t{-}1)$, shared-resource ceiling (§10) |
-| SMT ceiling | $1/u$ | — | idle-slot (Amdahl) bound on utilization $u$ (§10) |
-| Full mitigation cost | 10–30 % | — | close window / isolate / check (§11) |
+| DMA live-data floor | $Q\ge BL$ | — | 100 GB/s × 250 ns = 25 kB (§10.6) |
+| SMT-2 speedup | 1.2–1.35× | 1.1–1.4× | $1+\alpha(t{-}1)$, shared-resource ceiling (§11) |
+| SMT ceiling | $1/u$ | — | idle-slot (Amdahl) bound on utilization $u$ (§11) |
+| Full mitigation cost | 10–30 % | — | close window / isolate / check (§12) |
 
 **The iron law** — $T_{\text{CPU}} = IC \times \text{CPI} \times t_{\text{clk}}$ — is the frame for all of it: frequency is not performance (a 2 GHz, CPI-1.5 core beats a 3 GHz, CPI-2.5 core), because throughput is $\text{IPC}\times f$, not $f$.
 
 ---
 
-## 13. Worked problems
+## 14. Worked problems
 
 **1 — Optimal pipeline depth, and why it is deeper than real cores.** A datapath has total logic $t_{\text{logic}}=140$ FO4 and per-stage overhead $t_{\text{ovh}}=2$ FO4; aggregate depth-sensitive hazards add $\beta=0.02$ CPI per stage (branch mispredicts dominate). The performance-only optimum is $N^{*}=\sqrt{t_{\text{logic}}/(\beta\,t_{\text{ovh}})}=\sqrt{140/0.04}\approx 59$ stages — only ~2.4 FO4 of logic per stage. That is *deeper* than any real core, and deliberately illustrative: it is why the frequency-race designs (Pentium 4, ~31 stages) went as far as they did. Two limits pull the real knee back to **14–20 stages**: the overhead wall (below ~6–8 FO4/stage, $t_{\text{ovh}}$ eats too large a fraction of each cycle for useful frequency to keep rising) and dynamic power ($\propto f$), which makes the performance-per-watt optimum shallower still. Better prediction (smaller $\beta$) raises $N^{*}$ as $1/\sqrt{\beta}$ — the quantitative form of "accurate prediction justifies a deeper pipe" (§1.3).
 
@@ -754,7 +889,7 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 
 - **Down the stack (what this machine is built from):** [CMOS_Fundamentals](../../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and $t_{\text{ovh}}$ behind §1.3), [Logic_Building_Blocks](../../../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../../../00_Fundamentals/03_Adders_and_Multipliers.md) (the EX-stage ALU whose delay sets $t_{\text{logic}}$).
 - **Up the stack (what builds on it):** [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the renaming, dynamic scheduling, ROB, and LSQ of §5 in full — the machine this in-order pipe becomes), [Branch_Prediction_Deep_Dive](../02_Frontend_and_Prediction/01_Branch_Prediction_Deep_Dive.md) (the TAGE/perceptron/BTB/RAS realization of §4), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (the cache internals of §6), [Cache_Coherence](../06_Coherence_and_Consistency/01_Cache_Coherence.md) (the transient controller, same-line races, directory formats, false sharing, atomics/DMA, and safety/liveness behind §8), [TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (the translation microarchitecture of §7), [ACE_and_CHI](../06_Coherence_and_Consistency/03_ACE_and_CHI.md) (the interconnect that carries the coherence protocol of §8 — this page owns the MESI/MOESI/MESIF stable-state view, while that page owns its message-set dual and snoop-vs-directory scaling), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a complete open core composing all of this).
-- **Adjacent:** [RISC_V_ISA](02_RISC_V_ISA.md) (the instruction set, trap model, and fence encodings referenced in §5/§9), [CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md) (Amdahl's law and the CPI stack — the iron law of §1 and the additive hazard-CPI of §2 are the same decomposition, built bottom-up here from the pipeline and read top-down there as a modeling kernel).
+- **Adjacent:** [RISC_V_ISA](02_RISC_V_ISA.md) (the instruction set, trap model, and fence encodings referenced in §5/§9), [SoC DMA implementation](../../04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md#6-direct-memory-access-engine-from-descriptor-to-visible-completion) (the generic engine behind the CPU-facing contract of §10), [CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md) (Amdahl's law and the CPI stack — the iron law of §1 and the additive hazard-CPI of §2 are the same decomposition, built bottom-up here from the pipeline and read top-down there as a modeling kernel).
 
 ---
 
@@ -765,5 +900,7 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 3. Hartstein, A. and Puzak, T.R., "The Optimum Pipeline Depth for a Microprocessor," *ISCA*, 2002. The $\sqrt{}$ depth-optimum derivation.
 4. Sorin, D.J., Hill, M.D., and Wood, D.A., *A Primer on Memory Consistency and Cache Coherence*, 2nd ed., Morgan & Claypool, 2020. SWMR/data-value invariants of §8 and the consistency models of §9.
 5. Tomasulo, R.M., "An Efficient Algorithm for Exploiting Multiple Arithmetic Units," *IBM J. R&D*, 11(1), 1967. The dynamic scheduling of §5.
-6. Tullsen, D.M., Eggers, S.J., and Levy, H.M., "Simultaneous Multithreading: Maximizing On-Chip Parallelism," *ISCA*, 1995. The SMT model of §10.
-7. Kocher, P. et al., "Spectre Attacks: Exploiting Speculative Execution," *IEEE S&P*, 2019; Lipp, M. et al., "Meltdown: Reading Kernel Memory from User Space," *USENIX Security*, 2018. The attacks of §11.
+6. Tullsen, D.M., Eggers, S.J., and Levy, H.M., "Simultaneous Multithreading: Maximizing On-Chip Parallelism," *ISCA*, 1995. The SMT model of §11.
+7. Kocher, P. et al., "Spectre Attacks: Exploiting Speculative Execution," *IEEE S&P*, 2019; Lipp, M. et al., "Meltdown: Reading Kernel Memory from User Space," *USENIX Security*, 2018. The attacks of §12.
+8. Intel, *Intel Data Streaming Accelerator Architecture Specification*. [[official specification]](https://www.intel.com/content/www/us/en/content-details/857060/intel-data-streaming-accelerator-architecture-specification.html) — queue/portal submission, descriptors, PASID-based virtual addressing, completion records, and faults for the integrated-data-mover example in §10.5.
+9. RISC-V International, *RISC-V IOMMU Architecture Specification*. [[official specification]](https://github.com/riscv-non-isa/riscv-iommu/releases) — device/process contexts, address translation, protection, invalidation, and fault reporting used in §10.4.

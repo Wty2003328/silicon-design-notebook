@@ -244,7 +244,7 @@ and the *amortized* per-tile cost is $K+\tfrac{2D-2}{T}\to K$ as $T$ grows—the
 
 **Worked number (edge quantization).** The other loss is a *step*, not a taper. A matrix barely over one tile — $M{=}N{=}129$ on $D{=}128$ — needs $\lceil129/128\rceil{=}2$ tiles per side, so the array sweeps a $256\times256$ footprint ($4$ tiles) while only $129\times129$ carries work: the edge prefactor is $\big(\tfrac{129}{2\cdot128}\big)^2=0.254$, so **75% of the MAC-cycles are padding** on a matrix only $0.8\%$ larger than a single tile. One row past a boundary conscripts a whole new tile — the discontinuity that makes mappers pad up to, and pick array sizes dividing, the common layer dimensions.
 
-The hardware consequence, stated plainly: **a systolic array is only efficient on matrices large relative to the array.** A skinny GEMM, a batch-1 decode step, or short-context attention leaves most PEs idle (edge quantization) or unamortized (fill/drain) — so array sizing is a *bet on the workload's shapes*, not a free "bigger is better." Put numbers on a $128\times128$ array ($D=128$): a fat training tile ($K=4096$) loses only $2D/(K{+}2D)\approx 6\%$ to fill/drain, so $U\approx 94\%$; a **batch-1 decode step** ($M=1$) collapses the edge factor to $M/D = 1/128$, so $U < 1\%$ — ~99% of the PEs are dark. The *same silicon* runs two orders of magnitude apart on training versus decode, from matrix shape alone; this is why inference serving fights so hard to *batch* requests, and why decode is memory-bound (§5). Array-shape sensitivity and the cycle/access-count models that expose it are continued in [Accelerator_and_NPU_Simulators §2–§6](../04_Simulation/01_Accelerator_and_NPU_Simulators.md).
+The hardware consequence, stated plainly: **a systolic array is only efficient on matrices large relative to the array.** A skinny GEMM, a batch-1 decode step, or short-context attention leaves most PEs idle (edge quantization) or unamortized (fill/drain) — so array sizing is a *bet on the workload's shapes*, not a free "bigger is better." Put numbers on a $128\times128$ array ($D=128$): a fat training tile ($K=4096$) loses only $2D/(K{+}2D)\approx 6\%$ to fill/drain, so $U\approx 94\%$; a **batch-1 decode step** ($M=1$) collapses the edge factor to $M/D = 1/128$, so $U < 1\%$ — ~99% of the PEs are dark. The *same silicon* runs two orders of magnitude apart on training versus decode, from matrix shape alone; this is why inference serving fights so hard to *batch* requests, and why decode is memory-bound (§6). Array-shape sensitivity and the cycle/access-count models that expose it are continued in [Accelerator_and_NPU_Simulators §2–§6](../04_Simulation/01_Accelerator_and_NPU_Simulators.md).
 
 ---
 
@@ -320,13 +320,219 @@ But *how large* must the tile be? Not merely to fit, but so the array is not DRA
 
 $$t_{\text{compute}}=\frac{T_mT_nT_k}{D^2 f}\;\ge\;\frac{b\,(T_mT_k+T_kT_n)}{\beta}=t_{\text{DMA}} \;\;\Longleftrightarrow\;\; \frac{T_mT_nT_k}{T_mT_k+T_kT_n} \;\ge\; \frac{D^2 f\,b}{\beta},$$
 
-which is the roofline ridge condition (§5) at *tile granularity*: **the tile must be compute-bound — its arithmetic intensity must exceed the machine ridge $I^\star=\pi/\beta$.** Because compute grows as $T^3$ and traffic as $T^2$, bigger tiles raise intensity, so the balance sets a *lower* bound on tile size while capacity sets an *upper* bound; a scratchpad is adequate iff the two are compatible. **Worked number.** Square tiles $T_m=T_n=T_k=T$, bf16 (bfloat16, brain floating-point 16-bit) ($b=2$), $D=128$, $f=1$ GHz, HBM $\beta=1$ TB/s. Ridge $I^\star=(D^2 f)/\beta = 1.64\times10^{13}/10^{12}=16.4$ MAC/byte. Tile intensity is $\tfrac{T^3}{b\cdot 3T^2}=\tfrac{T}{6}$ MAC/byte, so compute-bound needs $T/6\ge16.4\Rightarrow T\gtrsim98$ — round up to the array size $T=128$. Footprint at $T=128$: $b\cdot3T^2 = 2\times3\times16{,}384 = 98{,}304$ B $=96$ KB; double-buffered, $S_{\text{buf}}\ge192$ KB. A $128\times128$ bf16 array on 1 TB/s HBM therefore needs *at least $\sim$192 KB* of scratchpad merely to avoid starvation on square tiles — and real parts carry MBs (TPUv1's 24 MiB) so they can hold *large* tiles (intensity $\gg$ ridge, deep reuse) and whole weight/activation panels, not the bare minimum. Halve the bandwidth to 0.5 TB/s and the ridge halves to $8.2$ MAC/byte, so a smaller $T\gtrsim49$ tile already balances: a *slower* memory is *easier* to keep fed — the roofline's counter-intuitive corollary.
+which is the roofline ridge condition (§6) at *tile granularity*: **the tile must be compute-bound — its arithmetic intensity must exceed the machine ridge $I^\star=\pi/\beta$.** Because compute grows as $T^3$ and traffic as $T^2$, bigger tiles raise intensity, so the balance sets a *lower* bound on tile size while capacity sets an *upper* bound; a scratchpad is adequate iff the two are compatible. **Worked number.** Square tiles $T_m=T_n=T_k=T$, bf16 (bfloat16, brain floating-point 16-bit) ($b=2$), $D=128$, $f=1$ GHz, HBM $\beta=1$ TB/s. Ridge $I^\star=(D^2 f)/\beta = 1.64\times10^{13}/10^{12}=16.4$ MAC/byte. Tile intensity is $\tfrac{T^3}{b\cdot 3T^2}=\tfrac{T}{6}$ MAC/byte, so compute-bound needs $T/6\ge16.4\Rightarrow T\gtrsim98$ — round up to the array size $T=128$. Footprint at $T=128$: $b\cdot3T^2 = 2\times3\times16{,}384 = 98{,}304$ B $=96$ KB; double-buffered, $S_{\text{buf}}\ge192$ KB. A $128\times128$ bf16 array on 1 TB/s HBM therefore needs *at least $\sim$192 KB* of scratchpad merely to avoid starvation on square tiles — and real parts carry MBs (TPUv1's 24 MiB) so they can hold *large* tiles (intensity $\gg$ ridge, deep reuse) and whole weight/activation panels, not the bare minimum. Halve the bandwidth to 0.5 TB/s and the ridge halves to $8.2$ MAC/byte, so a smaller $T\gtrsim49$ tile already balances: a *slower* memory is *easier* to keep fed — the roofline's counter-intuitive corollary.
 
 **Why square/cube tiles — an AM-GM (arithmetic-mean/geometric-mean) optimum.** The sizing above quietly assumed $T_m{=}T_n{=}T_k$; here is the proof that shape is optimal. For a fixed scratchpad footprint — fixed *surface* $S=T_mT_k+T_kT_n+T_mT_n$ — the useful work per refill is the tile *volume* $T_mT_nT_k$, so maximizing intensity means maximizing volume at fixed surface. The three faces have product $(T_mT_k)(T_kT_n)(T_mT_n)=(T_mT_nT_k)^2$, and by AM-GM a fixed *sum* of the faces maximizes their *product* — hence the volume — exactly when the faces are equal, i.e. $T_m=T_n=T_k$. So the **cube maximizes arithmetic intensity for any SRAM budget**, the same isoperimetric logic by which a sphere minimizes surface per volume; this is why mappers bias toward square, array-aligned ($T{=}D$) tiles. **Worked number — the single-buffer cliff.** Undersize the scratchpad so only *one* tile fits and the ping-pong collapses: fill and compute serialize to $t_{\text{tile}}=t_{\text{compute}}+t_{\text{DMA}}$ instead of $\max(\cdot)$. At the balanced point $t_{\text{compute}}=t_{\text{DMA}}$ that *doubles* tile time — throughput halves — so the second buffer is not a luxury but the line between a fed and a half-starved array: the $96$ KB tile that ran at $32.8$ TOPS double-buffered delivers only $16.4$ TOPS single-buffered on the identical MACs. That factor of two is exactly why the capacity floor above carries its leading $2\times$.
 
 ---
 
-## 5. The roofline view of an accelerator
+## 5. NPU tensor DMA — the hardware that makes the static schedule real
+
+An NPU's DMA is not merely a small SoC memcpy block placed beside the array. It is the **programmable access pipeline** that realizes the compiler's tiled loop nest: it fetches strided activation/weight tiles, performs layout and precision adaptation, deposits them in exact scratchpad banks, releases dependency events to the matrix/vector engines, and drains results while the next tile is computing. If this engine cannot sustain the compiler's schedule, the advertised MAC array is physically unable to reach peak.
+
+```mermaid
+flowchart TB
+    RT["Runtime / compiler command stream<br/>load, compute, store, event dependencies"]
+    CQ["Command fetch + validation<br/>context, phase, fault policy"]
+    DEP["Dependency scoreboard<br/>wait/signal event generations"]
+    SCH["DMA lane scheduler<br/>load / store / prefetch QoS"]
+    AGU["N-D tensor AGUs<br/>shape, stride, pad, gather"]
+    XL["Address translation + protection<br/>IOTLB / local aperture"]
+    OUT["Outstanding request table<br/>tag, tile, bank, offset, epoch"]
+    NOC["NoC + HBM/DDR controller"]
+    BUF["Return / write-data buffers<br/>ECC, byte-valid, reorder"]
+    CVT["Unpack / transpose / swizzle<br/>decompress / precision convert"]
+    XBAR["Scratchpad bank steering<br/>conflict queues + ECC"]
+    SPAD["Banked activation / weight SRAM<br/>buffer phase 0 / phase 1"]
+    ACC["Accumulator SRAM<br/>wide partial sums"]
+    ARRAY["Systolic / vector engines"]
+    EVT["Completion + fault events<br/>phase-tagged release"]
+
+    RT --> CQ --> DEP --> SCH --> AGU --> XL --> OUT --> NOC
+    NOC --> BUF --> CVT --> XBAR --> SPAD
+    SPAD --> ARRAY --> ACC
+    ACC --> CVT
+    CVT --> BUF --> NOC
+    OUT --> EVT --> DEP
+    EVT --> ARRAY
+```
+
+The generic descriptor/AGU/buffer/completion machinery is expanded in [SoC DMA §6](../../04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md#6-direct-memory-access-engine-from-descriptor-to-visible-completion). The NPU-specific hardware is the dependency plane, tensor address generation, scratchpad-bank endpoint, transforms, and exact coupling to array phases.
+
+### 5.1 What the compiler actually commands
+
+After tiling and dataflow selection, the compiler emits a schedule such as:
+
+```text
+LOAD  A[t+1] -> activation_bank_set[phase^1], signal a_ready[t+1]
+LOAD  B[t+1] -> weight_bank_set[phase^1],     signal b_ready[t+1]
+WAIT  a_ready[t], b_ready[t], acc_free[t]
+MMA   A[t], B[t] -> accumulator[t],           signal compute_done[t]
+STORE accumulator[t-1] -> HBM,                signal output_free[t-1]
+```
+
+These commands are software inventions; the queue parser, event counters, AGUs, SRAM banks, and array handshakes are hardware. A useful tensor-DMA descriptor contains:
+
+```text
+source/destination address space and base
+rank; extent[d]; source_stride[d]; destination_stride[d]
+element size, vector/transaction width, signedness and precision
+padding/bounds/fill value; gather/scatter index source if supported
+source and destination layout/swizzle/bank mapping
+compression/sparsity format and metadata address
+context/security identity; QoS and DMA-lane affinity
+wait-event IDs + expected generations
+signal-event ID + new generation
+fault/retry/partial-completion policy; software cookie
+```
+
+Hardware copies all fields into an immutable work entry before execution. It validates widened address arithmetic, rank and zero extents, legal formats, SRAM bounds, bank-set ownership, event generations, and whether the requested transform can be performed without overwriting unread data. A descriptor accepted into the queue is an architectural promise; malformed commands must fail before any visible partial write unless the ISA explicitly permits partial completion.
+
+### 5.2 Tensor AGU and transaction construction
+
+For rank-$r$ tensor coordinates $\mathbf{i}=(i_0,\dots,i_{r-1})$, the byte addresses are
+
+$$
+A_s(\mathbf{i})=base_s+\sum_{d=0}^{r-1}i_d S_{s,d},\qquad
+A_d(\mathbf{i})=base_d+\sum_{d=0}^{r-1}i_d S_{d,d}.
+$$
+
+A hardware AGU implements nested counters, comparators, carry/reset logic, stride adders, and widened overflow checks. It does not multiply arbitrary coordinates every element: the common implementation holds a current row/plane address and increments by a transaction width; at an inner-loop terminal count it adds a precomputed stride correction and carries into the next counter.
+
+The burst constructor caps every issue by:
+
+- remaining bytes in the innermost extent;
+- source and destination alignment;
+- IOMMU page, NoC packet, HBM burst, and scratchpad-bank-row boundaries;
+- maximum transaction width and reserved return-buffer space;
+- transform granularity, such as a complete compressed block or transpose micro-tile.
+
+Each outstanding entry records descriptor ID, subtransaction ID, tensor coordinates or logical offset, physical/request address, byte mask, destination bank/row/phase, reserved buffer slot, fabric ID, retry epoch, and returned-byte count. Read responses may return out of order because the tag carries the intended tensor position; completion still waits for every required subtransaction.
+
+### 5.3 The scratchpad endpoint is a banking problem
+
+For $N_b$ banks with interleave granularity $G$, a simple mapping is
+
+$$
+bank=\left\lfloor\frac{A}{G}\right\rfloor\bmod N_b,\qquad
+row=\left\lfloor\frac{A}{GN_b}\right\rfloor.
+$$
+
+The DMA bank-steering crossbar decomposes each returned beat into bank writes, carries byte enables and ECC, and queues conflicts when multiple beat lanes target one single-ported bank. The array simultaneously reads the other buffer phase; therefore the physical design must specify either separate bank sets/ports or an arbitration rule. “Double buffered” is not sufficient if DMA writes and array reads still collide on the same decoder, crossbar, or SRAM port.
+
+Common implementations partition activation, weight, and accumulator SRAMs because their widths and access patterns differ:
+
+| Array | Typical access | Hardware implication |
+|---|---|---|
+| activation scratchpad | DMA write, array row/column stream, vector read/write | many banks and programmable swizzle |
+| weight scratchpad | DMA/prefetch write, broad array broadcast | wide read ports or bank-to-row distribution network |
+| accumulator SRAM | wide array read-modify-write, DMA store/readback | wider elements, higher precision, separate store drain |
+| metadata/index SRAM | sparse masks, scales, gather indices | narrow irregular ports feeding decode/address logic |
+
+A transpose or convolution `im2col` transform can be done by destination-address swizzle rather than a full transpose RAM: the converter emits element lanes tagged with destination `(bank,row,byte)` and the steering network writes the permuted layout. The cost is crossbar width, conflict buffering, and additional write cycles; it is not free “DMA functionality.”
+
+### 5.4 Phase-tagged double buffering and dependency state
+
+Each logical buffer needs more than a ready bit. Use a generation/phase plus producer and consumer state:
+
+```text
+buffer_state = {phase, owner, expected_bytes, arrived_bytes,
+                producer_event_generation, consumer_count, error}
+```
+
+The legal lifecycle is:
+
+```text
+FREE -> DMA_FILLING -> READY -> ARRAY_READING -> FREE
+FREE -> ARRAY_WRITING_ACC -> READY_TO_DRAIN -> DMA_DRAINING -> FREE
+```
+
+DMA may mark `READY` only after all SRAM writes and ECC updates for the matching phase complete. The array may release a source buffer only after the last PE/vector consumer has read it. A one-bit ready flag without a generation has an ABA failure: a late completion from tile $t$ can wake the consumer of tile $t+2$ after the buffer bit has wrapped.
+
+The event scoreboard stores `(event ID, generation, status/error, optional byte count)`. A command is eligible only when all wait generations match. This decoupled access/execute organization lets load, matrix, vector, and store engines advance independently while preserving compiler-specified dependencies; it is the NPU analogue of an out-of-order scheduler, except dependencies are explicit events rather than dynamically discovered register names.
+
+### 5.5 Load, compute, and store form a bounded pipeline
+
+For tile $t$, a steady schedule overlaps `LOAD(t+1)`, `COMPUTE(t)`, and `STORE(t-1)`. Ideal initiation interval is
+
+$$
+II_{\text{tile}}=\max\!\left(t_{\text{load}},t_{\text{compute}},t_{\text{store}}\right),
+$$
+
+but only if activation/weight/accumulator phases are independently available and the three paths do not oversubscribe the same NoC/HBM/SRAM ports. If reads and writes share bandwidth $B$, a more honest lower bound is
+
+$$
+t_{\text{memory}}\ge\frac{Q_{\text{load}}+Q_{\text{store}}}{B_{\text{shared}}},
+\qquad
+II_{\text{tile}}\ge\max(t_{\text{compute}},t_{\text{memory}}).
+$$
+
+The scheduler must apply backpressure before consuming the last buffer phase. A load cannot reserve a phase still owned by the array, and the array cannot start a tile unless its output accumulator has capacity. Deadlock freedom requires a resource order—for example, reserve destination SRAM phase and return-buffer credits before issuing HBM reads, but never hold all load buffers while waiting for store responses that need those same buffers.
+
+### 5.6 Precision conversion, compression, sparsity, and gather/scatter
+
+Real tensor DMA often sits at a format boundary:
+
+- **unpack/convert:** FP8/INT8/INT4 from HBM to wider internal lanes; sign extension, zero-point subtraction, scale lookup, NaN policy, and rounding mode are actual shifters/adders/LUTs plus exception state;
+- **compress on store:** scan a fixed block, generate mask/index metadata, pack surviving values, and write payload plus metadata with one completion dependency;
+- **decompress on load:** fetch metadata early, determine payload byte count, reserve output capacity, expand values to fixed array lanes, and zero/fill missing elements;
+- **gather/scatter:** fetch index vectors, translate/check each target, coalesce legal neighbors, and track per-element completion; irregular outstanding state can dominate the DMA area;
+- **padding/bounds:** compare tensor coordinates with valid extents and synthesize zero or another fill value without issuing an HBM read.
+
+Metadata and payload must share an atomic validity contract even if they use separate transactions. A consumer cannot see a new sparsity mask with old values. For variable-rate compression, size buffers against worst-case expansion or throttle before accepting the descriptor; average compression ratio is not a safety bound.
+
+### 5.7 Translation, isolation, and fault policy
+
+An embedded accelerator may use a fixed physical aperture and fail a command outside it. A shared datacenter NPU normally carries context/PASID-like identity through descriptor, payload, and completion accesses and uses an IOMMU or local MMU/IOTLB. Split page-crossing tensor bursts; do not infer physical contiguity from virtual stride.
+
+Recoverable faults are expensive because static scheduling has already reserved buffer phases and dependent commands. To resume exactly, retain descriptor snapshot, nested-loop coordinates, issued/returned/written subtransaction state, SRAM bytes already made valid, event generation, and translation epoch. An easier implementation defines faults as command-fatal, poisons the destination phase, releases dependents with an error token, and lets firmware rebuild the graph. Whichever policy is chosen must prevent a dependent compute from consuming a partially filled tile.
+
+### 5.8 Size DMA lanes, tags, and SRAM ports together
+
+The sustainable useful bandwidth is bounded by every leg:
+
+$$
+B_{\text{DMA}}\le
+\min\!\left(
+B_{\text{source}},
+B_{\text{NoC}},
+B_{\text{conversion}},
+B_{\text{scratchpad-port}},
+\frac{N_{\text{out}}C}{L}
+\right).
+$$
+
+For 100 GB/s useful bandwidth, 200 ns round trip, and 128-byte transactions, the theoretical request floor is
+
+$$
+N_{\text{out}}\ge\left\lceil\frac{BL}{C}\right\rceil
+=\left\lceil\frac{100\times10^9\cdot200\times10^{-9}}{128}\right\rceil=157.
+$$
+
+Sixty-four entries cap throughput at $64(128)/200\text{ ns}=40.96$ GB/s. Adding more HBM channels cannot overcome that table. Conversely, 256 tags do not help if a 16-bank single-ported scratchpad accepts only one 16-byte write per bank per cycle and the chosen layout camps on four banks. Model tag count, data-buffer bytes, converter lanes, crossbar width, bank conflicts, array ports, NoC credits, and HBM efficiency as one pipeline.
+
+The open Gemmini design makes the coupling concrete: its DMA moves main memory into the scratchpad and accumulator data back to memory; DMA bus width and maximum transaction size are coupled to the SoC system-bus beat and cache-block parameters, while explicit move instructions pair with execute instructions. That is the small open-source instance of the same load/compute/store machine.
+
+### 5.9 Verification and observability
+
+Required properties:
+
+- each accepted tensor coordinate maps to exactly one intended destination element and byte mask;
+- no HBM read issues without outstanding-table and return-buffer reservation;
+- a buffer phase becomes ready only after all matching bytes/ECC are written, and only the matching generation wakes;
+- the array never reads a DMA-owned bank phase and DMA never overwrites an array-owned phase;
+- compression metadata and payload become valid together; overflow cannot exceed reserved storage;
+- fault, abort, context teardown, retry, and reset cannot release a partial tile as valid or duplicate a visible store;
+- dependency cycles are rejected or guaranteed to make progress under finite backpressure;
+- randomized ranks, strides, padding, layouts, page/burst/bank boundaries, response reordering, sparse formats, and simultaneous load/compute/store match a tensor-level golden model.
+
+Counters should separate command wait, translation, source/NoC, return-buffer, conversion, bank-conflict, scratchpad-port, array-starved, store-drain, and completion cycles; also record useful/fabric bytes, compression ratio, live-tag high-water mark, and buffer-phase occupancy. “DMA busy” alone cannot tell whether to change the compiler schedule or the RTL.
+
+For a signal-by-signal implementation checklist, continue to [Scratchpad, DMA, Runtime, and Serving Implementation Blueprint](../06_Implementation_Blueprints/02_Scratchpad_DMA_Runtime_and_Serving_Implementation_Blueprint.md) and [Decoupled Access/Execute and Scratchpad Scheduling](../02_Mapping_and_Memory/03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md).
+
+---
+
+## 6. The roofline view of an accelerator
 
 The most useful first-order model of an accelerator is the **roofline** (Williams, Waterman & Patterson, CACM 2009). Attainable throughput is
 
@@ -350,7 +556,7 @@ Because the silicon is heterogeneous (systolic array for GEMM + a SIMD **vector 
 
 ---
 
-## 6. Scaling out — multi-die and pods, where the interconnect is the roofline
+## 7. Scaling out — multi-die and pods, where the interconnect is the roofline
 
 A single die cannot grow arbitrarily: the lithography **reticle limit** (~800 mm²) caps die area, yield falls with area, and a frontier model no longer fits in one chip's HBM. NPU scaling therefore goes *outward* — many dies wired into a fabric — and at that point **the interconnect, not the MAC array, sets performance.** Two levels:
 
@@ -363,11 +569,11 @@ Why the network dominates once you are here: a matmul sharded across chips needs
 
 $$B_{\text{crit}}=\frac{2S}{\gamma\,B_{\text{link}}}=\frac{t_{\text{coll}}}{\gamma},\qquad \eta=\min\!\Big(1,\ \frac{B}{B_{\text{crit}}}\Big).$$
 
-For the $8$ ms reduce above and $\gamma=0.1$ ms/sample, $B_{\text{crit}}=8/0.1=80$ samples/device: run $B\ge80$ and the network is free, drop to $B=20$ and $\eta=20/80=25\%$. Because adding chips at fixed *global* batch shrinks each device's $B$, this $B_{\text{crit}}$ is also the practical ceiling on data-parallel width — the pod-scale twin of the VU-peak and roofline-ridge (§5) latency-vs-throughput split: below a critical size the fixed cost is exposed, above it hidden. This is why large-batch training scales while small-batch/latency-bound serving does not, and why the collective cost (bandwidth-bound, floored at $2S/B_{\text{link}}$) is a first-class DSE knob — the pod-level echo of the operator-level roofline max of [NPU workload and performance methods](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md). The full chip→pod composition lives in [Full_Chip_Modeling §4](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md); this page's point is that reticle and HBM limits *force* scale-out, making the interconnect the binding roof ([Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md)).
+For the $8$ ms reduce above and $\gamma=0.1$ ms/sample, $B_{\text{crit}}=8/0.1=80$ samples/device: run $B\ge80$ and the network is free, drop to $B=20$ and $\eta=20/80=25\%$. Because adding chips at fixed *global* batch shrinks each device's $B$, this $B_{\text{crit}}$ is also the practical ceiling on data-parallel width — the pod-scale twin of the VU-peak and roofline-ridge (§6) latency-vs-throughput split: below a critical size the fixed cost is exposed, above it hidden. This is why large-batch training scales while small-batch/latency-bound serving does not, and why the collective cost (bandwidth-bound, floored at $2S/B_{\text{link}}$) is a first-class DSE knob — the pod-level echo of the operator-level roofline max of [NPU workload and performance methods](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md). The full chip→pod composition lives in [Full_Chip_Modeling §4](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md); this page's point is that reticle and HBM limits *force* scale-out, making the interconnect the binding roof ([Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md)).
 
 ---
 
-## 7. Trade-offs — the efficiency–flexibility ledger, and where dataflow hardware stops winning
+## 8. Trade-offs — the efficiency–flexibility ledger, and where dataflow hardware stops winning
 
 The NPU buys its 10–100× perf/W over a CPU by *specializing*, and every element of that specialization is a bet that narrows the machine:
 
@@ -377,7 +583,7 @@ The NPU buys its 10–100× perf/W over a CPU by *specializing*, and every eleme
 | Fixed dataflow (§3) | cheap resident-operand reuse | wrong for mismatched shapes (skinny GEMM, batch-1 decode) → low utilization |
 | Scratchpad + DMA vs cache (§4) | no tag/LRU area, deterministic timing | compiler must map perfectly; a bad tiling can't be fixed at run time |
 | Reduced precision (INT8/FP8/FP4) | 2–4× MAC density & effective BW per bit | accuracy risk; needs quantization ([Floating_Point](../../../00_Fundamentals/04_Floating_Point.md)) |
-| Scale-out torus / NVLink (§6) | model parallelism beyond one die | collectives dominate; comm-bound at low intensity |
+| Scale-out torus / NVLink (§7) | model parallelism beyond one die | collectives dominate; comm-bound at low intensity |
 
 **The ledger, in real silicon: TPU vs GPU Tensor Core.** The two dominant training engines sit at opposite ends of the flexibility axis, and every row above predicts *where*. A **TPU** commits fully: one large systolic array (a $128\times128$ MXU) fed by a software-managed scratchpad — maximal MAC density and resident-operand reuse, but the compiler must map every layer (§2–§4) and a mismatched shape starves it. A **GPU** keeps the *same MAC leaf* but packages it as many small **Tensor-Core** MMA tiles per SM, fed from the register file and a hardware-cached shared memory beneath the SIMT scalar core — it sacrifices peak GEMM efficiency to keep the front end's flexibility, so it also runs the irregular shapes, control flow, and non-GEMM kernels a TPU cannot ([GPU_Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md)). Neither is "better": they are two different points on the efficiency–flexibility ledger, chosen for two different deployment bets.
 
@@ -388,17 +594,17 @@ The NPU buys its 10–100× perf/W over a CPU by *specializing*, and every eleme
 | Who owns the mapping | compiler, statically (§4) | compiler *and* hardware, dynamically |
 | Sweet spot | large regular GEMM, peak eff/W | mixed/irregular shapes, flexibility |
 
-Where it stops winning: an NPU is efficient **only** in the compute-bound, high-reuse, regular-shape regime. Memory-bound operators (low operational intensity, §5), small or irregular shapes (poor utilization, §2), and control-heavy code (no dataflow to exploit) each erode the advantage back toward the HBM or the scalar unit, and the fixed datapath cannot adapt the way an out-of-order core does. This is exactly why real accelerators are *heterogeneous* (array + vector + scalar) and why the mapping/quantization/parallelism software stack is not optional polish but the thing that decides whether the silicon's peak is reachable at all. The corollary for a hardware architect is the co-design rule of [Full_Chip_Modeling §4.4](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md): **size the array, the scratchpad, the HBM bandwidth, and the ICI together against a target workload's shapes and intensities — an array that outruns its SRAM or its HBM is starved silicon.**
+Where it stops winning: an NPU is efficient **only** in the compute-bound, high-reuse, regular-shape regime. Memory-bound operators (low operational intensity, §6), small or irregular shapes (poor utilization, §2), and control-heavy code (no dataflow to exploit) each erode the advantage back toward the HBM or the scalar unit, and the fixed datapath cannot adapt the way an out-of-order core does. This is exactly why real accelerators are *heterogeneous* (array + vector + scalar) and why the mapping/quantization/parallelism software stack is not optional polish but the thing that decides whether the silicon's peak is reachable at all. The corollary for a hardware architect is the co-design rule of [Full_Chip_Modeling §4.4](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md): **size the array, the scratchpad, the HBM bandwidth, and the ICI together against a target workload's shapes and intensities — an array that outruns its SRAM or its HBM is starved silicon.**
 
 ---
 
-## 8. Worked problems
+## 9. Worked problems
 
 **1 — Utilization is a bet on batch size (§2).** A $128\times128$ MXU ($D=128$). *(a)* A training tile $M=N=512,\ K=4096$: the edge factors are $512/(4{\cdot}128)=1$ each (512 is a multiple of 128), and fill/drain is $K/(K{+}2D)=4096/4352=0.94$, so $U\approx 94\%$. *(b)* A **batch-1 decode** GEMV (general matrix-vector multiply) $M=1,\ N=4096,\ K=4096$: the $M$ edge factor collapses to $1/(\lceil 1/128\rceil{\cdot}128)=1/128$, giving $U\approx (1/128)(1)(0.94)\approx 0.7\%$. The *same array* runs at 94% on training and under 1% on decode — a ~130× utilization swing from matrix shape alone. This is why the array size is a workload bet, and why serving stacks batch decode requests until $M$ approaches $D$.
 
 **2 — Dataflow is an energy lever, quantified (§3).** Take a weight reused $r=256$ times as a long activation stream flows past it, with the hierarchy $e_{\text{DRAM}}{:}e_{\text{RF}}\approx 200{:}1$. Re-fetching it from DRAM every use (temporal, no reuse) costs $r\cdot e_{\text{DRAM}}=256\times200=51{,}200$ (in RF-access units). Making it **weight-stationary** costs $e_{\text{DRAM}}+(r{-}1)e_{\text{RF}}=200+255=455$ — a **$112\times$ energy reduction** on that operand, bought purely by *deciding which tensor stays resident*, with identical MAC count. This is why a dataflow is chosen against an energy model, not a cycle model.
 
-**3 — Roofline predicts the regime before you build (§5).** An accelerator with $\pi=200$ TOPS (INT8) and $\beta=1$ TB/s HBM has ridge $I^{*}=\pi/\beta=200$ ops/byte. *(a)* A square GEMM $N=2048$ with 1-byte operands and good on-chip reuse moves $\approx 3N^2$ bytes off-chip for $2N^3$ ops, so $I=2N/3\approx 1365$ ops/byte $\gg I^{*}$ → **compute-bound**, the array is fed. *(b)* A batch-1 decode through a $d{\times}d$ weight layer reads $\approx d^2$ weight bytes to do $2d^2$ ops → $I\approx 2$ ops/byte $\ll I^{*}$ → **deeply memory-bound**, the MACs starve no matter how many you built. Same silicon, opposite regimes — and note it is the *same root cause* as problem 1: batch-1 has no reuse to capture, so both the array (utilization) and the HBM (roofline) report it. The roofline delivers that verdict from two numbers, before any RTL exists.
+**3 — Roofline predicts the regime before you build (§6).** An accelerator with $\pi=200$ TOPS (INT8) and $\beta=1$ TB/s HBM has ridge $I^{*}=\pi/\beta=200$ ops/byte. *(a)* A square GEMM $N=2048$ with 1-byte operands and good on-chip reuse moves $\approx 3N^2$ bytes off-chip for $2N^3$ ops, so $I=2N/3\approx 1365$ ops/byte $\gg I^{*}$ → **compute-bound**, the array is fed. *(b)* A batch-1 decode through a $d{\times}d$ weight layer reads $\approx d^2$ weight bytes to do $2d^2$ ops → $I\approx 2$ ops/byte $\ll I^{*}$ → **deeply memory-bound**, the MACs starve no matter how many you built. Same silicon, opposite regimes — and note it is the *same root cause* as problem 1: batch-1 has no reuse to capture, so both the array (utilization) and the HBM (roofline) report it. The roofline delivers that verdict from two numbers, before any RTL exists.
 
 ---
 
@@ -424,14 +630,15 @@ Where it stops winning: an NPU is efficient **only** in the compute-bound, high-
 | Systolic reuse | $O(D)$ MACs per boundary operand | $O(N^2)$ compute for $O(N)$ movement (§1–2) |
 | Fill/drain ramp | fixed $2D{-}2$ cycles; peak $D^2 f$ MAC/s | $U_{\text{tile}}=K/(K{+}2D)$ (§2) |
 | Scratchpad floor | $\ge 2\times$ tile bytes, tile $I\ge I^\star$ | double-buffer + not DRAM-starved (§4) |
-| GEMM compute-bound at | square $N>3I^\star$ | ridge sets a minimum problem size (§5) |
-| Ring-AllReduce per chip | $2\frac{N-1}{N}S\to 2S$ bytes | $N$-independent bandwidth term (§6) |
+| GEMM compute-bound at | square $N>3I^\star$ | ridge sets a minimum problem size (§6) |
+| Ring-AllReduce per chip | $2\frac{N-1}{N}S\to 2S$ bytes | $N$-independent bandwidth term (§7) |
 | Movement lower bound | $\Omega(N^2)$ crossings for $\Theta(N^3)$ MACs | array attains the floor; temporal core $\Theta(N)$ worse (§1) |
-| GEMM intensity ceiling | $I\le I_{\max}=N/3$ (square, $b{=}1$) | tiling raises *actual* $I$ toward it, never above (§5) |
+| GEMM intensity ceiling | $I\le I_{\max}=N/3$ (square, $b{=}1$) | tiling raises *actual* $I$ toward it, never above (§6) |
 | Pipelined tiles | $TK+2D$ cycles — ramp paid once | back-to-back tiles bill $\approx\!D$, not $2D$ (§2) |
 | Optimal tile shape | cube $T_m{=}T_n{=}T_k$ (AM-GM) | max intensity per SRAM byte (§4) |
 | Single-buffer penalty | $\max(\cdot)\to$ sum ⇒ throughput halves | why the scratchpad floor carries $2\times$ (§4) |
-| Collective crossover | $B_{\text{crit}}=2S/(\gamma B_{\text{link}})$ | min per-device batch to hide All-Reduce (§6) |
+| Tensor-DMA live requests | $\lceil BL/C\rceil$ | 100 GB/s, 200 ns, 128 B ⇒ 157 entries (§5.8) |
+| Collective crossover | $B_{\text{crit}}=2S/(\gamma B_{\text{link}})$ | min per-device batch to hide All-Reduce (§7) |
 
 ---
 
@@ -441,7 +648,7 @@ Where it stops winning: an NPU is efficient **only** in the compute-bound, high-
 
 - **Down the stack:** [Adders_and_Multipliers](../../../00_Fundamentals/03_Adders_and_Multipliers.md) (the MAC leaf), [Memory](../00_Design_Methodology/02_NPU_PPA_and_Physical_Implementation.md) (the SRAM the scratchpad is built from), [Cache_Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (the reactive machinery the scratchpad deliberately deletes), [Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (operand distribution on-die and torus routing), [Block_Activity_and_Power](../../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the activity × per-event-energy model behind §3), [Floating_Point](../../../00_Fundamentals/04_Floating_Point.md) (INT8/FP8/FP4 formats).
 - **Up the stack:** [NPU workload and performance methods](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md) turns this hardware into architecture-level systolic cycles/utilization, a hierarchy-aware roofline, matrix/vector balance, graph scheduling, and ring-collective cost; [Full-Chip Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) composes PE→array→chip→pod power/thermal, double-buffering, and collectives; [Accelerator and NPU Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md) explains how a layer + mapping becomes latency/energy in Timeloop/Accelergy, SCALE-Sim, ONNXim, and NeuSim; [OoO Execution](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) supplies the "what must the structure hold, and why" lens this page applies to the PE.
-- **Adjacent (the other throughput accelerator):** [GPU_Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) — SIMT and the Tensor-Core MMA leaf; the flexibility end of the efficiency–flexibility ledger whose specialized end this page's systolic array anchors (§7).
+- **Adjacent (the other throughput accelerator):** [GPU_Architecture](../../02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) — SIMT and the Tensor-Core MMA leaf; the flexibility end of the efficiency–flexibility ledger whose specialized end this page's systolic array anchors (§8).
 - **Modeling and simulator companions:** [NPU workload and performance methods](../00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md) (operator/roofline equations), [Full_Chip_Modeling](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) (PE→array→chip→pod composition), and [Accelerator_and_NPU_Simulators](../04_Simulation/01_Accelerator_and_NPU_Simulators.md) (mapping, reuse, cycle, and energy tools).
 
 ## References
@@ -453,4 +660,5 @@ Where it stops winning: an NPU is efficient **only** in the compute-bound, high-
 - M. Horowitz, "Computing's Energy Problem (and what we can do about it)," ISSCC 2014 — [gwern.net/doc/cs/hardware/2014-horowitz-2.pdf](https://gwern.net/doc/cs/hardware/2014-horowitz-2.pdf).
 - S. Williams, A. Waterman, D. Patterson, "Roofline: An Insightful Visual Performance Model for Multicore Architectures," *CACM* 2009 — [people.eecs.berkeley.edu/~kubitron/cs252/handouts/papers/RooflineVyNoYellow.pdf](https://people.eecs.berkeley.edu/~kubitron/cs252/handouts/papers/RooflineVyNoYellow.pdf).
 - "How to Think About TPUs" (JAX scaling book; modern MXU dimensions and systolic dataflow) — [jax-ml.github.io/scaling-book/tpus](https://jax-ml.github.io/scaling-book/tpus/).
+- UC Berkeley, *Chipyard Documentation — Gemmini*. [[official documentation]](https://chipyard.readthedocs.io/en/stable/Generators/Gemmini.html) — explicit move/execute instructions, scratchpad/accumulator organization, and DMA coupling to system-bus beat and cache-block parameters (§5.8).
 - NVIDIA, "Fifth-Generation NVLink" (Blackwell, 1.8 TB/s per GPU; NVL72) — [nvidia.com NVLink](https://www.nvidia.com/en-us/data-center/nvlink/).

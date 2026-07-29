@@ -320,6 +320,149 @@ Use randomized alignment, sizes, strides, page/burst/cache-line boundaries, resp
 
 Counters: descriptors/bytes, useful versus fabric bytes, average/tail queue latency, outstanding reads/writes, buffer occupancy/full cycles, burst-size distribution, translation hit/walk/fault, source/destination stalls, reorder occupancy, bandwidth per channel, completion latency, retries/timeouts, and error causes.
 
+### 6.10 SoC and chiplet DMA: crossing a die boundary without losing the contract
+
+The SoC/chiplet case owns the reusable DMA engine of §6, but a die boundary adds another transaction machine between its read/write tables and memory. Three cases must not be conflated:
+
+| Case | Initiator | Destination | What crosses die/package |
+|---|---|---|---|
+| local SoC DMA | DMA on die A | SRAM/DDR controller on die A | ordinary on-die protocol only |
+| chiplet-remote DMA | DMA on die A | SRAM/HBM/controller on die B | tunneled AXI/CHI/CXL-like transactions or a native packet protocol |
+| endpoint/RDMA | NIC, peer accelerator, or die B | memory aperture on die A | an external requester transaction; local “DMA” may only be the target-side adapter |
+
+An implementation must name who owns translation, ordering, retry, and final completion in each case. “UCIe link present” describes a physical/protocol transport, not the memory semantics by itself.
+
+```mermaid
+flowchart TB
+    SW["Software / firmware<br/>descriptor + release + doorbell"]
+    DMA["Source-die DMA<br/>AGU, tags, data buffers"]
+    IOMMU["Source IOMMU<br/>identity + translation"]
+    HNA["Local home / NoC adapter<br/>route + coherency class"]
+    TX["Die-to-die protocol adapter<br/>packetize, ID map,<br/>credits, CRC, retry"]
+    PHY["D2D PHY<br/>lanes + training"]
+    RX["Remote protocol adapter<br/>depacketize + duplicate filter"]
+    HNB["Remote NoC / home agent<br/>directory or aperture"]
+    MEM["Remote SRAM / HBM / DDR"]
+    CMP["Visibility acknowledgement<br/>completion record / interrupt"]
+
+    SW --> DMA --> IOMMU --> HNA --> TX --> PHY --> RX --> HNB --> MEM
+    MEM --> HNB --> RX --> PHY --> TX --> DMA
+    HNB -->|"remote visibility event"| CMP
+    CMP --> TX
+    TX --> DMA
+```
+
+#### 6.10.1 Address ownership and routing
+
+Choose one of two clean address models:
+
+- **globally routed physical aperture:** system address bits or an address-map table select the destination die and target; the source IOMMU returns a system physical address, and the local NoC routes remote regions to the die-to-die adapter;
+- **two-stage translation:** source translation yields a fabric/intermediate address plus destination identity, while a remote agent performs a second protection/translation stage before local memory.
+
+The requester/context identity must survive the bridge even if the remote protocol uses a different field width. A remap-table entry holds at least `(source port, source ID, RID/PASID or security domain, ordering class, destination, remote ID, epoch)`. Never hash identities in a way that permits two live transactions to alias. Descriptor fetch, payload, and completion accesses can route to different dies and each must pass its own protection check.
+
+Remote apertures need explicit attributes: coherent or noncoherent, cacheable or device, atomic capability, shareability domain, allowed burst/byte enables, poison behavior, and whether direct peer access is legal. An address decoder alone does not confer coherence.
+
+#### 6.10.2 Protocol adaptation, splitting, and return storage
+
+The source adapter converts on-die transactions into die-to-die packets/flits. It may split one AXI/CHI burst into several packets and merge packets into a wider link flit. For every child packet it records:
+
+```text
+parent DMA transaction and byte range
+source protocol ID/order domain
+remote transaction ID and packet sequence
+destination die/port and route/virtual channel
+payload-buffer pointer and byte-valid mask
+credit reservation
+CRC/replay sequence and link epoch
+completion/poison/error state
+```
+
+All child responses must fold back into exactly one parent response. If the on-die requester permits 256 outstanding IDs but the link adapter exposes only 64 remote IDs, admission must stop at the remap-table limit; ID reuse before the final response risks delivering old data to new DMA work.
+
+Credit reservation spans both directions. Before accepting a remote read, the design must guarantee storage for the returned data and a path for its response; before injecting a write, it must guarantee the remote side can absorb data or return credits without waiting for a resource held by that same write. Use separate request, response, snoop, and data virtual channels—or reserved escape capacity—to break protocol-dependency cycles.
+
+#### 6.10.3 Coherence and the real remote completion point
+
+There are three common coherence organizations:
+
+1. **one package-wide coherent domain:** remote requests enter a home agent/directory that can snoop or recall dirty copies on either die; the bridge carries request, response, data, and snoop traffic on deadlock-safe virtual networks;
+2. **coherent proxy at the boundary:** the source or destination bridge aggregates/cache-proxies a remote region and translates coherence protocol locally; proxy state becomes part of the SWMR invariant and must be reset/invalidation-safe;
+3. **noncoherent remote aperture:** software or a higher-level runtime performs cache clean/invalidate and explicit ownership transfer around DMA.
+
+Completion must refer to the consumer's visibility domain:
+
+- **link accepted:** transmitter consumed the last flit;
+- **remote adapter accepted:** packet passed CRC/replay and entered the remote NoC;
+- **remote target accepted:** SRAM/controller/home agent accepted the write;
+- **architecturally visible:** the remote coherence/memory ordering point guarantees the next legal observer can obtain it.
+
+Only the last is safe for a descriptor completion unless the programming contract explicitly promises less. A remote acknowledgement, barrier, or ordered completion packet must travel back before the DMA publishes status. For a source buffer reused immediately after a remote read, the corresponding read completion also proves no requester will fetch more bytes from the old contents.
+
+Atomics and fences cannot be decomposed like ordinary copies. An atomic is legal only if one serialization point owns the entire read-modify-write at the remote home/target. A fence cannot complete while earlier posted writes remain in the D2D replay buffer, remote adapter, NoC, home agent, or memory queue if those stages lie before its defined visibility point.
+
+#### 6.10.4 Retry, poison, link reset, and partial completion
+
+A link-layer retry may retransmit a packet after CRC failure. The receiver needs sequence numbers and a duplicate filter/replay contract so an ordinary read or idempotent write can be repeated safely; a non-idempotent atomic must not execute twice. Separate:
+
+- **link retry:** same transaction, hidden below the memory protocol;
+- **protocol retry:** target asks the requester to resend later;
+- **DMA descriptor retry:** software-visible work is restarted after a reported fault.
+
+Each level needs a distinct identity/epoch. Collapsing them into one retry bit causes duplicate writes or lost completion.
+
+On link down/retrain:
+
+1. stop new remote admission;
+2. preserve or fail every accepted remap-table entry;
+3. decide whether transmitted-but-unacknowledged writes may be replayed;
+4. poison/abort dependent DMA descriptors at a documented byte boundary;
+5. bump the link/DMA epoch before IDs are reused;
+6. reject late packets from the old epoch;
+7. restore credits and routing before reopening queues.
+
+Poison/ECC information must travel with the exact byte range and appear in the DMA completion; silently converting poisoned read data into a successful remote write corrupts two memories. Since a copy is not transactional, software needing atomic publication writes a private remote buffer and updates a pointer/version only after successful visible completion.
+
+#### 6.10.5 The die-to-die bandwidth-delay product dominates
+
+For remote useful bandwidth $B_R$, round-trip latency $L_R$, and average packet payload $C$,
+
+$$
+Q_{\text{remote}}\ge B_RL_R,\qquad
+N_{\text{remote}}\ge\left\lceil\frac{B_RL_R}{C}\right\rceil,
+$$
+
+and delivered bandwidth is bounded by
+
+$$
+B_{\text{DMA,remote}}\le\min\!\left(
+B_{\text{source}},
+B_{\text{local NoC}},
+B_{\text{D2D}}\eta_{\text{packet}},
+B_{\text{remote NoC}},
+B_{\text{memory}},
+\frac{N_{\text{remote}}C}{L_R}
+\right).
+$$
+
+At 256 GB/s and 800 ns, about 205 kB must be live; with 256-byte payloads the floor is 800 outstanding packets. A 128-entry remote-ID table caps useful throughput near 41 GB/s even if the PHY has 256 GB/s of raw bandwidth. Packet headers, CRC/retry, lane repair, protocol bubbles, and small/unaligned transfers reduce $\eta_{\text{packet}}$, so raw lane rate is never the DMA bandwidth.
+
+Place buffers deliberately. Source-die buffering absorbs link credit stalls but costs long wires and SRAM; destination buffering decouples the remote NoC but consumes D2D credits longer. The safe design reserves end-to-end capacity before issue and measures occupancy at source data buffer, TX replay buffer, RX buffer, remote request queue, and completion-return path.
+
+#### 6.10.6 Chiplet-DMA verification and counters
+
+In addition to §6.9:
+
+- prove every source transaction/byte maps bijectively through split/merge/remap entries to the remote target byte;
+- prove source ID, requester/security identity, ordering class, poison, and epoch survive both bridge directions;
+- prove link acceptance cannot cause architectural DMA completion before remote visibility;
+- inject CRC errors, duplicate packets, dropped credits, lane retrain, protocol retry, remote reset, and old-epoch late responses;
+- verify coherent snoop/request/response dependency cycles cannot consume all escape capacity;
+- verify atomics execute once at one remote serialization point and fences wait through every posted/replay stage;
+- compare local and remote copies against the same byte-addressed scoreboard under arbitrary response reordering and backpressure.
+
+Counters should expose useful bytes versus D2D payload/wire bytes, packet-size distribution, local/remote ID-table occupancy, each credit pool, replay depth/count, CRC/poison, link retrains, virtual-channel stalls, remote visibility latency, and per-destination bandwidth. Those measurements separate a DMA limit from a NoC, adapter, PHY, or remote-memory limit.
+
 ## 7. DDR controller reconstruction
 
 A double data rate (DDR) memory subsystem comprises frontend request queues, address mapping, read/write scheduling, bank/row state, command timing, data-path buffers, refresh/power management, ECC, and a physical interface (PHY).
@@ -375,6 +518,7 @@ The design is reconstructable when every address has one meaning, every transact
 1. Arm, [AMBA AXI and ACE Protocol Specification](https://developer.arm.com/documentation/ihi0022/latest/) — channels, bursts, IDs, responses, ordering, and atomic/coherent attributes.
 2. RISC-V International, [RISC-V IOMMU Architecture Specification](https://docs.riscv.org/reference/iommu/) — device/process contexts, translation, invalidation, fault and page-request queues, and hardware integration guidance.
 3. Arm, [CoreLink DMA-330 DMA Controller Technical Reference Manual](https://developer.arm.com/documentation/ddi0424/latest/) — a concrete multichannel programmable DMA architecture.
+4. UCIe Consortium, [UCIe Specifications](https://www.uciexpress.org/specifications) — standardized package-level die-to-die physical, adapter/protocol, software, and compliance layers; the transport boundary used for the chiplet-DMA adaptation in §6.10.
 
 ---
 

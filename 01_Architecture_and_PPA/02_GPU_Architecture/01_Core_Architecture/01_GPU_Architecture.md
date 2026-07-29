@@ -58,7 +58,7 @@ Specialize to warps. Let $t_{\text{issue}} = 1/\lambda$ be the issue interval th
 
 $$W_{\text{needed}} \;=\; \big\lceil \lambda\,L_{\text{mem}} \big\rceil \;=\; \Big\lceil \frac{L_{\text{mem}}}{t_{\text{issue}}} \Big\rceil$$
 
-where $L_{\text{mem}}$ = memory latency (cycles) and $t_{\text{issue}}$ = cycles per issue. *Worked number:* hiding $L_{\text{mem}}=400$ cycles at $t_{\text{issue}}=1$ cyc needs $W_{\text{needed}}=400$ warps. **Below that count the slot runs dry:** with $W < W_{\text{needed}}$ warps each stalling for the full latency, the issue slot is busy only a fraction $W/W_{\text{needed}}$ of cycles, so sustained issue is $\min(1, W/W_{\text{needed}})$ of peak — the 64-warp hardware cap (§7) reaches just $64/400 = 16\%$ from stalled warps alone. Real GPUs recover the missing $\sim6\times$ with *per-warp* parallelism (each warp keeping $k$ independent ops in flight, so it re-issues before stalling), which lowers the requirement to $W_{\text{needed}} = \lceil L_{\text{mem}}/(t_{\text{issue}}\,k)\rceil$ — the calculation completed in §10-problem 2.
+where $L_{\text{mem}}$ = memory latency (cycles) and $t_{\text{issue}}$ = cycles per issue. *Worked number:* hiding $L_{\text{mem}}=400$ cycles at $t_{\text{issue}}=1$ cyc needs $W_{\text{needed}}=400$ warps. **Below that count the slot runs dry:** with $W < W_{\text{needed}}$ warps each stalling for the full latency, the issue slot is busy only a fraction $W/W_{\text{needed}}$ of cycles, so sustained issue is $\min(1, W/W_{\text{needed}})$ of peak — the 64-warp hardware cap (§7) reaches just $64/400 = 16\%$ from stalled warps alone. Real GPUs recover the missing $\sim6\times$ with *per-warp* parallelism (each warp keeping $k$ independent ops in flight, so it re-issues before stalling), which lowers the requirement to $W_{\text{needed}} = \lceil L_{\text{mem}}/(t_{\text{issue}}\,k)\rceil$ — the calculation completed in §11-problem 2.
 
 To hide a 400-cycle miss while issuing a memory op every few cycles, you need on the order of *hundreds* of independent operations queued — far more than one thread's ROB holds, but trivially available if you have thousands of resident threads. So the design answer is **massive multithreading**: hold so many threads' state on-chip that the scheduler always finds a ready one.
 
@@ -380,7 +380,7 @@ $$\text{peak}\;\propto\;\underbrace{\frac{1}{p_{in}^2}}_{\text{format}}\;\times\
 
 The metadata **co-travels** with the compressed weight fragment under one valid/tag; if the value and index streams ever separate under backpressure, every later product multiplies the *wrong* activation — the same alignment hazard the NPU sparse datapath guards ([Sparsity, Quantization, and Compression](../../03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md)). *Worked number and its caveat:* 2:4 stacks on the format — dense FP16 $990\to$ sparse FP16 $\approx1980$ TFLOP/s; dense FP8 $1980\to$ sparse FP8 $\approx3960$. But 2:4 is a *lossy weight transform*: forcing two-of-four to zero on a fixed pattern discards half the parameters regardless of their importance, so accuracy typically needs retraining/fine-tuning to recover and some layers cannot recover at all. The metadata is a tax that grows as values narrow — four bits atop $2\times16=32$ bits of FP16 survivors is $\sim11\%$, but atop $2\times4=8$ bits of FP4 survivors is $\sim33\%$, eroding much of the win.
 
-**Trade-off — when dense or higher precision is required.** *Format:* narrow inputs raise peak but shrink range/precision, so keep FP32/TF32 or FP16-with-FP32-accumulate for a numerically fragile reduction (long $K$, tight tolerance, unvalidated low-precision accuracy) and for training that needs gradient range ([Floating_Point §7](../../../00_Fundamentals/04_Floating_Point.md)); the accumulator stays wide in every case. *Sparsity:* 2:4 is the **only** sparsity a dense tensor core accelerates — unstructured 90%-zero weights get $0\times$ speedup because the MAC array is dense and would need a gather ([Sparsity, Quantization, and Compression](../../03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md)) — so run **dense** when the model cannot absorb a fixed 50% structured prune, when the weights are not pre-pruned (2:4 is a *static weight* property and cannot exploit dynamic activation sparsity), or when the metadata/decode overhead on a very narrow format exceeds the arithmetic saved. Both levers also cut the bytes moved per value, raising arithmetic intensity and pushing a kernel rightward across the roofline knee (§7; §10-problem 3). [AI Workload and Operator Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Operator_Mapping.md) applies the format and sparsity choices to GEMM, attention, and decode shapes.
+**Trade-off — when dense or higher precision is required.** *Format:* narrow inputs raise peak but shrink range/precision, so keep FP32/TF32 or FP16-with-FP32-accumulate for a numerically fragile reduction (long $K$, tight tolerance, unvalidated low-precision accuracy) and for training that needs gradient range ([Floating_Point §7](../../../00_Fundamentals/04_Floating_Point.md)); the accumulator stays wide in every case. *Sparsity:* 2:4 is the **only** sparsity a dense tensor core accelerates — unstructured 90%-zero weights get $0\times$ speedup because the MAC array is dense and would need a gather ([Sparsity, Quantization, and Compression](../../03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md)) — so run **dense** when the model cannot absorb a fixed 50% structured prune, when the weights are not pre-pruned (2:4 is a *static weight* property and cannot exploit dynamic activation sparsity), or when the metadata/decode overhead on a very narrow format exceeds the arithmetic saved. Both levers also cut the bytes moved per value, raising arithmetic intensity and pushing a kernel rightward across the roofline knee (§7; §11-problem 3). [AI Workload and Operator Mapping](../05_AI_Workloads_and_Serving/01_AI_Workload_and_Operator_Mapping.md) applies the format and sparsity choices to GEMM, attention, and decode shapes.
 
 The unifying idea, and the reason to read the SM this way: **an SM is a machine that converts *resident parallelism* into *sustained issue*, and its throughput is set by whichever resource runs out first** — warp slots, registers, shared memory, an execution-unit's initiation interval, operand-delivery bandwidth, or memory bandwidth. That is the same “which structure saturates first” diagnosis as the out-of-order core and exactly what a GPU timing simulator reports. Vendor-specific counts should be taken from the target architecture documentation rather than generalized across generations.
 
@@ -430,7 +430,7 @@ Formalized, this is the memory analogue of $\eta_{\text{SIMT}}$ (§3): with $n_a
 
 $$\varepsilon \;=\; \frac{n_a\,w}{N_{\text{txn}}\cdot G}$$
 
-which is **1** for a stride-1 float warp ($32\times4 / (4\times32)$) and as low as **1/8** when each lane lands in its own 32-byte sector to use 4 bytes ($32\times4 / (32\times32)$). Coalescing is thus the same "keep the 32 lanes in agreement" discipline as branch convergence, moved from the control plane to the address plane — and the two efficiencies multiply (§10).
+which is **1** for a stride-1 float warp ($32\times4 / (4\times32)$) and as low as **1/8** when each lane lands in its own 32-byte sector to use 4 bytes ($32\times4 / (32\times32)$). Coalescing is thus the same "keep the 32 lanes in agreement" discipline as branch convergence, moved from the control plane to the address plane — and the two efficiencies multiply (§11).
 
 **Bounds and the three canonical patterns.** Two inequalities frame $N_{\text{txn}}$: you can never do better than packing the useful bytes into full sectors, $N_{\text{txn}}\ge\lceil n_a w/G\rceil$, nor worse than one sector per lane, $N_{\text{txn}}\le n_a$. So $\varepsilon = \tfrac{n_a w}{N_{\text{txn}} G}\le 1$, with equality iff the accessed words exactly tile whole sectors. Evaluate the three patterns every GPU programmer learns, for an aligned warp of $n_a=32$ lanes reading $w=4$-byte words at granularity $G=32$ B (8 words/sector):
 
@@ -500,7 +500,7 @@ where $R_{\max}$ = registers/SM, $r_t$ = registers/thread, $S_{\max}$ = shared m
 
 **Why a *minimum* — and why not a sum.** Each budget caps residency independently: registers admit $c_{\text{reg}}=\lfloor R_{\max}/(32 r_t)\rfloor$ warps, shared memory $c_{\text{smem}}=\lfloor S_{\max}/s_b\rfloor\,w_b$, the warp-slot table $c_{\text{warp}}=W_{\max}$, the block table $c_{\text{blk}}=B_{\max}\,w_b$. A residency $n$ is feasible only if it obeys **all** caps at once, so the feasible set is the intersection $\{n:n\le c_k\ \forall k\}$ and the largest admissible residency is $\min_k c_k$ — the single **binding** resource ($\arg\min$). It is a minimum, not a sum, because the resources are not fungible: spare shared memory cannot buy back a warp the register file has no room for. (Hardware allocates registers and shared memory in *quanta* — a warp-allocation granularity, a shared-memory page — so each floor is if anything slightly *more* pessimistic than the clean division; the formula is an upper bound on residency.)
 
-**The tie back to Little's law is the whole point of the metric.** §1 set the *demand* $W_{\text{needed}}=\lceil L_{\text{mem}}/t_{\text{issue}}\rceil$; occupancy sets the *supply* $W_{\text{res}}=\min_k c_k$. Latency is hidden only when supply meets demand, $W_{\text{res}}\ge W_{\text{needed}}$; below it the SM reaches the memory roof only at a **fill factor** $\phi=\min(1,\,W_{\text{res}}/W_{\text{needed}})$ and the rest of the latency is *exposed*. *Worked number — register pressure caps occupancy, latency leaks.* A kernel at $r_t=64$ regs/thread on $R_{\max}=65{,}536$ makes registers bind: $c_{\text{reg}}=\lfloor 65{,}536/(32\cdot64)\rfloor=32$ warps $<W_{\max}=64$, so occupancy is capped at $32/64=50\%$ *by registers alone*, whatever the other budgets allow. Feed that into §1: at per-warp concurrency $k=6$ the demand is $W_{\text{needed}}=\lceil 400/6\rceil=67$ warps, but supply is 32, so $\phi=32/67\approx48\%$ — **under half the memory latency is hidden**, and the kernel runs latency-exposed at roughly half its attainable memory-roof rate *before bandwidth is even the limit*. Recompiling to $r_t=32$ restores $c_{\text{reg}}=64$ warps, lifts $\phi=\min(1,64/67)\approx1$, and closes the leak — the mechanism behind "registers/thread is the highest-leverage occupancy knob" (§5, §10-problem 1).
+**The tie back to Little's law is the whole point of the metric.** §1 set the *demand* $W_{\text{needed}}=\lceil L_{\text{mem}}/t_{\text{issue}}\rceil$; occupancy sets the *supply* $W_{\text{res}}=\min_k c_k$. Latency is hidden only when supply meets demand, $W_{\text{res}}\ge W_{\text{needed}}$; below it the SM reaches the memory roof only at a **fill factor** $\phi=\min(1,\,W_{\text{res}}/W_{\text{needed}})$ and the rest of the latency is *exposed*. *Worked number — register pressure caps occupancy, latency leaks.* A kernel at $r_t=64$ regs/thread on $R_{\max}=65{,}536$ makes registers bind: $c_{\text{reg}}=\lfloor 65{,}536/(32\cdot64)\rfloor=32$ warps $<W_{\max}=64$, so occupancy is capped at $32/64=50\%$ *by registers alone*, whatever the other budgets allow. Feed that into §1: at per-warp concurrency $k=6$ the demand is $W_{\text{needed}}=\lceil 400/6\rceil=67$ warps, but supply is 32, so $\phi=32/67\approx48\%$ — **under half the memory latency is hidden**, and the kernel runs latency-exposed at roughly half its attainable memory-roof rate *before bandwidth is even the limit*. Recompiling to $r_t=32$ restores $c_{\text{reg}}=64$ warps, lifts $\phi=\min(1,64/67)\approx1$, and closes the leak — the mechanism behind "registers/thread is the highest-leverage occupancy knob" (§5, §11-problem 1).
 
 The subtlety that closes the loop with the roofline ([GPU workload and performance methods](../00_Design_Methodology/01_GPU_Workloads_Performance_and_DSE.md)): **occupancy is a *ceiling on latency-hiding, not throughput itself.*** By Little's law (§1) you need enough resident warps to cover memory latency — but *past* that point, more warps buy nothing, because performance is then set by whether you are left or right of the roofline knee:
 
@@ -516,11 +516,180 @@ where $\phi=\min(1,W_{\text{res}}/W_{\text{needed}})$ = latency-hiding fill fact
 
 ### 7.1 Beyond one GPU — the multi-GPU domain, and where a kernel's operands live
 
-Everything above is *one* GPU; modern AI work spans many, and the system a GPU sits in is just the on-chip hierarchy's "keep traffic local" logic pushed one level out — into ever-slower, ever-larger shared pools. Past HBM sits **NVLink**, a point-to-point GPU-to-GPU link (~0.9 TB/s per Hopper GPU), and an **NVSwitch** crossbar that fuses 8–72 GPUs into one **NVLink domain** where any GPU reads another's HBM at a large fraction of local bandwidth — a memory pool an order of magnitude larger than one card's 80–192 GB. Past that domain, GPUs reach the host over **PCIe** and other nodes over the datacenter network (InfiniBand / RoCE NICs, usually with GPUDirect-RDMA so the NIC DMAs straight out of HBM, bypassing the CPU). Each boundary is a **bandwidth cliff** — HBM (TB/s) → NVLink domain (hundreds of GB/s per GPU) → network (tens of GB/s) — which is why large-model training pins the heaviest collective (tensor-parallel `AllReduce`) *inside* the NVLink domain and tolerates the slowest (data-parallel gradient sync) across the network. That is the same collective-placement problem the NPU page frames as ring-`AllReduce` over a torus ICI ([NPU_Accelerators §6](../../03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md)). The architect's lesson mirrors §7's roofline one scale up: **past a single GPU the *interconnect* is the roofline, and a kernel's effective bandwidth is set by which pool its operands live in** — registers/shared-memory, local HBM, a neighbor's HBM over NVLink, or another node across the network, each an order of magnitude apart.
+Everything above is *one* GPU; modern AI work spans many, and the system a GPU sits in is just the on-chip hierarchy's "keep traffic local" logic pushed one level out — into ever-slower, ever-larger shared pools. Past HBM sits **NVLink**, a point-to-point GPU-to-GPU link (~0.9 TB/s per Hopper GPU), and an **NVSwitch** crossbar that fuses 8–72 GPUs into one **NVLink domain** where any GPU reads another's HBM at a large fraction of local bandwidth — a memory pool an order of magnitude larger than one card's 80–192 GB. Past that domain, GPUs reach the host over **PCIe** and other nodes over the datacenter network (InfiniBand / RoCE NICs, usually with GPUDirect-RDMA so the NIC DMAs straight out of HBM, bypassing the CPU). Each boundary is a **bandwidth cliff** — HBM (TB/s) → NVLink domain (hundreds of GB/s per GPU) → network (tens of GB/s) — which is why large-model training pins the heaviest collective (tensor-parallel `AllReduce`) *inside* the NVLink domain and tolerates the slowest (data-parallel gradient sync) across the network. That is the same collective-placement problem the NPU page frames as ring-`AllReduce` over a torus ICI ([NPU_Accelerators §7](../../03_NPU_Architecture/01_Compute_Dataflows/01_NPU_Accelerators.md)). The architect's lesson mirrors §7's roofline one scale up: **past a single GPU the *interconnect* is the roofline, and a kernel's effective bandwidth is set by which pool its operands live in** — registers/shared-memory, local HBM, a neighbor's HBM over NVLink, or another node across the network, each an order of magnitude apart.
 
 ---
 
-## 8. Clocking and power at throughput — why wide-and-slow wins
+## 8. GPU DMA and copy engines — four data movers, four hardware scopes
+
+Calling every GPU transfer “DMA” hides the architecture. A modern GPU contains at least four physically different movement mechanisms:
+
+| Mechanism | Command source | Physical endpoints | Where the state lives |
+|---|---|---|---|
+| **system copy engine / SDMA** | runtime stream packet or driver queue | host memory ↔ HBM, HBM ↔ HBM, peer HBM | chip-level command processor and dedicated read/write engines |
+| **page-migration engine** | GPU/CPU page fault or prefetch policy | physical page in host memory ↔ physical page in HBM | memory-management unit, fault/replay queues, copy engine, page tables |
+| **SM-local async copy** (`cp.async`/LDGSTS, TMA) | an executing warp/thread issues an instruction | global memory ↔ shared/cluster memory | SM load/store/TMA pipeline and barrier state |
+| **NIC or peer RDMA** | NIC/collective engine descriptor | network/link ↔ GPU HBM | external requester plus GPU address-translation/link endpoints |
+
+Only the first is the direct GPU analogue of a conventional platform DMA. The third is part of a kernel's instruction execution; it cannot move host buffers, service an unrelated stream, or migrate virtual-memory ownership. The fourth is often not a GPU-owned DMA engine at all—the NIC or remote GPU is the bus master.
+
+```mermaid
+flowchart TB
+    subgraph HOST["Host and command plane"]
+        API["CUDA runtime<br/>memcpy / prefetch / kernel"]
+        PIN["Pinned host pages<br/>or pageable staging"]
+        SQ["Per-stream command queues<br/>dependencies + events"]
+    end
+
+    subgraph GPU["GPU chip"]
+        CP["Front-end command processor<br/>queue fetch + dependency scoreboard"]
+        CE["System copy engines / SDMA<br/>descriptor, AGU, split, tags"]
+        MMU["GPU MMU + IOMMU/ATS path<br/>GPU VA / host IOVA"]
+        PF["Fault + migration controller<br/>page state, invalidate, replay"]
+        L2["Unified L2 slices<br/>coherence/visibility point"]
+        HBM["HBM partition controllers"]
+        GPC["GPC / SM array"]
+        TMA["Per-SM async-copy/TMA<br/>tensor-map AGU + mbarrier"]
+        SMEM["Shared / cluster memory"]
+        CMP["Semaphore/event writes<br/>interrupt or host polling"]
+    end
+
+    PEER["Peer GPU / NVLink"] <--> CE
+    NIC["NIC / RDMA requester"] <--> MMU
+    API --> SQ --> CP
+    PIN <--> CE
+    CP --> CE
+    CP --> GPC
+    CE <--> MMU <--> L2 <--> HBM
+    PF --> CE
+    PF --> MMU
+    L2 <--> GPC
+    GPC --> TMA
+    TMA <--> L2
+    TMA <--> SMEM
+    CE --> CMP
+    PF --> CMP
+    CMP --> SQ
+```
+
+### 8.1 System copy engine: from a CUDA stream command to HBM bytes
+
+`cudaMemcpyAsync` is software's expression of ordering and possible overlap; it is not itself a hardware block. The driver/runtime converts it into one or more command packets in a GPU-visible queue, records the stream dependency, and rings a doorbell. A representative chip-level implementation then executes:
+
+1. **Queue fetch and dependency check.** The front end fetches a packet only after prior operations in that stream have satisfied their semaphore/event dependencies. Commands from independent streams may be admitted together.
+2. **Descriptor capture.** Source/destination GPU virtual address, host I/O virtual address, byte count or 2D/3D pitches, context, attributes, and completion semaphore are copied into an internal work entry.
+3. **Address-space selection and translation.** GPU virtual addresses go through the GPU MMU; host addresses go through the PCIe/IOMMU/ATS path. A host transfer can proceed directly only from resident, DMA-addressable pages; pageable memory commonly requires pinning or a staged pinned buffer.
+4. **Segmentation.** An AGU splits the range at page, PCIe maximum-payload/read-request, L2-sector, HBM-partition, alignment, and link-credit boundaries. First/last requests carry byte masks.
+5. **Read issue.** Per-direction engines reserve tags and data-buffer credits, then issue many reads across PCIe, NVLink, or L2/HBM. A tag stores command, logical byte offset, length, destination route, context, and reset epoch.
+6. **Return and write.** Out-of-order read data lands in tagged SRAM/FIFO entries, passes ECC/poison and optional swizzle/format logic, and is written to the destination. No reorder is needed for independent byte ranges; overlapping or transform semantics require ordered retirement.
+7. **Visibility and completion.** The engine waits for the appropriate L2/fabric/link visibility acknowledgement, updates a GPU semaphore or completion record, and optionally causes a host interrupt. “PCIe packet sent” or “last HBM write queued” is too early.
+
+The minimum silicon state follows directly:
+
+| Block | Per-command / per-request state |
+|---|---|
+| stream dependency frontend | queue/context ID, sequence, wait/signal semaphores, priority |
+| copy scheduler | direction, byte deficit/QoS, engine affinity, outstanding quotas |
+| translation frontend | VA/IOVA, address-space selector, page size, permission, translation generation |
+| read table | fabric tag, command ID, offset, length, reserved data slot, retry epoch |
+| data buffer | payload, byte-valid mask, poison/ECC, destination address/partition |
+| write tracker | issued/acknowledged/visible bitmap or counters |
+| completion sequencer | status, bytes completed, fault code, semaphore address/value, interrupt route |
+
+Multiple copy engines provide **independent scheduling capacity**, not free bandwidth. Host-to-device, device-to-host, peer, and local copies ultimately contend with kernels at L2, memory partitions, HBM pins, and off-package links. Direction-specialized engines can overlap one upstream and one downstream transfer, but a full HBM kernel can still starve both.
+
+### 8.2 SM-local asynchronous copy is execution hardware, not the system DMA
+
+A conventional CUDA statement such as `shared[i] = global[i]` creates a global load whose value normally passes through a register and then a shared-memory store. Hardware-accelerated asynchronous paths remove or amortize those steps:
+
+- **LDGSTS / `cp.async` class.** Lanes in a warp issue small global-to-shared copies. Coalescing produces memory-sector requests; a per-warp async-copy scoreboard/groups table tracks issued and completed sectors. Data returns directly to shared memory without occupying an intermediate architectural register. A commit closes a producer group; a wait stalls only when the required group remains incomplete.
+- **Tensor Memory Accelerator (TMA) class.** One elected thread supplies a prebuilt tensor-map descriptor. A hardware multidimensional AGU expands 1D–5D coordinates, shapes, strides, element formats, bounds/fill rules, and shared-memory layout; bulk requests move global↔shared or cluster-shared data. A transaction barrier (`mbarrier`) carries expected byte/transaction count plus phase/generation so a consumer cannot confuse the next reuse of a ping-pong buffer with the previous transfer.
+
+The per-SM path is:
+
+```text
+warp issues async instruction
+  -> instruction/descriptor validation
+  -> coalescer or tensor-map AGU
+  -> SM request queue and L1/L2 route
+  -> tagged return data
+  -> shared-memory bank write
+  -> decrement group/barrier expected count
+  -> wake waiting warp(s) when phase and count match
+```
+
+This engine needs shared-memory destination bounds checking, bank/sector steering, outstanding-copy slots, a map-descriptor cache, fault propagation into the issuing warp, and generation-tagged completion. The central property is: **no consumer reads a tile before every required byte of its matching phase is written, and no producer overwrites the tile before all consumers release it.** The detailed instruction/barrier pipeline continues in [Independent-Thread Scheduling and Asynchronous Pipelines §3–§5](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md).
+
+### 8.3 Unified-memory migration is copy plus a virtual-memory state transition
+
+A GPU access to a page resident only in host memory can fault. The replayable-fault path records `(context, warp/request, virtual page, access type, engine epoch)` and suppresses or parks dependent requests. Firmware/driver chooses whether to map remotely, migrate, replicate, or evict another page. A migration then requires:
+
+1. allocate destination physical pages and reserve migration-buffer/copy-engine capacity;
+2. quiesce or revoke writers to the source mapping;
+3. copy the page through a system copy engine;
+4. order the copy before updating residency/PTE state;
+5. invalidate GPU and CPU/device translation caches as required;
+6. publish the new mapping and replay the faulting requests exactly once.
+
+This is why page migration is not “just `memcpy`.” The hardware must serialize data, ownership, PTE update, TLB invalidation, and replay. If the PTE becomes valid before the copy is visible, a replay reads uninitialized HBM; if the old mapping remains writable, CPU and GPU can diverge. Page-fault groups, migration queues, resident-page/dirty state, replay buffers, and invalidation generations are first-class storage structures, and thrashing between host and HBM is a control-policy failure even when raw copy bandwidth is high.
+
+### 8.4 Peer copies, GPUDirect RDMA, and collective data movers
+
+For peer GPU copy, the source copy engine translates the source and destination GPU address spaces, packets the data over NVLink/PCIe, observes link credits/replay, and completes only when the destination visibility contract is met. Some systems instead let the destination pull. The descriptor must name both contexts/devices; peer-access permission and topology determine whether traffic is direct or staged through host memory.
+
+In GPUDirect RDMA, a NIC is the requester. GPU hardware supplies an address aperture/translation and routes coherent or explicitly synchronized transactions into L2/HBM; NIC descriptor, PCIe ordering, IOMMU/peer-memory registration, and GPU visibility must form one contract. A CUDA event does not automatically order an unrelated NIC unless the platform defines a shared semaphore/fence mechanism.
+
+Collective engines add a transform between link receive and HBM/link transmit: reduction ALUs, datatype/rounding state, chunk/rail routing, credit/replay buffers, and per-chunk completion. They are data movers with arithmetic, not SM tensor cores. Their sizing is governed by the slowest of link bandwidth, reduction throughput, and HBM read/write bandwidth.
+
+### 8.5 Ordering domains and the completion that software actually sees
+
+Keep four orderings separate:
+
+1. **stream order:** commands in one CUDA stream observe their defined dependencies;
+2. **engine order:** packets accepted by a copy engine may split and return out of order;
+3. **memory visibility:** payload writes have reached L2/HBM or a coherent point visible to the next consumer;
+4. **system visibility:** host/peer/NIC can observe the bytes after link and cache ordering.
+
+A completion semaphore is released only after the required lower-level visibility event. A dependent kernel waits on that semaphore before block dispatch or before its memory requests may pass the dependency point. Cross-stream overlap is legal only without an event/data dependency; correctness must never rely on an accidental lack of concurrency.
+
+For a tiled copy/compute pipeline, double buffering gives
+
+$$
+T_{\text{total}}\approx T_{\text{fill}}+(n-1)\max(T_{\text{copy}},T_{\text{compute}})+T_{\text{drain}},
+$$
+
+not $n(T_{\text{copy}}+T_{\text{compute}})$. But that maximum assumes distinct buffers, generation-safe barriers, enough outstanding state, and unused shared bandwidth. If copy and compute both saturate HBM, their overlap is contention and the effective times grow.
+
+### 8.6 Size every path with a bandwidth-delay product
+
+For a link or memory leg with useful bandwidth $B$, round-trip latency $L$, and request payload $C$,
+
+$$
+Q_{\text{live}}\ge BL,\qquad
+N_{\text{req}}\ge\left\lceil\frac{BL}{C}\right\rceil,\qquad
+B_{\text{engine}}\le\min\!\left(B_{\text{src}},B_{\text{link}},B_{\text{dst}},\frac{N_{\text{req}}C}{L}\right).
+$$
+
+A 400-GB/s peer link at 500 ns needs 200 kB live. With 256-byte packets that is at least 782 outstanding payloads across request tables, replay storage, and destination credits. Providing 128 tags caps the leg near 65.5 GB/s even if the SerDes advertises 400 GB/s. For host transfers, include PCIe/IOMMU latency; for TMA, use SM→L2/HBM→SM latency and count shared-memory write bandwidth as the destination roof.
+
+Expose counters per engine and per leg: useful versus packet bytes, command queue depth, dependency-wait cycles, translation hits/walks/faults, live tags, buffer-full cycles, source/link/destination stalls, L2/HBM partition traffic, replay/CRC errors, completion latency, and overlap with SM execution. Those counters tell whether to add an engine, tags, buffer SRAM, link width, or memory bandwidth.
+
+### 8.7 GPU DMA verification checklist
+
+- every accepted source byte updates exactly the intended destination byte mask, including unaligned and 2D/3D boundary cases;
+- no request issues without tag, return-buffer, and downstream-credit ownership;
+- stream/event completion cannot precede payload visibility in the consumer's domain;
+- context teardown, page migration, TLB invalidation, fault replay, and reset cannot duplicate writes or leak one context's memory to another;
+- peer-link retry/replay preserves byte identity and rejects late old-epoch packets;
+- an SM async-copy barrier decrements once per matching transaction and never wakes a later buffer generation early;
+- kernels and copies under adversarial HBM/L2 backpressure make forward progress without consuming response resources needed to break the stall;
+- randomized host↔device, device↔device, peer, page-fault, and TMA tests compare against a byte-addressed memory/reference model.
+
+The reusable generic DMA block is in [SoC DMA §6](../../04_SoC_and_Chiplet_Architecture/08_Implementation_Blueprints/01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md#6-direct-memory-access-engine-from-descriptor-to-visible-completion). GPU architecture adds the stream dependency plane, GPU/host dual translation, replayable migration, HBM/L2 contention with kernels, and per-SM instruction-driven copy engines.
+
+---
+
+## 9. Clocking and power at throughput — why wide-and-slow wins
 
 A GPU runs at **~1–2 GHz**; a CPU core at **3–5+ GHz**. That is a *deliberate* design choice, and it falls straight out of the power model. Dynamic power is
 
@@ -532,7 +701,7 @@ The flip side is **power density**: an SM is almost all active datapath and regi
 
 Finally, **data-movement energy is the real budget.** Reading an operand from the register file costs a fraction of a pJ; from shared memory a bit more; from L2 more; from **HBM ~1–2 orders of magnitude more per byte** than on-chip, and off-package (NVLink/PCIe) more still ([Full_Chip_Modeling §4.3](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) gives representative pJ/bit). So the memory hierarchy of §7 exists **as much to save energy as to save time**: every byte kept in the register file or shared-memory scratchpad instead of HBM is both faster *and* cheaper, and at throughput scale the energy term dominates the design.
 
-### 8.1 Closing the causal loop with observables and properties
+### 9.1 Closing the causal loop with observables and properties
 
 An architect should be able to distinguish which evolutionary step is failing from counters, then connect the same boundary to a correctness property:
 
@@ -549,7 +718,7 @@ The diagnosis order follows the datapath: first find unused issue or lane slots,
 
 ---
 
-## 9. Numbers to memorize
+## 10. Numbers to memorize
 
 | Quantity | Value | Why it matters |
 |---|---|---|
@@ -572,7 +741,7 @@ The diagnosis order follows the datapath: first find unused issue or lane slots,
 
 ---
 
-## 10. Worked problems
+## 11. Worked problems
 
 **1 — Occupancy is a *min*, and registers usually bind it (§5, §7).** An SM has $R_{\max}=65{,}536$ registers and $W_{\max}=64$ warp slots (2048 threads). A kernel compiles to $r_t=64$ registers/thread, so the register term caps residency at $\lfloor 65{,}536/(32\times 64)\rfloor = 32$ warps → occupancy $=32/64=50\%$: registers bind well before the slot cap. Recompiling to $r_t=32$ doubles the cap to $\lfloor 65{,}536/1024\rfloor=64$ warps $=100\%$. This is why registers/thread (`__launch_bounds__` / `maxrregcount`) is the highest-leverage occupancy knob — the file is fixed, so every register a thread holds is subtracted directly from latency-hiding depth (§5).
 
@@ -603,6 +772,8 @@ The diagnosis order follows the datapath: first find unused issue or lane slots,
 - NVIDIA. *NVIDIA H100 Tensor Core GPU Architecture* (Hopper whitepaper) and *NVIDIA Hopper Architecture In-Depth.* 2022. [[blog]](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/) — 132 SMs, 128 FP32/SM, 256 KB RF/SM, 256 KB L1+smem/SM, 50 MB L2, 80 GB HBM3 @ >3 TB/s, 700 W.
 - NVIDIA. *NVIDIA Tesla V100 GPU Architecture* (Volta whitepaper), 2017. (Independent Thread Scheduling: per-thread PC and reconvergence.)
 - NVIDIA. *CUDA C++ Programming Guide* — SIMT architecture, independent thread scheduling, coalesced global-memory access (32-byte sectors). [[docs]](https://docs.nvidia.com/cuda/cuda-programming-guide/)
+- NVIDIA. *CUDA Programming Guide — Asynchronous Execution and Asynchronous Data Copies*. [[asynchronous execution]](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/asynchronous-execution.html) · [[LDGSTS/TMA mechanisms]](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-kernel-programming.html#asynchronous-data-copies) — stream-level copy/compute overlap versus kernel-internal global↔shared copy hardware (§8.1–§8.2).
+- NVIDIA. *CUDA Programming Guide — Programming Systems with Multiple GPUs*. [[peer transfers]](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/multi-gpu-systems.html) — dedicated copy engines, direct peer access, NVLink use, and stream ordering (§8.4–§8.5).
 - Xu, Sun, et al. *Microbenchmarking NVIDIA's Blackwell Architecture: An In-Depth Architectural Analysis.* arXiv:2512.02189, 2025. [[html]](https://arxiv.org/html/2512.02189v1) — dual-die 208 B transistors, 192 GB HBM3e, TMEM 256 KB/SM, 5th-gen tensor cores (`tcgen05`), measured FP4/FP8 throughput.
 - Modal. *GPU Glossary — Memory Coalescing*, and Cornell Virtual Workshop, *Understanding GPU Architecture — SIMT and Warps.* [[coalescing]](https://modal.com/gpu-glossary/perf/memory-coalescing) · [[SIMT]](https://cvw.cac.cornell.edu/gpu-architecture/gpu-characteristics/simt_warp)
 - Hennessy & Patterson. *Computer Architecture: A Quantitative Approach*, 6th ed. (Ch. 4, data-level parallelism and GPUs; the throughput-vs-latency and Pollack's-rule framing.)
