@@ -8,10 +8,15 @@ flowchart TD
     CMOS --> GATE["gates compose Boolean functions"]
     GATE --> STATE["feedback + timing stores state"]
     STATE --> ARITH["carry and partial-product networks compute integers"]
+    STATE --> MEM["dense arrays store state far more cheaply than registers"]
     ARITH --> FP["encoding + alignment + rounding compute over wide dynamic range"]
+    ARITH --> DSP["scaled integers plus iteration compute filters and transforms"]
+    FP --> DSP
     STATE --> SIM["events and transactions model concurrent systems"]
     ARITH --> SIM
     FP --> ARCH["CPU / GPU / NPU / SoC architecture"]
+    MEM --> ARCH
+    DSP --> ARCH
     SIM --> ARCH
 ```
 
@@ -41,12 +46,16 @@ If a section gives only a taxonomy or a final block diagram, treat it as incompl
 | 03 | [Adders and Multipliers](03_Adders_and_Multipliers.md) | a correct one-bit sum becomes slow when carry must cross a word; repeated carry propagation makes multi-operand arithmetic worse | half/full adder → ripple trace → skip/select/lookahead → associative carry prefix → prefix topology tradeoffs → carry-save compression → Booth recoding → Wallace/Dadda reduction → final carry-propagate adder | select or implement an integer adder/multiplier for a delay/area/wiring target, trace every carry/partial product, write value-conservation checks |
 | 04 | [Floating Point](04_Floating_Point.md) | one fixed binary point cannot cover tiny and huge values at useful precision; most exact results are not encodable | sign/significand/exponent → hidden bit → ULP/error model → subnormals → GRS and all rounding modes → complete add/multiply/FMA datapaths with internal widths, binary points, stage registers, and flow control → divider/root FSMDs → conversions/comparisons → SFUs → physical implementation and verification | derive every FP engine from CLA/CRA, shifter, multiplier, and leading-zero blocks; write the RTL-stage contract; calculate rounding and flags; choose and verify arithmetic algorithms, precision, timing, and recovery behavior |
 | 05 | [SystemC and TLM](05_SystemC_and_TLM.md) | sequential C++ has no deterministic simulated concurrency, while pin-level RTL is too slow for software workloads and private transaction APIs do not compose | elaboration → event queue/evaluate/update/delta cycles → modules/processes/channels → generic payload/sockets → blocking LT → four-phase AT → DMI/temporal decoupling → counters and result reduction | build a virtual platform model, trace an instruction-generated load to its architectural result and simulated time, distinguish configured latency from emergent contention, validate reported performance |
+| 06 | [Memory Circuits and Technologies](06_Memory_Circuits_and_Technologies.md) | a register built from flip-flops costs an order of magnitude more area per bit than a dedicated cell, and no array of useful size yields without repair | flop-array vs bitcell area crossover → 6T cell with the read-disturb/write-margin conflict → decoder, precharge, column mux, sense amplifier, replica timing → bitline-development delay → multi-port and 8T/10T cells → memory compilers → redundancy, fuses, and BISR → soft errors, SEC-DED, interleaving, scrubbing → ROM/OTP/eFuse → the 1T1C DRAM cell and every timing parameter it forces → flash, MRAM, ReRAM, PCM → working with a macro | size and place a memory macro, read its datasheet and `.lib`, derive access time and refresh overhead, choose a protection scheme against a FIT target, explain where every DDR parameter comes from |
+| 07 | [DSP and Fixed-Point Hardware](07_DSP_and_Fixed_Point_Hardware.md) | a floating-point reference model is not an implementation; choosing widths by intuition silently destroys signal-to-noise ratio or overflows | quantization-noise model and the 6.02 dB/bit rule → word-length selection from dynamic range and SNR → noise propagation through stages → overflow strategy and the guard-bit bound → FIR direct vs transposed form and four architectures → CSD and multiplier-free constant multiplication → IIR, the recursive iteration bound, biquads, limit cycles → CORDIC in rotation and vectoring mode → fixed-point division, root, and reciprocal → FFT architectures and block floating point → bit-exact verification → the bridge to INT8/INT4 AI quantization | take a floating-point algorithm to a bit-exact RTL datapath with a proven error bound, choose an architecture for a throughput target, and verify it against a golden model |
 
 ## Focused reading routes
 
 - **Build a storage or control cell:** CMOS §§2–5 → Logic §§1–4 → Logic §§6–8. This route goes from voltage restoration through feedback, sampling, next-state logic, metastability, and hazards.
 - **Build an arithmetic datapath:** Logic §§1–3 → Adders §§1–8 → Floating Point §§4–8. This route goes from selection/reduction networks through carry/partial-product structures to alignment, normalization, and rounding.
 - **Understand AI arithmetic:** Adders §6–7 → Floating Point §§4–7 → the NPU and GPU cross-references. Concentrate on carry-save accumulation, significand-width-squared multiplier cost, wide accumulation, and block scaling.
+- **Build a storage array or price a memory decision:** CMOS §§2–5 → Logic §§4–5 → Memory §§1–5 → Memory §§7–8. This route goes from bistability through the bitcell's two conflicting margins to array timing, ports, yield repair, and error protection.
+- **Build a signal-processing or quantized-AI datapath:** Adders §§1–8 → Arithmetic RTL Q-format/saturation/rounding → DSP §§1–5 → DSP §§8–9 → DSP §12. This route goes from carry structures through word-length engineering to filter architectures, iterative function evaluation, and neural-network quantization.
 - **Build or evaluate a simulator:** SystemC §§1–6 → each architecture folder's simulation methodology. Keep host execution speed, target simulated time, fidelity, and derived architectural metrics separate.
 
 ## Diagram notation in this Obsidian vault
@@ -64,4 +73,4 @@ TikZJax, Mermaid Zoom, and WaveDrom are vault dependencies. A page should still 
 
 ---
 
-[Root Index](../Index.md) · [Flow Overview](../Chip_Design_Flow_Overview.md) · next ➡ [01 · Architecture and PPA](../01_Architecture_and_PPA/00_Index.md)
+[Root Index](../Index.md) · [Start Here](../Start_Here_Learning_Path.md) · [Flow Overview](../Chip_Design_Flow_Overview.md) · next ➡ [01 · Architecture and PPA](../01_Architecture_and_PPA/00_Index.md)

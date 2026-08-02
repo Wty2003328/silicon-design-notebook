@@ -19,4 +19,4 @@
 
 ---
 
-⬅ prev [07 · Manufacturing and Bring-up](../07_Manufacturing_and_Bringup/00_Index.md) · [Root Index](../Index.md) · [Flow Overview](../Chip_Design_Flow_Overview.md)
+⬅ prev [08 · Cross-Cutting Engineering](../08_Cross_Cutting_Engineering/00_Index.md) · [Root Index](../Index.md) · [Flow Overview](../Chip_Design_Flow_Overview.md)

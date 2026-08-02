@@ -2,6 +2,7 @@
 
 > **Read this first.** This page is the spine of this notebook. The folders are numbered in **flow order** (00 → 07); this page explains what each stage consumes, produces, and hands off, where the loops are, and which page covers each step.
 > **Prerequisites:** none — this is the map. **Hands off to:** every stage page linked below.
+> **If you are new:** read this page for orientation, then go to [Start Here — the Learning Path](Start_Here_Learning_Path.md) for the ordered curriculum, and keep [Glossary](Glossary.md) and [Concept Dependency Map](Concept_Dependency_Map.md) open beside it.
 
 ---
 
@@ -46,10 +47,11 @@ flowchart TD
     classDef s6 fill:#fca5a5,stroke:#991b1b,color:#000
 ```
 
-Two cross-cutting concerns ride alongside every stage and therefore live in their own track:
+Three cross-cutting concerns ride alongside every stage and therefore live in their own tracks:
 
 - **[02 · Power & Low-Power](02_Power_and_Low_Power/00_Index.md)** — power is budgeted from workloads, partitioned into power/voltage/clock domains, captured in UPF or CPF, implemented at synthesis/backend, and verified through signoff. The track is kept together so you can see the whole story.
-- **[00 · Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md)** — device physics, logic, and arithmetic the other stages assume.
+- **[08 · Cross-Cutting Engineering](08_Cross_Cutting_Engineering/00_Index.md)** — security, functional safety, design methodology/EDA infrastructure, and IP reuse. None of these is a stage; each is a constraint or a practice that applies at every stage at once. A floorplan does not decide whether two redundant channels need physical separation — the safety analysis decides, and the floorplan obeys.
+- **[00 · Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md)** — device physics, logic, arithmetic, memory arrays, and fixed-point datapaths the other stages assume.
 
 ---
 
@@ -93,14 +95,15 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 
 | Stage (folder) | What you do | Key pages |
 |---|---|---|
-| **00 · Fundamentals** | the physics/logic everything assumes | [CMOS](00_Fundamentals/01_CMOS_Fundamentals.md), [Logic blocks](00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md), [Floating point](00_Fundamentals/04_Floating_Point.md) |
+| **00 · Fundamentals** | the physics/logic everything assumes | [CMOS](00_Fundamentals/01_CMOS_Fundamentals.md), [Logic blocks](00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md), [Floating point](00_Fundamentals/04_Floating_Point.md), [Memory circuits](00_Fundamentals/06_Memory_Circuits_and_Technologies.md), [DSP and fixed point](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md) |
 | **01 · Architecture + PPA** | choose a CPU, GPU, or NPU organization; compose the SoC/chiplets; model performance and power/area | [CPU book and methods](01_Architecture_and_PPA/01_CPU_Architecture/00_Index.md), [GPU book and methods](01_Architecture_and_PPA/02_GPU_Architecture/00_Index.md), [NPU book and methods](01_Architecture_and_PPA/03_NPU_Architecture/00_Index.md), [SoC/chiplet book and methods](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/00_Index.md). Each book introduces its own terms, workloads, design-space exploration, physical costs, and simulation evidence. |
 | **02 · Power & Low-Power** | the cross-cutting power track | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md), [Domain Architecture](02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md), [Reduction Techniques](02_Power_and_Low_Power/04_Power_Reduction_Techniques.md), [UPF/CPF Flow](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md), [Power Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) |
 | **03 · Frontend RTL + Verification** | write synthesizable RTL; verify it | [RTL Design Methodology](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md), [Data types](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md), [Async/CDC](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM](03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Lint/CDC/RDC signoff](03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md), [GLS & Emulation](03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md), [Verification Planning](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md), [Formal](03_Frontend_RTL_and_Verification/12_Formal_Verification.md) |
-| **04 · Synthesis** | RTL → gates under constraints | [Synthesis & Optimization](04_Synthesis/01_Synthesis_and_Optimization.md), [SDC Constraints](04_Synthesis/02_Constraints_SDC.md) |
-| **05 · Backend (Physical Design)** | gates → layout | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md), [Signal Integrity](05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) |
-| **06 · Signoff** | prove it's correct before tapeout | [STA](06_Signoff/01_STA.md), [DFT & ATPG](06_Signoff/02_DFT_and_ATPG.md), [Physical Verification (DRC/LVS)](06_Signoff/03_Physical_Verification_DRC_LVS.md) |
+| **04 · Synthesis** | RTL → gates under constraints | [Synthesis & Optimization](04_Synthesis/01_Synthesis_and_Optimization.md), [SDC Constraints](04_Synthesis/02_Constraints_SDC.md), [Standard-Cell Libraries](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md), [Synthesis Flow & QoR](04_Synthesis/04_Synthesis_Flow_and_QoR_Closure.md), [Physical Synthesis & Design Planning](04_Synthesis/05_Physical_Synthesis_and_Design_Planning.md) |
+| **05 · Backend (Physical Design)** | gates → layout | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md), [Signal Integrity](05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md), [Floorplanning & Power Planning](05_Backend_Physical_Design/03_Floorplanning_and_Power_Planning.md), [Placement](05_Backend_Physical_Design/04_Placement_Legalization_and_Optimization.md), [CTS](05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md), [Routing & Extraction](05_Backend_Physical_Design/06_Routing_and_Parasitic_Extraction.md) |
+| **06 · Signoff** | prove it's correct before tapeout | [STA](06_Signoff/01_STA.md), [DFT & ATPG](06_Signoff/02_DFT_and_ATPG.md), [Physical Verification (DRC/LVS)](06_Signoff/03_Physical_Verification_DRC_LVS.md), [Signoff Orchestration & ECOs](06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md) |
 | **07 · Manufacturing + Bring-up** | fab, package, tapeout, first silicon | [Fabrication](07_Manufacturing_and_Bringup/01_Fabrication_Process.md), [Packaging](07_Manufacturing_and_Bringup/02_IC_Packaging.md), [Tapeout & Post-Silicon Bring-up](07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) |
+| **08 · Cross-Cutting Engineering** | the constraints and practices that ride alongside every stage | [Hardware Security](08_Cross_Cutting_Engineering/01_Hardware_Security_Architecture.md), [Functional Safety & Reliability](08_Cross_Cutting_Engineering/02_Functional_Safety_and_Reliability_Engineering.md), [Methodology & EDA Infrastructure](08_Cross_Cutting_Engineering/03_Design_Methodology_and_EDA_Infrastructure.md), [IP Reuse & Register Automation](08_Cross_Cutting_Engineering/04_IP_Reuse_Integration_and_Register_Automation.md) |
 
 ---
 
@@ -126,5 +129,8 @@ Loops get more expensive the further back they reach — the "cost of a late cha
 ---
 
 ## Cross-references
+- **New to the field:** [Start Here — the Learning Path](Start_Here_Learning_Path.md) turns this map into an ordered curriculum with entry checks, projects, and exit questions.
+- **A term you do not know:** [Glossary](Glossary.md). **A page that assumes something you do not know:** [Concept Dependency Map](Concept_Dependency_Map.md).
 - Power as a cross-cutting track: [02 · Power & Low-Power](02_Power_and_Low_Power/00_Index.md).
+- Security, safety, methodology, and IP reuse as the second cross-cutting track: [08 · Cross-Cutting Engineering](08_Cross_Cutting_Engineering/00_Index.md).
 - The systems analogue (the AI-datacenter "flow") lives in the companion AI-infra notebook.
