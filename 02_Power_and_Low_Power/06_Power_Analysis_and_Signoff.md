@@ -309,7 +309,7 @@ Three remaining signoff concerns round out the two proofs; each is treated compa
 | Cu DC current-density limit | ~1–3 MA/cm² at 105 °C | sets minimum wire width (§8) |
 | Annotation coverage for signoff | > 80 %, checked *per hierarchy* | a low-coverage watt is a guess (§2.2) |
 | Estimation accuracy vs silicon | vectorless ±20–30 %, PTPX ±10–15 %, Voltus/RedHawk ±5–10 % | fidelity ladder (§1) |
-| Clock power fraction | 30–50 % of dynamic | why clock nets dominate coverage risk (§2.2) |
+| Clock power fraction | network 20–35 % of dynamic; 35–50 % incl. flop-internal | why clock nets dominate coverage risk (§2.2) |
 | Typical TDP | mobile 2–15 W · desktop 65–250 W · AI accel 300–1000 W | sets total budget (§3) |
 | Power-density ceiling | ~100 W/cm² air · ~300 W/cm² liquid | thermal envelope (§11) |
 | Junction temperature | $T_j=T_a+P\,R_{th,ja}$ | peak ≠ sustainable → throttle (§11) |
@@ -321,3 +321,7 @@ Three remaining signoff concerns round out the two proofs; each is treated compa
 - **Down the stack (what signoff is built from):** [Power_Fundamentals](01_Power_Fundamentals.md) (the total-power equation and the thermal/delivery/energy ceilings §2–§3 and §11 check against), [Block_Activity_and_Power](02_Block_Activity_and_Power.md) (the vectored/vectorless activity and glitch estimation feeding §2 — the $\alpha$ this page consumes), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the $\tfrac12CV^2$ per transition and the delay-vs-$V_{DD}$ physics behind §9), [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) (the PnR-side grid/decap/EM *models and fixing levers*; this page owns the *signoff criteria*).
 - **Up the stack (what consumes signoff):** [STA](../06_Signoff/01_STA.md) (the timing side — takes §9's IR-derated per-instance voltage; owns crosstalk/OCV), [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md) (implements the grid and decap decisions of §5/§7), [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md) (the package PDN and resonance of §4/§11), [Tapeout_and_Post_Silicon_Bringup](../07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) (the tapeout gate this page passes), [Full_Chip_Modeling](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/01_System_Modeling/01_Full_Chip_Modeling.md) (composes the §3 budget across the chip).
 - **Adjacent:** [Power_Reduction_Techniques](04_Power_Reduction_Techniques.md) (what you *do* when a check fails — clock gating, DVFS, multi-$V_t$), [UPF/CPF Power Intent](05_UPF_and_CPF_Power_Intent.md) (the power domains and states §10's multi-mode analysis exercises), [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md) (scan-shift power — the separate test-mode number of §2.2).
+
+---
+
+⬅ prev [UPF/CPF Power-Intent Flow](05_UPF_and_CPF_Power_Intent.md) · [Section Index](00_Index.md) · [Root Index](../Index.md)

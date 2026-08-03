@@ -258,3 +258,7 @@ If NPU tiling reduces its traffic to 420 GB/s, total becomes 540 GB/s (90% utili
 ---
 
 ← [Methodology index](00_Index.md) · next → [SoC/Chiplet PPA and Physical Implementation](02_SoC_Chiplet_PPA_and_Physical_Implementation.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [SoC and Chiplet Power, Performance, Area, and Physical Implementation](02_SoC_Chiplet_PPA_and_Physical_Implementation.md)

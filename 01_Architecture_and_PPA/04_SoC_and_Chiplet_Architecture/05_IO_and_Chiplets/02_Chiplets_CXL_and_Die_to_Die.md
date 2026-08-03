@@ -600,3 +600,7 @@ An eight-chiplet system with eight cores/chiplet could track 64 core sharers glo
 ---
 
 **Navigation:** [System Fabrics index](00_Index.md) · [Interconnect index](../00_Index.md)
+
+---
+
+⬅ prev [Quality of Service (QoS), Ordering, and Input/Output (I/O) Coherence](01_QoS_Ordering_and_IO_Coherence.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [High-Speed I/O and Peripheral Protocols](03_High_Speed_IO_and_Peripheral_Protocols.md)

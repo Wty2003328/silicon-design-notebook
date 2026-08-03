@@ -459,10 +459,10 @@ Development time is linear in row count. Halving the rows per bank nearly halves
 | 1 | 1024 | 2061 ps | 2.53 ns | — |
 | 2 | 512 | 1122 ps | 1.59 ns | +1 sense-amp row, +1 decoder |
 | 4 | 256 | 653 ps | 1.12 ns | +3 |
-| 8 | 128 | 418 ps | 0.88 ns | +7 |
+| 8 | 128 | 418 ps | 0.89 ns | +7 |
 | 16 | 64 | 301 ps | 0.77 ns | +15 |
 
-The gain saturates because the fixed 15 fF of periphery capacitance and the ~370 ps of non-development terms stop scaling, while the cost — an extra sense-amp row, write-driver row, decoder, and control per bank, plus a global bank-select mux and a global data bus whose own RC grows with bank count — is linear. Array efficiency falls from ~70% at 4 banks to ~45% at 16. **The optimum lands at 128–256 rows per bank**, which is why nearly every compiled SRAM you will ever look at has that shape internally, regardless of its capacity.
+Every access-time entry is that row's $t_{dev}$ plus the **470 ps** of non-development terms that §4.3 totals (60 + 90 + 120 + 90 + 110). The gain saturates because the fixed 15 fF of periphery capacitance and that 470 ps stop scaling, while the cost — an extra sense-amp row, write-driver row, decoder, and control per bank, plus a global bank-select mux and a global data bus whose own RC grows with bank count — is linear. Array efficiency falls from ~70% at 4 banks to ~45% at 16. **The optimum lands at 128–256 rows per bank**, which is why nearly every compiled SRAM you will ever look at has that shape internally, regardless of its capacity.
 
 ### 4.5 Why access time scales as it does
 
@@ -601,10 +601,10 @@ A macro is a rectangle with a fixed aspect ratio, fixed pin locations, fixed rou
 | Option | Footprint | Access time | Floorplan effect |
 |---|---|---|---|
 | 1 × 32 KB, 4 banks internal | ~11,000 µm², roughly 105 × 105 µm | 1.12 ns | One block to place; hard to fit around a narrow region; one set of pins to reach |
-| 4 × 8 KB, 1 bank each | ~3,000 µm² each plus 4 halos | 0.95 ns each | Placeable in an L-shape or along an edge; 4× the pin count to route; 4× the BIST hookup |
-| 2 × 16 KB | intermediate | ~1.0 ns | Usually the pragmatic answer |
+| 4 × 8 KB, 1 bank each | ~3,000 µm² each plus 4 halos | 1.08 ns each | Placeable in an L-shape or along an edge; 4× the pin count to route; 4× the BIST hookup |
+| 2 × 16 KB | intermediate | ~1.10 ns | Usually the pragmatic answer |
 
-More, smaller macros give the floorplanner freedom and slightly better access time, and cost pin routing, halo area, and per-instance engineering. Fewer, larger macros give better array efficiency and cost placement flexibility. When a block's macros exceed roughly 40% of its area, the macro placement *is* the floorplan and the standard cells fill what is left — see [Floorplanning and Power Planning](../05_Backend_Physical_Design/03_Floorplanning_and_Power_Planning.md). Decide the macro partitioning with the physical designer before RTL freeze, not after.
+More, smaller macros give the floorplanner freedom and only *slightly* better access time — all three options put 256 rows on a bitline, so §4.2's 653 ps of development is identical in every one of them and the only thing that shrinks is the global output wire inside a smaller array. Do not expect partitioning to buy latency; it buys placement freedom, and it costs pin routing, halo area, and per-instance engineering. Fewer, larger macros give better array efficiency and cost placement flexibility. When a block's macros exceed roughly 40% of its area, the macro placement *is* the floorplan and the standard cells fill what is left — see [Floorplanning and Power Planning](../05_Backend_Physical_Design/03_Floorplanning_and_Power_Planning.md). Decide the macro partitioning with the physical designer before RTL freeze, not after.
 
 ---
 
@@ -717,7 +717,7 @@ That should have made things catastrophically worse, and it did not, for a reaso
 
 $1\ \text{FIT} = 1$ failure per $10^9$ device-hours, so $\text{MTBF} = 10^9/\text{FIT}$ hours. Rates are quoted per megabit because that is the unit that composes.
 
-Take a FinFET SRAM at **3 FIT/Mbit** at sea level (a realistic mid-range figure; the honest range is 1–10 depending on cell, voltage, and altitude), and a chip with **32 MB = 256 Mbit** of SRAM:
+Take a 16 nm-class FinFET SRAM at **3 FIT/Mbit at sea level** (a realistic mid-range figure; the honest range is 1–10 FIT/Mbit depending on cell, voltage, and altitude, and every number below moves with it), and a chip with **32 MB = 256 Mbit** of SRAM:
 
 $$
 \text{FIT}_{\text{chip}} = 256 \times 3 = 768\ \text{FIT}
@@ -786,7 +786,7 @@ $$
 
 Syndrome $(s_4s_2s_1)_2 = (110)_2 = 6$. **The syndrome is the index of the bad bit.** Flip position 6 and the word is restored. That is the whole trick of the Hamming construction: because each column of $H$ is the binary index, the syndrome of a single error at position $i$ is column $i$, which reads out as $i$ directly.
 
-**Why this alone is dangerous.** Corrupt positions 3 and 5 instead. $s_1 = 0\oplus1\oplus1\oplus1 = 1$, $s_2 = 1\oplus0\oplus1\oplus1 = 1$, $s_4 = 0\oplus1\oplus1\oplus1 = 1$; syndrome $= 7$. The decoder would "correct" position 7 — turning a 2-bit error into a 3-bit error, silently. A SEC code without DED is *worse than nothing* against double errors.
+**Why this alone is dangerous.** Corrupt positions 3 and 5 instead, giving `0 1 0 0 1 1 1`. $s_1 = 0\oplus0\oplus1\oplus1 = 0$, $s_2 = 1\oplus0\oplus1\oplus1 = 1$, $s_4 = 0\oplus1\oplus1\oplus1 = 1$; syndrome $= (110)_2 = 6$. That is no accident: the syndrome of a double error is the XOR of the two columns, and column 3 XOR column 5 is $3 \oplus 5 = 6$. The decoder would "correct" position 6 — turning a 2-bit error into a 3-bit error, silently. A SEC code without DED is *worse than nothing* against double errors.
 
 **The extension.** Append an overall parity bit $p_0$ = XOR of all seven positions (here $0\oplus1\oplus1\oplus0\oplus0\oplus1\oplus1 = 0$). At decode, compute $s_0$ = mismatch of the overall parity, and the Hamming syndrome $S$:
 
@@ -1269,7 +1269,7 @@ All of these are the floorplanner's constraints, and they are the reason macro p
 | Access time scaling | $t_{acc}\approx a + b\sqrt{N}$ | Why L1 is small and L3 is slow (§4.5) |
 | Multi-port cell area law | $\propto (R+W)(R+2W)$ | Ports cost quadratically; bank instead (§5.4) |
 | SEC-DED overhead | 12.5% at 64 data bits, 21.9% at 32 | Why ECC granularity is 64 bits (§8.3) |
-| SRAM soft-error rate | 1–10 FIT/Mbit at FinFET nodes | 148-year chip MTBF, 5-day fleet MTBF (§8.2) |
+| SRAM soft-error rate | 1–10 FIT/Mbit at 16 nm FinFET, sea level; ~3 typical | 148-year chip MTBF, 5-day fleet MTBF (§8.2) |
 | Redundancy yield effect | 12% → 94% with 4 spares, → 99.97% with 8 | ~3% area buys manufacturability (§7.2) |
 | DRAM charge-transfer ratio | $C_s/(C_s+C_{BL}) \approx 0.25$, giving ~140 mV | Why DRAM bitlines are short and reads are destructive (§10.2) |
 | DRAM worst-cell leakage budget | < ~50 fA for 64 ms retention | The hardest number in volume manufacturing (§10.5) |
@@ -1307,24 +1307,24 @@ Check the alternatives. Banking into 4 banks does not help: retire reads 4 *cons
 ---
 
 **2 — Bitline development, and choosing between two fixes.**
-You need a 32 KB single-port SRAM (8192 × 32) at N7 with a 1.0 ns cycle at the slow corner. The compiler offers 4 banks of 256 rows or 8 banks of 128 rows, and separately a high-current bitcell with $I_{cell} = 12\ \mu$A at the slow corner at 26% larger cell area. Non-development access terms total 370 ps and $\Delta V_{\text{target}} = 110$ mV.
+You need a 32 KB single-port SRAM (8192 × 32) at N7 with a 1.0 ns cycle at the slow corner. The compiler offers 4 banks of 256 rows or 8 banks of 128 rows, and separately a high-current bitcell with $I_{cell} = 12\ \mu$A at the slow corner at 26% larger cell area. Non-development access terms total 470 ps (§4.3) and $\Delta V_{\text{target}} = 110$ mV.
 
 *Solution.* Bitline capacitance from §4.2, $C_{BL} = 0.15R + 15$ fF:
 
 $$
-R = 256: \quad C_{BL} = 53.4\ \text{fF}, \quad t_{dev} = \frac{53.4\times10^{-15}\times0.110}{9\times10^{-6}} = 653\ \text{ps}, \quad t_{acc} = 1023\ \text{ps}
+R = 256: \quad C_{BL} = 53.4\ \text{fF}, \quad t_{dev} = \frac{53.4\times10^{-15}\times0.110}{9\times10^{-6}} = 653\ \text{ps}, \quad t_{acc} = 1123\ \text{ps}
 $$
 $$
-R = 128: \quad C_{BL} = 34.2\ \text{fF}, \quad t_{dev} = \frac{34.2\times10^{-15}\times0.110}{9\times10^{-6}} = 418\ \text{ps}, \quad t_{acc} = 788\ \text{ps}
-$$
-
-The 4-bank version at 1023 ps misses a 1.0 ns cycle. How close is it? Solve for the differential that *would* fit, allowing 630 ps of development:
-
-$$
-\Delta V = \frac{t\,I_{cell}}{C_{BL}} = \frac{630\times10^{-12}\times9\times10^{-6}}{53.4\times10^{-15}} = 106\ \text{mV}
+R = 128: \quad C_{BL} = 34.2\ \text{fF}, \quad t_{dev} = \frac{34.2\times10^{-15}\times0.110}{9\times10^{-6}} = 418\ \text{ps}, \quad t_{acc} = 888\ \text{ps}
 $$
 
-which needs $\sigma_{V_{os}} \le 106/6 = 17.7$ mV against the 18 mV you have. It misses by 2% — a real miss, not a rounding one, because the 6σ requirement is what keeps the fleet from producing silent wrong data.
+The 4-bank version at 1123 ps misses a 1.0 ns cycle. How close is it? The 470 ps of fixed overhead leaves 530 ps for development, so solve for the differential that *would* fit:
+
+$$
+\Delta V = \frac{t\,I_{cell}}{C_{BL}} = \frac{530\times10^{-12}\times9\times10^{-6}}{53.4\times10^{-15}} = 89\ \text{mV}
+$$
+
+which needs $\sigma_{V_{os}} \le 89.3/6 = 14.9$ mV against the 18 mV you have. It misses by 17% — nowhere near a rounding error, because the 6σ requirement is what keeps the fleet from producing silent wrong data.
 
 Now price the two fixes. Total bits = 262,144.
 
@@ -1335,9 +1335,9 @@ $$
 \text{4 banks, HC cell } (0.034\ \mu\text{m}^2), \text{ efficiency } 65\%: \quad \frac{262144\times0.034}{0.65} = \frac{8913}{0.65} = 13{,}713\ \mu\text{m}^2
 $$
 
-and for the high-current option, $t_{dev} = 53.4\times10^{-15}\times0.110/12\times10^{-6} = 490$ ps, giving $t_{acc} = 860$ ps — it also makes timing.
+and for the high-current option, $t_{dev} = 53.4\times10^{-15}\times0.110/12\times10^{-6} = 490$ ps, giving $t_{acc} = 960$ ps — it also makes timing, but only just.
 
-*Answer:* **8 banks of 128 rows**, at 12,418 µm² versus 13,713 µm² — 9% smaller than the high-current-cell option, and it also has the better access time (788 ps versus 860 ps), leaving margin for the output load and the clock skew you have not budgeted yet. The general lesson: banking and cell selection are two knobs on the same equation, and the cheaper one is usually banking until array efficiency collapses.
+*Answer:* **8 banks of 128 rows**, at 12,418 µm² versus 13,713 µm² — 9% smaller than the high-current-cell option, and it also has the better access time (888 ps versus 960 ps), leaving margin for the output load and the clock skew you have not budgeted yet. The general lesson: banking and cell selection are two knobs on the same equation, and the cheaper one is usually banking until array efficiency collapses.
 
 ---
 

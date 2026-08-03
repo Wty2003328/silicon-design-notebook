@@ -602,3 +602,7 @@ The synthesis consequence across the cookbook: each is intentionally *shallow* l
 2. Cummings, C. E., "Synthesizable Finite State Machine Design Techniques Using the New SystemVerilog 3.0 Enhancements," SNUG, 2003. FSM/FSMD coding styles and enum-based state (§2).
 3. Cummings, C. E., "SystemVerilog's priority & unique — A Solution to Verilog's full_case & parallel_case Evil Twins," SNUG, 2005. `unique`/`priority` case semantics vs the old pragmas (§4).
 4. Sutherland, S., Davidmann, S., and Flake, P., *SystemVerilog for Design*, 2nd ed., Springer, 2006. Parameterization, `generate`, interfaces and modports (§§3, 5).
+
+---
+
+⬅ prev [Gate-Level Simulation and Emulation](13_Gate_Level_Sim_and_Emulation.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Flow Control and FIFOs](15_Flow_Control_and_FIFOs.md)

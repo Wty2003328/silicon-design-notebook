@@ -1219,7 +1219,7 @@ A review is not a status meeting. It is an attempt to move defect detection *ear
 | Block simulation | 1 day |
 | SoC integration | 1 week |
 | Post-netlist-freeze | 1 month, plus re-verification |
-| Silicon | 3 months and $1–5 M in mask costs |
+| Silicon | 3 months, plus a mask set: **$1.5–2 M at 28 nm, $8–12 M at 7 nm, $10–40 M for a full leading-node set** ([Signoff Orchestration §4.5](../06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md)) |
 
 A two-hour review with five engineers costs 10 engineer-hours. It pays for itself if it catches one defect that would otherwise have reached SoC integration. It does not need to be efficient; it needs to be *early*.
 

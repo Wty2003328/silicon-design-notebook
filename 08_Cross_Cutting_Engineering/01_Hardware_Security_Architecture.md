@@ -619,7 +619,7 @@ stateDiagram-v2
 
 ### 10.1 IP provenance: you did not write most of your chip
 
-A modern SoC is typically 50–80 % third-party or reused IP by gate count: CPU and GPU cores, memory controllers, interconnect, PHYs, sensor blocks. You receive it as encrypted RTL under IEEE 1735, as a netlist, or as a hard macro with only a LEF abstract. **You cannot fully audit any of these**, and the encrypted-RTL case deserves a specific note: IEEE 1735's version 1 flow was shown in published academic work to have exploitable weaknesses in how tools handled padding and errors, so "encrypted RTL" should be understood as a commercial-confidentiality mechanism, not as a security boundary.
+A modern SoC is typically 70–90 % third-party or reused IP by gate count: CPU and GPU cores, memory controllers, interconnect, PHYs, sensor blocks. You receive it as encrypted RTL under IEEE 1735, as a netlist, or as a hard macro with only a LEF abstract. **You cannot fully audit any of these**, and the encrypted-RTL case deserves a specific note: IEEE 1735's version 1 flow was shown in published academic work to have exploitable weaknesses in how tools handled padding and errors, so "encrypted RTL" should be understood as a commercial-confidentiality mechanism, not as a security boundary.
 
 The practical controls are therefore not "audit everything." They are:
 

@@ -338,3 +338,7 @@ If simulation shows only 3% speedup, while implementation estimates +12% core ar
 ---
 
 ← [CPU Workloads and DSE](01_CPU_Workloads_Performance_and_DSE.md) · next → [CPU Simulation Methodology and Evidence](03_CPU_Simulation_Methodology_and_Evidence.md)
+
+---
+
+⬅ prev [CPU Workloads, Performance Modeling, and Design-Space Exploration](01_CPU_Workloads_Performance_and_DSE.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU Simulation Methodology and Evidence](03_CPU_Simulation_Methodology_and_Evidence.md)

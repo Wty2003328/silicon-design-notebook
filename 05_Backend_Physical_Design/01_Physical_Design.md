@@ -205,7 +205,7 @@ Real designs choose a distribution style along one axis — how much power to bu
 - **Clock mesh** — every sink taps a shorted grid, so mismatches average out to `<5 ps` skew, at the cost of a permanently-switching high-capacitance grid that can dominate clock power. Reserved for where skew is worth the watts: high-performance CPU/GPU cores.
 - **Multi-source spine + local sub-trees** — for reticle-scale dies a single tree cannot span 25–30 mm without huge insertion delay, so a global spine feeds per-partition trees (§7).
 
-The trade is sharp because the **clock is the single largest dynamic-power consumer — typically 30–40% of dynamic power** — since it is the one net that toggles every cycle across the entire die. Every buffer added to cut skew adds to that 30–40%. CTS is therefore permanently torn between low skew (more buffers, mesh) and low power (fewer buffers, plain tree); the mesh-vs-tree choice is where a design declares which side it is on. Clocks are also routed with **non-default rules** (double width to cut $R$ and thus skew-inducing RC variation, double spacing to cut coupling and thus jitter), at roughly $4\times$ the routing resource of a normal wire.
+The trade is sharp because the **clock is the single largest dynamic-power consumer — the clock network itself is typically 20–35% of dynamic power, and 35–50% once each flop's internal clock inverters are counted** — since it is the one net that toggles every cycle across the entire die. Every buffer added to cut skew adds to that 30–40%. CTS is therefore permanently torn between low skew (more buffers, mesh) and low power (fewer buffers, plain tree); the mesh-vs-tree choice is where a design declares which side it is on. Clocks are also routed with **non-default rules** (double width to cut $R$ and thus skew-inducing RC variation, double spacing to cut coupling and thus jitter), at roughly $4\times$ the routing resource of a normal wire.
 
 ---
 
@@ -287,7 +287,7 @@ The pattern: ML does not replace the engineer or the solver; it accelerates the 
 | Global / local clock skew (7nm, 1 GHz) | $<50$ ps / $<20$ ps | CTS quality target (§4) |
 | Clock mesh skew | $<5$ ps | achievable only at high power (§4.3) |
 | Insertion delay | 200–500 ps (block); 800–1500 ps (reticle die) | latency-vs-skew cost (§4) |
-| Clock network power | 30–40% of dynamic power | the CTS skew-vs-power trade (§4.3) |
+| Clock network power | 20–35% of dynamic (35–50% incl. flop-internal clock) | the CTS skew-vs-power trade (§4.3) |
 | Metal layers (advanced node) | 13–18 | tiered stack answers $L^2$ (§5.1) |
 | DRC rule count | ~500 (65 nm) → 5000+ (N3) | design-rule-vs-density tension (§5.2) |
 | Std-cell track height | 6T / 7.5T / 9T | density-vs-timing library choice (§7) |
@@ -314,3 +314,7 @@ The pattern: ML does not replace the engineer or the solver; it accelerates the 
 5. Lin, Y. et al., "DREAMPlace: Deep Learning Toolkit-Enabled GPU Acceleration for Modern VLSI Placement," *DAC*, 2019. Differentiable, GPU-accelerated analytical placement (§3.2, §8).
 6. McMurchie, L. and Ebeling, C., "PathFinder: A Negotiation-Based Performance-Driven Router," *FPGA*, 1995. The negotiated-congestion routing of §5.
 7. Mirhoseini, A. et al., "A Graph Placement Methodology for Fast Chip Design," *Nature* 594, 2021. Reinforcement-learning floorplanning (§8).
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Signal Integrity and Reliability](02_Signal_Integrity_Reliability.md)

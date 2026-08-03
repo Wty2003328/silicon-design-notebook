@@ -87,7 +87,7 @@ The **deserializer** is the mirror: a 1:2 demux at half rate feeding a tree that
 
 ### 2.2 Why an embedded clock forces clock and data recovery
 
-The receiver has no clock wire. It has a local reference oscillator, but that oscillator and the transmitter's are independent crystals with independent tolerances: Ethernet specifies $\pm 100$ ppm at each end, PCIe $\pm 300$ ppm, so the two ends can differ by 200-600 parts per million. At 32 GT/s, 600 ppm is $32 \times 10^9 \times 600 \times 10^{-6} = 19.2$ million bits per second of drift. A free-running local clock would slip a whole bit every 52 microseconds and the link would be useless.
+The receiver has no clock wire. It has a local reference oscillator, but that oscillator and the transmitter's are independent crystals with independent tolerances: Ethernet specifies $\pm 100$ ppm at each end, PCIe $\pm 300$ ppm, so the two ends can differ by 200-600 parts per million. At 32 GT/s, 600 ppm is $32 \times 10^9 \times 600 \times 10^{-6} = 19.2$ million bits per second of drift. A free-running local clock would slip a whole bit every $1/(19.2\times10^6) = 52$ **nanoseconds** — under two thousand bit times — and the link would be useless.
 
 So the receiver must extract both the **frequency** and the **phase** of the transmitter's symbol clock from the data edges themselves. That is **clock and data recovery (CDR)**, and it is a phase-locked loop whose phase detector observes data transitions instead of a reference clock.
 
@@ -120,7 +120,7 @@ A raw bitstream cannot be sent as-is. It has three defects, and a line code fixe
 
 **Defect 1 — no transitions.** A run of identical bits gives the CDR no phase information. During a run the loop coasts on its accumulated frequency estimate, and the VCO's or PI's own jitter accumulates as a random walk. Long runs also break the receiver's automatic gain control, which needs edges to measure amplitude.
 
-**Defect 2 — no DC balance.** Serial links are almost always **AC-coupled**: a series capacitor at the receiver blocks the transmitter's common-mode voltage so that two chips at different supply voltages can interoperate. That capacitor is a high-pass filter. With $C = 100$ nF into $R = 100\ \Omega$ differential, $\tau = RC = 10\ \mu\text{s}$ and the corner is $1/(2\pi RC) = 159$ Hz. A run of $N$ identical bits at rate $R_b$ lasts $N/R_b$ and the signal droops by approximately $(N/R_b)/\tau$ of its amplitude. At 8 Gb/s a 66-bit run lasts 8.25 ns and droops 0.08% — nothing. At 100 Mb/s a 10 000-bit run lasts 100 µs and droops by ten time constants — the signal has gone to zero and the receiver is decoding noise. So the DC-balance requirement is severe at low rates and mild at high rates, which is exactly why 8b/10b's strict balance was abandoned for 64b/66b once rates rose.
+**Defect 2 — no DC balance.** Serial links are almost always **AC-coupled**: a series capacitor at the receiver blocks the transmitter's common-mode voltage so that two chips at different supply voltages can interoperate. That capacitor is a high-pass filter. With $C = 100$ nF into $R = 100\ \Omega$ differential, $\tau = RC = 10\ \mu\text{s}$ and the corner is $1/(2\pi RC) = 15.9$ kHz. A run of $N$ identical bits at rate $R_b$ lasts $N/R_b$ and the signal droops by approximately $(N/R_b)/\tau$ of its amplitude. At 8 Gb/s a 66-bit run lasts 8.25 ns and droops 0.08% — nothing. At 100 Mb/s a 10 000-bit run lasts 100 µs and droops by ten time constants — the signal has gone to zero and the receiver is decoding noise. So the DC-balance requirement is severe at low rates and mild at high rates, which is exactly why 8b/10b's strict balance was abandoned for 64b/66b once rates rose.
 
 **Defect 3 — no framing.** A bit stream has no byte boundaries. The receiver must find them.
 
@@ -150,7 +150,7 @@ An **additive** (side-stream) scrambler runs its LFSR free, seeded to a known va
 
 A **multiplicative** (self-synchronizing) scrambler feeds the *transmitted* bits back into its own shift register; 10GBASE-R uses $x^{58}+x^{39}+1$. The receiver needs no seed — it synchronizes automatically after 58 bits. The cost is **error multiplication**: because the polynomial has three terms, each channel bit error produces three descrambled bit errors, which triples the effective raw error rate the forward error correction must handle.
 
-Either way, scrambling does not *guarantee* anything. The probability that a scrambled stream produces a run of 66 identical bits is about $2^{-65}$; at 32 Gb/s such a run occurs once every $10^9$ years. That is the whole argument, and it is why standards committees accepted it.
+Either way, scrambling does not *guarantee* anything. The probability that a scrambled stream produces a run of 66 identical bits starting at any given bit is about $2^{-65} = 2.7\times10^{-20}$; at 32 Gb/s that is $8.7\times10^{-10}$ such runs per second, or one every $1.2\times10^{9}$ seconds — **about 37 years per lane**. And the consequence of one is not a bit error but a few tens of picoseconds of accumulated CDR drift, which the loop recovers from on the next edge. A guarantee replaced by a 37-year mean time to a *recoverable* event, in exchange for 22 percentage points of link bandwidth: that is the whole argument, and it is why standards committees accepted it.
 
 Scrambling also has a second, independent purpose: **electromagnetic emissions**. An unscrambled repetitive pattern — an idle sequence, a block of zeros — concentrates its spectral energy into a few narrow lines that radiate and fail regulatory limits. Scrambling spreads the same energy across the band, lowering the peak by 20-30 dB with no change in total power.
 
@@ -1291,7 +1291,7 @@ $$15.754 \times 0.8421 \times 0.9806 \times 0.9973 = 12.97\ \text{GB/s}$$
 
 $$B = \frac{8192\ \text{B}}{1.2\ \mu\text{s}} = 6.83\ \text{GB/s}$$
 
-To saturate the 14.2 GB/s of part (a) you would need $14.2\ \text{GB/s} \times 1.2\ \mu\text{s} = 17.0$ KB in flight, which is $17040/512 = 34$ tags. **With 16 tags the link runs at 48% of its capability, and the fix is to enable extended tags** — 8-bit tags give 256 outstanding requests, and PCIe 5.0's 14-bit tags give far more. This is the same $C \ge B \cdot T_{rt}$ relation as credit sizing in §5.5, applied to a different resource.
+To saturate the 14.2 GB/s of part (a) you would need $14.2\ \text{GB/s} \times 1.2\ \mu\text{s} = 17.0$ KB in flight, which is $17040/512 = 34$ tags. **With 16 tags the link runs at 48% of its capability, and the fix is to enable extended tags** — the 8-bit extended tag field gives 256 outstanding requests, the 10-bit tags added in PCIe 4.0 give 1024, and the 14-bit tags added in PCIe 6.0 give 16 384. This is the same $C \ge B \cdot T_{rt}$ relation as credit sizing in §5.5, applied to a different resource.
 
 ---
 

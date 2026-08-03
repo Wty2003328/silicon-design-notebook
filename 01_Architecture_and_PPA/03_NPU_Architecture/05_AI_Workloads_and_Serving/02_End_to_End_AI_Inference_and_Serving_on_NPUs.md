@@ -463,3 +463,7 @@ Open research questions include hardware-visible preemption points for chunked p
 ---
 
 ← [AI Workload and Graph Mapping](01_AI_Workload_and_Graph_Mapping_to_NPUs.md) · [AI Workloads and Serving index](00_Index.md) · next → [Performance, Compiler, Profiling, and Research Methodology](03_Performance_Compiler_Profiling_and_Research_Methodology.md)
+
+---
+
+⬅ prev [AI Workload and Graph Mapping to Neural Processing Units](01_AI_Workload_and_Graph_Mapping_to_NPUs.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Neural Processing Unit Performance, Compiler, Profiling, and Research Methodology](03_Performance_Compiler_Profiling_and_Research_Methodology.md)

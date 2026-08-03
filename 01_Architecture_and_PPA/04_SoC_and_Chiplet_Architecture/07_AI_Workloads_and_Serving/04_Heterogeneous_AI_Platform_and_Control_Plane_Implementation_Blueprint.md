@@ -133,3 +133,7 @@ Trace deployment generation → placement decision → reservation → artifact 
 ---
 
 ← [AI Serving Performance/Research](03_AI_Serving_Performance_Analysis_and_Research_Methodology.md) · next → [Distributed AI Serving Data Plane and State](05_Distributed_AI_Serving_Data_Plane_and_State_Implementation_Blueprint.md)
+
+---
+
+⬅ prev [Artificial Intelligence Serving Performance Analysis and Research Methodology](03_AI_Serving_Performance_Analysis_and_Research_Methodology.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Distributed AI Serving Data-Plane and State Implementation Blueprint](05_Distributed_AI_Serving_Data_Plane_and_State_Implementation_Blueprint.md)

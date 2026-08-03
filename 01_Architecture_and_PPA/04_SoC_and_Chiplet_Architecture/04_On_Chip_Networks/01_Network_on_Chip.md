@@ -447,3 +447,7 @@ The fabric's parameters are ultimately *wire* statements:
 6. McKeown, N., "The iSLIP Scheduling Algorithm for Input-Queued Switches," *IEEE/ACM Trans. Networking*, 7(2), 1999. The iterative separable allocator of §5.
 7. Kim, J., Dally, W.J., Towles, B., and Gupta, A.K., "Microarchitecture of a High-Radix Router," *ISCA*, 2005; and "Flattened Butterfly," *ISCA*, 2007. High-radix / low-diameter on-chip topologies.
 8. Arm, *CoreLink CMN-600 / CMN-700 Coherent Mesh Network Technical Reference Manual*. The CHI-on-mesh node types and hashing of §7.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Routing, Flow Control, and Deadlock](02_Routing_Flow_Control_and_Deadlock.md)

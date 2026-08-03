@@ -88,7 +88,7 @@ $$
 P_{core} \;=\; \sum_{u\in\text{units}} E_u\,A_u\,f \;+\; P_{clock} \;+\; \sum_u P_{leak,u}
 $$
 
-where $E_u$ = per-event energy (from CACTI-fit arrays / characterized cells), $A_u$ = events per cycle (from the [CPI stack](../00_Design_Methodology/01_SoC_Chiplet_Workloads_Performance_and_DSE.md) counters), $f$ = clock. There is **no new physics at the core level** — the clock tree ($P_{clock}$, typically 30–40% of core dynamic) and leakage ($V\cdot I_{leak}$, scaled by area and temperature) are added, and the array/op energies are *looked up, not recomputed*. That is the whole game restated: push the physics down, keep the composition cheap.
+where $E_u$ = per-event energy (from CACTI-fit arrays / characterized cells), $A_u$ = events per cycle (from the [CPI stack](../00_Design_Methodology/01_SoC_Chiplet_Workloads_Performance_and_DSE.md) counters), $f$ = clock. There is **no new physics at the core level** — the clock tree ($P_{clock}$, typically 20–35% of core dynamic for the network alone, 35–50% counting flop-internal clock) and leakage ($V\cdot I_{leak}$, scaled by area and temperature) are added, and the array/op energies are *looked up, not recomputed*. That is the whole game restated: push the physics down, keep the composition cheap.
 
 Each per-event energy is itself the $\alpha C V^2$ of a structure (§2.4), so the roll-up is literally *activity × per-event-energy*, and it is worth carrying one to a number. *Worked number — McPAT-style rollup.* Take three structures on a core at $f=3$ GHz: an integer ALU at $E_{\text{ALU}}=3$ pJ/op, a 32 KB L1 at $E_{\text{L1}}=15$ pJ/access, and a register-file read port at $E_{\text{RF}}=1$ pJ/read. Suppose the per-cycle activity counts (from the CPI stack) are $A_{\text{ALU}}=1.0$ op, $A_{\text{L1}}=0.6$ access, $A_{\text{RF}}=2.4$ reads (two source operands + writeback per instruction at IPC $\approx1.5$). Then
 
@@ -763,3 +763,7 @@ flowchart LR
 9. Intel, *Running Average Power Limit (RAPL)* and *Turbo Boost* documentation; NVIDIA GPU Boost / `nvidia-smi` power-cap docs; AMD Precision Boost. The governor mechanisms of §2.4.
 10. Kleinrock, L., *Queueing Systems, Volume 1: Theory*, Wiley, 1975. The M/M/1 birth–death response time $T_0/(1-\rho)$ and the Pollaczek–Khinchine mean-wait formula (M/D/1 half-variance) behind the §2.2 queueing derivation.
 11. Sakurai, T. and Newton, A.R., "Alpha-power law MOSFET model and its applications to CMOS inverter delay," *IEEE JSSC*, 25(2), 1990. The $f\propto(V-V_t)^{\alpha_v}/V$ delay law behind the §2.4 DVFS cube.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

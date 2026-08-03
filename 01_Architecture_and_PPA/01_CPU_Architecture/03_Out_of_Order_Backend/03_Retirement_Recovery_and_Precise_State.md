@@ -355,3 +355,7 @@ Cross-references: the precise-exception path this section reuses is §4; killed-
 ---
 
 **Navigation:** [Out-of-Order Backend index](00_Index.md) · [CPU index](../00_Index.md)
+
+---
+
+⬅ prev [Load-Store Unit and Memory Ordering](02_Load_Store_Unit_and_Memory_Ordering.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Advanced CPU Scheduling](04_Advanced_Scheduling_Wakeup_and_Replay.md)

@@ -463,7 +463,7 @@ $$
 C_{wakeup} \;\propto\; W\cdot S\cdot W \;=\; S\,W^2,
 $$
 
-**the associative wakeup cost is quadratic in issue width.** This is the theoretical reason superscalar width *plateaus*: doubling $W$ quadruples the per-cycle CAM work *and* lengthens the broadcast wires, yet all of it must still complete inside the one-cycle wakeup→select recurrence that (unlike the rest of the pipe) cannot be pipelined away. The achievable $N$ and $W$ are jointly whatever keeps that loop's delay under $t_{cyc}$; since the delay rises with $N$ (tag flight + match-line RC) and with $W$ (more buses to compare), there is a hard *frequency-bounded* ceiling on the two together — which is why sustained issue width has sat at 4–8 for two decades while transistor budgets grew ~100×. The escape is not a bigger CAM but **partitioning** (§4.5): $c$ clusters of $N/c$ entries cut each queue's compare count and wire length by $\sim c$, trading cross-cluster steering for a loop that closes. Concretely, at 3 GHz a cycle is $\approx 333$ ps $\approx 12$ FO4 inverter delays, and wakeup+select alone consume 6–9 of them:
+**the associative wakeup cost is quadratic in issue width.** This is the theoretical reason superscalar width *plateaus*: doubling $W$ quadruples the per-cycle CAM work *and* lengthens the broadcast wires, yet all of it must still complete inside the one-cycle wakeup→select recurrence that (unlike the rest of the pipe) cannot be pipelined away. The achievable $N$ and $W$ are jointly whatever keeps that loop's delay under $t_{cyc}$; since the delay rises with $N$ (tag flight + match-line RC) and with $W$ (more buses to compare), there is a hard *frequency-bounded* ceiling on the two together — which is why sustained issue width has sat at 4–8 for two decades while transistor budgets grew ~100×. The escape is not a bigger CAM but **partitioning** (§4.5): $c$ clusters of $N/c$ entries cut each queue's compare count and wire length by $\sim c$, trading cross-cluster steering for a loop that closes. Concretely, at 3 GHz on a 7 nm-class process a cycle is $\approx 333$ ps, and with a fan-out-of-four inverter delay of $\approx 12$ ps that is $\approx 28$ FO4; wakeup+select alone consume 6–9 of them:
 
 | Component | FO4 | Note |
 |---|---|---|
@@ -472,7 +472,7 @@ $$
 | Ready reduction | 1 | combine per-source ready bits |
 | Select (priority encode + port check) | 2–3 | oldest-first over the ready set |
 
-That leaves only a few FO4 for latch, clock skew, and the wire flight to the execution units. This is why issue queues stay **small** (32–64 entries per queue), get **split or clustered**, and why widening issue or raising frequency trades directly against IQ depth. It is also why the scheduler — not the ROB or the PRF — is usually the *frequency-limiting* structure of the core, and why §4.4–4.5 are all about keeping it small.
+So roughly a quarter to a third of the cycle is spent on one loop that cannot be pipelined — before latch overhead, clock skew and jitter, and the wire flight to the execution units are paid. Push the clock instead of the width and the fraction becomes brutal: a 5 GHz N5 core has a 200 ps cycle at $\approx 10$ ps per FO4, i.e. $\approx 20$ FO4, so the same 6–9 FO4 loop is now approaching half the cycle. This is why issue queues stay **small** (32–64 entries per queue), get **split or clustered**, and why widening issue or raising frequency trades directly against IQ depth. It is also why the scheduler — not the ROB or the PRF — is usually the *frequency-limiting* structure of the core, and why §4.4–4.5 are all about keeping it small.
 
 ### 4.4 Data-capture vs tag-only schedulers
 
@@ -761,3 +761,7 @@ Typical parameters for a modern high-performance 4-to-6-wide OoO core (early 202
 7. Palacharla, S., Jouppi, N.P., and Smith, J.E., "Complexity-Effective Superscalar Processors," *ISCA*, 1997. The wakeup–select critical-path analysis of §4.3.
 8. Tullsen, D.M., Eggers, S.J., and Levy, H.M., "Simultaneous Multithreading," *ISCA*, 1995.
 9. RISC-V International, *The RISC-V Instruction Set Manual, Vol. II: Privileged Architecture*, 2024. Trap, CSR, and delegation model of §9.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Load-Store Unit and Memory Ordering](02_Load_Store_Unit_and_Memory_Ordering.md)

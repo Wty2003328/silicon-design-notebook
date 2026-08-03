@@ -370,3 +370,7 @@ Counters require a declared aggregation window and granularity. Per-link peaks c
 3. UCIe Consortium, *UCIe Specifications*. https://www.uciexpress.org/specifications
 4. Compute Express Link Consortium, *CXL 4.0 Specification*. https://computeexpresslink.org/cxl-specification/
 5. Jouppi, N. et al., “In-Datacenter Performance Analysis of a Tensor Processing Unit,” *ISCA*, 2017. https://doi.org/10.1145/3079856.3080246
+
+---
+
+⬅ prev [End-to-End Artificial Intelligence Serving on Systems on Chip and Chiplet Systems](01_End_to_End_AI_Serving_on_SoCs_and_Chiplets.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Artificial Intelligence Serving Performance Analysis and Research Methodology](03_AI_Serving_Performance_Analysis_and_Research_Methodology.md)

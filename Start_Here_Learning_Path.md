@@ -26,12 +26,12 @@ Every item in the left column is a true and useful abstraction. Every item in th
 |---|---|---|---|
 | A gate is a Boolean function. | A gate is a network of transistors with finite drive, input capacitance, threshold voltage, leakage, and a delay that depends on its load and on how fast its input arrived. | Circuit-level design and library characterization | [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md), [Standard-Cell Libraries](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) — Stage 0 |
 | Wires connect things. | Wires have resistance and capacitance, couple to their neighbors, dominate delay at advanced nodes, consume the routing resource that limits how dense your design can be, and fail by electromigration. | Physical design, signal integrity, extraction | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md), [Routing and Extraction](05_Backend_Physical_Design/06_Routing_and_Parasitic_Extraction.md) — Stage 2 |
-| The clock arrives everywhere at once. | The clock is a physical network with insertion delay, skew, jitter, and a power bill that is 30–40% of the chip's dynamic power. Two flops in the same design see different clock edges. | Clock tree synthesis, static timing analysis | [Clock Tree Synthesis](05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md), [STA](06_Signoff/01_STA.md) — Stage 1–2 |
+| The clock arrives everywhere at once. | The clock is a physical network with insertion delay, skew, jitter, and a power bill that is 20–35% of the chip's dynamic power for the network alone, and 35–50% once each flop's internal clock inverters are counted. Two flops in the same design see different clock edges. | Clock tree synthesis, static timing analysis | [Clock Tree Synthesis](05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md), [STA](06_Signoff/01_STA.md) — Stage 1–2 |
 | The design either works or it doesn't. | The design works at some voltages, temperatures, and process outcomes and not others; correctness is a claim over a space of corners, and it is *proved* by analysis rather than observed by simulation. | Corners, derating, signoff | [STA](06_Signoff/01_STA.md), [Signoff Orchestration](06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md) — Stage 2 |
-| Area is a number in a report. | Area is money, and power is a thermal and battery constraint that is often *the* binding one; both are budgeted before a line of RTL is written. | PPA, power architecture | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md), [Low-Power Architecture](02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md) — Stage 1–3 |
+| Area is a number in a report. | Area is money, and power is a thermal and battery constraint that is often *the* binding one; both are budgeted before a line of RTL is written. | PPA, power architecture | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md), [Low-Power Architecture](02_Power_and_Low_Power/03_Low_Power_Architecture_and_Domain_Partitioning.md) — Stage 0–3 |
 | If the testbench passes, you're done. | You cannot simulate your way to confidence on a design with $2^{10^6}$ states; you need coverage models, constrained randomization, assertions, formal proof, and a plan that says when you are allowed to stop. And after all that, the chip must still be *testable on a tester* after manufacture. | Verification methodology, DFT | [Verification Planning](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md), [DFT and ATPG](06_Signoff/02_DFT_and_ATPG.md) — Stage 1–2 |
 
-There is a seventh lie that is subtler and that catches good students hardest: **the course let you believe a design is something one person writes.** A real chip is 70–90% integrated IP, assembled by a team of dozens under a schedule, with a hand-off contract at every boundary. That is removed in Stage 3 by [IP Reuse and Integration](08_Cross_Cutting_Engineering/04_IP_Reuse_Integration_and_Register_Automation.md) and [Design Methodology](08_Cross_Cutting_Engineering/03_Design_Methodology_and_EDA_Infrastructure.md).
+There is a seventh lie that is subtler and that catches good students hardest: **the course let you believe a design is something one person writes.** A real chip is 70–90% integrated IP, assembled by a team of dozens under a schedule, with a hand-off contract at every boundary. This one is removed in pieces rather than at a single point. [Design Methodology and EDA Infrastructure](08_Cross_Cutting_Engineering/03_Design_Methodology_and_EDA_Infrastructure.md) §13 is used from **Stage 0** onward, because it is the toolchain every build project in this page runs on; the same page's material on repositories, regressions, reviews, and release discipline becomes the point rather than the means in **Stage 3**, alongside [IP Reuse and Integration](08_Cross_Cutting_Engineering/04_IP_Reuse_Integration_and_Register_Automation.md). That staggering is deliberate: you need the tools long before you need the organisation that runs them.
 
 ---
 
@@ -40,13 +40,14 @@ There is a seventh lie that is subtler and that catches good students hardest: *
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    S0["Stage 0 · Reconditioning<br/>a gate is a circuit, a flop is a race<br/>4-6 weeks"]:::a
-    S1["Stage 1 · Frontend engineer<br/>synthesizable RTL you can defend,<br/>verified on purpose<br/>10-14 weeks"]:::b
-    S2["Stage 2 · Implementation engineer<br/>constraints, gates, geometry,<br/>timing, test, signoff<br/>10-14 weeks"]:::c
+    S0["Stage 0 · Reconditioning<br/>a gate is a circuit, a flop is a race<br/>6-9 weeks"]:::a
+    S1["Stage 1 · Frontend engineer<br/>synthesizable RTL you can defend,<br/>verified on purpose<br/>10-15 weeks"]:::b
+    S2["Stage 2 · Implementation engineer<br/>constraints, gates, geometry,<br/>timing, test, signoff<br/>16-22 weeks"]:::c
     S3["Stage 3 · Architect<br/>where the numbers come from<br/>before anyone writes RTL<br/>12-20 weeks"]:::d
     S4["Stage 4 · Specialist and researcher<br/>depth in one track, evidence,<br/>original design<br/>ongoing"]:::e
     X["Cross-cutting track 08<br/>power, security, safety,<br/>methodology, IP<br/>read alongside 1-3"]:::f
     S0 --> S1 --> S2 --> S3 --> S4
+    S0 -.-> X
     S1 -.-> X
     S2 -.-> X
     S3 -.-> X
@@ -58,9 +59,9 @@ flowchart TD
     classDef f fill:#e5e7eb,stroke:#4b5563,color:#000
 ```
 
-The solid arrows are hard dependencies: Stage 2's timing analysis is unintelligible without Stage 1's synchronous discipline, and Stage 3's PPA reasoning is guesswork without Stage 2's knowledge of what things actually cost. The dotted arrows are soft: the cross-cutting material in folder 08 and folder 02 should be interleaved, not deferred, because power and testability are decisions you make *while* designing, not after.
+The solid arrows are hard dependencies: Stage 2's timing analysis is unintelligible without Stage 1's synchronous discipline, and Stage 3's PPA reasoning is guesswork without Stage 2's knowledge of what things actually cost. The dotted arrows are soft: the cross-cutting material in folder 08 and folder 02 should be interleaved, not deferred, because power and testability are decisions you make *while* designing, not after. The dotted arrow from Stage 0 is there because you install the open-source toolchain from [Design Methodology §13](08_Cross_Cutting_Engineering/03_Design_Methodology_and_EDA_Infrastructure.md) before the very first build project — the cross-cutting track starts on day one, it just deepens later.
 
-**Total elapsed time to the end of Stage 3, at 10–15 focused hours per week: roughly 9 to 14 months.** That is the honest number. It is faster with a job that forces daily practice, and slower without hands-on tool access. Nothing about this is a race — a person who spends two years and can derive every result is in a far better position than one who spends four months and recognizes vocabulary.
+**Total elapsed time to the end of Stage 3, at 10–15 focused hours per week: roughly 10 to 15 months.** That is the honest number, and it is arithmetic rather than a guess: the hour column in every table below is derived from the target page's actual length at a stated rate, and §10 shows the sum. It went *up* when the estimates were last recalibrated, because the earlier figures had been assigned per page rather than per page-length. It is faster with a job that forces daily practice, and slower without hands-on tool access. Nothing about this is a race — a person who spends two years and can derive every result is in a far better position than one who spends four months and recognizes vocabulary.
 
 ---
 
@@ -76,12 +77,13 @@ The solid arrows are hard dependencies: Stage 2's timing analysis is unintelligi
 
 | # | Page | What to take from it | Hours |
 |---|---|---|---|
-| 1 | [Chip Design Flow Overview](Chip_Design_Flow_Overview.md) | The map. Read it once now and again at the end of every stage; it means something different each time. | 2 |
-| 2 | [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) | MOSFET as a switch with finite resistance; the inverter voltage-transfer curve and noise margin; RC delay and why delay depends on load; dynamic vs leakage power; FinFET; the 6T SRAM cell. | 12–16 |
-| 3 | [Logic Building Blocks](00_Fundamentals/02_Logic_Building_Blocks.md) | Logical effort; multiplexers and Shannon expansion; **latch vs flip-flop at the transistor level**; metastability and mean-time-between-failures (MTBF); FSM encodings; hazards; FIFO depth. This is the most important single page in Stage 0. | 16–20 |
-| 4 | [Adders and Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md) | Why a ripple adder is slow, how carry-lookahead and prefix networks buy delay with area, carry-save, Booth, Wallace. The first place you *feel* an area/delay trade. | 10–14 |
-| 5 | [Memory Circuits and Technologies](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Why arrays are not built from flops; the SRAM read-disturb vs write-margin conflict; sense amplifiers; memory compilers; ECC; DRAM's destructive read and where every DDR timing parameter comes from. | 12–16 |
-| 6 | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md) | $P = \alpha C V^2 f$ derived, not quoted; short-circuit and leakage components; why Dennard scaling ended and what that did to the field. | 8–10 |
+| 1 | [Chip Design Flow Overview](Chip_Design_Flow_Overview.md) | The map. Read it once now and again at the end of every stage; it means something different each time. | 2–3 |
+| 2 | [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) | MOSFET as a switch with finite resistance; the inverter voltage-transfer curve and noise margin; RC delay and why delay depends on load; dynamic, short-circuit, and leakage power; FinFET; logical effort applied to a path; the 6T SRAM cell. | 9–13 |
+| 3 | [Logic Building Blocks](00_Fundamentals/02_Logic_Building_Blocks.md) | Logical effort; multiplexers and Shannon expansion; **latch vs flip-flop at the transistor level**; metastability and mean-time-between-failures (MTBF); FSM encodings; hazards; FIFO depth. This is the most important single page in Stage 0. | 17–23 |
+| 4 | [Adders and Multipliers](00_Fundamentals/03_Adders_and_Multipliers.md) | Why a ripple adder is slow, how carry-lookahead and prefix networks buy delay with area, carry-save, Booth, Wallace. The first place you *feel* an area/delay trade. | 7–10 |
+| 5 | [Floating Point](00_Fundamentals/04_Floating_Point.md) — §§1–7 and §§9–10 | The exponent-vs-significand budget; ULP and machine epsilon; subnormals; round-to-nearest-even and the guard/round/sticky summary; catastrophic cancellation and why the FMA exists; why a significand multiplier costs roughly width-squared; the AI-format landscape. **§8 builds the complete unit gate by gate — skip it now and return when you need to build one.** | 5–7 |
+| 6 | [Memory Circuits and Technologies](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Why arrays are not built from flops; the SRAM read-disturb vs write-margin conflict; sense amplifiers; memory compilers; ECC; DRAM's destructive read and where every DDR timing parameter comes from. The longest page in Stage 0 and worth its length. | 23–32 |
+| 7 | [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md) | $P = \alpha C V^2 f$ derived, not quoted; short-circuit and leakage components; why Dennard scaling ended and what that did to the field. | 5–7 |
 
 **Build this.** Install Verilator or Icarus Verilog and a waveform viewer (GTKWave or Surfer) — the toolchain section of [Design Methodology and EDA Infrastructure](08_Cross_Cutting_Engineering/03_Design_Methodology_and_EDA_Infrastructure.md) §13 lists exactly what to install and how. Then:
 
@@ -92,7 +94,7 @@ The solid arrows are hard dependencies: Stage 2's timing analysis is unintelligi
 **Exit check — answer without looking:**
 
 1. Why does a NAND gate have a smaller area than a NOR gate for the same drive strength, and what does that imply about which one a synthesis tool prefers?
-2. A flip-flop's setup time is specified as 40 ps. What physical event is being measured, and what does the specification's *failure criterion* actually say?
+2. A flip-flop's setup time is specified as 40 ps. What physical event *inside the flop* is that 40 ps measuring, and why is missing it by 1 ps not the same kind of event as missing it by 100 ps? (How the 40 ps is *characterized* — the library's clock-to-Q degradation criterion — is Stage 2, [Libraries §3](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md); you should be able to answer this one from the flop's internals alone.)
 3. Why does a hold violation not depend on the clock period?
 4. You double a net's capacitance. What happens to delay, to dynamic energy per transition, and to leakage? Explain each separately.
 5. Why can a 1 Mbit array not be made from flip-flops, and roughly where is the crossover?
@@ -113,25 +115,27 @@ The solid arrows are hard dependencies: Stage 2's timing analysis is unintelligi
 
 | # | Page | What to take from it | Hours |
 |---|---|---|---|
-| 1a | [RTL Design Methodology](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) | The synchronous contract; reset architecture (sync vs async vs async-assert/sync-deassert) and why the choice is architectural; datapath/control separation; the coding rules that make inference predictable. | 10–12 |
-| 2a | [Data Types and Basics](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md) | 2-state vs 4-state; **X-optimism and X-pessimism** — the single most commonly misunderstood thing in RTL; nets vs variables; packed vs unpacked. | 8 |
-| 3a | [Procedural, Processes, and IPC](03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) | The event-region scheduler. Once you understand the active/inactive/NBA regions, the blocking-vs-nonblocking rule stops being folklore and becomes a theorem. | 8–10 |
-| 4a | [RTL Design Patterns](03_Frontend_RTL_and_Verification/14_RTL_Design_Patterns.md) | Pipelining and retiming, FSMD, parameterization, the cookbook (counters, shifters, LFSRs, priority encoders, round-robin arbiters). | 8–10 |
-| 5a | [Flow Control and FIFOs](03_Frontend_RTL_and_Verification/15_Flow_Control_and_FIFOs.md) | valid/ready, the skid buffer, credit-based flow control, back-pressure through a pipeline. This is the vocabulary of every real interface. | 8–10 |
-| 6a | [Arithmetic and Memory RTL](03_Frontend_RTL_and_Verification/16_Arithmetic_and_Memory_RTL.md) | Q-format, saturation, rounding, RAM inference and read-during-write, register files, control/status registers. | 8 |
-| 7a | [Clock Division and Switching](03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) | Dividers, glitch-free clock muxing, integrated clock gating. Where "just gate the clock with an AND" becomes visibly wrong. | 6–8 |
-| 8a | [Async Design and CDC](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Metastability and MTBF quantified; two-flop synchronizers and what they do *not* solve; gray coding; handshakes; the asynchronous FIFO derived in full. | 12–14 |
-| 9a | [Lint, CDC and RDC Signoff](03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md) | Static checking as a gate, structural vs functional CDC, reset-domain crossing. | 6 |
+| 1a | [RTL Design Methodology](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) | The synchronous contract; reset architecture (sync vs async vs async-assert/sync-deassert) and why the choice is architectural; datapath/control separation; the coding rules that make inference predictable. | 6–8 |
+| 2a | [Data Types and Basics](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md) | 2-state vs 4-state; **X-optimism and X-pessimism** — the single most commonly misunderstood thing in RTL; nets vs variables; packed vs unpacked. | 6–8 |
+| 3a | [Procedural, Processes, and IPC](03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) | The event-region scheduler. Once you understand the active/inactive/NBA regions, the blocking-vs-nonblocking rule stops being folklore and becomes a theorem. | 5–7 |
+| 4a | [RTL Design Patterns](03_Frontend_RTL_and_Verification/14_RTL_Design_Patterns.md) | Pipelining and retiming, FSMD, parameterization, the cookbook (counters, shifters, LFSRs, priority encoders, round-robin arbiters). | 4–6 |
+| 5a | [Flow Control and FIFOs](03_Frontend_RTL_and_Verification/15_Flow_Control_and_FIFOs.md) | valid/ready, the skid buffer, credit-based flow control, back-pressure through a pipeline. This is the vocabulary of every real interface. | 5–7 |
+| 6a | [DSP and Fixed-Point Hardware](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md) — §§1–4 and §11 | Where a datapath's bit widths *come from*: deriving the format instead of guessing it, quantization noise as a budget, guard bits and saturation, the FIR as the canonical datapath, and the bridge to AI quantization. Read this **before** 7a — it is where 7a's Q-format material is derived. §§5–10 (CORDIC, IIR, division, FFT) are excellent and can wait until a project needs them. | 7–9 |
+| 7a | [Arithmetic and Memory RTL](03_Frontend_RTL_and_Verification/16_Arithmetic_and_Memory_RTL.md) | Q-format, saturation, rounding, RAM inference and read-during-write, register files, control/status registers. | 5–7 |
+| 8a | [Clock Division and Switching](03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md) | Dividers, glitch-free clock muxing, integrated clock gating. Where "just gate the clock with an AND" becomes visibly wrong. | 6–9 |
+| 9a | [PLL, DLL and Clock Distribution](03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) | Where the clock you have been dividing actually comes from: the PLL as a feedback loop, loop bandwidth and damping, the jitter budget and which noise the loop filters, VCO trade-offs, the DLL and when to prefer it, and distribution to millions of endpoints. The jitter number you will later subtract in every setup equation is derived here. | 6–8 |
+| 10a | [Async Design and CDC](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Metastability and MTBF quantified; two-flop synchronizers and what they do *not* solve; gray coding; handshakes; the asynchronous FIFO derived in full. | 6–9 |
+| 11a | [Lint, CDC and RDC Signoff](03_Frontend_RTL_and_Verification/07_Lint_CDC_RDC_Signoff.md) | Static checking as a gate, structural vs functional CDC, reset-domain crossing. | 5–7 |
 
 **Verification track:**
 
 | # | Page | What to take from it | Hours |
 |---|---|---|---|
-| 1b | [Assertions and Coverage](03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md) | Immediate vs concurrent SVA; assert/assume/cover as three different claims; functional vs code coverage and why 100% code coverage means very little. | 10 |
-| 2b | [OOP and Randomization](03_Frontend_RTL_and_Verification/08_OOP_and_Randomization.md) | Classes and polymorphism in a testbench; constrained randomization; `rand` vs `randc`; why randomization without coverage is noise. | 8–10 |
-| 3b | [UVM Methodology](03_Frontend_RTL_and_Verification/10_UVM_Methodology.md) | Components and phasing, sequences, factory, `config_db`, TLM, the register abstraction layer, a full AXI4-Lite testbench. Long, and worth every hour. | 16–20 |
-| 4b | [Verification Planning and Coverage Closure](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md) | The verification plan as a contract; coverage taxonomy; the coverage-driven loop; **the stopping criterion**. | 8–10 |
-| 5b | [Formal Verification](03_Frontend_RTL_and_Verification/12_Formal_Verification.md) | SAT/BDD, bounded model checking vs k-induction vs IC3/PDR, logic equivalence checking, where formal beats simulation and where it collapses. | 12–14 |
+| 1b | [Assertions and Coverage](03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md) | Immediate vs concurrent SVA; assert/assume/cover as three different claims; functional vs code coverage and why 100% code coverage means very little. | 6–8 |
+| 2b | [OOP and Randomization](03_Frontend_RTL_and_Verification/08_OOP_and_Randomization.md) | Classes and polymorphism in a testbench; constrained randomization; `rand` vs `randc`; why randomization without coverage is noise. | 5–7 |
+| 3b | [UVM Methodology](03_Frontend_RTL_and_Verification/10_UVM_Methodology.md) | Components and phasing, sequences, factory, `config_db`, TLM, and the register abstraction layer, each derived from the reuse problem it solves. §10 then connects those pieces into an **AXI4-Lite write-agent skeleton**, traced from sequence to pins and back for a single transaction — a spine to build on, not a finished testbench. It is a compact page; the hours go into building the environment in the projects below, not into reading it. | 6–8 |
+| 4b | [Verification Planning and Coverage Closure](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md) | The verification plan as a contract; coverage taxonomy; the coverage-driven loop; **the stopping criterion**. | 5–7 |
+| 5b | [Formal Verification](03_Frontend_RTL_and_Verification/12_Formal_Verification.md) | SAT/BDD, bounded model checking vs k-induction vs IC3/PDR, logic equivalence checking, where formal beats simulation and where it collapses. | 7–10 |
 
 **Cross-cutting, read alongside:** [Block Activity and Power](02_Power_and_Low_Power/02_Block_Activity_and_Power.md) and [Power Reduction Techniques](02_Power_and_Low_Power/04_Power_Reduction_Techniques.md), so that clock gating and operand isolation enter your hands as RTL habits rather than as someone else's later problem.
 
@@ -166,24 +170,26 @@ The solid arrows are hard dependencies: Stage 2's timing analysis is unintelligi
 
 | # | Page | What to take from it | Hours |
 |---|---|---|---|
-| 1 | [Timing Constraints (SDC)](04_Synthesis/02_Constraints_SDC.md) | Constraints as the formal specification of timing intent; clocks and generated clocks; I/O delay; the four exceptions; the two ways to be wrong. **Read this before synthesis**, because synthesis is meaningless without it. | 10 |
-| 2 | [STA](06_Signoff/01_STA.md) | The exhaustiveness argument; the timing graph; setup and hold derived from first principles; skew, jitter, insertion delay, CPPR; OCV/AOCV/POCV; corners. | 14–18 |
-| 3 | [Standard-Cell Libraries and Characterization](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) | What a cell physically is; the library views and why they must agree; how a `.lib` number is made; NLDM interpolation; CCS/ECSM; arcs; the corner explosion; Vt flavors. This page is the reason the previous two have numbers in them. | 12–14 |
-| 4 | [Logic Synthesis](04_Synthesis/01_Synthesis_and_Optimization.md) | Synthesis as a compiler; the four stages and why the order is forced; technology mapping as covering; retiming; the timing/area/power Pareto surface. | 10–12 |
-| 5 | [Synthesis Flow and QoR Closure](04_Synthesis/04_Synthesis_Flow_and_QoR_Closure.md) | The actual run: files in, files out, a real script, elaboration warnings, compile strategy, hierarchical budgeting, DFT-aware and power-aware compile, **reading the reports**, the triage playbook, LEC as a gate. | 12–14 |
-| 6 | [Physical Synthesis and Design Planning](04_Synthesis/05_Physical_Synthesis_and_Design_Planning.md) | Why the wireload model died; partitioning; die-size estimation; budgets across partitions; congestion prediction; the hand-off package. | 10 |
-| 7 | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md) | The concept-level tour of floorplan → place → CTS → route, and why timing is fiction until there is geometry. | 10–12 |
-| 8 | [Floorplanning and Power Planning](05_Backend_Physical_Design/03_Floorplanning_and_Power_Planning.md) | The least reversible decision on a chip; utilization and routability; macro placement; the power grid derived from a current budget; multi-voltage floorplanning. | 12 |
-| 9 | [Placement, Legalization, and Optimization](05_Backend_Physical_Design/04_Placement_Legalization_and_Optimization.md) | The three phases; HPWL as a proxy; legalization; in-place optimization; buffer insertion theory; congestion; scan reordering. | 10–12 |
-| 10 | [Clock Tree Synthesis](05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md) | Ideal clock becomes real: what changes in the inequalities; tree structures; balancing; gating in the tree; **useful skew derived**; CTS and OCV; post-CTS hold fixing. | 12 |
-| 11 | [Routing and Parasitic Extraction](05_Backend_Physical_Design/06_Routing_and_Parasitic_Extraction.md) | The metal stack as a resource; the routing graph; vias; advanced-node rules; antenna; extraction physics; SPEF; Elmore; RC corners. | 12 |
-| 12 | [Signal Integrity and Reliability](05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) | Crosstalk, IR drop, electromigration, aging, antenna — the ways a physically correct design still fails. | 10 |
-| 13 | [DFT and ATPG](06_Signoff/02_DFT_and_ATPG.md) | Scan as the conversion of a sequential test problem into a combinational one; fault models; ATPG; at-speed test; compression; MBIST. | 12–14 |
-| 14 | [Gate-Level Sim and Emulation](03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) | What GLS catches that RTL simulation cannot; SDF; X-propagation; emulation and FPGA prototyping. | 8 |
-| 15 | [Physical Verification (DRC/LVS)](06_Signoff/03_Physical_Verification_DRC_LVS.md) | Two proofs, because there are two ways to be wrong. | 8 |
-| 16 | [Signoff Orchestration, ECOs, and Tape-out Readiness](06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md) | Signoff as a scheduling problem; MMMC; the ECO taxonomy; metal-only ECO mechanics; waivers; the readiness checklist. | 10 |
-| 17 | [UPF/CPF Power Intent](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md) and [Power Analysis and Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) | How power architecture becomes a machine-readable contract that survives the whole flow, and how power is finally proved. | 14 |
-| 18 | [Fabrication Process](07_Manufacturing_and_Bringup/01_Fabrication_Process.md), [IC Packaging](07_Manufacturing_and_Bringup/02_IC_Packaging.md), [Tape-out and Post-Silicon Bring-up](07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) | Where the geometry goes, what the package does to your timing and power, and what happens when the chip comes back. | 16 |
+| 1 | [Timing Constraints (SDC)](04_Synthesis/02_Constraints_SDC.md) | Constraints as the formal specification of timing intent; clocks and generated clocks; I/O delay; the four exceptions; the two ways to be wrong. **Read this before synthesis**, because synthesis is meaningless without it. | 4–6 |
+| 2 | [STA](06_Signoff/01_STA.md) | The exhaustiveness argument; the timing graph; setup and hold derived from first principles; skew, jitter, insertion delay, CPPR; OCV/AOCV/POCV; corners. A short, dense page that is almost all derivation — its ideas are re-used by rows 8–16, so it repays a second pass more than a slow first one. | 5–7 |
+| 3 | [Standard-Cell Libraries and Characterization](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) | What a cell physically is; the library views and why they must agree; how a `.lib` number is made; NLDM interpolation; CCS/ECSM; arcs; the corner explosion; Vt flavors. This page is the reason the previous two have numbers in them. | 12–17 |
+| 4 | [Logic Synthesis](04_Synthesis/01_Synthesis_and_Optimization.md) | Synthesis as a compiler; the four stages and why the order is forced; technology mapping as covering; retiming; the timing/area/power Pareto surface. | 4–6 |
+| 5 | [Synthesis Flow and QoR Closure](04_Synthesis/04_Synthesis_Flow_and_QoR_Closure.md) | The actual run: files in, files out, a real script, elaboration warnings, compile strategy, hierarchical budgeting, DFT-aware and power-aware compile, **reading the reports**, the triage playbook, LEC as a gate. | 12–16 |
+| 6 | [Physical Synthesis and Design Planning](04_Synthesis/05_Physical_Synthesis_and_Design_Planning.md) | Why the wireload model died; partitioning; die-size estimation; budgets across partitions; congestion prediction; the hand-off package. | 10–14 |
+| 7 | [Physical Design](05_Backend_Physical_Design/01_Physical_Design.md) | The concept-level tour of floorplan → place → CTS → route, and why timing is fiction until there is geometry. | 5–7 |
+| 8 | [Floorplanning and Power Planning](05_Backend_Physical_Design/03_Floorplanning_and_Power_Planning.md) | The least reversible decision on a chip; utilization and routability; macro placement; the power grid derived from a current budget; multi-voltage floorplanning. | 10–15 |
+| 9 | [Placement, Legalization, and Optimization](05_Backend_Physical_Design/04_Placement_Legalization_and_Optimization.md) | The three phases; HPWL as a proxy; legalization; in-place optimization; buffer insertion theory; congestion; scan reordering. | 9–12 |
+| 10 | [Clock Tree Synthesis](05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md) | Ideal clock becomes real: what changes in the inequalities; tree structures; balancing; gating in the tree; **useful skew derived**; CTS and OCV; post-CTS hold fixing. | 10–14 |
+| 11 | [Routing and Parasitic Extraction](05_Backend_Physical_Design/06_Routing_and_Parasitic_Extraction.md) | The metal stack as a resource; the routing graph; vias; advanced-node rules; antenna; extraction physics; SPEF; Elmore; RC corners. The longest page in Stage 2. | 18–25 |
+| 12 | [Signal Integrity and Reliability](05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md) | Crosstalk, IR drop, electromigration, aging, antenna — the ways a physically correct design still fails. | 4–6 |
+| 13 | [DFT and ATPG](06_Signoff/02_DFT_and_ATPG.md) | Scan as the conversion of a sequential test problem into a combinational one; fault models; ATPG; at-speed test; compression; MBIST. | 6–8 |
+| 14 | [Gate-Level Sim and Emulation](03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) | What GLS catches that RTL simulation cannot; SDF; X-propagation; emulation and FPGA prototyping. | 4–6 |
+| 15 | [Physical Verification (DRC/LVS)](06_Signoff/03_Physical_Verification_DRC_LVS.md) | Two proofs, because there are two ways to be wrong. | 4–6 |
+| 16 | [Signoff Orchestration, ECOs, and Tape-out Readiness](06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md) | Signoff as a scheduling problem; MMMC; the ECO taxonomy; metal-only ECO mechanics; waivers; the readiness checklist. One of the two longest pages in the stage, and the one that reads most like the job. | 16–22 |
+| 17 | [UPF/CPF Power Intent](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md) and [Power Analysis and Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) | How power architecture becomes a machine-readable contract that survives the whole flow, and how power is finally proved. | 13–18 |
+| 18 | [Fabrication Process](07_Manufacturing_and_Bringup/01_Fabrication_Process.md) | Lithography and why it is the problem the field orbits; multi-patterning vs EUV; variation as a distribution; yield, $D_0$, and the economics that decide die size. | 6–8 |
+| 19 | [IC Packaging](07_Manufacturing_and_Bringup/02_IC_Packaging.md) | The four jobs of a package; wire-bond vs flip-chip; power delivery into a hundred-amp load; the thermal stack; the reticle-and-yield inflection that produced chiplets; 2.5D and 3D. | 5–7 |
+| 20 | [Tape-out and Post-Silicon Bring-up](07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) | What happens when the chip comes back: the bring-up ladder, shmoo plots, binning, and respin economics. A short page — it is a map of post-silicon, not a manual for it. | 3–4 |
 
 **Build this.** Install the open-source implementation flow ([Design Methodology](08_Cross_Cutting_Engineering/03_Design_Methodology_and_EDA_Infrastructure.md) §13): Yosys, OpenSTA, OpenROAD/OpenLane, KLayout, and an open PDK.
 
@@ -295,14 +301,17 @@ The [Concept Dependency Map](Concept_Dependency_Map.md) is the tool for the spec
 
 ## 10. Time and effort calibration
 
+**How the hour column was computed.** Every hour figure in Stages 0–2 is derived, not assigned: **1.0–1.4 hours per 1,000 words of the target page**, rounded to whole hours. That rate — roughly 700 to 1,000 words an hour — is what deliberate study costs on material this dense: you stop at each derivation and reproduce it, and you work the problems at the end. Skimming is three to five times faster and teaches approximately nothing, which is the whole argument of §11. Two consequences worth naming. First, **a page's hours track its length, not its glamour**: STA is short and central, Routing and Extraction is long and specialised, and the table now says so. Second, where a row covers only part of a page (Stage 0 row 5, Stage 1 row 6a) the rate is applied to those sections only. Stage 3 is the one stage not computed this way, because its length depends on which architecture book you pick.
+
 | Quantity | Realistic value | Why it matters |
 |---|---|---|
-| Deliberate study of one substantive page | 2–4 hours | Re-deriving and working problems, not skimming |
-| Stage 0 | 4–6 weeks at 10–15 h/week | Removes the free-gate, free-wire assumption |
-| Stage 1 | 10–14 weeks | The two skills, design and verification, interleaved |
-| Stage 2 | 10–14 weeks | The largest single block; also the highest-leverage |
+| Deliberate study rate | 1.0–1.4 h per 1,000 words | Re-deriving and working problems, not skimming |
+| One median page (~5,700 words) | 6–8 hours | The rate applied to the typical page in this notebook |
+| Stage 0 | 68–95 h reading + 8–12 h building → **6–9 weeks** at 12 h/week | Removes the free-gate, free-wire assumption |
+| Stage 1 | 90–125 h reading + 35–50 h building → **10–15 weeks** | The two skills, design and verification, interleaved |
+| Stage 2 | 160–224 h reading + 30–45 h building → **16–22 weeks** | The largest single block by a wide margin; also the highest-leverage |
 | Stage 3 | 12–20 weeks for one architecture book | Depth in one beats breadth in four |
-| Elapsed to end of Stage 3 | 9–14 months at 10–15 h/week | The honest number |
+| Elapsed to end of Stage 3 | 44–66 weeks ≈ **10–15 months** at 10–15 h/week | The honest number, and it is the sum of the four rows above |
 | First full OpenLane RTL-to-GDS run | 1–3 days including failures | The single most educational exercise in the notebook |
 | Ratio of verification to design engineers on a real chip | roughly 2:1 to 3:1 | Where the jobs are |
 | Fraction of an SoC's gates that are reused IP | 70–90% | Why integration is the senior skill |

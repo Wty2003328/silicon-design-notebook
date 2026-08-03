@@ -327,3 +327,7 @@ so a per-die escape that would be a nuisance in a monolith becomes a scrapped *s
 7. van de Goor, A.J., *Testing Semiconductor Memories: Theory and Practice*, Wiley, 1991. March algorithms and memory fault models.
 8. Rajski, J. et al., "Embedded Deterministic Test," *IEEE Trans. CAD*, 23(5), 2004. The LFSR-based compression of §7.2.
 9. IEEE Std 1149.1 (JTAG boundary scan), 1500 (embedded-core wrapper), 1687 (IJTAG). The access-standard family of §7.
+
+---
+
+⬅ prev [Static Timing Analysis](01_STA.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Physical Verification](03_Physical_Verification_DRC_LVS.md)

@@ -218,7 +218,7 @@ where $C_{\text{eff}}$ = effective switched capacitance (gate + wire), $E_{\text
 
 Two primitives concentrate the power, and both are structural rather than workload-driven — which is why they are the first levers:
 
-- **The clock tree is the headline.** Its net toggles every cycle by construction ($\alpha=1$) and it carries the largest fanout and total capacitance on the die (CTS buffers, every FF clock pin, the H-tree). So **clock power is commonly 30–40 % of total dynamic power**, higher in flop-dense, low-logic-depth blocks. This is the whole reason clock gating is the first-line dynamic-power lever ([Power_Reduction_Techniques §2](04_Power_Reduction_Techniques.md)): killing one node's clock removes its single biggest per-cycle energy term, guaranteed, independent of data.
+- **The clock tree is the headline.** Its net toggles every cycle by construction ($\alpha=1$) and it carries the largest fanout and total capacitance on the die (CTS buffers, every FF clock pin, the H-tree). So **the clock network is commonly 20–35 % of total dynamic power, and 35–50 % once each flop's internal clock inverters are counted**, higher in flop-dense, low-logic-depth blocks. This is the whole reason clock gating is the first-line dynamic-power lever ([Power_Reduction_Techniques §2](04_Power_Reduction_Techniques.md)): killing one node's clock removes its single biggest per-cycle energy term, guaranteed, independent of data.
 - **Memory arrays concentrate the rest.** [CACTI](https://en.wikipedia.org/wiki/CACTI) is the standard analytical model for array access energy — given (capacity, ports, banks, node) it sums decoder, wordline, **bitline** (the dominant term: precharge and discharge of long bitlines), sense-amp, and H-tree energy. In large arrays *leakage* and, in retention modes, retention power often exceed dynamic, which is why last-level caches are aggressively power-gated or held at low $V$ when idle.
 
 Everything else in the block is combinational logic and wires, whose power the earlier sections were about estimating.
@@ -298,3 +298,7 @@ The mechanics of the activity files themselves — SAIF's backward/forward annot
 3. Najm, F.N., "A Survey of Power Estimation Techniques in VLSI Circuits," *IEEE TVLSI*, 2(4), 1994. The vectored-vs-vectorless taxonomy and the correlation problem of §4.
 4. Li, S. et al., "McPAT: An Integrated Power, Area, and Timing Modeling Framework for Multicore Architectures," *MICRO*, 2009. The architectural component decomposition of §6–§7.
 5. Muralimanohar, N., Balasubramonian, R., and Jouppi, N.P., "CACTI 6.0: A Tool to Model Large Caches," HP Labs, 2009. The array access-energy model of §6.
+
+---
+
+⬅ prev [Power Fundamentals](01_Power_Fundamentals.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Low-Power Architecture](03_Low_Power_Architecture_and_Domain_Partitioning.md)

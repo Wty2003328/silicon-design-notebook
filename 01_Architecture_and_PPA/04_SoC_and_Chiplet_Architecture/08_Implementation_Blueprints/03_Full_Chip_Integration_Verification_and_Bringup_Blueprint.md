@@ -195,3 +195,7 @@ A full-chip architecture is ready for implementation/tapeout review when:
 ---
 
 ← [NoC/QoS/I/O/Chiplet Blueprint](02_NoC_QoS_IO_and_Chiplet_Integration_Blueprint.md) · [SoC/Chiplet Blueprint Index](00_Index.md)
+
+---
+
+⬅ prev [SoC NoC, QoS, I/O, and Chiplet-Integration Blueprint](02_NoC_QoS_IO_and_Chiplet_Integration_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

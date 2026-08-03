@@ -25,7 +25,7 @@ Here is what a ~$400$ M-instance, 7 nm-class SoC actually runs before release. R
 
 | # | Check | What it consumes | What it proves | Typical full-chip runtime | Owner |
 |---|---|---|---|---|---|
-| 1 | **Timing (STA)** — static timing analysis | gate netlist, SDC, `.lib` timing models, SPEF parasitics | no setup/hold/recovery/removal/min-pulse-width violation in any signed-off mode-corner | 2–6 h per scenario; 30–150 scenarios | STA / timing |
+| 1 | **Timing (STA)** — static timing analysis | gate netlist, SDC, `.lib` timing models, SPEF parasitics | no setup/hold/recovery/removal/min-pulse-width violation in any signed-off mode-corner | 2–6 h per scenario; 30–100 scenarios | STA / timing |
 | 2 | **SI timing** — signal-integrity delta-delay | + coupling capacitance, aggressor switching windows, noise-aware cell models | crosstalk-induced delay push-out and pull-in are bounded and included in slack | $1.5$–$3\times$ the nominal STA cost | STA / SI |
 | 3 | **Noise / glitch** | coupling, cell noise-immunity models, driver strengths | no aggressor-induced glitch is large enough to propagate or be latched | similar to SI STA | SI |
 | 4 | **Power — average and peak** | netlist, `.lib` power tables, switching activity from VCD/FSDB or SAIF | the part fits its thermal and battery budget at the specified workload | 2–12 h per workload | power |
@@ -99,7 +99,7 @@ flowchart TD
 
 **Contract of the figure.** Every solid edge is a *data* dependency: the target consumes an artifact the source produces, so running the target on a stale source is not a check, it is a lie. The dashed edge is the one that makes signoff a scheduling problem: an ECO re-enters at place-and-route and invalidates the entire subtree below it.
 
-**One concrete trace.** Suppose STA reports a $-4$ ps setup violation. The fix is a VT (threshold-voltage) swap on one cell. That single cell change invalidates, in order: the routing of the nets it touches (its pin geometry may differ), the fill in the window around it (fill is placed against routing), the extraction of every net within a coupling neighborhood of the change, the SI windows of every aggressor that touches those nets, all 36 timing scenarios, the local power and IR numbers, and the DRC/LVS status of the merged GDS. If you re-run only STA and declare victory, you have signed off a database that no longer matches the one that passed DRC.
+**One concrete trace.** Suppose STA reports a $-4$ ps setup violation. The fix is a VT (threshold-voltage) swap on one cell — the cheapest change in the flow, because the flavors share a footprint and pin geometry so nothing moves and nothing re-routes (§4.1). It still invalidates, in order: the fill in the window around it (the cell's own implant and density signature changed), the extraction of every net within a coupling neighborhood, the SI windows of every aggressor that touches those nets, all 36 timing scenarios, the local power and IR numbers, and the DRC/LVS status of the merged GDS. If you re-run only STA and declare victory, you have signed off a database that no longer matches the one that passed DRC.
 
 **The trade-off it illustrates.** You could re-run everything after every ECO — perfectly sound, and it takes four days per turn, so you get maybe six turns before tape-out. Or you can run *incremental* checks over the changed window only, which takes two hours and gets you forty turns, at the cost of trusting the tool's notion of "changed window". Real flows do both: incremental during the burn-down (§8), one **final full run on the exact released database** as the gate. The single most common tape-out disaster is skipping that final full run because "only one cell changed".
 
@@ -133,7 +133,7 @@ The naive cross product is
 
 $$ N_{\text{naive}} = 6 \times 3 \times 3 \times 3 \times 4 \times 2 = 1296 \text{ scenarios.}$$
 
-At 3 hours each that is 3888 CPU-hours per timing turn *per block*, and with 14 blocks, $54{,}400$ CPU-hours — about six days of a 400-slot farm doing nothing else. It is not affordable, and most of it is redundant. Real flows prune to 30–150.
+At 3 hours each that is 3888 CPU-hours per timing turn *per block*, and with 14 blocks, $54{,}400$ CPU-hours — about six days of a 400-slot farm doing nothing else. It is not affordable, and most of it is redundant. Real flows prune to 30–100.
 
 **Prune 1 — only foundry-qualified PVT combinations exist.** The `.lib` files that exist are the ones the foundry characterized. You do not get SS at $0.90$ V; you get the named combinations. This alone collapses (process × voltage × temperature) from 27 to typically 5–7 named corners.
 
@@ -164,7 +164,7 @@ $1296 \to 36$ is a $36\times$ reduction, and it is entirely made of *claims*. Ea
 | Prune | The claim | How it fails in silicon |
 |---|---|---|
 | Named PVT only | the foundry characterized the worst case | a *system* corner the foundry did not model — e.g. supply droop stacking on a low-V corner — sits between two characterized points |
-| Setup only at slow | slow is monotonically worse for max-delay | **temperature inversion**: below ~$0.8$ V at FinFET nodes, cells get *slower* at $-40$ °C than at $125$ °C, so the cold corner is a setup corner too. Dropping $-40$ °C from setup is a silicon bug |
+| Setup only at slow | slow is monotonically worse for max-delay | **temperature inversion** ([Standard_Cell_Libraries §6.2](../04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) derives the crossover): inside the inverted region the cold corner is a setup corner too, so dropping $-40$ °C from setup is a silicon bug |
 | RC pairing | `cworst` dominates for setup | for a resistance-dominated long net, `rcworst` is worse; for a mixed block neither dominates, so you must keep both — and there are blocks where a *middle* corner is worst |
 | SI on the "fast" corner is benign | crosstalk hurts most where the victim is slow | delta-delay depends on *window overlap*, not on absolute speed. A faster corner can shift an aggressor's window *into* the victim's transition and make a path worse. SI breaks monotonicity, so SI-aware dominance arguments must be re-derived, not inherited |
 | Shift-mode setup dropped | 50 MHz cannot fail setup | true for logic paths, false for **min-pulse-width** and clock-gating checks, which are frequency-independent. Keep those checks in every mode |
@@ -242,7 +242,7 @@ Crosstalk delta-delay is circular. The delay added to a victim depends on whethe
 
 **Contract.** The victim's stage delay is charged extra only for aggressors whose *switching window* — the interval $[\text{earliest arrival}, \text{latest arrival}]$ at the aggressor net — overlaps the victim's transition. Aggressor A does; aggressor B does not.
 
-**One trace.** Iteration 0 has no window information, so the tool assumes every aggressor can switch at any time — infinite windows, all coupling charged. On a net with three aggressors and $C_c = 4$ fF against $C_{\text{gnd}} = 6$ fF, the worst-case switching-factor model charges up to $2C_c$ of effective load against $C_{\text{gnd}}+C_c$, roughly doubling the effective capacitance and inflating stage delay by $30$–$60\%$. Iteration 1 computes real windows from those (pessimistic) delays and finds aggressor B never overlaps; the delta shrinks. Iteration 2 re-computes windows from the smaller delays; windows move slightly. Iteration 3 changes almost nothing. **Two to three iterations is the practical convergence point**, and tools cap it.
+**One trace.** Iteration 0 has no window information, so the tool assumes every aggressor can switch at any time — infinite windows, all coupling charged. On a net with three aggressors and $C_c = 4$ fF against $C_{\text{gnd}} = 6$ fF, the worst-case switching-factor model charges $C_{\text{gnd}} + 2C_c = 14$ fF where the quiet-aggressor value is $C_{\text{gnd}}+C_c = 10$ fF — **1.4× the effective capacitance**, and roughly that much again on stage delay, i.e. $30$–$60\%$ once the three aggressors' worst alignment is stacked. Iteration 1 computes real windows from those (pessimistic) delays and finds aggressor B never overlaps; the delta shrinks. Iteration 2 re-computes windows from the smaller delays; windows move slightly. Iteration 3 changes almost nothing. **Two to three iterations is the practical convergence point**, and tools cap it.
 
 **The failure it illustrates.** The iteration is not guaranteed to converge — it can oscillate, where shrinking the victim's delay moves its window off an aggressor, which shrinks it further, which moves it back on. Tools break oscillation by *damping* (accepting only part of each update) or by taking the pessimistic **union** of the windows seen across iterations. Both are safe-by-construction and both leave pessimism on the table. When a path's slack changes by tens of ps between SI iterations, that path is window-sensitive and should be fixed structurally (shielding, spacing, driver upsizing — see [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md)) rather than trimmed to exactly zero slack, because its slack is not a stable number.
 
@@ -274,7 +274,7 @@ The Boolean function changes: a bug fix, a spec change, a missing reset. The net
 
 The **freeze line** is a layer boundary negotiated with the foundry: everything below it (transistors, local interconnect, and typically the first metal or two) is already committed to masks that exist; everything above it can be re-masked. A metal-only ECO implements a *functional* change using only re-routing above the freeze line, which means it can create no new transistors. It must therefore build the new logic out of transistors that are already there and unused: **spare cells** (§5).
 
-The argument for its existence is purely economic. A full mask set at 7 nm is roughly $\$8$–$12$ M and 4–6 weeks to build; the metal subset above the freeze line is 15–20 masks out of 70-plus and costs $20$–$35\%$ of that. Better, the base-layer wafers can be **banked**: partially processed wafers held in the fab at the freeze layer, so a metal-only respin starts from work-in-progress and reaches finished wafers in 5–7 weeks instead of 11–14.
+The argument for its existence is purely economic. A full mask set at 7 nm is roughly $\$8$–$12$ M and 4–6 weeks to build; the metal subset above the freeze line is 15–20 masks out of 70-plus and costs $20$–$35\%$ of that. Better, the base-layer wafers can be **banked**: partially processed wafers held in the fab at the freeze layer, so a metal-only respin starts from work-in-progress and reaches finished wafers in 4–5 weeks of back-end processing instead of the 12–14 a full flow takes.
 
 ### 4.4 Full-layer ECO — everything re-masked
 
@@ -290,10 +290,10 @@ Every mask is regenerated. You get complete freedom: re-floorplan, re-place, re-
 | Masks regenerated | 0 | 0 | ~15–20 of 70+ | all |
 | Mask cost, 7 nm class | 0 | 0 | $\$2$–$3.5$ M | $\$8$–$12$ M |
 | Mask cost, 28 nm class | 0 | 0 | $\$0.3$–$0.6$ M | $\$1.5$–$2$ M |
-| Engineering time | hours to 2 days per turn | 1–3 weeks | 2–4 weeks | 6–10 weeks |
+| Engineering time | hours to 2 days per turn | 1–3 weeks | 2–4 weeks | 5–10 weeks |
 | Mask build | — | — | 2–3 weeks | 4–6 weeks |
-| Wafers to finished die | — | — | 5–7 weeks from bank | 11–14 weeks |
-| **Total to new silicon** | — | — | **8–12 weeks** | **20–26 weeks** |
+| Wafers to finished die | — | — | 4–5 weeks from bank | 12–14 weeks |
+| **Total to new silicon** | — | — | **8–12 weeks** | **21–30 weeks** |
 | LEC obligation | trivial pass | vs modified RTL | vs modified RTL, with spares tied off | vs modified RTL |
 | Main risk | churn: each fix creates new violations | schedule | **the fix may not be constructible from available spares, or the ECO path may not meet timing** | schedule and market window |
 | When it is right | closure, always | any pre-tape-out bug | post-silicon bug that fits the spare budget | bug too large for spares, or several bugs plus a performance uplift |
@@ -351,15 +351,15 @@ Two stages instead of one, and — much more importantly — three ECO routes: $
 
 **Contract of the figure.** The ECO route is modeled as the driver's effective output resistance $R_d$ in series with a $\pi$-model of the wire ($R_w$, $C_w$ split at both ends) loading the spare cell's input capacitance $C_{in}$. The delay of this stage is what an inline fix would not have paid.
 
-**The arithmetic.** Take a 7 nm-class intermediate metal at $R_w \approx 0.6\ \Omega/\mu\text{m}$ and $C_w \approx 0.18\ \text{fF}/\mu\text{m}$, with $\text{FO4} \approx 13$ ps as the delay yardstick.
+**The arithmetic.** Take a 7 nm-class intermediate metal at $R_w \approx 5\ \Omega/\mu\text{m}$ and $C_w \approx 0.18\ \text{fF}/\mu\text{m}$ (the values derived in [Physical_Synthesis §1](../04_Synthesis/05_Physical_Synthesis_and_Design_Planning.md)), with $\text{FO4} \approx 13$ ps as the delay yardstick.
 
-- Wire: 40 µm gives $R_w = 24\ \Omega$, $C_w = 7.2$ fF.
-- Wire's own Elmore term: $R_w C_w / 2 = 24 \times 7.2\,\text{f} / 2 \approx 0.09$ ps — negligible. **At these lengths the wire is a capacitor, not a transmission line.**
-- Driver: an X2 cell with effective output resistance $\approx 6\ \text{k}\Omega$ driving $7.2$ fF gives $0.69 R_d C \approx 0.69 \times 6000 \times 7.2\times10^{-15} \approx 30$ ps.
+- Wire: 40 µm gives $R_w = 200\ \Omega$, $C_w = 7.2$ fF.
+- Wire's own Elmore term: $R_w C_w / 2 = 200 \times 7.2\,\text{f} / 2 \approx 0.7$ ps — negligible. **At these lengths the wire is a capacitor, not a transmission line**; the ECO cost is the *charging* of $C_w$, not the wire's own $RC$.
+- Driver: an X2 cell with effective output resistance $\approx 3\ \text{k}\Omega$ (an X1 is $\approx 6.5\ \text{k}\Omega$, back-solved from $\text{FO4} = 0.69 R_d C_{\text{fo4}}$ at $C_{\text{fo4}} = 2.8$ fF) driving $7.2$ fF gives $0.69 R_d C \approx 0.69 \times 3000 \times 7.2\times10^{-15} \approx 15$ ps.
 - Logic: NAND2 $\approx 13$ ps, INV $\approx 9$ ps.
-- Total ECO path $\approx 30 + 13 + 9 \approx 52$ ps, plus a second route back to the sink of similar order.
+- Total ECO path $\approx 15 + 13 + 9 \approx 37$ ps out to the spare, plus a second route back to the sink of similar order — call it $\approx 55$ ps end to end.
 
-An inline AND2 placed where it was needed would have cost $\approx 15$ ps. **The metal-only implementation of the same logic is roughly $3$–$5\times$ slower**, and that penalty is the reason a metal-only ECO can be functionally correct and still fail timing. Mitigations: place the fix on a path with slack, use a high-drive spare buffer at the source of each ECO route, and — the real lever — set the spare grid pitch small enough that $C_w$ stays under a few fF.
+An inline AND2 placed where it was needed would have cost $\approx 15$ ps. **The metal-only implementation of the same logic is roughly $2.5$–$4\times$ slower**, and that penalty is the reason a metal-only ECO can be functionally correct and still fail timing. Mitigations: place the fix on a path with slack, use a high-drive spare buffer at the source of each ECO route, and — the real lever — set the spare grid pitch small enough that $C_w$ stays under a few fF.
 
 ### 5.3 The routing constraint and the freeze line
 
@@ -367,7 +367,7 @@ Only layers above the freeze line may change. Three consequences follow, and the
 
 1. **You must be able to reach the spare cell's pins.** Pin shapes live on M0/M1. If the freeze line were "M4 and above", no changeable layer could touch a pin and the whole scheme collapses. This is why the freeze line is set low — commonly at M1 or M2 — and why a "metal-only" respin is 15–20 masks, not 2.
 2. **You are routing in a used channel.** The existing routes on M4 and above must be ripped up and re-routed around the new ECO nets, without disturbing anything below the line. In a block at $85\%$ routing utilization, this is where metal-only ECOs actually fail: not for lack of spares, but for lack of *track*. Blocks intended to be ECO-friendly are routed to a lower upper-layer utilization on purpose.
-3. **Detours are long.** With only upper layers available, an ECO net that would have taken 40 µm point-to-point may take 90 µm of actual routing, tripling $C_w$ and the 30 ps above with it. Always cost a metal-only ECO with the *routed* length, never the Manhattan distance.
+3. **Detours are long.** With only upper layers available, an ECO net that would have taken 40 µm point-to-point may take 90 µm of actual routing, more than doubling $C_w$ and the 15 ps driver term above with it. Always cost a metal-only ECO with the *routed* length, never the Manhattan distance.
 
 ### 5.4 LVS and LEC implications
 
@@ -419,8 +419,7 @@ Commands below are PrimeTime/ICC2-flavored; Cadence and Siemens equivalents diff
 ##############################################################################
 
 # ---- 1. Rebuild the exact view the violation was reported in ---------------
-set_app_var timing_enable_si_analysis true
-set_app_var si_enable_analysis        true
+set_app_var si_enable_analysis true          ;# the one PT variable that turns SI on
 
 read_verilog   ./rel/r12/top_r12.routed.v
 current_design top
@@ -435,37 +434,48 @@ report_constraint -all_violators -significant_digits 4 \
                   > ./rpt/r12.func_max.ss_m40c_cworst.viol
 
 # ---- 2. Constrain the ECO engine to what the mask freeze allows ------------
-#   Freeze everything, then selectively unfreeze the spare cells. Doing it in
-#   this order is deliberate: a new cell type added to the library tomorrow is
-#   frozen by default rather than silently usable.
+#   Base layers are frozen, so NO existing cell may change: a different drive
+#   strength is a different transistor layout, which is a base-layer mask.
+#   Freeze everything, then selectively unfreeze the spare cells -- they are
+#   the only transistors the freeze already paid for. Doing it in this order is
+#   deliberate: a cell type added to the library tomorrow is frozen by default
+#   rather than silently usable.
 set_dont_touch [get_cells -hierarchical -filter "is_hierarchical == false"] true
 set_dont_touch [get_cells -hierarchical -filter "ref_name =~ *SPARE*"]     false
 set_dont_use   [get_lib_cells */*_LVT*]        ;# leakage budget is closed
 
-set_eco_options -physical_mode open_site \
-                -honor_dont_touch_cells true \
+set_eco_options -physical_mode occupied_site \
+                -honor_dont_touch true \
+                -honor_dont_use   true \
                 -log_file ./log/eco_r13.log
 
 # ---- 3. Ask for the smallest legal repair, worst endpoints first -----------
+#   -physical_mode occupied_site: the engine may only claim a site that already
+#   holds a (spare) cell. open_site would let it invent an instance in filler --
+#   correct BEFORE base freeze, illegal after it, and the difference between a
+#   metal-only respin and a full one.
 #   -slack_greater_than filters out the hopeless: a -400 ps endpoint is not an
 #   ECO, it is a re-implementation, and letting the engine chase it burns the
 #   spare budget on a fix that will not work.
 fix_eco_timing -type setup \
-               -methods {size_cell insert_buffer} \
+               -methods {insert_buffer} \
                -buffer_list {BUFX4_HVT BUFX8_HVT} \
                -slack_lesser_than  0.000 \
                -slack_greater_than -0.150 \
-               -physical_mode open_site
+               -physical_mode occupied_site
 
 fix_eco_timing -type hold \
                -methods {insert_buffer} \
                -buffer_list {DLYX1_HVT DLYX2_HVT} \
-               -slack_lesser_than 0.000
+               -slack_lesser_than 0.000 \
+               -physical_mode occupied_site
 
 # ---- 4. Emit the change list for the implementation tool ------------------
-write_changes -format icctcl -output ./eco/eco_r13.tcl
-report_eco_changes                     > ./rpt/eco_r13.summary
+write_changes -format icc2tcl -output ./eco/eco_r13.tcl
+report_eco_options                     > ./rpt/eco_r13.summary
 ```
+
+Before the base freeze the same script reads differently in exactly two places, and they are the two worth memorizing: `-methods {size_cell insert_buffer}` instead of `insert_buffer` alone, and `-physical_mode open_site` instead of `occupied_site`. Resizing and creating instances are the workhorse pre-freeze moves of §4.1 and are precisely what the freeze removes.
 
 Implementation side:
 
@@ -478,22 +488,25 @@ source ./eco/eco_r13.tcl                     ;# the change list, verbatim
 place_eco_cells -eco_changed_cells -legalize_only
 check_legality  -verbose                      ;# must be 0 violations
 
-# Base layers frozen at M2: M1/M2 are reachable for pins, M3+ are routable.
-set_route_eco_options -reserved_layers {M1 M2} -only_eco_nets true
-route_eco
+# Freeze line is at M1: M1 belongs to the base set and is untouchable, so the
+# lowest CHANGEABLE layer is M2 -- which is what makes spare pins reachable at
+# all (5.3). Bar the router from M1 and let it have M2 upward.
+set_ignored_layers -min_routing_layer M2
+route_eco -reroute modified_nets_first_then_others
 
-# ---- 6. Local re-extraction, hand back to the signoff timer --------------
-extract_parasitics -coupled -mode incremental
-write_parasitics -format spef -output ./rel/r13/spef/top.ss_0p675v_m40c_cworst.spef.gz
-
-# ---- 7. Fill repair: fill was removed where ECO routes landed ------------
+# ---- 6. Fill repair FIRST: fill was destroyed where ECO routes landed ----
 remove_fill  -region [get_eco_change_regions]
 create_fill  -region [get_eco_change_regions] -mode density_driven
-# NOTE: fill changed => coupling changed => step 6 must be re-run. The order
-# fill-then-extract is not optional.
+
+# ---- 7. ...and only then extract, because fill IS coupling capacitance ---
+extract_parasitics -coupled -mode incremental
+write_parasitics -format spef -output ./rel/r13/spef/top.ss_0p675v_m40c_cworst.spef.gz
+# Hand back to the signoff timer. Reverse steps 6 and 7 and you sign off timing
+# against parasitics that do not describe the shipped database -- and no check
+# in the flow will catch it for you.
 ```
 
-Two things in that script are the real lesson. First, **freeze-by-default then selectively unfreeze**: the safe direction. Second, the comment on fill — the ordering constraint that fill precedes final extraction, which precedes final timing, is the loop from §1.2 written as three lines of TCL. Getting it backwards produces a timing signoff against parasitics that do not describe the shipped database, and there is no check that will catch it for you.
+Three things in that script are the real lesson. First, **freeze-by-default then selectively unfreeze**, and let `-physical_mode` carry the freeze into the engine rather than trusting a comment. Second, **the freeze line is one layer below the lowest routable layer, not the same layer** — get that off by one and either the router touches a committed mask or it cannot reach a spare pin. Third, **fill precedes extraction precedes timing**: that is the loop from §1.2 written as six lines of TCL, and the ordering is not optional.
 
 ### 6.3 Freeze silicon and ECO windows
 
@@ -753,9 +766,9 @@ stateDiagram-v2
 | Released, mask prep not started | re-release the database | engineering only |
 | Base masks written, metal not | metal-only ECO, metal masks not yet wasted | metal mask NRE only |
 | All masks written, wafers not started | metal-only ECO, discard the metal masks | metal mask NRE, rewritten |
-| Wafers banked at the freeze layer | metal-only ECO on banked wafers — **the best case for a post-release bug** | metal NRE plus ~5–7 weeks |
+| Wafers banked at the freeze layer | metal-only ECO on banked wafers — **the best case for a post-release bug** | metal NRE plus ~4–5 weeks |
 | Wafers past the freeze layer | this lot is spent; next lot on new metal masks | metal NRE plus a full lot |
-| Die exist and the bug needs base layers | full-layer respin | full NRE plus 20–26 weeks |
+| Die exist and the bug needs base layers | full-layer respin | full NRE plus 21–30 weeks |
 
 The banked-wafer row is why fabs are asked to hold lots at the freeze layer during the first weeks after tape-out. It is not free — held wafers are inventory and there is a queue-time limit before they must be scrapped or run — but it converts the most likely post-release discovery into the cheapest possible repair.
 
@@ -805,19 +818,19 @@ Almost every tape-out disaster lives in that gap. A clean run on a database that
 | Distinct signoff checks a real chip runs | ~20, across 5–8 owning teams | orphaned checks are a real failure mode (§1.1) |
 | Full-chip DRC / LVS runtime | 12–72 h / 8–48 h | too slow for an inner loop; sets the freeze order (§1.1, §8.4) |
 | MMMC naive scenario product | $10^3$–$10^4$ | why pruning is mandatory (§2.2) |
-| MMMC after pruning | 30–150 scenarios | the real signoff workload (§2.2) |
+| MMMC after pruning | 30–100 scenarios | the real signoff workload (§2.2) |
 | STA memory per million instances | $1.5$–$3$ GB with SI and parasitics | why full-chip signoff is hierarchical (§2.4) |
 | One timing turn, large SoC | 12–24 h including queueing | sets the number of closure iterations available (§2.4) |
 | Signoff extraction accuracy | $2$–$5\%$; in-tool PnR extraction $10$–$20\%$ | why clean in PnR reopens at signoff (§3.1) |
 | PnR vs signoff timer correlation target | $R^2 > 0.95$, mean offset $< 20$–$30$ ps | below this, no margin can rescue the loop (§3.3) |
-| Crosstalk delta-delay magnitude | $10$–$30\%$ of stage delay; iteration-0 worst case up to $2C_c$ of extra load | why SI breaks corner dominance (§2.3, §3.4) |
+| Crosstalk delta-delay magnitude | $10$–$30\%$ of stage delay; iteration-0 charges $C_{\text{gnd}}+2C_c$, ~1.4× the quiet value | why SI breaks corner dominance (§2.3, §3.4) |
 | SI timing-window iterations | 2–3 to converge; damped or unioned if oscillating | window-sensitive paths need structural fixes (§3.4) |
 | Full mask set cost | $\$1.5$–$2$ M at 28 nm; $\$8$–$12$ M at 7 nm | the denominator of every ECO decision (§4.5) |
 | Metal-only mask subset | $20$–$35\%$ of the full set; 15–20 of 70+ masks | the freeze line must be low enough to reach cell pins (§4.5, §5.3) |
-| Metal-only vs full respin turnaround | 8–12 weeks vs 20–26 weeks | usually the dominant term, not the mask cost (§4.5) |
+| Metal-only vs full respin turnaround | 8–12 weeks vs 21–30 weeks | usually the dominant term, not the mask cost (§4.5) |
 | Spare-cell budget | $0.3$–$2\%$ of instances, $\approx0.3$–$1\%$ of area, HVT | half a percent of area buys respin insurance (§5.1) |
 | Spare-cell reach radius | 20–50 µm grid pitch | reach, not count, is the binding constraint (§5.1) |
-| Metal-only fix delay penalty | $3$–$5\times$ an inline gate, dominated by ECO-route capacitance | a correct metal-only fix can still fail timing (§5.2) |
+| Metal-only fix delay penalty | $2.5$–$4\times$ an inline gate, dominated by ECO-route capacitance | a correct metal-only fix can still fail timing (§5.2) |
 | ECO churn factor $\alpha$ | $\le 0.3$ healthy; $0.7$ too slow; $\ge 1.0$ structural problem | the honest schedule predictor (§8.3) |
 | Late hand-ECO defect injection | $\sim2$–$5\%$ per ECO | why improvement ECOs are refused after freeze (§8.4) |
 | OASIS vs GDSII size | $10$–$50\times$ smaller | mandatory at advanced nodes (§10) |
@@ -827,23 +840,17 @@ Almost every tape-out disaster lives in that gap. A clean run on a database that
 
 ## Worked problems
 
-### 1 — MMMC scenario count and prune
+### 1 — Applying the §2.2 prune to a different mode list
 
-**Problem.** A block runs 5 modes: `FUNC_HI` (1.4 GHz @ 0.85 V), `FUNC_LO` (0.5 GHz @ 0.65 V), `SHIFT` (40 MHz), `CAPTURE` (at-speed), `MBIST` (200 MHz). The library is characterized at 3 process corners, 3 voltages, 3 temperatures. Four RC corners exist. Both setup and hold must be checked. (a) Compute the naive scenario count. (b) Prune it with an explicit dominance argument per prune, and give the final count. (c) The block is at a 7 nm FinFET node. Identify one prune from (b) that would be a silicon bug, and say why.
+**Problem.** §2.2 pruned a 6-mode block from 1296 scenarios to 36. Re-run *that same argument*, unchanged, on a block with a different mode list: `FUNC_HI` (1.4 GHz @ 0.85 V), `FUNC_LO` (0.5 GHz @ 0.65 V), `SHIFT` (40 MHz), `CAPTURE` (at-speed), `MBIST` (200 MHz) — 5 modes, otherwise the same 3 process corners, 3 voltages, 3 temperatures, 4 RC corners, setup and hold. (a) Naive count. (b) Final count, showing only where this block's answer *differs* from §2.2's. (c) The block is at a 7 nm FinFET node. Identify one prune that would be a silicon bug here, and say why.
 
 **Solution.**
 
 **(a)** $5 \times 3 \times 3 \times 3 \times 4 \times 2 = 1080$ scenarios.
 
-**(b)** Prune in four steps.
+**(b)** Prunes 1–3 of §2.2 are properties of the library and the physics, not of the mode list, so they apply verbatim: the 27 PVT combinations collapse to 6 named corners ($5\times6\times4\times2 = 240$); analysis-type dominance splits those 6 into 3 setup (SS family) and 3 hold (FF family plus a TT sanity view), giving $5\times6\times4 = 120$; RC pairing takes 2 RC corners per analysis type instead of 4, giving 60.
 
-*Step 1 — only characterized PVT combinations exist.* The foundry ships named corner libraries, not the free cross product. Assume the available set is: SS/0.65 V/$-40$ °C, SS/0.65 V/125 °C, SS/0.85 V/125 °C, TT/0.75 V/25 °C, FF/0.95 V/$-40$ °C, FF/0.95 V/125 °C — 6 named corners, replacing $3\times3\times3=27$. Count so far: $5 \times 6 \times 4 \times 2 = 240$.
-
-*Step 2 — analysis-type dominance.* Setup uses only the SS family (3 corners) plus nothing else; hold uses only the FF family (2) plus TT (1) as a sanity view. So instead of $6\times2=12$ corner-by-analysis combinations we have $3$ setup $+$ $3$ hold $=6$. Count: $5 \times 6 \times 4 = 120$.
-
-*Step 3 — RC pairing.* Setup pairs with $\{$`cworst`, `rcworst`$\}$; hold pairs with $\{$`cbest`, `rcbest`$\}$. That is 2 RC corners per analysis type, not 4. Count: $5 \times 3 \times 2 \;(\text{setup}) + 5 \times 3 \times 2\;(\text{hold}) = 30 + 30 = 60$.
-
-*Step 4 — mode-voltage correlation and mode-frequency reduction.* `FUNC_LO` only exists at 0.65 V, so its setup corners collapse from 3 to the 2 SS corners at 0.65 V, and similarly `FUNC_HI` at 0.85 V uses 1 SS corner: this is the axis the naive product double-counted. Additionally `SHIFT` at 40 MHz (25 ns) cannot fail logic setup, so keep 1 setup RC view as a sanity check instead of 6; keep hold in full because shift is hold-critical. `MBIST` at 200 MHz keeps 2 setup views.
+Only §2.2's prunes 4 and 5 — mode-voltage correlation and mode-frequency reduction — depend on the mode list, so only they need re-deriving. `FUNC_LO` exists only at 0.65 V, so its setup corners collapse to the 2 SS corners at that voltage; `FUNC_HI` at 0.85 V uses the 1 SS corner there. `SHIFT` at 40 MHz (25 ns) cannot fail logic setup, so 1 setup view survives as a sanity check while hold is kept in full, shift being hold-critical. `MBIST` at 200 MHz keeps 2 setup views.
 
 | Mode | Setup views | Hold views | Total |
 |---|---|---|---|
@@ -854,9 +861,9 @@ Almost every tape-out disaster lives in that gap. A clean run on a database that
 | `MBIST` | 2 | 4 | 6 |
 | **Total** | **13** | **28** | **41** |
 
-$1080 \to 41$, a $26\times$ reduction, at a runtime of $41 \times 3\,\text{h} = 123$ scenario-hours per turn.
+$1080 \to 41$, a $26\times$ reduction, at a runtime of $41 \times 3\,\text{h} = 123$ scenario-hours per turn — the same order as §2.2's 36 and inside the 30–100 band a real signoff runs. The count moved by five scenarios for a whole different mode list, which is the point: the prune's leverage lives in prunes 1–3, and those are not yours to choose.
 
-**(c)** The dangerous prune is *Step 2's* implicit assumption that setup is worst at high temperature within the SS family. At 7 nm FinFET below roughly 0.8 V, **temperature inversion** makes cells slower at $-40$ °C than at $125$ °C. `FUNC_LO` runs at 0.65 V — deep in the inverted region — so its worst setup corner is SS/0.65 V/$-40$ °C, not SS/0.65 V/125 °C. In the table above both were kept for `FUNC_LO`, which is correct; a team that pruned "cold setup" by the classical rule would have dropped exactly the binding corner for the low-voltage mode and shipped a part that fails at cold boot. The lesson generalizes: **corner dominance arguments must be re-derived at each node**, because they encode device physics that scaling changes.
+**(c)** The dangerous prune is the analysis-type step's implicit assumption that setup is worst at high temperature within the SS family. **Temperature inversion** ([Standard_Cell_Libraries §6.2](../04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) derives it and places the crossover at $V_{DD} \approx 0.6$–$0.9$ V) inverts that below the crossover. `FUNC_LO` runs at 0.65 V — inside the inverted region — so its worst setup corner is SS/0.65 V/$-40$ °C, not SS/0.65 V/125 °C. In the table above both were kept for `FUNC_LO`, which is correct; a team that pruned "cold setup" by the classical rule would have dropped exactly the binding corner for the low-voltage mode and shipped a part that fails at cold boot. The lesson generalizes: **corner dominance arguments must be re-derived at each node**, because they encode device physics that scaling changes.
 
 ---
 
@@ -918,7 +925,7 @@ Metal-only wins by $\$15.8$ M, and note where the win comes from: $\$5$ M of it 
 
 **(b)** Set expected schedules equal (schedule dominates, so solve on weeks):
 $$12(1-p) + 34p = 22 \;\Longrightarrow\; 12 + 22p = 22 \;\Longrightarrow\; p^\ast = \frac{10}{22} = 0.455$$
-Checking against total cost including masks gives a very similar break-even ($p^\ast \approx 0.47$). So: **if the metal-only fix has better than roughly a $55\%$ chance of working, attempt it; below that, go straight to full-layer.** The result is robust and worth carrying around, because the intuition "always try the cheap fix first" is wrong — a metal-only attempt with a $60\%$ failure probability is strictly worse than going direct, since it buys a small chance of saving 10 weeks at the cost of a large chance of losing 12.
+Including masks moves it the other way, because metal-only is the cheaper mask spend: $31.3 + 62.8p = 62.8$ gives $p^\ast = 0.502$. So: **if the metal-only fix has better than roughly a $50\%$ chance of working, attempt it; below that, go straight to full-layer.** The result is robust and worth carrying around, because the intuition "always try the cheap fix first" is wrong — a metal-only attempt with a $60\%$ failure probability is strictly worse than going direct, since it buys a small chance of saving 10 weeks at the cost of a large chance of losing 12.
 
 **(c)** $p$ is not a fact about the universe; it is a fact about your design and your homework. Three levers, in order of value:
 

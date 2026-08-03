@@ -409,3 +409,7 @@ Implementation failures include asynchronous buffer reuse before completion, sha
 ---
 
 ← [AI Workloads and Serving index](00_Index.md) · next → [End-to-End GPU AI Inference and Serving](02_End_to_End_GPU_AI_Inference_and_Serving.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [End-to-End GPU Artificial-Intelligence Inference and Serving](02_End_to_End_GPU_AI_Inference_and_Serving.md)

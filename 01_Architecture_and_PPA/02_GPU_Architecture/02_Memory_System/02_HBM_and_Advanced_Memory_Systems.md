@@ -452,3 +452,7 @@ Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way ($2\ \te
 ---
 
 **Navigation:** [Main Memory index](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)
+
+---
+
+⬅ prev [Coalescing, Caches, and Shared Memory](01_Coalescing_Caches_and_Shared_Memory.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

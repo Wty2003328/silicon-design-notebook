@@ -158,3 +158,7 @@ The platform is implementation-reconstructable when another team can define arti
 ---
 
 ← [Distributed AI Serving Data Plane](05_Distributed_AI_Serving_Data_Plane_and_State_Implementation_Blueprint.md) · [SoC/Chiplet AI Index](00_Index.md)
+
+---
+
+⬅ prev [Distributed AI Serving Data-Plane and State Implementation Blueprint](05_Distributed_AI_Serving_Data_Plane_and_State_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

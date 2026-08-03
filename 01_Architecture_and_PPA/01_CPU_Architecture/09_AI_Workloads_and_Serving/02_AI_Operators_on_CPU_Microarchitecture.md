@@ -481,3 +481,7 @@ Suppose 256 tokens choose two of eight experts, producing 512 assignments. Unifo
 ---
 
 ← [End-to-End AI Serving on CPUs](01_End_to_End_AI_Serving_on_CPUs.md) · [AI section index](00_Index.md) · next → [Performance Analysis, Profiling, and Research Frontiers](03_Performance_Analysis_Profiling_and_Research_Frontiers.md)
+
+---
+
+⬅ prev [End-to-End Artificial Intelligence Serving on Central Processing Units](01_End_to_End_AI_Serving_on_CPUs.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Central Processing Unit AI Performance Analysis, Profiling, and Research Frontiers](03_Performance_Analysis_Profiling_and_Research_Frontiers.md)

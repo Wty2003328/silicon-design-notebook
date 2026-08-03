@@ -392,3 +392,7 @@ Fusion saves a 64 MiB intermediate write and read (128 MiB), but combined live s
 ---
 
 **Navigation:** [Mapping and Memory index](00_Index.md) · [NPU index](../00_Index.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Sparsity, Quantization, and Compression](02_Sparsity_Quantization_and_Compression.md)

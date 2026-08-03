@@ -124,3 +124,7 @@ Build single model/profile/static batch; request states and cancellation; multip
 ---
 
 ← [NPU Compiler/Runtime](04_NPU_Compiler_Runtime_and_Executable_Implementation_Blueprint.md) · next → [NPU AI Stack Verification, Operations, and Deployment](06_NPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md)
+
+---
+
+⬅ prev [NPU Compiler, Runtime, and Executable Implementation Blueprint](04_NPU_Compiler_Runtime_and_Executable_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU AI-Stack Verification, Operations, and Deployment Blueprint](06_NPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md)

@@ -183,3 +183,7 @@ You can specify the SM when every resident resource has allocation/release rules
 ---
 
 Next → [GPU Memory and Scale-Up Implementation Blueprint](02_GPU_Memory_and_Scale_Up_Implementation_Blueprint.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Memory and Scale-Up Implementation Blueprint](02_GPU_Memory_and_Scale_Up_Implementation_Blueprint.md)

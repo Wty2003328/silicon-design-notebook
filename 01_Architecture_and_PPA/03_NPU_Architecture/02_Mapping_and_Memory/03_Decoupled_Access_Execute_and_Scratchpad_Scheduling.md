@@ -419,3 +419,7 @@ Counters should expose queue occupancy, outstanding reads/writes, TLB misses, by
 ---
 
 ← [Sparsity, Quantization, and Compression](02_Sparsity_Quantization_and_Compression.md) · [Mapping and Memory index](00_Index.md) · next → [System Integration](../03_System_Integration/00_Index.md)
+
+---
+
+⬅ prev [Sparsity, Quantization, and Compression](02_Sparsity_Quantization_and_Compression.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

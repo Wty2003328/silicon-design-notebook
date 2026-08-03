@@ -300,3 +300,7 @@ For $M=128$, the larger array uses one wave while the smaller needs two, so it c
 ---
 
 ← [Methodology index](00_Index.md) · next → [NPU PPA and Physical Implementation](02_NPU_PPA_and_Physical_Implementation.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU Power, Performance, Area, and Physical Implementation](02_NPU_PPA_and_Physical_Implementation.md)

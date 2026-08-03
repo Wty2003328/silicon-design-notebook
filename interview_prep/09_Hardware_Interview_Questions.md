@@ -49,14 +49,14 @@ The same skew that bought setup margin *eats* hold margin — the seesaw every S
 
 ### 2.1 Worked problem — MTBF
 
-2 GHz receiver, async data toggling at 200 MHz, $T_0$ = 100 ps, $\tau$ = 15 ps, resolution time with one sync FF (flip-flop) $t_r$ = 350 ps. MTBF one-flop vs two-flop?
+2 GHz receiver, async data toggling at 200 MHz, $T_0$ = 100 fs, $\tau$ = 15 ps, resolution time with one sync FF (flip-flop) $t_r$ = 350 ps. MTBF one-flop vs two-flop? ($T_0$ is the intrinsic metastability window, a technology constant on the order of femtoseconds — see [Async_Design_and_CDC §2](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md).)
 
 $$
 \text{MTBF} = \frac{e^{t_r/\tau}}{T_0 f_{clk} f_{data}}, \quad
-\text{1FF: } \frac{e^{350/15}}{100\text{ps} \cdot 2\text{GHz} \cdot 200\text{MHz}} = \frac{e^{23.3}}{4\times10^{7}} \approx \frac{1.3\times10^{10}}{4\times10^{7}} \approx 330\ \text{s}
+\text{1FF: } \frac{e^{350/15}}{100\text{fs} \cdot 2\text{GHz} \cdot 200\text{MHz}} = \frac{e^{23.3}}{4\times10^{4}} \approx \frac{1.4\times10^{10}}{4\times10^{4}} \approx 3.4\times10^{5}\ \text{s} \approx 4\ \text{days}
 $$
 
-Two-flop adds a full period (500 ps) of resolution: $e^{(850/15)} = e^{56.7} \approx 4\times10^{24}$ → MTBF ≈ $10^{17}$ s ≈ 3 billion years. **The exponential is the entire story** — each added τ-multiple multiplies MTBF by e.
+Two-flop adds a full period (500 ps) of resolution: $e^{(850/15)} = e^{56.7} \approx 4\times10^{24}$ → MTBF ≈ $1\times10^{20}$ s ≈ $3\times10^{12}$ years. **The exponential is the entire story** — each added τ-multiple multiplies MTBF by e.
 
 ### 2.2 Snap answers
 
@@ -186,13 +186,13 @@ The grading axis is identical in all four: **clarify constraints → block diagr
 
 | Quantity | Value | Domain |
 |---|---|---|
-| FO4 delay @ N5-class | ~8–12 ps | timing intuition |
+| FO4 delay (quote the node) | ~9–12 ps @ N5 · ~11–14 @ 7 nm · ~18–22 @ 28 nm | timing intuition |
 | Flop $t_{cq}$ / $t_{su}$ | ~50–80 / 30–60 ps | path budgets |
-| 2-FF sync MTBF scaling | × $e^{T/\tau}$, τ ≈ 10–20 ps | CDC |
+| 2-FF sync MTBF scaling | × $e^{T/\tau}$; τ ≈ 8–12 ps (N5), ~50 ps (28 nm); $T_0$ ~ fs | CDC |
 | SRAM access (L1-class macro) | ~0.3–0.5 ns | hierarchy |
 | Dynamic power | $\alpha C V^2 f$ | the formula |
 | Leakage vs Vt | ~10× per 100 mV Vt drop | multi-Vt |
-| Clock tree share of dynamic | 25–40% | why ICG |
+| Clock share of dynamic | network 20–35%; 35–50% incl. flop-internal | why ICG — say which you mean |
 | Scan overhead | 2–5% area, 1 mux on D | DFT |
 | AMAT | $h + m \times \text{penalty}$, nested | hierarchy |
 | Mispredict cost (big OoO) | 15–20 cycles × width | branch econ |
@@ -206,3 +206,7 @@ The grading axis is identical in all four: **clarify constraints → block diagr
 - Live-coding companion: [RTL_Coding_Questions](08_RTL_Coding_Questions.md).
 - Per-domain depth: [STA](../06_Signoff/01_STA.md), [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md), [OoO_Execution](../01_Architecture_and_PPA/01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md), [Cache_Microarchitecture](../01_Architecture_and_PPA/01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md), [UVM_Methodology](../03_Frontend_RTL_and_Verification/10_UVM_Methodology.md), [Formal_Verification](../03_Frontend_RTL_and_Verification/12_Formal_Verification.md).
 - AI-systems counterpart (*Common Interview Questions*, *System Design Interview*): companion AI-infra notebook.
+
+---
+
+⬅ prev [RTL Coding Questions](08_RTL_Coding_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [10](10_Digital_IC_Frontend_Interview_Bank.md)

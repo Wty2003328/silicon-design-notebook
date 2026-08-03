@@ -566,3 +566,7 @@ The package should make every reported point traceable from useful model work to
 ---
 
 ← [End-to-End AI Inference and Serving on NPUs](02_End_to_End_AI_Inference_and_Serving_on_NPUs.md) · [AI Workloads and Serving index](00_Index.md) · [NPU Architecture](../00_Index.md)
+
+---
+
+⬅ prev [End-to-End Artificial-Intelligence Inference and Serving on Neural Processing Units](02_End_to_End_AI_Inference_and_Serving_on_NPUs.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU Compiler, Runtime, and Executable Implementation Blueprint](04_NPU_Compiler_Runtime_and_Executable_Implementation_Blueprint.md)

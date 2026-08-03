@@ -509,3 +509,7 @@ The simpler shared-memory tree wins when the reduction spans the whole block reg
 ---
 
 ← [SIMT Scheduling and Occupancy](02_SIMT_Scheduling_and_Occupancy.md) · [Core Architecture index](00_Index.md) · next → [Independent Threads and Asynchronous Pipelines](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md)
+
+---
+
+⬅ prev [Single Instruction, Multiple Threads (SIMT) Scheduling and Occupancy](02_SIMT_Scheduling_and_Occupancy.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Advanced GPU Execution](04_Independent_Thread_Scheduling_and_Asynchronous_Pipelines.md)

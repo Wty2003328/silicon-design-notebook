@@ -141,3 +141,7 @@ Build one coupled worker; routed stateless replicas; stateful request IDs/cancel
 ---
 
 ← [AI Platform Control Plane](04_Heterogeneous_AI_Platform_and_Control_Plane_Implementation_Blueprint.md) · next → [AI Platform Verification, Operations, and Deployment](06_AI_Platform_Verification_Operations_and_Deployment_Blueprint.md)
+
+---
+
+⬅ prev [Heterogeneous AI Platform and Control-Plane Implementation Blueprint](04_Heterogeneous_AI_Platform_and_Control_Plane_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [AI Platform Verification, Operations, and Deployment Blueprint](06_AI_Platform_Verification_Operations_and_Deployment_Blueprint.md)

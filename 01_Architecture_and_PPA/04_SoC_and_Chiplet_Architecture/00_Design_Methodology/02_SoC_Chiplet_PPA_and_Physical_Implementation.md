@@ -379,7 +379,7 @@ where $\delta=t_{capture}-t_{launch}$ has an uncertain sign per path: positive s
 
 **Why a balanced tree bounds skew.** An H-tree branches recursively in H shapes so every leaf is geometrically equidistant from the root — matched wire length gives matched delay and near-zero *nominal* skew by construction; a spine/fishbone is the tool-balanced form that **clock-tree synthesis (CTS)** builds; a mesh shorts endpoints together from many drive points so local variation averages out. A balanced tree's residual skew is not nominal but comes from **on-chip variation (OCV)**: the "same" 20 ps buffer is 18 ps on one branch and 22 ps on another, bounded in signoff by opposed derating of the launch and capture paths. The topology detail, OCV, and common-path pessimism removal are on [the frontend clock page](../../../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md); here the load-bearing quantity is the *budget*.
 
-**The skew–power trade.** Driving skew toward zero costs power. A mesh minimizes the divergent (non-common) clock length, making it the least OCV-sensitive topology — but it is a die-spanning continuous grid switching every cycle, so its capacitance, and thus its $\alpha{=}1$ clock power, dwarfs a tree's. Cutting skew by moving from a balanced tree to a mesh can push the clock network from ~25% to ~40% of a domain's dynamic power. Skew is bought in Watts.
+**The skew–power trade.** Driving skew toward zero costs power. A mesh minimizes the divergent (non-common) clock length, making it the least OCV-sensitive topology — but it is a die-spanning continuous grid switching every cycle, so its capacitance, and thus its $\alpha{=}1$ clock power, dwarfs a tree's. Cutting skew by moving from a balanced tree to a mesh can push the clock network from ~25% to ~35% of a domain's dynamic power — the top of the 20–35% network band. Skew is bought in Watts.
 
 *Worked number — skew as a fraction of the period.* A 2.5 GHz domain has $T=400$ ps. A CTS skew target of 5% is 20 ps; combine it (root-sum-square) with ~12 ps of PLL period jitter (§7.6) and ~6 ps of duty/OCV margin and the total clock uncertainty is $\sqrt{20^2+12^2+6^2}\approx24$ ps — ~6% of the period, subtracted from every path before a gate is placed. Tighten skew to 2% (8 ps) with a mesh and uncertainty falls to ~15 ps (~3.8%), recovering ~9 ps of cycle at the mesh's power cost. On a 400 MHz peripheral domain ($T=2.5$ ns) the same 20 ps skew is 0.8% of the period and irrelevant.
 
@@ -529,3 +529,7 @@ If the workload keeps most traffic local, partitioning can win cost/yield. If co
 ---
 
 ← [SoC/Chiplet Workloads and DSE](01_SoC_Chiplet_Workloads_Performance_and_DSE.md) · next → [SoC/Chiplet Simulation Methodology and Evidence](03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md)
+
+---
+
+⬅ prev [SoC and Chiplet Workloads, Performance Modeling, and Design-Space Exploration](01_SoC_Chiplet_Workloads_Performance_and_DSE.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [SoC and Chiplet Simulation Methodology and Evidence](03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md)

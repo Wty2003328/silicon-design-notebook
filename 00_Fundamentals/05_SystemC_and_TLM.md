@@ -604,3 +604,7 @@ The through-line: SystemC gives you a **dial**, not a point. LT for reach and so
 3. **F. Ghenassia (ed.), *Transaction-Level Modeling with SystemC: TLM Concepts and Applications for Embedded Systems*, Springer, 2005.** The virtual-platform methodology and the LT/AT/temporal-decoupling rationale (§6–§7).
 4. **D. C. Black, J. Donovan, B. Bunton, A. Keist, *SystemC: From the Ground Up*, 2nd ed., Springer, 2010.** Kernel mechanics, processes, channels, and the coding styles, with worked models.
 5. **Accellera SystemC reference implementation (proof-of-concept simulator) and `tlm_utils` (quantum keeper, simple sockets).** The de-facto behavior behind §5–§6.
+
+---
+
+⬅ prev [Floating Point](04_Floating_Point.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Memory Circuits and Technologies](06_Memory_Circuits_and_Technologies.md)

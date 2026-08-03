@@ -298,7 +298,7 @@ The clock is the one net guaranteed to switch, at the highest frequency, with th
 
 $$P_{clk}=\alpha\,C_{clk}\,V_{DD}^2\,f$$
 
-and for the clock **$\alpha=1$** (it toggles every cycle by definition — nothing else does), $f$ is the maximum in its domain, and $C_{clk}$ — every clock buffer, every metre of balanced route, every flip-flop's clock-pin load — is the largest single capacitance on the die. The product routinely makes the clock network **20–45% of total dynamic power**; a mesh sits at the top of that range. Two consequences: (1) the first-order low-power lever is **clock gating** — kill $\alpha$ on idle subtrees, ideally near the root so a whole branch stops toggling (see [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) §2); (2) topology is a *power* decision as much as a skew decision, which is the real tension behind tree-vs-mesh.
+and for the clock **$\alpha=1$** (it toggles every cycle by definition — nothing else does), $f$ is the maximum in its domain, and $C_{clk}$ — every clock buffer, every metre of balanced route, every flip-flop's clock-pin load — is the largest single capacitance on the die. The product routinely makes the clock network itself **20–35% of dynamic power** — a mesh sits at the top of that range — rising to **35–50%** once the clock inverters inside every flip-flop are counted ([Clock Tree Synthesis §11](../05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md)). Two consequences: (1) the first-order low-power lever is **clock gating** — kill $\alpha$ on idle subtrees, ideally near the root so a whole branch stops toggling (see [Power_Reduction_Techniques](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) §2); (2) topology is a *power* decision as much as a skew decision, which is the real tension behind tree-vs-mesh.
 
 ### 7.5 The CTS objective
 
@@ -326,7 +326,7 @@ Clock-tree synthesis is the physical step that, given placed flip-flops, builds 
 | DLL deskew range | one $T_{ref}$ (360°) | — | delay-range limit (§5.3) |
 | Global clock skew | <5% of period | 20–100 ps | CTS target (§7.1) |
 | Insertion delay | 100 ps–1 ns+ | — | harmless if matched (§7.1) |
-| Clock-network power | 20–45% of dynamic | — | $\alpha{=}1$, max $f$, biggest $C$ (§7.4) |
+| Clock-network power | 20–35% of dynamic | 35–50% incl. flop-internal clock | $\alpha{=}1$, max $f$, biggest $C$ (§7.4) |
 | CPPR recovery | 50–200 ps | — | common-path pessimism (§7.3) |
 
 **One-line intuition ladder:** crystal is *clean but slow* → PLL *multiplies* it (and inherits $N^2\times$ its noise) → loop bandwidth splits *reference (low-pass) vs VCO (high-pass)* noise → DLL *deskews* without multiplying and *cannot accumulate* jitter → distribution spends *power* to buy *skew* down against *OCV*.
@@ -360,3 +360,7 @@ Clock-tree synthesis is the physical step that, given placed flip-flops, builds 
 5. Maneatis, J.G., "Low-Jitter Process-Independent DLL and PLL Based on Self-Biased Techniques," *IEEE JSSC*, 31(11), 1996. DLL loop design and self-biasing.
 6. Restle, P.J. et al., "A Clock Distribution Network for Microprocessors," *IEEE JSSC*, 36(5), 2001. Grid/mesh distribution and variation averaging (§7.2–§7.3).
 7. Friedman, E.G., "Clock Distribution Networks in Synchronous Digital Integrated Circuits," *Proc. IEEE*, 89(5), 2001. Skew, insertion delay, and topology trade-offs.
+
+---
+
+⬅ prev [Clock Division and Glitch-Free Clock Switching](04_Clock_Division_and_Switching.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Asynchronous Design and Clock-Domain Crossing](06_Async_Design_and_CDC.md)

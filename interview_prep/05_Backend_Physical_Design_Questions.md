@@ -342,3 +342,6 @@ ends). Unlike EM, SM occurs even without current flow — it can affect idle met
 SM is checked separately from EM and has its own lifetime models based on stress gradient
 and temperature cycling range.
 
+---
+
+⬅ prev [04](04_Synthesis_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [06](06_Signoff_Questions.md)

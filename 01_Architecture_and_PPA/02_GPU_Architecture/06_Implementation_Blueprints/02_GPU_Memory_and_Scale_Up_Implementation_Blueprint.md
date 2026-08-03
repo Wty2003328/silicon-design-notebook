@@ -128,3 +128,7 @@ The reconstructed design is complete when per-lane semantics, transaction aggreg
 ---
 
 ← [SIMT Core Blueprint](01_SIMT_Core_and_Tensor_Pipeline_Implementation_Blueprint.md) · next → [GPU Software, Simulator, Verification, and Bring-up](03_GPU_Software_Simulator_Verification_and_Bringup_Blueprint.md)
+
+---
+
+⬅ prev [GPU SIMT-Core and Tensor-Pipeline Implementation Blueprint](01_SIMT_Core_and_Tensor_Pipeline_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Software, Simulator, Verification, and Bring-up Blueprint](03_GPU_Software_Simulator_Verification_and_Bringup_Blueprint.md)

@@ -395,3 +395,7 @@ The **ordering rule is the reason this lives on this page.** Because the MSI is 
 ---
 
 **Navigation:** [System Fabrics index](00_Index.md) · [Interconnect index](../00_Index.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Chiplets, Compute Express Link (CXL), and Die-to-Die Architecture](02_Chiplets_CXL_and_Die_to_Die.md)

@@ -177,3 +177,7 @@ The build is reconstructable when the same contracts drive compiler legality, ru
 ---
 
 ← [GPU Memory Blueprint](02_GPU_Memory_and_Scale_Up_Implementation_Blueprint.md) · [GPU Blueprint Index](00_Index.md)
+
+---
+
+⬅ prev [GPU Memory and Scale-Up Implementation Blueprint](02_GPU_Memory_and_Scale_Up_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

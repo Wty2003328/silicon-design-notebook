@@ -537,3 +537,7 @@ Correctness invariants include: no token reads a KV slot before its write comple
 ---
 
 ← [AI Workload and Operator Mapping](01_AI_Workload_and_Operator_Mapping.md) · [AI Workloads and Serving index](00_Index.md) · next → [GPU AI Performance Analysis and Research Methods](03_GPU_AI_Performance_Analysis_and_Research_Methods.md)
+
+---
+
+⬅ prev [Artificial-Intelligence Workload and Operator Mapping to GPU Microarchitecture](01_AI_Workload_and_Operator_Mapping.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Artificial-Intelligence Performance Analysis, Profiling, and Research Methods](03_GPU_AI_Performance_Analysis_and_Research_Methods.md)

@@ -465,3 +465,7 @@ Two properties make RISC-V the default substrate for new hardware, and both foll
 5. Waterman, A., *Design of the RISC-V Instruction Set Architecture*, PhD thesis, UC Berkeley, 2016. The modularity and compressed-encoding rationale of §1–§3.
 6. Patterson, D.A. and Waterman, A., *The RISC-V Reader: An Open Architecture Atlas*, Strawberry Canyon, 2017.
 7. Bhargava, R. et al., "Accelerating Two-Dimensional Page Walks for Virtualized Systems," *ASPLOS*, 2008. The nested-paging cost model of §5.4.
+
+---
+
+⬅ prev [Central Processing Unit (CPU) Architecture](01_CPU_Architecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Simultaneous Multithreading (SMT), Single Instruction Multiple Data (SIMD), Vector, and Matrix Execution](03_SMT_SIMD_and_Vector_Execution.md)

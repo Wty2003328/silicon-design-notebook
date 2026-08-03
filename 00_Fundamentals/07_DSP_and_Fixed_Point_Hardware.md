@@ -62,16 +62,18 @@ $$
 
 That is the 6.02 dB-per-bit rule, and it is a *ceiling*, not a promise. Two effects push a real design below it, and both are just bookkeeping:
 
-- **Crest factor** $C_{\text{dB}} = 20\log_{10}(x_{\text{peak}}/x_{\text{rms}})$. A full-scale sinusoid has $C = 3.01$ dB, which recovers the familiar $\text{SNR} = 6.02B + 1.76$ dB (because $6.02B - 3.01 + 4.77$, where $4.77 = 10\log_{10}12/\!$… more directly: $\sigma_x^2 = R^2/8$ gives $\text{SNR} = 1.5\cdot2^{2B}$, and $10\log_{10}1.5 = 1.76$). Speech has $C \approx 12$ dB; an OFDM waveform has $C \approx 10\!-\!12$ dB; a pulse train can have 20 dB or more.
+- **Crest factor** $C_{\text{dB}} = 20\log_{10}(x_{\text{peak}}/x_{\text{rms}})$. A full-scale sinusoid has $C = 3.01$ dB, which recovers the familiar $\text{SNR} = 6.02B + 1.76$ dB — check it directly: $\sigma_x^2 = R^2/8$ gives $\text{SNR} = 1.5\cdot2^{2B}$ and $10\log_{10}1.5 = 1.76$. The bookkeeping that reconciles the two is $6.02B - 3.01 + 4.77 = 6.02B + 1.76$, and that $4.77 = 10\log_{10}3$ is the crest factor of the uniform full-range signal the $6.02B$ ceiling assumed; it reappears in the working formula below and is the term people drop. Speech has $C \approx 12$ dB; an OFDM waveform has $C \approx 10\!-\!12$ dB; a pulse train can have 20 dB or more.
 - **Headroom** $H_{\text{dB}} = 20\log_{10}(R/2 \div x_{\text{peak}})$ — the deliberate gap you leave between the largest signal you expect and the largest number the format can hold, so that a transient does not clip.
 
 So the working formula is
 
 $$
-\text{SNR}_{\text{dB}} \;=\; 6.02\,B \;-\; C_{\text{dB}} \;-\; H_{\text{dB}}
+\text{SNR}_{\text{dB}} \;=\; 6.02\,B \;+\; 4.77 \;-\; C_{\text{dB}} \;-\; H_{\text{dB}}
 \qquad\Longrightarrow\qquad
-B \;=\; \left\lceil \frac{\text{SNR}_{\text{req}} + C_{\text{dB}} + H_{\text{dB}}}{6.02} \right\rceil .
+B \;=\; \left\lceil \frac{\text{SNR}_{\text{req}} + C_{\text{dB}} + H_{\text{dB}} - 4.77}{6.02} \right\rceil .
 $$
+
+The $+4.77 = 10\log_{10}3$ term is not a fudge factor and dropping it is the classic mistake. The $6.02B$ ceiling was derived for a signal that fills the range *uniformly*, and a uniform distribution has a crest factor of its own: $20\log_{10}(\sqrt{12}/2) = 4.77$ dB. Subtracting the real signal's $C_{\text{dB}}$ without adding the reference distribution's back double-counts, and the formula then under-predicts every SNR by exactly 4.77 dB. Sanity check it on the case you already know: a full-scale sinusoid has $C = 3.01$ and $H = 0$, and the formula returns $6.02B - 3.01 + 4.77 = 6.02B + 1.76$ dB — the ADC datasheet result.
 
 ### 1.3 Integer bits come from the dynamic range
 
@@ -101,9 +103,9 @@ $$
 
 **Integer bits, from the range.** $V_{\max}=1.0$, so $m = \lceil\log_2 1\rceil + 1 = 1$ would give Q1.16 — which cannot hold $+1.0$. Take $m=2$: Q2.16, spanning $[-2,+2)$, an 18-bit word.
 
-**Cross-check with the shortcut formula.** Choosing $m=2$ against a peak of 1.0 means $H = 20\log_{10}(2/1) = 6.02$ dB of headroom. Then $\text{SNR} = 6.02\times18 - 12 - 6.02 = 108.4 - 18.0 = 90.4$ dB. The two routes agree to within a tenth of a decibel, which is the check you always run.
+**Cross-check with the shortcut formula.** Choosing $m=2$ against a peak of 1.0 means $H = 20\log_{10}(2/1) = 6.02$ dB of headroom. Then $\text{SNR} = 6.02\times18 + 4.77 - 12 - 6.02 = 95.1$ dB — and feeding $\Delta = 2^{-16}$ back through $\sigma_e^2 = \Delta^2/12$ gives 95.1 dB as well, so the two routes agree to within a tenth of a decibel. That is the check you always run, and it has a specific diagnostic value: **if the two routes disagree by about 4.8 dB you have dropped the $10\log_{10}3$.** Note also that 95.1 dB sits 5.1 dB *above* the 90 dB target, and the 5.1 dB is precisely the $6.02\times(16 - 15.15)$ bought by rounding $n$ up to an integer.
 
-**The engineering decision that follows.** 18 bits is awkward. Rounding *up* to 20 bits (Q2.18) costs two extra bits in every register and roughly 20% in every multiplier, and buys 12 dB of margin you did not ask for. Rounding *down* to 16 bits (Q2.14) yields $6.02\times16-18 = 78.3$ dB — it misses the 84 dB requirement outright. So 18 bits it is, and the correct move is to declare it as a parameter rather than a magic number, because the next revision of the sensor will change the crest factor.
+**The engineering decision that follows.** 18 bits is awkward. Rounding *up* to 20 bits (Q2.18) costs two extra bits in every register and roughly 20% in every multiplier, and buys 12 dB of margin you did not ask for. Rounding *down* to 16 bits (Q2.14) yields $6.02\times16 + 4.77 - 18.02 = 83.1$ dB — it misses the 84 dB requirement, and it misses by only 0.9 dB, which is exactly the kind of near-miss that tempts a team into shipping it and then discovering that the 6 dB modelling margin was the thing protecting them. So 18 bits it is, and the correct move is to declare it as a parameter rather than a magic number, because the next revision of the sensor will change the crest factor.
 
 ---
 
@@ -236,7 +238,7 @@ $$
 t_{\text{crit}}^{\text{direct}} \;=\; t_{\text{mult}} \;+\; \lceil \log_2 N\rceil \cdot t_{\text{add}}
 $$
 
-if the $N$ products are summed by a balanced adder tree, or $t_{\text{mult}} + (N-1)t_{\text{add}}$ if summed by a chain. With a 16×16 multiplier at roughly 12 FO4 and a 38-bit prefix adder at roughly 6 FO4, a 64-tap direct-form filter has a path of $12 + 6\times6 = 48$ FO4 — around 580 ps at 12 ps/FO4, capping the clock near 1.7 GHz *before* any wire delay. The tree grows with $\log_2 N$, so doubling the tap count costs another adder level.
+if the $N$ products are summed by a balanced adder tree, or $t_{\text{mult}} + (N-1)t_{\text{add}}$ if summed by a chain. With a 16×16 multiplier at roughly 12 FO4 and a 38-bit prefix adder at roughly 6 FO4, a 64-tap direct-form filter has a path of $12 + 6\times6 = 48$ FO4 — around 580 ps at 12 ps/FO4 (a 7 nm-class node, where FO4 $\approx$ 11–14 ps), capping the clock near 1.7 GHz *before* any wire delay. The tree grows with $\log_2 N$, so doubling the tap count costs another adder level.
 
 ### 4.2 Transposed form: the same filter, a constant critical path
 
@@ -364,7 +366,7 @@ Area figures below use library-typical order-of-magnitude values — 16×16 sign
 
 | Architecture | Mult | Clocks per output | Max $f_s$ at 500 MHz | Mult utilization at 10 MSa/s | Logic area | Latency | Memory | Pick it when |
 |---|---|---|---|---|---|---|---|---|
-| Fully parallel, transposed | 64 | 1 | 500 MSa/s | 2% | ≈ 156 kGE | 64 clk | none | $f_s$ within 2× of $f_{\text{clk}}$ |
+| Fully parallel, transposed | 64 | 1 | 500 MSa/s | 2% | ≈ 156 kGE | 1 clk | none | $f_s$ within 2× of $f_{\text{clk}}$ |
 | Fully parallel, direct + symmetric pre-add | 32 | 1 | 500 MSa/s | 2% | ≈ 81 kGE | ≈ 6 clk (pipelined tree) | none | same, and linear phase |
 | Systolic, 64 cells | 64 | 1 | 500 MSa/s, highest achievable $f_{\text{clk}}$ | 2% | ≈ 162 kGE | 128 clk | none | you need the clock, not the filter |
 | Semi-parallel, fold ×16 ($P=2$) | 2 | 16 | 31.2 MSa/s | 32% | ≈ 5.4 kGE | ≈ 20 clk | 1 kbit RAM + 512 b ROM | 3× rate headroom wanted |
@@ -420,11 +422,11 @@ Not every coefficient wins that much. The full 11-tap Hamming-windowed lowpass w
 |---|---|---|---|---|---|
 | 166 | 4 | 3 | 4 | 3 | $2^7+2^5+2^3-2^1$ |
 | −1374 | 7 | 6 | 5 | 4 | $-(2^{11}-2^{9}-2^{7}-2^{5}-2^{1})$ |
-| 4096 | 1 | 0 | 1 | 0 | $2^{12}$ |
+| 9453 | 8 | 7 | 6 | 5 | $2^{13}+2^{10}+2^{8}-2^{4}-2^{2}+2^{0}$ |
 | 16279 | 11 | 10 | 5 | 4 | $2^{14}-2^{7}+2^{5}-2^{3}-2^{0}$ |
-| **total** | **23** | **19** | **15** | **11** | |
+| **total** | **30** | **26** | **20** | **16** | |
 
-Counting only the distinct magnitudes (symmetry means each is used once after the pre-add of §4.3), CSD takes the filter from 19 adders to 11 — **42% fewer**. Against a fully parallel multiplier implementation of the same six effective taps (six 16×16 multipliers ≈ 12 kGE), the CSD shift-add version needs 11 adders of ≈ 20 bits ≈ 1.5 kGE, an 8× area reduction. Also note that a 0 coefficient costs *nothing* and a power-of-two coefficient costs *nothing* — which is why filter designers who care about area constrain the design to power-of-two coefficients where the frequency response can tolerate it.
+Counting only the distinct magnitudes (symmetry means each is used once after the pre-add of §4.3, and the two zero coefficients cost nothing), CSD takes the filter from 26 adders to 16 — **38% fewer**, close to the $W/2 \to W/3$ average the theory predicts. Against a fully parallel multiplier implementation of the same four *non-zero* taps (four 16×16 multipliers ≈ 8 kGE), the CSD shift-add version needs 16 adders of ≈ 20 bits ≈ 2.1 kGE, a 3.8× area reduction. Note the shape of the table: 16279 alone accounts for most of the win, because it happens to sit next to a power of two, while 9453 — an ordinary-looking coefficient — gives back only two adders. Also note that a 0 coefficient costs *nothing* and a power-of-two coefficient costs *nothing* — which is why filter designers who care about area constrain the design to power-of-two coefficients where the frequency response can tolerate it.
 
 ### 5.3 Multiple-constant multiplication and subexpression sharing
 
@@ -663,7 +665,7 @@ K_n = \prod_{i=0}^{n-1}\frac{1}{\cos\alpha_i} = \prod_{i=0}^{n-1}\sqrt{1+2^{-2i}
 \qquad \frac{1}{K_\infty} = 0.607253 .
 $$
 
-Because $K$ does not depend on the angle, it is compensated for free: pre-scale the input by $1/K$ (which for a constant input magnitude costs nothing at all), or post-scale, or absorb it into an adjacent filter coefficient. For $n=6$, $K_6 = 1.646492$, already within $1.6\times10^{-4}$ of the limit.
+Because $K$ does not depend on the angle, it is compensated for free: pre-scale the input by $1/K$ (which for a constant input magnitude costs nothing at all), or post-scale, or absorb it into an adjacent filter coefficient. For $n=6$, $K_6 = 1.646492$, already within $2.7\times10^{-4}$ of the limit.
 
 The **convergence range** is set by the reachable angle span $\sum_{i\ge0}\arctan 2^{-i} = 1.7433$ rad $= 99.88°$. Angles outside $\pm 99.88°$ must be range-reduced first, which for the circular case is a quadrant fold: subtract multiples of $90°$ (a coordinate swap and sign flip, zero cost) until the residue is in range.
 
@@ -859,7 +861,7 @@ Work it for the reciprocal on $[1,2)$, where $|f''| = |2/d^3| \le 2$ and $|f'''|
 | 1 (linear) | $2\delta^2/8 \le 2^{-24}$ → $\delta \le 2^{-11}$ | $2^{11} = 2048$ | ≈ 100 kbit | 1 multiply, 1 add |
 | 2 (quadratic) | $6\delta^3/(9\sqrt3) \le 2^{-24}$ → $\delta \le 2^{-8}$ | $2^{8} = 256$ | ≈ 21.5 kbit | 2 multiplies, 2 adds (Horner) |
 
-Each extra polynomial degree buys roughly one more power of $\delta$, which for a fixed accuracy target divides the segment count by a factor of $2^{24/D - 24/(D+1)}$ — here, an 8× smaller table for one extra multiply. The general shape is that **table size falls geometrically with degree while arithmetic grows linearly**, so degree 1 or 2 is almost always the optimum in hardware, and degree 3+ appears only when the ROM is the binding constraint.
+Each extra polynomial degree buys roughly one more power of $\delta$: a degree-$D$ minimax fit has error $\propto \delta^{D+1}$, so for a $2^{-24}$ target the segment count is $2^{24/(D+1)}$ and stepping from $D$ to $D+1$ divides it by $2^{24/(D+1) - 24/(D+2)}$ — $2^{12-8} = 16\times$ for $D = 1 \to 2$. The table above realizes 8× rather than 16× because the two error bounds carry different constants ($1/8$ against $1/(9\sqrt3)$), which is the usual gap between the asymptotic law and the arithmetic. The general shape is that **table size falls geometrically with degree while arithmetic grows linearly**, so degree 1 or 2 is almost always the optimum in hardware, and degree 3+ appears only when the ROM is the binding constraint.
 
 Two refinements are standard. **Bipartite (and multipartite) tables** split the interpolation into two smaller tables added together, exploiting the fact that the correction term depends weakly on the high-order input bits; they achieve roughly $2p$ bits of accuracy from tables sized like $2^{2p/3}$, with adders only and no multiplier at all. And **coefficient storage can be shrunk** by noting that higher-order coefficients need fewer bits than the constant term — the degree-2 coefficient of a well-conditioned segment only needs enough precision to place its own contribution below the error target.
 
@@ -915,7 +917,9 @@ flowchart LR
     SHF --> BF
 ```
 
-The load-bearing detail is the **two banks**. An in-place radix-2 butterfly at stage $s$ reads the pair of addresses that differ only in bit $s$, so if the bank select is the exclusive-OR of the address bits, the two operands always land in different banks and both reads happen in one cycle with single-port SRAM. Get that wrong and you need dual-port memory, which is roughly 1.6–2× the area per bit ([Memory_Circuits_and_Technologies](06_Memory_Circuits_and_Technologies.md)). Throughput: $\frac N2\log_2 N$ cycles per transform.
+The load-bearing detail is the **two banks**. An in-place radix-2 butterfly at stage $s$ reads the pair of addresses that differ only in bit $s$, so if the bank select is the exclusive-OR of the address bits, the two operands always land in different banks and both reads happen in one cycle. Get that wrong and every butterfly serializes its two reads on one bank.
+
+Then count the accesses honestly, because this is where the cycle budget is usually mis-quoted. A butterfly is **two reads and two writes** — four accesses. Two *single-port* banks supply two accesses per cycle, so a butterfly takes **two** cycles and a transform takes $N\log_2 N$ cycles. Only with two **1R1W** banks, at roughly 1.6–1.9× the area per bit of a 1RW macro ([Memory_Circuits_and_Technologies](06_Memory_Circuits_and_Technologies.md)), does the read pair and the write pair overlap and give one butterfly per cycle, $\frac N2\log_2 N$ cycles per transform. Production engines pay for 1R1W, and the rest of this section assumes it; if you are costing a design with 1RW macros, double every memory-based cycle count below.
 
 **Pipelined delay-feedback (R2SDF).** One butterfly per stage, $\log_2 N$ stages, each with a feedback shift register that holds $N/2^{s+1}$ words. Data streams through at one sample per clock.
 
@@ -941,8 +945,8 @@ Two arithmetic facts make R2SDF attractive. Its total memory is $\sum_{s} N/2^{s
 
 | Architecture | Butterfly units | Complex multipliers | Data memory | Cycles per transform | Throughput at 400 MHz | Logic area |
 |---|---|---|---|---|---|---|
-| Memory-based, radix-2 | 1 | 1 | 1024 words SRAM | 5120 | 78 kFFT/s | ≈ 12 kGE |
-| Memory-based, radix-4 | 1 (radix-4) | 3 | 1024 words SRAM, 4 banks | 1280 | 313 kFFT/s | ≈ 35 kGE |
+| Memory-based, radix-2 | 1 | 1 | 1024 words, 2 banks 1R1W | 5120 | 78 kFFT/s | ≈ 12 kGE |
+| Memory-based, radix-4 | 1 (radix-4) | 3 | 1024 words, 4 banks 1R1W | 1280 | 313 kFFT/s | ≈ 35 kGE |
 | Pipelined R2SDF | 10 | 9 | 1023 words | 1024 (streaming) | 391 kFFT/s | ≈ 95 kGE |
 | Pipelined R2$^2$SDF | 10 | 4 | 1023 words | 1024 (streaming) | 391 kFFT/s | ≈ 50 kGE |
 | Fully parallel | 5120 | ≈ 5120 | none | 1 (pipelined) | 400 MFFT/s | ≈ 46 MGE |
@@ -1089,7 +1093,7 @@ For $K = 1024$ — a typical transformer feed-forward reduction — that is $16 
 | Quantity | Value | Why it matters |
 |---|---|---|
 | Quantization noise power | $\sigma_e^2 = \Delta^2/12$ | the one integral underneath every SNR budget (§1.2) |
-| SNR per bit | 6.02 dB | converts an SNR specification into a word length (§1.2) |
+| SNR per bit | 6.02 dB; working form $\text{SNR} = 6.02B + 4.77 - C - H$ | converts an SNR specification into a word length; dropping the $4.77 = 10\log_{10}3$ under-predicts every result by 4.8 dB (§1.2) |
 | Full-scale sinusoid SNR | $6.02B + 1.76$ dB | the ADC datasheet formula; the $1.76$ is $10\log_{10}1.5$ (§1.2) |
 | Truncation bias | $-\Delta/2$ | truncation adds a DC offset; round-to-nearest does not (§1.2, §6.3) |
 | Cost of dither | ≈ 4.8 dB of SNR | the price of turning quantization tones into a benign floor (§2.1) |
@@ -1183,19 +1187,19 @@ Five non-zero digits instead of eleven, hence **4 adders instead of 10**.
 |---|---|---|---|---|
 | 166 | 4 | 3 | 4 | 3 |
 | −1374 | 7 | 6 | 5 | 4 |
-| 4096 (centre, after halving) | 1 | 0 | 1 | 0 |
+| 9453 | 8 | 7 | 6 | 5 |
 | 16279 | 11 | 10 | 5 | 4 |
-| **total** | 23 | **19** | 15 | **11** |
+| **total** | 30 | **26** | 20 | **16** |
 
 *Comparison.*
 
 | Implementation | Arithmetic units | Approximate area |
 |---|---|---|
 | Four 16×16 multipliers | 4 multipliers + 3 pre-adders + adder tree | ≈ 8000 GE + 0.6 kGE ≈ **8.6 kGE** |
-| Binary shift-add | 19 adders (≈ 20 bits) + 3 pre-adders | ≈ 19×130 + 0.4 kGE ≈ **2.9 kGE** |
-| CSD shift-add | 11 adders + 3 pre-adders | ≈ 11×130 + 0.4 kGE ≈ **1.8 kGE** |
+| Binary shift-add | 26 adders (≈ 20 bits) + 3 pre-adders | ≈ 26×130 + 0.4 kGE ≈ **3.8 kGE** |
+| CSD shift-add | 16 adders + 3 pre-adders | ≈ 16×130 + 0.4 kGE ≈ **2.5 kGE** |
 
-CSD is **4.8× smaller than the multiplier version and 1.6× smaller than naive shift-add**. Common-subexpression sharing across the four coefficients (§5.3) typically removes another 2–3 adders.
+CSD is **3.5× smaller than the multiplier version and 1.5× smaller than naive shift-add**. Only four multipliers appear, not six, because two of the six distinct taps are exactly zero and cost nothing at all. Common-subexpression sharing across the four coefficients (§5.3) typically removes another 2–3 adders.
 
 *Guard bits.* $\|h\|_1 = 1.168$, so $g = \lceil\log_2 1.168\rceil = 1$ guard bit above the Q2.30 product format — a Q3.30 accumulator, 33 bits, which is then rounded once to the output format. If the specification restricts the input to sinusoids, $\|H\|_\infty = 1.00$ and even that one bit is unnecessary; the design document must say which assumption is being made.
 
@@ -1253,13 +1257,13 @@ Angle ROM: 17 entries × 22 bits = 374 bits, negligible. Latency 17 clocks, thro
 
 *Solution — area.* Taking a complex multiplier at ≈ 8.5 kGE (four 16×16 real multipliers plus two adders) and a complex adder at ≈ 250 GE:
 
-- Memory-based radix-2: 1 complex multiplier + 2 complex adders + address generator ≈ **12 kGE**, plus one 1024×32-bit SRAM (32 kbit) and a 4 kbit octant-folded twiddle ROM.
-- Memory-based radix-4: 3 complex multipliers + 8 complex adders + a 4-bank address generator ≈ **35 kGE**, same memory but split into four banks.
+- Memory-based radix-2: 1 complex multiplier + 2 complex adders + address generator ≈ **12 kGE**, plus one 1024×32-bit SRAM (32 kbit) as two 1R1W banks (§9.3 — with 1RW banks the cycle counts below double) and a 4 kbit octant-folded twiddle ROM.
+- Memory-based radix-4: 3 complex multipliers + 8 complex adders + a 4-bank address generator ≈ **35 kGE**, same memory but split into four 1R1W banks.
 - R2$^2$SDF: 4 non-trivial complex multipliers + 10 butterflies + $N-1 = 1023$ words of delay-feedback storage ≈ **50 kGE** plus 32 kbit.
 
 *Decision.* **Memory-based radix-4.** It is the smallest architecture that meets *both* modes, and it does so with 2× margin in the harder one. The pipelined design costs 43% more logic to deliver 2.56 µs where 3.2 µs suffices — throughput the specification never asked for. Note the structure of the argument: it is §4.5's folding argument transplanted to the FFT. The clock is 10× the sample rate, so the correct move is to time-share one butterfly unit rather than instantiate ten.
 
-*Selection boundary.* If the requirement changed to 95% overlap (hop 51 samples, 1.28 µs per transform), radix-4 memory-based would fail and R2$^2$SDF would become the only single-engine answer. If the input rate rose to 400 MSa/s, only the pipelined design would work, because a memory-based engine physically cannot accept one sample per clock while also performing $\log_2 N$ passes over the same memory.
+*Selection boundary.* If the requirement changed to 95% overlap (hop 51 samples, 1.28 µs per transform), radix-4 memory-based would fail at 3.2 µs — **and so would R2$^2$SDF**, which streams one sample per clock and therefore needs 1024 clocks = 2.56 µs per transform however the frames overlap. The reason is worth stating because it is easy to get backwards: overlap does not shorten the transform, it multiplies the *sample* rate the engine must swallow. At 95% overlap each input sample belongs to 20 frames, so the engine must accept $20 \times 40 = 800$ MSa/s against a 400 MHz clock, and no single-lane architecture on this clock can do that. The answers are a faster clock, a two-samples-per-clock radix-4 pipeline, or two engines processing alternate frames. If instead the input rate rose to 400 MSa/s with no overlap, only the pipelined design would work, because a memory-based engine physically cannot accept one sample per clock while also performing $\log_2 N$ passes over the same memory.
 
 *Solution — dynamic range.* Worst-case magnitude growth over 10 radix-2 stages (5 radix-4 stages) is $N = 1024$, i.e. 10 bits. Three options: a 26-bit datapath with no scaling (largest, exact); unconditional scaling with a 16-bit datapath (cheapest, costs about 5 bits of effective resolution); or **block floating point** — a max-magnitude detector running alongside the butterfly, one shared 4-bit exponent per block, and a per-stage shift applied on the next stage's read. BFP costs a comparator tree and an exponent register, a few hundred gates against a 35 kGE engine, and recovers most of the 5 bits. For a spectrum monitor, where the whole point is measuring signals 60–80 dB below full scale, BFP is not optional.
 

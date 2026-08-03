@@ -495,3 +495,7 @@ Trace one transaction and every seam on this page shows up exactly once: the **s
 1. IEEE Std 1800.2-2020, *Universal Verification Methodology (UVM) Language Reference Manual*.
 2. Accellera Systems Initiative, *Universal Verification Methodology (UVM) 1.2 User's Guide*, 2015.
 3. Spear, C. and Tumbush, G., *SystemVerilog for Verification*, 3rd ed., Springer, 2012. Chs. on the testbench architecture UVM standardizes.
+
+---
+
+⬅ prev [SystemVerilog Assertions and Coverage](09_Assertions_and_Coverage.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Verification Planning and Coverage Closure](11_Verification_Planning_and_Coverage_Closure.md)

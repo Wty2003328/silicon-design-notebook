@@ -288,3 +288,7 @@ Read every rule as the fingerprint of a physics from the sections above:
 5. Stapper, C.H., "Modeling of Integrated Circuit Defect Sensitivities," *IBM J. Res. Dev.*, 27(6), 1983. Negative-binomial (clustered) yield of §5.
 6. Cutress, I. and industry disclosures (TSMC, Intel, Samsung, ASML) at IEDM / ISSCC / VLSI Symposium, 2019–2025. EUV adoption, High-NA, GAA/RibbonFET, and backside power of §3, §7, §8.
 7. IEEE, *International Roadmap for Devices and Systems (IRDS)*, 2023 edition. Node-scaling, interconnect, and lithography roadmaps underlying §6–8.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [IC Packaging](02_IC_Packaging.md)

@@ -395,3 +395,7 @@ A property with an assertion *and* a cover on its antecedent is the fully-formed
 4. Piziali, A., *Functional Verification Coverage Measurement and Analysis*, Springer, 2004. The coverage-space model of §4.1 and the code-vs-functional distinction.
 5. Manna, Z. and Pnueli, A., *The Temporal Logic of Reactive and Concurrent Systems: Specification*, Springer, 1992. Safety vs liveness (§2.4).
 6. Motwani, R. and Raghavan, P., *Randomized Algorithms*, Cambridge, 1995. The coupon-collector result and its heavy tail (§4.4).
+
+---
+
+⬅ prev [OOP and Constrained Randomization](08_OOP_and_Randomization.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [UVM Methodology](10_UVM_Methodology.md)

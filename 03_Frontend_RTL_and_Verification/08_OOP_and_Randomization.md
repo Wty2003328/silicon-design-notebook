@@ -408,3 +408,7 @@ Reproducibility is what makes constrained-random *debuggable at all* — it is t
 4. Kitchen, N. and Kuehlmann, A., "Stimulus generation for constrained random simulation," *ICCAD*, 2007. Uniform sampling of a constraint solution set (§3.1).
 5. Piziali, A., *Functional Verification Coverage Measurement and Analysis*, Springer, 2004. Coverage models and closure (§5).
 6. Accellera / IEEE Std 1800.2-2020, *Universal Verification Methodology (UVM)*. The methodology built on the OOP and randomization primitives of this page.
+
+---
+
+⬅ prev [Lint, CDC, and RDC Signoff](07_Lint_CDC_RDC_Signoff.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [SystemVerilog Assertions and Coverage](09_Assertions_and_Coverage.md)

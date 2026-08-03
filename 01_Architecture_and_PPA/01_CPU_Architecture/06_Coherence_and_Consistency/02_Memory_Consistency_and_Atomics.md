@@ -752,3 +752,7 @@ Cross-references: [Cache Coherence](01_Cache_Coherence.md) supplies the conflict
 ---
 
 **Navigation:** [Coherence and Consistency index](00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)
+
+---
+
+⬅ prev [Cache Coherence](01_Cache_Coherence.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [AXI Coherency Extensions (ACE) and Coherent Hub Interface (CHI)](03_ACE_and_CHI.md)

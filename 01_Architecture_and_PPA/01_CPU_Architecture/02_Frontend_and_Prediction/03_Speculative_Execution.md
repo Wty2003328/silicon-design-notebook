@@ -349,3 +349,7 @@ For each speculation source, verify both the prediction and every way it can be 
 ---
 
 ← [Fetch, Decode, and µop Delivery](02_Fetch_Decode_and_Uop_Delivery.md) · [Frontend index](00_Index.md) · next → [Out-of-Order Backend](../03_Out_of_Order_Backend/00_Index.md)
+
+---
+
+⬅ prev [Fetch, Decode, and Micro-Operation (µop) Delivery](02_Fetch_Decode_and_Uop_Delivery.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

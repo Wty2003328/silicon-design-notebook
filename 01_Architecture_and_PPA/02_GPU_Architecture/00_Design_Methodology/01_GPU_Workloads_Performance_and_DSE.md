@@ -257,3 +257,7 @@ The kernel is HBM-bound at this boundary, with a 133 ms lower-bound time ($400\ 
 ---
 
 ← [Methodology index](00_Index.md) · next → [GPU PPA and Physical Implementation](02_GPU_PPA_and_Physical_Implementation.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Power, Performance, Area, and Physical Implementation](02_GPU_PPA_and_Physical_Implementation.md)

@@ -158,3 +158,7 @@ The layer is reconstructable when a tensor byte has an unambiguous owner and add
 ---
 
 ← [Compiler and Array Blueprint](01_Graph_Compiler_and_Execution_Array_Implementation_Blueprint.md) · next → [NPU Verification, Performance, and Bring-up](03_NPU_Verification_Performance_and_Bringup_Blueprint.md)
+
+---
+
+⬅ prev [NPU Graph-Compiler and Execution-Array Implementation Blueprint](01_Graph_Compiler_and_Execution_Array_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU Verification, Performance, and Bring-up Blueprint](03_NPU_Verification_Performance_and_Bringup_Blueprint.md)

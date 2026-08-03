@@ -245,7 +245,7 @@ At scale the same stage hits a **capacity wall**: flat synthesis is superlinear 
 | Quantity | Value | Why (section) |
 |---|---|---|
 | Vt inverter delay (7 nm) HVT / SVT / LVT / ULVT | ~25 / 18 / 13 / 10 ps | speed–leakage knob (§7.2) |
-| Vt leakage HVT / SVT / LVT / ULVT | 1× / 3–5× / 10–20× / 30–50× | exponential in $V_{th}$ (§7.2) |
+| Vt leakage HVT / SVT / LVT / ULVT | 1× / 4–6× / **10–30×** / 50–100× | exponential in $V_{th}$; library reality, not the subthreshold-only model (§7.2) |
 | Typical Vt mix after closure | ~70–80% HVT · 15–25% SVT · ~5% LVT | critical cells are a minority (§7.2, §7.4) |
 | Drive strength X1 → X8 | area / leakage / $C_{in}$ scale ~× drive | logical effort (§5.1) |
 | Optimal stage effort $\rho$ | ~3.6–4 (fanout-of-4) | equal-effort law (§5.1) |
@@ -277,3 +277,7 @@ At scale the same stage hits a **capacity wall**: flat synthesis is superlinear 
 5. Cong, J. and Ding, Y., "FlowMap: An Optimal Technology Mapping Algorithm for Delay Optimization in Lookup-Table Based FPGA Designs," *IEEE TCAD*, 13(1), 1994. Cut-based depth-optimal mapping of §4.2.
 6. Sutherland, I., Sproull, R., and Harris, D., *Logical Effort: Designing Fast CMOS Circuits*, Morgan Kaufmann, 1999. The sizing law of §5.1.
 7. Brayton, R.K. et al., "MIS: A Multiple-Level Logic Optimization System," *IEEE TCAD*, 6(6), 1987. Multi-level optimization lineage of §3.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Timing Constraints (SDC)](02_Constraints_SDC.md)

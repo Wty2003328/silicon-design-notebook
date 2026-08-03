@@ -165,3 +165,7 @@ Once silicon is functional and characterized, the product moves to volume, where
 2. Mitra, S., Seshia, S.A., and Nicolici, N., "Post-Silicon Validation Opportunities, Challenges and Recent Advances," *DAC*, 2010. The escape gap and trace/scan-based localization.
 3. Abramovici, M., Breuer, M.A., and Friedman, A.D., *Digital Systems Testing and Testable Design*, IEEE Press, 1990. Scan, ATPG, and production test.
 4. Baker, K. and van Beers, J., "Shmoo Plotting: The Black Art of IC Testing," *IEEE Design & Test*, 1997. Reading failure mechanisms from shmoo shape.
+
+---
+
+⬅ prev [IC Packaging](02_IC_Packaging.md) · [Section Index](00_Index.md) · [Root Index](../Index.md)

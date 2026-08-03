@@ -547,3 +547,7 @@ Both answers come straight from the §2 and §5 models — which is the point of
 3. Keating, M., Flynn, D., Aitken, R., Gibbons, A., Shi, K., *Low Power Methodology Manual for System-on-Chip Design*, Springer, 2007. The canonical treatment of isolation, level shifting, retention, and power-gating methodology behind §3–§5.
 4. Bhasker, J. and Chadha, R., *Static Timing Analysis for Nanometer Designs*, Springer, 2009. Level-shifter and multi-voltage timing (the STA cost of §4).
 5. Silicon Integration Initiative (Si2), *Low Power Coalition archive*. CPF 2.1, CPF/UPF Interoperability Guide V2.0, and power-closure design guides: https://si2.org/si2-openstandards/
+
+---
+
+⬅ prev [Power Reduction Techniques](04_Power_Reduction_Techniques.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Power and Power-Integrity Signoff](06_Power_Analysis_and_Signoff.md)

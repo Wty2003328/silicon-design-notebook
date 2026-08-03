@@ -524,3 +524,7 @@ endmodule
 3. Cummings, C.E., "Clock Domain Crossing (CDC) Design & Verification Techniques Using SystemVerilog," *SNUG*, 2008. The bus-coherency, handshake, and MUX-recirculation techniques of §4–§6.
 4. Kinniment, D.J., *Synchronization and Arbitration in Digital Systems*, Wiley, 2007. Metastability physics and multi-stage synchronizers.
 5. Dally, W.J. and Poulton, J.W., *Digital Systems Engineering*, Cambridge University Press, 1998. Ch. on synchronization and the resolution-time model.
+
+---
+
+⬅ prev [Clock Generation and Distribution](05_PLL_DLL_and_Clock_Distribution.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Lint, CDC, and RDC Signoff](07_Lint_CDC_RDC_Signoff.md)

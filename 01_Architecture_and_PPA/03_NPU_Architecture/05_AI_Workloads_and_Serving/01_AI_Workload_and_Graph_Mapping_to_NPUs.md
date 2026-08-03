@@ -421,3 +421,7 @@ Open research questions include joint compiler–microarchitecture optimization 
 ---
 
 ← [AI Workloads and Serving index](00_Index.md) · next → [End-to-End AI Inference and Serving on NPUs](02_End_to_End_AI_Inference_and_Serving_on_NPUs.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [End-to-End Artificial-Intelligence Inference and Serving on Neural Processing Units](02_End_to_End_AI_Inference_and_Serving_on_NPUs.md)

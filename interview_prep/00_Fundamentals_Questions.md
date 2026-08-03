@@ -44,7 +44,7 @@ Each carry is a 2-level sum-of-products of G and P terms, computable in O(1) gat
 
 ### Q8: In a 28nm ASIC, what adder would synthesis choose for a 32-bit add on a critical path with 350ps budget?
 
-**A:** With T_target = 350ps and FO4 ≈ 20ps, we have ~17.5 gate delays. An RCA needs 50+ gate delays (1000ps) — far too slow. A Brent-Kung prefix adder at ~380ps is marginal. The tool would likely select a Kogge-Stone or Han-Carlson variant to meet 350ps. The tool may also try a carry-select architecture with optimized block sizes. If 350ps is still tight, the tool could use a speculative adder (compute assuming carry-in = 0, correct later). In practice, you'd write `assign sum = a + b;`, set the timing constraint to 350ps, and let DesignWare choose.
+**A:** With T_target = 350ps and FO4 ≈ 20ps *at 28nm* (the node matters — FO4 is ~11–14ps at 7nm and ~9–12ps at N5), we have ~17.5 gate delays. An RCA needs 50+ gate delays (1000ps) — far too slow. A Brent-Kung prefix adder at ~380ps is marginal. The tool would likely select a Kogge-Stone or Han-Carlson variant to meet 350ps. The tool may also try a carry-select architecture with optimized block sizes. If 350ps is still tight, the tool could use a speculative adder (compute assuming carry-in = 0, correct later). In practice, you'd write `assign sum = a + b;`, set the timing constraint to 350ps, and let DesignWare choose.
 
 ### Q9: How do you handle signed vs unsigned multiplication?
 
@@ -451,3 +451,7 @@ capacitance, and timing. Design rules require metal density to stay within bound
 ### Q28: Why has bfloat16 replaced FP32 for deep learning training?
 
 **A:** BF16 has the same 8-bit exponent as FP32 (same dynamic range, max ~3.4e38), so gradient values don't overflow during training — unlike FP16 (5-bit exponent, max ~65504) which requires loss scaling. BF16's 7-bit mantissa provides sufficient precision for gradient descent (the reduced precision acts as implicit regularization, often matching FP32 accuracy). The hardware advantage is massive: BF16 multiply is 8x8 = 64 units vs FP32's 24x24 = 576 — 9x smaller, enabling 9x more MACs in the same silicon area. The standard training recipe is: FP32 master weights, BF16 forward/backward computation, FP32 weight update. This "mixed precision" approach was first deployed by Google (TPU v2, 2017) and is now universal across NVIDIA (Ampere, Hopper), AMD (MI300), and all major training frameworks (PyTorch, JAX). No loss scaling needed, simpler than FP16 mixed precision.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [01](01_Architecture_and_PPA_Questions.md)

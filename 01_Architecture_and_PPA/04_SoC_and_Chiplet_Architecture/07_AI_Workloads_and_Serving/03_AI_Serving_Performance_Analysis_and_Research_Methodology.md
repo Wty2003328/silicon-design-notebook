@@ -466,3 +466,7 @@ A strong architecture study should answer:
 4. Zhong, Y. et al., “DistServe,” *OSDI*, 2024. https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin
 5. Williams, S., Waterman, A., and Patterson, D., “Roofline,” *Communications of the ACM*, 2009.
 6. Harchol-Balter, M., *Performance Modeling and Design of Computer Systems*, Cambridge University Press, 2013.
+
+---
+
+⬅ prev [Artificial Intelligence Workload Mapping to SoC, Memory, NoC, and Chiplets](02_AI_Workload_Mapping_to_SoC_Memory_NoC_and_Chiplets.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Heterogeneous AI Platform and Control-Plane Implementation Blueprint](04_Heterogeneous_AI_Platform_and_Control_Plane_Implementation_Blueprint.md)

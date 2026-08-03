@@ -219,3 +219,7 @@ Build one static graph using validated library calls; add multi-stream dependenc
 ---
 
 ← [GPU AI Performance and Research](03_GPU_AI_Performance_Analysis_and_Research_Methods.md) · next → [GPU Serving Engine, Scheduler, and KV State](05_GPU_Serving_Engine_Scheduler_and_KV_Implementation_Blueprint.md)
+
+---
+
+⬅ prev [GPU Artificial-Intelligence Performance Analysis, Profiling, and Research Methods](03_GPU_AI_Performance_Analysis_and_Research_Methods.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Serving-Engine, Scheduler, and KV-State Implementation Blueprint](05_GPU_Serving_Engine_Scheduler_and_KV_Implementation_Blueprint.md)

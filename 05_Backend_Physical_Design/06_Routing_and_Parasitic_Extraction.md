@@ -83,7 +83,7 @@ The cost of tiering is silicon area in the third dimension (each layer pair is t
 
 ### 1.2 A realistic 15-layer stack
 
-The following is a representative 5 nm-class back-end-of-line (BEOL — everything above the transistors) stack. Foundries do not publish these tables, but the values are consistent with published IRDS targets, the geometry, and the resistivity model of §1.1: every $r$ in the table is $\rho_{\text{eff}}/(W\!\cdot\!T)$ with the stated $\rho_{\text{eff}}$, so you can check any row.
+The following is a representative **7 nm-class** back-end-of-line (BEOL — everything above the transistors) stack; its 40 nm minimum metal pitch and 240 nm six-track cell height are N7 dimensions, and an N5 stack scales the bottom four rows to a ~28–30 nm pitch without changing any of the arguments below. Foundries do not publish these tables, but the values are consistent with published IRDS targets, the geometry, and the resistivity model of §1.1: every $r$ in the table is $\rho_{\text{eff}}/(W\!\cdot\!T)$ with the stated $\rho_{\text{eff}}$, so you can check any row.
 
 | Layer | Tier | Pitch (nm) | $W$ (nm) | $T$ (nm) | $T/W$ | $\rho_{\text{eff}}$ ($\mu\Omega\cdot$cm) | $r$ ($\Omega/\mu$m) | $c$ (fF/$\mu$m) | Preferred dir | Typical use |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -348,15 +348,15 @@ Now the budget arithmetic, because "apply NDRs to critical nets" is only actiona
 | M4, M5 | 60 | 10.7 each | 0.85 | 9.1 each |
 | M6, M7 | 80 | 8.0 each | 0.80 | 6.4 each |
 | M8, M9 | 160 | 4.0 each | 0.60 | 2.4 each |
-| **Total** | | | | **51.3 m** |
+| **Total** | | | | **50.9 m** |
 
-A block with 3.0 M instances and an average net length of 15 µm needs about $3.3\times10^6 \times 15\ \mu\text{m} = 49.5$ m of track — 96 % of supply, which is why real blocks run at 65–80 % utilization rather than 90 %. Against that budget:
+A block with 3.0 M instances and an average net length of 15 µm needs about $3.3\times10^6 \times 15\ \mu\text{m} = 49.5$ m of track — 97 % of supply, which is why real blocks run at 65–75 % utilization rather than 90 %. Against that budget:
 
-- **Shield the clock.** 3,200 clock segments averaging 120 µm is 0.38 m of clock wire, which at 5× costs 1.92 m instead of 0.38 m. Globally that is +1.5 m on 51.3 m, under 3 %. But clock routes on M6–M9, where the budget is only $6.4+6.4+2.4+2.4 = 17.6$ m — so the clock consumes 11 % of the tier it actually uses. That is affordable, and it is why clock shielding is standard practice.
+- **Shield the clock.** 3,200 clock segments averaging 120 µm is 0.38 m of clock wire, which at 5× costs 1.92 m instead of 0.38 m. Globally that is +1.5 m on 50.9 m, about 3 %. But clock routes on M6–M9, where the budget is only $6.4+6.4+2.4+2.4 = 17.6$ m — so the clock consumes 11 % of the tier it actually uses. That is affordable, and it is why clock shielding is standard practice.
 - **2W2S the top 2,000 critical signal nets** averaging 90 µm: 0.18 m at 3× costs 0.54 m instead of 0.18 m. +0.36 m. Trivial.
 - **Shield all 2,000 critical signal nets** instead: 0.18 m at 5× = 0.90 m, +0.72 m. Still small globally — but these nets are also promoted to M6/M7, and combined with the clock the M6/M7 budget goes from roughly 78 % to 93 % utilized, which is where local overflow starts.
 
-The selection boundary in one sentence: **NDRs are cheap because they are applied to a tiny fraction of nets that happen to be short; shielding is affordable only because clocks are few; neither survives being applied broadly.** The quantitative gate is the one stated in [Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md) §1.6 — apply the rule only where the predicted delta-delay or glitch exceeds the net's budget.
+The selection boundary in one sentence: **NDRs are cheap because they are applied to a tiny fraction of the nets — 2,000 out of millions — not because those nets are short (at 90 µm they are six times the 15 µm block average, which is exactly why they were selected); shielding is affordable only because clocks are few; neither survives being applied broadly.** The quantitative gate is the one stated in [Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md) §1.6 — apply the rule only where the predicted delta-delay or glitch exceeds the net's budget.
 
 ---
 
@@ -415,7 +415,7 @@ EUV (extreme ultraviolet, 13.5 nm wavelength) lithography relaxes some of this b
 
 ### 6.4 Pin access on a short cell
 
-Consider a standard cell six routing tracks tall at N5 — a common height for a high-density library. Its input pin is a single M0 rectangle perhaps 40 nm long, sitting on one track. To connect to it, the router must place a V0 via on that pin, then an M1 wire, then V1, then M2. Under unidirectional routing with a 40 nm M1 pitch, the number of legal M1 tracks that overlap a 40 nm pin is **one or two**. That is the entire access set.
+Consider a standard cell six routing tracks tall on the 7 nm-class stack of §1.2 — a common height for a high-density library. Its input pin is a single M0 rectangle perhaps 40 nm long, sitting on one track. To connect to it, the router must place a V0 via on that pin, then an M1 wire, then V1, then M2. Under unidirectional routing with a 40 nm M1 pitch, the number of legal M1 tracks that overlap a 40 nm pin is **one or two**. That is the entire access set.
 
 Now place two such cells adjacent. If cell X's pin needs M1 track $k$ and cell Y's pin also needs track $k$ (because their pin positions happen to align), one of them cannot be accessed — and neither the router nor the placer created the problem; the *combination* of two legal placements did. This is why:
 
@@ -438,7 +438,7 @@ $$
 \frac{0.55}{0.75} = 0.73\times \text{ per node}
 $$
 
-Meanwhile the *demand* per cell is roughly constant — a cell still has three or four pins, and nets still connect two to four cells. So each generation gives every cell **27 % fewer tracks to work with**. Over three generations, $0.73^3 = 0.39$ — a 2.6× shortfall. The industry has paid for it by adding metal layers (8 to 15) and by inventing the pitch-multiple tier structure of §1.2, and it is still not enough, which is why achievable utilization has fallen from 85 % at 65 nm to 60–70 % at N5 on routing-limited blocks.
+Meanwhile the *demand* per cell is roughly constant — a cell still has three or four pins, and nets still connect two to four cells. So each generation gives every cell **27 % fewer tracks to work with**. Over three generations, $0.73^3 = 0.39$ — a 2.6× shortfall. The industry has paid for it by adding metal layers (8 to 15) and by inventing the pitch-multiple tier structure of §1.2, and it is still not enough, which is why achievable utilization has fallen from 85 % at 65 nm to 65–75 % at 7 nm and 60–70 % at N5 on routing-limited blocks ([Floorplanning_and_Power_Planning](03_Floorplanning_and_Power_Planning.md) §2).
 
 Layer that on top of the rule explosion — 500 rules to 5,000, with the new rules being *conditional* (this spacing applies only if the neighbor is wider than $X$ and the run length exceeds $Y$ and the parallel edge is within $Z$) — and detailed-routing runtime grows 2–3× per node while the fraction of legal moves at any grid point shrinks. The practical result: at 65 nm, a block that placed legally at 85 % utilization routed. At N5, the *placer* will happily produce a legal 85 % placement that is physically unroutable, and the only way to know is to route it. That inversion is the defining backend fact of the advanced-node era.
 
@@ -970,13 +970,13 @@ The effective load is $C_g + \text{MF}\cdot C_c + C_{\text{pin}}$, and delay is 
 
 The load swings by $86.5/43.7 = 1.98\times$ and the delay by **59.1 ps on a 89.8 ps nominal stage** — $\pm 33\ \%$, from geometry that is *identical* in all three rows. Nothing about the wire changed; only the neighbors' activity did.
 
-Now the corner comparison. An RC corner applies a blind multiplier — suppose `cworst` raises total $C$ by 20 % and uses an effective coupling factor of 1.5:
+Now the corner comparison. An RC corner applies a blind multiplier — suppose `cworst` raises the extracted *ground* capacitance 20 % and applies an effective coupling factor of 1.5 to $C_c$:
 
 $$
-C_{\text{corner}} = 39.7 + 1.5(21.4) + 4 = 75.8\ \text{fF} \;\Rightarrow\; 104.6\ \text{ps}
+C_{\text{corner}} = 1.2(39.7) + 1.5(21.4) + 4 = 47.6 + 32.1 + 4 = 83.7\ \text{fF} \;\Rightarrow\; 115.6\ \text{ps}
 $$
 
-That is 14.8 ps **optimistic** against the true opposite-switching case. The corner cannot know which nets actually toggle against each other, so it either under-covers (as here) or, if set to MF = 2 everywhere, over-covers by assuming every aggressor on the die switches against its victim simultaneously — which would cost far more area in fixes than the real problem justifies. This is the exact gap that SI-aware STA fills by computing switching windows per timing arc; see [Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md) §1.4 and [STA](../06_Signoff/01_STA.md).
+That is 3.8 ps **optimistic** against the true opposite-switching case — and only that close because the 20 % ground-capacitance skew happens to absorb most of the missing Miller term. Raise the coupling fraction from this net's 35 % toward the 50–65 % a field solver reports for a wire buried in a bus, and the same corner under-covers by 15–20 ps. The corner cannot know which nets actually toggle against each other, so it either under-covers (as here) or, if set to MF = 2 everywhere, over-covers by assuming every aggressor on the die switches against its victim simultaneously — which would cost far more area in fixes than the real problem justifies. This is the exact gap that SI-aware STA fills by computing switching windows per timing arc; see [Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md) §1.4 and [STA](../06_Signoff/01_STA.md).
 
 ---
 
@@ -1062,7 +1062,7 @@ $$
 \text{rcworst: } 22 + 18 + 3.73 - 8.57 - 12 = 23.16\ \text{ps}
 $$
 
-**The slow-RC corner is 1.23 ps worse for hold.** The mechanism is asymmetry of wire length: the differential clock route is 40 µm and the data route is 6 µm, so slowing the wires hurts the clock nearly seven times more than it helps the data. The general rule: **hold is worst at the fast *PVT* corner (gates dominate the data path) combined with whichever *RC* corner maximizes the clock-arm imbalance** — which is the slow-RC corner whenever the differential clock route is longer than the data route, and the fast-RC corner when the reverse holds. Since both situations exist in every block, hold must be checked at every RC corner. That is not tool conservatism; it is arithmetic.
+**The slow-RC corner is 1.23 ps worse for hold.** The mechanism is asymmetry of wire length: the differential clock route is 40 µm against a 6 µm data route, so slowing the wires costs 1.75 ps of skew while returning only 0.52 ps of data delay — a **3.4× asymmetry**, not the full 6.7× of the length ratio, because the short data net's delay is still mostly its driver's $R_d C$ and only the wire part responds to the RC corner. The general rule: **hold is worst at the fast *PVT* corner (gates dominate the data path) combined with whichever *RC* corner maximizes the clock-arm imbalance** — which is the slow-RC corner whenever the differential clock route is longer than the data route, and the fast-RC corner when the reverse holds. Since both situations exist in every block, hold must be checked at every RC corner. That is not tool conservatism; it is arithmetic.
 
 ---
 

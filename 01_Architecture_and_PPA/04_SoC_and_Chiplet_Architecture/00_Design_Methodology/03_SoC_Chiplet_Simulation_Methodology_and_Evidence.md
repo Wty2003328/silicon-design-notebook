@@ -299,3 +299,7 @@ Preserve software/artifact hashes, full topology/configuration, trace points/has
 ---
 
 ← [SoC/Chiplet PPA and Physical Implementation](02_SoC_Chiplet_PPA_and_Physical_Implementation.md) · [SoC/chiplet book index](../00_Index.md) · next → [System Modeling](../01_System_Modeling/00_Index.md)
+
+---
+
+⬅ prev [SoC and Chiplet Power, Performance, Area, and Physical Implementation](02_SoC_Chiplet_PPA_and_Physical_Implementation.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

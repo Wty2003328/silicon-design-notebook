@@ -84,8 +84,9 @@ Also cannot retime if register has dont_touch or scan attributes.
 ### Q6: Explain the impact of clock gating on power and area.
 
 **A:** Clock gating eliminates switching power on the clock tree and flip-flops
-when the enable is inactive. In a typical SoC (System-on-Chip), the clock tree consumes 30-50%
-of total dynamic power, so gating can save 20-40% dynamic power. Area overhead
+when the enable is inactive. In a typical SoC (System-on-Chip), the clock network consumes 20-35%
+of total dynamic power and 35-50% counting the flop-internal clock — gating attacks the larger
+figure, so it can save 20-40% dynamic power. Area overhead
 is one ICG (Integrated Clock Gating) cell per group of gated FFs (typically 4-32 FFs per ICG). The ICG
 cell contains a latch (to prevent glitches) and an AND gate. It adds ~1 gate
 equivalent per group. The break-even point is typically 3-4 FFs: gating fewer
@@ -304,3 +305,6 @@ is valid for multiple cycles. Use max_delay for asynchronous CDC paths (with
 max_delay as a substitute for multicycle on synchronous paths -- it bypasses
 the clock-based timing framework and can lead to incorrect hold analysis.
 
+---
+
+⬅ prev [03](03_Frontend_RTL_and_Verification_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [05](05_Backend_Physical_Design_Questions.md)

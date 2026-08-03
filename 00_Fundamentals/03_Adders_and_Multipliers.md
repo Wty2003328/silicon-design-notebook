@@ -113,7 +113,7 @@ Every adder therefore lives inside the box $[\,\Theta(\log n)\text{ delay},\,\Th
 | Parallel-prefix (§5) | prefix-sum over the $(g,p)$ monoid | $O(\log n)$ | $O(n\log n)$ | high-performance 32/64-bit ALUs |
 | Carry-save (§6) | don't propagate — stay redundant | $O(1)$/level | $O(n)$/level | multipliers, MAC accumulators |
 
-**Delay model used below.** Costs are in *gate delays* $\approx$ one FO4 inverter delay $\approx 15\text{–}25$ ps at 28 nm, $\approx 8$ ps at 7 nm ([CMOS_Fundamentals](01_CMOS_Fundamentals.md)). The load-bearing per-gate numbers: XOR $\approx 2$, a compound AOI/OAI carry gate $\approx 1.5$, MUX $\approx 1$. A full-adder contributes $\approx 1.5$ to the carry path and $\approx 2$ to the sum.
+**Delay model used below.** Costs are in *gate delays* $\approx$ one FO4 inverter delay, which is only meaningful with a node attached: $\approx 18\text{–}22$ ps at 28 nm, $\approx 11\text{–}14$ ps at 7 nm, $\approx 9\text{–}12$ ps at N5 ([CMOS_Fundamentals](01_CMOS_Fundamentals.md) §4.1). The load-bearing per-gate numbers: XOR $\approx 2$, a compound AOI/OAI carry gate $\approx 1.5$, MUX $\approx 1$. A full-adder contributes $\approx 1.5$ to the carry path and $\approx 2$ to the sum.
 
 ---
 
@@ -624,3 +624,7 @@ Note the knee: Kogge-Stone buys the last $\sim30$ ps over Han-Carlson for $\sim4
 9. Wallace, C.S., "A Suggestion for a Fast Multiplier," *IEEE Trans. Electronic Computers*, EC-13(1), 1964.
 10. Dadda, L., "Some Schemes for Parallel Multipliers," *Alta Frequenza*, 34, 1965.
 11. Parhami, B., *Computer Arithmetic: Algorithms and Hardware Designs*, 2nd ed., Oxford University Press, 2010.
+
+---
+
+⬅ prev [Logic building blocks](02_Logic_Building_Blocks.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Floating Point](04_Floating_Point.md)

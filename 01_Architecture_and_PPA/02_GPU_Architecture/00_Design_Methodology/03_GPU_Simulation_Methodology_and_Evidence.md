@@ -247,3 +247,7 @@ Preserve host/device source and input hashes, build commands, fatbin/cubin infor
 ---
 
 ← [GPU PPA and Physical Implementation](02_GPU_PPA_and_Physical_Implementation.md) · [GPU book index](../00_Index.md) · next → [Core Architecture](../01_Core_Architecture/00_Index.md)
+
+---
+
+⬅ prev [GPU Power, Performance, Area, and Physical Implementation](02_GPU_PPA_and_Physical_Implementation.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

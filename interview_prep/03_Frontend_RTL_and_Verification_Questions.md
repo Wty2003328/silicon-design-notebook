@@ -1296,3 +1296,6 @@ sequence of other processes. The older `$random` is NOT thread-stable and should
 
 **Q: How do constrained-random and functional coverage relate?** They're the two halves of CDV: random stimulus reaches breadth and corners cheaply; functional coverage measures what was actually exercised; the un-hit bins feed back as new constraints/seeds (or coverage-driven generation). One produces volume, the other measures meaning.
 
+---
+
+⬅ prev [02](02_Power_and_Low_Power_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [04](04_Synthesis_Questions.md)

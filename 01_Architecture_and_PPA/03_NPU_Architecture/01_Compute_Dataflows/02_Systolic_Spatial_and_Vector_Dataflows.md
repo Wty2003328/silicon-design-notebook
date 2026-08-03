@@ -526,3 +526,7 @@ Winograd is thus a targeted optimization for small dense spatial filters with re
 ---
 
 **Navigation:** [Compute Dataflows index](00_Index.md) · [NPU index](../00_Index.md)
+
+---
+
+⬅ prev [Neural Processing Unit (NPU) Accelerators](01_NPU_Accelerators.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Transformer and Attention Engine Microarchitecture](03_Transformer_and_Attention_Engine_Microarchitecture.md)

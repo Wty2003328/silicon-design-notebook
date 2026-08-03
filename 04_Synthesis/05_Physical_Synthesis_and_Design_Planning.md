@@ -15,6 +15,8 @@ Skipping it ships two defects. A *correlation* defect: a netlist optimized again
 
 ## 1. The wireload-model fiction and its death
 
+*That* the wireload model died, and that its error reached **2–5×** while a floorplan in the loop restores correlation to **5–10%**, is [Synthesis_and_Optimization §8](01_Synthesis_and_Optimization.md); those conclusions are taken as given here and not re-argued. What that page asserts, this section **measures** — and the measurement changes the diagnosis, because the model's fatal property turns out not to be its bias.
+
 Synthesis needs a delay per net; delay needs $R$ and $C$; those need a length; before placement there is none. The **wireload model (WLM)** assumes length is a function of **fanout** alone: bin every net of a previously-routed population by fanout $f$, take the mean routed length $\bar L(f)$, publish it in the `.lib` (Liberty) file with per-micron $R$, $C$ (`fanout_length(4, 22.0)` and so on) and a `slope` $s$ for extrapolation beyond the table:
 
 $$
@@ -62,7 +64,7 @@ The last row uses $\tau(k)=rcL^2/2k+k\,t_{buf}$, minimized at $k^\star=L\sqrt{rc
 | 28 nm | ~0.45 | ~2 | 90% — flow is broken |
 | 7 nm | 0.50–0.75 | 2–5 | 100–375% — meaningless |
 
-**The correlation gap** has two halves. *Magnitude:* post-route worst negative slack (WNS) runs **20–50% of the period** worse than the WLM-based report — 200–500 ps on a 1 ns design; physical synthesis gives **5–10%**. *Rank:* Spearman correlation between synthesis and post-route path ordering falls **below ~0.5**, so the two tools' top-1000 critical paths are different *sets*; physical synthesis restores 0.85–0.95. The rank half makes the flow non-convergent, because synthesis spends its area and leakage budget upsizing paths that post-route have positive slack while leaving the real offender minimum-sized. Over-constraining by 10–20% inflates area and leakage uniformly ([Synthesis_and_Optimization §7.4](01_Synthesis_and_Optimization.md)) without fixing the ordering, and each reconciliation loop costs a synthesis plus a PnR turn — **1–3 days on a 2 M-instance block**, of which teams burned 10–20.
+**The correlation gap** has two halves, and only the first is the one people quote. *Magnitude:* post-route WNS runs **20–50% of the period** worse than the WLM-based report — 200–500 ps on a 1 ns design, against the 5–10% a floorplan in the loop buys. *Rank* is the half that matters and the half page 01 does not cover: Spearman correlation between synthesis and post-route path ordering falls **below ~0.5**, so the two tools' top-1000 critical paths are different *sets*; physical synthesis restores 0.85–0.95. The rank half makes the flow non-convergent, because synthesis spends its area and leakage budget upsizing paths that post-route have positive slack while leaving the real offender minimum-sized. Over-constraining by 10–20% inflates area and leakage uniformly ([Synthesis_and_Optimization §7.4](01_Synthesis_and_Optimization.md)) without fixing the ordering, and each reconciliation loop costs a synthesis plus a PnR turn — **1–3 days on a 2 M-instance block**, of which teams burned 10–20.
 
 ---
 
@@ -103,7 +105,7 @@ Contract of the upper chain: two tools alternately minimize two *different* cost
 
 The sequence is fixed by data dependency: chip spec (function, per-domain frequency, power budget, package, node) → gate-count and memory estimate from trial synthesis or IP datasheets → die and core area (§4) → shape → partition into blocks → hierarchy style → macro plan (§7), interface design (§5), and budgets (§6) in parallel → power plan (§9) → hand-off (§10). One back-edge is cheap: congestion or budget infeasibility returns to *partitioning*. A 12 M-instance block that estimates to 3.57 mm² but must fit a 1.90 × 1.90 mm slot takes that edge and moves 0.5 M instances next door (§4); the same discovery after CTS is §11's catastrophe.
 
-**Shape.** For fixed core area $A$ and aspect ratio $\rho=H/W$, the longest intra-block Manhattan distance is $\sqrt{A}(\rho^{-1/2}+\rho^{1/2})$, minimized at $\rho=1$. At $\rho=4$ it is $2.5\sqrt A$ versus $2\sqrt A$ — **25% longer worst wire for the same silicon**, about 70 ps on a 1.9 mm-scale block. Keep $\rho\in[0.5,2.0]$; a rectilinear block's concave corner is a congestion funnel and a CTS problem, since both arms need balanced insertion delay while the shortest path between them goes around the notch. What usually forces a shape is macro tiling, not choice (WP1).
+**Shape.** For fixed core area $A$ and aspect ratio $\rho=H/W$, the longest intra-block Manhattan distance is $\sqrt{A}(\rho^{-1/2}+\rho^{1/2})$, minimized at $\rho=1$. At $\rho=4$ it is $2.5\sqrt A$ versus $2\sqrt A$ — **25% longer worst wire for the same silicon**: on the §4 block that is $0.5\sqrt{A}=945$ µm of extra Manhattan reach, about **139 ps** at §2's 0.147 ps/µm buffered rate. Keep $\rho\in[0.5,2.0]$; a rectilinear block's concave corner is a congestion funnel and a CTS problem, since both arms need balanced insertion delay while the shortest path between them goes around the notch. What usually forces a shape is macro tiling, not choice (WP1).
 
 | Hierarchy style | Mechanism and why it exists | Cost |
 |---|---|---|
@@ -142,7 +144,7 @@ $U_{\text{eff}}$ — density over the area actually available to standard cells 
 
 Five points of utilization is worth about ±6% of die — *less* than $5/70=7.1\%$, because the fixed macro footprint dilutes the lever; in WP1, where macros dominate, that lever nearly vanishes.
 
-**Where it becomes infeasible.** Upward, the **congestion ceiling**: above $U_{\text{eff}}\approx0.80\text{–}0.85$ for 7 nm logic at normal pin density, global-route overflow appears and the placer cannot find legal sites near its optimum; the design does not fail, it silently degrades, because the router spreads cells — which *is* lowering utilization, done expensively after you already paid for the small die. A pin-dense block (§8) hits this at 0.70. Downward, a **delay floor**: wirelength scales roughly as $\sqrt{1/U}$, so 0.70 → 0.50 stretches the average net 18%. Externally, the **hard slot**: if the SoC allocated **1.90 × 1.90 mm**, the 1.930 mm outline does not fit — 1.6% linear, 3.2% area. Options: raise $U_{\text{eff}}$ to 0.75 (side $1.838+0.040=1.878$ mm ✓, 22 µm margin, at a §8 congestion risk); move logic out — max core side 1.86 mm → $A_{\text{core}}\le3.460$, placeable $\le2.769$, $A_{\text{cells,eff}}\le1.938$, $A_{\text{cells}}\le1.730$ mm² → **11.53 M instances**, so relocate **0.47 M (3.9%)**; remove macros — each frees $14{,}400\ \mu\text{m}^2$ and you need 111,000, so **8 macros**, a 256 KB architectural cut; or renegotiate the slot, moving every neighbor. **The die estimate is a constraint check, not a report** — it exists so infeasibility surfaces in week 3 at the cost of a spreadsheet, not in week 30 at the cost of a re-partition.
+**Where it becomes infeasible.** Upward, the **congestion ceiling**: above $U_{\text{eff}}\approx0.75$ for typical 7 nm logic, global-route overflow appears — only regular, low-pin-density datapath sustains 0.80–0.85, and [Floorplanning_and_Power_Planning §2](../05_Backend_Physical_Design/03_Floorplanning_and_Power_Planning.md) gives the node-by-node band this sits in and the placer cannot find legal sites near its optimum; the design does not fail, it silently degrades, because the router spreads cells — which *is* lowering utilization, done expensively after you already paid for the small die. A pin-dense block (§8) hits this at 0.70. Downward, a **delay floor**: wirelength scales roughly as $\sqrt{1/U}$, so 0.70 → 0.50 stretches the average net 18%. Externally, the **hard slot**: if the SoC allocated **1.90 × 1.90 mm**, the 1.930 mm outline does not fit — 1.6% linear, 3.2% area. Options: raise $U_{\text{eff}}$ to 0.75 (side $1.838+0.040=1.878$ mm ✓, 22 µm margin, at a §8 congestion risk); move logic out — max core side 1.86 mm → $A_{\text{core}}\le3.460$, placeable $\le2.769$, $A_{\text{cells,eff}}\le1.938$, $A_{\text{cells}}\le1.730$ mm² → **11.53 M instances**, so relocate **0.47 M (3.9%)**; remove macros — each frees $14{,}400\ \mu\text{m}^2$ and you need 111,000, so **8 macros**, a 256 KB architectural cut; or renegotiate the slot, moving every neighbor. **The die estimate is a constraint check, not a report** — it exists so infeasibility surfaces in week 3 at the cost of a spreadsheet, not in week 30 at the cost of a re-partition.
 
 ---
 
@@ -194,38 +196,38 @@ Contract: the same datum reaches C one cycle later (unregistered — one combina
 
 ## 6. Timing budgeting across partitions
 
-A path launches in A, crosses to B, crosses to C, captures there; each block is implemented *alone*, so each needs an SDC describing the world outside it. $T_{clk}=1.00$ ns, $t_{cq}=0.05$, $t_{setup}=0.03$, $t_{unc}=0.06$ (jitter plus a pre-CTS skew allowance). Fly-lines: A→B 700 µm, B→C 500 µm. Planning number for a repeatered top-level route on mid-upper metal: **0.10 ps/µm plus 20 ps per boundary crossing** (pin escape and via stack), so $w_{AB}=90$ ps, $w_{BC}=70$ ps, leaving
+A path launches in A, crosses to B, crosses to C, captures there; each block is implemented *alone*, so each needs an SDC describing the world outside it. $T_{clk}=1.00$ ns, $t_{cq}=0.05$, $t_{setup}=0.03$, $t_{unc}=0.150$ — the **pre-CTS** value, jitter plus an allowance for a clock tree that does not exist yet, so the 150–250 ps band of [Constraints_SDC](02_Constraints_SDC.md), *not* the 50–80 ps that survives CTS. Budgeting against the post-CTS number is the most common way to issue budgets nobody can meet. Fly-lines: A→B 700 µm, B→C 500 µm. Planning number for a repeatered top-level route on mid-upper metal: **0.10 ps/µm plus 20 ps per boundary crossing** (pin escape and via stack), so $w_{AB}=90$ ps, $w_{BC}=70$ ps, leaving
 
-$$B_{\text{total}}=1.00-0.05-0.03-0.06-0.09-0.07=\mathbf{0.70\ ns}$$
+$$B_{\text{total}}=1.00-0.05-0.03-0.150-0.09-0.07=\mathbf{0.61\ ns}$$
 
 **Algorithm 1 — proportional to logic depth.** Run a fast unconstrained trial synthesis per block and measure what each *wants*: A 0.62 ns (14 levels), B 0.28 (7), C 0.45 (10); total 1.35. Allocate $B_i=\dfrac{d_i}{\sum_j d_j}B_{\text{total}}$:
 
 | Block | trial $d_i$ | share | budget | required compression |
 |---|---|---|---|---|
-| A | 0.62 | 0.459 | **0.321** | 1.93× |
-| B | 0.28 | 0.207 | **0.145** | 1.93× |
-| C | 0.45 | 0.333 | **0.233** | 1.93× |
-| | 1.35 | 1.000 | 0.699 | |
+| A | 0.62 | 0.459 | **0.280** | 2.21× |
+| B | 0.28 | 0.207 | **0.127** | 2.21× |
+| C | 0.45 | 0.333 | **0.203** | 2.21× |
+| | 1.35 | 1.000 | 0.610 | |
 
-The property is in the last column: proportional budgeting demands the **same compression ratio** ($0.70/1.35=0.519$) from every block. That is its virtue — fair, one cheap trial run — and its flaw: a block already at four levels of NAND cannot give 1.93×, while one that trialed at 14 unoptimized levels can often give 3×. In SDC (`set_output_delay -max` covers everything after the port *including* capture setup; uncertainty is applied separately):
+The property is in the last column: proportional budgeting demands the **same compression ratio** ($0.61/1.35=0.452$) from every block. That is its virtue — fair, one cheap trial run — and its flaw: a block already at four levels of NAND cannot give 2.21×, while one that trialed at 14 unoptimized levels can often give 3×. In SDC (`set_output_delay -max` covers everything after the port *including* capture setup; uncertainty is applied separately):
 
 ```tcl
-set_clock_uncertainty 0.06 [get_clocks clk]
-set_output_delay -max 0.568 -clock clk [get_ports a_out*]  ;# w_AB+B+w_BC+C+t_su -> A gets 0.322
-set_input_delay  -max 0.461 -clock clk [get_ports b_in*]   ;# t_cq+A+w_AB
-set_output_delay -max 0.333 -clock clk [get_ports b_out*]  ;# w_BC+C+t_su  -> B gets 0.146
-set_input_delay  -max 0.676 -clock clk [get_ports c_in*]   ;# t_cq+A+w_AB+B+w_BC -> C gets 0.234
+set_clock_uncertainty 0.150 [get_clocks clk]
+set_output_delay -max 0.520 -clock clk [get_ports a_out*]  ;# w_AB+B+w_BC+C+t_su -> A gets 0.280
+set_input_delay  -max 0.420 -clock clk [get_ports b_in*]   ;# t_cq+A+w_AB
+set_output_delay -max 0.303 -clock clk [get_ports b_out*]  ;# w_BC+C+t_su  -> B gets 0.127
+set_input_delay  -max 0.617 -clock clk [get_ports c_in*]   ;# t_cq+A+w_AB+B+w_BC -> C gets 0.203
 ```
 
 **The consistency check — write it as a script and run it every turn.** For every crossing path, $t_{cq}+\sum_i B_i+\sum_j w_j+t_{setup}+t_{unc}\le T_{clk}$:
 
-$$0.05+(0.321{+}0.145{+}0.233)+(0.09{+}0.07)+0.03+0.06=0.999\le1.000\ \checkmark$$
+$$0.05+(0.280{+}0.127{+}0.203)+(0.09{+}0.07)+0.03+0.150=1.000\le1.000\ \checkmark$$
 
 The number-one silent failure of hierarchical design is three SDC files that each look reasonable and jointly demand 1.08 ns of a 1.00 ns period. Nothing detects it until top-level assembly, months later.
 
-**Algorithm 2 — tool-derived.** `derive_budget` / `write_hier_constraints` and their Genus and Fusion Compiler equivalents take the **whole design virtually flattened**, run a timing analysis with ideal interfaces, and write each boundary pin's actual arrival and required time as I/O delays, so the split reflects what the logic *needs* rather than a ratio. If the flat run reports intrinsic floors A ≥ 0.300, B ≥ 0.120, C ≥ 0.220 (total 0.640), the remaining 0.060 ns spreads as margin proportional to floor → A **0.328**, B **0.132**, C **0.240**. The proportional split had parked 25 ps on B, which needed none, while giving A only 21 ps over its floor. The cost is the trial full-design run: 0.5–1 TB of memory overnight for a 40 M-instance SoC.
+**Algorithm 2 — tool-derived.** `derive_budget` / `write_hier_constraints` and their Genus and Fusion Compiler equivalents take the **whole design virtually flattened**, run a timing analysis with ideal interfaces, and write each boundary pin's actual arrival and required time as I/O delays, so the split reflects what the logic *needs* rather than a ratio. If the flat run reports intrinsic floors A ≥ 0.265, B ≥ 0.105, C ≥ 0.190 (total 0.560), the remaining 0.050 ns spreads as margin proportional to floor → A **0.289**, B **0.114**, C **0.207**. The proportional split had parked 22 ps on B, which needed none, while giving A only 15 ps over its floor. The cost is the trial full-design run: 0.5–1 TB of memory overnight for a 40 M-instance SoC.
 
-**Interface models.** An **ETM** (extracted timing model, a `.lib` of pin-to-pin NLDM/CCS arcs) is 1–5% of the block and suits top-level closure and IP delivery; an **ILM** (interface logic model — the real gates between boundary pins and the first/last sequential element, with parasitics, interior discarded) is 5–15% and the best accuracy short of flat. ETM pitfalls: regenerate per mode and corner (4 modes × 6 corners = 24 models per block); exceptions do not survive unless baked in; internal reconvergence is hidden, causing pessimism or optimism; clock-path pessimism removal across the boundary degrades because the shared clock path is inside the model.
+**Interface models.** Two numbers travel with each and they measure different things, so say which you mean. An **ETM** (extracted timing model, a `.lib` of pin-to-pin NLDM/CCS arcs) is **1–5% of the block in model size** and costs **5–15% of boundary-path pessimism**, because a `.lib` collapses every path through a port into one worst case; it suits top-level closure and IP delivery. An **ILM** (interface logic model — the real gates between boundary pins and the first/last sequential element, with parasitics, interior discarded) is **5–15% of the block in model size** and carries almost no boundary pessimism, the gates being real: the best accuracy short of flat. ETM pitfalls: regenerate per mode and corner (4 modes × 6 corners = 24 models per block); exceptions do not survive unless baked in; internal reconvergence is hidden, causing pessimism or optimism; clock-path pessimism removal across the boundary degrades because the shared clock path is inside the model.
 
 **When a budget is infeasible**, options ordered by cost and blast radius: (1) **rebudget** — take slack from a block that has it, then re-run the consistency check on *every* path through the affected pins; (2) **move the blocks closer** — cheap before Freeze 1 (§11), expensive after; (3) **register the boundary** — an RTL change costing one cycle plus re-verification; (4) **relax the clock** — a product decision. Options 3 and 4 leave the physical domain entirely, which is why they are planning failures rather than tools. **A budget is a contract, and moving it is a multi-block change**: the pin that gains 30 ps here may be on four other paths that just lost it. Budgets are per mode and per corner (functional and scan-shift budgets for one pin differ — [DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md)), and hold budgets (`-min`) are placeholders, since real hold is decided by clock skew that does not exist until CTS.
 
@@ -332,13 +334,13 @@ Each gate is the point past which a change costs an order of magnitude more, bec
 | One-cycle buffered reach at 2 GHz | ~2 mm intermediate, ~8 mm top metal | above this, add a pipeline stage (§2) |
 | Mean standard-cell area, 7 nm mixed netlist | 0.12–0.16 µm² | the die estimate's first multiplier (§4) |
 | PnR cell-area growth over synthesis | +8–15% | CTS, hold, DRV, tap, ECO cells (§4) |
-| Target $U_{\text{eff}}$ / congestion ceiling | 0.60–0.75 / 0.80–0.85 | the master die knob (§4) |
+| Target $U_{\text{eff}}$ / congestion ceiling (7 nm) | 0.60–0.72 / ~0.75 typical, 0.80–0.85 only for regular low-pin-density logic | the master die knob (§4) |
 | Die sensitivity to 5 utilization points | ±5–6% logic-dominated, < 1% macro-dominated | know which term dominates (§4, WP1) |
 | Macro halo / effective footprint | 3–10 µm / ×1.15–1.35 | (§4, §7) |
 | Minimum useful macro channel, 7 nm | 20–30 µm; below ~10 µm is a dead zone | the macro-maze rule (§7) |
 | Block pin limit | ~1 pin per 3–4 µm of perimeter | vetoes many min-cut partitions (§3) |
 | Budget iterations, registered vs unregistered | 0–1 vs 3–6 | the value of boundary flops (§5) |
-| Interface model size, ETM / ILM | 1–5% / 5–15% of the block | hierarchical timing cost (§6) |
+| Interface model **size**, ETM / ILM | 1–5% / 5–15% of the block; ETM additionally costs 5–15% boundary **pessimism** | hierarchical timing cost (§6) |
 | Rent exponent: local array / random logic / crossbar | ~0.5 / 0.55–0.70 / 0.75–1.0 | the congestion predictor (§8) |
 | Rent congestion scaling | demand/supply $\propto g^{\,p-1/2}$ | why metal layers cannot fix a $p$ problem (§8) |
 | Congestion targets at hand-off | < 0.5% overflowed GCells, < 35 pins/µm² | the go/no-go gate (§8) |
@@ -353,16 +355,16 @@ Each gate is the point past which a change costs an order of magnitude more, bec
 **1 — Die estimate for a macro-dominated block, and finding the real lever.**
 *Problem.* A 4 MB L3 slice at 7 nm: 128 data SRAMs of 32 KB (12,000 µm², 190 × 65 µm each), 24 tag/ECC macros of 8 KB (3,540 µm² each), 900,000 standard-cell instances at 0.14 µm² mean, $U_{\text{eff}}=0.65$. Estimate the die, then find which knob moves it.
 
-*Solution.* Macros: $128(12{,}000)+24(3{,}540)=1{,}536{,}000+84{,}960=$ **1.621 mm²**. Cells: $900{,}000(0.14)=0.126$ mm²; ×1.15 growth = 0.145; placeable needed $=0.145/0.65=0.223$ mm². The macro *tiling* then sets the shape before anyone chooses one: tile the 128 data macros $16\times8$ with 10 µm channels and width $=16(190)+15(10)=3{,}190$ µm, height $=8(65)+7(10)=590$ µm — a **3.19 × 0.59 mm strip, aspect ratio 5.4**, unusable. Re-tile $8\times16$: width 1,590, height 1,190 → **1.892 mm²**, an effective halo factor of $1.892/1.536=1.13$. Add tags at ×1.20 = 0.102 and logic 0.223: $A_{\text{core}}=\mathbf{2.217\ mm^2}$; as a 1.590 mm-wide rectangle it is 1.394 mm tall, aspect ratio 1.14. Feasible.
+*Solution.* Macros: $128(12{,}000)+24(3{,}540)=1{,}536{,}000+84{,}960=$ **1.621 mm²**. Cells: $900{,}000(0.14)=0.126$ mm²; ×1.15 growth = 0.145; placeable needed $=0.145/0.65=0.223$ mm². The macro *tiling* then sets the shape before anyone chooses one: tile the 128 data macros $16\times8$ with 10 µm channels and width $=16(190)+15(10)=3{,}190$ µm, height $=8(65)+7(10)=590$ µm — a **3.19 × 0.59 mm strip, aspect ratio 5.4**, unusable. Re-tile $8\times16$: width 1,590, height 1,190 → **1.892 mm²**, a packing overhead of $1.892/1.536=\mathbf{1.23}$ over bare macro area — channels plus the array's own aspect quantization, not a halo the tool applies. Add tags at ×1.20 = 0.102 and logic 0.223: $A_{\text{core}}=\mathbf{2.217\ mm^2}$; as a 1.590 mm-wide rectangle it is 1.394 mm tall, aspect ratio 1.14. Feasible.
 
 *The lever.* Move $U_{\text{eff}}$ ±5 points: at 0.60, placeable 0.242 → core 2.236 (**+0.8%**); at 0.70, placeable 0.207 → core 2.201 (**−0.7%**). **Utilization is worth under 1% here**, because 90% of the area is macro. Move macro packing instead: 10 µm channels → 4 µm gives width $8(190)+7(4)=1{,}548$, height $16(65)+15(4)=1{,}100$ → 1.703 mm², core 2.028 mm² — **−8.5%**, ten times the utilization lever. The method is the lesson: **differentiate the estimate with respect to each knob before spending a week turning one.** (The 4 µm channel is below §7's useful-routing width, so it is legal only if nothing must cross there — which for an abutted bank array it does not.)
 
 **2 — Re-budgeting an infeasible 3-way split (continues §6).**
-*Problem.* Budgets issued: A 0.321, B 0.145, C 0.233 ns, with $w_{AB}=0.09$, $w_{BC}=0.07$, $t_{cq}=0.05$, $t_{setup}=0.03$, $t_{unc}=0.06$, $T=1.00$ ns. A reports its best achievable is **0.375 ns**; B closed at 0.118 and C at 0.229. Close the design.
+*Problem.* Budgets issued: A 0.280, B 0.127, C 0.203 ns, with $w_{AB}=0.09$, $w_{BC}=0.07$, $t_{cq}=0.05$, $t_{setup}=0.03$, $t_{unc}=0.150$, $T=1.00$ ns. A reports its best achievable is **0.334 ns**; B closed at 0.101 and C at 0.199. Close the design.
 
-*Solution.* Deficit $=0.375-0.321=\mathbf{0.054}$ ns. *Option 1, rebudget:* B has $0.145-0.118=0.027$ spare, C has 0.004 — **0.031 < 0.054**, and taking all of it leaves B and C at zero margin. *Option 2, shorten the wire:* move A and B from 700 µm to 400 µm apart, $w_{AB}=400(0.10)+20=60$ ps, saving **0.030**; with A, B, C in a row and only A moving toward B, $w_{BC}$ is unchanged. *Combined:* $0.031+0.030=0.061\ge0.054$ ✓. Issue A 0.375, B 0.120, C 0.233, $w_{AB}=0.06$, $w_{BC}=0.07$:
-$$0.05+(0.375+0.120+0.233)+(0.06+0.07)+0.03+0.06=0.998\le1.000\ \checkmark$$
-It closes with 2 ps of margin, and B sits 2 ps above its measured 0.118. *Option 3:* register A's output — its contribution becomes $t_{cq}$ alone and the path becomes two cycles, each with room, at +1 cycle, a protocol change, and re-verification. *Option 4:* relax $T$ to 1.06 ns, a 5.7% frequency loss and a product decision. *Decision:* take 1+2 only if a 2 ps outcome survives the corner spread it will face; otherwise take option 3, because a design closing on 2 ps at planning will not close once CTS adds real skew. Either way, **re-run the §6 check on every path through A's output and B's input pins** — the 30 ps recovered by moving A may have been the margin on a different path that also crosses $w_{AB}$.
+*Solution.* Deficit $=0.334-0.280=\mathbf{0.054}$ ns. *Option 1, rebudget:* B has $0.127-0.101=0.026$ spare, C has 0.004 — **0.030 < 0.054**, and taking all of it leaves B and C at zero margin. *Option 2, shorten the wire:* move A and B from 700 µm to 400 µm apart, $w_{AB}=400(0.10)+20=60$ ps, saving **0.030**; with A, B, C in a row and only A moving toward B, $w_{BC}$ is unchanged. *Combined:* $0.030+0.030=0.060\ge0.054$ ✓. Issue A 0.334, B 0.103, C 0.201, $w_{AB}=0.06$, $w_{BC}=0.07$:
+$$0.05+(0.334+0.103+0.201)+(0.06+0.07)+0.03+0.150=0.998\le1.000\ \checkmark$$
+It closes with 2 ps of margin, and B sits 2 ps above its measured 0.101. *Option 3:* register A's output — its contribution becomes $t_{cq}$ alone and the path becomes two cycles, each with room, at +1 cycle, a protocol change, and re-verification. *Option 4:* relax $T$ to 1.06 ns, a 5.7% frequency loss and a product decision. *Decision:* take 1+2 only if a 2 ps outcome survives the corner spread it will face; otherwise take option 3, because a design closing on 2 ps at planning will not close once CTS adds real skew. Either way, **re-run the §6 check on every path through A's output and B's input pins** — the 30 ps recovered by moving A may have been the margin on a different path that also crosses $w_{AB}$.
 
 **3 — Rent's-rule congestion estimate.**
 *Problem.* A 7 nm packet classifier: 320,000 gates, mean cell area 0.13 µm², $U=0.72$, 1,100 external pins. Horizontal layers M3/M5/M7 at 0.040/0.048/0.080 µm, $\eta=0.55$, $\kappa=1.4$. Recursive hMETIS partitioning gives mean terminals $T$ = 2,900 / 1,950 / 860 / 380 at $g$ = 160,000 / 80,000 / 20,000 / 5,000. Will it route? Will a 4×-larger next generation? What would a $p=0.72$ variant do?

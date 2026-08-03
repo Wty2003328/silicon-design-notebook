@@ -303,3 +303,7 @@ The wider core is roughly performance-neutral before considering extra power/are
 ---
 
 ← [Methodology index](00_Index.md) · next → [CPU PPA and Physical Implementation](02_CPU_PPA_and_Physical_Implementation.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU Power, Performance, Area, and Physical Implementation](02_CPU_PPA_and_Physical_Implementation.md)

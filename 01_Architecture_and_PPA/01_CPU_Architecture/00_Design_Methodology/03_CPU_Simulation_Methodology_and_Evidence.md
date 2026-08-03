@@ -343,3 +343,7 @@ Another reader should be able to walk backward from a plotted point to raw count
 ---
 
 ← [CPU PPA and Physical Implementation](02_CPU_PPA_and_Physical_Implementation.md) · [CPU book index](../00_Index.md) · next → [Core Foundations](../01_Core_Foundations/00_Index.md)
+
+---
+
+⬅ prev [CPU Power, Performance, Area, and Physical Implementation](02_CPU_PPA_and_Physical_Implementation.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

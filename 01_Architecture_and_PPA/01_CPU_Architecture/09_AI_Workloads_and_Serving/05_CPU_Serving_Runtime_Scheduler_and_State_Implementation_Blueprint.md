@@ -142,3 +142,7 @@ Trace request, scheduler epoch, batch, plan, task, KV block, device submission, 
 ---
 
 ← [CPU AI Software Stack](04_CPU_AI_Software_Stack_Implementation_Blueprint.md) · next → [CPU AI Stack Verification, Operations, and Deployment](06_CPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md)
+
+---
+
+⬅ prev [CPU Artificial-Intelligence Software-Stack Implementation Blueprint](04_CPU_AI_Software_Stack_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU AI-Stack Verification, Operations, and Deployment Blueprint](06_CPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md)

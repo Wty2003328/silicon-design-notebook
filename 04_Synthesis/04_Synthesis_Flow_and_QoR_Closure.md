@@ -9,11 +9,11 @@
 
 A student who has only run a simulator has one mental model of an EDA tool: give it source and a stimulus, get waveforms, and if the waveforms are right you are done. Synthesis breaks every part of that. There is no stimulus, and there is no single right answer — there is a netlist *plus a stack of numbers*, and the numbers are as much the deliverable as the netlist. The tool will happily produce a netlist for broken RTL, nonsense constraints, and a library it only half found, and it will say so only in warnings buried in a 40,000-line log.
 
-So the skill is not "type `compile_ultra`." It is **how to construct a run whose result you can trust, and how to read its output well enough to say what is wrong and what to change.** Page 01 explains why technology mapping is a covering problem; it does not explain why `report_area` says 273,287 when your floorplan is 190,000, or why `check_design` found four black boxes you did not know you had.
+So the skill is not "type `compile_ultra`." It is **how to construct a run whose result you can trust, and how to read its output well enough to say what is wrong and what to change.** Page 01 explains why technology mapping is a covering problem; it does not explain why `report_area` says 85,171 when your floorplan is 60,000, or why `check_design` found four black boxes you did not know you had.
 
 Getting the *process* wrong costs as much as getting the algorithm wrong. A run is a function of about a dozen input files, and if one is not version-controlled the run is not reproducible: a QoR regression cannot be bisected and a taped-out netlist cannot be recreated. A netlist released without logic equivalence checking (LEC) can differ functionally from the RTL that was verified, and nothing downstream notices. A netlist released with max-transition violations hands physical design a problem it cannot fix, because the offending cell was marked `dont_touch` by you.
 
-Afterwards you should be able to: write and defend the stage order of a synthesis script; read an elaboration log and separate the two fatal warnings from the two hundred benign ones; choose a compile strategy and state its cost in debuggability and LEC; derive a block's timing budget from a top-level path; read `report_timing`, `report_qor`, `report_area`, `report_power`, and `report_constraint` line by line and name the culprit; and run the checklist that decides whether a netlist leaves the block.
+Afterwards you should be able to: write and defend the stage order of a synthesis script; read an elaboration log and separate the two fatal warnings from the two hundred benign ones; choose a compile strategy and state its cost in debuggability and LEC; know where a block's timing budget comes from and what makes one infeasible; read `report_timing`, `report_qor`, `report_area`, `report_power`, and `report_constraint` line by line and name the culprit; and run the checklist that decides whether a netlist leaves the block.
 
 ---
 
@@ -114,7 +114,11 @@ set_dont_use { sc7p5t_*/*_X0P5 sc7p5t_lvt/*_DLY* }  ;# weakest drives + delay ce
 
 # --- 3. read the design: analyze -> elaborate -> link ----------------
 set_app_var hdlin_infer_multibit default_all
-analyze -format sverilog -define {SYNTHESIS ASIC_TARGET} -f ${RTL_ROOT}/${BLOCK}.f
+#  analyze takes a Tcl list of files, not a filelist: -f is an abbreviation of
+#  -format, so passing block.f to it silently does the wrong thing. Expand the
+#  filelist yourself (or hand it to the front end with -vcs "-f block.f").
+set RTL_FILES [split [string trim [read [open ${RTL_ROOT}/${BLOCK}.f]]] "\n"]
+analyze -format sverilog -define {SYNTHESIS ASIC_TARGET} $RTL_FILES
 elaborate ${BLOCK} -parameters "DATA_W=128,NUM_ROUNDS=10"
 current_design ${BLOCK}
 link                                                ;# resolve EVERY reference now
@@ -292,7 +296,7 @@ The reasonable policy is `-no_autoungroup` plus explicit `set_ungroup ... true` 
 
 ## 5. Hierarchical synthesis and timing budgeting
 
-Flat synthesis is superlinear in instance count. Beyond roughly **0.5–2 M instances** it runs out of memory or runtime (budget ~**1 GB RAM per 100 k instances**, 3–12 h at high effort for a 200–500 k block). Above that the design is partitioned, which immediately creates the budgeting problem.
+Flat synthesis is superlinear in instance count. Beyond roughly **0.5–2 M instances** it runs out of memory or runtime (budget **2–4 GB RAM per 100 k instances** at high effort, 3–12 h for a 200–500 k block). Above that the design is partitioned, which immediately creates the budgeting problem.
 
 | Strategy | How it runs | Buys | Costs |
 |---|---|---|---|
@@ -300,34 +304,14 @@ Flat synthesis is superlinear in instance count. Beyond roughly **0.5–2 M inst
 | **Bottom-up** | compile each leaf standalone, `dont_touch` it, compile the parent | parallel, small runs, clear ownership | interface timing is guesswork; a child compiled to a wrong budget forces a parent recompile too — endless churn |
 | **Top-down with budgets** | derive per-block constraints from a top-level analysis, compile blocks in parallel | parallelism *and* interface consistency | needs a top-level model early, and a real budget derivation |
 
-Production SoCs use the third, with the second as a fallback for IP delivered as a netlist. The top level holds an abstraction rather than gates. An **ETM** (extracted timing model) is a `.lib` abstract — port-to-register and register-to-port arcs plus summarized checks — small and fast, but a `.lib` collapses multiple paths through a port into a worst case and needs one model per mode, so **5–15% boundary pessimism** is normal. An **ILM** (interface logic model) keeps the *actual gates* on boundary-touching cones and deletes the interior: more accurate, larger. A **black box plus budget** — I/O delays alone — is what you have on day one, which is why the budget must be derived rather than guessed.
+Production SoCs use the third, with the second as a fallback for IP delivered as a netlist. The top level holds an abstraction rather than gates — an **ETM**, an **ILM**, or on day one a **black box plus budget**. What each is, what each costs as a fraction of the block, and their regeneration obligations are [Physical_Synthesis §6](05_Physical_Synthesis_and_Design_Planning.md). The one number this page needs is the ETM's **5–15% boundary-path *pessimism*** (not its size): a `.lib` collapses multiple paths through a port into a worst case, which is cause 4 of §5.3.
 
-### 5.2 Deriving a block budget from a top-level path
+### 5.2 Where the budget comes from
 
-Take one top-level path: launch flop in block A, logic in A, A's output port, a top-level net, B's input port, logic in B, capture flop in B. Rearranging the setup inequality of [page 02 §1.1](02_Constraints_SDC.md):
+Partitioning creates the budgeting problem: each block is compiled alone, so each needs an SDC describing the world outside it, and those SDCs must jointly fit the period. The derivation — reserving $t_{cq}$, $t_{su}$, $t_{unc}$ and the top-level wire, splitting the remainder proportional to logic depth, turning the split into `set_input_delay`/`set_output_delay`, and the sum check that catches an infeasible set — belongs to design planning and is worked in full at [Physical_Synthesis §6](05_Physical_Synthesis_and_Design_Planning.md), with a re-budgeting exercise in its Worked Problem 2. Two properties of it matter to a synthesis run and are used below:
 
-$$
-t_{cq} + t^{A}_{comb} + t_{wire} + t^{B}_{comb} + t_{su} + t_{unc} \;\le\; T_{clk}
-$$
-
-Reserve the terms belonging to neither block ($t_{cq}$, $t_{su}$, $t_{unc}$, $t_{wire}$), then split the remainder **proportional to logic depth**, because depth is what each side must implement:
-
-$$
-t^{A}_{comb} = \big(T_{clk}-t_{cq}-t_{su}-t_{unc}-t_{wire}\big)\cdot\frac{N_A}{N_A+N_B}
-$$
-
-Each block's SDC then reserves the rest of the world, and the sum gives a **checkable invariant** that catches most budgeting bugs at a glance:
-
-$$
-\text{OD}_A = t_{wire} + t^{B}_{comb} + t_{su},
-\qquad
-\text{ID}_B = t_{cq} + t^{A}_{comb} + t_{wire}
-$$
-$$
-\boxed{\;\text{OD}_A + \text{ID}_B \;=\; T_{clk} - t_{unc} + t_{wire}\;}
-$$
-
-The $+t_{wire}$ appears because the top-level wire is deliberately counted in *both* budgets — each block sees the wire it drives into or receives from. Worked numerically in **Problem 1**.
+- the top-level wire is deliberately counted in **both** adjacent budgets, each block seeing the wire it drives into or receives from, so the sum of a crossing pair exceeds $T_{clk}-t_{unc}$ by exactly one wire term;
+- $t_{unc}$ is the **pre-CTS** value, 150–250 ps at 7 nm ([page 02](02_Constraints_SDC.md)) — the same number §8.1's report subtracts, not the 50–80 ps that survives CTS.
 
 ### 5.3 Every block closes, the top does not
 
@@ -371,7 +355,7 @@ Scan replaces each D flip-flop with a **scan flip-flop**: the same storage eleme
 \end{document}
 ```
 
-**Contract:** `SE = 0` selects `D` (mission mode), `SE = 1` selects `SI` (shift); `SO` is just `Q`, wired to the next cell's `SI`. **Trace:** in mission mode a signal arriving at `D` now traverses the mux before reaching the storage node, so the effective setup requirement grows by the mux delay — **15–30 ps at 7 nm, roughly 1.5–2 FO4** — while `Q` carries an extra fanout (the next cell's `SI` pin) plus its routing, slowing every functional path *out of* that flop. **The trade-off:** the scan cell costs **+12–25% area** over a plain D flop and perturbs *both ends* of every register-to-register path, which is why it cannot be added after closure — inserting scan into a netlist that closed at 1.0 ns adds 15–30 ps of setup and extra load to every path with the optimization budget already spent.
+**Contract:** `SE = 0` selects `D` (mission mode), `SE = 1` selects `SI` (shift); `SO` is just `Q`, wired to the next cell's `SI`. **Trace:** in mission mode a signal arriving at `D` now traverses the mux before reaching the storage node, so the effective setup requirement grows by the mux delay — **15–30 ps at 7 nm, roughly 1–2 FO4** (7 nm FO4 $\approx$ 11–14 ps) — while `Q` carries an extra fanout (the next cell's `SI` pin) plus its routing, slowing every functional path *out of* that flop. **The trade-off:** the scan cell costs **+12–25% area** over a plain D flop and perturbs *both ends* of every register-to-register path, which is why it cannot be added after closure — inserting scan into a netlist that closed at 1.0 ns adds 15–30 ps of setup and extra load to every path with the optimization budget already spent.
 
 The repair is **test-ready compile** (`compile -scan`), which maps to scan-equivalent flops from the first mapping pass so the mux delay and area are inside the loop. `insert_dft` afterwards only *stitches* — `Q` to the next `SI`, plus `SE` routing — and the incremental compile repairs the induced load. What it cannot repair is a `dont_touch` region, which is why §8.5's violation lands where it does.
 
@@ -401,7 +385,7 @@ The repair is **test-ready compile** (`compile -scan`), which maps to scan-equiv
 
 **Reading UPF.** `load_upf` supplies which logic belongs to which power domain, which supplies exist, and what must happen at each boundary ([UPF_and_CPF_Power_Intent](../02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md)). Synthesis inserts three cell classes: **isolation cells** clamping a switchable domain's outputs so a powered-down domain never drives an indeterminate level into a live one, in the functional path at 10–25 ps; **level shifters** wherever a signal crosses a voltage boundary, since a logic level is meaningful only relative to a rail; and **retention flops** carrying a shadow element on an always-on supply, at roughly **+30–60% area** plus always-on rail routing. The synthesis-specific failure: those cells must be in `target_library` and *not* caught by `set_dont_use`, because an over-broad pattern silently defeats the strategy — check inserted-cell counts against the UPF strategy count explicitly.
 
-**Clock gating.** Dynamic power is $P=\alpha C V_{DD}^2 f$, and the clock is the one net with $\alpha=1$ by construction: it toggles every cycle whether or not data changes. That is why the clock network is typically **25–35% of dynamic power** and why gating is the highest-yield transform synthesis has. (Why you cannot simply `AND` the clock, and why the ICG contains a latch, is derived in [Power_Reduction_Techniques §2.2](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md).) The tool finds opportunities *structurally*: RTL of the form
+**Clock gating.** Dynamic power is $P=\alpha C V_{DD}^2 f$, and the clock is the one net with $\alpha=1$ by construction: it toggles every cycle whether or not data changes. That is why the clock network is typically **20–35% of dynamic power** (35–50% counting the flop-internal clock, which is what gating also kills) and why gating is the highest-yield transform synthesis has. (Why you cannot simply `AND` the clock, and why the ICG contains a latch, is derived in [Power_Reduction_Techniques §2.2](../02_Power_and_Low_Power/04_Power_Reduction_Techniques.md).) The tool finds opportunities *structurally*: RTL of the form
 
 ```systemverilog
 always_ff @(posedge clk) begin
@@ -415,7 +399,7 @@ $$
 2.5\,N > 6 \quad\Longrightarrow\quad N > 2.4
 $$
 
-which is exactly why `-minimum_bitwidth` defaults to **3**: below that you pay an ICG to save fewer muxes than it costs, *and* add a cell CTS must balance. Full arithmetic including power in **Problem 2**.
+which is exactly why `-minimum_bitwidth` defaults to **3**: below that you pay an ICG to save fewer muxes than it costs, *and* add a cell CTS must balance. Full arithmetic including power in **Problem 1**.
 
 | `set_clock_gating_style` option | Consequence |
 |---|---|
@@ -474,10 +458,10 @@ All excerpts are invented but format-faithful, and they are **mutually consisten
 The report has exactly two halves — the two sides of the setup inequality of [page 02 §1.1](02_Constraints_SDC.md).
 
 - **Startpoint / Endpoint** name the launch and capture flops; "input port" or "output port" instead means an I/O path governed by `set_input_delay`/`set_output_delay`. **`Incr`** is this row's contribution and **`Path`** the running sum, so $\text{Path}_i=\text{Path}_{i-1}+\text{Incr}_i$; the `r`/`f` suffix is transition direction, because rise and fall delays differ.
-- **`clock network delay (ideal)` = 0.150 appears on both halves.** "Ideal" means no clock tree exists yet, so it cancels and contributes nothing to slack. Post-CTS the two numbers differ by the real skew, and that difference *does* move slack (one third of Problem 4).
+- **`clock network delay (ideal)` = 0.150 appears on both halves.** "Ideal" means no clock tree exists yet, so it cancels and contributes nothing to slack. Post-CTS the two numbers differ by the real skew, and that difference *does* move slack (one third of Problem 3).
 - **`clock uncertainty` $-0.180$** is jitter plus a pre-CTS skew estimate, subtracted from the required time — 18% of a 1 ns period on margin, normal before CTS, shrinking to 50–80 ps after. **`library setup time` $-0.061$** is $t_{su}$ from the characterization tables ([page 03](03_Standard_Cell_Libraries_and_Characterization.md)), and **slack $=$ required $-$ arrival.**
 
-**Find the culprit by scanning the `Incr` column for outliers, not the total.** Combinational delay is $0.942-0.228=0.714$ ns over 23 stages, averaging **31 ps/stage** — normal for 7 nm. But `u_ctl/U9911/ZN` contributes **0.121 ns**, 3.9× the average and 12.8% of the path, with fanout 68 and 61.4 fF on the weakest legal inverter. That is one under-driven high-fanout net, not a depth problem. Problem 3 completes the diagnosis.
+**Find the culprit by scanning the `Incr` column for outliers, not the total.** Combinational delay is $0.942-0.228=0.714$ ns over 23 stages, averaging **31 ps/stage** — normal for 7 nm. But `u_ctl/U9911/ZN` contributes **0.121 ns**, 3.9× the average and 12.8% of the path, with fanout 68 and 61.4 fF on the weakest legal inverter. That is one under-driven high-fanout net, not a depth problem. Problem 2 completes the diagnosis.
 
 ### 8.2 `report_qor`
 
@@ -496,12 +480,12 @@ The report has exactly two halves — the two sides of the setup inequality of [
                                              Total Number of Nets:   161890
   Area                                       Nets With Violations:      184
   ------------------------------------       Max Trans Violations:      167
-  Combinational Area:            41822.6     Max Cap Violations:         17
-  Noncombinational Area:         27301.0
-  Macro/Black Box Area:         184320.0    Hostname: synth07
-  Net Area:                      19844.1    CPU seconds: 41210.3
-  Cell Area (netlist):          253443.7    Elapsed: 5:22:11
-  Design Area:                  273287.8    Memory: 62.4 GB
+  Combinational Area:            11127.5     Max Cap Violations:         17
+  Noncombinational Area:         11538.8
+  Macro/Black Box Area:          56320.0    Hostname: synth07
+  Net Area:                       6184.9    CPU seconds: 39204.7
+  Cell Area (netlist):           78986.3    Elapsed: 5:22:11
+  Design Area:                   85171.2    Memory: 4.8 GB
 ```
 
 - **WNS** ($-0.03$) is the worst path, **TNS** ($-9.84$ ns) the sum of negative slacks, **412** the count. The *ratio* is the diagnostic: $9.84/412 = 24$ ps average violation — shallow and wide, so a closure problem. The same TNS concentrated in 3 paths would be structural.
@@ -511,17 +495,17 @@ The report has exactly two halves — the two sides of the setup inequality of [
 ### 8.3 `report_area`
 
 ```text
-  Number of ports:      1206     Combinational area:        41822.643
-  Number of nets:     161890     Buf/Inv area:               5310.221
-  Number of cells:    158346     Noncombinational area:     27301.008
-  Combinational:      117132     Macro/Black Box area:     184320.000
-  Sequential:          41210     Net Interconnect area:     19844.117
+  Number of ports:      1206     Combinational area:        11127.464
+  Number of nets:     161890     Buf/Inv area:               1413.184
+  Number of cells:    158346     Noncombinational area:     11538.800
+  Combinational:      117132     Macro/Black Box area:      56320.000
+  Sequential:          41210     Net Interconnect area:      6184.930
   Macros/black boxes:      4       (Wire load has been used to compute net area)
-  Buf/inv:             21106     Total cell area:          253443.651
-  References:            186     Total area:               273287.768
+  Buf/inv:             21106     Total cell area:           78986.264
+  References:            186     Total area:                85171.194
 ```
 
-Areas are in the library's area unit, usually µm². Four traps. **(1)** Macros dominate and are not yours to optimize: 184,320 of 253,444 units is 73%, so "we cut area 5%" of the *standard-cell* portion (69,124 units) is a 1.4% total-area claim — always state the denominator. **(2)** `Net Interconnect area` is a wireload estimate, the same fiction as §9.6, and it disappears once you have a floorplan. **(3)** `Buf/Inv area` is a *subset* of combinational area, not an addition — 12.7% of it spent on buffering. **(4)** `Total cell area` divided by the floorplan's core area is utilization; hand off above ~75% and PnR has no room to fix anything.
+Areas are in the library's area unit, usually µm² — and at 7 nm that means 117,132 combinational cells average 0.095 µm² and 41,210 flops average 0.28 µm², a 0.143 µm² mean that should match the mean-cell-area figure design planning budgets with ([page 05 §4](05_Physical_Synthesis_and_Design_Planning.md)). If it does not, one of the two is using the wrong node's numbers. Four traps. **(1)** Macros dominate and are not yours to optimize: 56,320 of 78,986 units is 71%, so "we cut area 5%" of the *standard-cell* portion (22,666 units) is a 1.4% total-area claim — always state the denominator. **(2)** `Net Interconnect area` is a wireload estimate, the same fiction as §9.6, and it disappears once you have a floorplan. **(3)** `Buf/Inv area` is a *subset* of combinational area, not an addition — 12.7% of it spent on buffering. **(4)** `Total cell area` divided by the floorplan's core area is utilization; hand off above ~75% and PnR has no room to fix anything.
 
 ### 8.4 `report_power`
 
@@ -556,20 +540,42 @@ Diagnosing it: `clock_network` at 30.0% is normal-to-high, and above 90% gating 
 ### 8.5 `report_constraint -all_violators`
 
 ```text
-  max_transition                          max_capacitance
-  Pin / Net        Required Actual  Slack  Pin / Net       Required Actual   Slack
-  --------------------------------------  ---------------------------------------
-  u_ctl/U9911/ZN      0.150  0.386 -0.236  u_ctl/U9911/ZN    30.000 61.400 -31.400
-  u_ctl/scan_en_int   0.150  0.284 -0.134  ... 16 more
-  u_ctl/mode_reg[2]/Q 0.150  0.171 -0.021
-  ... 164 more
+  max_transition
 
-  max_delay/setup                         min_delay/hold
-  Endpoint         Required Actual  Slack  Endpoint        Required Actual   Slack
-  --------------------------------------  ---------------------------------------
-  u_mix/acc_reg[7]/D  0.909  0.942 -0.033  u_dma/cnt_reg[3]/D  0.192 -0.018 -0.210
-  ... 411 more                             ... 2916 more
+                                             Required    Actual
+    Pin                                      Trans       Trans      Slack
+    -----------------------------------------------------------------------
+    u_ctl/U9911/ZN                              0.150     0.386     -0.236 (VIOLATED)
+    u_ctl/scan_en_int                           0.150     0.284     -0.134 (VIOLATED)
+    u_ctl/mode_reg[2]/Q                         0.150     0.171     -0.021 (VIOLATED)
+    ... 164 more
+
+  max_capacitance
+
+                                             Required    Actual
+    Pin                                      Cap         Cap        Slack
+    -----------------------------------------------------------------------
+    u_ctl/U9911/ZN                             30.000    61.400    -31.400 (VIOLATED)
+    ... 16 more
+
+  max_delay/setup
+
+                                             Required    Actual
+    Endpoint                                 Path        Path       Slack
+    -----------------------------------------------------------------------
+    u_mix/acc_reg[7]/D                          0.909     0.942     -0.033 (VIOLATED)
+    ... 411 more
+
+  min_delay/hold
+
+                                             Required    Actual
+    Endpoint                                 Path        Path       Slack
+    -----------------------------------------------------------------------
+    u_dma/cnt_reg[3]/D                          0.192    -0.018     -0.210 (VIOLATED)
+    ... 2916 more
 ```
+
+The report is **one section per constraint type, in that order** — not a side-by-side table. Reading it means scrolling, and the ordering is the tool's, not a ranking.
 
 Read it in order. **(1) DRVs first.** `max_transition` and `max_capacitance` are design rule violations and are not negotiable: a cell driving a slew outside its characterization range is evaluated by extrapolation, so *every timing number on that path is unreliable* and the internal power of everything it drives is understated. 167 max-trans violations means 167 places where your timing report is guessing. **(2)** The same pin heads both DRV lists — `u_ctl/U9911/ZN`, 61.4 fF against a 30 fF limit — and it is the row that dominated §8.1's critical path: one root cause, three symptoms, which is the normal shape of a real problem. **(3)** `u_ctl/scan_en_int` is the §6 prediction coming true — the scan-enable net, created by `insert_dft` after the main compile, is under-buffered. **(4)** Cross-check the setup violator count (412) against `report_qor`. **(5)** The 2917 hold violations are expected pre-CTS (§9.4).
 
@@ -637,9 +643,9 @@ Routing resource is proportional to *area*, but routing demand is proportional t
 
 ### 9.6 "Closed in synthesis, failed in PnR": the wireload fiction
 
-In wireload mode, net delay comes from a **statistical table indexed by fanout** — "a 3-fanout net in a 100 k-gate block has $R=12\ \Omega$, $C=3.1$ fF" — averaged over past designs, knowing nothing about where the cells are. [Page 01 §8](01_Synthesis_and_Optimization.md) derives why the error grew each node; the number to carry is that at 28 nm and below it is wrong by **2–5×** on the nets that matter, biased so that long nets — the ones on critical paths — are the most underestimated.
+Why the wireload model is a fiction, why its error grew every node to **2–5×**, and why a floorplan in the loop restores correlation to **5–10%** are derived in [page 01 §8](01_Synthesis_and_Optimization.md) and re-derived against measured post-route data in [Physical_Synthesis §1](05_Physical_Synthesis_and_Design_Planning.md). Neither is repeated here.
 
-The consequence is worse than a delay error: **the tool optimizes the wrong path.** With fictional wire delay the apparently critical path is the one with the most *gates*, not the most *distance*, so the tool sizes and restructures that one and leaves the genuinely long-wire path alone. Post-route you inherit a netlist whose gate choices are optimal for a circuit that does not exist, and PnR cannot fully undo commitments already made in mapping. Problem 4 quantifies a 15% frequency loss from exactly this; the repair is [Physical_Synthesis_and_Design_Planning](05_Physical_Synthesis_and_Design_Planning.md), which restores correlation to **5–10%**.
+What belongs to *this* page is how the fiction shows up in the reports you have just learned to read. The tell is in `report_timing`: **any synthesis critical path reporting under ~15% wire at an advanced node is describing the model, not the circuit** — the wire share should be 30–50%. And the consequence is worse than a delay error, because the *ranking* is wrong: with fictional wire delay the apparently critical path is the one with the most *gates*, not the most *distance*, so the tool spends its area and leakage budget there and leaves the genuinely long-wire path minimum-sized. PnR cannot undo commitments already made in mapping. Problem 3 walks the resulting 15% frequency loss picosecond by picosecond.
 
 ---
 
@@ -712,9 +718,9 @@ The two `set_constant` lines are the ones beginners omit. The netlist contains s
 | Quantity | Value | Why it matters |
 |---|---|---|
 | Scan flop area vs plain D flop | **+12–25%** | why scan must be inside the closure loop (§6) |
-| Scan mux delay in the D path | **15–30 ps** at 7 nm, ~1.5–2 FO4 | added to *every* register-to-register path (§6) |
+| Scan mux delay in the D path | **15–30 ps** at 7 nm, ~1–2 FO4 | added to *every* register-to-register path (§6) |
 | Clock-gating minimum bit-width | **3** flops | ICG 6 GE vs mux 2.5 GE per bit (§7) |
-| Cell areas in GE: DFF / 2:1 mux / ICG | ~**5 / 2.5 / 5–7** | the gating break-even (§7, Problem 2) |
+| Cell areas in GE: DFF / 2:1 mux / ICG | ~**5 / 2.5 / 5–7** | the gating break-even (§7, Problem 1) |
 | Clock-gating coverage target | $\ge$ **90%** of gateable registers | release gate (§7, §11) |
 | Clock network share of dynamic power | **25–35%** | why gating is the highest-yield transform (§7, §8.4) |
 | Wireload vs extracted net delay error | **2–5×**, biased low on long nets | the tool optimizes the wrong path (§9.6) |
@@ -722,9 +728,9 @@ The two `set_constant` lines are the ones beginners omit. The netlist contains s
 | Pre-CTS clock uncertainty at 7 nm | **150–250 ps** | 15–25% of a 1 ns period spent on margin (§8.1) |
 | Hold TNS pre-CTS | routinely **$10^2$–$10^3$ ns**, not actionable | ideal clock means fictional skew (§9.4) |
 | Boundary optimization + ungrouping win | **3–8% area**, 5–15% on crossing paths | what hierarchy costs (§4) |
-| Flat compile ceiling | **0.5–2 M instances**; ~**1 GB RAM per 100 k** | when hierarchical synthesis becomes mandatory (§5) |
+| Flat compile ceiling | **0.5–2 M instances**; **2–4 GB RAM per 100 k** | when hierarchical synthesis becomes mandatory (§5) |
 | Block synthesis runtime at high effort | **3–12 h** for 200–500 k instances | why exploratory runs use medium effort (§4) |
-| Levels of logic at 7 nm | **25–35** at 1 GHz; **12–18** at 3.5 GHz | separates closure from structural problems (§8.2) |
+| Levels of logic at 7 nm | **25–35** at 1 GHz on 25–40 ps loaded stages; **12–18** at 3.5 GHz *only* because those stages are FO4-light (~13 ps) and the flop/uncertainty overhead is a post-CTS 85 ps | separates closure from structural problems (§8.2) |
 | Average loaded stage delay at 7 nm | **25–40 ps** | the yardstick for spotting an outlier `Incr` (§8.1) |
 | Scan chain length | **1000–5000** flops uncompressed; **100–500** compressed | sets $T_{test}\approx N_{pat}(L_{max}{+}1)$ (§6) |
 | ETM boundary-path pessimism | **5–15%** | why blocks close and the top does not (§5) |
@@ -736,34 +742,7 @@ The two `set_constant` lines are the ones beginners omit. The netlist contains s
 
 ## Worked problems
 
-**1 — Derive a block's timing budget from a top-level path.**
-A path runs from `u_fetch/pc_reg[12]` through logic in FETCH, out of `pc_out[12]`, across a 380 µm top-level route, into DECODE's `pc_in[12]`, through logic in DECODE, to `u_dec/ir_reg[12]`. Target 1.25 GHz, so $T_{clk}=0.800$ ns. Given $t_{cq}=0.055$, $t_{su}=0.035$, $t_{unc}=0.150$ (pre-CTS), $t_{wire}=0.090$ ns, and depths $N_A=6$, $N_B=11$, write both blocks' boundary constraints.
-
-Reserve the terms belonging to neither block:
-
-$$
-t^{A}_{comb}+t^{B}_{comb} = 0.800-0.055-0.035-0.150-0.090 = 0.470\ \text{ns}
-$$
-
-Split by depth ($N_A+N_B=17$): $t^{A}_{comb}=0.470\cdot\frac{6}{17}=0.166$ and $t^{B}_{comb}=0.470\cdot\frac{11}{17}=0.304$ ns. Then
-
-$$
-\text{OD}_A = 0.090+0.304+0.035 = \mathbf{0.429},\qquad
-\text{ID}_B = 0.055+0.166+0.090 = \mathbf{0.311}\ \text{ns}
-$$
-
-```tcl
-set_output_delay -max 0.429 -clock clk [get_ports pc_out[12]]   ;# in FETCH's SDC
-set_input_delay  -max 0.311 -clock clk [get_ports pc_in[12]]    ;# in DECODE's SDC
-```
-
-*Check both.* FETCH: arrival at the port $=0.055+0.166=0.221$; required $=0.800-0.150-0.429=0.221$; slack 0. DECODE: arrival $=0.311+0.304=0.615$; required $=0.800-0.150-0.035=0.615$; slack 0. *Check the invariant:* $0.429+0.311=0.740$ and $T_{clk}-t_{unc}+t_{wire}=0.800-0.150+0.090=0.740$.
-
-*What this catches.* If both teams assume "half the period" and set $\text{OD}=\text{ID}=0.400$, the sum is 0.800 against an invariant of 0.740 — both blocks are over-constrained by 60 ps and pay area and leakage for margin nobody needs. Worse, if the top-level wire is forgotten and the 90 ps redistributed into logic ($\text{OD}_A=0.339$, $\text{ID}_B=0.221$), both blocks close, but at the top arrival becomes $0.615+0.090=0.705$ against a required 0.615 — $-0.090$ ns with no block responsible, §5.3's signature failure.
-
----
-
-**2 — Area and power delta of a clock-gating decision.**
+**1 — Area and power delta of a clock-gating decision.**
 A 64-bit register bank at $f=1.0$ GHz, $V_{DD}=0.75$ V, per-flop clock-pin capacitance (including its share of the leaf clock net) $C_{ck}=1.8$ fF, per-flop internal power 0.35 µW per clocked cycle even with no data change. The enable is asserted on a fraction $\beta$ of cycles. Compare gated and ungated at $\beta=0.15$, then find the break-even width.
 
 *Area.* Ungated with an enable needs a recirculation mux per bit: $64\times(5+2.5)=480$ GE. Gated: $64\times5+6=326$ GE. Saving **154 GE = 32%**.
@@ -784,7 +763,7 @@ Adding the 0.35 µW internal term gives 1.36 µW per flop per cycle, always; for
 
 ---
 
-**3 — Diagnose the §8.1 timing path.**
+**2 — Diagnose the §8.1 timing path.**
 *Size it.* Slack $-0.033$ on 1.000 ns is **3.3%**; TNS $-9.84$ over 412 paths is a 24 ps average violation — shallow and wide, so a closure problem, not a structural one.
 
 *Check the structure.* 23 levels; combinational delay $0.942-0.228=0.714$ ns; $0.714/23=31$ ps per stage, inside the normal 25–40 ps band. Depth is fine, so no pipelining is needed.
@@ -805,7 +784,7 @@ and both DRV violations at that pin disappear. **This was a design-rule problem 
 
 ---
 
-**4 — Why a design that closed at 1.2 GHz in synthesis misses by 15% after route.**
+**3 — Why a design that closed at 1.2 GHz in synthesis misses by 15% after route.**
 Synthesis closed at $T=0.833$ ns with WNS $=0$ in wireload mode; post-route STA reports 1.020 GHz. Account for every picosecond.
 
 Synthesis-time composition, summing to 0.833 ns at slack 0: $t_{cq}=0.055$, cell delay $=0.520$, wireload net delay $=0.088$, $t_{su}=0.040$, uncertainty $=0.130$. Post-route, three things change:

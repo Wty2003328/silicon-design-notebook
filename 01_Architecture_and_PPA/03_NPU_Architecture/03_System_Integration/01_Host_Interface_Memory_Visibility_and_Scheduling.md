@@ -521,3 +521,7 @@ This integrity layer extends the RAS and reset path of §10 (it reports through 
 ---
 
 **Navigation:** [System Integration index](00_Index.md) · [NPU index](../00_Index.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

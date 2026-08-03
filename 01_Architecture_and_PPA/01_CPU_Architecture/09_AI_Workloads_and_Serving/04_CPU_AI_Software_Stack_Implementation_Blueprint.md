@@ -136,3 +136,7 @@ The stack is reconstructable when artifacts, IR, passes, plan, ABI, buffers, tas
 ---
 
 ← [Performance and Research](03_Performance_Analysis_Profiling_and_Research_Frontiers.md) · next → [CPU Serving Runtime, Scheduler, and State](05_CPU_Serving_Runtime_Scheduler_and_State_Implementation_Blueprint.md)
+
+---
+
+⬅ prev [Central Processing Unit AI Performance Analysis, Profiling, and Research Frontiers](03_Performance_Analysis_Profiling_and_Research_Frontiers.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU Serving Runtime, Scheduler, and State Implementation Blueprint](05_CPU_Serving_Runtime_Scheduler_and_State_Implementation_Blueprint.md)

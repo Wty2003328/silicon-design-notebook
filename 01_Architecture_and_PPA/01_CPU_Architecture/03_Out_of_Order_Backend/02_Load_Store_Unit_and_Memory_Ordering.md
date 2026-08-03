@@ -475,3 +475,7 @@ Speculation wins on expectation, but a tail-latency product may still cap repeat
 ---
 
 **Navigation:** [Out-of-Order Backend index](00_Index.md) · [CPU index](../00_Index.md)
+
+---
+
+⬅ prev [Out-of-Order Execution](01_OoO_Execution.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Retirement, Recovery, and Precise State](03_Retirement_Recovery_and_Precise_State.md)

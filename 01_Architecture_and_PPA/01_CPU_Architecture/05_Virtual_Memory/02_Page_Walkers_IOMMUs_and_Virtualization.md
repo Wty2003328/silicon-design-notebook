@@ -377,3 +377,7 @@ Bandwidth may be tolerable, but dependent latency and shared-cache pollution can
 ---
 
 **Navigation:** [Virtual Memory index](00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)
+
+---
+
+⬅ prev [Translation Lookaside Buffer (TLB) and Virtual Memory](01_TLB_and_Virtual_Memory.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

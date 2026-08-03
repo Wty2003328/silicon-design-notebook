@@ -303,3 +303,7 @@ inside the core, explaining why prediction accuracy is an energy feature as well
 ---
 
 **Navigation:** [Frontend and Prediction index](00_Index.md) · [CPU index](../00_Index.md)
+
+---
+
+⬅ prev [Branch Prediction](01_Branch_Prediction_Deep_Dive.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Speculative Execution](03_Speculative_Execution.md)

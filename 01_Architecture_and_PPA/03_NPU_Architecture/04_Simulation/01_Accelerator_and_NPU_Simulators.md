@@ -748,3 +748,7 @@ The **384×** is the event-count face of the same argument. A $D{=}128$ array re
 - H. Ham et al., "ONNXim: A Fast, Cycle-level Multi-core NPU Simulator," IEEE CAL 2024 — [arXiv:2406.08051](https://arxiv.org/abs/2406.08051), [github.com/PSAL-POSTECH/ONNXim](https://github.com/PSAL-POSTECH/ONNXim).
 - NeuSim (UIUC PlatformX) — [source snapshot used for §7](https://github.com/platformxlab/NeuSim/tree/58fbd3f3579079046a2f433517029389646229a0), especially [`Operator.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/frontend/Operator.py), [`op_analysis_lib.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/frontend/op_analysis_lib.py), and [`npusim_lib.py`](https://github.com/platformxlab/NeuSim/blob/58fbd3f3579079046a2f433517029389646229a0/neusim/npusim/backend/npusim_lib.py).
 - Y.-H. Chen, J. Emer, V. Sze, "Eyeriss: A Spatial Architecture for Energy-Efficient Dataflow for CNNs (row-stationary)," ISCA 2016.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

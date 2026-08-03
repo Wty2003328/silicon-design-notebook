@@ -502,3 +502,7 @@ Each rule is a one-line consequence of the inference model — the "why" column 
 4. Sutherland, S. and Mills, D., "Standard Gotchas: Subtleties in the Verilog and SystemVerilog Standards," SNUG. X-optimism/pessimism and inference surprises (§4).
 5. IEEE Std 1800-2017, *SystemVerilog LRM*, and IEEE Std 1364.1 (RTL synthesis subset). The synthesizable subset of §3.
 6. Keating, M. and Bricaud, P., *Reuse Methodology Manual for System-on-a-Chip Designs*, 3rd ed., Springer, 2002. Reset, clocking, and datapath/control discipline (§5, §7).
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [SystemVerilog Data Types](02_Data_Types_and_Basics.md)

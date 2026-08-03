@@ -291,7 +291,7 @@ $$
 t_p\ \propto\ \frac{C_L\,V_{DD}}{I_{Dsat}}\ \propto\ \frac{C_L\,V_{DD}}{(V_{DD}-V_{th})^{\alpha}}
 $$
 
-where $\alpha\approx 1.3$ for a modern velocity-saturated device (§1.2). Read it as the master delay law: **speed comes from overdrive $V_{DD}-V_{th}$, and because $\alpha<2$, raising $V_{DD}$ helps sub-quadratically** while costing energy quadratically — the root of every voltage/frequency trade. The process-independent unit is the **FO4 delay** (an inverter driving four copies of itself), $\approx 12$–$15\ \text{ps}$ at N5; the notebook measures pipeline stages, wakeup loops, and cache paths in FO4 precisely because it cancels the process out.
+where $\alpha\approx 1.3$ for a modern velocity-saturated device (§1.2). Read it as the master delay law: **speed comes from overdrive $V_{DD}-V_{th}$, and because $\alpha<2$, raising $V_{DD}$ helps sub-quadratically** while costing energy quadratically — the root of every voltage/frequency trade. The process-independent unit is the **FO4 delay** (an inverter driving four copies of itself). It is only meaningful with a node attached, and the notebook uses one ladder throughout: $\approx 18$–$22\ \text{ps}$ at 28 nm, $\approx 14$–$18\ \text{ps}$ at 16 nm, $\approx 11$–$14\ \text{ps}$ at 7 nm, $\approx 9$–$12\ \text{ps}$ at N5 — roughly a 20% shrink per node, far slower than the classical gate-length scaling because gate length itself has nearly stopped moving. The notebook measures pipeline stages, wakeup loops, and cache paths in FO4 precisely because it cancels the process out.
 
 **The sub-quadratic trade, with numbers.** Hold $V_{th}=0.35$ V and $\alpha=1.3$, and boost $V_{DD}$ from $0.70\to0.80$ V ($+14\%$). Overdrive rises $0.35\to0.45$ V, so delay $\propto V_{DD}/(V_{DD}-V_{th})^{\alpha}$ scales by $\dfrac{0.80/0.45^{1.3}}{0.70/0.35^{1.3}}=\dfrac{2.26}{2.74}=0.82$ — a mere $\sim18\%$ speed-up. Switching energy $\propto V_{DD}^2$ meanwhile climbs $(0.80/0.70)^2=1.31$, i.e. $+31\%$. So $+14\%$ volts buys only $-18\%$ delay but $+31\%$ energy — the alpha-power law made arithmetic, and why $V_{DD}$ is a last-resort speed knob.
 
@@ -322,7 +322,9 @@ for name, vt in Vth.items():
 # LVT: 100.0x   SVT:   8.6x   HVT:   1.0x
 ```
 
-An LVT cell leaks $\sim100\times$ an HVT cell for just 150 mV of threshold — which is why leakage recovery is largely a game of swapping non-critical cells to HVT.
+The model says an LVT cell leaks $\sim100\times$ an HVT cell for just 150 mV of threshold — which is why leakage recovery is largely a game of swapping non-critical cells to HVT.
+
+**But treat that $100\times$ as a subthreshold-only idealization, not a library number.** Real characterized LVT/HVT leakage ratios land at **10–30×**, and the notebook uses that range everywhere it prices a $V_t$ swap ([Standard_Cell_Libraries_and_Characterization §7](../04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md)). Three effects compress the model's answer. *Subthreshold is not the only path*: gate tunnelling and GIDL are far less $V_{th}$-sensitive, so they set a leakage floor the HVT cell cannot get below, shrinking the ratio's denominator. *DIBL*: the higher-$V_{th}$ device is usually also the longer-channel one, but at a real operating $V_{DS}$ both flavors are barrier-lowered, which flattens the effective threshold difference. And *the flavors are closer than 150 mV*: production libraries typically separate adjacent flavors by 50–80 mV, not the full LVT-to-HVT span assumed above. Use the derivation to understand *why* the trade is exponential; use 10–30× to size it.
 
 $$
 P_{total}=\underbrace{\alpha C V_{DD}^2 f}_{\text{dynamic}}+\underbrace{P_{sc}}_{\text{short-circuit}}+\underbrace{V_{DD}I_{leak}}_{\text{leakage}}
@@ -633,9 +635,10 @@ Finally, compare the extracted results against the simple models here. $0.69R_{e
 | Subthreshold slope floor | **60 mV/decade** @ 300 K | thermodynamic limit; bulk ~80–100, FinFET ~65–70 (§1.3) |
 | Electron / hole mobility (eff.) | ~400 / ~180 cm²/V·s | PMOS ~2–2.5× wider (§1.1, §2.2) |
 | Alpha-power exponent $\alpha$ | ~1.3 | velocity-saturated; delay $\propto(V_{DD}-V_{th})^{-\alpha}$ (§1.2, §4.1) |
-| FO4 delay at N5 | ~12–15 ps | process-independent gate-delay unit (§4.1) |
+| FO4 delay (node ladder) | ~18–22 ps @ 28 nm · ~14–18 @ 16 nm · ~11–14 @ 7 nm · ~9–12 @ N5 | gate-delay unit; **never quote it without a node** (§4.1) |
 | Dynamic energy per transition | $\tfrac12 CV_{DD}^2$ | $P_{dyn}=\alpha CV_{DD}^2 f$ (§4.2) |
 | Leakage share of total | 20–50% | static power now rivals dynamic (§4.3, §13) |
+| LVT / HVT leakage ratio | **10–30×** in real libraries (~100× subthreshold-only model) | the model overstates it; gate/GIDL floor and sub-150 mV flavor spacing compress it (§4.3) |
 | Noise margin (symmetric inv.) | ~0.4 $V_{DD}$ | regeneration budget (§3.1) |
 | Inverter switching threshold $V_M$ | $V_{DD}/2$ (symmetric) | sizing $r=\sqrt{k_p/k_n}$ (§2.2) |
 | EOT at N5 | ~0.8–1.0 nm | high-$k$ keeps physical oxide thick (§1.4) |
@@ -669,3 +672,7 @@ Finally, compare the extracted results against the simple models here. $0.69R_{e
 6. Seevinck, E., List, F., and Lohstroh, J., "Static-Noise Margin Analysis of MOS SRAM Cells," *IEEE JSSC*, 22(5), 1987. The butterfly-curve SNM of §12.3.
 7. Pelgrom, M. et al., "Matching Properties of MOS Transistors," *IEEE JSSC*, 24(5), 1989. The $1/\sqrt{WL}$ variation law of §9.1.
 8. Taur, Y. and Ning, T., *Fundamentals of Modern VLSI Devices*, 3rd ed., Cambridge, 2021. Short-channel electrostatics and the screening length of §1.4/§8.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Logic building blocks](02_Logic_Building_Blocks.md)

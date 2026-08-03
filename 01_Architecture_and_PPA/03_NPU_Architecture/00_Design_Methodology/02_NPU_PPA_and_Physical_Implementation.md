@@ -290,3 +290,7 @@ The SRAM option may still lose if macro area/leakage or access latency forces a 
 ---
 
 ← [NPU Workloads and DSE](01_NPU_Workloads_Performance_and_DSE.md) · next → [NPU Simulation Methodology and Evidence](03_NPU_Simulation_Methodology_and_Evidence.md)
+
+---
+
+⬅ prev [NPU Workloads, Performance Modeling, and Design-Space Exploration](01_NPU_Workloads_Performance_and_DSE.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU Simulation Methodology and Evidence](03_NPU_Simulation_Methodology_and_Evidence.md)

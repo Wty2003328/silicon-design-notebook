@@ -1525,3 +1525,7 @@ Then reconstruct ownership:
 | Hands off to | [Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (the fabric CHI rides on) |
 | Related | [STA](../../../06_Signoff/01_STA.md) (interconnect timing closure) |
 | Back to Index | [Index](../../../Index.md) |
+
+---
+
+⬅ prev [Memory Consistency and Atomic Operations](02_Memory_Consistency_and_Atomics.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

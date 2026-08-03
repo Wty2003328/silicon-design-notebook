@@ -55,7 +55,7 @@ If a section gives only a taxonomy or a final block diagram, treat it as incompl
 - **Build an arithmetic datapath:** Logic §§1–3 → Adders §§1–8 → Floating Point §§4–8. This route goes from selection/reduction networks through carry/partial-product structures to alignment, normalization, and rounding.
 - **Understand AI arithmetic:** Adders §6–7 → Floating Point §§4–7 → the NPU and GPU cross-references. Concentrate on carry-save accumulation, significand-width-squared multiplier cost, wide accumulation, and block scaling.
 - **Build a storage array or price a memory decision:** CMOS §§2–5 → Logic §§4–5 → Memory §§1–5 → Memory §§7–8. This route goes from bistability through the bitcell's two conflicting margins to array timing, ports, yield repair, and error protection.
-- **Build a signal-processing or quantized-AI datapath:** Adders §§1–8 → Arithmetic RTL Q-format/saturation/rounding → DSP §§1–5 → DSP §§8–9 → DSP §12. This route goes from carry structures through word-length engineering to filter architectures, iterative function evaluation, and neural-network quantization.
+- **Build a signal-processing or quantized-AI datapath:** Adders §§1–8 → Arithmetic RTL Q-format/saturation/rounding → DSP §§1–5 → DSP §§8–9 → DSP §11. This route goes from carry structures through word-length engineering to filter architectures, iterative function evaluation, and neural-network quantization.
 - **Build or evaluate a simulator:** SystemC §§1–6 → each architecture folder's simulation methodology. Keep host execution speed, target simulated time, fidelity, and derived architectural metrics separate.
 
 ## Diagram notation in this Obsidian vault

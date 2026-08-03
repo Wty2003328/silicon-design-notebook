@@ -225,3 +225,7 @@ Its place among the signoffs is defined by what it *uniquely* owns. [STA](01_STA
 3. Kahng, A.B., Lienig, J., Markov, I.L., and Hu, J., *VLSI Physical Design: From Graph Partitioning to Timing Closure*, Springer, 2011. Multi-patterning layout decomposition and conflict-graph coloring.
 4. Stapper, C.H., "Modeling of Integrated Circuit Defect Sensitivities," *IBM J. Res. Dev.*, 27(6), 1983. Critical-area / defect-density yield modeling.
 5. König, D., *Theorie der endlichen und unendlichen Graphen*, 1936. A graph is bipartite (2-colorable) iff it has no odd cycle.
+
+---
+
+⬅ prev [Design for Test (DFT) and ATPG](02_DFT_and_ATPG.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Signoff Orchestration, ECOs, and Tape-out Readiness](04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md)

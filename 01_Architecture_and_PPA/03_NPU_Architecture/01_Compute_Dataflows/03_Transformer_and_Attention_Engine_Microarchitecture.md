@@ -427,3 +427,7 @@ Counters should report array utilization by shape, vector backlog, reduction occ
 ---
 
 ← [Systolic, Spatial, and Vector Dataflows](02_Systolic_Spatial_and_Vector_Dataflows.md) · [Compute Dataflows index](00_Index.md) · next → [Dynamic Sparsity, MoE, and Irregular Execution](04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md)
+
+---
+
+⬅ prev [Systolic, Spatial, and Vector Dataflows](02_Systolic_Spatial_and_Vector_Dataflows.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Dynamic Sparsity, Mixture-of-Experts, and Irregular NPU Execution](04_Dynamic_Sparsity_MoE_and_Irregular_Execution.md)

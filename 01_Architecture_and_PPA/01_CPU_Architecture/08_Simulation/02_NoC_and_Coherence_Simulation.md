@@ -517,3 +517,7 @@ A trace injects a miss every 20 cycles. A narrower NoC raises miss latency and w
 ---
 
 **Navigation:** [Memory and Interconnect Simulation index](../../04_SoC_and_Chiplet_Architecture/06_Simulation/00_Index.md) · [Simulators index](../../04_SoC_and_Chiplet_Architecture/01_System_Modeling/00_Index.md)
+
+---
+
+⬅ prev [gem5](01_gem5.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

@@ -544,3 +544,7 @@ This plan can produce an architecture insight. Reporting one `tokens/s` comparis
 ---
 
 ← [AI Operators on CPU Microarchitecture](02_AI_Operators_on_CPU_Microarchitecture.md) · [AI Workloads and Serving index](00_Index.md) · [CPU Architecture](../00_Index.md)
+
+---
+
+⬅ prev [Artificial Intelligence Operators on Central Processing Unit Microarchitecture](02_AI_Operators_on_CPU_Microarchitecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU Artificial-Intelligence Software-Stack Implementation Blueprint](04_CPU_AI_Software_Stack_Implementation_Blueprint.md)

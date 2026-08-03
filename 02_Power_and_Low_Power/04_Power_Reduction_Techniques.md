@@ -51,7 +51,7 @@ Each row is a full section below. Read it as: this lever kills this term, by thi
 
 | Lever | Term killed | Mechanism | Dominant cost | Worth it when… | § |
 |---|---|---|---|---|---|
-| **Clock gating** | $\alpha$ on the clock (the 30–50 % term) | stop the clock to idle flops/blocks | enable-detection logic, ICG area, tight enable timing | always — every synchronous design | 2 |
+| **Clock gating** | $\alpha$ on the clock (the 35–50 % clock-related term) | stop the clock to idle flops/blocks | enable-detection logic, ICG area, tight enable timing | always — every synchronous design | 2 |
 | **Operand isolation** | $\alpha$ of a datapath cloud | freeze inputs of an unused combinational block | one gate layer on a timing path | wide unit, low use duty cycle | 2.4 |
 | **DVFS** | $V_{DD}^2 f$ (≈ cubic together) | scale supply + frequency with demand | µs–ms transition latency, signoff corners | workload intensity varies | 3 |
 | **Voltage islands** | $V_{DD}^2$ per block | run each block at its own minimum supply | level shifters, extra rails, floorplan | blocks have different $V_{min}$ | 3.5 |
@@ -75,7 +75,7 @@ Each row is a full section below. Read it as: this lever kills this term, by thi
 
 The practical reading: fight for power at architecture and micro-architecture first (where 2–100× lives), then let the implementation flow harvest the remaining tens of percent. You cannot multi-$V_t$ your way out of a bad architecture.
 
-**The terms are not equal, and the clock is the fat one.** The clock network is 30–50 % of dynamic power because it is the one net with $\alpha = 1$ — a full charge/discharge *every* cycle, on every capacitance it touches — while datapath nodes toggle at $\alpha \approx 0.05\text{–}0.15$. That single asymmetry is why clock gating is the first technique, present in essentially every design ever taped out, and why we start there.
+**The terms are not equal, and the clock is the fat one.** The clock network proper — buffers, clock wire, flop clock-pin load — is 20–35 % of dynamic power, and 35–50 % once the clock inverters *inside* every flip-flop are counted (the quantity clock gating actually kills). Either way it leads, because it is the one net with $\alpha = 1$ — a full charge/discharge *every* cycle, on every capacitance it touches — while datapath nodes toggle at $\alpha \approx 0.05\text{–}0.15$. That single asymmetry is why clock gating is the first technique, present in essentially every design ever taped out, and why we start there.
 
 **They stack.** Because the terms multiply, the levers are orthogonal: a modern application-processor core is simultaneously clock-gated, DVFS-scaled, power-gated with retention, multi-$V_t$ optimized, and fed by mode-controlled SRAMs — each lever covering the operating regime the others miss (§8).
 
@@ -128,7 +128,7 @@ The cost of the cell is small but real: ~1–2× a minimum inverter in area, and
 
 One ICG can gate a handful of flops or an entire subsystem, and the choice is a genuine trade-off, not a detail. Fine-grain gating (4–16 flops per ICG, auto-inserted by synthesis from `if (en)` patterns) captures idle cycles precisely but costs many cells (~5–8 % area, ~20–40 % power reduction typical). Coarse-grain gating (hundreds to thousands of flops, one module-level ICG driven by firmware) costs almost no area but only fires when the whole block is idle.
 
-The decisive theoretical point is *where in the clock tree the ICG sits*. A leaf ICG stops only the flop clock pins below it — **the clock buffers above it still toggle every cycle.** Since those buffers are a large part of the 30–50 % clock power, moving real clock-tree power requires gating near the *root*. But root gating tightens the enable path: less clock-network insertion delay downstream of the ICG means less margin for the enable to arrive, so the enable must be computed earlier. That is the core tension CTS manages (cloning ICGs to control skew, pulling them up or down to balance enable timing against gated-buffer power). The right answer is a *hierarchy*: module-level gating for sleep modes, cluster-level for pipeline stages, fine-grain for the rest — each level catching idleness the others miss.
+The decisive theoretical point is *where in the clock tree the ICG sits*. A leaf ICG stops only the flop clock pins below it — **the clock buffers above it still toggle every cycle.** Since those buffers are a large part of the 20–35 % clock-*network* share (a leaf ICG only reaches the flop-internal remainder), moving real clock-tree power requires gating near the *root*. But root gating tightens the enable path: less clock-network insertion delay downstream of the ICG means less margin for the enable to arrive, so the enable must be computed earlier. That is the core tension CTS manages (cloning ICGs to control skew, pulling them up or down to balance enable timing against gated-buffer power). The right answer is a *hierarchy*: module-level gating for sleep modes, cluster-level for pipeline stages, fine-grain for the rest — each level catching idleness the others miss.
 
 Beyond what single-cycle inference can see, **sequential (data-driven) gating** strengthens enables using multi-cycle behaviour: observability-don't-care gating stops a register whose output nobody will read for $N$ cycles; XOR self-gating fires the clock only when the data actually changes ($\text{en} = \lvert (d \oplus q)\rvert$), paying an OR-reduction tree to do it. Because these change cycle-by-cycle behaviour on don't-care cycles, they cannot be checked by combinational equivalence — they need *sequential* equivalence checking (SLEC). That verification cost is the price of the extra savings.
 
@@ -423,7 +423,7 @@ The levers are not bolted on at the end; each enters at a specific step, and ret
 | Quantity | Value | Why it matters |
 |---|---|---|
 | Savings by abstraction level | arch 10–100× / µarch 2–10× / RTL & gate 10–30 % / circuit 5–20 % | optimize high in the stack first (§1.3) |
-| Clock distribution power | 30–50 % of dynamic ($\alpha=1$) | clock gating's target — gate it first (§2) |
+| Clock distribution power | network 20–35 % of dynamic; 35–50 % incl. flop-internal ($\alpha=1$) | clock gating's target is the larger figure — gate it first (§2) |
 | ICG cell | ~1–2× a min inverter, ~5 µW each | overhead subtracted from savings (§2.2) |
 | Fine-grain clock gating | ~5–8 % area → 20–40 % power | granularity vs savings (§2.3) |
 | Clock-gating efficiency (CGE) | target **> 60 %** per block (> 95 % achievable) | the headline gating metric (§2.1) |
@@ -462,3 +462,7 @@ The levers are not bolted on at the end; each enters at a specific step, and ret
 3. A. Chandrakasan, S. Sheng, and R. Brodersen, "Low-Power CMOS Digital Design," *IEEE JSSC*, 1992. The original architecture-level voltage-scaling argument behind §1.3 and §3.
 4. J. Rabaey, A. Chandrakasan, and B. Nikolić, *Digital Integrated Circuits: A Design Perspective*, 2nd ed., Prentice Hall, 2003. Dynamic/leakage power physics and the multi-$V_t$ economics of §5.
 5. N. Weste and D. Harris, *CMOS VLSI Design: A Circuits and Systems Perspective*, 4th ed., Addison-Wesley, 2010. Level shifters, latches, retention cells, and power-distribution circuits.
+
+---
+
+⬅ prev [Low-Power Architecture](03_Low_Power_Architecture_and_Domain_Partitioning.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [UPF/CPF Power-Intent Flow](05_UPF_and_CPF_Power_Intent.md)

@@ -1620,3 +1620,7 @@ An end-to-end proof combines local invariants: accepted producer beats enter onc
 3. Rabaey, J., Chandrakasan, A., Nikolić, B., *Digital Integrated Circuits*, 2nd ed., Prentice Hall, 2003. Dynamic/domino logic, charge sharing, keepers (§1.4).
 4. Eichelberger, E.B., "Hazard detection in combinational and sequential switching circuits," *IBM J. Res. Dev.*, 1965. The static→dynamic hazard theorem of §8.
 5. Ginosar, R., "Metastability and Synchronizers: A Tutorial," *IEEE Design & Test*, 2011. The MTBF derivation of §4.11.
+
+---
+
+⬅ prev [CMOS Fundamentals and Device Physics](01_CMOS_Fundamentals.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Datapath Arithmetic](03_Adders_and_Multipliers.md)

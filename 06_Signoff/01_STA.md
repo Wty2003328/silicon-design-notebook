@@ -312,7 +312,7 @@ with $M_{setup}=1,\,M_{hold}=0$ reproducing the single-cycle pair $E_1/E_0$.
 
 Signoff is the discipline of running the analysis above across the full scenario set and driving every slack non-negative. The load-bearing ideas:
 
-- **What STA inherits from the clock tree.** STA does not build the tree; it consumes it. Post-CTS it expects skew < 50–100 ps, insertion delay ~0.5–1.5 ns, clock-net slew < 150–250 ps, and low insertion-delay variation — quantities that feed the OCV margins of §5 and the CPPR credit of §4.3. Tree topology, buffering, and shielding live in [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md); clock *generation* and jitter in [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md).
+- **What STA inherits from the clock tree.** STA does not build the tree; it consumes it. Post-CTS it expects skew < 50–100 ps, insertion delay of **200–500 ps for a block** (800–1500 ps across a full reticle-size die), clock-net slew < 150–250 ps, and low insertion-delay variation — quantities that feed the OCV margins of §5 and the CPPR credit of §4.3. Tree topology, buffering, and shielding live in [Physical_Design](../05_Backend_Physical_Design/01_Physical_Design.md); clock *generation* and jitter in [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md).
 - **The setup↔hold fixing tension.** Setup is fixed by making the *max* path faster (upsize cells, swap to lower-$V_t$, restructure logic) or by borrowing skew; hold by making the *min* path slower (insert delay buffers). Because they pull oppositely on both delay and skew, an over-aggressive setup fix (e.g. useful skew, clock buffering) can *create* hold violations elsewhere — every ECO must be re-checked for both, at all corners. Timing ECOs are the targeted post-signoff form of these fixes.
 - **Crosstalk delta-delay.** A switching aggressor couples charge onto a victim net, adding or subtracting delay depending on relative switching direction; SI-aware STA computes a per-net delta-delay using aggressor *timing windows* to avoid assuming every aggressor aligns. This can be tens of ps on tightly-pitched advanced-node nets and is part of signoff — the mechanism and fixes are in [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md).
 - **Clock-gating checks.** An integrated clock-gating cell's enable must be stable around the clock's *inactive* edge (falling edge for an AND-based gate) or a runt pulse reaches the gated domain. STA models this as an ordinary setup/hold-style check on the enable pin; hold is the dangerous side because the enable path is often short.
@@ -324,12 +324,12 @@ Signoff is the discipline of running the analysis above across the full scenario
 
 | Quantity | Value | Why it matters |
 |---|---|---|
-| FO4 delay (N5) | ~12–15 ps | gate-delay yardstick; cycle budget in FO4 |
+| FO4 delay | ~9–12 ps (N5); ~11–14 ps (7 nm); ~18–22 ps (28 nm) | gate-delay yardstick; cycle budget in FO4 |
 | Setup time (typical DFF, N5) | 30–60 ps | consumes cycle time directly (§3.1) |
 | Hold time (typical DFF, N5) | 20–40 ps; can be **negative** | negative hold is a library gift that eases hold closure (§3.2) |
 | Clock uncertainty (post-CTS) | ±20–50 ps | jitter + margin; tightens **both** setup and hold (§4.2) |
 | Clock skew target | < 50–100 ps | signed: helps setup, hurts hold (§4.1) |
-| Insertion delay | ~0.5–1.5 ns | its *shared* part sets the CPPR credit (§4.3) |
+| Insertion delay | 200–500 ps (block); 800–1500 ps (full die) | its *shared* part sets the CPPR credit (§4.3) |
 | CPPR credit (typical) | 20–40 % of uncertainty | recovered shared-clock pessimism (§4.3) |
 | Flat OCV derate | ±5–15 % (rises with node) | linear-in-depth pessimism → over-margins deep paths (§5.1) |
 | POCV per-cell sigma | 2–5 % of mean | adds in quadrature (√N), least pessimistic (§5.1) |
@@ -356,3 +356,7 @@ Signoff is the discipline of running the analysis above across the full scenario
 2. Synopsys, *PrimeTime User Guide* — multicycle-path and hold-multiplier semantics (§6.2), CPPR, POCV.
 3. S. Sapatnekar, *Timing*, Springer, 2004. The timing graph and block-based vs path-based analysis.
 4. C. Visweswariah et al., "First-Order Incremental Block-Based Statistical Timing Analysis," *DAC*, 2004. Statistical/parametric variation modeling behind §5.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Design for Test (DFT) and ATPG](02_DFT_and_ATPG.md)

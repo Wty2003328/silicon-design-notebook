@@ -349,3 +349,7 @@ At four ways, core A loses 30 misses by receiving a fifth way; B loses 8. A util
 ---
 
 **Navigation:** [Cache Hierarchy index](00_Index.md) · [Memory index](../00_Design_Methodology/00_Index.md)
+
+---
+
+⬅ prev [Cache Microarchitecture](01_Cache_Microarchitecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

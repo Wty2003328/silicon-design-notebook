@@ -11,7 +11,7 @@ Every timing number the flow has produced so far rests on a fiction: the **clock
 
 **Clock tree synthesis (CTS)** replaces that fiction with a physical network of buffers, inverters, and wires, then tells static timing analysis (STA) the truth about it. Three things change at once. Skew stops being a lump of guessed margin and becomes an explicit, signed, per-path quantity. **Hold timing becomes real for the first time** — before CTS, hold slack is computed against a skew of zero that nobody believes, so fixing it is guaranteed waste. And a network that did not exist a minute ago becomes the largest single consumer of dynamic power on the die.
 
-Treating CTS as "run the tool, check the skew number" ships three defects downstream: an over-deep tree costing every path 20–40 ps of on-chip-variation pessimism; tens of thousands of hold violations arriving at routing as an area and congestion problem; and a clock burning 30 % of block power because the gating sits at the leaves instead of the trunk. This page owns the *implementation*. Topology selection is derived in [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) §7, the zero-skew merge geometry in [Physical_Design](01_Physical_Design.md) §4.2, the slack algebra and CPPR in [STA](../06_Signoff/01_STA.md) §3–§4.
+Treating CTS as "run the tool, check the skew number" ships three defects downstream: an over-deep tree costing every path 20–40 ps of on-chip-variation pessimism; tens of thousands of hold violations arriving at routing as an area and congestion problem; and a clock burning 45 % of block dynamic power — ten points past the top of the normal 20–35 % band of §11 — because the gating sits at the leaves instead of the trunk. This page owns the *implementation*. Topology selection is derived in [PLL_DLL_and_Clock_Distribution](../03_Frontend_RTL_and_Verification/05_PLL_DLL_and_Clock_Distribution.md) §7, the zero-skew merge geometry in [Physical_Design](01_Physical_Design.md) §4.2, the slack algebra and CPPR in [STA](../06_Signoff/01_STA.md) §3–§4.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 45, "htmlLabels": false}}}%%
@@ -98,9 +98,9 @@ Clock nets get a **non-default rule (NDR)**: double width, double spacing, somet
 \end{document}
 ```
 
-The contract: the driver's output resistance sits in series with the wire's distributed $rL$ and $cL$, terminated in sink load $C_L$, and wire delay is $\approx\tfrac{1}{2}RC$ (Elmore). Trace a 500 µm M5 branch at a 7 nm-class node, $r = 0.35\ \Omega/\mu\text{m}$, $c = 0.20\ \text{fF}/\mu\text{m}$: $R = 175\ \Omega$, $C = 100$ fF, $\tau_{1W} = 8.8$ ps. Double the width and $r$ halves while $c$ rises only to $\approx 0.26\ \text{fF}/\mu\text{m}$ (parallel-plate scales with width, fringe does not): $R = 87.5\ \Omega$, $C = 130$ fF, $\tau_{2W} = 5.7$ ps — a 35 % cut. But the trade-off the figure really illustrates is variance: etch bias and line-edge roughness perturb width by a fixed *absolute* amount, so a $2W$ wire suffers half the fractional width error, and since $r \propto 1/w$, doubling width roughly halves the RC spread between two nominally identical branches.
+The contract: the driver's output resistance sits in series with the wire's distributed $rL$ and $cL$, terminated in sink load $C_L$, and wire delay is $\approx\tfrac{1}{2}RC$ (Elmore). Trace a 150 µm M6 branch at a 7 nm-class node, $r = 16\ \Omega/\mu\text{m}$, $c = 0.20\ \text{fF}/\mu\text{m}$ (the 2× intermediate tier of [Routing_and_Parasitic_Extraction](06_Routing_and_Parasitic_Extraction.md) §1.2): $R = 2.4\ \text{k}\Omega$, $C = 30$ fF, $\tau_{1W} = 36$ ps. Double the width and $r$ halves while $c$ rises only to $\approx 0.26\ \text{fF}/\mu\text{m}$ (parallel-plate scales with width, fringe does not): $R = 1.2\ \text{k}\Omega$, $C = 39$ fF, $\tau_{2W} = 23.4$ ps — a 35 % cut, and the ratio $0.5\times1.3 = 0.65$ is width-independent, so 2W always buys exactly this. But the trade-off the figure really illustrates is variance: etch bias and line-edge roughness perturb width by a fixed *absolute* amount, so a $2W$ wire suffers half the fractional width error, and since $r \propto 1/w$, doubling width roughly halves the RC spread between two nominally identical branches.
 
-**Double spacing** cuts coupling capacitance 45–55 %, which for a clock shows up not as delay but as **induced jitter**, $\Delta t \approx \frac{C_c}{C_c+C_g}\times(\text{aggressor slew})$; **shielding** removes it almost entirely at three tracks per clock wire. Clocks go on intermediate/thick metals (M5–M7), where $r$ per length is an order of magnitude below M1–M2, and off the top ultra-thick layers reserved for the power grid ([Floorplanning_and_Power_Planning](03_Floorplanning_and_Power_Planning.md)). NDR plus shields costs 3–5× the routing resource of an ordinary net — the largest single resource CTS spends, and why clock routing runs *before* signal routing.
+**Double spacing** cuts coupling capacitance 45–55 %, which for a clock shows up not as delay but as **induced jitter**, $\Delta t \approx \frac{C_c}{C_c+C_g}\times(\text{aggressor slew})$; **shielding** removes it almost entirely at three tracks per clock wire. Clocks go on intermediate/thick metals (M5–M7), where $r$ per length is five to six times below M1–M2 (16 $\Omega/\mu$m against 90), and off the top ultra-thick layers reserved for the power grid ([Floorplanning_and_Power_Planning](03_Floorplanning_and_Power_Planning.md)). NDR plus shields costs 3–5× the routing resource of an ordinary net — the largest single resource CTS spends, and why clock routing runs *before* signal routing.
 
 ---
 
@@ -152,15 +152,17 @@ The contract: the mesh is a **short circuit**, not a tree. Trace an edge — it 
 | Resize the branch driver, X16 → X8 | 10–40 ps | small area/power change | first choice; effectively free |
 | Swap $V_{th}$ flavor, LVT → SVT → HVT | 10–30 ps | leakage change | second choice |
 | Insert a delay cell or extra buffer level | 20–60 ps | +1 cell, +power, +OCV depth | when resizing is exhausted |
-| Snake the wire (detour routing) | **0.05–0.10 ps/µm** | routing resource, added load | the last few ps only |
+| Snake the wire (detour routing) | **0.3–1.0 ps/µm**, load- and length-dependent | routing resource, added load, corner de-correlation | tens of ps, and only after cells |
 
-The snaking rate is routinely over-estimated, so derive it. Adding $\Delta L$ of wire at a driver with effective output resistance $R_d$ adds, to first order,
+The snaking rate is routinely mis-stated, in both directions, so derive it. The usual quotation keeps only the term in which the *driver* charges the new capacitance, $\partial d/\partial L \approx 0.69\,R_d c_w = 0.69(400\,\Omega)(0.20\ \text{fF}/\mu\text{m}) = 0.055$ ps/µm — which would make snaking useless. That drops the two terms carried by the wire's *own* resistance. Differentiate the whole Elmore expression for a branch of length $L$ into sink load $C_L$, $d = 0.69\big[R_d(c L + C_L) + rL(\tfrac{cL}{2}+C_L)\big]$:
 
 $$
-\frac{\partial d}{\partial L} \;\approx\; 0.69\,R_d\,c_w \;=\; 0.69 \times 400\ \Omega \times 0.20\ \text{fF}/\mu\text{m} \;=\; 0.055\ \text{ps}/\mu\text{m}.
+\frac{\partial d}{\partial L} \;\approx\; 0.69\big(\underbrace{R_d c}_{\text{driver}} \;+\; \underbrace{r\,c\,L}_{\text{new }R\text{ on old }C} \;+\; \underbrace{r\,C_L}_{\text{new }R\text{ on the sinks}}\big).
 $$
 
-Buying 44 ps by snaking would take **810 µm** of detour, adding 162 fF of load and probably violating `max_capacitance`. Snaking is a vernier; balancing is done with cells. So the **local-skew floor is set by the delay granularity of the clock cell library** — with cells quantized at ~15 ps, no tool effort gets local skew below roughly ±7 ps before OCV. A mesh, which shorts rather than balances, sidesteps the floor entirely.
+Only the first term is a property of the driver alone; the other two grow with the branch. On branch A of worked problem 2 — M6 at $r=16\ \Omega/\mu$m, $c = 0.20$ fF/µm, $L = 150$ µm, $C_L = 43$ fF of flop pins, $R_d = 400\ \Omega$ — the three terms are 0.08, 0.48 and 0.69 ps/µm, so $\partial d/\partial L \approx \mathbf{0.86\ ps/\mu m}$ and the driver-only figure is under a tenth of the truth. Buying 44 ps therefore takes **~50 µm** of detour, not 810.
+
+So snaking *works* at the tens-of-picoseconds scale — and that is exactly why it is still the last resort. Its cost is not resource but composition: every micrometre of snake makes the branch more wire-dominated, and §10 shows that two branches with different cell-to-wire ratios track each other badly across corners. **Cells buy delay that varies like the rest of the tree; wire buys delay that does not.** Snake for the last few picoseconds, after resizing and $V_{th}$ swaps are exhausted, and never as the primary lever. So the **local-skew floor is set by the delay granularity of the clock cell library** — with cells quantized at ~15 ps, no tool effort gets local skew below roughly ±7 ps before OCV. A mesh, which shorts rather than balances, sidesteps the floor entirely.
 
 **Three branches, and the unbalanceable sinks.** Worked problem 2 balances a node feeding 24 flops at 150 µm ($d_A = 40.0$ ps), an integrated clock-gating cell (ICG) plus 20 flops ($d_B = 84.5$ ps), and an SRAM macro whose CK pin sits at 33.6 ps but whose *internal* clock latency to the array flops is a further 195 ps. Balancing to the macro's **CK pin** costs two cells and lands at 84.5 ps of insertion; balancing to its **internal flops** costs nine extra buffer levels and 228.6 ps, because that latency is already inside the setup/hold arcs characterized at the macro's D and CK pins and compensating externally double-counts. The three canonical hard cases:
 
@@ -301,26 +303,26 @@ The clock is the only net with activity factor $\alpha = 1$ by definition, and i
 
 | Component | Capacitance | Share |
 |---|---|---|
-| Flop clock pins, 180k × 1.2 fF | 216 pF | 62 % |
-| Clock wire, 380 mm × 0.26 fF/µm (NDR) | 98.8 pF | 28 % |
-| Clock buffers, 4,200 × 8 fF effective | 33.6 pF | 10 % |
-| **Total $C_{clk}$ → 294 mW** | **348.4 pF** | |
+| Flop clock pins, 180k × 1.2 fF | 216 pF | 55 % |
+| Clock wire, 380 mm × 0.26 fF/µm (NDR) | 98.8 pF | 25 % |
+| Clock buffers, 9,840 × 8 fF effective | 78.7 pF | 20 % |
+| **Total $C_{clk}$ → 332 mW** | **393.5 pF** | |
 
-The *buffers* — the thing everyone tries to reduce — are only 10 %. Flop pin capacitance is irreducible for a given flop count, and wire is set by how far the tree must reach, which is set by the floorplan. Clock power is fundamentally an RTL and floorplanning problem and only secondarily a CTS one.
+The buffer count is not a free parameter: at `max_fanout = 24` a 180k-flop block needs at least $180{,}000/24 = 7{,}500$ leaf drivers before a single trunk stage exists, so ~9,800 clock cells is the floor, not an aggressive number. Even so the *buffers* — the thing everyone tries to reduce — are 20 %, the smallest of the three terms and the only one CTS controls directly. Flop pin capacitance is irreducible for a given flop count, and wire is set by how far the tree must reach, which is set by the floorplan. Clock power is fundamentally an RTL and floorplanning problem and only secondarily a CTS one.
 
-**Transition versus power.** Tightening `max_transition` forces more and larger buffers; loosening it saves buffer power but raises receiver short-circuit power and degrades delay predictability (§2). The two effects cross, and the minimum sits broadly at 5–10 % of the period — exactly where the standard target is set. Relative to a 60 ps baseline at 4,200 buffers, a 40 ps limit needs ~5,600 buffers (buffer and wire power 1.32×, crowbar 0.90×, net +8 %) while a 90 ps limit needs ~3,100 (0.82× and 1.28×, net +4 % *and* worse OCV). Below the knee you buy nothing; above it you pay twice, in crowbar current and in the variation-to-skew conversion of §2.
+**Transition versus power.** Tightening `max_transition` forces more and larger buffers; loosening it saves buffer power but raises receiver short-circuit power and degrades delay predictability (§2). The two effects cross, and the minimum sits broadly at 5–10 % of the period — exactly where the standard target is set. Relative to a 60 ps baseline at 9,840 buffers, a 40 ps limit needs ~13,100 buffers (buffer and wire power, 45 % of the total, ×1.32; crowbar on the 55 % sink-pin term ×0.90; net +9 %) while a 90 ps limit needs ~7,300 (×0.82 and ×1.28, net +7 % *and* worse OCV). Below the knee you buy nothing; above it you pay twice, in crowbar current and in the variation-to-skew conversion of §2.
 
 | Lever | Effect on $P_{clk}$ | Cost |
 |---|---|---|
 | Root-level gating vs. none | **−25 to −40 %** | insertion pad, enable criticality, $di/dt$ (§5) |
 | Leaf-only gating vs. none | −12 to −20 % | ICG count, area, enable hold pressure (§5) |
-| Remove one buffer level | −4 to −6 % per level | fanout per level rises → transition, skew (§2) |
+| Remove one buffer level | −3 to −5 % per level | fanout per level rises → transition, skew (§2) |
 | Mesh instead of tree | **+60 to +150 %** | a cost, paid for OCV immunity (§3) |
 | Relax NDR from 2W to 1.5W | −8 to −12 % | RC variation up → skew up (§2.1) |
 | Multi-bit register banking | −8 to −15 % | one clock pin per 2–4 bits; placement rigidity |
 | Fewer flops in RTL | proportional | design effort; the largest lever of all |
 
-Banking attacks the 62 % term directly: four 1-bit flops replaced by one 4-bit banked flop replaces four clock pins and four leaf stubs with one of each, cutting those registers' leaf capacitance 30–40 %, at the cost of placement rigidity.
+Banking attacks the 55 % term directly: four 1-bit flops replaced by one 4-bit banked flop replaces four clock pins and four leaf stubs with one of each, cutting those registers' leaf capacitance 30–40 %, at the cost of placement rigidity.
 
 ---
 
@@ -329,20 +331,20 @@ Banking attacks the 62 % term directly: four 1-bit flops replaced by one 4-bit b
 ```text
 Clock: CLK   (propagated)   Period: 800 ps   Corners: {ss0p675v125c, ff0p825vm40c}
   Sinks              184,312   (flops 180,004 / macros 46 / excluded 4,262)
-  Clock cells          4,214   (CLKINV_X8 2,988 / CLKINV_X16 901 / CLKBUF_X16 325)
+  Clock cells          9,840   (CLKINV_X8 6,980 / CLKINV_X16 2,210 / CLKBUF_X16 650)
   ICG cells            1,146   (trunk level 6: 42 / leaf level 11: 1,104)
   Levels             min 9  max 13  avg 11.4
-  Insertion delay    min 431 ps  max 512 ps  avg 478 ps
-  Global skew                  81 ps
+  Insertion delay    min 463 ps  max 492 ps  avg 478 ps
+  Global skew                  29 ps
   Local skew (worst group)     19 ps   [group: dp_core]
   Max clock transition         58 ps  (limit 60)  violations: 0
   Max clock capacitance        76 fF  (limit 80)  violations: 0
   Clock net length          381.4 mm  (NDR CLK_2W2S 100 %, shielded 34 %)
-  Clock network power         291 mW  (buffers 31 / wire 84 / sink pins 176)
+  Clock network power         332 mW  (buffers 66 / wire 84 / sink pins 182)
   Common-path fraction, worst 10 % of paths ......... 0.71
 ```
 
-Read it in this order. **Sinks** — 4,262 excluded pins is a lot, and an unexplained excluded pin is a clock net nobody is checking. **Levels 9–13** — a four-level spread means some branch needed four extra stages to balance, ~160 ps of insertion bought to fix one imbalance, and that is a floorplan smell. **Insertion spread** 431–512 ps is 81 ps, which must equal global skew, and does. **Local skew 19 ps** is the number that lands in slack; global 81 ps is decoration unless the groups are wrong. **Common-path fraction 0.71** is §8's metric; below ~0.6 you give away OCV margin. **Power 291 mW** against a 1.1 W block is 26 %, in range.
+Read it in this order. **Sinks** — 4,262 excluded pins is a lot, and an unexplained excluded pin is a clock net nobody is checking. **Clock cells 9,840** against 180,004 flops is a leaf fanout of ~24, which is the specified limit: a report showing far *fewer* cells than $N_{flops}/\text{max\_fanout}$ means the fanout constraint is not actually being enforced, usually because part of the tree was traced as data. **Levels 9–13** — a four-level spread means some branch needed four extra stages to balance, ~160 ps of insertion bought to fix one imbalance, and that is a floorplan smell. **Insertion spread** 463–492 ps is 29 ps, which must equal global skew, and does. **Local skew 19 ps** is the number that lands in slack; global 29 ps meets the 30 ps target of §2 and is otherwise decoration unless the groups are wrong. **Common-path fraction 0.71** is §8's metric; below ~0.6 you give away OCV margin. **Power 332 mW** against a 1.1 W block is 30 %, inside the 20–35 % band but near its top — consistent with a tree that is 100 % NDR and a third shielded.
 
 **The CTS quality checklist.** Skew within target *at every CTS corner* (§10). Insertion delay within target and consistent across sibling blocks, since 400 ps and 700 ps blocks cannot talk without 300 ps of interface skew. Zero clock DRV violations — hard gates, because one invalidates all downstream delay. Level-count spread ≤ 2–3. **Only clock cells in the clock path**: a logic buffer means unbalanced rise/fall and an uncharacterized cell in the most delay-sensitive network on the die, and it arrives through ECOs, so check explicitly. ICGs at their intended levels with sane fanouts. NDR at 100 % with shields where specified — partial NDR is a common silent failure when routing resources run out. No long unshielded runs beside aggressors ([Signal_Integrity_Reliability](02_Signal_Integrity_Reliability.md)). Skew groups matching the real communication graph. Clock-gating and minimum-pulse-width checks clean at every ICG and divider output (§5). No unexpected sinks. Duty cycle in spec at the leaves if any half-cycle or dual-edge logic exists.
 
@@ -385,9 +387,10 @@ The contract: `clk_root` is the reference the SDC declares, while `clk_launch` a
 | Max clock transition | 5–10 % of period (30–80 ps) | slow slew → delay variability + crowbar power (§2, §11) |
 | Insertion delay target, 100–300k flops | 300–800 ps | sets the OCV-derated divergent path (§2, §8) |
 | Clock buffer fanout per level | 8–24 sinks | set by max-cap and max-transition (§4) |
-| Tree levels, 200k-flop block | 8–14, spread ≤ 3 | each level ≈ 4–6 % of clock power (§11, §12) |
+| Tree levels, 200k-flop block | 8–14, spread ≤ 3 | each level ≈ 3–5 % of clock power (§11, §12) |
+| Clock cell count | $\ge N_{flops}/\text{max\_fanout}$, ~9,800 for 180k flops | far fewer means the tree is not fully traced (§11, §12) |
 | Clock cell delay per level | 30–60 ps | granularity of every balancing move (§4) |
-| Wire-snaking delay rate | **≈ 0.055 ps/µm** | why balancing uses cells, not detours (§4) |
+| Wire-snaking delay rate | **0.3–1.0 ps/µm**; $0.69(R_dc + rcL + rC_L)$ | the driver-only formula understates it ~10× (§4) |
 | Achievable local-skew floor | ±7–15 ps | set by delay-cell quantization (§4) |
 | Clock NDR | 2× width, 2× space; 3–5× tracks | halves $R$ and RC spread, cuts coupling jitter (§2.1) |
 | Post-CTS clock uncertainty | 30–80 ps setup / 20–40 ps hold | replaces the pre-CTS skew guess (§1) |
@@ -398,7 +401,7 @@ The contract: `clk_root` is the reference the SDC declares, while `clk_launch` a
 | Corner-induced skew, balanced tree | 30–80 ps, **sign can flip** | why multi-corner CTS exists (§10) |
 | Post-CTS hold cells | 1–5 % of instances (10 %+ with CCD/scan) | area 0.3–1.5 %, power 0.5–3 % (§9) |
 | Clock network dynamic power | 20–35 % of block dynamic | 35–50 % including flop-internal clock (§11) |
-| Clock power split | ~62 % sink pins / 28 % wire / 10 % buffers | flop count, not buffer count, is the lever (§11) |
+| Clock power split | ~55 % sink pins / 25 % wire / 20 % buffers | flop count, not buffer count, is the lever (§11) |
 
 ---
 
@@ -417,7 +420,7 @@ Setup improved 92 ps, 70 ps of it purely from uncertainty shrinking; hold swung 
 *Solution.* $C_A = 24(1.8)+150(0.2)=73.2$ fF → $d_A = 18+21.96 = 40.0$ ps.
 $C_{B1} = 3.0+60(0.2)=15.0$ fF → 22.5 ps; ICG load $= 20(1.8)+40(0.2)=44$ fF → 62 ps; $d_B = 84.5$ ps.
 $C_C = 12+200(0.2)=52$ fF → $d_{C,\text{pin}} = 33.6$ ps; internal $= 33.6+195 = 228.6$ ps.
-Balance to the macro's **CK pin** — correct, because its internal latency is already inside the setup/hold arcs characterized at its D and CK pins, so compensating externally double-counts. Target $=\max(40.0, 84.5, 33.6) = 84.5$ ps, set by the ICG, which cannot be shortened. Required: $+44.5$ ps on A, $+50.9$ ps on C. Downsizing A's driver X16→X8 ($t_0:18\to26$, $k:0.30\to0.52$) gives $26+0.52(73.2)=64.1$ ps, plus one 20 ps HVT delay cell → 84.1 ps. C takes one 45 ps cell → 78.6 ps, plus ~110 µm of snake at 0.055 ps/µm → 84.7 ps. **Local skew 0.6 ps, two cells added, insertion 84.5 ps.**
+Balance to the macro's **CK pin** — correct, because its internal latency is already inside the setup/hold arcs characterized at its D and CK pins, so compensating externally double-counts. Target $=\max(40.0, 84.5, 33.6) = 84.5$ ps, set by the ICG, which cannot be shortened. Required: $+44.5$ ps on A, $+50.9$ ps on C. Downsizing A's driver X16→X8 ($t_0:18\to26$, $k:0.30\to0.52$) gives $26+0.52(73.2)=64.1$ ps, plus one 20 ps HVT delay cell → 84.1 ps. C takes one 45 ps cell → 78.6 ps, plus ~10 µm of snake — branch C's rate is $0.69(R_dc + rcL + rC_L) = 0.69(0.08+0.64+0.19) = 0.63$ ps/µm at $L=200$ µm, $C_L = 12$ fF — → 84.9 ps. **Local skew 0.8 ps, two cells added, insertion 84.5 ps.**
 Balancing to the macro's **internal flops** instead makes the target 228.6 ps: A needs $+188.6$ and B $+144.1$ ps, roughly 5 and 4 extra buffer levels to serve 44 flops, and insertion rises 144 ps block-wide. At a 4 % derate that is $2(0.04)(144)=11.5$ ps of extra OCV skew on every divergent path, plus the power of nine extra levels, forever.
 
 **3 — Useful skew with the hold bound.** FF1 → FF2 → FF3 at $T = 700$ ps. $t_{cq}^{\max}=90$, $t_{cq}^{\min}=55$, $t_{su}=45$, $t_h=30$ ps. Stage 1: $d^{\max}=620$, $d^{\min}=95$. Stage 2: $d^{\max}=430$, $d^{\min}=60$. Find the feasible skew window, the best achievable period, and what happens if stage 1's short path is only 35 ps.
@@ -430,16 +433,16 @@ Hold, stage 2: $-\delta \le 60+55-30 = 85 \Rightarrow \delta \ge -85$ ps, non-bi
 Minimum period: equalize the setup slacks, $755-\delta = 565+\delta \Rightarrow \delta = 95$ ps and
 $$T_{\min} = \tfrac{1}{2}(755+565) = 660\ \text{ps},$$
 the averaging theorem of §7 — 1.515 GHz versus 1.325 GHz, a **14 % gain**, and $95 \le 120$ so hold permits it.
-With $d_1^{\min}=35$ ps (adjacent flops, or a scan-shift path): $\delta \le 60$ ps and $T_{\min}=755-60=695$ ps, recovering 8 ps instead of 95. Two 12 ps delay cells on that short path restore $d_1^{\min}=59$ ps, so $\delta \le 84$ and $T_{\min}=671$ ps: **two cells bought 24 ps of period**, a 3.5 % frequency gain. Useful skew and hold fixing must be co-optimized — which is what CCD does.
+With $d_1^{\min}=35$ ps (adjacent flops, or a scan-shift path): $\delta \le 60$ ps and $T_{\min}=755-60=695$ ps, recovering 60 ps instead of the full 95 — hold has capped the schedule short of the averaging bound, and the stage-2 setup constraint is no longer what binds. Two 12 ps delay cells on that short path restore $d_1^{\min}=59$ ps, so $\delta \le 84$ and $T_{\min}=671$ ps: **two cells bought 24 ps of period**, a 3.5 % frequency gain. Useful skew and hold fixing must be co-optimized — which is what CCD does.
 
-**4 — Clock power from capacitance and toggle.** A 180,000-flop block at 1.5 GHz, 0.75 V. Flop clock-pin cap 1.2 fF. Total clock route length 380 mm on a 2W NDR at 0.26 fF/µm. 4,200 clock buffers at ~8 fF effective switched capacitance each. Compute the clock network power, its share of a 1.1 W block, the saving from 55 % gating efficiency applied to 70 % of the tree capacitance, and the marginal cost of one more buffer level.
+**4 — Clock power from capacitance and toggle.** A 180,000-flop block at 1.5 GHz, 0.75 V. Flop clock-pin cap 1.2 fF. Total clock route length 380 mm on a 2W NDR at 0.26 fF/µm. `max_fanout = 24`. Compute the buffer count the fanout limit forces, the clock network power, its share of a 1.1 W block, the saving from 55 % gating efficiency applied to 70 % of the tree capacitance, and the marginal cost of one more buffer level.
 
-*Solution.*
+*Solution.* The buffer count is not an input — it follows. At 24 sinks per leaf driver the tree needs $180{,}000/24 = 7{,}500$ leaf buffers, and the levels above them at a trunk fanout of ~4 add $7{,}500(\tfrac14+\tfrac1{16}+\cdots) \approx 2{,}300$, so $N_{buf} \approx 9{,}840$. At ~8 fF of effective switched capacitance each:
 $$C_{pins} = 180{,}000 \times 1.2\ \text{fF} = 216\ \text{pF},\qquad C_{wire} = 380{,}000\ \mu\text{m} \times 0.26\ \text{fF}/\mu\text{m} = 98.8\ \text{pF},$$
-$$C_{buf} = 4{,}200 \times 8\ \text{fF} = 33.6\ \text{pF} \;\Longrightarrow\; C_{clk} = 348.4\ \text{pF}.$$
+$$C_{buf} = 9{,}840 \times 8\ \text{fF} = 78.7\ \text{pF} \;\Longrightarrow\; C_{clk} = 393.5\ \text{pF}.$$
 The clock's activity factor is $\alpha = 1$ — one full charge/discharge per period, by definition:
-$$P_{clk} = 1 \times 348.4\times10^{-12} \times (0.75)^2 \times 1.5\times10^{9} = 0.294\ \text{W} = \mathbf{294\ mW},$$
-which is **26.7 %** of a 1.1 W block, consistent with the 20–35 % rule. Gating: $0.55 \times 0.70 \times 294 = 113$ mW saved → 181 mW, **62 % of ungated**. Marginal level: at a fanout of ~4 per level near the trunk, one more level on a 7,500-leaf tree adds ~1,900 buffers, $1{,}900 \times 8\ \text{fF} = 15.2$ pF, so $\Delta P = 15.2\times10^{-12}\times0.5625\times1.5\times10^{9} = 12.8$ mW — **4.4 % of clock power per level**. Two lessons: buffers are only 10 % of the total, so buffer-count optimization has a low ceiling; and the 216 pF of flop pins says the largest available lever is *fewer flops* (RTL) or *fewer clock pins per bit* (multi-bit banking), neither of which is a CTS setting.
+$$P_{clk} = 1 \times 393.5\times10^{-12} \times (0.75)^2 \times 1.5\times10^{9} = 0.332\ \text{W} = \mathbf{332\ mW},$$
+which is **30.2 %** of a 1.1 W block, consistent with the 20–35 % rule. Gating: $0.55 \times 0.70 \times 332 = 128$ mW saved → 204 mW, **61 % of ungated**. Marginal level: at a fanout of ~4 per level near the trunk, one more level on a 7,500-leaf tree adds ~1,900 buffers, $1{,}900 \times 8\ \text{fF} = 15.2$ pF, so $\Delta P = 15.2\times10^{-12}\times0.5625\times1.5\times10^{9} = 12.8$ mW — **3.9 % of clock power per level**. Two lessons: buffers are 20 % of the total and their count is pinned by the fanout limit, so buffer-count optimization has a low ceiling; and the 216 pF of flop pins says the largest available lever is *fewer flops* (RTL) or *fewer clock pins per bit* (multi-bit banking), neither of which is a CTS setting.
 
 ---
 

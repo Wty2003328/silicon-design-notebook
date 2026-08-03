@@ -548,3 +548,7 @@ The clean division of labour: **gating removes cycles (activity $\alpha$); divis
 2. Weste, N. and Harris, D., *CMOS VLSI Design: A Circuits and Systems Perspective*, 4th ed., Addison-Wesley, 2011. Clock generation, dividers, gating, and minimum pulse width.
 3. Rabaey, J.M., Chandrakasan, A., and Nikolić, B., *Digital Integrated Circuits*, 2nd ed., Prentice Hall, 2003. The master–slave flip-flop, timing, and clocking discipline behind §1.
 4. Synopsys, *PrimeTime / SDC Reference* — `create_generated_clock`, `set_min_pulse_width`, and clock-gating checks used in §3, §1, and §8.
+
+---
+
+⬅ prev [SystemVerilog Procedural Code, Processes, and IPC](03_Procedural_Processes_and_IPC.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Clock Generation and Distribution](05_PLL_DLL_and_Clock_Distribution.md)

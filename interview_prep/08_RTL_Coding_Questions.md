@@ -411,3 +411,7 @@ What senior interviewers actually score:
 - Building blocks: [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md), [Adders_and_Multipliers](../00_Fundamentals/03_Adders_and_Multipliers.md).
 - Deep dives behind problems: [CPU PPA and Physical Implementation](../01_Architecture_and_PPA/01_CPU_Architecture/00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (SRAM/CAM cells, arrays, ports, and ECC), [Clock_Division_and_Switching](../03_Frontend_RTL_and_Verification/04_Clock_Division_and_Switching.md), [Async_Design_and_CDC](../03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) (CDC and FIFOs), [Network_on_Chip](../01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) (arbiter in context).
 - Companion: [Hardware_Interview_Questions](09_Hardware_Interview_Questions.md) (concept Q&A + timing/power math); the AI-systems counterpart (*System Design Interview*) lives in the companion AI-infra notebook.
+
+---
+
+⬅ prev [07](07_Manufacturing_and_Bringup_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Hardware Interview Questions](09_Hardware_Interview_Questions.md)

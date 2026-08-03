@@ -498,3 +498,7 @@ Be able to derive, not merely name:
 ---
 
 ← [End-to-End GPU AI Inference and Serving](02_End_to_End_GPU_AI_Inference_and_Serving.md) · [AI Workloads and Serving index](00_Index.md) · [GPU Architecture](../00_Index.md)
+
+---
+
+⬅ prev [End-to-End GPU Artificial-Intelligence Inference and Serving](02_End_to_End_GPU_AI_Inference_and_Serving.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Framework, Compiler, Kernel, and Runtime Implementation Blueprint](04_GPU_Framework_Compiler_Kernel_and_Runtime_Implementation_Blueprint.md)

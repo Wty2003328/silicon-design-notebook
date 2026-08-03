@@ -249,3 +249,7 @@ The stack is reconstructable when compiler legality and diagnostics, executable 
 ---
 
 ← [NPU Performance/Compiler Research](03_Performance_Compiler_Profiling_and_Research_Methodology.md) · next → [NPU Serving Engine, Scheduler, and State](05_NPU_Serving_Engine_Scheduler_and_State_Implementation_Blueprint.md)
+
+---
+
+⬅ prev [Neural Processing Unit Performance, Compiler, Profiling, and Research Methodology](03_Performance_Compiler_Profiling_and_Research_Methodology.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU Serving-Engine, Scheduler, and State Implementation Blueprint](05_NPU_Serving_Engine_Scheduler_and_State_Implementation_Blueprint.md)

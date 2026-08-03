@@ -240,3 +240,7 @@ Preserve framework/exported/optimized graph hashes, weights/input, node and cove
 ---
 
 ← [NPU PPA and Physical Implementation](02_NPU_PPA_and_Physical_Implementation.md) · [NPU book index](../00_Index.md) · next → [Compute Dataflows](../01_Compute_Dataflows/00_Index.md)
+
+---
+
+⬅ prev [NPU Power, Performance, Area, and Physical Implementation](02_NPU_PPA_and_Physical_Implementation.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

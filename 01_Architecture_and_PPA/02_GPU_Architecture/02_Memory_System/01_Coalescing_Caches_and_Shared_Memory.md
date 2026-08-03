@@ -428,3 +428,7 @@ The stronger, simpler choice wins in two regimes. If a handoff is provably confi
 ---
 
 **Navigation:** [GPU Memory System index](00_Index.md) · [GPU index](../00_Index.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [High-Bandwidth Memory (HBM) and Advanced GPU Memory Systems](02_HBM_and_Advanced_Memory_Systems.md)

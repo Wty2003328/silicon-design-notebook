@@ -408,3 +408,7 @@ Memory-hierarchy and metastability MTBF numbers that used to live here belong wi
 7. Kuehlmann, A. and Krohm, F., "Equivalence Checking Using Cuts and Heaps," *DAC*, 1997. The compare-point/cone methodology of combinational LEC (§5.1).
 8. Clarke, E., Grumberg, O., Jha, S., Lu, Y., and Veith, H., "Counterexample-Guided Abstraction Refinement," *CAV*, 2000. The CEGAR loop of §6.2.
 9. Rice, H.G., "Classes of Recursively Enumerable Sets and Their Decision Problems," *Trans. AMS*, 74, 1953. The undecidability boundary of §7.
+
+---
+
+⬅ prev [Verification Planning and Coverage Closure](11_Verification_Planning_and_Coverage_Closure.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Gate-Level Simulation and Emulation](13_Gate_Level_Sim_and_Emulation.md)

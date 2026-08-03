@@ -76,7 +76,7 @@ flowchart TD
     DYN --> SW["Switching<br/>alpha*C*Vdd^2*f"]
     DYN --> SC["Short-circuit<br/>~5-10% of dynamic"]
     STAT --> LEAK["Leakage<br/>Vdd*I_leak"]
-    SW --> CLK["Clock tree<br/>alpha=1  ->  30-50%"]
+    SW --> CLK["Clock network<br/>alpha=1  ->  20-35%<br/>(35-50% incl. flop-internal)"]
     SW --> LOGIC["Logic + glitch"]
     SW --> MEM["Memory access"]
     SW --> WIRE["Interconnect"]
@@ -96,7 +96,7 @@ Read it and stop: **energy per op depends on voltage and capacitance, not on fre
 
 The abstract $\alpha C V_{DD}^2 f$ hides a very uneven distribution across a chip, and knowing the distribution is what tells you *where to spend engineering effort*. Two structural facts dominate.
 
-**The clock tree is the single largest dynamic consumer — 30–50 % of dynamic power — because its activity factor is pinned at $\alpha=1$.** Every other node toggles a fraction of cycles; the clock toggles *every* cycle, by definition, and it fans out to every flip-flop in the design through a heavily buffered, high-capacitance H-tree. Nothing else in the chip has both maximal activity and maximal fan-out. This is precisely why **clock gating is the first and highest-leverage dynamic technique** (§6): it drives the clock's local $\alpha$ to zero wherever a block is idle, attacking the biggest term directly.
+**The clock is the single largest dynamic consumer — because its activity factor is pinned at $\alpha=1$.** Two figures circulate and they measure different things: the **clock network itself** (buffers, clock wire, and the flop clock-pin capacitance it drives) is **20–35 %** of block dynamic power, while **clock-related power** — that network *plus* the internal clock inverters inside every flip-flop — is **35–50 %**. Quote whichever you mean; most disagreements about "how big is the clock" are this distinction going unstated ([Clock Tree Synthesis §11](../05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md)). Every other node toggles a fraction of cycles; the clock toggles *every* cycle, by definition, and it fans out to every flip-flop in the design through a heavily buffered, high-capacitance H-tree. Nothing else in the chip has both maximal activity and maximal fan-out. This is precisely why **clock gating is the first and highest-leverage dynamic technique** (§6): it drives the clock's local $\alpha$ to zero wherever a block is idle, attacking the biggest term directly.
 
 **Everything else is set by real activity, and some of that activity is waste.** Combinational logic runs at $\alpha\approx0.05$–0.15, but a chunk of its switching is **glitch power** — spurious transitions when unbalanced path delays make a node toggle several times before settling. In an unoptimised datapath glitch can be **15–30 % of logic switching**, worst in deep reconvergent structures like multiplier/adder trees where a single input change ripples through many arrival times. Glitch is "activity you computed but did not want," and it is attacked by path balancing, retiming, and pipelining (the details live in [Block_Activity_and_Power](02_Block_Activity_and_Power.md)). Memory contributes **access energy** (charging long, high-capacitance bitlines and wordlines every read/write — often the dominant per-op cost in SRAM-heavy or register-file-heavy blocks) plus a large *leakage* term from the array (§4). Interconnect is a growing share as wires stop scaling ([CMOS §8.4](../00_Fundamentals/01_CMOS_Fundamentals.md)): long buses and NoC links move real charge over real distance.
 
@@ -280,13 +280,13 @@ flowchart LR
 | Lever | Term attacked | Mechanism | Costs / bounds |
 |---|---|---|---|
 | **Activity reduction** | $\alpha$ | operand isolation, data gating, glitch reduction (path balance / retime) | logic/verification effort; bounded by real work |
-| **Clock gating** | $\alpha$ on the clock ($\to$ the 30–50 % term) | stop the clock to idle flops/blocks | detection logic, a few cycles; leakage untouched |
+| **Clock gating** | $\alpha$ on the clock ($\to$ the 35–50 % clock-related term) | stop the clock to idle flops/blocks | detection logic, a few cycles; leakage untouched |
 | **Voltage / DVFS** | $V_{DD}^2$ (and $f$) | scale supply+frequency with demand; $V_{DD}$ islands | margin floor ~0.3–0.5 V, transition latency, $L\,di/dt$ |
 | **Capacitance** | $C$ | shorter wires, smaller cells, less data movement | area/placement; floorplan-limited |
 | **Power gating** | $V_{DD}I_{leak}$ | cut the rail on idle blocks (sleep transistors) | state loss → retention flops, wake latency, area |
 | **Multi-$V_t$ / body bias** | $I_{leak}$ (exponential in $V_{th}$) | HVT off-critical, LVT on-critical; RBB/FBB | speed↔leakage per path; body bias weak on FinFET |
 
-The framework for a new design falls straight out of the taxonomy: attribute power to **dynamic (~40–60 % at modern nodes)** — of which the clock tree is 30–50 %, glitch 5–15 %, short-circuit 5–10 % — and **leakage (~40–50 %)**, subthreshold-dominant and worst at the hot corner; then reach for the lever that moves the biggest attributable term you can afford to move. Clock and voltage first (they move the largest dynamic terms cheaply), multi-$V_t$ next (free leakage), power gating where duty cycle justifies the retention overhead.
+The framework for a new design falls straight out of the taxonomy: attribute power to **dynamic (~40–60 % at modern nodes)** — of which the clock network is 20–35 % (35–50 % counting the flop-internal clock), glitch 5–15 %, short-circuit 5–10 % — and **leakage (~40–50 %)**, subthreshold-dominant and worst at the hot corner; then reach for the lever that moves the biggest attributable term you can afford to move. Clock and voltage first (they move the largest dynamic terms cheaply), multi-$V_t$ next (free leakage), power gating where duty cycle justifies the retention overhead.
 
 ---
 
@@ -298,7 +298,7 @@ The framework for a new design falls straight out of the taxonomy: attribute pow
 | Dynamic : leakage (≤7 nm) | ~40–60 % : 40–50 % | leakage is now a co-equal budget term |
 | Switching share, 65 → 7 nm | 60–70 % → 40–50 % | shrinking dynamic fraction |
 | Leakage share, 65 → 7 nm | 20–30 % → 40–50 % | rises until FinFET reins it in |
-| Clock-tree share of dynamic | 30–50 % | $\alpha=1$ on every clock node → **gate it first** |
+| Clock network share of dynamic | 20–35 % (35–50 % incl. flop-internal clock) | $\alpha=1$ on every clock node → **gate it first**; state which of the two you mean |
 | Glitch power | 15–30 % unopt, 5–15 % optimised | path balancing / retiming |
 | Short-circuit power | ~5–10 % of dynamic | sharp edges; →0 when $V_{DD}<2V_{th}$ |
 | **DVFS power law** | $P\propto V_{DD}^2 f$, and $P\propto f^{3}$ over the range | the cube: last 10 % of clock is ~33 % more power |
@@ -330,3 +330,7 @@ The framework for a new design falls straight out of the taxonomy: attribute pow
 4. Esmaeilzadeh, H. et al., "Dark Silicon and the End of Multicore Scaling," *ISCA*, 2011. The dark-silicon limit of §5.2.
 5. Dreslinski, R. et al., "Near-Threshold Computing: Reclaiming Moore's Law Through Energy Efficient Integrated Circuits," *Proc. IEEE*, 98(2), 2010. The MEP and NTC operating point of §3.2.
 6. Rabaey, J., Chandrakasan, A., and Nikolić, B., *Digital Integrated Circuits: A Design Perspective*, 2nd ed., Prentice Hall, 2003. The power taxonomy and activity factor of §2.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Block Activity and Power](02_Block_Activity_and_Power.md)

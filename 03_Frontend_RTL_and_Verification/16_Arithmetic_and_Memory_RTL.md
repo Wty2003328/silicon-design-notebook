@@ -476,3 +476,7 @@ Notice the access asymmetry the decode enforces: a write to `A_STAT` does nothin
 5. Oberstar, E.L., "Fixed-Point Representation and Fractional Math," rev. 1.2, 2007. Worked Q-format multiply/round examples paralleling §1 and §3.
 6. AMD/Xilinx UG901, *Vivado Design Suite User Guide: Synthesis*, and Intel *Quartus Prime HDL Coding Styles* — RAM/register-file inference templates and the read-during-write (read-first / write-first / no-change) modes of §5.1.
 7. Arm, *AMBA APB Protocol Specification* (IHI 0024). The setup/access-phase handshake behind the §7 CSR slave.
+
+---
+
+⬅ prev [Flow Control and FIFOs](15_Flow_Control_and_FIFOs.md) · [Section Index](00_Index.md) · [Root Index](../Index.md)

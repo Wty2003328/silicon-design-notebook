@@ -467,3 +467,7 @@ Load-bearing values for DDR4-3200 and DDR5-5600, with the reason each matters. T
 6. Kim, Y. et al., "Flipping Bits in Memory Without Accessing Them: An Experimental Study of DRAM Disturbance Errors" (RowHammer), *ISCA*, 2014. The disturbance layer of §8.
 7. Chang, K. et al., "Understanding Latency Variation in Modern DRAM Chips," *SIGMETRICS*, 2016. Where the §3 timing margins actually come from.
 8. Compute Express Link Consortium, *CXL 3.1 Specification*, 2023. Type-3 coherent memory expansion (§9.3).
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

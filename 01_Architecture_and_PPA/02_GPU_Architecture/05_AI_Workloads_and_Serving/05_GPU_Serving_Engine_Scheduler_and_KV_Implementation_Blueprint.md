@@ -106,3 +106,7 @@ Build single-GPU static batches with contiguous KV; explicit request states/canc
 ---
 
 ← [GPU Framework/Compiler/Runtime](04_GPU_Framework_Compiler_Kernel_and_Runtime_Implementation_Blueprint.md) · next → [GPU AI Stack Verification, Operations, and Deployment](06_GPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md)
+
+---
+
+⬅ prev [GPU Framework, Compiler, Kernel, and Runtime Implementation Blueprint](04_GPU_Framework_Compiler_Kernel_and_Runtime_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU AI-Stack Verification, Operations, and Deployment Blueprint](06_GPU_AI_Stack_Verification_Operations_and_Deployment_Blueprint.md)

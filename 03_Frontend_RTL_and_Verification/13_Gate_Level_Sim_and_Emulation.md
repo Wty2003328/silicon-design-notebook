@@ -305,3 +305,7 @@ The same throughput-vs-visibility logic governs why power signoff leans on [emul
 2. IEEE Std 1497, *Standard Delay Format (SDF)* — the back-annotated delay model behind timed GLS, §3.
 3. Bening, L. and Foster, H., *Principles of Verifiable RTL Design*, 2nd ed., Kluwer, 2001 — X-optimism/pessimism and reset methodology (§2).
 4. Mishchenko, A. et al., "Improvements to Combinational Equivalence Checking," *ICCAD*, 2006 — the LEC engines that scope GLS (§1).
+
+---
+
+⬅ prev [Formal Verification](12_Formal_Verification.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [RTL Design Patterns](14_RTL_Design_Patterns.md)

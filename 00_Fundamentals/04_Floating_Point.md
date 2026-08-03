@@ -1421,3 +1421,7 @@ These encodings keep exceptional data flowing through a pipelined interface whil
 12. Muller, J.-M., *Elementary Functions: Algorithms and Implementation*, 3rd ed., Birkhäuser, 2016. Range reduction, minimax/Remez, table methods, and CORDIC of §8.7.
 13. Oberman, S.F. and Siu, M.Y., "A High-Performance Area-Efficient Multifunction Interpolator," *IEEE Symposium on Computer Arithmetic (ARITH-17)*, 2005. A table/interpolation SFU design referenced in §8.7.
 14. Walther, J.S., "A unified algorithm for elementary functions," *AFIPS Spring Joint Computer Conference*, 1971. The unified circular/linear/hyperbolic CORDIC of §8.7.
+
+---
+
+⬅ prev [Datapath Arithmetic](03_Adders_and_Multipliers.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [SystemC and TLM-2.0](05_SystemC_and_TLM.md)

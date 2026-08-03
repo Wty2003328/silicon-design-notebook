@@ -613,3 +613,7 @@ The layer is reconstructable when routes, buffers, credits, dependencies, servic
 ---
 
 ← [Address/Protocol/Memory Blueprint](01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md) · next → [Full-Chip Verification and Bring-up](03_Full_Chip_Integration_Verification_and_Bringup_Blueprint.md)
+
+---
+
+⬅ prev [SoC Address-Map, Protocol, and Memory-Integration Blueprint](01_Address_Map_Protocols_and_Memory_Integration_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Full-Chip Integration, Verification, and Bring-up Blueprint](03_Full_Chip_Integration_Verification_and_Bringup_Blueprint.md)

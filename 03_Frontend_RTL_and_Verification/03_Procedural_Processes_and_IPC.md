@@ -352,3 +352,7 @@ One line: **the tool maps register-transfer structure to gates; time-consuming a
 2. Cummings, C.E., "Nonblocking Assignments in Verilog Synthesis, Coding Styles That Kill!," SNUG 2000. The blocking/non-blocking derivation of §3.
 3. Cummings, C.E., "SystemVerilog Event Regions, Race Avoidance & Guidelines," SNUG 2006. The stratified regions and delta-cycle model of §2.
 4. Spear, C. and Tumbush, G., *SystemVerilog for Verification*, 3rd ed., Springer, 2012. Processes, fork/join, and IPC primitives of §6–§7.
+
+---
+
+⬅ prev [SystemVerilog Data Types](02_Data_Types_and_Basics.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Clock Division and Glitch-Free Clock Switching](04_Clock_Division_and_Switching.md)

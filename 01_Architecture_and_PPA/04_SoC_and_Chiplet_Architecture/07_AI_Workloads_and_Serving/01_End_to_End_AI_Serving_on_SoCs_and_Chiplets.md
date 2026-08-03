@@ -457,3 +457,7 @@ The calculation changes the architecture decision: faster PCIe/DMA cannot improv
 2. Zhong, Y. et al., “DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving,” *OSDI*, 2024. https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin
 3. Agrawal, A. et al., “Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve,” *OSDI*, 2024. https://www.usenix.org/conference/osdi24/presentation/agrawal
 4. MLCommons, *MLPerf Inference Rules and Reference Implementations*. https://docs.mlcommons.org/inference/
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Artificial Intelligence Workload Mapping to SoC, Memory, NoC, and Chiplets](02_AI_Workload_Mapping_to_SoC_Memory_NoC_and_Chiplets.md)

@@ -9,7 +9,7 @@
 
 A die fresh off the wafer is a slab of silicon a few hundred microns thick with a grid of copper pads a few microns wide. It can *compute* — but it cannot do any of the four things that would let it compute usefully. It cannot draw hundreds of amps of clean power through pads too small to solder. It cannot exchange signals with the world at a rate its own transistors can sustain. It cannot shed the heat those transistors make before they cook. And it cannot survive a socket, a reflow oven, or a decade of thermal cycling without cracking. **Packaging is the discipline of supplying those four missing functions** — power in, signals out, heat away, mechanical and environmental survival — to a device that has none of them on its own.
 
-For most of the industry's history that was the whole story, and packaging was a back-end afterthought: cheaper was better, and the package's only job was to stay out of the die's way. Two curves ended that era. The **reticle limit** caps a single die at $\approx 830\ \text{mm}^2$, and **yield falls exponentially in die area** ($Y=e^{-AD_0}$, [Fabrication_Process](01_Fabrication_Process.md) §5), so the largest and most valuable chips — server CPUs, AI GPUs — can no longer be built as one monolithic die at any acceptable cost. The only way to build a "bigger" chip is to build several smaller ones and **join them in the package**. At that moment packaging stops being protection and becomes a *first-class performance lever*: the interposer, the die-to-die link, and the in-package memory stack are now where bandwidth, energy-per-bit, and cost-per-transistor are won or lost.
+For most of the industry's history that was the whole story, and packaging was a back-end afterthought: cheaper was better, and the package's only job was to stay out of the die's way. Two curves ended that era. The **reticle limit** caps a single die at $\approx 858\ \text{mm}^2$, and **yield falls exponentially in die area** ($Y=e^{-AD_0}$, [Fabrication_Process](01_Fabrication_Process.md) §5), so the largest and most valuable chips — server CPUs, AI GPUs — can no longer be built as one monolithic die at any acceptable cost. The only way to build a "bigger" chip is to build several smaller ones and **join them in the package**. At that moment packaging stops being protection and becomes a *first-class performance lever*: the interposer, the die-to-die link, and the in-package memory stack are now where bandwidth, energy-per-bit, and cost-per-transistor are won or lost.
 
 This page derives the field from those facts. Sections 1–4 build the four jobs and show how each forces concrete package features — and why **flip-chip** beats **wire-bond** on three of the four at once. Sections 5–8 take the inflection: why the reticle-and-yield squeeze forces **chiplets**, why bandwidth economics put **HBM on a silicon interposer**, what **3D stacking** buys and what it costs in heat, and where real designs (EPYC, V-Cache, Blackwell) land. The goal is that you can *reason* about a package — size its PDN from a target impedance, its cooling from a thermal-resistance chain, its chiplet split from a yield curve — not recite a catalogue of package acronyms.
 
@@ -150,7 +150,7 @@ The buried die sees the *sum* of its own and its neighbours' resistances, runs h
 
 Everything so far made a *single* die work in a package. The rest of the page is about why you stop building single dies at all. Two independent walls force it.
 
-**Wall 1 — the reticle limit.** A lithography scanner exposes at most one reticle field per shot: $\approx 26 \times 33\ \text{mm} = 830\ \text{mm}^2$ (halved to $\approx 429\ \text{mm}^2$ by High-NA EUV, [Fabrication_Process](01_Fabrication_Process.md) §3). A die cannot exceed it without *stitching* two exposures — exotic and expensive (Blackwell does it, §8). A hard ceiling on monolithic die area.
+**Wall 1 — the reticle limit.** A lithography scanner exposes at most one reticle field per shot: $26 \times 33\ \text{mm} = 858\ \text{mm}^2$ (halved to $\approx 429\ \text{mm}^2$ by High-NA EUV, [Fabrication_Process](01_Fabrication_Process.md) §3). A die cannot exceed it without *stitching* two exposures — exotic and expensive (Blackwell does it, §8). A hard ceiling on monolithic die area.
 
 **Wall 2 — yield collapse.** Even below the reticle limit, cost per good die rises *super-linearly* with area. Start from the Poisson yield law ([Fabrication_Process](01_Fabrication_Process.md) §5), $Y = e^{-AD_0}$, and count cost:
 
@@ -270,7 +270,7 @@ The link layer (training, CRC/retry, credit-based flow control) rides on the sam
 
 | Quantity | Value | Why it matters (section) |
 |---|---|---|
-| Reticle limit | $\approx 830\ \text{mm}^2$ (26×33); $\approx 429$ High-NA | caps monolithic die $\to$ chiplets (§5) |
+| Reticle limit | $858\ \text{mm}^2$ (26×33); $\approx 429$ High-NA | caps monolithic die $\to$ chiplets (§5) |
 | Yield / cost-per-good-die | $Y = e^{-AD_0}$; $C \propto A\,e^{AD_0}$ | the chiplet economic engine (§5) |
 | Chiplet split gain | $e^{AD_0} \to e^{(A/n)D_0}$ | why $n$ small dies beat one big die (§5) |
 | Wire-bond inductance | $\sim\!1\ \text{nH/mm}$ | caps wire-bond to $\sim\!1\ \text{GHz}$ (§2) |
@@ -308,3 +308,7 @@ The link layer (training, CRC/retry, credit-based flow control) rides on the sam
 4. Black, B. et al., "Die Stacking (3D) Microarchitecture," *MICRO*, 2006. The 3D-stacking bandwidth/thermal trade of §7.
 5. UCIe Consortium, *Universal Chiplet Interconnect Express (UCIe) Specification*, Rev. 1.1 / 2.0, 2023–2024. The die-to-die interface of §9.
 6. JEDEC, *JESD22* test-method family and *J-STD-020* (moisture/reflow sensitivity). The reliability qualification gates of §1.2.
+
+---
+
+⬅ prev [Semiconductor Fabrication](01_Fabrication_Process.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Tape-out and Post-Silicon Bring-up](03_Tapeout_and_Post_Silicon_Bringup.md)

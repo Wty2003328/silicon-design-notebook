@@ -394,3 +394,7 @@ The one load-bearing fact worth carrying: a **queue** gives `O(1)` push/pop at b
 3. Cummings, C.E., "SystemVerilog's priority & unique — A Solution to Verilog's full_case & parallel_case Evil Twins," SNUG, 2005. The X-optimism / case-branch hazard of §3.3.
 4. Turpin, M., "The Dangers of Living with an X," Synopsys/ARM, 2003. RTL-vs-gate X-optimism vs X-pessimism, the basis of §3.
 5. Spear, C. and Tumbush, G., *SystemVerilog for Verification*, 3rd ed., Springer, 2012. Queues, dynamic/associative arrays, and the testbench type system of §9.
+
+---
+
+⬅ prev [RTL Design Methodology](01_RTL_Design_Methodology.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [SystemVerilog Procedural Code, Processes, and IPC](03_Procedural_Processes_and_IPC.md)

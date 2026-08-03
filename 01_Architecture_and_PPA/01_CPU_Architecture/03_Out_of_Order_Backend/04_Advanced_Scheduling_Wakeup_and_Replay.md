@@ -320,3 +320,7 @@ Counters should separate `not ready`, `no execution port`, `PRF bank conflict`, 
 ---
 
 ← [Retirement, Recovery, and Precise State](03_Retirement_Recovery_and_Precise_State.md) · [Out-of-Order Backend index](00_Index.md)
+
+---
+
+⬅ prev [Retirement, Recovery, and Precise State](03_Retirement_Recovery_and_Precise_State.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

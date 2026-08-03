@@ -398,3 +398,7 @@ Separate sparse-feature parsing, embedding lookup, ANN search, reranking, and de
 ---
 
 ← [AI Workloads and Serving index](00_Index.md) · next → [AI Operators on CPU Microarchitecture](02_AI_Operators_on_CPU_Microarchitecture.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Artificial Intelligence Operators on Central Processing Unit Microarchitecture](02_AI_Operators_on_CPU_Microarchitecture.md)

@@ -397,3 +397,7 @@ One GPU compute is 800 ms. Fixed communication/synchronization is 60 ms. At eigh
 ---
 
 **Navigation:** [Multi-GPU Scale-Up index](00_Index.md) · [GPU index](../00_Index.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

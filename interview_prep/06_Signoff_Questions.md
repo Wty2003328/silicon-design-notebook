@@ -384,3 +384,6 @@ clocks can share clock tree resources; the others cannot.
 14. DFT timing clean (scan shift and capture modes)
 15. Formal verification of SDC constraints against design intent
 
+---
+
+⬅ prev [05](05_Backend_Physical_Design_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [07](07_Manufacturing_and_Bringup_Questions.md)

@@ -191,3 +191,7 @@ You are ready to specify this core when you can answer, without hand-waving:
 ---
 
 Next → [CPU Memory, Translation, and Coherence Implementation Blueprint](02_Memory_Translation_and_Coherence_Implementation_Blueprint.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU Memory, Translation, and Coherence Implementation Blueprint](02_Memory_Translation_and_Coherence_Implementation_Blueprint.md)

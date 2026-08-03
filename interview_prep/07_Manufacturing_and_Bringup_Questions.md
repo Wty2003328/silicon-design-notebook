@@ -325,3 +325,6 @@ probe individual bonds. (6) Design rules for keep-out and dummy patterns become 
 
 **Q: A functional bug is found in silicon. Options?** If it can be fixed by changing logic reachable with spare cells, do a **metal-layer ECO (Engineering Change Order)** (cheap, weeks). If it needs base-layer changes, it's a **full respin** (expensive, months). Sometimes you can **work around it in firmware/software** and ship, fixing it in the next spin — often the fastest path to revenue.
 
+---
+
+⬅ prev [06](06_Signoff_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [RTL Coding Questions](08_RTL_Coding_Questions.md)

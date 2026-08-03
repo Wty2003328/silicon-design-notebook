@@ -624,3 +624,7 @@ endmodule
 3. ARM, *AMBA AXI and ACE Protocol Specification* (IHI 0022). The VALID/READY handshake as a bus contract, including the dependency rules that forbid combinational `VALID`-from-`READY` loops (§1).
 4. Harris, D.M. and Harris, S.L., *Digital Design and Computer Architecture*, 2nd ed., Morgan Kaufmann, 2012. FIFOs, pipelining, and handshaking fundamentals underlying §§1–3, 6.
 5. ARM, *AMBA 4 AXI4-Stream Protocol Specification* (IHI 0051). The minimal valid/ready streaming interface the skid buffer and FWFT FIFO here plug into directly.
+
+---
+
+⬅ prev [RTL Design Patterns](14_RTL_Design_Patterns.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Arithmetic and Memory RTL](16_Arithmetic_and_Memory_RTL.md)

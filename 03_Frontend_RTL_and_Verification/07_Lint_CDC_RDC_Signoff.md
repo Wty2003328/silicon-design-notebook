@@ -326,3 +326,7 @@ where $C_0$ = cost to fix at RTL, $r$ = per-stage escalation factor, $k$ = stage
 3. Litterick, M., "Pragmatic Simulation-Based Verification of Clock Domain Crossing Signals and Jitter using SystemVerilog Assertions," DVCon, 2006 — metastability-injection simulation (§3.4).
 4. Ginosar, R., "Metastability and Synchronizers: A Tutorial," *IEEE Design & Test*, 28(5), 2011 — the MTBF model cross-referenced from [Async_Design_and_CDC](06_Async_Design_and_CDC.md).
 5. Rice, H.G., "Classes of Recursively Enumerable Sets and Their Decision Problems," *Trans. AMS*, 1953 — undecidability of nontrivial semantic properties, the reason static analysis trades soundness against completeness (§1).
+
+---
+
+⬅ prev [Asynchronous Design and Clock-Domain Crossing](06_Async_Design_and_CDC.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [OOP and Constrained Randomization](08_OOP_and_Randomization.md)

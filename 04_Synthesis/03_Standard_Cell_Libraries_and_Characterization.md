@@ -13,7 +13,7 @@ The library sits in a uniquely unfalsifiable position. [Constraints_SDC](02_Cons
 
 So: what a cell physically is (§1), what its five views are and which tool consumes each (§2), how a timing number is manufactured from SPICE (§3), why the simple delay model broke (§4), what a "setup time" actually means given it is defined by a measurement convention (§5), why the corner list explodes and how to prune it defensibly (§6), what Vt and channel-length families cost in library count (§7), what else ships (§8), how libraries go wrong (§9), and how to read one (§10).
 
-Afterwards you should be able to interpolate a delay by hand and state its error bars, explain why `max_transition` is a correctness constraint rather than a style rule, count a realistic MMMC scenario list and defend every entry, and run the diagnostic that separates "my design is slow" from "my library is lying to me."
+Afterwards you should be able to interpolate a delay by hand and state its error bars, explain why `max_transition` is a correctness constraint rather than a style rule, count a realistic signoff corner list and defend every entry, and run the diagnostic that separates "my design is slow" from "my library is lying to me."
 
 ---
 
@@ -201,7 +201,7 @@ $$
 d(25\,\text{ps}, 6\,\text{fF}) = 0.03018 + 0.25\,(0.03354 - 0.03018) = \boxed{0.03102\ \text{ns} = 31.0\ \text{ps}}
 $$
 
-Equivalently, in product form: $0.375(0.02373) + 0.375(0.03663) + 0.125(0.02697) + 0.125(0.04011) = 0.03102$. A direct SPICE run at that point gives 31.0 ps — **inside the grid, bilinear interpolation is good to a few tenths of a percent**, which is the entire justification for a 7×7 table replacing a SPICE run.
+Equivalently, in product form: $0.375(0.02373) + 0.375(0.03663) + 0.125(0.02697) + 0.125(0.04011) = 0.03102$. A direct SPICE run at that point gives 31.6 ps — **inside the grid, bilinear interpolation on a geometric template is good to 1–3%**, which is the entire justification for a 7×7 table replacing a SPICE run. (The excerpt's tables are smoothed for legibility and are close to affine on both axes, so the residual here is smaller than a real library's; assume the 1–3% band, not what this arithmetic happens to give.)
 
 The lookup is not finished. The same interpolation runs on `rise_transition` to get the arc's **output slew** — 21.0 ps here — which becomes `index_1` for the next stage. Delay and slew co-propagate down the timing graph, one bilinear pair per arc. This is the oracle [STA](../06_Signoff/01_STA.md) §2 treats as a black box.
 
@@ -267,7 +267,7 @@ A combinational arc says a transition on `related_pin` causes a transition on th
 |---|---|---|---|
 | `positive_unate` | rise → rise, fall → fall | buffer, AND, OR, mux data pins | 1 arc pair |
 | `negative_unate` | rise → fall, and conversely | inverter, NAND, NOR, AOI/OAI | 1 arc pair |
-| `non_unate` | direction depends on other inputs | XOR, XNOR, mux **select**, latch data-through | **both** polarities propagated, worse kept — 2× |
+| `non_unate` | direction depends on other inputs | XOR, XNOR, mux **select**, a latch's enable→Q arc | **both** polarities propagated, worse kept — 2× |
 
 The mux is instructive: its data pins are positive-unate, but its **select** is non-unate — a rising `S` makes `Y` rise if `D1 > D0` and fall otherwise, and the library cannot know which. Hence XOR- and mux-dense designs analyze more slowly, and a mux select is a poor place for a critical path. Finer resolution comes from **conditional arcs**: a `when : "!B"` clause gives an arc its own tables valid only in that input state (§4.3), at a multiple of the table count.
 
@@ -286,7 +286,7 @@ Sequential arcs produce no delay. They produce a **required-time offset** that S
 | `non_seq_setup_rising` / `non_seq_hold_rising` | a data-to-data relationship with no clock | address unstable around a write enable |
 | `skew_rising` | maximum separation of two related pins | dual-clock macros, differential inputs |
 
-**Constraint tables are not indexed like delay tables.** `cell_rise` is indexed by (input slew, output load); `setup_rising` is indexed by (**related-pin transition**, **constrained-pin transition**) — clock slew and data slew. Output load does not appear, because setup is a property of the flop's internal sampling and has nothing to do with what Q drives. Reading `index_2` of a constraint table as capacitance is a routine and consequential misreading.
+**Constraint tables are not indexed like delay tables.** `cell_rise` is indexed by (input slew, output load); a `setup_rising` table is indexed by two *transitions* — conventionally `variable_1 : constrained_pin_transition` (the data slew at D) and `variable_2 : related_pin_transition` (the clock slew at CK), though as always the template declares the order and you must read it. Output load does not appear, because setup is a property of the flop's internal sampling and has nothing to do with what Q drives. Reading `index_2` of a constraint table as capacitance is a routine and consequential misreading.
 
 `min_pulse_width` is the check most often ignored until it fails. Clock cells with mismatched rise/fall delays shrink pulses cumulatively: a 14-level tree with 3 ps of per-level duty asymmetry delivers a pulse 42 ps narrower than the source. If the flop needs 60 ps high and receives 55 ps, it fails to capture — a functional failure no setup or hold check reports.
 
@@ -309,7 +309,7 @@ There is no measurable instant at which a flip-flop's setup requirement is "met.
 }
 ```
 
-Each trial is an independent SPICE run at one (clock slew, data slew) pair, differing only in when D changes. The trace that matters is trial 2 → trial 3: moving D six picoseconds later takes Q from "42 ps after the edge" to "never resolves." The measured sweep:
+Each trial is an independent SPICE run at one (clock slew, data slew) pair, differing only in when D changes. The trace that matters is trial 2 → trial 3: moving D twelve picoseconds later — from 36 ps of separation to 24 ps — takes Q from "46 ps after the edge" to "never resolves." The measured sweep:
 
 | D-to-clock separation | clock-to-Q | degradation |
 |---|---|---|
@@ -327,13 +327,13 @@ This flop's setup time is 36 ps — *or* 62 ps, depending on the criterion the v
 
 **Negative hold times are legitimate.** If a flop's internal clock path is longer than its internal data path, data may change *after* the edge and still be captured; $t_h$ comes out negative, a genuine gift for hold closure. A QA check that rejects all negative constraint values is wrong (§9).
 
-### 5.4 Setup-hold pessimism removal and the dependent table
+### 5.4 Why the setup/hold pair is characterized jointly
 
-Setup and hold are characterized independently: to find $t_{su}$, sweep data *arrival* with data *departure* held far away; for $t_h$, the reverse. Each sweep measures one edge of the required stable window while the other edge is safely distant.
+Setup and hold are naively characterized independently: to find $t_{su}$, sweep data *arrival* with data *departure* held far away; for $t_h$, the reverse. Each sweep measures one edge of the required stable window while the other edge is safely distant.
 
-The real pass/fail boundary is not a rectangle. In the plane of (data arrival, data departure) relative to the clock, the passing region is bounded by a smooth curve, and the independently characterized pair $(t_{su}, t_h)$ is the corner of the largest axis-aligned rectangle two one-dimensional sweeps can certify. That corner lies strictly inside the true passing region, so the declared pair is **conservative**: requiring stability for $t_{su} + t_h$ demands a wider window than any real failure needs. Hold is where you feel it, because hold closure is buffer-count-limited.
+The real pass/fail boundary is not a rectangle. In the plane of (data arrival, data departure) relative to the clock, the passing region is bounded by a smooth curve, and two one-dimensional sweeps can only report one point on each axis. That pair is **optimistic near the corner**: a data pulse narrow enough to violate both edges at once satisfies each independent check and still fails, because neither sweep ever presented a pulse that short. This is why characterization flows sweep the two edges **jointly** — a combined or iterative sweep that walks the real contour — and then report a $(t_{su}, t_h)$ pair guaranteed to sit inside it.
 
-The repair is the **dependent (2-D) constraint table** — several points along the true contour, so STA can pick the $(t_{su}, t_h)$ pair matched to the window a path actually delivers; a path with 200 ps of setup slack does not need the setup-limited hold number. Tools call this **setup-hold pessimism removal**, and typical recovery is 5–20 ps of hold per flop, which across $10^5$ endpoints is a real reduction in inserted buffers. A known **optimism** runs the other way — a very narrow data pulse can satisfy both independent checks and still fail, because neither sweep presented a pulse that short — which is why characterization flows use a combined or iterative sweep. The constraint half of a library is harder to get right than the delay half.
+The residual cost is that the reported pair is a single conservative point on a curve, so a path with 200 ps of setup slack still gets charged the setup-limited hold number. Liberty can express the whole contour through **`when`-conditioned or multi-dimensional constraint tables**, but mainstream STA consumes one `setup_rising` and one `hold_rising` table per arc and does no per-path pairing — so the pessimism is real and is not something the timer removes for you. Hold is where you feel it, because hold closure is buffer-count-limited. The constraint half of a library is harder to get right than the delay half.
 
 ---
 
@@ -359,25 +359,23 @@ Liberty carries `nom_process`, `nom_voltage`, `nom_temperature` and an `operatin
 
 **Derating sits on top of corners, not instead of them.** Corners model **die-to-die** variation; **on-chip variation** is a multiplier applied via `set_timing_derate`, an AOCV depth table, or **LVF (Liberty Variation Format)** sigma tables embedded in the `.lib` for POCV. LVF is expensive — each entry needs a Monte-Carlo campaign rather than one run, costing 10–100× nominal characterization and adding 2–5× to library size — which is why it often exists for only a subset of corners, and why *the OCV method you can use is a library decision before it is an STA decision* ([STA](../06_Signoff/01_STA.md) §5).
 
-### 6.4 The explosion, and a defensible pruning
+### 6.4 The explosion, and the corner list that survives it
 
 A realistic 7 nm mobile SoC:
 
 | Axis | Values | Count |
 |---|---|---|
 | Device process | SS, TT, FF | 3 |
-| Voltage | 0.675 V (low), 0.750 V (nominal), 0.825 V (overdrive) | 3 |
+| Voltage | 0.600 V (DVFS-low), 0.675 V (low), 0.750 V (nominal), 0.825 V (overdrive) | 4 |
 | Temperature | −40 °C, 25 °C, 125 °C | 3 |
 | Interconnect RC | Cworst, Cbest, RCworst, RCbest, Ctyp | 5 |
-| Mode | mission, DVFS-low, scan-shift, scan-capture | 4 |
 
-The naive product is $3 \times 3 \times 3 \times 5 = 135$ corners and $135 \times 4 = 540$ **MMMC scenarios** (a scenario = one corner paired with one mode, carrying its own `.lib` set, SPEF, and SDC). At three CPU-hours each that is 1,620 CPU-hours per sweep per partition — unaffordable and mostly redundant. Each cut below is justified by a check, not by a budget:
+The naive product is $3 \times 4 \times 3 \times 5 = 180$ corner points, each of which would be a separately characterized `.lib` per Vt flavor. That is unaffordable and mostly redundant. This page owns the *corner* question — which `.lib` files must exist; pairing corners with modes into **MMMC scenarios**, and the scenario arithmetic that follows, is [Signoff_Orchestration §2.2](../06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md). Each cut below is justified by a check, not by a budget:
 
-1. **A check needs one side of P and V.** Setup is max-delay (slow, low voltage); hold is min-delay (fast, high voltage). Nine P/V combinations collapse to two anchors plus `tt_0p750v` for power.
+1. **A check needs one side of P and V.** Setup is max-delay (slow, low voltage); hold is min-delay (fast, high voltage). The twelve P/V combinations collapse to two anchors plus `tt_0p750v` for power.
 2. **Temperature does not collapse** (§6.2): both extremes per anchor.
-3. **DVFS adds an operating point**, needing its own setup corners at both temperatures — that is where inversion is strongest.
+3. **DVFS adds an operating point** at 0.600 V, needing its own setup corners at both temperatures — that is where inversion is strongest.
 4. **RC corners pair by check:** Cworst/RCworst with setup anchors, Cbest/RCbest with hold. Two per anchor, not five.
-5. **Modes do not need every corner:** scan-shift runs slow, so one setup and one hold corner suffice; scan-capture is at-speed and needs the mission pair.
 
 | # | Corner | Owns |
 |---|---|---|
@@ -391,9 +389,9 @@ The naive product is $3 \times 3 \times 3 \times 5 = 135$ corners and $135 \time
 | 8 | `ss_0p600v_125c_cworst` | DVFS-low setup, hot |
 | 9 | `ss_0p600v_m40c_cworst` | DVFS-low setup, cold |
 
-Scenario assignment: mission × corners 1–7 = 7; DVFS-low × {8, 9, 4, 6} = 4; scan-shift × {1, 4} = 2; scan-capture × {1, 2, 4, 5} = 4. **Total 17 scenarios**, down from 540 — a 32× reduction with every cut defended.
+**Nine corners, down from 180**, with every cut defended by which check owns it. Those nine are the `.lib` sets that must exist; each is then paired with the modes that need it, giving the 30–100 signoff scenarios counted in [Signoff_Orchestration §2.2](../06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md).
 
-The residual cost is still large. Nine corners × four Vt flavors (§7) = 36 `.lib` files for the logic library alone at 100–500 MB each in CCS form: 4–18 GB, before macros, LVF, or I/O. Seventeen scenarios at three CPU-hours is 51 CPU-hours per sweep, times eight partitions, run two or three times a week during closure. And the marginal cost of one more corner is not one file: it is $\sim\!2\times10^5$ characterization simulations, a QA re-run, $N$ new scenarios, and permanent disk and license consumption. That is the arithmetic behind every "can we just check one more corner?" conversation.
+The residual cost is still large. Nine corners × four Vt flavors (§7) = 36 `.lib` files for the logic library alone at 100–500 MB each in CCS form: 4–18 GB, before macros, LVF, or I/O. And the marginal cost of one more corner is not one file: it is $\sim\!2\times10^5$ characterization simulations *per Vt flavor*, a QA re-run, a batch of new scenarios, and permanent disk and license consumption. That is the arithmetic behind every "can we just check one more corner?" conversation.
 
 ---
 
@@ -417,7 +415,7 @@ The critical difference is **footprint**. The extra length must fit, and at fixe
 
 ### 7.3 The mix, and where its leakage lives
 
-Synthesis starts with the low-leakage flavor as default (often with `set_dont_use` on ULVT until proven necessary), maps, then swaps *up* only on violating paths worst-first; place-and-route repeats against real parasitics and then runs **leakage recovery**, swapping back *down* wherever slack allows. The converged mix quoted in [Synthesis_and_Optimization](01_Synthesis_and_Optimization.md) §7.2 hides the number that matters for power budgeting. Take a 100k-cell block at a 72 / 20 / 8 percent HVT / SVT / LVT split, relative leakages 0.2 / 1.0 / 5.0:
+Synthesis starts with the low-leakage flavor as default (often with `set_dont_use` on ULVT until proven necessary), maps, then swaps *up* only on violating paths worst-first; place-and-route repeats against real parasitics and then runs **leakage recovery**, swapping back *down* wherever slack allows. The converged mix quoted in [Synthesis_and_Optimization](01_Synthesis_and_Optimization.md) §7.2 hides the number that matters for power budgeting. Take a 100k-cell block at a 72 / 20 / 8 percent HVT / SVT / LVT split, relative leakages 0.2 / 1.0 / 5.0 — an LVT/HVT ratio of 25×, mid-band for the **10–30×** real libraries actually show ([CMOS_Fundamentals §4.3](../00_Fundamentals/01_CMOS_Fundamentals.md), which also explains why the subthreshold-only model's ~100× overstates it):
 
 $$
 72{,}000(0.2) + 20{,}000(1.0) + 8{,}000(5.0) = 14{,}400 + 20{,}000 + 40{,}000 = 74{,}400\ \text{units}
@@ -439,7 +437,7 @@ Logic cells are the smallest part of a library release by volume. Everything bel
 
 **Retention and isolation cells.** A retention flop is a normal flop plus a shadow latch on an always-on supply, so its `.lib` declares two `related_power_pin` entries, a `retention_cell` attribute, and SAVE/RESTORE arcs; isolation cells carry `is_isolation_cell` and a clamp value. These **attributes are the interface** UPF-aware synthesis keys on — a library whose transistors are correct but whose attributes are missing cannot be used in a power-gated design at all, because no tool can recognize which cells satisfy which strategy ([UPF_and_CPF_Power_Intent](../02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md) §3, §5).
 
-**Spare cells and ECO cells.** Both make a post-tape-out fix possible with a **metal-only** mask change — at 7 nm roughly 3–5 masks and 2–4 weeks, against a base-layer respin at 60+ masks and 10–14 weeks. That ratio is the entire budget justification. **Spare cells** are real functional cells scattered at 0.5–2% of block area with inputs tied off, rewired using existing metal; they cost area *and* leakage on every die for the life of the product, used or not. **ECO / gate-array filler cells** hold unconnected transistors in a regular pattern, personalized later by metal only — cheaper, with near-zero leakage since nothing is biased into conduction, but they need a personalization library and tool support.
+**Spare cells and ECO cells.** Both make a post-tape-out fix possible with a **metal-only** mask change — at 7 nm roughly 15–20 masks of a 70-plus set and 8–12 weeks to new silicon, against a full-layer respin at every mask and 21–30 weeks ([Signoff_Orchestration §4](../06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md)). That ratio is the entire budget justification. **Spare cells** are real functional cells scattered at 0.3–1% of block area with inputs tied off, rewired using existing metal; they cost area *and* leakage on every die for the life of the product, used or not. **ECO / gate-array filler cells** hold unconnected transistors in a regular pattern, personalized later by metal only — cheaper, with near-zero leakage since nothing is biased into conduction, but they need a personalization library and tool support.
 
 **The clock-tree subset.** CTS uses a curated subset with three properties: **balanced rise/fall delay**, so a deep tree does not accumulate duty drift into a `min_pulse_width` failure (§5.2); high drive relative to input capacitance, since the clock is the highest-activity net; and low delay *variation*, which is what OCV punishes hardest. Advanced-node trees are frequently **inverter-only** — an inverter pair's rise/fall imbalance cancels pairwise, whereas a buffer is two inverters inside one cell at a fixed internal ratio CTS cannot re-balance. The subset is marked (`is_clock_cell` and vendor attributes) and the CTS setup is an allow-list, not the complement of a `set_dont_use` ([Clock_Tree_Synthesis](../05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md)). Scan and DFT cells follow the same attribute-is-the-interface rule ([DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md)).
 
@@ -487,7 +485,7 @@ Tier 4 catches what re-simulation cannot: a change in the library's *composition
 
 ## 10. Reading a `.lib`
 
-Liberty is nested attributes and groups: everything is either `attribute : value;` or `group_type (name) { ... }`. Below is a syntactically valid excerpt for the cell used throughout §3 — invented numbers, real structure.
+Liberty is nested attributes and groups: everything is either `attribute : value;` or `group_type (name) { ... }`. Below is an excerpt for the cell used throughout §3 in genuine Liberty syntax — invented numbers, real structure — with the repetitive table groups elided in `/* … */` comments. Every group shown is complete; every elision is marked, and a real `.lib` would carry the elided groups in full (a `timing()` group with no tables in it is not legal Liberty).
 
 ```text
 library (foundryN7_sc6t_rvt_ss_0p675v_125c) {
@@ -504,7 +502,7 @@ library (foundryN7_sc6t_rvt_ss_0p675v_125c) {
     process : 1.0;  voltage : 0.675;  temperature : 125.0;
     tree_type : balanced_tree;
   }
-  default_operating_conditions : "ss_0p675v_125c";
+  default_operating_conditions : ss_0p675v_125c;
 
   input_threshold_pct_rise      : 50.0;  input_threshold_pct_fall      : 50.0;
   output_threshold_pct_rise     : 50.0;  output_threshold_pct_fall     : 50.0;
@@ -512,7 +510,7 @@ library (foundryN7_sc6t_rvt_ss_0p675v_125c) {
   slew_lower_threshold_pct_fall : 30.0;  slew_upper_threshold_pct_fall : 70.0;
   slew_derate_from_library      : 0.5;
 
-  default_max_transition : 0.320;
+  default_max_transition : 0.280;
 
   lu_table_template ("delay_7x7") {
     variable_1 : input_net_transition;
@@ -543,7 +541,7 @@ library (foundryN7_sc6t_rvt_ss_0p675v_125c) {
       direction       : output;
       function        : "!(A B)";
       max_capacitance : 0.03200;
-      max_transition  : 0.32000;
+      max_transition  : 0.28000;
 
       timing () {
         related_pin  : "A";
@@ -570,14 +568,13 @@ library (foundryN7_sc6t_rvt_ss_0p675v_125c) {
             "0.01938, 0.02075, 0.02350, 0.02900, 0.04000, 0.06200, 0.10600", \
             "0.03538, 0.03675, 0.03950, 0.04500, 0.05600, 0.07800, 0.12200" );
         }
-        /* cell_fall and fall_transition: same template, same shape */
+        /* cell_fall (delay_7x7) and fall_transition (delay_7x7): same template, same shape */
       }
-      timing () {                       /* B is the lower series device: slightly slower */
-        related_pin  : "B";
-        timing_sense : negative_unate;
-        timing_type  : combinational;
-      }
-      internal_power () { related_pin : "A"; /* rise_power, fall_power on the same grid */ }
+      /* a second, complete timing() group for related_pin "B" — same negative_unate
+         combinational arc, same delay_7x7 template, tables a few percent slower
+         because B drives the lower device of the series stack */
+      /* an internal_power() group per related_pin, rise_power and fall_power
+         on the same grid */
     }
   }
 }
@@ -588,7 +585,7 @@ Read it in the order that matters.
 1. **The name encodes the corner** — 7 nm, 6-track, RVT, slow-slow, 0.675 V, 125 °C. If the filename says `ss` while `operating_conditions` says otherwise, stop: the name is convention, the group is truth.
 2. **Units first, always.** `time_unit : "1ns"` and `capacitive_load_unit (1, pf)` mean every table number is in nanoseconds and picofarads: `0.02373` is 23.73 ps, `0.00068` is 0.68 fF. Reading a table without reading the units is how a factor of 1000 enters a hand calculation.
 3. **Thresholds define what "delay" and "slew" mean here** — 50%-to-50% and 30%-to-70%. `slew_derate_from_library : 0.5` declares the relationship between stored transition values and the full-swing equivalent the tool works in. Practical rule: two libraries with different threshold declarations or derates cannot be mixed in one analysis and their transition numbers cannot be compared by eye.
-4. **`default_max_transition : 0.320` matches `max(index_1) = 0.3200`** — that is the §9 check passing. If the header said `0.400`, every arc driven above 320 ps would be extrapolated and its delay invented.
+4. **`default_max_transition : 0.280` sits inside `max(index_1) = 0.3200`** — $0.280 \le 0.9 \times 0.320 = 0.288$, so the §9 assertion passes with room. Setting it *equal* to the table edge would not: an arc at exactly the limit is at the last grid point, and any modelling slop past it is extrapolated. If the header said `0.400`, every arc driven above 320 ps would be extrapolated and its delay invented.
 5. **`lu_table_template` separates the grid from the data.** `variable_1 : input_net_transition` and `variable_2 : total_output_net_capacitance` say rows are slew and columns capacitance. **Never assume this order** — the template declares it, and constraint tables (§5.2) use entirely different variables.
 6. **`cell_footprint : "nand2"`** is the swap key of §7.1; **`function : "!(A B)"`** is what LEC and technology mapping both read as the cell's meaning (Liberty uses `!` for NOT, juxtaposition or `&` for AND, `+` or `|` for OR, `^` for XOR) and is the string that must agree with the Verilog model (§2). **`timing()`** is the arc: `related_pin` names the source, `timing_sense` the polarity relationship, `timing_type` whether it is a delay or a constraint. One group per input pin — which is why arc count, not cell count, drives library size.
 7. **Locate §3.2's interpolation.** `cell_rise` row 3 is `index_1 = 0.0200`, row 4 is `0.0400`; columns 4 and 5 are `index_2 = 0.00400` and `0.00800`. Those four values — 0.02373, 0.03663, 0.02697, 0.04011 — are the corners of the bilinear cell, and 0.03102 ns is the answer. The matching `rise_transition` lookup gives 0.02100 ns, which becomes the next stage's `index_1`.
@@ -605,19 +602,20 @@ Read it in the order that matters.
 | NAND2_X1 area, 6T at 7 nm | ~0.041 µm² | the atom of every synthesis area report (§1.2) |
 | Logical effort, NAND2 / NOR2 | 4/3 and 5/3 | the $2u$ series/parallel sizing that defines X1 (§1.2) |
 | Tap-cell maximum spacing | 20–50 µm | bounds substrate resistance; latch-up is destructive (§1.4) |
-| Spare-cell budget | 0.5–2% of block area | buys a metal-only ECO: 3–5 masks and 2–4 weeks vs 60+ and 10–14 weeks (§8) |
+| Spare-cell budget | 0.3–1% of block area | buys a metal-only ECO: 15–20 of 70+ masks and 8–12 weeks vs 21–30 weeks (§8) |
 | NLDM grid; characterization cost | 7×7 geometric; ~2 × 10⁶ SPICE runs for 500 cells × 10 corners | why adding a corner is never free (§3.1) |
-| Bilinear error inside the grid | ~0.1–0.5% | the justification for tables over SPICE (§3.2) |
+| Bilinear error inside the grid | 1–3% | the justification for tables over SPICE (§3.2) |
 | Extrapolation error past the grid | 10–20%, always optimistic, compounding | why `max_transition` is a correctness constraint (§3.3) |
 | NLDM vs CCS/ECSM accuracy | ±10–20% on resistive nets vs ±2–3% | at 5–10× library size and 2–4× runtime (§4) |
 | Library size per corner, NLDM / CCS | 10–50 MB / 100–500 MB | 4 flavors × 9 corners = 4–18 GB (§4.2, §6.4) |
 | Setup criterion | 10% clock-to-Q degradation | 4.2 ps of bounded optimism vs 26 ps of pessimism at 1% (§5.3) |
 | Constraint table axes | clock slew × data slew, **not** load | misreading `index_2` as capacitance is routine (§5.2) |
-| Setup-hold pessimism recovery | 5–20 ps of hold per flop | dependent 2-D constraint tables (§5.4) |
+| Setup/hold characterization | joint sweep, not two independent ones | independent sweeps are optimistic on a narrow data pulse (§5.4) |
 | Temperature-inversion crossover | $V_{DD} \approx$ 0.6–0.9 V | both temperature extremes needed for setup *and* hold (§6.2) |
-| Realistic signoff corners / MMMC scenarios | ~9 corners, ~17 scenarios (from 135 / 540) | 32× pruning, each cut defended by check ownership (§6.4) |
+| Realistic signoff corner count | ~9 corners (from a naive 180) | each cut defended by check ownership; scenarios are counted in Signoff §2.2 (§6.4) |
 | LVF characterization cost | 10–100× nominal; +2–5× library size | why POCV exists at only some corners (§6.3) |
 | Multi-Vt leakage win vs all-LVT | ~6.7× at equal frequency; 8% of cells hold 54% of leakage | the justification for 4 flavors × 9 corners (§7.3) |
+| LVT / HVT leakage ratio | 10–30× (25× used here) | library reality; the subthreshold-only ~100× overstates it (§7.3) |
 | Extended-channel device | −30–50% leakage, +5–15% delay, +1 CPP width | footprint-changing, so not an ECO knob (§7.2) |
 
 ---
@@ -631,7 +629,7 @@ Read it in the order that matters.
 $$t_x = \tfrac{21-20}{40-20} = 0.05, \qquad t_y = \tfrac{12-8}{16-8} = 0.50$$
 $$d(20,12) = 0.03663 + 0.50(0.06297-0.03663) = 0.04980, \qquad d(40,12) = 0.04011 + 0.50(0.06693-0.04011) = 0.05352$$
 $$d_2 = 0.04980 + 0.05(0.00372) = 0.04999\ \text{ns} \approx 50.0\ \text{ps}$$
-Total $= 31.0 + 50.0 = \mathbf{81.0}$ **ps**. (SPICE at the same two points: 31.0 and 49.9 ps.)
+Total $= 31.0 + 50.0 = \mathbf{81.0}$ **ps**. (SPICE at the same two points: 31.6 and 51.0 ps — 2% and 2% under, the §3.2 band.)
 
 (b) The same interpolation on `rise_transition` at $(21, 12)$: row 0.0200 gives $0.02600 + 0.5(0.02200) = 0.03700$, row 0.0400 gives $0.02800 + 0.5(0.02200) = 0.03900$, then $0.03700 + 0.05(0.00200) = 0.03710$ ns $= \mathbf{37.1}$ **ps** — still inside the grid, so stage 3's lookup remains trustworthy.
 
@@ -646,27 +644,25 @@ Total $= 31.0 + 50.0 = \mathbf{81.0}$ **ps**. (SPICE at the same two points: 31.
 
 (c) Block level, 100k cells at 72 / 20 / 8 percent HVT / SVT / LVT with relative leakages 0.2 / 1.0 / 5.0: $14{,}400 + 20{,}000 + 40{,}000 = 74{,}400$ units versus $500{,}000$ for all-LVT — **6.7×**. The 8% LVT population holds 54% of the leakage, so a leakage overshoot is always investigated by listing LVT cells with positive slack first. The price of the arbitrage is library count: four flavors × nine corners = 36 `.lib` files that must all exist and all agree (§7.1).
 
-**3 — Count the MMMC scenarios, and price one more corner.**
-*Problem.* Given the §6.4 axes (3 process, 3 voltage, 3 temperature, 5 RC, 4 modes), compute the naive scenario count, the pruned count, and the marginal cost of adding a fourth voltage point.
+**3 — Price one more corner.**
+*Problem.* The §6.4 pruning leaves 9 corners out of a naive 180. Marketing wants a deep-DVFS operating point at 0.55 V. Price it — not in scenarios, which [Signoff_Orchestration §2.2](../06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md) counts, but in library.
 
-*Solution.* Naive: $3 \times 3 \times 3 \times 5 = 135$ corners × 4 modes $= \mathbf{540}$ **scenarios**, or 1,620 CPU-hours per partition per sweep at 3 hours each. Pruned by the ownership argument of §6.4 to 9 corners, with mission × 7, DVFS-low × 4, scan-shift × 2, scan-capture × 4 $= \mathbf{17}$ **scenarios** — a 32× reduction and 51 CPU-hours per sweep.
+*Solution.* Adding one voltage point is not one file. Temperature inversion (§6.2) forces both extremes, so it is **2 new corners**; each needs a `.lib` per Vt flavor, so $2 \times 4 = \mathbf{8}$ characterized libraries at $\sim\!2\times10^5$ SPICE runs each $= 1.6\times10^6$ simulations — comparable to characterizing the *entire* original library (§3.1). Then a full QA re-run (§9); 0.8–4 GB of permanent disk at 100–500 MB per CCS library; the new scenarios every mode that uses the point now needs; and STA license-hours for all of them, every sweep, forever. The characterization lead time — days to weeks — is usually what makes the answer "no" late in a project.
 
-Adding one voltage point (say 0.55 V for deep DVFS) is not one file. Temperature inversion forces both extremes, so it is **2 new corners**; each needs a `.lib` per Vt flavor, so $2 \times 4 = 8$ characterized libraries at $\sim\!2\times10^5$ SPICE runs per corner-flavor pair; a full QA re-run (§9); 2 new scenarios per mode that uses it; and 0.8–4 GB of permanent disk plus STA license-hours. The characterization lead time — days to weeks — is usually what makes the answer "no" late in a project.
+**4 — "The library is lying to you": a 1.0 GHz block that runs at 869 MHz.**
+*Problem.* A block signs off at $T = 1000$ ps at SS with $+18$ ps worst setup slack, and `report_constraint -all_violators` is clean — no max-transition, max-capacitance, or max-fanout violations. First silicon at the same voltage and temperature fails above **869 MHz**. Locate the defect.
 
-**4 — "The library is lying to you": a 1.0 GHz block that runs at 871 MHz.**
-*Problem.* A block signs off at $T = 1000$ ps at SS with $+18$ ps worst setup slack, and `report_constraint -all_violators` is clean — no max-transition, max-capacitance, or max-fanout violations. First silicon at the same voltage and temperature fails above **871 MHz**. Locate the defect.
-
-*Solution.* Work the slack backwards: 871 MHz is $T = 1148.5$ ps, so at $T = 1000$ ps the real slack is $-148.5$ ps against a reported $+18$ ps. STA is optimistic by $\mathbf{166.5}$ **ps** — far too large for OCV, crosstalk, or extraction error, and far too systematic for a marginal cell. That points at the delay calculator itself.
+*Solution.* Work the slack backwards: 869 MHz is $T = 1150.7$ ps, so at $T = 1000$ ps the real slack is $-150.7$ ps against a reported $+18$ ps. STA is optimistic by $\mathbf{168.7}$ **ps** — far too large for OCV, crosstalk, or extraction error, and far too systematic for a marginal cell. That points at the delay calculator itself.
 
 *Step 1, is the path even analyzed?* Yes — the path identified by shmoo and on-die monitors appears in `report_timing` at $+18$ ps, so it is not a missing arc (§9) or a wrong exception.
 
 *Step 2, is any DRV violated?* No — but check what the limit was compared against. The SDC has `set_max_transition 0.400`, the library header has `default_max_transition : 0.400`, and `max(index_1)` across the delay templates is **0.320**. Every arc receiving a slew between 320 and 400 ps is DRV-legal and **extrapolated**.
 
-*Step 3, quantify.* Nine stages of this 22-stage path have post-route input slews between 340 and 390 ps. Extrapolating in the slew direction off the last two rows at the 8 fF column: slope $= (0.08883 - 0.06099)/(0.320-0.160) = 0.174$ ns/ns, so at $s = 0.380$ the tool books $0.08883 + 0.060(0.174) = 0.0993$ ns $= 99.3$ ps where SPICE gives 118 ps — **18.5 ps of optimism per stage**, and $9 \times 18.5 = \mathbf{166.5}$ **ps**. The arithmetic closes exactly.
+*Step 3, quantify.* Nine stages of this 22-stage path have post-route input slews between 340 and 390 ps. Extrapolating in the slew direction off the last two rows at the 8 fF column: slope $= (0.08883 - 0.06099)/(0.320-0.160) = 0.174$ ns/ns, so at $s = 0.380$ the tool books $0.08883 + 0.060(0.174) = 0.0993$ ns $= 99.3$ ps where SPICE gives 118 ps — **18.7 ps of optimism per stage**, and $9 \times 18.7 = \mathbf{168.3}$ **ps**. The arithmetic closes to within half a picosecond of the 168.7 ps inferred from silicon, which for a diagnosis of this size is a match.
 
 *Step 4, confirm independently.* Re-run the path with the delay calculator forced to CCS, or SPICE the extracted path: CCS drives the real RC network and does not extrapolate the NLDM grid, so a 150+ ps NLDM-versus-CCS discrepancy on one path is the signature.
 
-*Fix and prevention.* Immediately, `set_max_transition 0.300` (10% inside the table boundary), re-optimize, re-close — and expect buffer area to grow, which is the real cost the loose limit had been hiding. Structurally, add the §9 assertion `default_max_transition ≤ 0.9 × max(index_1)` to the qualification gate and promote the extrapolation warning to an error. This survived signoff because extrapolation produces a *plausible* number rather than a NaN — the defining property of a library defect.
+*Fix and prevention.* Immediately, `set_max_transition 0.288` — $0.9 \times \max(\texttt{index\_1})$, the §9 bound — re-optimize, re-close — and expect buffer area to grow, which is the real cost the loose limit had been hiding. Structurally, add the §9 assertion `default_max_transition ≤ 0.9 × max(index_1)` to the qualification gate and promote the extrapolation warning to an error. This survived signoff because extrapolation produces a *plausible* number rather than a NaN — the defining property of a library defect.
 
 **5 — What a 1% setup criterion would cost.**
 *Problem.* Using the §5.3 sweep, compare signing off at the 10% and 1% clock-to-Q criteria on a 1 GHz design.

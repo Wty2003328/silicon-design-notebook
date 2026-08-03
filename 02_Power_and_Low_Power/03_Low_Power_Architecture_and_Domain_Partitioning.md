@@ -544,3 +544,7 @@ The output is not yet a final UPF/CPF file. It is the **architecture contract fr
 2. Silicon Integration Initiative (Si2), *Low Power Coalition archive*. Hosts CPF 2.1, the CPF/UPF interoperability guide, and the flow-oriented low-power design guides: https://si2.org/si2-openstandards/
 3. Keating, M., Flynn, D., Aitken, R., Gibbons, A., and Shi, K., *Low Power Methodology Manual for System-on-Chip Design*, Springer, 2007. Architecture-to-implementation treatment of multi-voltage design, power gating, isolation, retention, and verification.
 4. Cummings, C., *Clock Domain Crossing Design and Verification Techniques Using SystemVerilog*, SNUG papers. CDC protocol principles used in §5–§6.
+
+---
+
+⬅ prev [Block Activity and Power](02_Block_Activity_and_Power.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Power Reduction Techniques](04_Power_Reduction_Techniques.md)

@@ -705,3 +705,7 @@ The central recovery invariant is: **after branch `B` redirects, every surviving
 7. Kessler, R.E., "The Alpha 21264 Microprocessor," *IEEE Micro*, 19(2), 1999. Tournament predictor and speculative RAS repair — §5.2, §6.
 8. Yeh, T.-Y. and Patt, Y.N., "Two-Level Adaptive Branch Prediction," *MICRO-24*, 1991. The GHR and correlation — §3.2.
 9. XiangShan Team, “Kunminghu BPU, FTQ, and RAS Design Documents,” current public documentation — [BPU](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/BPU/), [FTQ](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/FTQ/), [RAS](https://docs.xiangshan.cc/projects/design/en/latest/frontend/BPU/RAS/).
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Fetch, Decode, and Micro-Operation (µop) Delivery](02_Fetch_Decode_and_Uop_Delivery.md)

@@ -184,3 +184,7 @@ An NPU implementation is review-ready when adjacent reference models localize er
 ---
 
 ← [Runtime and Serving Blueprint](02_Scratchpad_DMA_Runtime_and_Serving_Implementation_Blueprint.md) · [NPU Blueprint Index](00_Index.md)
+
+---
+
+⬅ prev [NPU Scratchpad, DMA, Runtime, and Serving Implementation Blueprint](02_Scratchpad_DMA_Runtime_and_Serving_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

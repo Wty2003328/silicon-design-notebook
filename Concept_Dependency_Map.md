@@ -79,13 +79,13 @@ Three things in this figure are worth stating in words, because they are the sou
 
 ### 3.1 L0 — Device physics
 
-Owned by [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) §§1–4 and [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md) §§1–3, with the manufacturing side in [Fabrication Process](07_Manufacturing_and_Bringup/01_Fabrication_Process.md).
+Owned by [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) §1 (the MOSFET and where it stops being a switch), §8 (FinFET and gate-all-around), §9 (variation), and §13 (leakage), together with [Power Fundamentals](02_Power_and_Low_Power/01_Power_Fundamentals.md) §§2–4, with the manufacturing side in [Fabrication Process](07_Manufacturing_and_Bringup/01_Fabrication_Process.md).
 
 The MOSFET as a voltage-controlled resistance; threshold voltage and its temperature and body dependence; drain-induced barrier lowering and short-channel effects; subthreshold conduction and the 60 mV/decade limit; gate and junction leakage; the RC of a wire; FinFET and gate-all-around geometry. **Everything numeric in the notebook bottoms out here.** A delay is an RC; a power is a $CV^2f$ or an $I_{leak}V$; a corner is a statement about threshold voltage and mobility.
 
 ### 3.2 L1 — Circuits
 
-Owned by [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) §§5–12 and [Memory Circuits and Technologies](00_Fundamentals/06_Memory_Circuits_and_Technologies.md).
+Owned by [CMOS Fundamentals](00_Fundamentals/01_CMOS_Fundamentals.md) §§2–7 (inverter, noise margin, delay, logic families, latch-up, ESD) and §§10–12 (wire delay, logical effort, the 6T bitcell), together with [Memory Circuits and Technologies](00_Fundamentals/06_Memory_Circuits_and_Technologies.md).
 
 The complementary inverter and its voltage-transfer curve; noise margin as the reason digital abstraction works at all; drive strength and fan-out; logical effort; pass-transistor and transmission-gate structures; latch-up and electrostatic discharge; the 6T SRAM cell's read-disturb/write-margin conflict; sense amplifiers; the 1T1C DRAM cell and its destructive read. This layer is where "a gate" becomes "a circuit with a cost."
 
@@ -121,32 +121,32 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 
 | Concept | Requires | Derived in | What breaks if you skip the prerequisite |
 |---|---|---|---|
-| MOSFET as a switch | — | [CMOS §1–2](00_Fundamentals/01_CMOS_Fundamentals.md) | Every later cost number is a memorized fact instead of a derivation |
-| Threshold voltage, $V_t$ flavors | MOSFET | [CMOS §2](00_Fundamentals/01_CMOS_Fundamentals.md), [Libraries §7](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) | "LVT is faster" without knowing the leakage exchange rate |
-| Inverter VTC, noise margin | MOSFET, series/parallel conduction | [CMOS §5–6](00_Fundamentals/01_CMOS_Fundamentals.md) | No account of why digital logic is noise-immune at all |
-| RC delay, drive strength, fan-out | Inverter, wire RC | [CMOS §7–8](00_Fundamentals/01_CMOS_Fundamentals.md) | Cannot explain why delay depends on load or on input slew |
+| MOSFET as a switch | — | [CMOS §1](00_Fundamentals/01_CMOS_Fundamentals.md) | Every later cost number is a memorized fact instead of a derivation |
+| Threshold voltage, $V_t$ flavors | MOSFET | [CMOS §1, §13](00_Fundamentals/01_CMOS_Fundamentals.md), [Libraries §7](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) | "LVT is faster" without knowing the leakage exchange rate |
+| Inverter VTC, noise margin | MOSFET, series/parallel conduction | [CMOS §2–3](00_Fundamentals/01_CMOS_Fundamentals.md) | No account of why digital logic is noise-immune at all |
+| RC delay, drive strength, fan-out | Inverter, wire RC | [CMOS §4, §10](00_Fundamentals/01_CMOS_Fundamentals.md) | Cannot explain why delay depends on load or on input slew |
 | Logical effort | Drive strength, fan-out | [Logic §1](00_Fundamentals/02_Logic_Building_Blocks.md) | No hand method for sizing or for path-delay estimation |
-| Dynamic, short-circuit, leakage power | MOSFET, RC, activity | [Power Fundamentals §1–3](02_Power_and_Low_Power/01_Power_Fundamentals.md) | Power reduction techniques become a list to memorize |
-| Subthreshold swing, DIBL | Device physics | [CMOS §3](00_Fundamentals/01_CMOS_Fundamentals.md), [Power §4](02_Power_and_Low_Power/01_Power_Fundamentals.md) | Cannot explain why supply voltage stopped scaling |
+| Dynamic, short-circuit, leakage power | MOSFET, RC, activity | [Power Fundamentals §2](02_Power_and_Low_Power/01_Power_Fundamentals.md) | Power reduction techniques become a list to memorize |
+| Subthreshold swing, DIBL | Device physics | [CMOS §1, §13](00_Fundamentals/01_CMOS_Fundamentals.md), [Power §4](02_Power_and_Low_Power/01_Power_Fundamentals.md) | Cannot explain why supply voltage stopped scaling |
 | 6T SRAM cell, read disturb, write margin | Inverter, bistability, sizing | [Memory §2](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Memory macros are black boxes with unexplained constraints |
 | Sense amplifier, bitline development | SRAM cell, RC, differential pairs | [Memory §3–4](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | No account of why array access time scales as it does |
 | 1T1C DRAM cell, destructive read | Capacitance, charge sharing | [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Every DDR timing parameter is an arbitrary number |
 | ECC, SEC-DED | Hamming distance, memory arrays | [Memory §8](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Cannot size a protection scheme or argue a FIT target |
-| Latch-up, ESD, antenna | Device structure, process | [CMOS §10](00_Fundamentals/01_CMOS_Fundamentals.md), [PV](06_Signoff/03_Physical_Verification_DRC_LVS.md) | Physical-verification rule failures look arbitrary |
+| Latch-up, ESD, antenna | Device structure, process | [CMOS §6–7](00_Fundamentals/01_CMOS_Fundamentals.md), [PV](06_Signoff/03_Physical_Verification_DRC_LVS.md) | Physical-verification rule failures look arbitrary |
 
 ### 4.2 Logic and timing
 
 | Concept | Requires | Derived in | What breaks if you skip the prerequisite |
 |---|---|---|---|
-| Bistable feedback, SR/D latch | Inverter, gain > 1 | [Logic §4–5](00_Fundamentals/02_Logic_Building_Blocks.md) | The flip-flop stays an atom and timing stays folklore |
-| Master-slave flip-flop | D latch, clock phases | [Logic §5](00_Fundamentals/02_Logic_Building_Blocks.md) | Cannot explain why setup and hold exist |
-| Setup and hold time | Flip-flop internals | [Logic §5](00_Fundamentals/02_Logic_Building_Blocks.md), [STA §3](06_Signoff/01_STA.md) | Timing inequalities become formulas to memorize |
-| Metastability, MTBF | Bistability, resolution time constant | [Logic §5](00_Fundamentals/02_Logic_Building_Blocks.md), [CDC §1](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Synchronizers are cargo cult; cannot size a chain |
-| Hazards and glitches | Boolean networks, unequal path delays | [Logic §9](00_Fundamentals/02_Logic_Building_Blocks.md) | Clock gating and glitch power are inexplicable |
-| Gray code | Hamming distance, multi-bit sampling | [Logic §9](00_Fundamentals/02_Logic_Building_Blocks.md) | Async FIFO pointer crossing looks like a trick |
+| Bistable feedback, SR/D latch | Inverter, gain > 1 | [Logic §4](00_Fundamentals/02_Logic_Building_Blocks.md) | The flip-flop stays an atom and timing stays folklore |
+| Master-slave flip-flop | D latch, clock phases | [Logic §4](00_Fundamentals/02_Logic_Building_Blocks.md) | Cannot explain why setup and hold exist |
+| Setup and hold time | Flip-flop internals | [Logic §4](00_Fundamentals/02_Logic_Building_Blocks.md), [STA §3](06_Signoff/01_STA.md) | Timing inequalities become formulas to memorize |
+| Metastability, MTBF | Bistability, resolution time constant | [Logic §4](00_Fundamentals/02_Logic_Building_Blocks.md), [CDC §2](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Synchronizers are cargo cult; cannot size a chain |
+| Hazards and glitches | Boolean networks, unequal path delays | [Logic §8](00_Fundamentals/02_Logic_Building_Blocks.md) | Clock gating and glitch power are inexplicable |
+| Gray code | Hamming distance, multi-bit sampling | [Logic §7](00_Fundamentals/02_Logic_Building_Blocks.md) | Async FIFO pointer crossing looks like a trick |
 | Carry propagation, prefix adders | Full adder, associativity | [Adders §1–5](00_Fundamentals/03_Adders_and_Multipliers.md) | No feel for the area/delay trade in any datapath |
-| Carry-save, Booth, Wallace | Carry propagation | [Adders §6–8](00_Fundamentals/03_Adders_and_Multipliers.md) | Multiplier and MAC costs are unanalyzable |
-| Rounding, ULP, guard/round/sticky | Binary fractions, error model | [Floating Point §4–6](00_Fundamentals/04_Floating_Point.md) | Fixed-point and FP verification have no error bound |
+| Carry-save, Booth, Wallace | Carry propagation | [Adders §6–7](00_Fundamentals/03_Adders_and_Multipliers.md) | Multiplier and MAC costs are unanalyzable |
+| Rounding, ULP, guard/round/sticky | Binary fractions, error model | [Floating Point §2, §4](00_Fundamentals/04_Floating_Point.md) | Fixed-point and FP verification have no error bound |
 | Q-format, saturation, guard bits | Two's complement, quantization noise | [Arithmetic RTL](03_Frontend_RTL_and_Verification/16_Arithmetic_and_Memory_RTL.md), [DSP §1–4](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md) | Quantized datapaths overflow silently |
 
 ### 4.3 RTL and verification
@@ -154,21 +154,21 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 | Concept | Requires | Derived in | What breaks if you skip the prerequisite |
 |---|---|---|---|
 | Synchronous discipline | Setup/hold, clocking | [RTL Methodology §1–2](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) | Intermittent, un-debuggable silicon |
-| Reset architecture | Flip-flop reset pins, recovery/removal | [RTL Methodology §3](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) | Reset de-assertion metastability across a domain |
-| Blocking vs non-blocking | Event-region scheduler | [Procedural §1–2](03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) | Simulation/synthesis mismatch, race conditions |
-| X-optimism and X-pessimism | 4-state values, gate semantics | [Data Types §2](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md) | Bugs hidden in RTL sim that appear in GLS |
+| Reset architecture | Flip-flop reset pins, recovery/removal | [RTL Methodology §5](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md) | Reset de-assertion metastability across a domain |
+| Blocking vs non-blocking | Event-region scheduler | [Procedural §2–3](03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md) | Simulation/synthesis mismatch, race conditions |
+| X-optimism and X-pessimism | 4-state values, gate semantics | [Data Types §3](03_Frontend_RTL_and_Verification/02_Data_Types_and_Basics.md) | Bugs hidden in RTL sim that appear in GLS |
 | Latch inference | Incomplete assignment, sensitivity | [RTL Methodology](03_Frontend_RTL_and_Verification/01_RTL_Design_Methodology.md), [Synthesis Flow §3](04_Synthesis/04_Synthesis_Flow_and_QoR_Closure.md) | Unexpected latches, untimed paths |
 | CDC and synchronizers | Metastability, gray code | [CDC §1–4](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Multi-bit crossings corrupted; MTBF unknown |
-| Async FIFO | CDC, gray code, FIFO depth | [CDC §6](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Full/empty flags wrong under crossing latency |
-| valid/ready, back-pressure | Handshake, buffering | [Flow Control §1–3](03_Frontend_RTL_and_Verification/15_Flow_Control_and_FIFOs.md) | Deadlock, dropped data, throughput collapse |
-| Skid buffer | valid/ready, registered outputs | [Flow Control §3](03_Frontend_RTL_and_Verification/15_Flow_Control_and_FIFOs.md) | Combinational loop through ready, or lost throughput |
+| Async FIFO | CDC, gray code, FIFO depth | [CDC §7](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) | Full/empty flags wrong under crossing latency |
+| valid/ready, back-pressure | Handshake, buffering | [Flow Control §1, §6](03_Frontend_RTL_and_Verification/15_Flow_Control_and_FIFOs.md) | Deadlock, dropped data, throughput collapse |
+| Skid buffer | valid/ready, registered outputs | [Flow Control §2](03_Frontend_RTL_and_Verification/15_Flow_Control_and_FIFOs.md) | Combinational loop through ready, or lost throughput |
 | Pipelining and retiming | Setup inequality, register cost | [Design Patterns §1](03_Frontend_RTL_and_Verification/14_RTL_Design_Patterns.md), [Synthesis §6](04_Synthesis/01_Synthesis_and_Optimization.md) | "Add a pipeline stage" without knowing the latency/verification cost |
 | SVA concurrent assertions | Clocking, temporal logic | [Assertions §1–3](03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md) | Assertions that pass vacuously |
 | Functional coverage | Verification plan, sampling | [Assertions §4](03_Frontend_RTL_and_Verification/09_Assertions_and_Coverage.md), [Planning §2](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md) | Coverage that measures the testbench, not the design |
-| Constrained randomization | OOP, solver semantics | [OOP and Randomization §3](03_Frontend_RTL_and_Verification/08_OOP_and_Randomization.md) | Random noise with no closure argument |
+| Constrained randomization | OOP, solver semantics | [OOP and Randomization §2–3](03_Frontend_RTL_and_Verification/08_OOP_and_Randomization.md) | Random noise with no closure argument |
 | UVM phasing, factory, RAL | OOP, TLM, config | [UVM](03_Frontend_RTL_and_Verification/10_UVM_Methodology.md) | Copy-paste testbenches that cannot be reused |
 | Formal: BMC, k-induction, IC3 | Boolean satisfiability, state space | [Formal §1–4](03_Frontend_RTL_and_Verification/12_Formal_Verification.md) | Cannot tell a bounded proof from a full one |
-| Logic equivalence checking | Synthesis transforms, key points | [Formal §6](03_Frontend_RTL_and_Verification/12_Formal_Verification.md), [Synthesis Flow §10](04_Synthesis/04_Synthesis_Flow_and_QoR_Closure.md) | Retiming and ungrouping silently break the proof |
+| Logic equivalence checking | Synthesis transforms, key points | [Formal §5](03_Frontend_RTL_and_Verification/12_Formal_Verification.md), [Synthesis Flow §10](04_Synthesis/04_Synthesis_Flow_and_QoR_Closure.md) | Retiming and ungrouping silently break the proof |
 | Gate-level simulation, SDF | Netlist, timing annotation, X semantics | [GLS §1–3](03_Frontend_RTL_and_Verification/13_Gate_Level_Sim_and_Emulation.md) | Reset and initialization bugs escape to silicon |
 
 ### 4.4 The implementation chain
@@ -214,7 +214,7 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 | DRC, LVS | Layout rules, netlist comparison | [PV §2–3](06_Signoff/03_Physical_Verification_DRC_LVS.md) | Masks rejected; layout is not the circuit |
 | ECO taxonomy, spare cells | Netlist edit, mask layers | [Signoff Orchestration §4–6](06_Signoff/04_Signoff_Orchestration_ECO_and_Tapeout_Readiness.md) | Late fixes cost a full mask set unnecessarily |
 | Lithography, OPC, EUV | Optics, process | [Fabrication §2–3](07_Manufacturing_and_Bringup/01_Fabrication_Process.md) | Design rules and DFM look arbitrary |
-| Yield, D0, redundancy | Defect statistics | [Fabrication §8](07_Manufacturing_and_Bringup/01_Fabrication_Process.md) | Die-size and chiplet economics unanalyzable |
+| Yield, D0, redundancy | Defect statistics | [Fabrication §5](07_Manufacturing_and_Bringup/01_Fabrication_Process.md) | Die-size and chiplet economics unanalyzable |
 | Package parasitics, SSO | IO circuits, inductance | [Packaging](07_Manufacturing_and_Bringup/02_IC_Packaging.md) | IO timing and noise budgets wrong |
 | Bring-up, shmoo, respin economics | Whole flow | [Tape-out and Bring-up](07_Manufacturing_and_Bringup/03_Tapeout_and_Post_Silicon_Bringup.md) | No sense of what a late bug actually costs |
 
@@ -232,7 +232,7 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 | Memory consistency, barriers | Coherence, reordering | [Memory Consistency](01_Architecture_and_PPA/01_CPU_Architecture/06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md) | Software-visible ordering bugs |
 | SIMT, warps, occupancy | Threads, latency hiding, register files | [GPU Architecture](01_Architecture_and_PPA/02_GPU_Architecture/01_Core_Architecture/01_GPU_Architecture.md) | Occupancy tuning as superstition |
 | Systolic arrays, dataflows | MAC arrays, data reuse | [Systolic and Spatial Dataflows](01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) | Dataflow choice with no energy model |
-| Quantization for AI | Fixed-point, error analysis | [DSP §1–4, §12](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md), [Sparsity and Quantization](01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) | Accumulator widths and scales chosen by trial |
+| Quantization for AI | Fixed-point, error analysis | [DSP §1–4, §11](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md), [Sparsity and Quantization](01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) | Accumulator widths and scales chosen by trial |
 | AXI/AHB/APB | Handshakes, flow control, ordering | [AHB AXI APB](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) | Integration deadlocks and ID-width bugs |
 | NoC routing, flow control, deadlock | Buffering, virtual channels | [Routing, Flow Control, Deadlock](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md) | Topologies proposed that deadlock |
 | DDR timing and scheduling | DRAM device physics | [DDR Controller](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md), [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Bandwidth models that ignore row-buffer behavior |
@@ -268,18 +268,18 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 
 | Symptom | Real cause | Read this |
 |---|---|---|
-| "The timing equations look arbitrary." | You are treating a flip-flop as an atom. | [Logic §5](00_Fundamentals/02_Logic_Building_Blocks.md), then [STA §3](06_Signoff/01_STA.md) |
+| "The timing equations look arbitrary." | You are treating a flip-flop as an atom. | [Logic §4](00_Fundamentals/02_Logic_Building_Blocks.md), then [STA §3](06_Signoff/01_STA.md) |
 | "I don't see why hold violations exist at all." | You have not separated the launch race from the capture requirement. | [STA §3](06_Signoff/01_STA.md), then [CTS §1](05_Backend_Physical_Design/05_Clock_Tree_Synthesis.md) |
 | "Synthesis feels like a black box." | Missing the compiler frame and the cell library as its instruction set. | [Synthesis §1–4](04_Synthesis/01_Synthesis_and_Optimization.md), [Libraries §1–3](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) |
 | "Where do delay numbers come from?" | You have never seen a `.lib` table interpolated. | [Libraries §3](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md) |
 | "Corners and derates are noise to me." | Missing the variation argument and temperature inversion. | [Libraries §6](04_Synthesis/03_Standard_Cell_Libraries_and_Characterization.md), [STA §5](06_Signoff/01_STA.md) |
 | "Physical design is just tool commands." | Missing the optimization formulations underneath. | [Physical Design §1–5](05_Backend_Physical_Design/01_Physical_Design.md), then the four stage pages |
-| "CDC rules feel like superstition." | Missing the MTBF derivation and the multi-bit argument. | [Logic §5](00_Fundamentals/02_Logic_Building_Blocks.md), [CDC §1–4](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) |
+| "CDC rules feel like superstition." | Missing the MTBF derivation and the multi-bit argument. | [Logic §4](00_Fundamentals/02_Logic_Building_Blocks.md), [CDC §1–4](03_Frontend_RTL_and_Verification/06_Async_Design_and_CDC.md) |
 | "I can build a UVM env but not argue closure." | Missing the plan-and-coverage framing. | [Verification Planning](03_Frontend_RTL_and_Verification/11_Verification_Planning_and_Coverage_Closure.md) |
 | "Architecture papers feel like hand-waving." | Missing the cost side; a structure with no area/power/timing price is not a proposal. | Stage 2 of the [learning path](Start_Here_Learning_Path.md), then the design-methodology sub-book |
-| "Power sections read as a list of tricks." | Missing the physics that makes each trick pay. | [Power Fundamentals §1–3](02_Power_and_Low_Power/01_Power_Fundamentals.md) |
+| "Power sections read as a list of tricks." | Missing the physics that makes each trick pay. | [Power Fundamentals §2–4](02_Power_and_Low_Power/01_Power_Fundamentals.md) |
 | "DFT seems like someone else's problem." | Missing the observability/controllability argument. | [DFT §1–2](06_Signoff/02_DFT_and_ATPG.md) |
-| "I can't follow the AI-hardware chapters." | Missing quantization and the memory-bandwidth framing. | [DSP §1–4, §12](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md), [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) |
+| "I can't follow the AI-hardware chapters." | Missing quantization and the memory-bandwidth framing. | [DSP §1–4, §11](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md), [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) |
 
 ---
 

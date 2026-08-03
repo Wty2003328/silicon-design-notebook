@@ -486,3 +486,7 @@ The simpler multiple-launch structure wins when sync points are few and each pha
 ---
 
 ← [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md) · [Core Architecture index](00_Index.md) · next → [GPU Memory System](../02_Memory_System/00_Index.md)
+
+---
+
+⬅ prev [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

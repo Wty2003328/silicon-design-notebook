@@ -217,3 +217,7 @@ Each step retains the earlier correctness oracle and adds a new performance hypo
 ---
 
 ← [Core Blueprint](01_Frontend_and_Execution_Core_Implementation_Blueprint.md) · next → [CPU Integration, Verification, and Bring-up](03_CPU_Integration_Verification_and_Bringup_Blueprint.md)
+
+---
+
+⬅ prev [CPU Frontend and Execution-Core Implementation Blueprint](01_Frontend_and_Execution_Core_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [CPU Integration, Verification, and Bring-up Blueprint](03_CPU_Integration_Verification_and_Bringup_Blueprint.md)

@@ -904,3 +904,7 @@ The enduring lesson for an architect: **a speculative optimization is only safe 
 7. Kocher, P. et al., "Spectre Attacks: Exploiting Speculative Execution," *IEEE S&P*, 2019; Lipp, M. et al., "Meltdown: Reading Kernel Memory from User Space," *USENIX Security*, 2018. The attacks of §12.
 8. Intel, *Intel Data Streaming Accelerator Architecture Specification*. [[official specification]](https://www.intel.com/content/www/us/en/content-details/857060/intel-data-streaming-accelerator-architecture-specification.html) — queue/portal submission, descriptors, PASID-based virtual addressing, completion records, and faults for the integrated-data-mover example in §10.5.
 9. RISC-V International, *RISC-V IOMMU Architecture Specification*. [[official specification]](https://github.com/riscv-non-isa/riscv-iommu/releases) — device/process contexts, address translation, protection, invalidation, and fault reporting used in §10.4.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [RISC-V Instruction Set Architecture (ISA)](02_RISC_V_ISA.md)

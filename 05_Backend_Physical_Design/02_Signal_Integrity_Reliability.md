@@ -320,3 +320,7 @@ The power-integrity half of this (IR, dynamic droop, decap, grid EM) shares its 
 3. Ho, R., Mai, K.W., and Horowitz, M.A., "The Future of Wires," *Proc. IEEE*, 89(4), 2001. The interconnect-scaling and coupling argument of §1.2.
 4. Alam, M.A. and Mahapatra, S., "A comprehensive model for PMOS NBTI degradation," *Microelectronics Reliability*, 45(1), 2005. The reaction-diffusion power-law $\Delta V_{th}\propto t^{n}$ of §4.2.
 5. Sakurai, T. and Newton, A.R., "Alpha-power law MOSFET model and its applications to CMOS inverter delay," *IEEE JSSC*, 25(2), 1990. The delay-vs-$V_{DD}$ relation behind the IR-droop-to-delay link of §2.
+
+---
+
+⬅ prev [Physical Design (Place & Route)](01_Physical_Design.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Floorplanning and Power Planning](03_Floorplanning_and_Power_Planning.md)

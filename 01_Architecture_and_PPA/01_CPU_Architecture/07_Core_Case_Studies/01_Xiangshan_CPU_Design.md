@@ -292,3 +292,7 @@ Module documents expose the identities and state transitions needed to write the
 ---
 
 [Core Case Studies index](00_Index.md) · [CPU Architecture](../00_Index.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

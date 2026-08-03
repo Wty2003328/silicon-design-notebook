@@ -180,3 +180,7 @@ The reconstruction is adequate when the graph legality, IR fields, descriptor fo
 ---
 
 Next → [Scratchpad, DMA, Runtime, and Serving Blueprint](02_Scratchpad_DMA_Runtime_and_Serving_Implementation_Blueprint.md)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [NPU Scratchpad, DMA, Runtime, and Serving Implementation Blueprint](02_Scratchpad_DMA_Runtime_and_Serving_Implementation_Blueprint.md)

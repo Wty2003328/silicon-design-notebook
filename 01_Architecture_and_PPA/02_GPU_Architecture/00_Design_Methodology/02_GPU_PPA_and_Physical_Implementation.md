@@ -255,3 +255,7 @@ If the workload can raise tensor issue only from 0.85 to 1.00 of the old peak be
 ---
 
 ← [GPU Workloads and DSE](01_GPU_Workloads_Performance_and_DSE.md) · next → [GPU Simulation Methodology and Evidence](03_GPU_Simulation_Methodology_and_Evidence.md)
+
+---
+
+⬅ prev [GPU Workloads, Performance Modeling, and Design-Space Exploration](01_GPU_Workloads_Performance_and_DSE.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Simulation Methodology and Evidence](03_GPU_Simulation_Methodology_and_Evidence.md)

@@ -151,7 +151,7 @@ by the dataflow. You size cooling to peak, but you size *battery life* to this i
 
 ### Q9: Compare leakage reduction techniques: multi-Vt, power gating, and body biasing.
 
-**A:** Multi-Vt: assigns HVT (high threshold voltage) to non-critical paths (5-10x leakage reduction per cell, no area overhead, works always, standard flow). Power gating: turns off entire domains (nearly 100% leakage elimination when off, but requires isolation/retention/switches, only works for long idle periods). Body biasing: applies reverse body bias to increase Vth in idle mode (5-20x reduction, requires bias generators and distribution network, less effective in FinFET). Best practice: use multi-Vt always (baseline), add power gating for large blocks with long idle periods, use body biasing for fine-grain control in planar CMOS (complementary metal-oxide-semiconductor). In modern FinFET designs, multi-Vt + power gating is the dominant combination.
+**A:** Multi-Vt: assigns HVT (high threshold voltage) to non-critical paths (5-10x leakage reduction for one adjacent-flavor step, 10-30x across the full LVT-to-HVT span, no area overhead, works always, standard flow). Power gating: turns off entire domains (nearly 100% leakage elimination when off, but requires isolation/retention/switches, only works for long idle periods). Body biasing: applies reverse body bias to increase Vth in idle mode (5-20x reduction, requires bias generators and distribution network, less effective in FinFET). Best practice: use multi-Vt always (baseline), add power gating for large blocks with long idle periods, use body biasing for fine-grain control in planar CMOS (complementary metal-oxide-semiconductor). In modern FinFET designs, multi-Vt + power gating is the dominant combination.
 
 ### Q10: How do you estimate the break-even time for power gating?
 
@@ -419,7 +419,7 @@ captured on watchdog reset.
 
 ### Q14: "Why is clock power so high?"
 
-**A:** Clock toggles every cycle (activity factor = 1.0, vs 0.05-0.2 for data). Clock networks are heavily buffered (thousands of buffers in clock tree) with large drive strengths. Clock wires run long distances across the chip with significant wire capacitance. In a typical SoC: clock tree = 30-50% of dynamic power. This is why clock gating is the single most impactful power reduction technique.
+**A:** Clock toggles every cycle (activity factor = 1.0, vs 0.05-0.2 for data). Clock networks are heavily buffered (thousands of buffers in clock tree) with large drive strengths. Clock wires run long distances across the chip with significant wire capacitance. In a typical SoC the clock network itself is 20-35% of dynamic power, rising to 35-50% once the clock inverters inside every flip-flop are counted — say which you mean, because the two figures get quoted interchangeably. This is why clock gating is the single most impactful power reduction technique.
 
 ### Q15: "What is the minimum energy point (MEP) and why does it exist?"
 
@@ -427,7 +427,7 @@ captured on watchdog reset.
 
 ### Q16: "Explain the power-performance-area (PPA) trade-off at the cell level."
 
-**A:** A larger cell (wider transistors) has: more drive current -> faster (better P), but more capacitance -> more switching power (worse P), and more area (worse A). Multi-Vt: LVT is faster (better performance) but leaks ~5-20x more than HVT (worse leakage power), at the same area. Sizing: upsizing a cell on the critical path improves timing but increases its capacitance and the capacitance it presents to its driver. The optimization is a constrained problem: minimize power subject to timing constraints, using cell sizing and Vt assignment as the primary levers.
+**A:** A larger cell (wider transistors) has: more drive current -> faster (better P), but more capacitance -> more switching power (worse P), and more area (worse A). Multi-Vt: LVT is faster (better performance) but leaks ~10-30x more than HVT (worse leakage power), at the same area. Sizing: upsizing a cell on the critical path improves timing but increases its capacitance and the capacitance it presents to its driver. The optimization is a constrained problem: minimize power subject to timing constraints, using cell sizing and Vt assignment as the primary levers.
 
 ---
 
@@ -674,3 +674,6 @@ Only the specified registers are replaced with retention variants. The other 90%
 
 **A:** (1) Architecture freezes domains, supplies, modes, boundary matrix, retained state, and sequences. (2) Intent authoring declares them; exit on clean syntax/semantics and complete scope/connectivity reports. (3) Power-aware RTL simulation corrupts off logic and exercises every legal transition; exit on assertions and state/transition coverage. (4) Synthesis inserts/maps isolation, level shifters, retention, AON, and switch structures; exit with zero unexplained unmapped strategies. (5) Low-power equivalence proves source+intent against netlist+intent. (6) P&R realizes voltage areas, power grids, switches, special-cell placement, and AON routing; exit on rail/placement/connectivity checks. (7) Post-route MMMC STA and structural/power-aware checks cover all legal modes. (8) Signoff closes power, IR drop, electromigration, and thermal results with full artifact/version provenance.
 
+---
+
+⬅ prev [01](01_Architecture_and_PPA_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [03](03_Frontend_RTL_and_Verification_Questions.md)

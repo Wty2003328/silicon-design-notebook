@@ -481,3 +481,7 @@ The block scale is decoded per group in the requantization pipeline of §10; the
 ---
 
 **Navigation:** [Mapping and Memory index](00_Index.md) · [NPU index](../00_Index.md)
+
+---
+
+⬅ prev [Tensor Tiling and Data Movement](01_Tensor_Tiling_and_Data_Movement.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Decoupled Access–Execute](03_Decoupled_Access_Execute_and_Scratchpad_Scheduling.md)

@@ -439,3 +439,7 @@ Reducing registers from 64 to 48 raises residency from 4 to 5 blocks — assumin
 ---
 
 **Navigation:** [GPU Core Architecture index](00_Index.md) · [GPU index](../00_Index.md)
+
+---
+
+⬅ prev [Graphics Processing Unit (GPU) Architecture](01_GPU_Architecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [GPU Operand Delivery](03_Operand_Collectors_Register_Files_and_Scoreboards.md)

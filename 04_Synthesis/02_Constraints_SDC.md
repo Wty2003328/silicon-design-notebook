@@ -270,3 +270,7 @@ Quantitative margins (7 nm-class, for the $t_{unc}$ term):
 1. S. Gangadharan and S. Churiwala, *Constraining Designs for Synthesis and Timing Analysis: A Practical Guide to Synopsys Design Constraints (SDC)*, Springer, 2013. The definitive treatment of SDC semantics and exception precedence.
 2. J. Bhasker and R. Chadha, *Static Timing Analysis for Nanometer Designs: A Practical Approach*, Springer, 2009. Setup/hold derivation and multicycle/false-path timing.
 3. Synopsys, *Synopsys Design Constraints (SDC) Format Reference Manual*. The command-level reference this page deliberately does not reproduce.
+
+---
+
+⬅ prev [Logic Synthesis](01_Synthesis_and_Optimization.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [Standard-Cell Libraries and Timing Characterization](03_Standard_Cell_Libraries_and_Characterization.md)

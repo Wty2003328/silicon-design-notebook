@@ -336,3 +336,7 @@ Requests and responses share every endpoint input slot. All slots fill with requ
 ---
 
 **Navigation:** [Network on Chip index](00_Index.md) · [Interconnect index](../00_Index.md)
+
+---
+
+⬅ prev [Network on Chip](01_Network_on_Chip.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

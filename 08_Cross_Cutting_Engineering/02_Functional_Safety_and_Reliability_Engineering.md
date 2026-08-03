@@ -71,7 +71,7 @@ flowchart TD
 | Class | Mechanism | Persists after? | Typical rate | Detected how |
 |---|---|---|---|---|
 | **Permanent (hard)** | metal void, oxide breakdown, gate short, latent process defect that finally opens | Yes — forever | ~1–5 FIT/mm² of digital logic in the useful-life region (§2.5) | LBIST/MBIST at key-on, online periodic test, or by a continuous mechanism once activated |
-| **Transient (soft)** | alpha or neutron strike flipping a storage node; a coupled glitch that gets latched | No — the next write restores it | 10–20 FIT/Mbit SRAM at 16 nm, sea level (§3.3) | ECC, parity, lockstep compare, CRC — must be *continuous*, since the fault is gone before any test runs |
+| **Transient (soft)** | alpha or neutron strike flipping a storage node; a coupled glitch that gets latched | No — the next write restores it | 1–10 FIT/Mbit SRAM at 16 nm FinFET, sea level, ~3 typical (§3.3) | ECC, parity, lockstep compare, CRC — must be *continuous*, since the fault is gone before any test runs |
 | **Intermittent** | marginal via, marginal timing path that fails only hot, a partially broken solder joint | Sometimes — recurs, correlated with condition | Not separately modeled; folded into permanent FIT with a duty factor | Same mechanisms as permanent, but diagnosis is much harder because it passes on the bench |
 
 The reason this taxonomy earns its place is that it selects the mechanism *class*. A transient cannot be caught by a periodic self-test — by the time the test runs, the evidence is gone — so transients force you into always-on encoding or replication. A permanent fault *can* be caught by a periodic test, which is dramatically cheaper, and that is why key-on BIST exists at all. Intermittents are the ones that get returned from the field with "no trouble found", and they are the reason §11.4's failure-analysis loop is a real cost center.
@@ -196,24 +196,26 @@ Now the transient contribution, computed per storage element rather than per are
 
 | Source | Count | Raw SER rate | Raw $\lambda_{\text{trans}}$ (FIT) |
 |---|---|---|---|
-| SRAM bits | 2 MB = 16 Mbit | 15 FIT/Mbit | 240 |
+| SRAM bits | 2 MB = 16 Mbit | 3 FIT/Mbit | 48 |
 | Flip-flops | 3.0 M | $2\times10^{-5}$ FIT/flop | 60 |
 | Combinational logic (SETs latched) | — | ~15% of flop SER after derating | 9 |
-| **Total raw transient** | | | **309** |
+| **Total raw transient** | | | **117** |
 
-**The headline result: raw transient FIT is 5.8× the permanent FIT.** For an unprotected consumer chip that is the entire story of its silent-data-corruption rate. The engineering response is that transients, unlike permanents, are *cheap to cover* with encoding:
+**The headline result: raw transient FIT is 2.2× the permanent FIT, and the flops contribute more of it than the SRAM does.** For an unprotected consumer chip that is the entire story of its silent-data-corruption rate. The engineering response is that transients, unlike permanents, are *cheap to cover* with encoding:
 
 | Source | Raw FIT | Mechanism | Residual FIT |
 |---|---|---|---|
-| SRAM | 240 | SEC-DED, 4-way bit interleaving, background scrub | 1.2 |
+| SRAM | 48 | SEC-DED, 4-way bit interleaving, background scrub | 0.24 |
 | CPU flops (1.0 M) | 20 | dual-core lockstep, compare every cycle | 0.02 |
 | Other flops (2.0 M) | 40 | parity on state machines and config, unprotected datapath | 2.4 |
 | Combinational | 9 | covered incidentally by the flop mechanisms downstream | 0.5 |
-| **Total residual transient** | **309** | | **≈ 4.1** |
+| **Total residual transient** | **117** | | **≈ 3.2** |
 
-Die total after protection: $\lambda \approx 53.6 + 4.1 \approx 58$ FIT. That is the number the FMEDA of §5 then decomposes into safe, single-point, residual, and latent.
+Read the residual column before moving on: the 48 FIT of SRAM, which is the part everybody worries about, ends up contributing 0.24 FIT because it is the one structure with a real code on it, while the 40 FIT of ordinary flops contributes 2.4 FIT — **75% of the residual transient budget sits in the flops nobody protected.** That inversion is the whole reason §3.3 spends time on flop SER.
 
-**Where the budget comes from, top-down.** Do not derive the target from the die — derive it from the vehicle. An ASIL-D safety goal demands PMHF $< 10^{-8}\,\text{h}^{-1} = 10$ FIT for the whole *item* (§4.2). The item is sensor + ECU + actuator, so the system engineer allocates, say: sensors 3 FIT, actuator and power stage 3 FIT, ECU discretes and supply 2 FIT, **SoC 2 FIT**. That 2 FIT is the budget for the SoC's single-point plus residual faults — not for its total FIT of 58. The design job is therefore to get from 58 FIT of raw failure rate to under 2 FIT of *safety-goal-violating* failure rate, which requires an average diagnostic coverage above 96.6% across the safety-related portion. §5 does exactly this and lands at 0.936 FIT.
+Die total after protection: $\lambda \approx 53.6 + 3.2 \approx 57$ FIT. That is the number the FMEDA of §5 then decomposes into safe, single-point, residual, and latent.
+
+**Where the budget comes from, top-down.** Do not derive the target from the die — derive it from the vehicle. An ASIL-D safety goal demands PMHF $< 10^{-8}\,\text{h}^{-1} = 10$ FIT for the whole *item* (§4.2). The item is sensor + ECU + actuator, so the system engineer allocates, say: sensors 3 FIT, actuator and power stage 3 FIT, ECU discretes and supply 2 FIT, **SoC 2 FIT**. That 2 FIT is the budget for the SoC's single-point plus residual faults — not for its total FIT of 57. The design job is therefore to get from 57 FIT of raw failure rate to under 2 FIT of *safety-goal-violating* failure rate, which requires an average diagnostic coverage above 96.5% across the safety-related portion. §5 does exactly this and lands at 0.936 FIT.
 
 ### 2.4 Permanent FIT versus transient FIT: two different data sources
 
@@ -285,7 +287,7 @@ with the first term dominant for fast strikes. This is the circuit-level figure 
 
 **Contract of the figure.** This is the struck node reduced to what matters: a capacitance holding the state, a restoring device trying to hold it, and a current source representing the collected charge from the ionizing track. Trace it at 130 nm: $C_{\text{node}} \approx 2$ fF, $V_{DD} = 1.2$ V, so $Q_{\text{crit}} \approx 2.4$ fC. At 16 nm FinFET: $C_{\text{node}} \approx 0.5$ fF, $V_{DD} = 0.8$ V, so $Q_{\text{crit}} \approx 0.4$ fC — a 6× reduction. A single alpha depositing tens of fC along its track now exceeds $Q_{\text{crit}}$ by more than an order of magnitude, so *every strike that collects meaningful charge flips the cell*.
 
-**The failure the figure predicts, and why it did not happen.** Naively, a 6× lower $Q_{\text{crit}}$ plus 2× more bits per generation should have produced a soft-error catastrophe. It did not, and the reason is the *other* term: **charge collection volume**. A planar bulk device collects charge from a deep funnel in the substrate; a FinFET's channel is a thin fin sitting above the bulk, with a much smaller volume in which deposited charge can be collected before it recombines or diffuses away. Collected charge fell faster than $Q_{\text{crit}}$ did. The empirical result is that **per-bit SRAM SER fell roughly an order of magnitude from planar 65 nm to 16 nm FinFET, while per-chip SER rose**, because bit counts grew faster. FD-SOI does the same thing more aggressively — the buried oxide truncates collection almost completely, giving another large reduction, which is one of the reasons that process family survives in aerospace and automotive niches.
+**The failure the figure predicts, and why it did not happen.** Naively, a 6× lower $Q_{\text{crit}}$ plus 2× more bits per generation should have produced a soft-error catastrophe. It did not, and the reason is the *other* term: **charge collection volume**. A planar bulk device collects charge from a deep funnel in the substrate; a FinFET's channel is a thin fin sitting above the bulk, with a much smaller volume in which deposited charge can be collected before it recombines or diffuses away. Collected charge fell faster than $Q_{\text{crit}}$ did. The empirical result is that **per-bit SRAM SER fell by more than two orders of magnitude from planar 65 nm to 16 nm FinFET** — roughly one of those orders at the planar-to-FinFET step itself (§3.3's table: ~700 to ~3 FIT/Mbit), the rest accumulated across the planar shrinks before it. Per-*chip* SER fell far less than per-bit SER did, because bit counts grew by more than an order of magnitude over the same span, which is why the SRAM line in §2.3's budget is still tens of FIT rather than a rounding error. FD-SOI does the same thing more aggressively — the buried oxide truncates collection almost completely, giving another large reduction, which is one of the reasons that process family survives in aerospace and automotive niches.
 
 ### 3.3 Representative numbers, and the derating chain
 
@@ -293,13 +295,13 @@ These are order-of-magnitude figures at sea-level reference conditions; the real
 
 | Element | Raw SER, planar 65 nm | Raw SER, 16 nm FinFET | Note |
 |---|---|---|---|
-| SRAM bit cell | ~700 FIT/Mbit | ~15 FIT/Mbit | the reference number everyone quotes |
+| SRAM bit cell | ~700 FIT/Mbit | ~3 FIT/Mbit (honest range 1–10) | the reference number everyone quotes; matches [Memory_Circuits_and_Technologies §8.2](../00_Fundamentals/06_Memory_Circuits_and_Technologies.md) |
 | Standard flip-flop | ~$5\times10^{-5}$ FIT/flop | ~$2\times10^{-5}$ FIT/flop | larger nodes than an SRAM cell, so higher $Q_{\text{crit}}$, but far less aggressive hardening |
 | Hardened (DICE) flip-flop | — | ~$2\times10^{-6}$ FIT/flop | ~10× better for ~1.8–2× area and ~1.5× power |
 | Latch in a latch-based pipeline | — | comparable to a flop | often forgotten in the budget |
 | Combinational gate (SET generation) | — | ~$10^{-6}$ FIT/gate raw | almost entirely derated away, see below |
 
-Notice what this table does to a mental model built on "memory is the SER problem". At 16 nm, 16 Mbit of SRAM contributes 240 FIT and 3 M flops contribute 60 FIT — flops are 20% of the raw budget and, critically, **flops usually have no ECC**, so after protection the flop contribution *dominates* the residual.
+Notice what this table does to a mental model built on "memory is the SER problem". At 16 nm, 16 Mbit of SRAM contributes 48 FIT while 3 M flops contribute 60 FIT — the flops are already **more than half the raw budget**, and, critically, **flops usually have no ECC**, so after protection the flop contribution does not merely compete with the SRAM's, it dominates it by an order of magnitude (§2.3: 2.4 FIT against 0.24 FIT). The mental model is a generation out of date: it was formed when SRAM was hundreds of FIT per megabit, and the FinFET transition of §3.2 took that term away without touching the flops.
 
 **The derating chain for combinational logic.** A single-event transient (SET) generated in a combinational gate must survive three independent filters before it becomes a fault:
 
@@ -315,7 +317,7 @@ The architectural generalization of all three is the **architectural vulnerabili
 
 **Baseline.** SEC-DED ECC over a 64-bit word corrects one bit error and detects two. It assumes at most one error per word.
 
-**Failure.** A single particle's ionization track is not a point. At 65 nm the track's charge cloud is small compared to the cell pitch and multi-cell upsets (MCU) are 1–5% of events. At 16 nm the cells are so tightly packed that one track's collection region spans several of them, and **30–50% of upset events flip two or more physically adjacent cells**. If those adjacent cells belong to the same ECC word, SEC-DED cannot correct them — and a triple upset is not even *detected*, which turns a benign correction into a silent data corruption. The nominal 240 → 1.2 FIT improvement of §2.3 evaporates.
+**Failure.** A single particle's ionization track is not a point. At 65 nm the track's charge cloud is small compared to the cell pitch and multi-cell upsets (MCU) are 1–5% of events. At 16 nm the cells are so tightly packed that one track's collection region spans several of them, and **30–50% of upset events flip two or more physically adjacent cells**. If those adjacent cells belong to the same ECC word, SEC-DED cannot correct them — and a triple upset is not even *detected*, which turns a benign correction into a silent data corruption. The nominal 48 → 0.24 FIT improvement of §2.3 evaporates.
 
 **Derived repair.** Break the correspondence between physical adjacency and logical word membership. **Bit interleaving** (also called column multiplexing) lays the array out so that bits $0, 1, 2, \dots$ of one logical word are separated by $N-1$ cells belonging to *other* words. With $N = 4$, a track that flips four adjacent cells produces four single-bit errors in four different words, each of which SEC-DED corrects. The physical layout, sense-amplifier sharing, and column decode of this arrangement are the memory designer's problem and are covered in [Memory_Circuits_and_Technologies](../00_Fundamentals/06_Memory_Circuits_and_Technologies.md); what matters here is that **the interleaving degree is a safety parameter you must specify and verify**, not a memory-compiler default to accept silently.
 
@@ -455,11 +457,11 @@ $$\text{LFM} \;=\; 1 - \frac{\sum \lambda_{\text{MPF,latent}}}{\sum \left(\lambd
 
 $$\text{PMHF} \;\approx\; \sum \lambda_{\text{SPF}} + \sum \lambda_{\text{RF}} \;+\; \underbrace{\sum_{\text{pairs}} \lambda_{i}\,\lambda_{j}\,T_{\text{lifetime}}}_{\text{dual-point term}}$$
 
-Three things to notice immediately. **(1) Safe faults inflate SPFM.** They sit in the denominator only, so adding a big pile of provably-safe logic makes your SPFM *better* without improving anything. Assessors know this, and an FMEDA claiming a 70% safe fraction with no justification will be rejected. **(2) LFM's denominator includes safe faults too**, which makes LFM systematically easier to pass than SPFM — hence the lower targets. **(3) The dual-point term in PMHF is almost always negligible**, as §5.5 demonstrates numerically; PMHF is in practice just the SPF-plus-RF sum, which is why passing SPFM and passing PMHF are nearly the same check.
+Three things to notice immediately. **(1) Safe faults inflate SPFM.** They sit in the denominator only, so adding a big pile of provably-safe logic makes your SPFM *better* without improving anything. Assessors know this, and an FMEDA claiming a 70% safe fraction with no justification will be rejected. **(2) LFM is systematically easier to pass than SPFM, and the reason is the numerator, not the denominator.** Both metrics divide by essentially the whole failure rate — LFM's denominator removes only the SPF and RF terms, which are small by construction in any design that passes SPFM. What differs is what goes on top: SPFM's numerator collects every uncovered fault in every *functional* element, while LFM's collects only the undetected faults *inside the safety mechanisms themselves*, a far smaller population. Hence the lower targets. **(3) The dual-point term in PMHF is almost always negligible**, as §5.5 demonstrates numerically; PMHF is in practice just the SPF-plus-RF sum, which is why passing SPFM and passing PMHF are nearly the same check.
 
 ### 5.3 A worked FMEDA
 
-**The design.** An ASIL-D brake-pressure control subsystem on a die: a lockstepped CPU pair, protected data SRAM, an AXI interconnect carrying the safety-relevant traffic, a PWM output timer driving the valve stage, the clock and reset infrastructure, configuration registers, and a small block of debug and test glue that sits in the safety-relevant path. Three blocks are pure safety mechanisms. Total allocated $\lambda = 100$ FIT, from a die budget built as in §2.3.
+**The design.** An ASIL-D brake-pressure control subsystem on a die: a lockstepped CPU pair, protected data SRAM, an AXI interconnect carrying the safety-relevant traffic, a PWM output timer driving the valve stage, the clock and reset infrastructure, configuration registers, and a small block of debug and test glue that sits in the safety-relevant path. Three blocks are pure safety mechanisms. Total allocated $\lambda = 100$ FIT for this subsystem's safety-related portion, built as in §2.3 — permanent faults plus the *post-protection* transient residual, on a die larger than that section's 25 mm² example. Note that the rates below are dominated by permanent faults, so nothing in this section moves when the SRAM soft-error figure of §3.3 is revised.
 
 Column meanings: $f_S$ is the fraction of the element's failure rate judged **safe**; $\text{DC}_{\text{SPF}}$ is the mechanism's coverage against single-point/residual faults; $\text{DC}_{\text{LF}}$ is the coverage of the *latent-fault* mechanism watching a safety mechanism. The convention used here — the one used by every commercial FMEDA tool — is: for a functional element, $\lambda_{\text{RF}} = \lambda(1-f_S)(1-\text{DC}_{\text{SPF}})$ and the covered remainder becomes MPF-detected; for a safety-mechanism element, none of its faults violate the goal alone, so $\lambda_{\text{MPF,latent}} = \lambda(1-f_S)(1-\text{DC}_{\text{LF}})$.
 
@@ -524,7 +526,7 @@ Note that **all four fixes were required** — any three of them leave the metri
 
 $$\text{LFM} = 1 - \frac{\sum \lambda_{\text{MPF,latent}}}{\sum \lambda_{\text{total}} - \sum \lambda_{\text{SPF}} - \sum \lambda_{\text{RF}}} = 1 - \frac{1.340}{100 - 0.936} = 1 - \frac{1.340}{99.064} = \mathbf{98.65\%}$$
 
-which clears the ASIL D target of 90% with room to spare. That comfort is typical and is a direct consequence of the denominator including all the safe and detected faults. The way to *fail* LFM is to have no latent-fault mechanism at all — drop the key-on LBIST and the error-injection self-tests, so $\text{DC}_{\text{LF}} = 0$ for G, H, and I, and $\sum \lambda_{\text{MPF,latent}} = 4.8 + 3.2 + 3.6 = 11.6$ FIT, giving $\text{LFM} = 1 - 11.6/99.064 = 88.3\%$ — **a failure at ASIL D and even marginal for ASIL C.** That single comparison is the entire economic argument for building self-test into the safety mechanisms, and it is why "who tests the tester" is a mandatory design review question.
+which clears the ASIL D target of 90% with room to spare. That comfort is typical, and per §5.2 it comes from the numerator: only the three mechanism blocks (14 FIT of the 100) can contribute latent faults at all, and 90% of that is covered. The way to *fail* LFM is to have no latent-fault mechanism at all — drop the key-on LBIST and the error-injection self-tests, so $\text{DC}_{\text{LF}} = 0$ for G, H, and I, and $\sum \lambda_{\text{MPF,latent}} = 4.8 + 3.2 + 3.6 = 11.6$ FIT, giving $\text{LFM} = 1 - 11.6/99.064 = 88.3\%$ — **a failure at ASIL D, whose target is 90%, though still clear of ASIL C's 80% with margin.** That single comparison is the entire economic argument for building self-test into the safety mechanisms at the top ASIL, and it is why "who tests the tester" is a mandatory design review question. It also shows where the LFM cliff is: the metric is forgiving until the last ASIL step, and then it is not.
 
 ### 5.5 PMHF, and why the dual-point term is negligible
 
@@ -544,7 +546,7 @@ Every entry below answers three questions: **what fault class does it detect**, 
 
 ### 6.1 Parity — the cheapest thing that works
 
-Append one bit per word such that the total number of ones is even (or odd). **Detects** any odd-weight error, therefore all single-bit errors — which is essentially all soft errors in a non-interleaved array, and a large fraction of stuck-at faults in the array and its addressing. **Misses** all even-weight errors, so its coverage against arbitrary multi-bit corruption is ~50%. Cannot correct. **DC 60–90%** depending on the failure-mode mix; claim 90% only for a single-bit-dominated distribution. **Cost:** $1/W$ extra bits ($1.6\%$ for $W=64$), an XOR tree of depth $\lceil \log_2 W\rceil$ (~3 gate delays for 64 bits, usually absorbable in the array access), negligible power. **Selection boundary:** parity is right for register banks, configuration registers, small FIFOs, and anywhere a detected error can be handled by re-fetching or by entering the safe state. It is *wrong* for a write-back cache holding the only copy of dirty data, where detection without correction means unrecoverable data loss.
+Append one bit per word such that the total number of ones is even (or odd). **Detects** any odd-weight error, therefore all single-bit errors — which is essentially all soft errors in a non-interleaved array, and a large fraction of stuck-at faults in the array and its addressing. **Misses** all even-weight errors, so its coverage against arbitrary multi-bit corruption is ~50%. Cannot correct. **DC 60–90%** depending on the failure-mode mix; claim 90% only for a single-bit-dominated distribution. **Cost:** $1/W$ extra bits ($1.6\%$ for $W=64$), an XOR tree of depth $\lceil \log_2 W\rceil$ — 6 levels of 2-input XOR for $W = 64$, or 3 levels if the library offers 4-input XORs, usually absorbable in the array access — and negligible power. **Selection boundary:** parity is right for register banks, configuration registers, small FIFOs, and anywhere a detected error can be handled by re-fetching or by entering the safe state. It is *wrong* for a write-back cache holding the only copy of dirty data, where detection without correction means unrecoverable data loss.
 
 ### 6.2 SEC-DED and stronger ECC
 
@@ -988,7 +990,7 @@ Take $E_a = 0.7$ eV, so $E_a/k = 8{,}123.5$ K, and a reference of 125 °C = 398.
 **The whole 12,000-hour mission is equivalent to 3,345 hours of continuous stress at 125 °C.** Two conclusions worth memorizing:
 
 1. **The hot tail dominates.** The top 2% of operating time (150 °C) contributes 24% of the wear — more than the 125 °C bin, which has four times as many hours. The bottom 30% (40 °C) contributes 0.4%, essentially nothing. **Wear-out is a property of the tail of the temperature distribution, not its mean.** Anyone who signs off on the average junction temperature has signed off on the wrong number, and this is the argument for a temperature sensor *inside* the safety island rather than a die-average estimate (§8.3).
-2. **Design margin buys enormous life at the top of the histogram.** Shaving 10 °C off the 150 °C bin through floorplan or thermal design removes about 12% of the total accumulated wear — a better return than most circuit-level fixes.
+2. **Design margin buys enormous life at the top of the histogram.** Shaving 10 °C off the 150 °C bin through floorplan or thermal design drops that bin's acceleration factor from 3.34 to 2.10, taking it from 802 to 503 equivalent hours and removing **8.9%** of the total accumulated wear — a better return than most circuit-level fixes, from 2% of the operating time.
 
 The equivalent stress then feeds the vendor's aging model to produce a $\Delta V_{th}$, which becomes a delay degradation. In STA this appears either as an **aged `.lib`** characterized at the end-of-life $V_{th}$ shift, or as a global `set_timing_derate` of typically **5–10% on cell delay** for an automotive lifetime — larger for a static, high-duty-cycle always-on block than for a lightly switching one, since BTI partially recovers. The details of applying it belong to [STA](../06_Signoff/01_STA.md); the safety-specific point is that **the derate is derived from the mission profile, not chosen**, and its derivation is a work product an assessor will ask to see.
 
@@ -1089,7 +1091,7 @@ The pattern across every row is the same: **the safety part does not do differen
 | DC forced by ASIL D | ≥ 98% with a 50% safe fraction; ≥ 99% with none | rules out parity and mod-3 residue as primary mechanisms (§7.5) |
 | Neutron flux, sea level NYC | ~13 n/cm²/h above 10 MeV | the JESD89 reference all SER numbers normalize to (§3.1) |
 | Altitude scaling of neutron flux | ~4× at 1,600 m, ~300× at 11 km | why avionics and automotive SER budgets differ by orders of magnitude (§3.1) |
-| SRAM SER, 16 nm FinFET | ~15 FIT/Mbit at sea level | 2 MB of SRAM = 240 FIT raw, 5× a whole die's permanent FIT (§2.3, §3.3) |
+| SRAM SER, 16 nm FinFET | ~3 FIT/Mbit at sea level, honest range 1–10 | 2 MB of SRAM = 48 FIT raw — comparable to a whole die's permanent FIT, not dominant over it (§2.3, §3.3) |
 | Flop SER, 16 nm | ~$2\times10^{-5}$ FIT/flop | 3 M flops = 60 FIT, and flops usually have no ECC (§3.3) |
 | $Q_{\text{crit}}$, 130 nm → 16 nm | ~2.4 fC → ~0.4 fC | fell 6×, but collection volume fell faster, so per-bit SER improved (§3.2) |
 | MCU fraction at 16 nm | 30–50% of upset events flip ≥ 2 adjacent cells | forces bit interleaving of degree ≥ 4 before SEC-DED means anything (§3.4) |
@@ -1207,8 +1209,8 @@ $$\text{SPFM} = 1 - \frac{0.3055}{45} = \mathbf{99.32\%} \ \checkmark, \qquad \t
 Reading the table:
 
 - **On safety (column a), duplex beats TMR** — $5.76\times10^{-5}$ versus $9.98\times10^{-5}$, a factor of 1.7 — at two-thirds of the silicon. Both architectures are limited by the same common-cause term and by their checker; TMR additionally pays a full voter that sits in the datapath, while duplex's comparator only has to fail *silently* (roughly half its failure modes) to hurt.
-- **On availability (column b), TMR beats everything** by 30×, and duplex is 2× *worse than simplex* — twice the hardware means twice the rate of stopping.
-- The independent-TMR term $3q^2 = 6.22\times10^{-6}$ is the smallest number in the table. Triplication's celebrated quadratic benefit is 3% of TMR's actual failure probability; the voter and the common cause are 94% of it.
+- **On availability (column b), TMR beats everything** — 30× better than duplex and 14× better than simplex — and duplex is 2× *worse than simplex*, because twice the hardware means twice the rate of stopping.
+- The independent-TMR term $3q^2 = 6.22\times10^{-6}$ is the smallest number in the table. Triplication's celebrated quadratic benefit is only 6% of TMR's actual failure probability; the voter and the common cause are the other 94%.
 - The classical crossover where TMR falls below simplex is at $t = \ln 2/\lambda = 0.693/(1.2\times10^{-7}) = 5.8\times10^{6}$ h $\approx 660$ years — irrelevant here, and a reminder that the textbook crossover is not the real constraint.
 
 *The lesson.* **TMR buys availability, not safety.** If a safe state exists and can be reached inside FTTI — as it does in a car, where you disable the actuator and return control to the driver — duplex is both the safer and the cheaper architecture. TMR earns its 3× only where stopping is not an option: an aircraft control surface with no mechanical reversion, a spacecraft with no operator, a fault-tolerant server that must not drop the transaction. Choosing TMR "because it is more redundant" is choosing the wrong metric.

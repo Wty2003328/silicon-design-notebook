@@ -639,3 +639,7 @@ Multiply out into per-level contributions $(\prod_{j<k}m_{Lj})\,t_{Lk}$ (§1.2) 
 5. Sorin, D. J., Hill, M. D., and Wood, D. A., *A Primer on Memory Consistency and Cache Coherence*, 2nd ed., Morgan & Claypool, 2020. SWMR invariant and MESI/MOESI derivation (§8).
 6. Intel Corp., "Intel 64 and IA-32 Architectures Optimization Reference Manual," Order 248966. Prefetchers, inclusion, CAT.
 7. ARM Ltd., "Arm Memory System Resource Partitioning and Monitoring (MPAM)," ARM DDI 0598. §10.
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Prefetching, Replacement, and Quality of Service (QoS)](02_Prefetching_Replacement_and_QoS.md)

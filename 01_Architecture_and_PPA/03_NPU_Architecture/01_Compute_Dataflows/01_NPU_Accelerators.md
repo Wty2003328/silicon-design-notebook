@@ -558,7 +558,7 @@ Because the silicon is heterogeneous (systolic array for GEMM + a SIMD **vector 
 
 ## 7. Scaling out — multi-die and pods, where the interconnect is the roofline
 
-A single die cannot grow arbitrarily: the lithography **reticle limit** (~800 mm²) caps die area, yield falls with area, and a frontier model no longer fits in one chip's HBM. NPU scaling therefore goes *outward* — many dies wired into a fabric — and at that point **the interconnect, not the MAC array, sets performance.** Two levels:
+A single die cannot grow arbitrarily: the lithography **reticle limit** (858 mm², the 26 × 33 mm field) caps die area, yield falls with area, and a frontier model no longer fits in one chip's HBM. NPU scaling therefore goes *outward* — many dies wired into a fabric — and at that point **the interconnect, not the MAC array, sets performance.** Two levels:
 
 - **Multi-die / chiplet (on-package).** Split what would be one over-reticle die into chiplets joined by a die-to-die link (UCIe (Universal Chiplet Interconnect Express), NVLink-C2C) over a silicon interposer — buys area past the reticle and better yield, at the cost of cross-die latency/energy and a bandwidth wall at the die boundary (packaging substrate: [IC_Packaging](../../../07_Manufacturing_and_Bringup/02_IC_Packaging.md); cross-die coherence: [ACE_and_CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md)).
 - **Pod / cluster (across nodes).** Tens to thousands of chips over a dedicated **inter-chip interconnect (ICI)**. TPUs wire a 2-D or 3-D **torus** — chosen for bounded node degree, short diameter, and a natural map onto collectives — scaling to a 9,216-chip pod on TPU v7 (Ironwood). NVIDIA wires an **NVLink** fabric: 5th-gen NVLink gives 1.8 TB/s per GPU, an NVL72 domain ~130 TB/s aggregate ($72\times1.8$ TB/s).
@@ -662,3 +662,7 @@ Where it stops winning: an NPU is efficient **only** in the compute-bound, high-
 - "How to Think About TPUs" (JAX scaling book; modern MXU dimensions and systolic dataflow) — [jax-ml.github.io/scaling-book/tpus](https://jax-ml.github.io/scaling-book/tpus/).
 - UC Berkeley, *Chipyard Documentation — Gemmini*. [[official documentation]](https://chipyard.readthedocs.io/en/stable/Generators/Gemmini.html) — explicit move/execute instructions, scratchpad/accumulator organization, and DMA coupling to system-bus beat and cache-block parameters (§5.8).
 - NVIDIA, "Fifth-Generation NVLink" (Blackwell, 1.8 TB/s per GPU; NVL72) — [nvidia.com NVLink](https://www.nvidia.com/en-us/data-center/nvlink/).
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Systolic, Spatial, and Vector Dataflows](02_Systolic_Spatial_and_Vector_Dataflows.md)

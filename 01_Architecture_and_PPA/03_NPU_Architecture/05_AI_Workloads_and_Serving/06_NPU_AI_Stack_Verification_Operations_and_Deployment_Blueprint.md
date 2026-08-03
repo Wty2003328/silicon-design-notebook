@@ -116,3 +116,7 @@ Bring up offline compiler/reference, device command smoke, one operator/profile,
 ---
 
 ← [NPU Serving Engine](05_NPU_Serving_Engine_Scheduler_and_State_Implementation_Blueprint.md) · [NPU AI Index](00_Index.md)
+
+---
+
+⬅ prev [NPU Serving-Engine, Scheduler, and State Implementation Blueprint](05_NPU_Serving_Engine_Scheduler_and_State_Implementation_Blueprint.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

@@ -540,3 +540,7 @@ Then use differential tests: infinite-cache versus finite-cache, zero-latency ve
 - Leng et al. *GPUWattch: Enabling Energy Optimizations in GPGPUs.* ISCA 2013.
 - Khairy, Shen, Aamodt, Rogers. *Accel-Sim: An Extensible Simulation Framework for Validated GPU Modeling.* ISCA 2020. [[pdf]](https://mkhairy.github.io/Docs/Accel-Sim.pdf) · [[site]](https://accel-sim.github.io/) · [[GitHub]](https://github.com/accel-sim/accel-sim-framework)
 - Kandiah, Peverelle, Khairy, et al. *AccelWattch: A Power Modeling Framework for Modern GPUs.* MICRO 2021. [[pdf]](https://paragon.cs.northwestern.edu/papers/2021-MICRO-AccelWattch-Kandiah.pdf)
+
+---
+
+[Section Index](00_Index.md) · [Root Index](../../../Index.md)

@@ -417,3 +417,7 @@ Useful counters include decoded density, metadata bytes, matcher utilization, PE
 ---
 
 ← [Transformer and Attention Engines](03_Transformer_and_Attention_Engine_Microarchitecture.md) · [Compute Dataflows index](00_Index.md) · next → [Mapping and Memory](../02_Mapping_and_Memory/00_Index.md)
+
+---
+
+⬅ prev [Transformer and Attention Engine Microarchitecture](03_Transformer_and_Attention_Engine_Microarchitecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)

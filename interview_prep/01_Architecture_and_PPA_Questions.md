@@ -2363,3 +2363,7 @@ But batching, verification shape efficiency, draft/target placement, extra KV st
 #### Q64: How do you roll out or roll back an AI stack when requests have live state?
 
 **Answer:** Treat model/compiler/executable/runtime/configuration/state format as immutable compatible generations. New workers validate, load, form groups, warm, and canary before routing. Existing requests stay pinned to their model/plan/KV layout and group. Drain stops new assignment, completes or explicitly migrates/cancels, commits outputs, quiesces device/collective/transfer users, releases state, and revokes epochs before unload. Rollback reuses live state only if model, tokenizer, precision, sharding, and state layout are compatible or a tested converter performs an ownership commit; otherwise keep old workers through drain or terminate explicitly. Reserve capacity for version overlap and failure.
+
+---
+
+⬅ prev [00](00_Fundamentals_Questions.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [02](02_Power_and_Low_Power_Questions.md)
