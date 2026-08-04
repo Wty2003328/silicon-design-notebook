@@ -1071,12 +1071,16 @@ Layering lets the same coherent semantics run over different fabrics. It also me
 
 ### 13.3 Four message-channel classes
 
-| Channel | Typical direction/role | Example content |
-|---|---|---|
-| `REQ` | RN → HN/SN | read, write, atomic, maintenance request |
-| `SNP` | HN → snoopable RN | query, invalidate, clean, forward request |
-| `RSP` | any required response path | completion, snoop response, retry acknowledgement, database-ID response |
-| `DAT` | any data-bearing path | completion data, snoop-response data, write data |
+The four classes have fixed names — **REQ** (Request), **RSP** (Response), **SNP** (Snoop), **DAT** (Data) — and every specification table, waveform, and verification-IP log uses them, so learn the names together with the roles. The transport unit is the **flit** (flow-control digit): the quantum the link layer moves in one beat and the quantum one link credit is spent on. A *packet* is one protocol message. On REQ, RSP, and SNP a packet is always exactly **one flit**; only DAT packets span several, because only they carry a cache line.
+
+| Channel — full name | Flit type | Direction / role | Representative opcodes |
+|---|---|---|---|
+| `REQ` — Request | request flit, 1 per packet | RN → HN, HN → SN | `ReadShared`, `ReadUnique`, `CleanUnique`, `WriteBackFull`, `WriteNoSnp`, `AtomicLoad`, `DVMOp`, `PCrdReturn` |
+| `RSP` — Response | response flit, 1 per packet | any node → any node | `Comp`, `CompDBIDResp`, `DBIDResp`, `SnpResp`, `CompAck`, `RetryAck`, `PCrdGrant` |
+| `SNP` — Snoop | snoop flit, 1 per packet | HN or MN → snoopable RN | `SnpShared`, `SnpUnique`, `SnpCleanInvalid`, `SnpDVMOp` |
+| `DAT` — Data | data flit, 1–4 per packet | any node → any node | `CompData`, `SnpRespData`, `CopyBackWrData`, `NonCopyBackWrData` |
+
+The DAT flit count is set by the configured data width and is a first-order performance parameter: one 64 B line is **4 flits at 128-bit, 2 flits at 256-bit, 1 flit at 512-bit** (§16.2). A response flit is on the order of 50–70 bits and a request flit on the order of 100–150 bits, so the three control channels are an order of magnitude narrower than DAT — which is a large part of why separating them is worth the wires.
 
 Each message contains routing and transaction fields plus opcode-specific payload. Logical channel separation prevents a large data stream from sharing exactly the same endpoint queue as small control messages, but full deadlock freedom still depends on independent buffering/virtual channels, routing, endpoint resource rules, and fairness in the selected implementation.
 
@@ -1103,6 +1107,8 @@ $$
 $$
 
 and every accepted flit eventually causes exactly one credit return when its receive slot is freed. A lost credit creates a permanent throughput leak; a duplicate credit permits buffer overflow.
+
+These are **L-Credits (link credits)**, and they answer exactly one question: *is there a flit buffer at the next hop?* A flit that wins an L-Credit has been **transported**, not **accepted by the protocol** — the home may still have no transaction-table entry to put it in. That second, protocol-level resource has its own separate currency, the **P-Credit (protocol credit)**, with its own grant and hand-back rules; §13.8 derives it. Keeping the two apart is the difference between diagnosing a link that has stopped moving flits (L-Credit leak) and a home that has stopped allocating transactions (P-Credit leak) — two failures whose waveforms look nothing alike.
 
 ---
 
@@ -1243,22 +1249,45 @@ sequenceDiagram
 
 The DBID is a promise that the receiver has a buffer for the data. It prevents the sender from injecting a cache line that has nowhere to land. The sender must not reuse the DBID/transaction entry before the required completion.
 
-Write opcodes distinguish full/partial line, unique/eviction/writeback intent, and allocation/coherence behavior. Partial writes can require read-modify-write or byte enables at the final target; full-line writes can avoid fetching old data.
+**The CopyBack family — the writes a coherent cache uses to give a line back.** CHI sorts requester-initiated writes into named groups, and the group a *cache* uses to return a line it already holds is **CopyBack**. The flow above is exactly its shape, with the home usually collapsing `Comp` and `DBIDResp` into a single `CompDBIDResp` RSP flit and the data returning as `CopyBackWrData`. Four opcodes cover the four things a cache can want, and each performs a specific state transition — memorize the transition, not the name:
+
+| Opcode | Group | Initial state | Final state in the requester | Data moved | Why this opcode exists |
+|---|---|---|---|---|---|
+| `WriteBackFull` | CopyBack | UD or SD | I | full 64 B dirty line | the ordinary dirty eviction; the Data-Value invariant forbids dropping the last copy of a write |
+| `WriteBackPtl` | CopyBack | UDP — unique dirty *partial*, a state some profiles define for a cache that gained write permission without fetching every byte | I | line plus byte enables | only some bytes are valid; writing the whole line back would overwrite bytes the cache never owned with stale content |
+| `WriteCleanFull` | CopyBack | UD or SD | **UC or SC — the line is kept** | full dirty line | clean *without* losing the line, so the cache keeps hitting on it while memory/SLC is made current; the fabric leg of a data-cache clean, and how a cache drains its dirty inventory before a power-down or a persistence point |
+| `WriteEvictFull` | CopyBack | UC | I | full **clean** line | hand a clean line to an *exclusive* system-level cache on eviction so the next requester hits in the SLC instead of going to DRAM; silently dropping it is correct but throws away a warm line |
+| `Evict` | Dataless — *not* CopyBack | UC or SC | I | none | tell the directory to drop this sharer with no data movement at all; the cheapest possible eviction |
+
+Two observations carry the design. First, `WriteCleanFull` is the only one that does **not** end in I — it is a *clean*, not an eviction, and confusing the two is how a cache ends up invalidating lines it wanted to keep. Second, `WriteEvictFull` versus `Evict` is a pure SLC-policy decision: an inclusive or non-inclusive SLC that already has the clean data wants `Evict` (no data traffic), while an exclusive SLC wants `WriteEvictFull` (the data would otherwise be lost). Choosing the wrong one costs either wasted DAT bandwidth or an avoidable DRAM miss on the next access.
+
+**The race a CopyBack must survive.** A CopyBack is not atomic with the eviction: the request leaves, and before the data does, the home can send a snoop that takes the line away. The protocol handles this by letting the requester complete the transaction with `CopyBackWrData` carrying a response state of `I` **and no valid data** — "the line is no longer mine; release the buffer." That releases the home's DBID and transaction entry without writing stale bytes over the newer copy the snoop just extracted. An implementation that instead "cancels" by simply never sending the data leaks a home transaction entry and a DBID on every occurrence, which is precisely the *home table fills permanently* row of §13.14 and is invisible until a long stress run.
+
+The remaining write groups distinguish full/partial line, unique/eviction/writeback intent, and allocation/coherence behavior. Partial writes can require read-modify-write or byte enables at the final target; full-line writes can avoid fetching old data.
 
 ---
 
 ### 13.8 Retry without uncontrolled livelock
 
-A home may lack a transaction-table or other resource. CHI retry is a protocol-controlled sequence rather than “send again whenever.”
+A home may lack a transaction-table or other resource. CHI retry is a protocol-controlled sequence rather than “send again whenever,” and it has an exact vocabulary worth learning, because that vocabulary is what a waveform and a protocol-checker error message show you. The mechanism is the **P-Credit (protocol credit)** introduced in §13.3.1: where an L-Credit says *I have a flit buffer*, a P-Credit says *I have the transaction resource your request needs*.
 
-Conceptually:
+1. **`RetryAck`.** The home takes the REQ flit off the link — so it does **not** back-pressure the fabric and does not head-of-line block unrelated traffic — but declines to allocate, and answers on RSP with `RetryAck` carrying a **`PCrdType`** field. `PCrdType` names the *resource class* the requester must wait for, not a specific entry. A home that separates, say, read trackers, write trackers, snoop-filter victim slots, and DVM slots gives each its own type, so a shortage of one class cannot stall the others. The field is small — on the order of 4 bits, so up to 16 classes in a typical configuration.
+2. **The requester marks the attempt dead.** The original request allocated nothing at the home; only the requester's own transaction-table entry still exists. The requester records the `PCrdType` and does **not** resend on a timer.
+3. **`PCrdGrant`.** When the resource frees, the home sends `PCrdGrant` on RSP with a matching `PCrdType`. Note what `PCrdGrant` does *not* carry: it is addressed to a requester and a credit class, not to a transaction. It is a **bearer token**, not a per-transaction reply.
+4. **The retried request** repeats the original — same address, same opcode, same TxnID — with two fields changed: `AllowRetry` is cleared, marking this attempt as one that must not be retried again, and `PCrdType` is set to the granted value so the home knows which credit is being spent. The home is now obliged to allocate.
 
-1. HN returns a retry acknowledgement with a retry-credit class/type.
-2. RN records that the original attempt did not allocate normal transaction progress.
-3. HN later grants a matching protocol credit when the relevant resource is available.
-4. RN retries only after receiving that grant and follows the specified identity/order rules.
+Two consequences follow from `PCrdGrant` being a bearer token, and both are standard first-bring-up bugs:
 
-This throttles retries and prevents a swarm of requesters from continuously re-flooding a full home. Verification must ensure one retry grant authorizes only the permitted retry use and cannot be lost/duplicated.
+- **The grant can arrive before the `RetryAck`.** Both ride RSP, but a home may emit them from different pipeline stages and nothing in the protocol orders them relative to each other. A requester that only arms its credit-capture logic *after* observing `RetryAck` will drop the grant and hang forever holding a request it will never be invited to resend. The correct receiver is a small **counter per `PCrdType`** that is allowed to go positive before any retry is known about.
+- **A credit you no longer need must be handed back.** A requester can end up holding a P-Credit it cannot use: the request was cancelled by a speculation squash or a fault, or two retries were outstanding and only one survived, or it simply received a grant of a type it is no longer waiting on. Credits are a finite home resource, so silently dropping one **permanently shrinks the home's usable tracker pool**. The protocol therefore defines **`PCrdReturn`**, a REQ-channel transaction that carries a `PCrdType` and returns the credit with no address semantics and no response. `PCrdReturn` is the single most frequently omitted obligation in a first RN implementation, and its signature is a fabric that degrades slowly across hours of stress until the home is issuing nothing but `RetryAck` to everyone.
+
+**Why this cannot livelock**, which is the entire point of the mechanism, now with the real names on it. A retried requester never resends spontaneously; it resends only when *invited* by a `PCrdGrant`. The home therefore controls the whole retry rate — a swarm of 64 requesters cannot re-flood a full home, because none of them is allowed to try again — and, more importantly, the home also controls the *order*, since it chooses which pending requester receives the next grant of a type. Make that choice fair — a FIFO of retried requesters per `PCrdType`, or an age-ranked pick — and every retried request is granted after a bounded number of grants, so retry inherits the liveness proof of §13.13.5. Make it unfair — grant to whoever asked most recently, or to the topologically nearest node — and a distant requester starves indefinitely while the home stays perfectly busy and perfectly protocol-legal. **Credit accounting is the safety half of retry; grant arbitration is the liveness half, and only the first is checked by a protocol checker.**
+
+Verification must therefore ensure that one `PCrdGrant` authorizes exactly one retry, that a grant is never lost or duplicated, that `PCrdType` values are never crossed between classes, and that credits balance at every quiesce point:
+
+$$
+\text{granted} \;=\; \text{consumed by retries} \;+\; \text{returned via } \texttt{PCrdReturn} \;+\; \text{held}
+$$
 
 ---
 
@@ -1490,6 +1519,494 @@ Then reconstruct ownership:
 - §12 (ACE designer deep dive): the channel-attached snoop protocol that motivates CHI.
 - [Network on Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md): routing, virtual channels, credits, and topology.
 - [Cache Coherence](01_Cache_Coherence.md): stable/transient state safety and liveness.
+
+---
+
+## 14. Distributed Virtual Memory — putting TLB maintenance on the coherent fabric
+
+> **Scope:** why an address translation is shared state that hardware coherence cannot reach, the four DVM (Distributed Virtual Memory) operation classes, the two-part `DVMOp`/`DVMSync` structure, the distribution node, the fabric events behind a correct `TLBI`+`DSB` sequence, and the $O(N)$ cost that makes DVM the first thing to break in a very large system.
+
+### 14.0 The gap the directory does not cover
+
+Everything in §§4–13 keeps **cache lines** coherent. A cache line has an address, so the directory can index it, snoop it, and invalidate it. Now ask what happens to the *other* cached copy every core keeps: the **TLB (translation lookaside buffer)** entry — the decoded virtual-to-physical mapping a page-table walk produced ([TLB_and_Virtual_Memory §5](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)).
+
+A TLB entry is a **derived** copy. It is not a copy of a cache line; it is a copy of the *meaning* of one, after the walker read up to four levels of page table and folded them into $\{$VA range, PA, permissions, memory attributes, ASID (address space identifier), VMID (virtual machine identifier)$\}$. Three properties follow, and together they are exactly why hardware coherence cannot reach it:
+
+1. **It has no address the directory can name.** The directory tracks line addresses. A TLB entry is looked up by *virtual* address, and the physical line it came from — the leaf PTE (page table entry) — is not what invalidating would fix, because the TLB no longer holds the PTE; it holds a transformation of it. A snoop to the PTE's line would tell the core "that line changed" and the core has no structure mapping "PTE line $X$" back to "which of my 1024 TLB entries were derived from it." Building that reverse map is possible in principle and is what nobody does: it costs a back-pointer per TLB entry plus a CAM (content-addressable memory) match over all of them on **every** snoop of **every** page-table line — and page-table lines are ordinary data lines the OS writes constantly.
+2. **It is a copy no agent recorded.** When the walker reads a PTE it uses an ordinary coherent read, so the directory records that this core's cache holds that *line*. The core then evicts the line and keeps the translation. From that instant, the directory's sharer set and the set of TLBs holding the derived translation are unrelated sets, and the directory's is the wrong one.
+3. **The architecture already concedes the point.** The ISA does not promise that a PTE write is visible to another core's translations; it promises visibility only after a defined maintenance sequence. So the invalidate instruction already exists. The only open question is **what carries it across the machine.**
+
+[TLB_and_Virtual_Memory §8](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) derives the software answer — the IPI (inter-processor interrupt) shootdown — and its cost. **DVM is the hardware answer: make the invalidate a fabric transaction that reuses the snoop fan-out the coherence protocol already built.** The comparison is the whole motivation:
+
+| | IPI shootdown (software) | DVM (fabric) |
+|---|---|---|
+| Fan-out mechanism | interrupt controller, one IPI per target core | SNP channel, one `SnpDVMOp` per target RN |
+| Cost at the *target* core | takes an exception: pipeline drain, handler entry, TLB op, handler exit, return — 500–2000 core cycles during which the core executes **nothing else** | the RN's snoop port applies a maintenance operation in the background; the pipeline drains only if the operation's semantics require it |
+| Cost at the *initiator* | spin on an acknowledgment array in memory, where every acknowledgment is itself a coherence miss | one `DVMOp`, later one `DVMSync` — two fabric transactions |
+| 64-core latency | 1–3 µs (§14.5) | 150–220 ns (§14.5) |
+| System-wide wasted work | $N$ cores stalled per shootdown $\times\ O(N)$ shootdowns $=O(N^2)$ stalled cycles | $O(N)$ fabric messages; **no core stalls** |
+| Precondition | an OS that tracks which cores could hold each mapping | an ISA whose TLB-invalidate is architecturally broadcast within a shareability domain |
+
+That last row is the catch. Arm's `TLBI ...IS` (Inner Shareable) and `...OS` (Outer Shareable) forms are *defined* to affect other PEs, which is what licenses the hardware to carry them; RISC-V's `SFENCE.VMA` is defined as **local only**, which is precisely why a RISC-V multi-core shootdown still needs software IPIs today.
+
+### 14.1 The four DVM operation classes — one per non-coherent, VA-indexed structure
+
+Do not read this as a list of features. Each class exists because there is a structure inside the core that (a) caches something derived from a virtual address and (b) is not on the coherence protocol. Enumerate those structures and you have derived the class list.
+
+| Class | The structure it repairs | The bug if it does not exist | Typical ISA operation |
+|---|---|---|---|
+| **TLB invalidate** | L1 TLB, L2 STLB, page-walk caches, stage-2/nested translation caches | a core keeps using an unmapped or permission-downgraded translation and reads or writes memory the OS has already reassigned — a correctness bug *and* a privilege-escalation primitive | `TLBI VAE1IS`, `TLBI ASIDE1IS`, `TLBI VMALLE1IS`, range forms |
+| **Branch-predictor invalidate** | BTB (branch target buffer) and indirect-predictor entries keyed by virtual address | after the code at a VA is replaced — a JIT (just-in-time compiler) rewriting a stub, a module unload, a page remap — the predictor steers fetch to a target derived from the *old* code, so the core speculatively fetches and executes instructions that no longer exist at that address | `BPIALLIS`, and the branch-predictor invalidation implied by an instruction-cache maintenance operation |
+| **Instruction-cache invalidate** | L1 I-cache, which in Arm is **not required** to be coherent with the D-side | a core writes new instructions through the data side, the instruction side keeps serving the old bytes, and self-modifying code, JITs, debuggers, and module loaders all silently execute stale code | `IC IALLUIS` |
+| **Synchronization** | none — it is the completion barrier for the three above | "I issued the invalidate" gets confused with "the invalidate has taken effect everywhere," and the OS reclaims a page while another core still has a live translation and an in-flight store to it | the fabric leg of `DSB ISH` |
+
+The instruction-cache row deserves a pause, because it looks like a step backwards. It is the same problem as §1 — a private cache holding stale data — and Arm deliberately chose **not** to solve it with coherence. The reason is a cost argument the reader has now seen three times: I-side writes are rare, and putting the I-cache on the snoop network costs tag-lookup bandwidth on the *fetch critical path* to defend against an event that almost never happens. DVM is the cheaper repair for a rare event, exactly as sparse directories (§5.1) are the cheaper representation for a sparse sharer set.
+
+A TLB invalidate also carries parameters, and this is what forces the structure of §14.2: **scope** (by VA, by ASID, by VMID, or all), **stage** (stage-1, stage-2, or both), **level** (last-level entries only, or the walk caches too), **shareability domain**, and — from the range-invalidate extension onward — a base plus a size and scale describing many pages at once. Add those up and the payload is wider than a physical address field.
+
+### 14.2 Two parts, and a separate sync — two different splits
+
+These are two independent splits and confusing them is the usual source of confusion about DVM.
+
+**Split 1 — the payload does not fit in one flit.** The REQ flit's address field is sized for a physical address, and the previous paragraph's parameter list exceeds it. CHI therefore ships a DVM operation as a **two-packet transaction shaped exactly like a write** (§13.7): `DVMOp` on REQ carries the first part of the payload, the distribution node answers with `DBIDResp` on RSP — the same data-buffer promise a write receives — and the requester sends the second part as `NonCopyBackWrData` on DAT. On the distribution side the same split reappears as a **two-part `SnpDVMOp`**, and the snooped RN answers once, after both parts have arrived. *(Exact field packing is issue- and configuration-dependent, as with every encoding on this page. The structural fact — a DVM operation is two packets, and neither part means anything alone — is stable across issues.)*
+
+The failure this creates, and which the transaction identity of §13.4 exists to prevent: a receiver that acts on part 1 alone invalidates the wrong thing, and a receiver that interleaves part 1 of operation A with part 1 of operation B corrupts both. The two parts of one operation are bound by transaction identity, never by arrival order.
+
+**Split 2 — issue is separated from completion, deliberately.** Ask what "the TLBI is complete" would have to mean if the `DVMOp`'s own `Comp` carried it. Every target RN would have to (i) invalidate every matching TLB, page-walk-cache, predictor, and I-cache entry, **and** (ii) drain every memory access it had already issued using the old translation, **and** (iii) resolve every page walk already in flight — all before answering. Each of those is a pipeline event of tens to hundreds of cycles. If `TLBI` completed with that meaning, the extremely common OS sequence "unmap a 2 MB region" would pay the full barrier 512 times.
+
+So CHI splits it the way the ISA already does: `TLBI` is **posted** and `DSB` is the **wait**. The `DVMOp`'s completion means "accepted and ordered into the distribution stream." A separate **DVM Sync** operation carries "and everything I sent before this point has now taken effect everywhere" — each RN answers the Sync only once all previously received DVM operations have been applied and its own affected accesses have drained.
+
+Quantify the amortization on a 64-core machine, using §14.5's numbers: a full fan-out/fan-in barrier costs $T_{\text{sync}}\approx 150$ ns, while a *posted* operation still costs the distribution node its $2N = 128$-cycle snoop fan-out (64 ns at 2 GHz) but does not stall the initiator. Unmapping a 2 MB region as 512 separate 4 KB pages:
+
+| Design | Per-operation cost | Total for 512 pages |
+|---|---|---|
+| Synchronous invalidate — every `TLBI` waits for full completion | 150 ns, non-overlapping | **76.8 µs** |
+| Posted `TLBI` + one `DSB` — the actual architecture | 64 ns of distribution-node fan-out, pipelined | **32.9 µs** |
+| Range `TLBI` + one `DSB` (§14.6) | one operation total | **0.21 µs** |
+
+Splitting the sync out buys **2.3×**; collapsing 512 operations into one range operation buys a further **154×**, for **359×** end to end. Read the ordering carefully, because it is the design lesson: the two-phase structure removes the *stall*, but every posted operation still pays a full $O(N)$ fan-out at the distribution node. Only the range form attacks the operation **count**, which is why it dominates every other mitigation at scale.
+
+### 14.3 Who distributes: the Miscellaneous Node
+
+Why not hash DVM operations across home nodes the way §4.2 hashes addresses? Because a DVM operation is not *about* an address in the coherence sense — its address field is a payload, and its target set is "every RN in the shareability domain that has a translation structure," which is all of them, every time. Hashing gains nothing, because there is no set of independent lines to spread across homes. Worse, it costs correctness: if two DVM operations were ordered by two different nodes, no agent could ever say "everything before this point is done," and the Sync would be meaningless.
+
+So DVM has exactly the §4.1 structure with the **shareability domain** playing the role that a single line plays for coherence: **one serialization point per domain.** In CHI that agent is a **MN (Miscellaneous Node)** — a node owning no memory and no directory, only the ordered DVM stream and its snoop fan-out. Some configurations fold the role into a home node; the role, not the box, is what matters.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    RN0["Initiating RN-F<br/>executes TLBI VAE1IS"]:::rn
+    MN["Miscellaneous Node<br/>one ordered DVM stream<br/>for the whole domain<br/>= the serialization point"]:::mn
+    A["RN-F core 1<br/>TLB + PWC + BTB + I-cache"]:::rn
+    B["RN-F core 2"]:::rn
+    C["RN-F core 63"]:::rn
+    IO["RN-I with no MMU<br/>filtered out, never snooped"]:::skip
+    RN0 -->|"1 DVMOp part 1 on REQ<br/>then part 2 on DAT"| MN
+    MN -->|"2 SnpDVMOp, two parts, to every RN in the domain"| A
+    MN --> B
+    MN --> C
+    MN -.->|"suppressed by the DVM filter"| IO
+    A -->|"3 SnpResp when applied"| MN
+    B --> MN
+    C --> MN
+    MN -->|"4 Comp: accepted and distributed,<br/>NOT yet taken effect"| RN0
+    classDef rn fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef mn fill:#fde68a,stroke:#b45309,color:#000
+    classDef skip fill:#e2e8f0,stroke:#475569,color:#000
+```
+
+The figure's contract is that step 4 is deliberately weak: `Comp` means *accepted and ordered*, not *applied everywhere*. Trace one operation: core 0 executes `TLBI VAE1IS`, the RN sends both parts of `DVMOp` to the MN, the MN inserts it into its ordered stream and fans out `SnpDVMOp` to every RN-F, each RN applies it and returns `SnpResp`, and the MN returns `Comp`. Core 0's `TLBI` instruction can retire here — long before the last core has applied anything. The trade-off this exposes is the one §14.2 costed: the weak completion is what allows 512 invalidates to pipeline, and it is exactly why a *second* operation, the Sync, must exist and why omitting the `DSB` is a real memory-safety bug rather than a performance issue. The dashed edge is §14.6's filter: an RN with no translation regime never needs the snoop, and suppressing it is the cheapest of all the mitigations.
+
+### 14.4 What makes `TLBI` + `DSB` architecturally correct
+
+```text
+    STR   X_newpte, [X_pte_addr]   ; 1. write the new (or zeroed) PTE
+    DSB   ISHST                    ; 2. that store visible to page walkers before...
+    TLBI  VAE1IS, X_va             ; 3. ...the invalidate is ordered at the MN
+    DSB   ISH                      ; 4. wait: applied everywhere AND old accesses drained
+    ISB                            ; 5. this core refetches with the new state
+```
+
+| Line | Fabric event it produces | What breaks if it is removed |
+|---|---|---|
+| 1 | an ordinary coherent write to the PTE's line, serialized at that line's home like any other store | — |
+| 2 | the store must reach the point of coherence **before** the DVM operation is ordered at the MN | a remote page walker — possibly one triggered by the very miss the invalidate causes — re-reads the **old** PTE and reinstalls exactly the translation you are removing. A self-defeating shootdown, and the most common real shootdown bug, because it fails only under a race |
+| 3 | `DVMOp` carrying $\{$TLBI, VA, ASID, Inner Shareable$\}$ → MN → two-part `SnpDVMOp` to every RN-F | nothing is invalidated; every stale translation survives |
+| 4 | `DVMOp(Sync)` → MN → `SnpDVMOp(Sync)` to every RN-F; each answers only when applied **and** drained; `Comp` returns to the initiator | the OS frees and reallocates the physical page while another core still holds a translation and an in-flight store to it — silent cross-process data corruption, and a privilege-escalation primitive |
+| 5 | none; purely local | this core continues executing instructions and translations it prefetched before the change |
+
+The load-bearing sentence: **line 4 is a fabric barrier, not a core barrier.** `DSB ISH` on the initiating core cannot retire until the fabric's DVM Sync has completed across the whole domain, which is why a `DSB` following a `TLBI` costs one to two orders of magnitude more than a `DSB` following ordinary stores, and why measuring "`DSB` cost" without saying what preceded it is meaningless.
+
+Two extensions of the same obligation are easy to miss. First, the Sync must cover **in-flight page walks** — a walker that has already read the old PTE and is about to install the entry you just invalidated — so an RN's Sync response is gated on its walker pipeline, not only its TLB arrays. Second, when the system has an IOMMU/SMMU with device-side translation caches, those ATCs (address translation caches) are invalidated through a **command-queue mechanism, not DVM**, so a complete unmap sequence has **two** independent fan-outs to wait on before the physical page can be reused. That second fan-out and its completion proof are [Page_Walkers_IOMMUs_and_Virtualization §5 and §7](../05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md).
+
+### 14.5 The cost, at 64 cores
+
+Model one Sync on an 8×8 mesh: 64 RN-Fs, fabric at 2 GHz (0.5 ns/cycle), 2 cycles per hop, mean hop count $\bar{h}=5.3$, worst-case 14 hops, cores at 3 GHz, and an MN whose SNP port injects one flit per cycle and whose RSP ingress absorbs one response per cycle.
+
+$$
+T_{\text{sync}}(N) \;=\; \underbrace{t_{\text{RN}\to\text{MN}} + t_{\text{ser}} + t^{\max}_{\text{MN}\to\text{RN}} + t_{\text{apply}} + t^{\max}_{\text{RN}\to\text{MN}} + t_{\text{Comp}}}_{\text{fixed}} \;+\; \underbrace{2N\,t_{\text{inj}} + N\,t_{\text{coll}}}_{\text{grows with the machine}}
+$$
+
+| Term | Meaning | Value (64 cores) |
+|---|---|---|
+| $t_{\text{RN}\to\text{MN}}$ | initiator to MN, $5.3\times2$ | 11 cy |
+| $t_{\text{ser}}$ | MN inserts the operation into its ordered stream | 4 cy |
+| $2N\,t_{\text{inj}}$ | inject a **two-part** `SnpDVMOp` to 64 RNs at 1 flit/cycle | **128 cy** |
+| $t^{\max}_{\text{MN}\to\text{RN}}$ | flight to the farthest RN, $14\times2$ | 28 cy |
+| $t_{\text{apply}}$, by VA | fully-associative L1 TLB CAM match plus one STLB set lookup, $\approx40$ core cycles at 3 GHz | 27 cy |
+| $t_{\text{apply}}$, by ASID | walk all 256 sets of a 1024-entry 4-way STLB, $\approx256$ core cycles | 171 cy |
+| $t^{\max}_{\text{RN}\to\text{MN}}$ | responses in flight | 28 cy |
+| $N\,t_{\text{coll}}$ | MN absorbs 64 `SnpResp` at 1/cycle | **64 cy** |
+| $t_{\text{Comp}}$ | completion back to the initiator | 11 cy |
+| **Total, invalidate by VA** | | **301 cy = 150 ns = 452 core cycles** |
+| **Total, invalidate by ASID** | | **445 cy = 223 ns = 668 core cycles** |
+
+Two things jump out of the table. First, against the IPI shootdown's 1–3 µs on the same machine ([TLB_and_Virtual_Memory §8](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)), DVM is **7–20× faster** — and, far more valuable, the other 63 cores never stopped executing. Second, $t_{\text{apply}}$ can *dominate*: an invalidate-by-ASID that forces each RN to sweep every STLB set costs more than the entire network round trip. The fabric mechanism is not the bottleneck; the per-core implementation of the invalidate often is.
+
+**Where it breaks.** Two of the terms scale with $N$, and both are serial:
+
+$$
+T_{\text{sync}}(N) \;\approx\; 109 + 3N \ \text{fabric cycles (by-VA case)}
+$$
+
+| $N$ | $T_{\text{sync}}$ | MN fan-out per operation | MN saturation rate |
+|---:|---:|---:|---:|
+| 16 | 157 cy = 79 ns | 32 cy | 62 M ops/s |
+| 64 | 301 cy = 150 ns | 128 cy | 15.6 M ops/s |
+| 128 | 493 cy = 247 ns | 256 cy | 7.8 M ops/s |
+| 256 | 877 cy = 439 ns | 512 cy | 3.9 M ops/s |
+
+*Worked number.* A container host or a JIT-heavy runtime doing 50 000 `munmap` calls/s, each touching 20 pages with no range support, generates $10^6$ DVM operations/s. At 64 cores that consumes $10^6/15.6\times10^6 = \mathbf{6.4\%}$ of the MN's injection bandwidth — comfortable. Raise the mapping-churn rate 10× and the MN is at **64 %**, past the knee of any queueing curve, at which point DVM latency stops being a fixed 150 ns and starts queueing behind other DVM operations. Meanwhile each RN is absorbing $2\times10^7$ DVM flits/s on the **same SNP port** its coherence snoops arrive on, so DVM pressure now degrades ordinary coherence latency too — the coupling that makes DVM saturation hard to diagnose from coherence counters alone.
+
+State the conclusion honestly: **DVM does not remove the $O(N)$ of a broadcast invalidate. It moves the $O(N)$ from cores into wires — cutting the constant by 10–20× and eliminating the $O(N^2)$ of simultaneously stalled cores — but the asymptote survives.** That is why the mitigations below stop being optional somewhere around 128 cores.
+
+### 14.6 Mitigations, and what each one costs
+
+- **Range invalidates.** One operation covers a whole span of pages instead of one. Section 14.2 measured the payoff at 154× over posted per-page invalidates, and it is the only mitigation that attacks the operation *count*. The cost lands at the RN: matching a range is easy in a fully-associative L1 TLB (a magnitude comparator per entry) and awkward in a set-indexed STLB, which must either sweep all sets — making $t_{\text{apply}}$ the 171-cycle number above — or over-invalidate. So the range form trades fabric traffic for per-RN apply time, and it wins whenever the range exceeds a handful of pages.
+- **ASID and VMID tagging** ([TLB_and_Virtual_Memory §4](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)) removes the single largest source of invalidations — context switches — outright. The cheapest DVM operation remains the one never sent.
+- **A DVM filter at the MN.** Track which RNs actually have a translation regime enabled: an RN-I with no MMU, or a core in a powered-down cluster, needs nothing. This turns $N$ into the $K$ nodes that could possibly hold the mapping. The cost is a small table at the MN and a correctness obligation identical to §5.1's directory rule — the filter may over-approximate but must **never** under-approximate.
+- **Hierarchical distribution.** MN → one aggregator per cluster → cores, with the aggregator combining $c$ responses into one. The MN's injection term drops from $2N$ to $2N/c$ and its collection term from $N$ to $N/c$; at $c=4$ the 64-core fan-out falls from 192 cycles to 48. A cluster-level shared unit that already broadcasts to its cores does exactly this. Cost: one extra hop of latency for small $N$, and the aggregator becomes a new ordering point that must not reorder DVM operations relative to one another.
+- **More MNs — but only along legal seams.** You may shard by shareability domain or by VMID, because each is independently ordered. You may **not** shard a single domain by address hash, because the Sync's meaning depends on a single total order. Multi-die systems therefore use per-die MNs plus an explicit cross-die sync protocol, and in a chiplet system (§7) that cross-die sync is usually the term that dominates DVM latency outright.
+- **Issue fewer invalidations.** Batching, lazy invalidation, and deferred reclamation ([TLB_and_Virtual_Memory §8](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)) attack the operation count in software. Past 128 cores they are the largest remaining lever, which is a slightly uncomfortable conclusion: the ultimate fix for a hardware scaling problem is an OS that unmaps less.
+
+---
+
+## 15. Atomics, exclusives, and near-memory operation
+
+> **Scope:** the two fabric-level mechanisms for an atomic read-modify-write — exclusive access with a monitor, and the CHI atomic transaction family — where the monitor physically lives, why the architecture permits spurious failure, and the arithmetic that decides between migrating the line and executing the operation at the home.
+
+### 15.0 Two fabric answers to one requirement
+
+An atomic RMW (read-modify-write) needs exactly one thing from the interconnect: **a point at which the read and the write of the location cannot be separated by another agent's write.** §4.1 already built the agent that provides it — the home node serializes every access to a line — and §8 named the two ways to use it. They differ in *where the arithmetic happens*:
+
+- **Exclusive access.** Move the line to the core, do the arithmetic there, and use a **monitor** to detect whether anyone interfered in between. The fabric provides conflict **detection**.
+- **Atomic transactions.** Send the operation to the line instead of the line to the operation. The fabric provides **execution**.
+
+[Memory_Consistency_and_Atomics §9.1](02_Memory_Consistency_and_Atomics.md) owns the core-side choice, the LSU (load-store unit) atomic entry, and the ordering qualifiers. This section owns what appears on the CHI wire, where the hardware physically sits, and how to choose.
+
+### 15.1 Exclusive access, and where the monitor lives
+
+`LoadExclusive`/`StoreExclusive` (Arm `LDXR`/`STXR`, RISC-V `LR`/`SC`) split an atomic into two instructions: the load records a **reservation**, and the store succeeds only if the reservation is still valid, returning a status the software loop branches on. The hardware that holds the reservation is the **exclusive monitor**, and it exists in two physically different places for a reason worth deriving rather than memorizing.
+
+**The local monitor, and why coherence makes it nearly free.** The exact event the reservation must notice — *another agent wrote this location* — is **already delivered** to the requester by the coherence protocol, because a competing store must acquire the line Unique and therefore must send this core a `SnpUnique` or `SnpCleanInvalid` (§13.3). The monitor can therefore be a handful of flops: $\{$valid, granule-aligned physical address, context identity$\}$, cleared by any snoop that invalidates the granule, by an eviction of the line, by a context switch or exception entry, and by an explicit clear instruction. There is **no fabric transaction at all**: `LoadExclusive` on coherent cacheable memory is an ordinary read-class request with an exclusive attribute set, and `StoreExclusive` is an ordinary ownership-acquiring store once the monitor has passed. Cost: on the order of 64 flops per hardware thread. This case covers essentially all normal shared memory.
+
+**The global monitor, and the three cases that force it.** The local monitor's entire argument was "coherence delivers the conflict event." Remove coherence and the argument evaporates:
+
+1. **Non-cacheable or Device memory** — a lock word in a device register region, or a shared word in a non-cacheable buffer, is never brought into a cache, so no snoop ever arrives.
+2. **A non-caching requester** — an RN-I with no coherent cache can issue exclusives but has nothing to snoop.
+3. **Memory shared with an agent outside the coherence domain** — a DMA engine or a second chip reaching the same memory over a non-coherent path.
+
+In all three, the only agent that observes *every* access to the location is the agent that orders them. So the monitor moves to the **home node**. In CHI the exclusive attribute rides on ordinary read and write requests; the home keeps a small table of $\{$address, requester SrcID, valid$\}$, sets an entry on an exclusive read, clears it on any conflicting write from anyone, and on an exclusive write checks the entry and reports the outcome **in the response's `Resp` field** — the `ExclOkay` encoding — rather than in a separate message. A failing exclusive write **does not update memory**, and the core's `STXR` returns failure.
+
+| | Local monitor | Global monitor |
+|---|---|---|
+| Physical location | inside the RN, beside the L1 | at the HN, one per home slice |
+| Covers | cacheable, coherent, shareable memory | non-cacheable/Device memory, non-caching RNs, memory shared outside the domain |
+| Conflict source | the snoop coherence already sends | the home's own serialization of every access |
+| Storage | ~1 entry per hardware thread, tens of flops | a table per home; entries are a **finite** resource |
+| Fabric cost of one exclusive pair | zero extra transactions — the ordinary miss path | two round trips to the home, $\approx26$ ns at §14.5's mesh numbers |
+| New failure mode it introduces | none | table full → an exclusive pair must be failed, or an entry stolen |
+
+That last row surprises people: the global monitor has finitely many entries, so with more concurrent exclusive sequences than entries, some must be evicted — and an evicted entry **must** fail its `StoreExclusive`. A fully correct implementation therefore produces failures that have nothing whatever to do with contention.
+
+### 15.2 Why the architecture permits spurious failure
+
+Enumerate what actually clears a reservation, and classify each as a real conflict or not:
+
+| Cause of `StoreExclusive` failure | Real conflict? | Why an implementation does it anyway |
+|---|---|---|
+| another agent wrote the granule | **yes** | the entire purpose of the mechanism |
+| another agent *read* the granule, and the design clears on any snoop | no | distinguishing `SnpShared` from `SnpUnique` costs decode logic on the snoop path; clearing on all snoops is simpler and always safe |
+| the line was evicted by capacity or conflict between the two instructions | no | after eviction no snoop will ever arrive, so the monitor has lost its conflict detector and must fail conservatively |
+| context switch, exception entry or return, debug halt | no | a reservation belongs to a context; carrying it across a switch would let one thread's store succeed against another thread's load |
+| a *different* address in the same reservation granule was written | no | the granule is a line (64 B), not the operand (8 B) — §3.1's false sharing, now applied to the reservation |
+| global-monitor table conflict or eviction | no | finite storage (§15.1) |
+
+Only the first row is a genuine conflict; every other row is a **spurious failure**, and the architecture permits all of them. The reason is a cost argument. Forbidding spurious failure would require an exact, per-thread, per-address structure that is cleared precisely and never for any other reason — more storage, more decode on the snoop critical path, and, worst of all, it would make **forward progress depend on the precision of a hardware structure**. The architecture instead makes the guarantee conditional on the *shape of the software loop*: a **constrained** exclusive sequence — no other memory access between the two instructions, a bounded instruction count, same address and size — is guaranteed to eventually succeed. Forward progress becomes a contract between the ISA and the loop rather than a property of the monitor, which is exactly why libc and compilers must emit that specific loop shape, and why an "improved" loop with a load or a function call in the middle can spin forever on real silicon while passing every functional test on a simulator. [Memory_Consistency_and_Atomics §9.4 and §9.6](02_Memory_Consistency_and_Atomics.md) own the reservation-field table and the forward-progress rules.
+
+```wavedrom
+{ "signal": [
+  { "name": "fabric clk",        "wave": "p........." },
+  { "name": "core op",           "wave": "x3.x....4x", "data": ["LDXR X", "STXR X"], "node": ".a......d." },
+  { "name": "monitor.valid",     "wave": "0.1...0...", "node": "..b...c..." },
+  { "name": "SNP SnpUnique X",   "wave": "0.....10..", "node": "......e..." },
+  { "name": "STXR status",       "wave": "x........5", "data": ["FAIL = 1"] }
+ ],
+ "edge": ["a~>b reservation set", "e~>c peer write clears it", "c~>d SC checks, finds invalid"],
+ "head": {"text": "a peer's write between LDXR and STXR fails the store-exclusive"}
+}
+```
+
+The waveform's contract is that the monitor is a *level*, not an event: it is set by the exclusive load and can be torn down at any time before the exclusive store samples it. Trace the failing case shown — core A executes `LDXR X` and the monitor goes valid; four cycles later core B's store to the same line drives `SnpUnique(X)` into A's snoop port; the snoop clears the monitor; A's `STXR` then samples an invalid monitor, performs **no** memory write, and returns 1 so the software loop retries. Now the trade-off the figure illustrates: replace the `SnpUnique` with a `SnpShared` from a mere *reader*, and a design that clears on all snoops fails identically — a spurious failure, row 2 of the table. Under $N$ cores hammering one granule, every core's exclusive load produces snoops that clear everyone else's monitor and no store ever succeeds. Two repairs exist: software exponential backoff, and a hardware **reservation hold window** that briefly defers a conflicting snoop after an exclusive load so the local store has a chance to land. The window's bound is not optional — an unbounded hold is a snoop that never responds, which is a coherence deadlock (§13.11) — so real designs use tens of cycles plus a hard timeout. That converts livelock into a rough queue but does not make the mechanism cheap, which is the motivation for §15.3.
+
+### 15.3 Atomic transactions: send the operation to the data
+
+CHI's second answer defines four families of atomic transaction, and they cover the whole space of single-location read-modify-write:
+
+| CHI family | Semantics | Returns | Arm large-system-extension form | RISC-V form |
+|---|---|---|---|---|
+| `AtomicStore` | `mem = f(mem, operand)` | **nothing** | `STADD`, `STCLR`, `STEOR`, `STSET`, `STSMAX`, `STSMIN`, `STUMAX`, `STUMIN` | `AMO*` with destination `x0` |
+| `AtomicLoad` | `old = mem; mem = f(mem, operand)` | the old value | `LDADD`, `LDCLR`, `LDEOR`, `LDSET`, `LDSMAX`, `LDSMIN`, `LDUMAX`, `LDUMIN` | `AMOADD`, `AMOAND`, `AMOOR`, … |
+| `AtomicSwap` | `old = mem; mem = operand` | the old value | `SWP` | `AMOSWAP` |
+| `AtomicCompare` | `if mem == compare then mem = swap` | the old value | `CAS`, `CASP` | composed from `LR`/`SC` |
+
+The `AtomicStore` row is the one to pause on: it returns no data, so the requester can retire the instruction as soon as the transaction is accepted. That single property is why a statistics counter incremented by 64 cores costs the issuing core nothing but a transaction-table entry, while the same counter under exclusives costs a full line transfer plus a probable retry. `AtomicCompare` is the opposite extreme: it carries *two* operands on DAT, compare and swap, so it is the one atomic whose request payload exceeds its result size.
+
+**Fixing the vocabulary, because the field uses it loosely.** An atomic executed **at the requester**, after the line has been pulled into the requester's cache with unique permission, is a **near atomic** — near the core. An atomic executed **at the home node, the system-level cache, or the memory controller**, with the line never moving to the requester, is a **far atomic** — far from the core. CHI carries the same four opcodes in both cases; the decision belongs to the home, which makes it from directory state.
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
+flowchart TB
+    START["RN executes LDADD on a shared counter"]:::rn
+    Q{"Home consults directory:<br/>is the line contended?"}:::hn
+    NEAR["NEAR path<br/>ReadUnique, snoop current owner,<br/>DCT the 64 B line to the requester,<br/>RMW in the requester L1"]:::near
+    FAR["FAR path<br/>AtomicLoad carries the 8 B operand,<br/>home snoop-invalidates any UD owner once,<br/>ALU beside the SLC computes,<br/>old value returns"]:::far
+    N1["Line now lives in this requester.<br/>Next requester must steal it back:<br/>machine completes 1 op per 30 ns"]:::cost
+    F1["Line stays at the home.<br/>Next requester needs no migration:<br/>home completes 1 op per 2 ns"]:::cost
+    START --> Q
+    Q -->|"no: line already unique-dirty here<br/>more than 60 percent of the time"| NEAR
+    Q -->|"yes: line is stolen away between accesses"| FAR
+    NEAR --> N1
+    FAR --> F1
+    classDef rn fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef hn fill:#fde68a,stroke:#b45309,color:#000
+    classDef near fill:#fee2e2,stroke:#b91c1c,color:#000
+    classDef far fill:#dcfce7,stroke:#15803d,color:#000
+    classDef cost fill:#e2e8f0,stroke:#475569,color:#000
+```
+
+The figure's contract is that both paths are architecturally identical — same opcode, same result, same ordering obligations — and differ only in *where* the ALU runs and therefore in what the fabric must move. Trace one increment on the far path: the RN issues `AtomicLoad` carrying an 8 B operand, the home checks the directory, finds the line resident in its SLC with no dirty owner, reads it, adds, writes it back into the SLC, and returns the old value in a `CompData` — the 64 B line never moved. The failure this figure sets up is the branch condition itself: choose wrong and you pay twice, because switching to the near path pulls the line out of the SLC and switching back snoops it home again. Section 15.4 derives the threshold on that branch.
+
+### 15.4 The arithmetic: why far atomics win under contention, and exactly where they lose
+
+| Symbol | Meaning | Value used |
+|---|---|---|
+| $t_{L1}$ | RMW on a line already held Unique-Dirty in the requester's L1 | 1.5 ns |
+| $T_{\text{mig}}$ | one contended migration plus local RMW: request to home, snoop the owner, DCT the line, compute | 30 ns (22 ns DCT from §11 problem 3, plus home lookup and RMW) |
+| $t_{\text{rt}}$ | unloaded round trip RN→HN→RN, 5.3 hops each way at 2 cycles/hop, 2 GHz | 11 ns |
+| $t_{\text{occ}}$ | home atomic-unit occupancy per operation — a pipelined banked-SLC read-modify-write, not a transaction | 2 ns |
+| $T_{\text{far}}$ | unloaded far atomic $= t_{\text{rt}} + t_{\text{occ}}$ | 13 ns |
+
+**Under contention the migrating path is serialized by the line, not by the cores.** Only one RN can hold the line unique, so the machine completes one atomic per $T_{\text{mig}}$ no matter how many cores are asking, and each core waits behind all the others:
+
+$$
+\Lambda_{\text{near}} = \frac{1}{T_{\text{mig}}} = 33.3\ \text{M ops/s}, \qquad L_{\text{near}}(N) = N\,T_{\text{mig}}
+$$
+
+**The far path is serialized by the home's atomic unit**, which is a pipeline stage rather than a network round trip:
+
+$$
+L_{\text{far}}(N) = t_{\text{rt}} + N\,t_{\text{occ}} = 11 + 2N \ \text{ns}, \qquad \Lambda_{\text{far}}(N) = \frac{N}{L_{\text{far}}(N)} \ \xrightarrow[N\to\infty]{}\ \frac{1}{t_{\text{occ}}} = 500\ \text{M ops/s}
+$$
+
+| Contending cores $N$ | Migrating: throughput / per-op latency | Far: throughput / per-op latency | Far advantage | DAT bytes moved per op |
+|---:|---|---|---|---|
+| 1, line already UD in L1 | 667 M/s / **1.5 ns** | 77 M/s / 13 ns | **0.12× — far loses by 8.7×** | 0 vs ≈32 B |
+| 2 | 33.3 M/s / 60 ns | 133 M/s / 15 ns | 4.0× | 64 B vs ≈32 B |
+| 8 | 33.3 M/s / 240 ns | 296 M/s / 27 ns | 8.9× | 64 B vs ≈32 B |
+| 64 | 33.3 M/s / 1.92 µs | 460 M/s / 139 ns | **13.8×** | 64 B vs ≈32 B |
+
+(The latency and throughput ratios are identical at every row because this is a closed loop — Little's law, not a coincidence.)
+
+**The break-even.** Real workloads are a mixture: with probability $p$ the requester already holds the line Unique-Dirty — a private accumulator, an uncontended lock reacquired by the same core — and otherwise it must migrate. The near path costs $p\,t_{L1} + (1-p)T_{\text{mig}}$; the far path costs $T_{\text{far}}$ regardless. They are equal when
+
+$$
+1.5p + 30(1-p) = 13 \;\Longrightarrow\; 30 - 28.5p = 13 \;\Longrightarrow\; p = 0.596
+$$
+
+**The near path wins only if the requester finds the line already unique-dirty in its own cache more than about 60 % of the time.** Below that, the far atomic wins, and the margin widens fast, because $T_{\text{mig}}$ grows with the number of contenders while $T_{\text{far}}$ grows only by $t_{\text{occ}}$ per contender.
+
+**The losing case, stated plainly.** Far atomics lose on *private* atomics: a thread-local accumulator, a per-core statistics counter, a reference count touched by a single owner, a lock the same core reacquires in a loop, and any atomic over an array the core already owns. Every one of those is a 1.5 ns L1 hit on the near path and a 13 ns fabric round trip on the far path — and the far version additionally consumes home atomic-unit slots and SNP bandwidth that a genuinely contended counter elsewhere needs. This is why the choice must be **dynamic and hysteretic**: count how often the line was stolen away between this core's atomics, use the near path below a threshold, switch to far above it, and require several consecutive observations before switching back. Oscillation is the worst outcome of all, because each switch to near pulls the line out of the SLC and each switch back snoops it home again.
+
+**The cost the table hides: sharding beats both.** If the counter can be split into $N$ per-core shards summed on read, each shard lives in its owner's L1 and the contention disappears entirely: $64 \times 667$ M/s $= 43$ G ops/s, against 460 M/s for the best fabric mechanism — a **93×** gap that no protocol feature can close. The fabric's job is to make the *irreducibly* shared case survivable, not to make a badly shared data structure fast. That is §3.1's padding lesson, applied to the read-modify-write.
+
+### 15.5 What the home needs in hardware, and what it must not skip
+
+- **Datapath.** A narrow integer ALU covering add, bit-clear, exclusive-or, bit-set, and signed and unsigned min/max at 1, 2, 4, and 8-byte widths with correct sign extension; a comparator and a second operand register for `AtomicCompare`; byte-enable and endianness handling.
+- **The coherence prerequisite — the part people skip.** A far atomic is **not** "skip coherence." Before executing, the home must hold the newest data, so if the directory shows a UD or SD owner it must issue `SnpUnique` and pull the line in first. The first far atomic on a line some core owned dirty therefore costs a full snoop round trip; the next thousand do not. That asymmetry is precisely why the §15.4 predictor must be hysteretic, and forgetting the snoop is the "atomic returns a stale old value" bug below.
+- **ECC.** An SLC line is protected by a code covering the whole line, so an 8 B atomic is a read-modify-write of the ECC codeword as well. The atomic ALU must sit **inside** the SLC's ECC loop, not beside it.
+- **Ordering.** The atomic carries the request's ordering class; whether an acquire or release qualifier is satisfied is decided by *which response* is treated as the completion point, not by the arithmetic ([Memory_Consistency_and_Atomics §9.5](02_Memory_Consistency_and_Atomics.md)).
+- **Cost.** One such unit per home slice: at $H = 8$–16 homes that is 8–16 small ALUs plus queues and roughly a dozen additional home-transaction states. The area is negligible next to the SLC data array; the real cost is the verification surface, which is every atomic opcode crossed with every directory state crossed with every race.
+
+| Symptom | First hypothesis |
+|---|---|
+| atomic returns a stale old value | the home executed without first snooping a UD owner, or executed against the SLC copy while a DCT was in flight |
+| `StoreExclusive` never succeeds on one hart while others do | reservation-granule false sharing, or a global-monitor entry repeatedly stolen by another requester |
+| `StoreExclusive` succeeds when it must not | monitor not cleared on eviction, or the exclusive check races the conflicting write's ordering at the home |
+| atomics functionally correct but a release fails to order | the completion point was taken at acceptance rather than at the point the value became observable |
+| far atomics measurably slower than exclusives on a benchmark | the workload is §15.4's private/uncontended case and the predictor is stuck in far mode |
+| throughput collapses when an operand spans two homes | an architecturally atomic operand was split across a line or home boundary — never legal |
+
+---
+
+## 16. CHI issue history — what changed, and the problem that forced each change
+
+> **Scope:** a version-by-version reading of AMBA 5 CHI with the *motivating failure* for each addition, quantified where it can be; then the practical questions — how to tell which issue an IP implements, and what it means to put two issues on one fabric.
+
+### 16.0 Why a coherence protocol has versions at all
+
+CHI is not versioned for fashion. Each issue is a response to a measured failure of the previous one on real silicon, and the useful thing to carry away is not the letter but the *pressure* — because the pressures recur, and a designer who understands them can predict what the next issue will contain.
+
+One structural fact governs everything in this section and is worth stating before the table: **CHI has no run-time capability negotiation.** Unlike PCIe, there is no link-training phase in which two endpoints discover a common feature set. The feature set of every CHI link is a **static configuration** on both ends, fixed at design time. "Which issue" is therefore an integration decision made once, recorded in the architecture specification next to the address map, and never renegotiated — which is why §16.8 is not an appendix but the operational point of the whole section.
+
+### 16.1 The version table
+
+| Issue | Approx. generation | Headline additions | The problem in the *previous* state of the art that forced it |
+|---|---|---|---|
+| **CHI-A** | AMBA 5, ~2014 | RN/HN/SN roles; the four REQ/RSP/SNP/DAT channels; the five-state I/UC/UD/SC/SD lattice; credit flow control; DVM; explicit barrier transactions; 128/256/512-bit data | ACE's broadcast was an $O(N^2)$ wall at ~8 cores (§3), and AXI's same-cycle `valid`/`ready` handshake assumed a shared bus segment and cannot cross a multi-hop mesh (§6) |
+| **CHI-B** | ~2016 | the atomic transaction family (§15.3); cache **stashing** — `StashOnce*` and write-with-stash; per-request **ordering fields** replacing standalone barrier transactions; Direct Memory Transfer | contended read-modify-write ping-ponged whole lines for 8 B of work (§15.4); producer-to-consumer data always arrived cold at the consumer (§16.4); barrier *transactions* forced fabric-wide serialization for what is usually a per-request ordering requirement |
+| **CHI-C** | ~2017 | refinement and completion of the write and eviction opcode set — the CopyBack family of §13.7, `WriteEvictFull` among them; tightened DMT/DCT rules; errata | an exclusive system-level cache lost clean lines on eviction and re-fetched them from DRAM; DMT and DCT corner cases were under-specified, which is worse than absent because two vendors implement them differently |
+| **CHI-D** | ~2018 | **MPAM** — Memory System Resource Partitioning and Monitoring — fields on requests; QoS refinements; further stash and DMT work | a shared SLC and memory system had no way to tell *whose* request it was serving, so one noisy tenant on a 64-core server evicted everyone else's data with no mechanism to stop it (§16.5) |
+| **CHI-E** | ~2020 | **memory tagging** support carried in-band; wider data and larger-transfer support; persistence — cache maintenance to a point of persistence; further stash/DMT enhancements | out-of-band memory tags roughly *doubled* the memory request rate for any tagged workload (§16.6); persistent memory had no architectural target to flush to |
+| **CHI-F and later** | ~2021 onward | wider node-ID and transaction-ID spaces; further ordering and QoS classes; continued I/O and accelerator refinement | ID field widths bounded the number of nodes a single fabric could address, and I/O traffic classes needed ordering guarantees the original classes did not express |
+| **CHI-C2C** | ~2023 onward | a serialized chip-to-chip encapsulation of CHI: compact flit packing, link-level CRC and retry, node-ID and address remapping at the boundary | the on-die flit format is far too wide and far too latency-optimistic for a package- or board-level serial link, yet chiplet systems need the *same* coherence semantics across it (§7, §16.7) |
+
+Treat the middle column as approximate and the right-hand column as the durable content. Feature-to-issue attribution should always be confirmed against the specification's own change history for the exact issue a project selects — the page has said the same about opcode and field encodings since §13.0 — but the *problem* each feature solves does not move, and it is what lets you recognize the feature under a different vendor's name.
+
+### 16.2 Data width: why the flit count is a first-order parameter
+
+A 64 B line is one packet on DAT but several flits, and the count follows directly from the configured width (§13.3):
+
+| DAT width | Flits per 64 B line | Link data bandwidth at 2 GHz | Serialization delay per line | Data wires per direction |
+|---|---:|---:|---:|---:|
+| 128 bit | 4 | 32 GB/s | 4 cy = 2.0 ns | 128 |
+| 256 bit | 2 | 64 GB/s | 2 cy = 1.0 ns | 256 |
+| 512 bit — a whole line in **one** flit | 1 | 128 GB/s | 1 cy = 0.5 ns | 512 |
+
+The latency column is the small win: 1.5 ns saved per transfer against a ~90 ns DRAM miss is noise. The **bandwidth column is the binding constraint**, and it binds at the busiest node rather than the average one. A home slice fronting an SLC bank capable of 128 GB/s is capped at **32 GB/s by a 128-bit DAT channel** — a 4× loss of achievable last-level-cache bandwidth that no protocol cleverness recovers, because the data physically cannot leave faster. That is why server-class fabrics run 512-bit DAT and mobile fabrics do not: the mobile SoC's SLC bank does not produce 128 GB/s in the first place, so the extra 384 wires per link direction would buy nothing.
+
+And those wires are the cost. A 512-bit DAT channel plus REQ, RSP, SNP, and their credit returns is on the order of 700–900 wires **per direction per link**; on an 8×8 mesh with four links per router that is a floorplanning and routing-resource decision, not a protocol decision, and it is settled with [Network_on_Chip](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/01_Network_on_Chip.md) and [Routing_Flow_Control_and_Deadlock](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md), not with the coherence architect.
+
+### 16.3 DMT and DCT — two different shortcuts, often confused
+
+```mermaid
+sequenceDiagram
+    participant R as RN requester
+    participant H as HN home
+    participant S as SN memory
+    participant O as RN dirty owner
+    Note over R,S: baseline - all data crosses the mesh twice
+    R->>H: REQ ReadShared X
+    H->>S: memory read X
+    S-->>H: DAT data X
+    H-->>R: DAT CompData X
+    Note over R,S: DMT - home forwards the requester identity to the SN
+    R->>H: REQ ReadShared X
+    H->>S: memory read X plus ReturnNID and ReturnTxnID of the requester
+    S-->>R: DAT CompData X, direct
+    R-->>H: RSP CompAck closes the home transaction
+    Note over R,O: DCT - the peer cache forwards instead of memory
+    R->>H: REQ ReadShared X
+    H->>O: SNP forward snoop
+    O-->>R: DAT CompData X, direct
+    O-->>H: RSP metadata for the directory
+```
+
+The contract of this figure is that the home remains the point of coherence in all three cases — it resolved the directory before any of the shortcuts happened — and only the **data path** changes. Trace the DMT case: the requester's `ReadShared` reaches the home, the home finds no cached copy, and instead of reading memory into itself it forwards the read to the memory node *carrying the requester's own node and transaction identity*, so the memory node's data packet is addressed straight to the requester. The home never sees the data.
+
+| Mechanism | What it shortcuts | Path before | Path after | Latency saved | What is given up |
+|---|---|---|---|---|---|
+| **DCT** — Direct Cache Transfer | data from a **peer cache** | owner → HN → requester | owner → requester | 60 ns → 22 ns, i.e. **38 ns** (§11 problem 3) | the home must learn the outcome from a separate metadata response; lose it and the directory goes blind |
+| **DMT** — Direct Memory Transfer | data from **memory** | SN → HN → requester | SN → requester | one mesh traversal of the payload plus the home's store-and-forward: ≈5.3 ns of flight plus ≈3 ns of buffering ≈ **8–10 ns** off a ~90 ns miss, about 10 % | the home never sees the line, so it **cannot allocate it into the SLC** on that request, and must close the transaction from responses alone |
+
+The bandwidth argument for DMT is larger than its latency argument, and it is the one that decides the feature. DMT removes a full 64 B line from the home's ingress **and** egress data path for every memory-sourced miss. At 20 M memory misses/s through one home that is $2\times20\text{M}\times64\text{ B} = \mathbf{2.56\ GB/s}$ of data traffic and the matching buffer occupancy removed from that home — and by shortening the transaction's lifetime $L_H$ it directly raises the home's acceptance rate $\lambda_H = T/L_H$ of §13.12.1.
+
+The trade-off to state explicitly, because it is not obvious from the name: **DMT and SLC allocation are mutually exclusive for the same request.** A design that wants both must either not use DMT for allocating reads or issue a separate fill. The usual policy is DMT for streaming, non-temporal, and read-once patterns and home-routed data for lines expected to be reused — which is the same allocate/no-allocate judgment the cache hierarchy already makes ([Prefetching_Replacement_and_QoS](../04_Cache_Hierarchy/02_Prefetching_Replacement_and_QoS.md)).
+
+### 16.4 Cache stashing: pushing data to the consumer that will read it
+
+**The problem.** A producer — a NIC (network interface controller), a DMA engine, an accelerator — writes data that a *specific* core will read almost immediately. Every mechanism so far is demand-driven: the write lands in memory or the SLC, and the consumer takes a cold miss when it eventually looks. The consumer's latency is therefore set by where the producer's write happened to stop, which is a placement decision nobody made.
+
+**The mechanism.** The producer's request carries a **stash target** — a node identity, and optionally a logical-processor identity within that node — telling the fabric "push this line into *that* cache." A write-with-stash carries data and stashes it; a `StashOnce`-class request carries **no data** and is a pure placement hint for a line already at the home or in memory. Critically, the stash is a **hint**: the target's response may decline it. That is a deliberate design choice with two payoffs — it keeps stash out of the correctness argument entirely, and it lets a target protect its own cache from a producer that guesses wrong.
+
+*Worked number.* A NIC delivering 10 M packets/s, with 2 lines per packet (descriptor and header) read by the core immediately on arrival. Without stash the core's read hits the SLC at ~30 ns, or DRAM at ~90 ns if the write went that far. With stash into the consumer's L2 it hits at ~5 ns. The saving is $25\ \text{ns}\times 20\ \text{M lines/s} = 0.5$ seconds of stall per second — **half a core's worth of stall removed**, and 1.7 cores' worth if the baseline was DRAM. The same arithmetic applies to an accelerator writing an output tile the CPU post-processes, with larger transfers and a proportionally larger saving.
+
+**The costs.** The producer must know which core will consume, which the fabric cannot infer — so the stash target is configured per queue by the driver, and a mis-targeted stash evicts something the target actually needed, converting a latency win into a pollution loss. This is also why the decline path exists, and why stash effectiveness must be *measured* per queue rather than assumed.
+
+### 16.5 MPAM: giving the shared resources a tenant identity
+
+**The problem.** On a 64–128 core server running many tenants, the SLC and the memory system are shared, and one streaming tenant evicts everyone else's data. The core-level fix — way partitioning inside a private L2 — does not reach the SLC or the memory controller, because those see requests with no idea who sent them. `SrcID` identifies a *node*, and one node runs many tenants.
+
+**The fix.** Carry the tenant identity on every request. `PARTID` (partition identity) selects an allocation policy at every resource that has one — a portion of SLC capacity, a share of memory bandwidth. `PMG` (performance monitoring group) selects a counter set, which is the half people forget and the half that makes a control loop possible: you cannot enforce a partition you cannot measure.
+
+**The cost, and why it is a build-time decision.** `PARTID` and `PMG` ride on **every** REQ flit. At a 9–16-bit `PARTID` and an 8-bit `PMG`, that is 17–24 bits added to a request flit on the order of 100–150 bits — **15–20 % wider REQ links across the entire mesh**, paid on every link whether or not partitioning is ever enabled. That is why MPAM width is a configuration parameter and why small SoCs configure it to zero. On top of the wires sit per-partition allocation state and counters at each SLC bank and memory controller. The policy side of this — what to partition and how to set the shares — is [Prefetching_Replacement_and_QoS](../04_Cache_Hierarchy/02_Prefetching_Replacement_and_QoS.md) and [QoS_Ordering_and_IO_Coherence](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md).
+
+### 16.6 Memory tagging: 3 % of payload versus 100 % of requests
+
+Memory tagging attaches a small tag — 4 bits per 16 B granule in Arm's scheme — to memory, and every pointer carries a tag that must match, catching use-after-free and buffer overflow in hardware. The fabric problem is that the tags are **metadata stored outside the data line**. If the interconnect knows nothing about them, every tagged access becomes *two* memory accesses — one for the data, one for the tag — roughly **doubling** the request rate and the memory traffic of any workload with checking enabled. That is a cost no production system will pay, and it would have relegated tagging to debug builds permanently.
+
+The fix is to give the tag a place in the protocol: tag bits ride the DAT flit alongside the data, and requests carry a tag operation — invalidate, transfer, update, or match — so the home, the SLC, and the memory controller can cache tags beside the data, update them in place, and check them without a second round trip.
+
+Quantify the two designs against each other. A 64 B line holds four 16 B granules, so it needs $4\times4 = 16$ tag bits per 512 data bits:
+
+$$
+\text{in-band overhead} \;=\; \frac{16}{512} \;=\; \mathbf{3.1\,\%}\ \text{of DAT payload}
+\qquad\text{versus}\qquad
+\text{out-of-band overhead} \;\approx\; \mathbf{100\,\%}\ \text{more requests}
+$$
+
+That 3.1 % against 2× is the entire argument, and it is why tagging had to become a **protocol** feature rather than a software convention — the security property is only deployable if the fabric carries the metadata.
+
+### 16.7 Chip-to-chip: the same protocol, a different physical reality
+
+Section 7 established that chiplets extend CHI rather than going asymmetric. This is what extending it actually requires, because three on-die assumptions all fail at once: a 512-bit DAT flit plus the control channels is 700–900 wires per direction and cannot cross a package boundary at a sane pin cost; a serial die-to-die link has a non-zero bit-error rate where an on-die link effectively does not; and the round trip is 10–50× longer.
+
+CHI-C2C's answer is an **encapsulation, not a new coherence protocol**: serialize CHI flits into a narrow stream with compact packing — dropping or compressing fields that are constant across the boundary — add **CRC and link-level retry** because the link is not lossless, and **remap node IDs and address ranges** at the boundary so each die keeps an independent identity space.
+
+The sizing consequence worth memorizing is credit depth, because it is a bandwidth-delay product and it is where D2D bring-up most often goes wrong:
+
+$$
+C_{\min} \;=\; \frac{BW \times RTT}{\text{bytes per credit}}
+$$
+
+*Worked number.* At 64 GB/s and a 60 ns round trip, in-flight bytes $= 64\times10^{9} \times 60\times10^{-9} = 3.84$ KB $=$ **60 cache lines**, so the receiver needs at least 60 line buffers **per virtual channel** merely to keep the link busy — against a handful on an on-die link with a 5 ns round trip. Under-provision it and the link runs at $C/C_{\min}$ of its wire rate: 16 credits on that link yields $16/60 = \mathbf{27\%}$ utilization, and no amount of PHY bandwidth fixes it, because the sender is idle waiting for returns. This is a *buffer* finding, not a protocol finding, and it is the most common surprise in a first D2D bring-up. The transport side lives in [Chiplets_CXL_and_Die_to_Die](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/02_Chiplets_CXL_and_Die_to_Die.md) and [Routing_Flow_Control_and_Deadlock](../../04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md).
+
+### 16.8 Practical guidance: which issue, and what happens when you mix them
+
+**How to tell which issue an IP implements**, in decreasing order of reliability:
+
+1. **The IP's technical reference manual and configuration guide.** Arm IP states its CHI issue and its optional feature set; third-party IP states it in the integration manual. This is the authoritative answer, and it is a document, not a signal you can probe.
+2. **The interface parameter set in the RTL.** Optional features appear as *fields on the flit structures*: MPAM (`PARTID`, `PMG`), memory tagging (a tag operation field and tag bits on DAT), stash (a stash node and logical-processor identity), DMT (the return-node and return-transaction identity fields), data-source reporting, and the atomic opcode space. A field's absence is the feature's absence — there is nothing else to check.
+3. **The opcode space actually driven.** In simulation, an opcode-coverage report tells you what an RN can generate. An RN that never emits an `AtomicLoad` either has no atomics or has them configured off, and the coverage report does not distinguish those — the manual does.
+4. **The protocol checker's configuration.** Verification IP is configured **to an issue**. Set it newer than the design and legal traffic is flagged; set it older and illegal traffic passes silently. Getting this wrong is exactly how a clean regression hides a real interoperability defect.
+
+**Why mixing issues is a compatibility question rather than a version-number question.** The rule follows from §16.0's no-negotiation fact and is worth stating as a sentence you can quote in a design review: **the effective feature set of a CHI link is the intersection of its two endpoints' configured feature sets, and it must be configured, not discovered.** The failure modes then split cleanly in two, and the less alarming one is the more dangerous:
+
+- Fields the receiver can ignore — a stash target, a `PARTID`, a tag operation — degrade **silently**. The system still works, the feature is simply off, and nothing reports it. This passes the regression.
+- Opcodes the receiver cannot decode — an atomic transaction arriving at a home with no atomic unit, a CopyBack variant a home does not implement — are **protocol errors**, not slowdowns. These fail loudly, which makes them the easier problem.
+
+**What interoperating with an older RN implies** — concretely, for a modern fabric with one older requester attached:
+
+| Feature the fabric has | What the older RN does instead | System-integration consequence |
+|---|---|---|
+| Atomic transactions (§15.3) | issues exclusives | the home must implement a **global monitor** (§15.1) covering that RN's address ranges; and a contended line that RN touches loses the far-atomic path *for everyone sharing it* |
+| Cache stashing (§16.4) | cannot be a stash target | the producer's driver must be configured never to target it; a stash aimed at it is at best ignored |
+| MPAM (§16.5) | emits no `PARTID` | the fabric must **inject a default `PARTID` at the boundary**, or that RN's traffic escapes partitioning entirely — a genuine QoS hole that presents as one tenant exceeding its cap for no visible reason |
+| Memory tagging (§16.6) | issues untagged accesses | any memory it shares with tagged agents needs a defined policy — a match-all tag, or exclusion of the region — decided in the address map, not in RTL |
+| 512-bit DAT (§16.2) | runs 256-bit or 128-bit | a width converter at the boundary: store-and-forward latency, a new buffer, and **a new node in the deadlock analysis of §13.11** |
+| DMT (§16.3) | may not supply the return-identity fields | those requests fall back to home-routed data; the home's sizing must assume the slower, buffer-consuming path for that requester |
+
+Every row is a configuration and integration task with a system-level consequence, and not one of them is fixed by "upgrading the RTL." That is why the CHI issue and feature set of **every** endpoint belongs in the architecture specification alongside the address map and the home-hash function — decided once, early, and by the same person who owns §13.11's deadlock argument.
 
 ---
 

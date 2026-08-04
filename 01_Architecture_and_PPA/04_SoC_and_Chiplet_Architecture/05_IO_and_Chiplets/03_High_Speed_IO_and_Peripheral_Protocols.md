@@ -1429,4 +1429,4 @@ The generalizable statement: **FEC strength is chosen against the latency budget
 
 ---
 
-⬅ prev [02 · Chiplets, CXL, and Die-to-Die](02_Chiplets_CXL_and_Die_to_Die.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [02 · Chiplets, CXL, and Die-to-Die](02_Chiplets_CXL_and_Die_to_Die.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [04 · PCI Express Protocol Deep Dive](04_PCIe_Protocol_Deep_Dive.md)

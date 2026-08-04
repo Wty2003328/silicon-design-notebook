@@ -470,4 +470,4 @@ Load-bearing values for DDR4-3200 and DDR5-5600, with the reason each matters. T
 
 ---
 
-[Section Index](00_Index.md) · [Root Index](../../../Index.md)
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [02 · The DRAM Device Protocol and Training](02_DRAM_Device_Protocol_and_Training.md)
