@@ -339,4 +339,4 @@ Requests and responses share every endpoint input slot. All slots fill with requ
 
 ---
 
-⬅ prev [Network on Chip](01_Network_on_Chip.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [Network on Chip](01_Network_on_Chip.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [03 · Router Microarchitecture](03_Router_Microarchitecture.md)
