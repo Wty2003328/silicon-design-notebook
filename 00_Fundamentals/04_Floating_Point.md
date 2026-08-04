@@ -215,7 +215,7 @@ $$
 a=3.14159\Rightarrow fl(a)=3.142,\qquad b=3.14127\Rightarrow fl(b)=3.141.
 $$
 
-The subtraction is *exact* (Sterbenz): $3.142-3.141=0.001$. But the true difference is $a-b=0.00032$, so the computed $0.001$ is off by $\approx210\%$ — the answer is essentially noise. Nothing failed in the subtract; it cancelled the four agreeing digits $3.141$ and promoted each operand's half-ULP rounding error (up to $0.0005$, invisible while riding a value of $\sim3$) into the *leading* digit of a result of size $\sim0.001$. FP32 does the identical thing in binary with $2^{-24}$ in place of the decimal ULP — which is why a small quantity must never be formed as the difference of two large near-equal ones.
+The subtraction is *exact* (Sterbenz): $3.142-3.141=0.001$. But the true difference is $a-b=0.00032$, so the computed $0.001$ is off by $\approx210\%$ — the answer is essentially noise. Nothing failed in the subtract; it cancelled the three agreeing digits $3.14$ and promoted each operand's half-ULP rounding error (up to $0.0005$, invisible while riding a value of $\sim3$) into the *leading* digit of a result of size $\sim0.001$. FP32 does the identical thing in binary with $2^{-24}$ in place of the decimal ULP — which is why a small quantity must never be formed as the difference of two large near-equal ones.
 
 Cancellation is also *why the FP adder has a close path*. For effective subtraction with exponent difference $\le1$, the result may cancel to many leading zeros, needing a full-width normalization shift driven by a leading-zero anticipator. Effective additions and farther subtractions use the far/add path: alignment may dominate, but post-normalization is small. The two expensive shifts need not occur in one path, so high-speed adders split into a **far/add path** (big align, tiny normalize) and a **close-subtract path** (tiny align, big normalize).
 
@@ -827,7 +827,7 @@ Use raw product exponent `eA+eB` and addend exponent `eC` for alignment under th
 A correct finite FMA can then be designed in these hardware phases:
 
 1. **Establish the product scale.** Keep the full product and a documented radix/exponent convention such as `prod_fixed` above. Do not round.
-2. **Choose the common exponent.** Compare the product-scale exponent with $e_C`; the larger exponent defines the fixed-point window.
+2. **Choose the common exponent.** Compare the product-scale exponent with $e_C$; the larger exponent defines the fixed-point window.
 3. **Align the smaller term.** Use a wide saturating shift. Preserve every bit needed for cancellation and final rounding; bits outside the implemented window become explicit tail metadata.
 4. **Apply effective signs.** Keep magnitude rows through alignment, then create two's-complement/compressor inputs, including inversion and the correction `+1` at the correct binary weight.
 5. **Compress.** Merge product sum/carry rows, aligned $C$, and correction rows to two carry-save rows.

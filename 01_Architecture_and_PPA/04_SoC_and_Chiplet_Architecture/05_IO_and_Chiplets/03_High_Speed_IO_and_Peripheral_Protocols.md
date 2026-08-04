@@ -658,7 +658,7 @@ so 1.5 kΩ, and the window is only 1.8:1 wide. Add two more devices and 100 pF o
 ```wavedrom
 { "signal": [
   {"name": "SCL (bus)",       "wave": "1.01010.101.", "node": "......a.b..."},
-  {"name": "SDA (bus)",       "wave": "10=.=.z..0.1", "data": ["A6","A5"]},
+  {"name": "SDA (bus)",       "wave": "10=.=.0..0.1", "data": ["A6","A5"]},
   {},
   {"name": "target drives SCL","wave": "z.....0.z..."},
   {"name": "target drives SDA","wave": "z.....0..z.."}
@@ -702,10 +702,10 @@ Note that modes 0 and 3 both sample on the rising edge; they differ only in idle
 
 ```wavedrom
 { "signal": [
-  {"name": "CS_n",            "wave": "10.......1.."},
+  {"name": "CS_n",            "wave": "10........1."},
   {},
-  {"name": "SCLK, CPOL=0",    "wave": "0.01010101.."},
-  {"name": "SCLK, CPOL=1",    "wave": "1.10101010.."},
+  {"name": "SCLK, CPOL=0",    "wave": "0.10101010.."},
+  {"name": "SCLK, CPOL=1",    "wave": "1.01010101.."},
   {},
   {"name": "data, CPHA=0",    "wave": "x=.=.=.=.x..", "data": ["b7","b6","b5","b4"]},
   {"name": "data, CPHA=1",    "wave": "x.=.=.=.=.x.", "data": ["b7","b6","b5","b4"]}

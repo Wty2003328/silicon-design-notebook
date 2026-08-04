@@ -363,8 +363,8 @@ The repair is **test-ready compile** (`compile -scan`), which maps to scan-equiv
 { "signal": [
   { "name": "clk",      "wave": "p........" },
   { "name": "scan_en",  "wave": "1...0.1..", "node": "....a.b.." },
-  { "name": "scan_in",  "wave": "x2345x...", "data": ["p0","p1","p2","p3"] },
-  { "name": "chain Q",  "wave": "x.2345x..", "data": ["p0","p1","p2","p3"] },
+  { "name": "scan_in",  "wave": "2345x....", "data": ["p0","p1","p2","p3"] },
+  { "name": "chain Q",  "wave": "x2345x...", "data": ["p0","p1","p2","p3"] },
   {},
   { "name": "mode",     "wave": "3...4.3..", "data": ["shift","capture","shift"] }
  ],

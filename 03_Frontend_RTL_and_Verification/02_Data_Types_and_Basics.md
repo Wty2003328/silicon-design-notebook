@@ -67,13 +67,13 @@ So X is a **debugging signal, not a real value**. Its purpose is to make "the de
 
 ### 2.3 The value lattice and the net resolution function
 
-Order the four values by **how much the simulator knows** about the wire. The three definite drive states — $0$, $1$, and the definite-undriven $Z$ — are fully known; $X$ sits above them as "could be either logic level":
+Order the four values by **how strongly each one asserts a level on the wire** — the order the multi-driver resolution function joins over. The floating $Z$ asserts nothing and sits at the bottom; a driven $0$ or $1$ asserts a level; $X$ sits at the top, where two drivers disagree and no level can be named:
 
 $$
 Z \;\sqsubset\; \{0, 1\}, \qquad 0 \;\sqsubset\; X, \quad 1 \;\sqsubset\; X
 $$
 
-where $a \sqsubset b$ means "$b$ is less determined than $a$." A **net with multiple drivers** resolves them through a function that respects this order, and the whole $4\times4$ table collapses to three rules:
+where $a \sqsubset b$ means "$b$ overrides $a$ when the two are resolved together." This is a *drive* order, not a knowledge order: $0$, $1$, and the definite-undriven $Z$ are all fully known states of the wire, and only $X$ is an unknown level. A **net with multiple drivers** resolves them by taking the least upper bound in this order, and the whole $4\times4$ table collapses to three rules:
 
 1. **Z is the identity** — any real driver beats a floater: $\text{res}(v, Z) = v$. This is what makes a tri-state bus work.
 2. **0 against 1 is contention** — two disagreeing hard drivers give $\text{res}(0,1) = X$.

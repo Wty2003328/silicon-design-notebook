@@ -53,7 +53,7 @@ $$
 \text{HPWL}(n) = \Big(\max_{i\in n} x_i - \min_{i\in n} x_i\Big) + \Big(\max_{i\in n} y_i - \min_{i\in n} y_i\Big)
 $$
 
-It is exact for 2- and 3-pin nets and an *underestimate* above that — a 5-pin net's Steiner tree can exceed it 10–20%, corrected by a fanout factor $\approx1+0.02(p-3)$ or a lookup-table rectilinear-Steiner estimate (FLUTE). It ignores detours: routed length runs **1.0–1.5×** HPWL, the multiplier climbing sharply past ~80% local utilization. And it is not delay — it does not know which pin drives, so two placements with equal HPWL can differ 30 ps depending on whether the driver sits at a corner of the bounding box or its center. It survives all three because it costs $O(\text{pins})$, decomposes per net, and has a trivial gradient with respect to one cell.
+It is exact for 2- and 3-pin nets and an *underestimate* above that — a 5-pin net's Steiner tree exceeds it by only a few percent, a 10-pin net by 10–15%, corrected by a fanout factor $\approx1+0.02(p-3)$ — 4% at $p=5$, 14% at $p=10$, 20% at $p=13$ — or by a lookup-table rectilinear-Steiner estimate (FLUTE). It ignores detours: routed length runs **1.0–1.5×** HPWL, the multiplier climbing sharply past ~80% local utilization. And it is not delay — it does not know which pin drives, so two placements with equal HPWL can differ 30 ps depending on whether the driver sits at a corner of the bounding box or its center. It survives all three because it costs $O(\text{pins})$, decomposes per net, and has a trivial gradient with respect to one cell.
 
 ### 2.2 Worked HPWL on a 5-pin net, and what a net weight does
 
@@ -170,10 +170,14 @@ Split into $k$ segments of length $\ell=L/k$, each driven by an identical buffer
 ```tikz
 \begin{document}
 \begin{circuitikz}[scale=0.82, transform shape]
-  \draw (0,0) to[amp] (1.6,0) to[R=$r\ell$] (4.2,0) coordinate (n1);
-  \draw (n1) to[C=$c\ell$] ++(0,-1.5) node[ground]{};
-  \draw (n1) -- (4.7,0) to[amp] (6.3,0) to[R=$r\ell$] (8.9,0) coordinate (n2);
-  \draw (n2) to[C=$c\ell$] ++(0,-1.5) node[ground]{};
+  \draw (0,0) to[amp] (1.6,0) -- (2.0,0) coordinate (m1);
+  \draw (m1) to[C=$c\ell/2$] ++(0,-1.5) node[ground]{};
+  \draw (m1) to[R=$r\ell$] (4.2,0) coordinate (n1);
+  \draw (n1) to[C=$c\ell/2$] ++(0,-1.5) node[ground]{};
+  \draw (n1) -- (4.7,0) to[amp] (6.3,0) -- (6.7,0) coordinate (m2);
+  \draw (m2) to[C=$c\ell/2$] ++(0,-1.5) node[ground]{};
+  \draw (m2) to[R=$r\ell$] (8.9,0) coordinate (n2);
+  \draw (n2) to[C=$c\ell/2$] ++(0,-1.5) node[ground]{};
   \draw (n2) -- (9.4,0) to[amp] (11.0,0) -- (11.6,0);
 \end{circuitikz}
 \end{document}

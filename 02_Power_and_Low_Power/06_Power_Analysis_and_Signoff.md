@@ -122,7 +122,7 @@ $$
 f_{res} \;=\; \frac{1}{2\pi\sqrt{L_{pkg}\,C_{die}}}, \qquad |Z|_{peak}\approx \sqrt{\frac{L_{pkg}}{C_{die}}}\cdot\frac{1}{\zeta}
 $$
 
-where $\zeta$ is the damping ratio (low $\zeta$ = tall, sharp peak). With $L_{pkg}\sim0.1\text{–}1$ nH and $C_{die}\sim$ tens of nF this lands at **~50–300 MHz** — right in the band a burst of activity can excite. A current step whose frequency content hits $f_{res}$ rings the tank and produces a droop far larger than $I\!\cdot\!Z_{target}$ would predict. This is *why* $di/dt$ events (domain wake-up, a vector unit turning on, a large cluster clock-ungating, §11) are dangerous out of proportion to their average power: each is a load *step* that dumps energy straight into the resonance.
+where $\zeta$ is the damping ratio (low $\zeta$ = tall, sharp peak). With $L_{pkg}\sim0.1\text{–}1$ nH and $C_{die}\sim$ tens of nF (10–50 nF) this lands at **~20–160 MHz** — right in the band a burst of activity can excite. A current step whose frequency content hits $f_{res}$ rings the tank and produces a droop far larger than $I\!\cdot\!Z_{target}$ would predict. This is *why* $di/dt$ events (domain wake-up, a vector unit turning on, a large cluster clock-ungating, §11) are dangerous out of proportion to their average power: each is a load *step* that dumps energy straight into the resonance.
 
 Plotting $|Z(f)|$ against frequency gives the profile every PDN designer keeps in their head — a floor held down stage by stage, with the package–die peak poking through:
 
@@ -147,7 +147,7 @@ Plotting $|Z(f)|$ against frequency gives the profile every PDN designer keeps i
 The mitigations are the same two the whole page keeps returning to — **more/closer decap** to lower $|Z|_{peak}$ and raise/damp the resonance (§7), and **adaptive clocking / droop detectors** that stretch the clock when a droop is sensed. Below the package tank sit the slower board/VRM resonances (kHz–few MHz, the "third droop"); above it, the on-die response (the fast "first droop" proper). The droop budget is spent across all three:
 
 $$
-V_{guardband} \;\approx\; \underbrace{V_{static}}_{\sim3\text{–}5\%} + \underbrace{V_{dynamic}}_{\sim5\text{–}10\%} \;\Rightarrow\; \text{total } \sim10\text{–}15\%\ \text{of } V_{DD}
+V_{guardband} \;\approx\; \underbrace{V_{static}}_{\sim3\text{–}5\%} + \underbrace{V_{dynamic}}_{\sim5\text{–}10\%} \;\Rightarrow\; \text{total } \sim8\text{–}15\%\ \text{of } V_{DD}
 $$
 
 ---
@@ -200,7 +200,7 @@ $$
 C_{decap} \;\ge\; \frac{I_{peak}\cdot \Delta t}{\Delta V}
 $$
 
-where $I_{peak}$ = transient current, $\Delta t$ = its duration before upstream PDN takes over, $\Delta V$ = allowed local droop. A 200 mA, 200 ps transient held to 50 mV needs $C = 200\text{m}\times200\text{p}/50\text{m} = 800$ pF; at an on-die density of ~1–5 nF/mm² that is ~0.2–0.4 mm² of silicon *for one region*. That area is the whole trade:
+where $I_{peak}$ = transient current, $\Delta t$ = its duration before upstream PDN takes over, $\Delta V$ = allowed local droop. A 200 mA, 200 ps transient held to 50 mV needs $C = 200\text{m}\times200\text{p}/50\text{m} = 800$ pF; at an on-die density of ~1–5 nF/mm² that is ~0.16–0.8 mm² of silicon *for one region*. That area is the whole trade:
 
 | Adding decap | |
 |---|---|
@@ -230,7 +230,7 @@ $$
 
 where $w_{min}$ = required width, $t_{metal}$ = metal thickness. A 10 mA average through a 400 nm-thick M5 stripe at $J_{max}=2$ MA/cm² needs ~1.25 µm of width ($w_{min}=I/(J_{max}t)=0.01/(2\times10^{6}\cdot4\times10^{-5})$ cm) — i.e. a single minimum-width stripe *cannot* legally carry it, forcing many parallel stripes. This is the same physics that rewards the wide top-metal power straps of §5, and it couples EM directly to the grid-density trade-off.
 
-**Temperature is the sharp knob.** From the exponential, $MTTF(85°\text{C})/MTTF(105°\text{C}) \approx e^{E_a/k}(1/358-1/378) \approx 3.3\times$ for $E_a=0.7$ eV — a 20 °C rise roughly *halves* lifetime. This is why EM is signed off at the *hottest* junction corner, and why EM and thermal signoff (§11) are coupled: the self-heating of a high-current wire raises its own $T$ and accelerates its own failure. Signoff targets **> 10-year lifetime at 105 °C**, with the AC limit ~2× the DC limit (bidirectional current partially self-heals). At advanced nodes thinner wires push $J$ up and grain-boundary scattering pushes Cu resistivity up together, tightening the constraint — mitigated by cobalt caps, ruthenium liners, and again **backside power delivery**, which moves the highest-current wires off the congested signal stack.
+**Temperature is the sharp knob.** From the exponential, $MTTF(85°\text{C})/MTTF(105°\text{C}) \approx e^{(E_a/k)(1/358-1/378)} \approx 3.3\times$ for $E_a=0.7$ eV — a 20 °C rise cuts lifetime by more than $3\times$ (and a 10 °C rise roughly *halves* it, $\approx1.9\times$). This is why EM is signed off at the *hottest* junction corner, and why EM and thermal signoff (§11) are coupled: the self-heating of a high-current wire raises its own $T$ and accelerates its own failure. Signoff targets **> 10-year lifetime at 105 °C**, with the AC limit ~2× the DC limit (bidirectional current partially self-heals). At advanced nodes thinner wires push $J$ up and grain-boundary scattering pushes Cu resistivity up together, tightening the constraint — mitigated by cobalt caps, ruthenium liners, and again **backside power delivery**, which moves the highest-current wires off the congested signal stack.
 
 ---
 
@@ -284,7 +284,7 @@ Three remaining signoff concerns round out the two proofs; each is treated compa
 
 **Thermal — the envelope behind the average number.** Average power (§2) only matters because it becomes heat: $T_j = T_a + P\,R_{th,ja}$, where $R_{th,ja}$ (junction-to-ambient) runs ~30–60 °C/W bare-die down to ~0.5–2 °C/W liquid-cooled. This is why **peak power is not sustainable power** — a 5 W mobile part with $R_{th}=40$ °C/W at 45 °C ambient would reach 245 °C in steady state, so it must throttle to ~1.4 W sustained and spend its 5 W only in short thermal-transient bursts. Signoff must also confirm a **stable thermal operating point exists**: because leakage rises ~2× per 10 °C, the dissipation curve $P(T)$ is convex, and if it is steeper than the linear heat-removal $Q(T)=(T-T_a)/R_{th}$ at their intersection the loop runs away and destroys the chip. That stability check, and the DTM throttling policy (DVFS governor → OPP caps → emergency shutdown with hysteresis) that keeps the chip inside the envelope, is developed in [Power_Fundamentals](01_Power_Fundamentals.md) (the ceilings) with implementation-side thermal mapping in [Signal_Integrity_Reliability](../05_Backend_Physical_Design/02_Signal_Integrity_Reliability.md).
 
-**$di/dt$ events — the peak that average-power signoff misses.** A domain waking (rush current), a vector unit turning on, or a large cluster clock-ungating is a *load step* that excites the ~50–300 MHz package resonance (§4.2). Signoff checks that the peak droop under each such step stays in budget *with* the mitigation modelled (decap + adaptive clocking), that the current ramp is within the PMIC's slew capability, and that the burst profile causes no EM overstress. The package-side PDN model these steps ring against belongs to [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
+**$di/dt$ events — the peak that average-power signoff misses.** A domain waking (rush current), a vector unit turning on, or a large cluster clock-ungating is a *load step* that excites the ~20–160 MHz package resonance (§4.2). Signoff checks that the peak droop under each such step stays in budget *with* the mitigation modelled (decap + adaptive clocking), that the current ramp is within the PMIC's slew capability, and that the burst profile causes no EM overstress. The package-side PDN model these steps ring against belongs to [IC_Packaging](../07_Manufacturing_and_Bringup/02_IC_Packaging.md).
 
 **Backside power delivery — what changes for the signoff engineer.** With power moved to the wafer backside (Intel 18A PowerVia in volume 2025; TSMC A16 Super Power Rail 2026), the IR-drop topology changes fundamentally: drop is now dominated by the short, fat backside vias and the nano-TSV interface rather than the M1–M3 weave, extraction needs new backside-metal tech files, and — because the silicon between devices and the backside grid is thinned — heat paths change and **thermal and IR signoff become more tightly coupled**. The delivery-ceiling motivation for the shift is in [Power_Fundamentals](01_Power_Fundamentals.md).
 
@@ -298,14 +298,14 @@ Three remaining signoff concerns round out the two proofs; each is treated compa
 | Leakage power | $P=I_{leak}V_{DD}$, ~2×/10 °C | dominates idle; drives thermal runaway (§11) |
 | PDN droop | $V_{droop}=IR + L\,di/dt$ | $L\,di/dt$ is 2–3× the $IR$ term on fast edges (§4, §6) |
 | Target impedance | $Z_{target}=V_{DD}\cdot\text{ripple}\%/I_{max}$ | e.g. 9–10 mΩ; keep $|Z(f)|$ under it to the knee (§4) |
-| First-droop resonance | $f_{res}=1/(2\pi\sqrt{L_{pkg}C_{die}})\approx$ 50–300 MHz | package–die anti-resonance $di/dt$ events excite (§4, §11) |
+| First-droop resonance | $f_{res}=1/(2\pi\sqrt{L_{pkg}C_{die}})\approx$ 20–160 MHz | package–die anti-resonance $di/dt$ events excite (§4, §11) |
 | Static IR-drop budget | < 5 % $V_{DD}$ (aggressive < 3 %) | average current; exceed → timing (§5) |
 | Dynamic IR-drop budget | < 10 % $V_{DD}$ (some < 8 %) | clock-edge transient; fixed by decap (§6) |
-| Total droop guardband | ~10–15 % $V_{DD}$ | static + dynamic split (§4.2) |
+| Total droop guardband | ~8–15 % $V_{DD}$ | static + dynamic split (§4.2) |
 | Delay sensitivity to droop | ~0.167 %/mV → 50 mV ≈ 8 % slower | couples integrity to timing (§9) |
 | Decap sizing | $C \ge I\,\Delta t/\Delta V$ | on-die ~1–5 nF/mm², 5–15 % of cells (§7) |
 | Black's equation | $MTTF=A\,J^{-n}e^{E_a/kT}$, $n$=1–2, $E_a$=0.7–0.9 eV | power-law in $J$, exponential in $T$ (§8) |
-| EM lifetime target | > 10 yr at 105 °C; AC limit ~2× DC | 20 °C rise ≈ halves life (§8) |
+| EM lifetime target | > 10 yr at 105 °C; AC limit ~2× DC | 10 °C rise ≈ halves life; 20 °C ≈ 3.3× (§8) |
 | Cu DC current-density limit | ~1–3 MA/cm² at 105 °C | sets minimum wire width (§8) |
 | Annotation coverage for signoff | > 80 %, checked *per hierarchy* | a low-coverage watt is a guess (§2.2) |
 | Estimation accuracy vs silicon | vectorless ±20–30 %, PTPX ±10–15 %, Voltus/RedHawk ±5–10 % | fidelity ladder (§1) |

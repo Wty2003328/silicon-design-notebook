@@ -99,7 +99,7 @@ $$
 \Delta V_{IR} = I\cdot R_{PDN}
 $$
 
-A 200 A load with a 35 mV budget demands $R_{PDN} < 0.175\ \text{m}\Omega$ — a hundred times smaller than a single bump. The only route there is **massive parallelism**: hundreds to thousands of area-array power bumps ($\sim\!10\ \text{m}\Omega$ each) and, in stacks, power TSVs in parallel. This is a second, independent reason flip-chip wins power delivery — peripheral wires cannot be paralleled enough.
+A 200 A load with a 35 mV budget demands $R_{PDN} < 0.175\ \text{m}\Omega$ — about 57 times smaller than a single $10\ \text{m}\Omega$ bump. The only route there is **massive parallelism**: hundreds to thousands of area-array power bumps ($\sim\!10\ \text{m}\Omega$ each) and, in stacks, power TSVs in parallel. This is a second, independent reason flip-chip wins power delivery — peripheral wires cannot be paralleled enough.
 
 **Dynamic — $L\,di/dt$ droop.** When current demand jumps (a clock ungates, a wide vector op fires), inductance in the supply path opposes the change and the rail droops:
 
@@ -208,7 +208,7 @@ flowchart TB
     SUB -->|"BGA balls"| PCB["PCB"]
 ```
 
-**Why HBM lives here.** High-bandwidth memory is the canonical customer. HBM presents a **1024-bit** interface per stack (HBM4: 2048-bit)—two orders of magnitude wider than DDR5's 64 bits—run at a *deliberately low* per-pin rate. Why wide-and-slow instead of narrow-and-fast? Energy. Bandwidth $= W\times f$, and interconnect energy scales with $f$ and with reach, so for a target bandwidth the *wide, slow, short* bus wins on pJ/bit—but only if you can physically route 1024+ signals into the memory, which needs interposer-class pitch. HBM-beside-logic-on-an-interposer is "wide, slow, short" made physical: NVIDIA's H100 places a GPU die and its HBM3 stacks on a $\sim\!2500\ \text{mm}^2$ CoWoS interposer for $\sim\!5\ \text{TB/s}$. The architecture-side view—delivered bandwidth, controller/PHY area and power, interposer routing, and thermal coupling—is [GPU PPA and Physical Implementation](../01_Architecture_and_PPA/02_GPU_Architecture/00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md).
+**Why HBM lives here.** High-bandwidth memory is the canonical customer. HBM presents a **1024-bit** interface per stack (HBM4: 2048-bit)—two orders of magnitude wider than DDR5's 64 bits—run at a *deliberately low* per-pin rate. Why wide-and-slow instead of narrow-and-fast? Energy. Bandwidth $= W\times f$, and interconnect energy scales with $f$ and with reach, so for a target bandwidth the *wide, slow, short* bus wins on pJ/bit—but only if you can physically route 1024+ signals into the memory, which needs interposer-class pitch. HBM-beside-logic-on-an-interposer is "wide, slow, short" made physical: NVIDIA's H100 SXM5 places a GPU die and five active HBM3 stacks on a CoWoS-S interposer for $3.35\ \text{TB/s}$ (the CoWoS-S ceiling of that generation is roughly $2500\ \text{mm}^2$, about $3\times$ reticle, not the size of this particular interposer). The architecture-side view—delivered bandwidth, controller/PHY area and power, interposer routing, and thermal coupling—is [GPU PPA and Physical Implementation](../01_Architecture_and_PPA/02_GPU_Architecture/00_Design_Methodology/02_GPU_PPA_and_Physical_Implementation.md).
 
 **The cost trade: don't buy silicon you don't need.** A full silicon interposer is expensive (adds ~100–500 USD/unit) and, being large, warps (§1.2). So the field offers a ladder of "fine pitch only where you need it":
 

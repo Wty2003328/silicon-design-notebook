@@ -209,8 +209,9 @@ The DLL answers a narrower question â€” *align a clock's phase to a reference* â
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart LR
     REF["f_ref"] --> PFD["PFD"]
+    REF -->|"clock in: edges to be delayed"| VCDL["VCDL<br/>delay line (not oscillator)"]
     PFD --> CP["Charge pump<br/>+ cap (no zero)"]
-    CP --> VCDL["VCDL<br/>delay line (not oscillator)"]
+    CP -->|"control: sets t_d"| VCDL
     VCDL --> OUT["f_out = f_ref, phase-shifted"]
     VCDL --> PFD
     classDef s fill:#dbeafe,stroke:#1d4ed8,color:#000

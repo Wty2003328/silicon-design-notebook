@@ -922,15 +922,15 @@ That last option is why the daily rhythm looks like this:
 
 ```wavedrom
 { "signal": [
-  {"name": "developer commits",  "wave": "0.......1...............0.......", "node": "........a......................."},
-  {"name": "on-commit CI",       "wave": "0.......1...............0......."},
-  {"name": "nightly regression", "wave": "1.......0...............1.......", "node": "........................b......."},
+  {"name": "developer commits",  "wave": "0..........1...............0....", "node": "...........a..................."},
+  {"name": "on-commit CI",       "wave": "0..........1...............0...."},
+  {"name": "nightly regression", "wave": "1..........0...............1....", "node": "...........................b..."},
   {},
-  {"name": "sim license usage",  "wave": "3.......4...............3.......", "data": ["95%","55%","95%"]},
-  {"name": "PD trial backfill",  "wave": "0.......5...............0.......", "data": ["preemptible"]}
+  {"name": "sim license usage",  "wave": "3..........4...............3....", "data": ["95%","55%","95%"]},
+  {"name": "PD trial backfill",  "wave": "0..........5...............0....", "data": ["preemptible"]}
  ],
  "edge": ["a~>b work queued during the day is cut into the 20:00 regression"],
- "head": {"text": "one UTC day on a chip-project farm, hour 0 at left, 32 slots of 45 min"}
+ "head": {"text": "one UTC day on a chip-project farm, hour 0 at left, 32 slots of 45 min: nightly owns 20:00-08:00"}
 }
 ```
 

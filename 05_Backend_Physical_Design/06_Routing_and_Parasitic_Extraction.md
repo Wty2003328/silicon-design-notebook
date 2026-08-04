@@ -319,7 +319,7 @@ The router's default is minimum width at minimum spacing, because that is what m
 
 A **non-default rule (NDR)** overrides width and/or spacing for named nets. The two common forms:
 
-- **Double width (2W)** halves $r$ on the affected segments. On a 400 µm M4 net this takes $R$ from 13.2 k$\Omega$ to 6.6 k$\Omega$, which on a 72 fF net removes roughly $6600 \times 39\times10^{-15} = 257$ ps of Elmore delay. It slightly *raises* capacitance (more sidewall and plate area), so it is a win only when the net is resistance-dominated — long.
+- **Double width (2W)** halves $r$ on the affected segments. On a 400 µm M4 net this takes $R$ from 13.2 k$\Omega$ to 6.6 k$\Omega$. With $C_w = 72$ fF of wire and a 3 fF receiver, only the $R_w(\tfrac{C_w}{2}{+}C_L)$ term of §10.2's $\pi$-model moves, so the saving is roughly $\Delta R_w(\tfrac{C_w}{2}{+}C_L) = 6600 \times (36{+}3)\times10^{-15} = 257$ ps of Elmore delay. It slightly *raises* capacitance (more sidewall and plate area), so it is a win only when the net is resistance-dominated — long.
 - **Double spacing (2S)** reduces coupling capacitance. Lateral coupling scales roughly as $1/S$ (§8), so doubling the space to each neighbor roughly halves the coupling term. It does nothing for resistance.
 
 Combined **2W2S** is the standard critical-net rule. Now quantify the resource cost, because this is where engineers get it wrong. On a track grid with pitch $P = W + S$, a default net occupies exactly one track. A 2W2S net occupies $2W$ of metal plus $2S$ of clearance on each side; measured in default tracks, it consumes

@@ -1020,7 +1020,7 @@ This is why the honest way to state crossbar cost is "two metal layers over a $(
 | Local input | North, South, East, West | 4 |
 | **Total** | | **16** |
 
-Sixteen crosspoints instead of 25 — a **36 % reduction**, free, from a routing restriction that was already mandatory for deadlock freedom. The North and South input muxes shrink from 5:1 to 2:1, which also shortens their delay by a full mux level. In wire terms the East/West output columns still need $w$ tracks from four sources, but the North/South columns need only two, so the vertical track count falls from $5w$ to about $3.6w$.
+Sixteen crosspoints instead of 25 — a **36 % reduction**, free, from a routing restriction that was already mandatory for deadlock freedom. The East and West output muxes shrink from 5:1 to 2:1, which also shortens their delay by a full mux level. In wire terms the North/South and Local output columns still need $w$ tracks from four sources, but the East/West columns need only two, so the average vertical track count falls from $5w$ to $16w/5 = 3.2w$.
 
 **Dimension slicing, the stronger version.** Split the crossbar into an X-dimension switch and a Y-dimension switch. The X switch connects {East-in, West-in, Local-in} to {East-out, West-out, transfer-to-Y}; the Y switch connects {North-in, South-in, transfer-from-X} to {North-out, South-out, Local-out}. Two $3\times3$ crossbars: 18 crosspoints, and — more importantly — each array is only $3w$ tracks per side, so the wire area is $2(3wp)^2 = 18(wp)^2$ against the full crossbar's $25(wp)^2$: a **28 % reduction in metal**, on top of shorter spans and therefore faster traversal.
 
@@ -1043,7 +1043,7 @@ The crossbar's span is a real delay, and at wide flits it is what forces ST into
 
 **Contract of the figure.** A single-segment pi model of one crossbar output wire: total resistance $R_w = r\ell$ and total capacitance $C_w = c\ell$ for a wire of length $\ell$, with $r \approx 30\ \Omega/\mu$m and $c \approx 0.2\ \text{fF}/\mu$m for an intermediate-layer signal wire at a 7 nm-class node.
 
-**Trace it.** Elmore delay for the un-repeated line is $\approx 0.38\, r c\, \ell^2$. At $w=128$ the span is $\ell = 64\ \mu$m: $0.38 \times 30 \times 0.2\times10^{-15} \times 64^2 = 9.3$ ps, under 1 FO4 — invisible. At $w=512$ the span is $\ell = 256\ \mu$m: $0.38 \times 30 \times 0.2\times10^{-15} \times 256^2 = 149$ ps, or **15 FO4** — a third of a 2 GHz cycle, spent on a wire. One repeater in the middle cuts it to about 40 ps plus the repeater's own 1.5 FO4, so a properly repeated 512-bit crossbar span costs about **5 FO4**.
+**Trace it.** Elmore delay for the un-repeated line is $\approx 0.38\, r c\, \ell^2$. At $w=128$ the span is $\ell = 64\ \mu$m: $0.38 \times 30 \times 0.2\times10^{-15} \times 64^2 = 9.3$ ps, under 1 FO4 — invisible. At $w=512$ the span is $\ell = 256\ \mu$m: $0.38 \times 30 \times 0.2\times10^{-15} \times 256^2 = 149$ ps, or **15 FO4** — a third of a 2 GHz cycle, spent on a wire. One repeater in the middle splits the span into two 128 µm segments; because the delay is quadratic in length, each segment is $149/4 = 37$ ps and the two in series total 75 ps — a $2\times$ cut, not a $4\times$ one. Adding the repeater's own 1.5 FO4, a properly repeated 512-bit crossbar span costs about **9 FO4**.
 
 **The trade it illustrates.** The quadratic term bites twice: wide flits cost $w^2$ in area *and* $w^2$ in un-repeated span delay. Repeaters linearize the delay but add power on the fabric's hottest datapath. This is the mechanism behind "the crossbar is wire-dominated," and it is why a 512-bit router pipelines ST separately while a 128-bit router merges SA and ST comfortably.
 
@@ -1925,7 +1925,7 @@ Compare with the rest of the router: $50{,}800 \times 0.03 = 1{,}524\ \mu\text{m
 
 What breaks first, in order:
 
-1. **Span delay.** The un-repeated Elmore delay across 256 µm is $0.38 \times 30\,\Omega/\mu\text{m} \times 0.2\,\text{fF}/\mu\text{m} \times 256^2 = 149$ ps $= 15$ FO4 (§8.5). Added to SA's 18 FO4, the SA+ST path becomes 37 FO4 — still inside 43, but with almost no margin. One mid-span repeater brings it to ~5 FO4 and restores the budget. **Insert the repeater or lose the frequency.**
+1. **Span delay.** The un-repeated Elmore delay across 256 µm is $0.38 \times 30\,\Omega/\mu\text{m} \times 0.2\,\text{fF}/\mu\text{m} \times 256^2 = 149$ ps $= 15$ FO4 (§8.5). Added to SA's 18 FO4 and the crossbar mux's 4.4, the SA+ST path becomes 37 FO4 — still inside 43, but with almost no margin. One mid-span repeater halves the wire term to ~9 FO4 (§8.5), so the path lands at $18 + 4.4 + 9 \approx 31$ FO4 and the budget is restored. **Insert the repeater or lose the frequency.**
 2. **Routing resources.** $2Pw = 5{,}120$ tracks must cross the block. At 0.1 µm pitch over a 256 µm side that is exactly one full metal layer in each direction — two of the six or seven signal layers consumed over the whole router footprint, which caps placement utilization near 60 % and pushes every other net around the array.
 3. **Link energy.** Each flit now toggles 512 wires over a 0.5 mm link: link energy per flit-hop rises 4× to 14.4 pJ. Since links were 61 % of gated router power (§12.4), fabric power roughly triples.
 

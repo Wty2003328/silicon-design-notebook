@@ -9,7 +9,7 @@
 
 Every other page in this section teaches you one check. [STA](01_STA.md) teaches you to read a slack. [Physical_Verification_DRC_LVS](03_Physical_Verification_DRC_LVS.md) teaches you what a spacing violation is. [DFT_and_ATPG](02_DFT_and_ATPG.md) teaches you what test coverage measures. Each of those pages leaves you with a tool that answers a yes/no question about one property of one database.
 
-A real chip runs about **twenty distinct signoff checks**, owned by five to eight different teams, consuming six or seven different views of the same design, on runtimes that range from twenty minutes to five days. They are not independent: the metal fill you insert to satisfy density changes the coupling capacitance, which changes extraction, which changes timing; the ECO (engineering change order) you apply to fix that timing changes the routing, which changes the fill. The checks form a **dependency graph with a feedback edge**, and the feedback edge is what makes signoff hard. Nothing in a single-check page prepares you for the fact that a `-3\,\text{ps}$ setup violation found at 11 p.m. two days before tape-out invalidates a 40-hour DRC run.
+A real chip runs about **twenty distinct signoff checks**, owned by five to eight different teams, consuming six or seven different views of the same design, on runtimes that range from twenty minutes to five days. They are not independent: the metal fill you insert to satisfy density changes the coupling capacitance, which changes extraction, which changes timing; the ECO (engineering change order) you apply to fix that timing changes the routing, which changes the fill. The checks form a **dependency graph with a feedback edge**, and the feedback edge is what makes signoff hard. Nothing in a single-check page prepares you for the fact that a $-3\,\text{ps}$ setup violation found at 11 p.m. two days before tape-out invalidates a 40-hour DRC run.
 
 So this page owns the part nobody teaches: **orchestration**. How the checks are scheduled so that they converge instead of chasing each other; how a failure is converted into the smallest legal change (an ECO), classified by which masks it touches, and priced; what a waiver legitimately is and how illegitimate ones kill tape-outs; how a violation-count burn-down predicts — and mispredicts — a schedule; and finally what the checklist looks like that a named human signs, because "the tool reported zero" and "the chip is signed off" are different statements and the gap between them is where projects die.
 
@@ -230,12 +230,12 @@ Crosstalk delta-delay is circular. The delay added to a victim depends on whethe
 
 ```wavedrom
 { "signal": [
-  { "name": "victim in",   "wave": "0.1.....", "node": ".a......" },
-  { "name": "victim out",  "wave": "0...1...", "node": "...c...." },
-  { "name": "aggressor A", "wave": "0..1....", "node": "..b....." },
-  { "name": "aggressor B", "wave": "0.....1.", "node": ".....d.." }
+  { "name": "victim in",   "wave": "0.1.....", "node": "..a....." },
+  { "name": "victim out",  "wave": "0...1...", "node": "....c..." },
+  { "name": "aggressor A", "wave": "0..1....", "node": "...b...." },
+  { "name": "aggressor B", "wave": "0.....1.", "node": "......d." }
  ],
- "edge": ["a~>c nominal stage delay", "b~>c A switches inside the victim window: delta delay applies", "d~>c B switches after the window: no coupling"],
+ "edge": ["a~>c nominal stage delay", "b~>c A switches inside the victim window: delta delay applies", "c~>d B switches after the window: no coupling"],
  "head": {"text": "Delta-delay applies only where the aggressor switching window overlaps the victim transition"}
 }
 ```
@@ -580,7 +580,7 @@ Every domain plots the same thing daily: violation count versus date, on a log a
 
 ### 8.2 The naive model, and why it lies
 
-Fit an exponential $V(t) = V_0 e^{-t/\tau}$ to the last three weeks and extrapolate: weeks-to-zero $\approx \tau \ln V_0$. With $V_0 = 5000$ and $\tau = 4$ days, that gives 34 days.
+Fit an exponential $V(t) = V_0 e^{-t/\tau}$ to the last three weeks and extrapolate: the time to fall to the last violation is $\approx \tau \ln V_0$, carrying whatever unit $\tau$ is measured in. With $V_0 = 5000$ and $\tau = 4$ days, that gives 34 days — about 4.9 weeks.
 
 The extrapolation is **systematically optimistic**, and the reason is structural: violations are not one population. There are at least two:
 

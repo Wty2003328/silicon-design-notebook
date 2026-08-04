@@ -485,7 +485,7 @@ The digit's sign drives a conditional two's-complement of $A$; its magnitude dri
 
 ### 7.2 Reduction: Wallace vs Dadda trees
 
-The partial-product array is a multi-operand add, so reduce it with a carry-save tree (§6). Both classic trees hit the same $\lceil\log_{1.5}(n/2)\rceil$ depth — each carry-save level turns 3 rows into 2, shrinking the row count by a factor $2/3$ per level, so collapsing $n/2$ rows down to the final 2 takes $\log_{1.5}(n/2)$ levels — and they differ only in *when* they do the compressing:
+The partial-product array is a multi-operand add, so reduce it with a carry-save tree (§6). Write $R$ for the number of partial-product **rows** ($R=\lceil n/2\rceil$ after radix-4 Booth on an $n$-bit multiplier). Both classic trees hit the same $\lceil\log_{1.5}(R/2)\rceil$ depth — each carry-save level turns 3 rows into 2, shrinking the row count by a factor $2/3$ per level, so collapsing $R$ rows down to the final 2 takes $\log_{1.5}(R/2)$ levels — and they differ only in *when* they do the compressing:
 
 - **Wallace** — reduce **eagerly**: at every level, compress every group of three bits it can. Uses more full adders, but the redundant pair converges to a **narrower** final CPA.
 - **Dadda** — reduce **lazily**: compress only enough to bring each column down to the next Dadda number $d_{j+1}=\lfloor1.5\,d_j\rfloor$ ($2,3,4,6,9,13,19,28,\dots$), deferring everything else. Uses **fewer** full adders (more half adders), a **wider** final CPA, and lays out more regularly.
@@ -497,7 +497,7 @@ The partial-product array is a multi-operand add, so reduce it with a carry-save
 | Layout regularity | lower | higher |
 | Net | essentially a wash — synthesis chooses | |
 
-**Concrete depth.** Reduce the 8 partial-product rows of a 16-bit radix-4 Booth array. Each level squeezes the tallest column by the $3{:}2$ ratio, so the row count falls $8\to6\to4\to3\to2$ — four CSA levels, exactly $\lceil\log_{1.5}(8/2)\rceil=\lceil\log_{1.5}4\rceil=\lceil3.42\rceil=4$. Dadda reaches the same 4 while inserting the fewest adders (it only ever reduces down to the next number in $2,3,4,6,9,13,\dots$); Wallace also lands at 4 but compresses eagerly, spending more adders to hand the final CPA a narrower redundant pair.
+**Concrete depth.** Reduce the $R=8$ partial-product rows of a 16-bit radix-4 Booth array. Each level squeezes the tallest column by the $3{:}2$ ratio, so the row count falls $8\to6\to4\to3\to2$ — four CSA levels, exactly $\lceil\log_{1.5}(R/2)\rceil=\lceil\log_{1.5}4\rceil=\lceil3.42\rceil=4$. Dadda reaches the same 4 while inserting the fewest adders (it only ever reduces down to the next number in $2,3,4,6,9,13,\dots$); Wallace also lands at 4 but compresses eagerly, spending more adders to hand the final CPA a narrower redundant pair.
 
 In practice the difference is a few percent and the tool picks; the *concept* — a $\log$-depth CSA tree feeding one CPA — is what matters.
 

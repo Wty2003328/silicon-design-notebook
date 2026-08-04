@@ -188,7 +188,7 @@ $$
 \text{CPPR} = t_{common}^{late} - t_{common}^{early},
 $$
 
-added to whichever side the analysis pessimized. Example: a common chain of 256 ps derated ±late/early to 256.8 / 223.2 ps yields **≈ 33.6 ps** recovered — enough to flip a marginal path from fail to pass. CPPR grows with common-path length and derate magnitude, which is one more reason to build clock trees that share insertion delay deep before diverging. It is computed automatically per path-pair; it appears as one line in every timing report and is often 20–40 % of the clock uncertainty. Conceptually it is the direct antidote to the setup/hold OCV split — the pessimism §3 and §5 create on the shared clock, handed back.
+added to whichever side the analysis pessimized. Example: a common chain of 240 ps derated ±7% late/early to 256.8 / 223.2 ps yields **≈ 33.6 ps** recovered — enough to flip a marginal path from fail to pass. CPPR grows with common-path length and derate magnitude, which is one more reason to build clock trees that share insertion delay deep before diverging. It is computed automatically per path-pair; it appears as one line in every timing report and is often 20–40 % of the clock uncertainty. Conceptually it is the direct antidote to the setup/hold OCV split — the pessimism §3 and §5 create on the shared clock, handed back.
 
 ---
 

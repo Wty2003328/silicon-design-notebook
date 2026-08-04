@@ -98,11 +98,11 @@ Schedule to "integrated and passing": about **5 months**. Risk is much lower —
 
 **Step 3 — compare.** Build $= \$885\text{k} + \$100\text{k} = \$985$k. Buy $= \$900\text{k} + \$20\text{k} = \$920$k. **The cash numbers are within 7% of each other.** This is the normal outcome, and it is why arguing about the license price is usually arguing about the wrong term.
 
-**Step 4 — the term that actually decides it.** $\Delta T = 14 - 5 = 9$ months. A 30-month product window is not flat: the ramp is roughly trapezoidal, and nine months earlier entry captures perhaps 20% of lifetime volume that would otherwise be lost to a competitor or to the window closing. That is $0.20 \times 5\text{M} \times \$3.20 = \$3{,}200{,}000$ of gross profit. The schedule term is **35× larger than the cash difference**. Buy.
+**Step 4 — the term that actually decides it.** $\Delta T = 14 - 5 = 9$ months. A 30-month product window is not flat: the ramp is roughly trapezoidal, and nine months earlier entry captures perhaps 20% of lifetime volume that would otherwise be lost to a competitor or to the window closing. That is $0.20 \times 5\text{M} \times \$3.20 = \$3{,}200{,}000$ of gross profit. Against the $\$65$k cash difference of Step 3, the schedule term is **49× larger**. Buy.
 
 **Step 5 — the break-even, so you know when the answer flips.** On cash alone, build costs a fixed $\$885$k; buy costs $\$500$k fixed plus $\$0.08N$. Equal when
 
-$$885{,}000 = 500{,}000 + 0.08N \quad\Longrightarrow\quad N^\* = \frac{385{,}000}{0.08} = 4{,}810{,}000 \text{ units.}$$
+$$885{,}000 = 500{,}000 + 0.08N \quad\Longrightarrow\quad N^\* = \frac{385{,}000}{0.08} = 4{,}812{,}500 \text{ units.}$$
 
 Below 4.81 M units buy is cheaper even ignoring schedule. Above it, build is cheaper on cash — but you must still pay the nine months, so the crossover in *value* sits far higher, near $N \approx 50$ M where the royalty reaches $\$4$M. And even there the correct move is usually not "build" but "negotiate": a **royalty buy-out** typically prices at 8–15× the single-project license fee, which at $\$350$k license means $\$2.8$M–$\$5.3$M — competitive with a $\$4$M royalty bill and with none of the schedule or compliance risk.
 
@@ -249,7 +249,7 @@ The reset contract has four clauses:
   { "name": "por_n",        "wave": "01........" },
   { "name": "pll_lock",     "wave": "0..1......" },
   { "name": "blk_clk",      "wave": "0...p....." },
-  { "name": "rst_n_sync",   "wave": "0.....1...", "node": "......a..." },
+  { "name": "rst_n_sync",   "wave": "0.....1...", "node": ".....a...." },
   { "name": "cfg_write",    "wave": "0......10.", "node": ".......b.." },
   { "name": "first_bus_req","wave": "0........1" }
  ],
@@ -1428,7 +1428,7 @@ The cross-product is
 
 $$5 \times 3 \times 5 \times 8 \times 16 \times 5 \times 64 = 3{,}072{,}000 \text{ configurations.}$$
 
-At 4 CPU-hours of regression per configuration that is $1.23 \times 10^7$ CPU-hours — about 1,400 CPU-years. On a 2,000-core farm running nothing else, 2.6 months of wall-clock for **one** regression pass. It is not a resource problem you can spend your way out of; the cross-product is not verifiable.
+At 4 CPU-hours of regression per configuration that is $1.23 \times 10^7$ CPU-hours — about 1,400 CPU-years. On a 2,000-core farm running nothing else, 6,144 hours — 256 days, about 8.4 months — of wall-clock for **one** regression pass. It is not a resource problem you can spend your way out of; the cross-product is not verifiable.
 
 ### 11.3 A defensible configuration matrix
 

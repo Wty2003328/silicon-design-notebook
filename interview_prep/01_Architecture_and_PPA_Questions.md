@@ -527,9 +527,8 @@ Stages behind branch: F1 through R2 = 9 stages
 Instructions squashed = 9 stages * 4 inst/cycle = 36 instructions
 
 Mispredict penalty in cycles:
-  - Cycle 9: misprediction detected
-  - Cycle 10: redirect sent to F1 with correct target
-  - Cycle 11: first correct instruction enters F1
+  - Cycle 9: misprediction detected; redirect sent to F1 with correct target
+  - Cycle 10: first correct instruction enters F1
   - Cycles lost = 9 (cycles 1--9 produced wrong-path instructions)
   - Penalty = 9 cycles (bubble before correct path resumes at EX throughput)
 ```
@@ -547,8 +546,8 @@ $$
 \text{Performance loss} = \frac{36}{1000 + 36} \approx 3.5\%
 $$
 
-Reducing the mispredict rate from 2% to 1% cuts the loss to ~1.7%, a
-significant improvement.
+Reducing the mispredict rate from 2% to 1% halves the wasted cycles to 18 and
+cuts the loss to $18/1018 \approx 1.8\%$, a significant improvement.
 
 ---
 
@@ -1313,7 +1312,8 @@ $$
 
 Note: the ASID is stored per entry (not per set) because different entries in the same
 set may belong to different address spaces. In some implementations, the ASID is moved
-to the tag to save storage, giving a tag of $23 + 16 = 39$ bits and data of 51 bits.
+to the tag to save storage, giving a tag of $23 + 16 = 39$ bits and data of $68 - 16 = 52$
+bits — the same 91 bits per entry, redistributed.
 
 Padding to a power of 2 is common: 96 bits per entry yields $64 \times 96 = 6{,}144$
 bits (768 bytes), or 128 bits per entry yields $64 \times 128 = 8{,}192$ bits (1 KB).
@@ -1420,8 +1420,10 @@ $$\boxed{PA = \texttt{0x0000000020020000}}$$
 
 ### Problem 3: VIPT Size Constraint Verification
 
-**Question:** Show that a 4-way, 32 KB cache with 64 B lines and 4 KB pages satisfies
-the VIPT constraint. What about a 2-way, 64 KB cache with the same line and page sizes?
+**Question:** Determine whether a 4-way, 32 KB cache with 64 B lines and 4 KB pages
+satisfies the VIPT constraint (every index bit must come from the page offset, i.e.
+way size $\le$ page size). What about a 2-way, 64 KB cache with the same line and page
+sizes?
 
 **Solution:**
 

@@ -31,7 +31,7 @@ flowchart LR
 |---:|---|---:|---|
 | 0 | [SoC/Chiplet Design Methodology](00_Design_Methodology/00_Index.md) | 3 | concurrent use-case contracts, shared-resource DSE, chip/package PPA, and composed simulation evidence |
 | 1 | [System Modeling](01_System_Modeling/00_Index.md) | 1 | composing block behavior, contention, power, thermal limits |
-| 2 | [Shared Memory](02_Shared_Memory/00_Index.md) | 2 | DDR commands, scheduling, refresh, errors, delivered bandwidth; and the device protocol beneath it — command truth table, mode registers, training, DFI, DDR5/LPDDR5X |
+| 2 | [Shared Memory](02_Shared_Memory/00_Index.md) | 3 | DDR commands, scheduling, refresh, errors, delivered bandwidth; and the device protocol beneath it — command truth table, mode registers, training, DFI, DDR5/LPDDR5X; and the scheduling policy above both — turnaround, fairness schedulers, address mapping, RowHammer, and the DRAM research frontier |
 | 3 | [Transaction Protocols](03_Transaction_Protocols/00_Index.md) | 1 | APB/AHB/AXI channels, handshakes, IDs, bursts, bridges |
 | 4 | [On-Chip Networks](04_On_Chip_Networks/00_Index.md) | 4 | topology, routing, flow control, deadlock/liveness; router microarchitecture down to synthesizable RTL and a critical-path budget; and topology selection by channel-load analysis, including the high-radix families |
 | 5 | [I/O and Chiplets](05_IO_and_Chiplets/00_Index.md) | 4 | end-to-end QoS/order, device visibility, CXL/UCIe partitioning, accelerator scale-up links/switches, remote memory/atomics, and inter-chip recovery; the external interface families (SerDes, Ethernet, USB/MIPI, DDR PHY, I2C/SPI/UART); and a full PCIe protocol deep dive |

@@ -140,13 +140,13 @@ The rate $r$ is not free traffic — it is the **coherence miss**, the *fourth* 
 - **True sharing.** Two cores genuinely communicate through a line — a lock word, a shared counter, a producer's output. Core A's write invalidates B's copy (SWMR forbids a reader beside a writer), so B's next access misses and re-fetches. This traffic is intrinsic to the algorithm; you cut it only by sharing less.
 - **False sharing.** Two cores touch *different* bytes that merely fall in the *same* line. Because coherence tracks state at **line granularity** ($B_{\text{line}}=64$ B), not per byte, the protocol cannot tell the independent accesses apart — A's write to byte 0 invalidates B's line even though B only ever reads byte 40. The miss is an artifact of *layout*, yet costs the full price of a real conflict.
 
-**The ping-pong, costed as fabric bandwidth.** Take two cores alternately writing one line. Each write must acquire the line Unique, so it invalidates the other holder and drags the whole line across — the line *ping-pongs* between the two private caches, one line transfer per write. [CPU_Architecture §8.5](../01_Core_Foundations/01_CPU_Architecture.md) derives the *latency* view (each write stalls at coherence-miss latency instead of ~1 cycle — a ~100× per-access slowdown); here we own the *bandwidth* view the fabric feels. Every ping-pong write moves a full $B_{\text{line}}$-byte line to deliver only the $w$ bytes actually written, so the fabric hauls
+**The ping-pong, costed as fabric bandwidth.** Take two cores alternately writing one line. Each write must acquire the line Unique, so it invalidates the other holder and drags the whole line across — the line *ping-pongs* between the two private caches, one line transfer per write. [CPU_Architecture §8.5](../01_Core_Foundations/01_CPU_Architecture.md) derives the *latency* view (each write stalls at coherence-miss latency instead of an L1 hit — on the $\sim\!10$-cycle uncontended loop iteration costed below, a $\sim\!19\times$ per-iteration slowdown); here we own the *bandwidth* view the fabric feels. Every ping-pong write moves a full $B_{\text{line}}$-byte line to deliver only the $w$ bytes actually written, so the fabric hauls
 
 $$
 \text{amplification} \;=\; \frac{B_{\text{line}}}{w} \;=\; \frac{64\text{ B}}{8\text{ B}} \;=\; 8\times, \qquad w = \text{bytes written per update (an 8 B counter here),}
 $$
 
-more bytes than the computation needs. *Worked number.* Two 3 GHz cores ping-pong one line. The line is a single exclusive token — at most one core holds it writable — so every write waits a full cache-to-cache transfer and the writes are serialized: the *pair* lands one contended store per $\approx\!190$ cycles (a $\sim\!10$-cycle loop body plus a $\sim\!180$-cycle $\approx\!60$ ns cache-to-cache miss), not one per core. Thus $3\times10^9/190 \approx 15.8$ M ping-pong writes/s for the pair ($\approx\!7.9$ M/s each), driving $\approx 15.8$ M line-moves/s $\times\,64$ B $\approx \mathbf{1.0\ GB/s}$ of coherence traffic to accomplish only $15.8\text{ M}\times 8$ B $\approx 126$ MB/s of real updates — $8\times$ the bandwidth the work requires, burned on a single hot line. Direct Cache Transfer (§5.2) shrinks the $\sim\!60$ ns cache-to-cache latency toward $\sim\!22$ ns and so *raises the rate* of the ping-pong (cutting the slowdown to $\sim\!7$–8×), but it moves the *same* 64 B per bounce — DCT speeds the transfer, it does not touch the amplification. Only breaking the granularity does: padding each core's datum onto its **own 64 B line** turns every ping-pong miss back into a local L1 write, erasing both the latency and the $8\times$ bandwidth tax for the price of $B_{\text{line}}/w = 8\times$ the memory footprint.
+more bytes than the computation needs. *Worked number.* Two 3 GHz cores ping-pong one line. The line is a single exclusive token — at most one core holds it writable — so every write waits a full cache-to-cache transfer and the writes are serialized: the *pair* lands one contended store per $\approx\!190$ cycles (a $\sim\!10$-cycle loop body plus a $\sim\!180$-cycle $\approx\!60$ ns cache-to-cache miss), not one per core. Thus $3\times10^9/190 \approx 15.8$ M ping-pong writes/s for the pair ($\approx\!7.9$ M/s each), driving $\approx 15.8$ M line-moves/s $\times\,64$ B $\approx \mathbf{1.0\ GB/s}$ of coherence traffic to accomplish only $15.8\text{ M}\times 8$ B $\approx 126$ MB/s of real updates — $8\times$ the bandwidth the work requires, burned on a single hot line. Direct Cache Transfer (§5.2) shrinks the $\sim\!60$ ns cache-to-cache latency toward $\sim\!22$ ns ($\approx\!66$ cycles), so a contended iteration falls from $\approx\!190$ to $\approx\!76$ cycles and the ping-pong *rate* rises to $\approx\!39.5$ M writes/s — measured against the same $\sim\!10$-cycle uncontended iteration, the $19\times$ slowdown becomes $\sim\!7.6\times$ — but it moves the *same* 64 B per bounce — DCT speeds the transfer, it does not touch the amplification. Only breaking the granularity does: padding each core's datum onto its **own 64 B line** turns every ping-pong miss back into a local L1 write, erasing both the latency and the $8\times$ bandwidth tax for the price of $B_{\text{line}}/w = 8\times$ the memory footprint.
 
 **Why the granule is 64 B — the trade this exposes.** False-sharing pressure pushes the line *small* (finer granularity → fewer independent data per line → less false invalidation), while tag/state overhead and spatial-locality prefetch push it *large* (a wide line amortizes its metadata and fetches neighbors you will likely use). The false-sharing collision probability of two independently-placed objects rises roughly linearly in $B_{\text{line}}$, so 64 B is the near-universal knee where the two pressures balance — and it is why the coherence *granule*, the directory *entry* granule (§5.1), and the cache *line* are the same 64 B. This coherence-miss traffic is the term the Universal Scalability Law bills as contention ([CPU bandwidth and queueing model](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md#44-bandwidth-and-queueing)); the rest of §3 shows how even *one* such miss per core, broadcast, hits a wall.
 
@@ -768,6 +768,7 @@ sequenceDiagram
     participant I as ACE interconnect
     participant B as Sharer B
     participant C as Sharer C
+    participant M as Memory
     A->>I: AR ReadUnique(X)
     par invalidate sharers
       I->>B: AC invalidating snoop X
@@ -775,7 +776,14 @@ sequenceDiagram
     end
     B-->>I: CR invalidated, no data
     C-->>I: CR invalidated, no data
-    I-->>A: R data + unique permission
+    alt a snooped peer held the line dirty
+      Note over I: that peer's CD data is the value delivered
+      I-->>A: R peer data + unique permission
+    else every sharer was clean
+      I->>M: memory read X
+      M-->>I: data X
+      I-->>A: R data + unique permission
+    end
     A-->>I: completion acknowledgement
     Note over A: local store may now modify line silently
 ```

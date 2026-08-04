@@ -434,7 +434,7 @@ Then program every bridge between the root port and the endpoint so its windows 
 
 Then 01:00.0 must enclose the union of 02:00.0's and 02:01.0's windows, and 00:01.0 must enclose 01:00.0's. Finally, set `Memory Space Enable` in each function's Command register, and `Bus Master Enable` on any function that will initiate DMA.
 
-**The cost this exposes.** The 1 MB granularity means each bridge level rounds every child's requirement up to a megabyte. A tree with a switch, four downstream ports, and one 16 KB BAR behind each consumes 4 MB of window at the switch's downstream ports and 4 MB at the upstream port — 256 times the 64 KB actually used. Multiply by a server with a dozen switches and several hundred functions and the 32-bit non-prefetchable region, which must live below 4 GB alongside everything else the firmware needs there, genuinely runs out. That is why every large BAR must be prefetchable and 64-bit, why firmware exposes an "Above 4G Decoding" option, and why the Resizable BAR capability (§15.2) exists to let a device request a smaller aperture on a platform that cannot afford a large one.
+**The cost this exposes.** The 1 MB granularity means each bridge level rounds every child's requirement up to a megabyte. A tree with a switch, four downstream ports, and one 16 KB BAR behind each consumes 4 MB of window at the switch's downstream ports, and the upstream port must enclose the same 4 MB — 64 times the 64 KB actually used. Multiply by a server with a dozen switches and several hundred functions and the 32-bit non-prefetchable region, which must live below 4 GB alongside everything else the firmware needs there, genuinely runs out. That is why every large BAR must be prefetchable and 64-bit, why firmware exposes an "Above 4G Decoding" option, and why the Resizable BAR capability (§15.2) exists to let a device request a smaller aperture on a platform that cannot afford a large one.
 
 ---
 
@@ -787,9 +787,9 @@ A **Data Link Layer Packet** is 6 bytes — 1 byte of type, 3 bytes of payload, 
 
 The contract of this figure is that **the transaction layer on both ends sees nothing**. The endpoint's DMA engine never learns that TLP 51 was corrupted; the only observable trace is the `Bad TLP` correctable-error counter incrementing in AER and roughly one round trip of added latency.
 
-Trace it concretely on the Gen4 x8 link of §4.3. TLPs 50-53 are 256-byte writes, so each occupies $280 / 15.75\times10^9 = 17.8$ ns of link time. The receiver detects the LCRC failure about 40 ns after the packet fully arrives, schedules a `Nak`, and the `Nak` reaches the transmitter roughly 250 ns later (a half round trip plus the wait for the current TLP transmission to finish). The transmitter then resends 51, 52, and 53: $3 \times 17.8 = 53$ ns. Total cost of the episode: about **300 ns of link time and three re-sent packets**, against a mean time between errors of four seconds. The bandwidth cost is $300\times10^{-9} / 4 = 7.5 \times 10^{-8}$ — utterly negligible. That is the point: go-back-N is wasteful per event and irrelevant in aggregate, which is why nobody implements selective retry.
+Trace it concretely on the Gen4 x8 link of §4.3. TLPs 50-53 are 256-byte writes, so each occupies $280 / 15.75\times10^9 = 17.8$ ns of link time. The receiver detects the LCRC failure about 40 ns after the packet fully arrives, schedules a `Nak`, and the `Nak` reaches the transmitter roughly 250 ns later (a half round trip plus the wait for the current TLP transmission to finish). The transmitter then resends 51, 52, and 53: $3 \times 17.8 = 53$ ns. Total cost of the episode: about **300 ns of link time and three re-sent packets**, against a mean time between errors of $1/(8 \times 16\times10^{9} \times 10^{-12}) = 7.8$ seconds on this x8 link (§6.1's four seconds is the x16 figure — half the lanes, half the error rate). The bandwidth cost is $300\times10^{-9} / 7.8 = 3.8 \times 10^{-8}$ — utterly negligible. That is the point: go-back-N is wasteful per event and irrelevant in aggregate, which is why nobody implements selective retry.
 
-The failure this figure illustrates is what happens when the error rate is *not* at spec. At a raw BER of $10^{-8}$ — a marginal channel, a missing equalization preset, a cracked AC coupling capacitor — the same link errors 2560 times per second, each costing 300 ns plus the discarded in-flight packets, and the replay traffic itself starts causing further errors. The link enters a regime where `REPLAY_NUM` rolls over, the LTSSM drops to Recovery to retrain, and the observable symptom is **a link that oscillates between L0 and Recovery while delivering a fraction of its rated bandwidth**. §9.7 and §16.6 turn that into a diagnosis.
+The failure this figure illustrates is what happens when the error rate is *not* at spec. At a raw BER of $10^{-8}$ — a marginal channel, a missing equalization preset, a cracked AC coupling capacitor — the same x8 link errors 1280 times per second, each costing 300 ns plus the discarded in-flight packets, and the replay traffic itself starts causing further errors. The link enters a regime where `REPLAY_NUM` rolls over, the LTSSM drops to Recovery to retrain, and the observable symptom is **a link that oscillates between L0 and Recovery while delivering a fraction of its rated bandwidth**. §9.7 and §16.6 turn that into a diagnosis.
 
 ### 6.5 The replay timer, and what happens when a NAK itself is lost
 
@@ -821,7 +821,7 @@ Then:
 $$\text{Gen4 x8}: \quad S \ge 15.75 \times 10^{9} \times 287 \times 10^{-9} = 4520\ \text{bytes}$$
 $$\text{Gen5 x16}: \quad S \ge 63.0 \times 10^{9} \times 402 \times 10^{-9} = 25{,}330\ \text{bytes}$$
 
-Round up and add margin: 8 KB and 32 KB respectively. Note that the buffer holds *whole TLPs*, so it must also be sized in **entries**: at MPS = 128 bytes, 32 KB of Gen5 replay buffer is 210 entries of 152 bytes, and each entry needs a sequence-number tag and a length. At MPS = 512, the same 32 KB is 59 entries. The entry count matters because the free-list and the replay state machine are indexed by it.
+Round up and add margin: 8 KB and 32 KB respectively. Note that the buffer holds *whole TLPs*, so it must also be sized in **entries**: at MPS = 128 bytes, 32 KB (32,768 B) of Gen5 replay buffer is 215 entries of 152 bytes, and each entry needs a sequence-number tag and a length. At MPS = 512, the same 32 KB is 61 entries of 536 bytes. The entry count matters because the free-list and the replay state machine are indexed by it.
 
 **What under-sizing costs.** If the buffer holds only $S' < B T_{\text{ack}}$, the transmitter stalls whenever it is full, and throughput falls to $S' / T_{\text{ack}}$ regardless of link rate. A Gen5 x16 controller configured with a 4 KB replay buffer delivers $4096 / 402\times10^{-9} = 10.2$ GB/s out of 63 GB/s. This is a real, configurable parameter in every commercial PCIe controller IP, it is often left at a default sized for a shorter link, and it is invisible to every software-level diagnostic. Checking it is part of §16.6's ladder.
 
@@ -1538,7 +1538,7 @@ Take a Gen5 x16 accelerator link. At roughly 5 pJ/bit, the PHY burns
 
 $$32\times10^{9}\ \text{bit/s} \times 16\ \text{lanes} \times 2\ \text{directions} \times 5\times10^{-12}\ \text{J/bit} = 5.1\ \text{W}$$
 
-L1 removes most of that: call it **4 W saved** while idle. Now the latency side. Suppose the accelerator runs kernels with a 40 µs idle gap between them — long enough to trip the L1 entry timer — and each kernel begins by fetching a descriptor from host memory. With L1 exit at 8 µs:
+L1 removes most of that: call it **4 W saved** while idle. Now the latency side. Suppose the accelerator runs 50 µs kernels with a 40 µs idle gap between them — long enough to trip the L1 entry timer — and each kernel begins by fetching a descriptor from host memory. With L1 exit at 8 µs, the exit latency is prepended to every 50 µs kernel:
 
 $$\text{overhead per kernel} = \frac{8\ \mu\text{s}}{8 + 50\ \mu\text{s}} = 13.8\%$$
 
@@ -1876,7 +1876,7 @@ $$0.7X \times \frac{536}{512} + 0.3X \times \frac{24}{512} \le 31.43 \implies X(
 
 $$0.3X \times \frac{84}{64} \le 31.43 \implies 0.3937X \le 31.43 \implies X \le 79.8\ \text{GB/s}$$
 
-The upstream direction binds: **$X = 42.1$ GB/s aggregate**, of which 29.5 GB/s is writes and 12.6 GB/s is reads. Note that if the completer had *not* split, the read side would have been $0.3X \times 536/512$ and the downstream constraint would be $X \le 100$ GB/s — the splitting policy costs nothing here because reads are the minority direction. Flip the mix to 30% writes and 70% reads and the downstream constraint becomes binding at $X = 34.2$ GB/s, and the splitting policy costs 21%.
+The upstream direction binds: **$X = 42.1$ GB/s aggregate**, of which 29.5 GB/s is writes and 12.6 GB/s is reads. Note that if the completer had *not* split, the read side would have been $0.3X \times 532/512$ (a completion carries a 3 DW header, so 512 + 20, not the 24 a 64-bit write pays) and the downstream constraint would be $X \le 100$ GB/s — the splitting policy costs nothing here because reads are the minority direction. Flip the mix to 30% writes and 70% reads and the downstream constraint becomes binding at $X = 34.2$ GB/s, and the splitting policy costs 21%.
 
 *The lesson:* which knob matters depends on the read/write mix, and the two directions must be budgeted separately.
 

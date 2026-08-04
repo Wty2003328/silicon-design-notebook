@@ -154,7 +154,7 @@ For a candidate tile, the compiler materializes exact state: shared-memory buffe
 ```wavedrom
 { "signal": [
   { "name": "copy_stage0", "wave": "01..0........" },
-  { "name": "stage0_ready", "wave": "0..1...0....." },
+  { "name": "stage0_ready", "wave": "0...1..0....." },
   { "name": "mma_stage0", "wave": "0...1..0....." },
   { "name": "copy_stage1", "wave": "0...1..0....." },
   { "name": "stage1_ready", "wave": "0......1...0." },

@@ -523,7 +523,7 @@ Q=\overline{R+\overline Q},\qquad
 \overline Q=\overline{S+Q}.
 $$
 
-Trace **set** causally. Starting from $Q=0,\overline Q=1$, raise $S$. The upper NOR output $\overline Q$ is forced low; that low removes the feedback term holding the lower NOR low; if $R=0$, the lower NOR raises $Q$. When $S$ returns low, $Q=1$ feeds back and keeps $\overline Q=0$, so the command can disappear while the state remains. Reset is the symmetric path through $R$.
+Trace **set** causally. Starting from $Q=0,\overline Q=1$, raise $S$. The lower NOR output $\overline Q$ is forced low; that low removes the feedback term holding the upper NOR low; if $R=0$, the upper NOR raises $Q$. When $S$ returns low, $Q=1$ feeds back and keeps $\overline Q=0$, so the command can disappear while the state remains. Reset is the symmetric path through $R$.
 
 | Operation | First forced event | Regenerative event | State after command is removed |
 |---|---|---|---|
@@ -655,7 +655,7 @@ When $E=1$, the latch is **transparent** and $Q$ follows $D$ after propagation d
   { "name": "E", "wave": "0.1....0..1..0" },
   { "name": "D", "wave": "0..1.0..1.0..." },
   { "name": "X", "wave": "0..1.0....0..." },
-  { "name": "Q", "wave": "0...10....0..." }
+  { "name": "Q", "wave": "0...1.0......." }
 ], "head": { "text": "D latch: internal X and Q follow during the enabled window, then feedback holds" } }
 ```
 
@@ -883,8 +883,8 @@ flowchart LR
 { "signal": [
   { "name": "CLK",         "wave": "p..........." },
   { "name": "raw reset_n", "wave": "0..1......0." },
-  { "name": "stage 1",     "wave": "0....1....0." },
-  { "name": "local reset_n", "wave": "0......1..0." },
+  { "name": "stage 1",     "wave": "0...1.....0." },
+  { "name": "local reset_n", "wave": "0....1....0." },
   { "name": "state Q",     "wave": "0..........." }
 ], "head": { "text": "Reset synchronizer: assertion is immediate; release reaches the domain after two safe edges" } }
 ```
@@ -940,7 +940,7 @@ flowchart LR
   { "name": "main_power", "wave": "1..0....1..." },
   { "name": "isolation",  "wave": "0.1......0.." },
   { "name": "restore",    "wave": "0........10." },
-  { "name": "Q visible",  "wave": "3..x....3...", "data": ["A", "A restored"] }
+  { "name": "Q visible",  "wave": "3..x......3.", "data": ["A", "A restored"] }
 ], "head": { "text": "Retention protocol: save → isolate → power off/on → restore → release isolation" } }
 ```
 
@@ -1111,8 +1111,8 @@ with a serial boundary input substituted when $i$ has no neighbor.
 ```mermaid
 flowchart LR
   P["P_i<br/>parallel load"] --> MUX["4:1 mode MUX"]
-  QL["Q_(i-1)<br/>shift right"] --> MUX
-  QR["Q_(i+1)<br/>shift left"] --> MUX
+  QL["Q_(i-1)<br/>shift left"] --> MUX
+  QR["Q_(i+1)<br/>shift right"] --> MUX
   MUX --> FF["DFF i"] --> Qi["Q_i"]
   Qi -->|hold feedback| MUX
   MODE["mode[1:0]"] -.-> MUX
@@ -1153,7 +1153,7 @@ The compact chain divides frequency, but it is not an atomic binary-state update
   { "name": "Q1",       "wave": "1..0......" },
   { "name": "Q2",       "wave": "1...0....." },
   { "name": "Q3",       "wave": "0....1...." },
-  { "name": "decoded bus", "wave": "3.4.5.6.7.", "data": ["0111", "0110", "0100", "0000", "1000"] }
+  { "name": "decoded bus", "wave": "3..4567...", "data": ["0111", "0110", "0100", "0000", "1000"] }
 ], "head": { "text": "Qualitative ripple transition: propagation exposes intermediate codes before 1000 settles" } }
 ```
 
@@ -1308,7 +1308,7 @@ Here `ack` is a **Moore** output because it depends only on `RESP`; `start` is a
   { "name": "CLK",   "wave": "p..........." },
   { "name": "req",   "wave": "0.1......0.." },
   { "name": "start", "wave": "0.10........" },
-  { "name": "state", "wave": "3.4....5...3", "data": ["IDLE", "RUN", "RESP", "IDLE"] },
+  { "name": "state", "wave": "3..4...5..3.", "data": ["IDLE", "RUN", "RESP", "IDLE"] },
   { "name": "done",  "wave": "0.....10...." },
   { "name": "ack",   "wave": "0......1..0." }
 ], "head": { "text": "Request controller: accept once, wait, acknowledge, and wait for request release" } }
@@ -1452,13 +1452,13 @@ A **static-1 hazard** is the canonical case. In $F=AB'+BC$ with $A{=}C{=}1$, tog
 
 ```wavedrom
 { "signal": [
-  { "name": "B",            "wave": "0..1...." },
-  { "name": "B̅ delayed",   "wave": "1...0..." },
-  { "name": "A·B̅",         "wave": "1...0..." },
-  { "name": "B·C",          "wave": "0..1...." },
-  { "name": "F without AC", "wave": "1..010.." },
+  { "name": "B",            "wave": "1..0...." },
+  { "name": "B̅ delayed",   "wave": "0...1..." },
+  { "name": "A·B̅",         "wave": "0...1..." },
+  { "name": "B·C",          "wave": "1..0...." },
+  { "name": "F without AC", "wave": "1..01..." },
   { "name": "F with AC",    "wave": "1......." }
-], "head": { "text": "Reconvergent unequal delays can create a static-1 hazard; consensus holds the output high" } }
+], "head": { "text": "B falls: B·C drops before the inverter lets A·B̄ rise, so F dips for one slot; the consensus term AC holds the output high" } }
 ```
 
 The load-bearing judgment: in ordinary synchronous data logic, a glitch is **functionally unobserved only if it settles before the receiving setup aperture and does not reach an event-sensitive control**. It still consumes dynamic power and can worsen supply noise. Consensus-term padding is often unnecessary between well-timed flip-flops, but hazards matter functionally where a transient is itself an event:
@@ -1508,11 +1508,11 @@ Simultaneous push and pop leave occupancy unchanged but advance both pointers. A
 { "signal": [
   { "name": "CLK",         "wave": "p..........." },
   { "name": "push_valid",  "wave": "0.1.....0..." },
-  { "name": "pop_ready",   "wave": "0....1....0." },
-  { "name": "occupancy",   "wave": "3.4.5.6.5.4.3", "data": ["0", "1", "2", "3", "2", "1", "0"] },
-  { "name": "almost_full", "wave": "0...1..0...." },
-  { "name": "backpressure", "wave": "0....1.0...." }
-], "head": { "text": "Burst buffering: occupancy integrates accepted pushes minus accepted pops" } }
+  { "name": "pop_ready",   "wave": "0......1...0" },
+  { "name": "occupancy",   "wave": "3..4567.6543", "data": ["0", "1", "2", "3", "4", "3", "2", "1", "0"] },
+  { "name": "almost_full", "wave": "0....1.....0" },
+  { "name": "backpressure", "wave": "0.....1.0..." }
+], "head": { "text": "Burst buffering into a depth-4 FIFO: occupancy integrates accepted pushes minus accepted pops; full backpressure blocks the last two offered pushes" } }
 ```
 
 The storage read contract changes latency. A **first-word fall-through (FWFT)** FIFO exposes the oldest entry as soon as nonempty, minimizing first-beat latency but lengthening the read-data path. A registered-read FIFO adds a cycle and output register, simplifying timing and memory-macro use. The interface must state whether `pop_ready` consumes the currently visible word or requests a word for a later cycle.

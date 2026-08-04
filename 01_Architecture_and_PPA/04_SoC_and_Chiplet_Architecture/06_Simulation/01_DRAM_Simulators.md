@@ -401,6 +401,442 @@ The ladder spans **two orders of magnitude**: one all-bank refresh (57 nJ) costs
 
 ---
 
+## 11. Running one — from clone to a number you can defend
+
+Everything above says what the model *is*. This section is what you execute: getting **DRAMsim3** and **Ramulator 2.0**, what each configuration field does to the answer, what a trace must contain, what the output holds, and how the same model mounts under [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md). Two tools, not four — DRAMPower post-processes a command trace (§9) and USIMM is a teaching artifact (§10a). Every number in §11.6 and §12 came from real runs of DRAMsim3 at current `master` with `configs/DDR4_8Gb_x8_3200.ini`.
+
+### 11.1 Getting and building
+
+**DRAMsim3** is plain CMake with vendored dependencies (an INI reader and `fmt`); nothing is fetched from the network.
+
+```bash
+git clone https://github.com/umd-memsys/DRAMsim3.git
+cd DRAMsim3 && mkdir build && cd build
+cmake ..                 # add -DTHERMAL=1 for the thermal solver of §10
+make -j8
+```
+
+This yields `build/dramsim3main` and `libdramsim3.so` **in the project root, not in `build/`** — which matters when another simulator links against it.
+
+**Ramulator 2.0** is the same shape with a stricter compiler requirement; CMake fetches `yaml-cpp`, `spdlog`, and `argparse` at configure time, so the first build needs network access:
+
+```bash
+git clone https://github.com/CMU-SAFARI/ramulator2.git
+cd ramulator2 && mkdir build && cd build
+cmake .. && make -j
+cp ./ramulator2 ../ramulator2      # the README copies the binary to the repo root
+```
+
+**Version warning, and it will bite you:** the default branch has moved to **Ramulator 2.1**, which replaced the hand-written YAML with a Python configuration API (`import ramulator`; `ramulator.dram.DDR4(...)`; `ramulator.Simulation(frontend, mem).run()`) and adds a Python ≥ 3.10 requirement. The YAML flow below is Ramulator **2.0**, what the CAL'23 paper and most published Ramulator-2 results used; check out tag `v2.0a` for exactly it. 2.1 still parses YAML, but as a machine-generated export, not a file you hand-edit.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Ramulator: errors on `consteval`, `<concepts>`, `std::span` | compiler not C++20-capable (distro `g++-9`/`g++-11`) | `cmake .. -DCMAKE_CXX_COMPILER=g++-12` (or `clang++-15`) |
+| DRAMsim3 `-DTHERMAL=1`: `Could NOT find BLAS`/`OpenMP` | the thermal solver needs both | install a BLAS and an OpenMP compiler, or drop the flag |
+| No `libdramsim3.so` at run time | it is emitted to the **repo root** | `LD_LIBRARY_PATH`, or `RPATH` to the repo root |
+| Output silently lands in the current directory | the requested output directory did not exist | create it first — DRAMsim3 warns and falls back to `./` |
+
+That last one is the quiet killer in a sweep: forty runs overwrite one `dramsim3.json`, and the analysis script reads the last one forty times.
+
+### 11.2 Configuration anatomy — the DRAMsim3 `.ini`
+
+One INI file, five groups. This is `configs/DDR4_8Gb_x8_3200.ini` — a real 8 Gb ×8 DDR4-3200 device, and the file every number in §12 came from:
+
+```ini
+[dram_structure]
+protocol = DDR4
+bankgroups = 4
+banks_per_group = 4
+rows = 65536
+columns = 1024
+device_width = 8
+BL = 8
+
+[timing]
+tCK = 0.63
+AL = 0
+CL = 22
+CWL = 16
+tRCD = 22
+tRP = 22
+tRAS = 52
+tRFC = 560
+tREFI = 12480
+tRRD_S = 4
+tRRD_L = 8
+tWTR_S = 4
+tWTR_L = 12
+tFAW = 34
+tWR = 24
+tRTP = 12
+tCCD_S = 4
+tCCD_L = 8
+tCKE = 8
+tXS = 576
+tXP = 10
+tRTRS = 1
+
+[power]
+VDD = 1.2
+IDD0 = 57
+IDD2P = 25
+IDD2N = 37
+IDD3P = 43
+IDD3N = 52
+IDD4W = 150
+IDD4R = 168
+IDD5AB = 250
+IDD6x = 30
+
+[system]
+channel_size = 16384
+channels = 1
+bus_width = 64
+address_mapping = rochrababgco
+queue_structure = PER_BANK
+refresh_policy = RANK_LEVEL_STAGGERED
+row_buf_policy = OPEN_PAGE
+cmd_queue_size = 8
+trans_queue_size = 32
+
+[other]
+epoch_period = 1587301
+output_level = 1
+```
+
+**Every timing value is in DRAM clock cycles except `tCK`, which is in nanoseconds.** That one convention causes most first-week errors: `tRCD = 22` means $22\times0.63 = 13.9$ ns, and copying `tRCD = 14` from a datasheet's nanosecond column silently builds a device 60% faster than any part that has shipped.
+
+**Derived quantities you never type but must be able to compute:**
+
+$$
+\begin{aligned}
+\text{request\_size} &= \tfrac{\text{bus\_width}}{8}\times \text{BL} = 64\ \text{B} \Rightarrow \text{shift\_bits}=6, &
+\text{banks/rank} &= 4\times4 = 16,\\
+\text{row size} &= \tfrac{1024\times 8}{8}\times \tfrac{64}{8} = 8\ \text{KB}, &
+\text{rank size} &= 8\ \text{KB}\times 65536\times 16 = 8\ \text{GB},\\
+\text{ranks} &= \tfrac{16384\ \text{MB}}{8192\ \text{MB}} = 2, &
+\text{peak BW} &= 8\ \text{B}\times\tfrac{2}{0.63\ \text{ns}} = 25.4\ \text{GB/s}.
+\end{aligned}
+$$
+
+**`ranks` is not a config key** — it is inferred from `channel_size` over the device geometry, and a `channel_size` below one rank makes DRAMsim3 warn and *silently enlarge the channel*, so a run you believed was 4 GB is 8 GB. And this part's peak is 25.4 GB/s, not the nominal 25.6, because `tCK = 0.63` ns is 3175 MT/s: **compute peak from `tCK`, never from the file name.**
+
+| Field | Governs | A wrong value produces |
+|---|---|---|
+| `protocol` | command set, bank-group rules, refresh model | DDR4 timings under DDR3 drops bank groups — $t_{CCD\_L}$ vanishes and column bandwidth is over-reported |
+| `CL`, `tRCD`, `tRP`, `tRAS` | the three-case latencies of §4 | the distribution shifts; a small `tRAS` shrinks `tRC` and inflates single-bank throughput (§12) |
+| `tCCD_S` / `tCCD_L` | column spacing across / within a bank group | the *streaming* ceiling: at `tCCD_L = 8`, one 64 B burst per 8 cycles caps one bank group at $64/(8\times0.63) = 12.7$ GB/s — half of peak on a perfectly row-local stream |
+| `bankgroups`, `banks_per_group` | how many independent command chains exist | fewer banks lowers saturation; §2's $\lceil t_{RC}/t_{\text{burst}}\rceil\approx20$ is the target |
+| `rows`, `columns`, `device_width`, `BL`, `bus_width` | row size, request size, peak, address-field widths | changes *which* address bits are the bank bits — silently changing the experiment in §12 |
+| `address_mapping` | the physical→coordinate slice of §5 | **§12 measures a 13.6× bandwidth swing from this field alone** |
+| `row_buf_policy` | `OPEN_PAGE` or `CLOSE_PAGE` (§4) | inverts the sign of the locality effect; `CLOSE_PAGE` always pays $t_{RCD}$, never $t_{RP}$ |
+| `cmd_queue_size`, `trans_queue_size` | how far ahead the scheduler can see | **the most under-reported confound in DRAM studies** — §12 measures 1.8× on a sequential stream from `trans_queue_size` alone |
+| `refresh_policy` | rank-simultaneous / rank-staggered / bank-staggered | simultaneous blacks out every rank at once and exaggerates the latency tail |
+
+DRAMsim3 has no scheduling-policy key: the controller is FR-FCFS (§6) by construction, which is why a scheduler study belongs in Ramulator.
+
+**Reading the `address_mapping` string.** Exactly twelve characters: six two-character fields from `ch`, `ra`, `bg`, `ba`, `ro`, `co`, **most-significant field first**, with bit positions assigned from the right-hand end upward after shifting off the `shift_bits` byte-select bits. For this configuration `rochrababgco` means:
+
+```text
+ bit 33 ................................. 18 17  16 15  14 13  12 ......... 6  5 .. 0
+[            row  (16 bits)                ][ra][ bank  ][bankgrp][ column (7) ][ byte ]
+        ch has zero width here (channels = 1) and occupies no bits
+```
+
+The column field is only $\log_2(\text{columns})-\log_2(BL) = 10-3 = 7$ bits, the low three column bits being consumed by the burst. So a 64 B request walks 128 columns — 8 KB, one row — before crossing into the next bank group at bit 13. **Every stride result in §12 follows from that bit table**, which is why writing it out is the first thing to do with a new configuration. DRAMsim3's mapping is a pure bit-slice with no XOR hashing; for §5's `bank ^= row_bits` permutation you must add it, or use a tool that ships one (Ramulator's `MOP4CLXOR`).
+
+### 11.3 Configuration anatomy — the Ramulator 2.0 YAML
+
+Ramulator's configuration is a component *tree*: each node names an interface and the `impl` that realizes it (§11.8), so the file is simultaneously the parameters and the object graph. This is `example_config.yaml` at tag `v2.0a`:
+
+```yaml
+Frontend:
+  impl: SimpleO3
+  clock_ratio: 8
+  num_expected_insts: 500000
+  traces:
+    - example_inst.trace
+
+  Translation:
+    impl: RandomTranslation
+    max_addr: 2147483648
+
+MemorySystem:
+  impl: GenericDRAM
+  clock_ratio: 3
+
+  DRAM:
+    impl: DDR4
+    org:
+      preset: DDR4_8Gb_x8
+      channel: 1
+      rank: 2
+    timing:
+      preset: DDR4_2400R
+
+  Controller:
+    impl: Generic
+    Scheduler:
+      impl: FRFCFS
+    RefreshManager:
+      impl: AllBank
+    RowPolicy:
+      impl: ClosedRowPolicy
+      cap: 4
+    plugins:
+
+  AddrMapper:
+    impl: RoBaRaCoCh
+```
+
+- **`Frontend: impl`** — the stimulus generator. `SimpleO3` is a small out-of-order core with an LLC in front of memory (defaults 4 IPC, 128-entry window, 2 MB LLC, 16 MSHRs/core), so it consumes an *instruction* trace and emits a *filtered* request stream; `LoadStoreTrace` and `ReadWriteTrace` replay flat traces with no core model. Picking a flat frontend when you meant `SimpleO3` deletes the cache filter and the window, and you simulate a stream the machine would never emit (§7.1).
+- **`clock_ratio` — the field that silently rescales everything.** There are two, and together they give the core:memory frequency ratio ($8{:}3$ here). A wrong value raises no error; it builds a machine whose core is 2.7× off, changing offered load, hence $\rho$, hence every latency through §8's $1/(1-\rho)$. **When a coupled result looks implausible, check this first.**
+- **`org: preset`** — `DDR4_8Gb_x8` is an 8 Gb die, ×8 DQ, (1 channel, 1 rank, 4 bank groups, 4 banks/group, $2^{16}$ rows, $2^{10}$ columns). Fields beneath the preset override it. Unlike DRAMsim3, rank count is **explicit, not derived**.
+- **`timing: preset`** — the **speed bin**, the field most often set carelessly: `DDR4_2400R` is 2400 MT/s at CL-nRCD-nRP = 16-16-16, `DDR4_3200AA` is 3200 MT/s at 22-22-22. A preset is the vector `rate, nBL, nCL, nRCD, nRP, nRAS, nRC, nWR, nRTP, nCWL, nCCDS, nCCDL, nRRDS, nRRDL, nWTRS, nWTRL, nFAW, nRFC, nREFI, nCS, tCK_ps`; any name in it can be overridden individually beneath the preset, which is how you sweep one constraint (the README sweeps `nRCD` over `[10, 15, 20, 25]`). Setting `rate` while a preset is active is a configuration *error*, since it would leave `tCK` and the cycle-denominated constraints inconsistent.
+- **`Controller: impl: Generic`** — the fixed, timing-correct controller; everything policy-shaped hangs off it: `Scheduler` (`FRFCFS`, `BlockingScheduler`, `BLISS`, …), `RefreshManager` (`AllBank`), `RowPolicy` (`OpenRowPolicy` / `ClosedRowPolicy`, whose `cap` bounds consecutive row hits before the row closes anyway — the anti-starvation knob), and `plugins:` (§11.8). Write-drain watermarks (`wr_low_watermark` / `wr_high_watermark`, defaults 0.2 / 0.8) expose §6's batching.
+- **`AddrMapper: impl`** — `ChRaBaRoCo`, `RoBaRaCoCh` (the usual default), or `MOP4CLXOR`, the XOR-hashed variant of §5. Ramulator names mappings rather than spelling out bit fields, so §11.2's bit table becomes a one-line lookup — but you still have to write it out to reason about a stride.
+
+Ramulator 2.0 also accepts the whole YAML document **as a command-line string**: a Python driver loads the base file with `yaml.safe_load`, mutates `config["MemorySystem"]["DRAM"]["timing"]["nRCD"]`, and passes the serialized dict as `argv[1]`. No temporary files, and the swept value lives in the driver rather than in forty near-identical configs.
+
+### 11.4 Trace formats — what the file must actually contain
+
+**DRAMsim3's memory trace** is one request per line, whitespace-separated, in the order *address, operation, arrival cycle*:
+
+```text
+0x2000D5C0 READ   30
+0x1FF96FC0 WRITE  160
+0x2000D600 READ   165
+```
+
+The address is hexadecimal and **physical**. The operation counts as a write only if it is `WRITE`, `write`, `P_MEM_WR`, or `BOFF`, and **as a read otherwise** — a typo in that field silently becomes a read rather than an error. The third field is the arrival cycle in **memory clock cycles**, and its semantics matter: the driver holds one pending transaction, offers it once the clock reaches `added_cycle`, and if the queue is full retries later while **holding the rest of the trace behind it**. Timestamps are a *lower bound* on injection, not a schedule. Set them all to `0` and you have a closed-loop saturating driver — what §12 wants for a bandwidth question, and what you must not use for a latency question (§11.6). Two synthetic generators need no trace at all: `-s random` (uniform addresses, one third writes, full rate) and `-s stream` (a three-array stream-add with high row locality).
+
+**Ramulator 2.0's three trace forms**, each bound to a frontend:
+
+```text
+# SimpleO3  —  <non-memory-instruction count> <load address> [<store address>], decimal
+3 20734016
+1 20846400
+8 20841280 20841280
+
+# LoadStoreTrace  —  LD|ST <address>, hex with 0x or decimal
+LD 0x2000D5C0
+ST 0x1FF96FC0
+
+# ReadWriteTrace  —  R|W <comma-separated coordinate vector>
+R 0,0,1,2,4096,0
+```
+
+The `SimpleO3` form matters most, and its first field is what makes it more than a replay: the count of **non-memory instructions before this memory instruction**, so the core consumes the trace at its issue width, fills its window, and stalls when a load's result is needed — how a trace-driven run reproduces *part* of the injection feedback a fixed timestamp cannot (§7.3). `ReadWriteTrace` names the coordinate vector directly and so bypasses the address mapper: a unit-test instrument, not a workload format. **All three frontends wrap to the start of the trace at the end**, so a short trace does not end the run; it becomes a periodic workload with a near-perfect row-hit rate on the second lap.
+
+**Producing a trace from a real program**, in increasing fidelity. `valgrind --tool=lackey --trace-mem=yes ./prog` gives every fetch, load, and store at zero setup and ~100× slowdown, but with **virtual** addresses and **no cache filtering** — the raw top of §7.1's pipeline, needing both repairs below; **Intel Pin**'s `pinatrace` example tool is the same content, faster. **DynamoRIO's `drcachesim`/`drmemtrace`** (`drrun -t drcachesim -offline -- ./prog`) is the useful one, because it can run the stream through a *simulated cache hierarchy* and emit the misses — §7.1's LLC filter done for you, and the difference between the right request count and one that overstates DRAM traffic by an order of magnitude ([Cache_Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md)). Highest fidelity is **a gem5 memory-trace probe**: a `CommMonitor` on the port between the last-level cache and the memory controller, carrying a `MemTraceProbe` with a `trace_file`. Its output sits exactly at the memory-controller boundary — physical addresses, writebacks, and prefetches included, produced by the machine that will later consume it.
+
+**Trap 1 — virtual addresses where the model expects physical.** Every mapping in §5 slices *physical* bits. Replaying virtual addresses as physical gives the bank and row distribution of the *virtual* layout, nearly contiguous for a large heap: row-hit rate over-estimated and bank conflicts under-estimated, **in the optimistic direction**, by an amount set by the page size and the allocator rather than by anything about the memory system. Two honest repairs: capture physical addresses (a gem5 probe, or a kernel-assisted tracer), or apply an explicit page-granularity translation and *say so* — Ramulator's `RandomTranslation` is exactly this, and randomizing frames is a *conservative* model of a fragmented system, not a neutral one. Feeding virtual addresses through `NoTranslation` and reporting a row-hit rate is never acceptable ([TLB_and_Virtual_Memory](../../01_CPU_Architecture/05_Virtual_Memory/01_TLB_and_Virtual_Memory.md)).
+
+**Trap 2 — timestamps that cannot respond to the change you are studying.** §7.3, operationally. A trace carries arrival cycles captured under *one* memory configuration; change the mapping, the speed bin, or the scheduler and the real machine's future arrivals move, because a slower memory backs up the miss-status registers and the instruction window. A fixed-timestamp trace cannot. The error is directional: **the replay over-states the offered load of whichever configuration you made slower**, exaggerating the queueing term and reporting a worse result than the closed-loop machine would. Three defensible responses, in order of cost: make the load explicitly saturating and report **achieved bandwidth at saturation**, which does not pretend to be application throughput (§12 does this); use a dependency-aware frontend (`SimpleO3`); or couple to a full core model (§11.7) when the claim is runtime or IPC. State which. "We replayed a trace" is not a method; "we replayed a trace at saturation and report achieved bandwidth, not runtime" is.
+
+### 11.5 Running standalone
+
+```bash
+mkdir -p run0
+./build/dramsim3main configs/DDR4_8Gb_x8_3200.ini -s random -c 200000 -o run0
+./build/dramsim3main configs/DDR4_8Gb_x8_3200.ini -c 200000 -t /abs/path/trace.txt -o run1
+./ramulator2 -f ./example_config.yaml
+```
+
+DRAMsim3's flags are few: the configuration file is a **positional** argument; `-c/--cycles` is the run length **in DRAM clock cycles** (default 100000) and is the *only* termination condition — the run does not stop when the trace ends; `-t/--trace` selects trace mode and overrides `-s/--stream` (`random` or `stream`); `-o/--output-dir` sets the output directory; `-h` prints the list.
+
+Three files land there (prefix `dramsim3`, settable as `output_prefix` in `[other]`): **`dramsim3.txt`**, the human-readable end-of-run report, one line per counter per channel; **`dramsim3.json`**, the same counters as JSON keyed by channel id, containing *strictly more* than the text file (§11.6); and **`dramsim3epoch.json`**, a JSON *array* of per-epoch snapshots, one per `epoch_period` cycles — the time series, and how you separate warm-up from steady state without guessing. `scripts/plot_stats.py` renders either JSON file with matplotlib.
+
+### 11.6 Reading the output — which numbers you may quote
+
+The real end-of-run report from one of §12's runs (mapping `rochrababgco`, 8 KB-stride read trace, 200000 cycles), trimmed to the load-bearing lines:
+
+```text
+num_cycles                     =       200000   # Number of DRAM cycles
+num_reads_done                 =        35894   # Number of read requests issued
+num_writes_done                =            0
+num_read_row_hits              =            0   # Number of read row buffer hits
+num_act_cmds                   =        35975   # Number of ACT commands
+num_pre_cmds                   =        35964   # Number of PRE commands
+num_ref_cmds                   =           32   # Number of REF commands
+rank_active_cycles.0           =       189211   # Cycles of rank active rank.0
+all_bank_idle_cycles.0         =        10789   # Cycles of all banks idle rank.0
+read_latency[60-79]            =         3726   # Read request latency (cycles)
+read_latency[100-119]          =         6461
+read_latency[200-]             =         7613
+act_energy                     =  2.41752e+08   # Activation energy
+read_energy                    =  1.59904e+08   # Read energy
+ref_energy                     =  3.40623e+07   # Refresh energy
+act_stb_energy.0               =  9.44541e+07   # Active standby energy rank.0
+average_read_latency           =       459.05   # Average read request latency (cycles)
+total_energy                   =  6.32332e+08   # Total energy (pJ)
+average_power                  =      3161.66   # Average power (mW)
+average_bandwidth              =      18.2319   # Average bandwidth
+```
+
+**Row hits, misses, conflicts.** `num_read_row_hits = 0` against 35894 reads: **every access was a miss** — §12's whole finding in one line, because the stride steps exactly one row per request. Cross-check `num_act_cmds = 35975 ≈ num_reads_done`: one activate per read is the arithmetic signature of zero locality. The opposite signature, from the sequential run in the same matrix, is 33191 reads against **282** activates — 118 reads per activate, close to the 128 requests an 8 KB row holds. **Always read the ACT count next to the hit count**; they are redundant by construction, and when they disagree your address-map mental model is wrong.
+
+**Bank and rank utilization.** `rank_active_cycles` and `all_bank_idle_cycles` sum to `num_cycles` per rank ($189211+10789=200000$). "Active" means *at least one bank has a row open*, not that the data bus is busy — so a 94.6% active fraction beside a 70% bandwidth number is no contradiction. It is a *power* input (§9), the residency that multiplies $I_{DD3N}$; reading it as utilization is a common and expensive mistake.
+
+**Bandwidth.** `average_bandwidth = 18.23` GB/s is $(\text{reads}+\text{writes})\times\text{request\_size}/(\text{num\_cycles}\times t_{CK}) = 35894\times64\ \text{B}/(200000\times0.63\ \text{ns})$, i.e. 71.8% of this part's 25.4 GB/s peak. The denominator is the **whole run**, idle cycles included — §7.4's measurement-window choice, made for you. Right for a saturating driver; wrong for a bursty trace with long gaps, where it reports the application's average *demand* rather than the memory system's *capability*.
+
+**Latency, and the trap in it.** `average_read_latency = 459.05` cycles $=289$ ns is **not** a device latency and must never be quoted as one: this driver offered requests as fast as the queue accepted them, so it is overwhelmingly queueing delay at $\rho\to1$ (§8) — a property of the *stimulus*. The device contribution shows only at low load. The same configuration with arrivals spaced 400 cycles apart ($\rho\approx0.12$) gives a histogram whose mode is **49 cycles for 93% of requests**, against the closed-form row-empty prediction $t_{RCD}+t_{CL}+\text{BL}/2 = 22+22+4 = 48$ cycles, the extra cycle being the completion convention (§7.4). **That agreement is the check that the timing engine does what §2–§4 say**, and it is the number you may quote as an unloaded latency. The remaining 7% of those sparse requests land at 247, 324, 403, and 483 cycles — arrivals that waited out part of a $t_{RFC}=560$ refresh. Refresh as a *bursty blackout* rather than a smooth 4.5% tax (§3), measured rather than asserted.
+
+**Tail latency, and why you must read the JSON.** The `.txt` report bins read latency into ten buckets and dumps everything past 200 cycles into `read_latency[200-]` — here 7613 of 35894 requests, 21% of the distribution, unresolvable, so no p99 can be computed from it. **The JSON's `read_latency` key holds the full unbucketed histogram**, one entry per distinct latency value, so percentiles are a five-line script: p50 = 141, p95 = 3656, p99 = 4783, max = 5392 cycles. That 34× p50-to-p99 ratio is the signature of a saturated queue, and it is invisible in the text summary.
+
+**Energy, by component.** The energy lines are §9's decomposition, already separated: `act_energy` is $E_{\text{ACT+PRE}}$ (38% of the total here), `read_energy` is $E_{\text{RD}}$ (25%), `ref_energy` is $E_{\text{REF}}$ (5%), and `act_stb_energy` + `pre_stb_energy` are $E_{\text{bg}}$ (30%); `total_energy` is their sum, $6.32\times10^8$ pJ, all in picojoules. Activation dominates because the row-hit rate is zero — §9's lever, measured; the sequential run on the same device spends almost nothing on activates. DRAMsim3 uses the same incremental subtraction §9 derives (`act_energy_inc = VDD*(IDD0*tRC - (IDD3N*tRAS + IDD2N*tRP))*devices`), so "no joule counted twice" holds and the components may be added.
+
+**One unit trap to carry.** `average_power` is `total_energy / num_cycles` — **picojoules per DRAM cycle**, *labeled* mW. It is milliwatts only when $t_{CK}=1$ ns. Here the true average power is $3161.66\ \text{pJ/cycle} \div 0.63\ \text{ns} = 5018$ mW, not 3162. (Two lesser blemishes: `num_writes_done`'s description string reads "Number of read requests issued", a copy-paste artifact; and `num_read_cmds` counts *commands* while `num_reads_done` counts *completed requests*, so they differ by whatever is in flight at the end.)
+
+**Trustworthy versus artifact — the rule.** Command counts, row hit/miss/conflict counts, energy components, and state residencies are properties of the *model*, trustworthy to the fidelity of the timing engine — what "validated against the Verilog model" (§10) certifies. Bandwidth, mean latency, tail latency, and queue occupancy are properties of the *stimulus crossed with* the model. The dividing question: **would this number change if I changed only the driver?** If yes, the driver is part of the claim and must be reported with it.
+
+### 11.7 Coupling to gem5 — and the other DRAM model already in there
+
+DRAMsim3 ships as a gem5 memory controller: a `DRAMsim3` SimObject inheriting `AbstractMemory`, so it attaches to the memory port like any other memory and takes two parameters.
+
+```python
+system.mem_ctrls = [DRAMsim3(
+    range      = system.mem_ranges[0],
+    configFile = "ext/dramsim3/DRAMsim3/configs/DDR4_8Gb_x8_3200.ini",
+    filePath   = "ext/dramsim3/DRAMsim3/")]
+```
+
+Through the standard configuration scripts this is `--mem-type=DRAMsim3`; gem5's `--mem-type` takes the SimObject *class name*, so the string is case-sensitive, and DRAMsim3's own README shows the lower-case `--mem-type=dramsim3` used by the **forked** gem5 its authors maintain. `filePath` is prepended to `configFile` because DRAMsim3 resolves paths relative to the invocation directory. The hand-off is §7's library boundary: gem5 sends physical addresses and read/write type through the port; DRAMsim3 owns the queue, mapping, scheduler, and timing, and returns a completion callback gem5 turns into a response packet. gem5 ticks it from the memory clock domain, so the domains must be declared consistently — §11.3's `clock_ratio` hazard in another notation.
+
+Ramulator 2.0 attaches as a library: build `libramulator.so`, place it under `gem5/ext/ramulator2/`, add an `SConscript` that puts it on the link line, install the `Ramulator2` SimObject wrapper (shipped under `resources/gem5_wrappers/`), and point `config_path` at your YAML. The step people forget is inside the YAML: **`Frontend: impl` must be the gem5 external-wrapper frontend**, not `SimpleO3`, or two cores generate traffic and the trace frontend fights gem5 for the memory system.
+
+**gem5 already has its own DRAM model, and it is not the same model.** Its internal path is `MemCtrl` (queues, scheduler, write drain) plus `DRAMInterface` (device state machine and JEDEC timing), configured from named device classes — `DDR4_2400_8x8`, `DDR5_6400_4x8`, `HBM_2000_4H_1x64` — each carrying `tRCD`, `tCL`, `tRP`, `tBURST`, `page_policy` (`open`, `open_adaptive`, `close`, `close_adaptive`), `addr_mapping` (`RoRaBaChCo`, `RoRaBaCoCh`, `RoCoRaBaCh`), and `mem_sched_policy` (`fcfs`, `frfcfs`). `--mem-type=DDR4_2400_8x8` uses this model; `--mem-type=DRAMsim3` replaces it wholesale.
+
+Use **gem5's internal `MemCtrl`** when memory is *present but not the subject*: you need a credible, contended, JEDEC-timed backend so IPC is not fantasy, but the study is about the core, the caches, or the interconnect. It is faster, needs no external dependency, and its statistics land in the same `stats.txt`. Use **DRAMsim3 or Ramulator** when memory *is* the subject: a DRAM standard stock gem5 does not model, a scheduler or refresh policy you are proposing, a RowHammer mitigation (§11.8), a thermal-coupled refresh study (§10), or any claim needing the Verilog-validated engine.
+
+**Why they disagree.** Run the same workload through both at nominally the same speed bin and the bandwidth and mean latency differ — commonly by several percent, more under contention. The causes are structural, not bugs: **different queue structure** (gem5 has one read and one write queue per controller with watermark-driven drain; DRAMsim3 has a transaction queue feeding per-bank command queues — and §11.2 flags queue depth as worth up to 1.8×); **different address-mapping defaults** (`RoRaBaChCo` and `rochrababgco` are not the same slice, and §12 measures 13.6× between two mappings); **different refresh modeling**, which moves the height and shape of the tail; **different controller front-end latency**, since gem5 charges an explicit static front-end and back-end pipeline delay on top of device timing; and **different completion conventions**, worth $\text{BL}/2$ cycles per request (§7.4). The rule that follows: **never compare a gem5-internal number against a DRAMsim3 number and call the difference a result.** If you switch memory models mid-study, re-baseline everything, and report model, version, configuration file, and completion convention — the [evidence standard](../../../Research_Depth_and_Evidence_Standard.md)'s simulator-result contract asks for exactly that chain.
+
+### 11.8 Ramulator 2.0's plugin model
+
+Ramulator rather than DRAMsim3 is the vehicle for most new-mechanism papers because of one decision: **the controller is fixed and correct, and a mechanism is a plugin that observes it.** A controller plugin implements `IControllerPlugin` and gets a callback for **every command the controller issues**, carrying the command type and the full address vector (channel, rank, bank group, bank, row, column). From that one hook a mechanism can count activates per row, maintain a frequency table, inject a command, or throttle a requester — without touching the scheduler, the timing tables, or the DRAM state machine, and so without the risk that its "improvement" is really a timing bug. Ramulator 2.0 ships the RowHammer literature on that hook (`para`, `twice`, `graphene`, `blockhammer`, `hydra`, `rrs`, `aqua`, `trr`, `oracle_rh`, `prac`, `rfm_manager`) plus instrumentation useful on its own: `cmd_counter` (per-command-type counts — DRAMPower's input, §9) and `trace_recorder` (the timestamped command trace that feeds §10's Verilog validation).
+
+Adding one is three steps: write a class inheriting both the interface and `Implementation`; put `RAMULATOR_REGISTER_IMPLEMENTATION(IControllerPlugin, MyPlugin, "MyPluginName", "description")` *inside* the class; add the file to `target_sources`. The self-registering factory then builds it whenever a config names `impl: MyPluginName` under `plugins:` — so a sweep over mechanisms is a sweep over strings in a YAML document, with the baseline controller byte-identical in every arm. **That is the property that makes the comparison mean something**, and it is the argument USIMM made in 2012 by letting contestants write only `schedule()` (§10a). One limit: a plugin sees commands *after* the scheduler has chosen them, so a mechanism that must change *which* request is selected has to be a `Scheduler` implementation instead. The hook is an observation point, not a rewrite point — which is why the timing engine stays trustworthy underneath it.
+
+---
+
+## 12. A worked experiment, end to end
+
+A page that describes a tool is worth less than a page that shows a method. This section runs one small question all the way through, with the arithmetic, the controls, and an honest boundary on what was shown. The contract it is written against is the notebook's [Research-Depth and Evidence Standard](../../../Research_Depth_and_Evidence_Standard.md) — §3 (workload, configuration, metric definition, warm-up, window, baseline, limiting resource) and §4 (source stimulus, timing model, region of interest, raw counters, aggregation formulas, validation target, error budget and validity boundary).
+
+### 12.1 The question and the hypothesis
+
+**Question.** *On a stride-heavy read stream, how much achieved bandwidth does the address mapping cost on this DDR4-3200 part?*
+
+That is answerable because one variable is isolated and both sides are measurable. Contrast "is `rochrababgco` a good mapping?", which is not answerable at all — §5 already says the mapping trades parallelism against locality, so goodness is a property of the workload.
+
+**Hypothesis, with a predicted number rather than a direction.** From §11.2's bit table, putting the **bank-group and bank bits immediately above the column field** makes a one-row (8 KB) stride walk across bank groups, engaging many independent command chains (§2). Putting the **row field immediately above the column field** makes the same stride walk rows *within one bank*, serializing every access behind $t_{RC}$. The prediction is §2's single-bank arithmetic:
+
+$$
+\text{BW}_{\text{1 bank}} = \frac{\text{request\_size}}{t_{RC}}\Big(1-\tfrac{t_{RFC}}{t_{REFI}}\Big)
+= \frac{64\ \text{B}}{74\times0.63\ \text{ns}}\Big(1-\tfrac{560}{12480}\Big) = 1.31\ \text{GB/s},
+$$
+
+**5.1% of the 25.4 GB/s peak**, with $t_{RC}=t_{RAS}+t_{RP}=52+22=74$ cycles. The bank-interleaved arm should reach a large multiple of that. If the row-interleaved arm lands near 1.31 and the other does not, the mechanism is confirmed; if the row-interleaved arm is much *faster* than 1.31, the model is finding parallelism the bit table says cannot exist, and the bit table is wrong.
+
+### 12.2 Configuration matrix, and what is held fixed
+
+| Arm | `address_mapping` | Field order, low bits first | Immediately above the column field |
+|---|---|---|---|
+| **A** (bank-interleaved) | `rochrababgco` | col, bankgroup, bank, rank, row | bank group, at bit 13 |
+| **B** (row-interleaved) | `chrabgbaroco` | col, row, bank, bankgroup, rank | row, at bit 13 |
+
+Strides: **64 B** (sequential — the control), **8 KB** (exactly one row), **128 KB** (bit 17, the rank bit under mapping A), **256 KB** (bit 18, a row bit under both). The stride sweep is present so the result is a *curve*, not a point.
+
+**Held fixed across all eight runs**, each being a plausible alternative explanation: the device (`DDR4_8Gb_x8_3200.ini`, 1 channel, 2 ranks derived, 4 bank groups × 4 banks, $t_{CK}=0.63$ ns); the whole `[timing]` and `[power]` block; `row_buf_policy = OPEN_PAGE`; `queue_structure = PER_BANK`; `cmd_queue_size = 8`; `trans_queue_size = 32`; `refresh_policy = RANK_LEVEL_STAGGERED`; FR-FCFS (constant by construction — DRAMsim3 has no scheduler key); 200000 DRAM cycles; the binary; and the trace generator, which emits **300000 read-only requests, all with arrival cycle 0**. Read-only removes §6's write-drain and turnaround terms; arrival cycle 0 makes the driver closed-loop saturating — the §11.4 decision that makes this a *bandwidth-at-saturation* question and disqualifies it as a latency or runtime question. 300000 requests against at most ~47000 served means the trace never wraps, so no arm acquires a perfect row-hit rate on a second lap.
+
+### 12.3 Warm-up and the measurement window
+
+The run starts with every bank precharged, every queue empty, and no refresh pending, so the first requests see an empty machine. Setting `epoch_period = 50000` splits the run into four 31.5 µs epochs in `dramsim3epoch.json`, making the transient visible rather than assumed. For arm A at 8 KB stride:
+
+| Epoch | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| Bandwidth (GB/s) | 19.31 | 18.06 | 17.78 | 17.78 |
+| Reads served | 9503 | 8887 | 8752 | 8752 |
+
+The transient is **8.6% high and lasts about two epochs**; epochs 2 and 3 agree to three significant figures. The measurement window is therefore **epochs 2–3 (cycles 100000–200000)**, and the whole-run average of 18.23 GB/s is an over-estimate of 2.5% against the steady-state 17.78. The arms with no parallelism show no transient at all — they are $t_{RC}$-bound from the first request.
+
+### 12.4 The runs
+
+```bash
+# two configs differing in exactly one line
+sed 's/address_mapping = rochrababgco/address_mapping = chrabgbaroco/' \
+    configs/DDR4_8Gb_x8_3200.ini > mapB.ini
+for m in A B; do
+  for s in 64 8192 131072 262144; do
+    mkdir -p out_${m}_${s}
+    ./build/dramsim3main map${m}.ini -c 200000 -t tr_${s}.txt -o out_${m}_${s}
+  done
+done
+```
+
+### 12.5 Results
+
+Bandwidth is the epochs-2–3 mean; percentages are of the 25.4 GB/s peak computed from `tCK` (§11.2); hit-rate and latency columns are whole-run.
+
+| Arm | Stride | Reads served | Row-hit % | ACT cmds | BW (GB/s) | % peak | Mean read latency |
+|---|---|---|---|---|---|---|---|
+| A | 64 B | 33191 | 99.2 | 282 | 16.88 | 66.5 | 285 cyc (179 ns) |
+| A | 8 KB | 35894 | 0.0 | 35975 | **17.78** | **70.0** | 459 cyc (289 ns) |
+| A | 128 KB | 5157 | 0.0 | 5167 | 2.61 | 10.3 | 1876 cyc (1182 ns) |
+| A | 256 KB | 2576 | 0.0 | 2582 | 1.31 | 5.1 | 3106 cyc (1957 ns) |
+| B | 64 B | 22712 | 99.2 | 194 | 11.54 | 45.4 | 377 cyc (237 ns) |
+| B | 8 KB | 2576 | 0.0 | 2582 | **1.31** | **5.1** | 3106 cyc (1957 ns) |
+| B | 128 KB | 2615 | 0.0 | 2622 | 1.35 | 5.3 | 3071 cyc (1934 ns) |
+| B | 256 KB | 2617 | 0.0 | 2622 | 1.31 | 5.2 | 3066 cyc (1932 ns) |
+
+**At an 8 KB stride the two mappings differ by $17.78/1.31 = 13.6\times$ in achieved bandwidth, on identical silicon, identical timing, and an identical request stream.**
+
+### 12.6 Analysis — every row explained by the bit table
+
+**The floor is exactly where it should be.** Four cells report 1.31–1.35 GB/s: A at 256 KB and all three strided B arms. In each, the stride steps a row bit while leaving bank, bank-group, and rank bits unchanged, so the whole stream lands in **one bank** and each access completes a full row cycle. Measured service interval $=200000/2576=77.6$ cycles; predicted $t_{RC}/(1-t_{RFC}/t_{REFI})=74/0.9551=77.5$ cycles — **agreement to 0.2%**, the §2 timestamp recurrence and the §3 refresh duty cycle reproduced simultaneously, and the resulting 5.1% of peak is §2's one-bank bus utilization measured instead of asserted.
+
+**The two-bank case is exactly twice the floor.** Arm A at 128 KB gives 2.61 GB/s $=1.99\times$ the floor. Under mapping A bit 17 is the **rank** bit, so a 128 KB stride alternates ranks while holding bank group and bank fixed: two banks on two independent ranks, each running its own $t_{RC}$ chain. Two chains, twice the floor, no fitted parameter anywhere in that statement.
+
+**The 8 KB case is where the mapping earns its keep.** Under A, bit 13 is the low bank-group bit, so the stride visits bank groups 0–3, then advances the bank field, then the rank field — 32 banks in rotation. At 17.78 GB/s that is $13.6\times$ the floor, near §2's estimate that $\lceil t_{RC}/t_{\text{burst}}\rceil\approx20$ concurrent row-cycle chains are needed to fill the bus; with 32 banks and a 32-entry queue the machine gets most of the way and stalls short of peak on the command bus and $t_{FAW}$ (§3) — hence 70%, not 100%. Under B, bit 13 is a row bit, and the same stride is the one-bank floor.
+
+**The sequential control behaves differently, and that is the interesting part.** At 64 B stride both arms show 99.2% row hits and only ~200–300 activates, yet A delivers 16.88 GB/s against B's 11.54. Neither is row-buffer-limited; both are **column-command-limited**. Within one row every column command hits the same bank group, so $t_{CCD\_L}=8$ applies, capping one bank group at $64\ \text{B}/(8\times0.63\ \text{ns})=12.7$ GB/s — and B's 11.54 is that ceiling less the amortized row change and the 4.5% refresh tax. A exceeds it only because near each 8 KB boundary the transaction queue holds two bank groups at once and column commands interleave at $t_{CCD\_S}=4$. **That makes A's sequential advantage a property of queue depth, not of the mapping** — a confound, which §12.7 measures rather than argues about.
+
+**Energy moves with the same lever.** Arm A at 8 KB spends $6.32\times10^8$ pJ to move 2.30 MB — **34.4 pJ/bit**, activation 38% of it. The one-bank arms spend $2.24\times10^8$ pJ to move 165 KB — **170 pJ/bit**, 72% background residency and 15% refresh. Average power *falls* from 5018 mW to 1781 mW while energy per bit rises **4.9×**: §9's fixed costs are unconditional, so a slow configuration does not save energy, it amortizes the same joules over 14× fewer bytes.
+
+### 12.7 Sanity checks — is the result an artifact?
+
+Five checks, each aimed at one alternative explanation. All were run; none is hypothetical.
+
+1. **Is the timing engine right at all?** Independent of the mapping question, §11.6's sparse-arrival run gives a latency mode of 49 cycles against the closed-form row-empty prediction of 48. The engine reproduces §4's analytic latency where an analytic answer exists.
+2. **Is it an alignment artifact of the trace generator?** Repeating both arms at 8 KB stride from a deliberately unaligned base (`0x2ABC1000` instead of `0x10000000`) gives 18.23 and 1.31 GB/s — **identical to three significant figures**. Not alignment.
+3. **Is mapping B simply broken, making the comparison unfair?** The important control, because a mapping bad at everything proves nothing about strides. Driving both arms with DRAMsim3's built-in **uniform-random** generator (`-s random`, which by construction has no stride) gives **A = 18.51 and B = 18.85 GB/s** — statistically the same, with B marginally *ahead*. B is a perfectly good mapping; it is bad *for this stride*. That falsification converts the headline from "mapping B is worse" to "the interaction between stride and mapping is worth 13.6×", which is the claim §5 actually makes.
+4. **Is it a window-length artifact?** Extending the run 5× to 1000000 cycles gives A = 17.95 and B = 1.31 GB/s: A drifts 1.5% further toward steady state, B does not move.
+5. **Is it a queue-depth artifact?** §12.6 flagged the queue as a confound on the sequential arm, so it must be tested on the strided arms too. Sweeping `trans_queue_size` with everything else fixed:
+
+| `trans_queue_size` | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|
+| A, 64 B stride (GB/s) | 13.41 | 14.42 | 16.88 | 23.85 |
+| A, 8 KB stride (GB/s) | — | — | 18.23 | 18.55 |
+| B, 8 KB stride (GB/s) | — | — | 1.31 | 1.31 |
+
+The sequential arm moves **1.8× across the sweep**; the strided arms move **≤ 2%**. So the 13.6× headline is queue-insensitive and safe, while the 1.46× sequential gap is *not* a clean statement about address mapping and must not be reported as one. This is the check that separates a result from a coincidence, and the one most often skipped.
+
+### 12.8 What this establishes, and what it does not
+
+**Established.** For this device, this controller configuration, and a saturating read-only stream, achieved bandwidth is a function of the interaction between access stride and address mapping, spanning **5.1% to 70% of peak — a 13.6× range** — with no timing parameter changed. The single-bank floor matches the closed-form $t_{RC}$-plus-refresh prediction to 0.2% and the two-bank case is exactly twice it, so the mechanism is understood, not merely observed. Energy per bit moves 4.9× in the same direction, for §9's reason that refresh and background residency are unconditional. The effect survives base-address, window-length, and queue-depth perturbation, and vanishes under a stride-free control — which rules out "mapping B is just bad."
+
+**Not established, and it would be dishonest to imply otherwise.**
+
+- **Nothing about application runtime.** The driver saturates with fixed timestamps, so §7.3's closed-loop feedback is absent by construction: a real core would slow its injection when memory slowed. 13.6× is a *bandwidth-at-saturation* ratio; the runtime ratio for a real program is smaller and unknown from this data, and needs §11.7's coupled configuration.
+- **Nothing about the latency column** — those are queueing delays at $\rho\to1$ (§11.6), properties of the driver.
+- **Nothing about real workloads.** A constant stride isolates a mechanism; it is not a program. Real streams mix strides, and their mapping sensitivity is bounded above by this result, not equal to it.
+- **Nothing about other parts or controllers.** One device, one bank-group geometry, one queue configuration, one scheduler, one refresh policy — DDR5's 32 banks per rank move the floor, and HBM's many channels move it more. Nor does it say *which* mapping to ship: check 3 shows the two are equivalent on random traffic, so the choice is a workload question, and the honest output is a mapping chosen *for a named workload mix* with the sensitivity curve attached.
+- **Nothing verified against silicon.** DRAMsim3's validation (§10) certifies that its command stream is legal and cycle-matched against a vendor Verilog model — that bounds *model* error, not *workload* error.
+
+**The reproducibility packet**, per §7.4's replay list and the evidence standard's simulator-result contract: simulator and commit; the two `.ini` files verbatim (they differ in one line); the trace generator and the resulting file hashes; `-c 200000`; `epoch_period = 50000`; the epochs-2–3 window and the reason for it; the definition of achieved bandwidth as `(reads+writes) × request_size / (num_cycles × tCK)`; the completion convention (last beat); and the counters the conclusion rests on — `num_reads_done`, `num_read_row_hits`, `num_act_cmds`, and the per-epoch series. With those, another reader reproduces the table exactly; without them, the 13.6× is a number on a slide.
+
+---
+
 ## Numbers to memorize
 
 | Quantity | Value / form | Why it matters |
@@ -422,6 +858,11 @@ The ladder spans **two orders of magnitude**: one all-bank refresh (57 nJ) costs
 | Achieved BW vs hit rate | $h{=}0.15\to$ 34%, $h{=}0.95\to$ 83% of peak | BW is an output of realized $h$ (§6, §8) |
 | Per-event energy ladder | REF $\approx$ 57 nJ $\gg$ ACT+PRE $\approx$ 0.52 nJ $>$ RD $\approx$ 0.35 nJ | refresh + activate dominate (§9) |
 | Row-hit rate as energy lever | streaming $\approx2.5\times$ cheaper/bit than random | open-page amortizes the activate (§9) |
+| Single-bank bandwidth floor | $\text{req}/t_{RC}\approx1.3$ GB/s $\approx5\%$ of peak | what one serialized bank delivers; measured to 0.2% (§12.6) |
+| Address-mapping penalty | up to $13.6\times$ achieved BW on a stride-matched stream | the mapping is a first-order knob, not bookkeeping (§12.5) |
+| Column-command ceiling | $\text{req}/t_{CCD\_L}\approx12.7$ GB/s within one bank group | a perfectly row-local stream still caps near 50% of peak (§11.2) |
+| Unloaded-latency check | histogram mode $=t_{RCD}+t_{CL}+\text{BL}/2$ (49 vs 48 cyc) | the check that the timing engine is faithful (§11.6) |
+| Queue depth as a confound | sequential BW moved $1.8\times$ for `trans_queue_size` 8→64 | report queue sizes or the result is not reproducible (§11.2, §12.7) |
 
 ---
 
@@ -429,6 +870,7 @@ The ladder spans **two orders of magnitude**: one all-bank refresh (57 nJ) costs
 
 - **Down the stack:** [Memory](../00_Design_Methodology/02_SoC_Chiplet_PPA_and_Physical_Implementation.md) (the 1T1C cell, sense amp, and refresh physics collapsed into these timing constants), [DDR_Controller](../02_Shared_Memory/01_DDR_Controller.md) (§2.2 the three-case FSM latencies this page *computes* as timestamp differences, §3 timing derivations + the $t_{FAW}$ power-grid physics, §4 row-buffer policy math, §5 the $\bar L(h)$ FR-FCFS payoff, §6 the refresh density tax this page re-derives in joules, §7.2 the bank-parallelism Little's law, §7.3 the loaded-latency $1/(1-\rho)$ law — this page *runs* what those sections *derive*), [OoO_Execution](../../01_CPU_Architecture/03_Out_of_Order_Backend/01_OoO_Execution.md) (the ROB whose stalls turn memory latency into system time).
 - **Up the stack:** [SoC/chiplet simulation methodology](../00_Design_Methodology/03_SoC_Chiplet_Simulation_Methodology_and_Evidence.md) (the discrete-event engine §3.1, trace-vs-execution §3, and the queueing backbone §3.1 this page instantiates), [gem5](../../01_CPU_Architecture/08_Simulation/01_gem5.md) (which mounts Ramulator/DRAMSim3 as its memory backend), [Full_Chip_Modeling](../01_System_Modeling/01_Full_Chip_Modeling.md) (composing the DRAM model into a perf→power→thermal chip flow; its McPAT §1.1 is the logic-side twin of the §9 activity × per-event-energy method), [Block_Activity_and_Power](../../../02_Power_and_Low_Power/02_Block_Activity_and_Power.md) (the same time-in-state × current accounting applied to logic blocks), [Root Index](../../../Index.md).
+- **Method and evidence:** [Research-Depth and Evidence Standard](../../../Research_Depth_and_Evidence_Standard.md) (§3 performance-result and §4 simulator-result contracts — the reporting rules §11.6 and §12.8 are written against), [Cache_Microarchitecture](../../01_CPU_Architecture/04_Cache_Hierarchy/01_Cache_Microarchitecture.md) (the last-level-cache filter a DRAM trace must pass through, §11.4), [TLB_and_Virtual_Memory](../../01_CPU_Architecture/05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (why a virtual-address trace is not a DRAM trace, §11.4).
 - **Sibling:** [GPU_Simulators](../../02_GPU_Architecture/04_Simulation/01_GPU_Simulators.md) (whose GDDR/HBM tier is the same kind of model, wider and hotter).
 
 ---

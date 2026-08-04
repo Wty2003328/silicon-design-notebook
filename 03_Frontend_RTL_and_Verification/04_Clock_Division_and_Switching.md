@@ -15,11 +15,11 @@ flowchart LR
 
 ```wavedrom
 { "signal": [
-  { "name": "clk_in",  "wave": "p........." },
-  { "name": "div2",    "wave": "0.1.0.1.0." },
-  { "name": "select_B", "wave": "0....1...." },
-  { "name": "clk_out", "wave": "p....0.p..." }
-], "head": { "text": "Divider and glitch-free switch: selection changes only through an inactive interval" } }
+  { "name": "clk_in (A)", "wave": "p........." },
+  { "name": "div2 (B)",   "wave": "0101010101" },
+  { "name": "select_B",   "wave": "0...1....." },
+  { "name": "clk_out",    "wave": "p...0..101" }
+], "head": { "text": "Divider and glitch-free switch: div2 toggles once per clk_in cycle (half the frequency); clk_out changes source only through an inactive interval" } }
 ```
 
 > **Prerequisites:** [Logic_Building_Blocks](../00_Fundamentals/02_Logic_Building_Blocks.md) (the flip-flop and its setup/hold/clk-to-Q §4.2, metastability §4.4, and *why a combinational clock mux glitches* §2.3), [CMOS_Fundamentals](../00_Fundamentals/01_CMOS_Fundamentals.md) (the buffer as a real, band-limited gate).

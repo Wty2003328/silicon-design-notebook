@@ -353,7 +353,7 @@ $$
 \underbrace{6400\ \text{MT/s}}_{\text{pin data rate } r}
 $$
 
-and, on the controller side, a fourth: the DFI clock, typically $f_{CK}/2$ or $f_{CK}/4$ (§13.4), so a 6400 MT/s interface is often driven by a controller running at **800 MHz** and issuing up to four DRAM commands per cycle. Four clock domains, three of them derived by fixed integer ratios from one PLL, and every one of them appears in some timing parameter. When a datasheet says "$t_{RCD}$ = 22", ask *in which clock* — it is $CK$ cycles, so $22 \times 0.3125 = 6.9$ ns at DDR5-6400 but the same parameter is ~14 ns in nanoseconds terms at DDR4-3200 with a count of 22 at 0.625 ns. The nanosecond value is the physics; the cycle count is the physics divided by the bin's $t_{CK}$ and rounded up. This is why speed bins have *larger* CL numbers at higher data rates for the same real latency.
+and, on the controller side, a fourth: the DFI clock, typically $f_{CK}/2$ or $f_{CK}/4$ (§13.4), so a 6400 MT/s interface is often driven by a controller running at **800 MHz** and issuing up to four DRAM commands per cycle. Four clock domains, three of them derived by fixed integer ratios from one PLL, and every one of them appears in some timing parameter. When a datasheet says "$t_{RCD}$ = 22", ask *in which clock* — it is $CK$ cycles, so at DDR4-3200 ($t_{CK}=0.625$ ns) that is $22 \times 0.625 = 13.75 \approx 14$ ns, the physical sense-and-latch time. The nanosecond value is the physics; the cycle count is the physics divided by the bin's $t_{CK}$ and rounded up. That is why the *same* ~14 ns at DDR5-6400 ($t_{CK}=0.3125$ ns) is programmed as $\lceil 14/0.3125 \rceil = 45$ cycles, not 22 — a count of 22 at DDR5-6400 would mean 6.9 ns, which no DRAM core can do and which contradicts the $t_{RCD}\approx14$ ns floor of §3.3. **Read a bare cycle count as meaningless until multiplied by its bin's $t_{CK}$**, and note the corollary: speed bins carry *larger* CL and $t_{RCD}$ numbers at higher data rates for the same real latency.
 
 ---
 
@@ -632,23 +632,25 @@ flowchart TD
 **The mechanism.** Read the known pattern repeatedly while stepping the delay line in 5–10 ps increments; record pass/fail per bit; the run of consecutive passes is that bit's **eye width** in the time dimension.
 
 ```text
- read eye scan, one byte lane, 5 ps per delay step
- DQ  delay code ->  0    4    8    12   16   20   24   28   32   36   40
- ---------------------------------------------------------------------
- DQ0            .  .  .  P  P  P  P  P  P  P  P  P  P  P  P  P  .  .  .   center = 21
- DQ1            .  .  P  P  P  P  P  P  P  P  P  P  P  P  .  .  .  .  .   center = 17
- DQ2            .  .  .  .  P  P  P  P  P  P  P  P  P  P  P  P  P  .  .   center = 24
- DQ3            .  .  .  P  P  P  P  P  P  P  P  P  P  P  P  .  .  .  .   center = 20
- DQ4            .  .  .  .  .  P  P  P  P  P  P  P  P  P  P  P  P  P  .   center = 26
- DQ5            .  .  P  P  P  P  P  P  P  P  P  P  P  .  .  .  .  .  .   center = 16
- DQ6            .  .  .  P  P  P  P  P  P  P  P  P  P  P  P  P  .  .  .   center = 21
- DQ7            .  .  .  .  P  P  P  P  P  P  P  P  P  P  P  .  .  .  .   center = 22
- ---------------------------------------------------------------------
- common window (intersection of all eight):  codes 5..25  ->  100 ps wide
- after per-bit deskew (each bit shifted to its own center): ~150 ps wide
+ read eye scan, one byte lane, DDR5-6400, 5 ps per delay step, one column per code
+ code   0    5    10   15   20   25   30   35   40
+        |....|....|....|....|....|....|....|....|
+ DQ0    ...............PPPPPPPPPPPPP.............   codes 15-27, centre 21
+ DQ1    ...........PPPPPPPPPPPPP.................   codes 11-23, centre 17
+ DQ2    ..................PPPPPPPPPPPPP..........   codes 18-30, centre 24
+ DQ3    ..............PPPPPPPPPPPPP..............   codes 14-26, centre 20
+ DQ4    ....................PPPPPPPPPPPPP........   codes 20-32, centre 26
+ DQ5    ..........PPPPPPPPPPPPP..................   codes 10-22, centre 16
+ DQ6    ...............PPPPPPPPPPPPP.............   codes 15-27, centre 21
+ DQ7    ................PPPPPPPPPPPPP............   codes 16-28, centre 22
+        ------------------------------------------
+ each individual window        : 13 codes  = 65 ps
+ spread of the eight centres   : 16..26    = 50 ps
+ common window (intersection)  : codes 20..22 = 3 codes = 15 ps
+ after per-bit deskew          : 65 ps -- the narrowest single window
 ```
 
-**Contract.** Each row is one physical wire's answer to "when is your data valid." **Trace the arithmetic:** without per-bit deskew, the PHY must place one strobe inside the *intersection* of all eight windows — here codes 5 through 25, a 21-step window = 105 ps, of which usable margin about the center is ±52 ps. With per-bit deskew, each bit is individually shifted so its own window is centered on the common strobe, and the effective window becomes the *narrowest individual* window (DQ5's 12 steps ≈ 60 ps... in this scan the narrowest is about 30 steps of shared width once aligned), recovering roughly 50 ps. **At a 156 ps UI, 50 ps is a third of the budget.** That is why per-bit delay lines — eight to sixteen extra calibrated delay elements per byte lane, each with its own control register — are worth their area.
+**Contract.** Each row is one physical wire's answer to "when is your data valid." **Trace the arithmetic:** without per-bit deskew the PHY must place one strobe inside the *intersection* of all eight windows, and an intersection can never be wider than its narrowest member. Each bit is open for 13 codes (65 ps), but their centres are scattered over 10 codes (50 ps), so the intersection is only $65 - 50 = 15$ ps — codes 20 through 22, bounded below by DQ4 (the latest bit) and above by DQ5 (the earliest). Against a 156.25 ps UI and the 95 ps of irreducible-plus-drifting uncertainty §7.1 leaves behind, a 15 ps common window does not close. With per-bit deskew each bit is individually shifted so its own window is centred on the common strobe, the centre spread is cancelled, and the effective window becomes the *narrowest individual* window — the full **65 ps**, which is exactly the $\approx61$ ps §7.1 predicts. **Per-bit deskew recovers 50 ps, a third of the UI, and it is the difference between a working interface and no interface.** That is why per-bit delay lines — eight to sixteen extra calibrated delay elements per byte lane, each with its own control register — are worth their area.
 
 **Failure if skipped.** The interface works at low data rate (where the intersection window is a small fraction of a large UI) and fails at the target rate. This is the canonical "trains but fails at speed" symptom in §14.4.
 
@@ -1403,7 +1405,7 @@ Positive, but only 39% of a UI. The interface exists in that 61 ps.
 
 (c) Skipping periodic retraining leaves the 30 ps drift term uncorrected — but 30 ps was a *snapshot* figure. Drift accumulates with the temperature excursion. Suppose the interface trains at a 30 °C die temperature and the chassis warms to 90 °C: a 60 °C swing. If $t_{DQSCK}$ and the PHY's own delay lines drift at even 1 ps/°C combined, that is 60 ps of accumulated shift — **essentially the entire 61 ps margin**, consumed by temperature alone. The design fails at exactly the moment a customer runs a sustained workload, which is the worst possible failure signature. Periodic retraining is not simplification-optional.
 
-(d) With one delay per byte lane, the strobe must sit in the *intersection* of all eight bits' windows. Take the scan in §7.5: individual windows are 12–14 codes (60–70 ps) wide but their centers span codes 16 to 26, a 10-code (50 ps) spread. The intersection is roughly $65 - 50 = 15$ ps wide once the spread is subtracted from a typical window — comparable to or smaller than the 40 ps of receiver setup and hold, so the intersection may be *empty*. Per-bit deskew removes the 50 ps of center spread and restores the full ~65 ps window. At a 156 ps UI, per-bit delay lines are the difference between a working interface and no interface.
+(d) With one delay per byte lane, the strobe must sit in the *intersection* of all eight bits' windows. Take the scan in §7.5: each individual window is 13 codes (65 ps) wide but their centres span codes 16 to 26, a 10-code (50 ps) spread. The intersection is roughly $65 - 50 = 15$ ps wide once the spread is subtracted from a typical window — comparable to or smaller than the 40 ps of receiver setup and hold, so the intersection may be *empty*. Per-bit deskew removes the 50 ps of center spread and restores the full ~65 ps window. At a 156 ps UI, per-bit delay lines are the difference between a working interface and no interface.
 
 ---
 
@@ -1533,4 +1535,4 @@ So for the residual multi-bit population, on-die ECC does not reduce risk — it
 
 ---
 
-⬅ prev [01 · DDR Controller](01_DDR_Controller.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [01 · DDR Controller](01_DDR_Controller.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [03 · Memory Scheduling and Address Mapping](03_Memory_Scheduling_and_Address_Mapping.md)

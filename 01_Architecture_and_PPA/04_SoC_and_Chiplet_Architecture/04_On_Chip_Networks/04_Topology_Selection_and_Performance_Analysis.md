@@ -53,7 +53,7 @@ Two more quantities are derived from $w$ and the clock and appear everywhere bel
 
 **Total channel count $C$** — every unidirectional channel in the network. Together with channel length it gives total wire, which is the routability constraint everywhere that is not the midline.
 
-**Total channel length $\Lambda$** — $\sum_c \ell_c$ over all channels, in units of the router pitch $p$. Combined with $w$ it gives wire *area*; combined with $b$ and the energy model of §11 it gives link energy.
+**Total channel length $L_{ch}$** — $\sum_c \ell_c$ over all channels, in units of the router pitch $p$. Combined with $w$ it gives wire *area*; combined with $b$ and the energy model of §11 it gives link energy. (The symbol $\Lambda$ is reserved for the traffic matrix of §3.1 and is never a length on this page.)
 
 ### 1.3 Closed forms per family
 
@@ -82,8 +82,10 @@ Per axis the torus is a $k$-node ring; the sum of distances from one node to all
 **$k$-ary $n$-flat (flattened butterfly)** — routers in a $k^n$ grid, each fully connected to the $k-1$ others in each dimension:
 
 $$
-d = 2n(k-1),\qquad D = n,\qquad B_c = \frac{k^{n+1}}{2}\ (n=2),\qquad C = 2nk^n(k-1),\qquad \overline{\ell_c} = \frac{k+1}{3}p .
+d = 2n(k-1),\qquad D = n,\qquad B_c = \frac{k^{n+1}}{2}\ (n=2),\qquad C = n\,k^n(k-1),\qquad \overline{\ell_c} = \frac{k+1}{3}p .
 $$
+
+Count $C$ the safe way, because this is where a spurious factor of two normally enters: each dimension of each of the $k^{n-1}$ lines is a complete graph $K_k$ with $k(k-1)/2$ bidirectional links, giving $n\,k^n(k-1)/2$ bidirectional links and hence $C = n\,k^n(k-1)$ *unidirectional* channels. Equivalently $C = k^n \times (\text{out-degree}) = k^n \cdot n(k-1)$, since $d = 2n(k-1)$ counts in *and* out. The mesh's $C = 2n(k-1)k^{n-1}$ has the 2 because there the bracketed quantity is a bidirectional link count; here it is not. At $k=4,n=2$ this gives 96 and at $k=8,n=2$ it gives 896 — the values in §1.4, §2.4, and Worked problem 3.
 
 For $n=2$ the bisection is counted directly: a vertical cut between column halves severs, in each of the $k$ rows, all $(k/2)^2$ row-channels joining a left router to a right router, in both directions — $2k \cdot k^2/4 = k^3/2$ unidirectional channels. Average channel length follows from $\mathbb{E}|i-j|$ over $i\ne j$ on $\{0..k-1\}$, which is $(k+1)/3$.
 
@@ -95,11 +97,14 @@ $$
 
 $\bar h$ depends on the level of the least common ancestor: with probability $(r/2)^j/N$ the LCA is at level $j$, giving $2j$ hops.
 
-**Dragonfly** — $g$ groups of $a$ routers, $p$ terminals and $h$ global ports per router, $N = a\,p\,g$, groups fully connected with $m = a h/(g-1)$ channels per group pair:
+**Dragonfly** — $g$ groups of $a$ routers, $c$ terminals and $h$ global ports per router (the same concentration $c$ as everywhere else on this page; $p$ remains the router pitch), $N = a\,c\,g$, groups fully connected with
 
 $$
+m = \left\lfloor \frac{a h}{g-1} \right\rfloor \ \text{channels per group pair}, \qquad
 d = 2\big[(a-1) + h\big],\qquad D = 3\ \text{(minimal)},\ 5\ \text{(Valiant)},\qquad B_c = 2m\left(\frac{g}{2}\right)^2 .
 $$
+
+The floor is not cosmetic: a group owns $ah$ global ports and must reach $g-1$ peers, so only $\lfloor ah/(g-1)\rfloor$ channels per pair are *realizable* and the remainder are spare ports. At $g{=}8,a{=}4,h{=}2$ the ratio is $8/7 = 1.14$, so $m=1$ and $B_c = 2(1)(4)^2 = 32$; at $g{=}8,a{=}8,h{=}4$ it is $32/7 = 4.57$, so $m=4$ and $B_c = 2(4)(4)^2 = 128$. Both are the §1.4 table entries.
 
 ### 1.4 The families instantiated: $N=64$ and $N=256$
 
@@ -116,7 +121,7 @@ The point of the table is that families stop being shapes and become comparable 
 | CMesh | $4\times4$, $c=4$ | 4 | 8 | 6 | 2.50 | 8 | 48 | $2p$ |
 | Flattened butterfly | $4\times4$, $c=4$ | 12 | 16 | 2 | 1.50 | 32 | 96 | $1.67p$ |
 | Fat tree | $r=16$, 2 levels | 16 | 16 | 4 | 3.75 | 64 | 256 | mixed |
-| Dragonfly | $g{=}8,a{=}4,p{=}2,h{=}2$ | 10 | 12 | 3 | 2.28 | 32 | 152 | mixed |
+| Dragonfly | $g{=}8,a{=}4,c{=}2,h{=}2$ ($m{=}1$) | 10 | 12 | 3 | 2.28 | 32 | 152 | mixed |
 
 **At $N=256$:**
 
@@ -129,7 +134,7 @@ The point of the table is that families stop being shapes and become comparable 
 | CMesh | $8\times8$, $c=4$ | 4 | 8 | 14 | 5.25 | 16 | 224 | $2p$ |
 | Flattened butterfly | $8\times8$, $c=4$ | 28 | 32 | 2 | 1.75 | 256 | 896 | $3p$ |
 | Fat tree | $r=32$, 2 levels | 32 | 32 | 4 | 3.88 | 256 | 1024 | mixed |
-| Dragonfly | $g{=}8,a{=}8,p{=}4,h{=}4$ | 22 | 26 | 3 | 1.74 | 128 | 672 | mixed |
+| Dragonfly | $g{=}8,a{=}8,c{=}4,h{=}4$ ($m{=}4$) | 22 | 26 | 3 | 1.74 | 128 | 672 | mixed |
 
 Three readings of these tables carry the rest of the page.
 
@@ -282,14 +287,14 @@ This is the section the rest of the page is built on. Everything before it was s
 
 ### 3.1 The three objects
 
-**A traffic pattern** is a matrix $\Lambda$ whose entry $\lambda_{sd}$ is the fraction of node $s$'s injected traffic destined for node $d$, with $\sum_d \lambda_{sd} = 1$ for every $s$. Uniform random is $\lambda_{sd} = 1/N$; a permutation pattern is $\lambda_{sd} = 1$ for exactly one $d$ per $s$ and 0 elsewhere. The matrix is the *only* thing about the workload that this analysis needs, which is both its power and its limit (§4.4).
+**A traffic pattern** is a matrix $\Lambda$ whose entry $\lambda_{sz}$ is the fraction of node $s$'s injected traffic destined for node $z$, with $\sum_z \lambda_{sz} = 1$ for every $s$. Uniform random is $\lambda_{sz} = 1/N$; a permutation pattern is $\lambda_{sz} = 1$ for exactly one $z$ per $s$ and 0 elsewhere. The matrix is the *only* thing about the workload that this analysis needs, which is both its power and its limit (§4.4). **Notation:** $z$ denotes a *destination* node throughout; $d$ is reserved for router degree (§1.2) and is never a destination on this page.
 
-**A routing function** $R$ maps each $(s,d)$ pair to a path, or to a probability distribution over paths for oblivious-randomized and adaptive routing. This is where [Routing, Flow Control, and Deadlock](02_Routing_Flow_Control_and_Deadlock.md) meets performance: that page decides which routing functions are *legal*, this one decides which are *fast*.
+**A routing function** $R$ maps each $(s,z)$ pair to a path, or to a probability distribution over paths for oblivious-randomized and adaptive routing. This is where [Routing, Flow Control, and Deadlock](02_Routing_Flow_Control_and_Deadlock.md) meets performance: that page decides which routing functions are *legal*, this one decides which are *fast*.
 
 **Channel load** $\gamma_c$ is the traffic on channel $c$ when every node injects one unit of traffic per unit time. It is dimensionless:
 
 $$
-\gamma_c \;=\; \sum_{s}\sum_{d} \lambda_{sd}\,\Pr\big[R(s,d)\ \text{traverses}\ c\big].
+\gamma_c \;=\; \sum_{s}\sum_{z} \lambda_{sz}\,\Pr\big[R(s,z)\ \text{traverses}\ c\big].
 $$
 
 A load of $\gamma_c = 3$ means channel $c$ must carry three times as much traffic as one node injects. Because every channel has the same capacity $b$, the network saturates when the *busiest* channel saturates:
@@ -331,7 +336,7 @@ The naive method — enumerate all $N^2$ source-destination pairs, trace each pa
 3. **If symmetry is broken, parameterize the channel by the coordinate that breaks it** — for a mesh, the column index of a row channel — write $\gamma$ as a function of that coordinate, and maximize.
 4. **Check against both bounds of §3.2.**
 
-**Worked: uniform random on a $k$-ary 2-mesh with dimension-order (XY) routing.** The mesh is not edge-symmetric — its edge channels are structurally different from its center channels — so use step 3. Consider the $+x$ channel in row $y$ joining column $x$ to column $x+1$. Under XY routing, a packet traverses this channel exactly when its source lies in row $y$ at a column $\le x$ and its destination lies at a column $> x$ (in any row). Counting sources and destinations, and weighting each $(s,d)$ pair by $\lambda_{sd} = 1/N$:
+**Worked: uniform random on a $k$-ary 2-mesh with dimension-order (XY) routing.** The mesh is not edge-symmetric — its edge channels are structurally different from its center channels — so use step 3. Consider the $+x$ channel in row $y$ joining column $x$ to column $x+1$. Under XY routing, a packet traverses this channel exactly when its source lies in row $y$ at a column $\le x$ and its destination lies at a column $> x$ (in any row). Counting sources and destinations, and weighting each $(s,z)$ pair by $\lambda_{sz} = 1/N$:
 
 $$
 \gamma(x) \;=\; \underbrace{(x+1)}_{\text{sources in row } y}\cdot\underbrace{(k-1-x)\,k}_{\text{destinations right of }x}\cdot\frac{1}{k^2} \;=\; \frac{(x+1)(k-1-x)}{k}.
@@ -381,7 +386,7 @@ What the torus actually buys is a 25 % reduction in hop count ($k/2$ versus $2k/
 
 $\gamma_{max}$ is a property of the *pair* (topology, routing). Change the routing and the number changes, sometimes by a factor of four, with no wire moved.
 
-**Minimal deterministic (DOR).** One path per $(s,d)$. Zero path diversity, so any pattern that concentrates minimal paths on one channel concentrates all of it there. Provably deadlock-free on a mesh with no extra VCs (the acyclic-CDG proof in [Routing, Flow Control, and Deadlock](02_Routing_Flow_Control_and_Deadlock.md) §4). It is the baseline and the worst case for adversarial patterns.
+**Minimal deterministic (DOR).** One path per $(s,z)$. Zero path diversity, so any pattern that concentrates minimal paths on one channel concentrates all of it there. Provably deadlock-free on a mesh with no extra VCs (the acyclic-CDG proof in [Routing, Flow Control, and Deadlock](02_Routing_Flow_Control_and_Deadlock.md) §4). It is the baseline and the worst case for adversarial patterns.
 
 **Valiant randomized routing.** Route every packet first to a uniformly random intermediate node $q$, then from $q$ to $d$, each phase minimally. The consequence is exact and beautiful: **any traffic pattern becomes two independent uniform-random patterns.** Therefore
 
@@ -392,11 +397,11 @@ $$
 *for every pattern*, which is why Valiant is the basis of worst-case throughput guarantees. On an $8\times8$ torus: $\gamma_{max} = 2 \times 1 = 2$, so $\Theta = b/2$ under *any* pattern. The costs are two, and both are large:
 
 - **Hop count doubles.** $\bar h_{\text{Valiant}} = 2\bar h_{\text{UR}}$ — on the $8\times8$ torus, 4 hops becomes 8. That is a direct hit to zero-load latency and, via §11, roughly a doubling of energy per bit.
-- **Throughput on benign traffic halves.** Under uniform random, Valiant gives $b/2$ where minimal gives $b$. You have paid a factor of two on the common case to buy a factor of three on the rare case.
+- **Throughput on benign traffic halves.** Under uniform random, Valiant gives $b/2$ where minimal gives $b$. Price the other side of that trade with this page's own worst cases rather than a slogan: on the $8\times8$ mesh Valiant takes transpose from $\gamma_{max}=7$ to $4$ ($1.75\times$ better), and on the $8\times8$ torus it takes tornado from $3$ to $2$ ($1.5\times$). **You pay a factor of two on the common case to buy about $1.5$–$1.75\times$ on the rare one** — which is exactly why the unconditional form lost to UGAL.
 
 Deadlock freedom also changes: a Valiant path visits channels in two phases and can revisit dimensions, reintroducing cycles. The standard fix is one VC class per phase — cheap in VCs, but it is a real cost and it belongs on the ledger.
 
-**ROMM (randomized oblivious multi-phase minimal).** Choose the random intermediate node *inside the minimal quadrant* between $s$ and $d$. Every path stays minimal, so hop count is unchanged, and load spreads across the many minimal paths a mesh offers. On patterns whose minimal quadrants are wide (transpose, bit-complement) ROMM captures much of Valiant's balancing for free. On patterns whose minimal paths are essentially unique — tornado on a ring, where every source-destination pair has one shortest path — ROMM can do nothing at all, because there is no diversity to exploit. **ROMM improves the average case at zero hop cost; Valiant improves the worst case at 2× hop cost. They are not substitutes.**
+**ROMM (randomized oblivious multi-phase minimal).** Choose the random intermediate node *inside the minimal quadrant* between $s$ and $d$. Every path stays minimal, so hop count is unchanged, and load spreads across the many minimal paths a mesh offers. On patterns whose minimal quadrants are wide *and whose DOR load is lopsided* — transpose is the standard example — ROMM captures much of Valiant's balancing for free. It is not automatic: under bit complement on an $8\times8$ mesh, spreading uniformly over the minimal staircases piles traffic onto the centre channels and raises $\gamma_{max}$ from XY's 4 to about 7.5, so path diversity used blindly can be *worse* than no diversity at all. On patterns whose minimal paths are essentially unique — tornado on a ring, where every source-destination pair has one shortest path — ROMM can do nothing at all, because there is no diversity to exploit. **ROMM improves the average case at zero hop cost; Valiant improves the worst case at 2× hop cost. They are not substitutes.**
 
 **O1TURN.** The cheapest useful load balancer on a mesh: route each packet XY or YX with probability $\tfrac12$ each. Hop count is unchanged (both are minimal). Under uniform random it changes nothing — both sub-routings have the same $\gamma(x)$ parabola, so $\gamma_{max}$ stays $k/4$. Under transpose it halves $\gamma_{max}$ (§4.2). Cost: two VC classes, because the union of the XY and YX subnetworks has a cyclic channel dependency graph even though each is acyclic separately. **Two VCs to halve the worst case at zero hop cost is the best exchange rate in this section**, which is why the technique keeps reappearing in production fabrics under other names.
 
@@ -424,7 +429,7 @@ Empirically a well-built wormhole fabric delivers **0.6 to 0.9 of $\Theta_{ideal
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 50, "htmlLabels": false}}}%%
 flowchart TD
-    TM["Traffic matrix<br/>lambda-sd from workload<br/>or synthetic pattern"]:::in
+    TM["Traffic matrix<br/>lambda-sz from workload<br/>or synthetic pattern"]:::in
     RT["Routing function R<br/>minimal, ROMM, O1TURN,<br/>Valiant, UGAL"]:::in
     TP["Topology<br/>N, k, n, c"]:::in
     TM --> LOAD["Channel load<br/>gamma-c for every channel"]:::calc
@@ -451,20 +456,22 @@ A traffic pattern is an instrument, not a workload. Each one is engineered to ma
 
 ### 4.1 Definitions
 
-Index each node by a $b$-bit number $s = s_{b-1}s_{b-2}\cdots s_0$ with $N = 2^b$; for a $k$-ary $n$-cube, split the index into $n$ fields of $\log_2 k$ bits, one per dimension. Patterns come in two flavors: **random** patterns spread each node's traffic over many destinations, and **permutation** patterns send each node's entire output to exactly one destination — permutations are far harsher because they remove all statistical averaging.
+Index each node by an $n_b$-bit number $s = s_{n_b-1}s_{n_b-2}\cdots s_0$ with $N = 2^{n_b}$; for a $k$-ary $n$-cube, split the index into $n$ fields of $\log_2 k$ bits, one per dimension. ($n_b$, not $b$, counts index bits — $b$ is channel bandwidth throughout this page.) Destinations are written $z$, per the §3.1 notation. Patterns come in two flavors: **random** patterns spread each node's traffic over many destinations, and **permutation** patterns send each node's entire output to exactly one destination — permutations are far harsher because they remove all statistical averaging.
 
 | Pattern | Definition | What it stresses | Topology it embarrasses |
 |---|---|---|---|
-| Uniform random | $d$ uniform over all $N$ | average-case balance; the bisection bound | nothing — it is the baseline, and it flatters everything |
-| Bit complement | $d_i = \lnot s_i$ | maximum distance; every packet crosses every midline | mesh: $\gamma_{max}$ doubles vs UR |
-| Bit reverse | $d_i = s_{b-1-i}$ | long structured permutation, no locality | butterfly-family networks; mesh moderately |
-| Bit rotation | $d_i = s_{(i+1) \bmod b}$ | mixes dimension fields, so DOR concentrates | dimension-ordered mesh and torus |
-| Shuffle | $d_i = s_{(i-1) \bmod b}$ | as rotation, opposite direction | same |
-| Transpose | $d_i = s_{(i + b/2) \bmod b}$ — swap the $x$ and $y$ halves | diagonal traffic against an axis-ordered route | **XY mesh: $\gamma_{max} = k-1$, the worst standard case** |
-| Tornado | $d_x = (s_x + \lceil k/2\rceil - 1) \bmod k$ per dimension | defeats minimal routing's direction choice by one hop | torus/ring with minimal routing |
-| Neighbor | $d_x = (s_x + 1) \bmod k$ | locality; the best case | indirect networks — a fat tree still climbs to a switch |
+| Uniform random | $z$ uniform over all $N$ | average-case balance; the bisection bound | nothing — it is the baseline, and it flatters everything |
+| Bit complement | $z_i = \lnot s_i$ (all $n_b$ bits) | maximum distance; every packet crosses every midline | mesh: $\gamma_{max}$ doubles vs UR |
+| Bit reverse | $z_i = s_{n_b-1-i}$ | long structured permutation, no locality | butterfly-family networks; mesh moderately |
+| Bit rotation | $z_i = s_{(i+1) \bmod n_b}$ | mixes dimension fields, so DOR concentrates | dimension-ordered mesh and torus |
+| Shuffle | $z_i = s_{(i-1) \bmod n_b}$ | as rotation, opposite direction | same |
+| Transpose | $z_i = s_{(i + n_b/2) \bmod n_b}$ — swap the $x$ and $y$ halves | diagonal traffic against an axis-ordered route | **XY mesh: $\gamma_{max} = k-1$, the worst standard case** |
+| Tornado | $z_x = (s_x + \lceil k/2\rceil - 1) \bmod k$, **applied in every dimension** | defeats minimal routing's direction choice by one hop | torus/ring with minimal routing |
+| Neighbor | $z_x = (s_x + 1) \bmod k$, **in the $x$ dimension only** | locality; the best case | indirect networks — a fat tree still climbs to a switch |
 | Hotspot | fraction $f$ of every node's traffic to one node | terminal bandwidth, not network bandwidth | every topology equally; it is not a topology problem |
-| Random permutation | a uniformly random bijection $s \mapsto d$ | the hard-case ensemble for oblivious routing | oblivious routing generally; the basis of worst-case theory |
+| Random permutation | a uniformly random bijection $s \mapsto z$ | the hard-case ensemble for oblivious routing | oblivious routing generally; the basis of worst-case theory |
+
+The dimensional scope in the last two rows is not pedantry: it fixes $\bar h_\Lambda$, and therefore $\eta_{LB}$, in §4.2's table.
 
 ### 4.2 Worked: what each does to an $8\times8$ mesh with XY routing
 
@@ -472,15 +479,15 @@ Every entry below is computed by the §3.3 procedure. Each source injects one un
 
 **Uniform random.** $\gamma_{max} = k/4 = 2$ (§3.3). $\Theta = 0.5b$. Reference point.
 
-**Bit complement.** With $s=(x,y)$ and $d = (k{-}1{-}x,\;k{-}1{-}y)$, every packet crosses both midlines. The $+x$ channel of row $y$ joining column $c$ to $c+1$ is used by sources with column $x \le c$ whose destination column $k{-}1{-}x > c$, i.e. $x \le \min(c,\,k{-}2{-}c)$, giving $\min(c, k{-}2{-}c) + 1$ sources. The peak is at $c = k/2-1$:
+**Bit complement.** With $s=(x,y)$ and $z = (k{-}1{-}x,\;k{-}1{-}y)$, every packet crosses both midlines. The $+x$ channel of row $y$ joining column $c$ to $c+1$ is used by sources with column $x \le c$ whose destination column $k{-}1{-}x > c$, i.e. $x \le \min(c,\,k{-}2{-}c)$, giving $\min(c, k{-}2{-}c) + 1$ sources. The peak is at $c = k/2-1$:
 
 $$
 \gamma_{max}^{\text{bitcomp}} = \frac{k}{2} = 4, \qquad \Theta = \frac{2b}{k} = 0.25b .
 $$
 
-Exactly half of uniform random — the mesh's honest penalty for traffic that refuses to stay local.
+Exactly half of uniform random — the mesh's honest penalty for traffic that refuses to stay local. Its load balance is *not* the mesh's worst: every packet travels $|2x-k{+}1| + |2y-k{+}1|$ hops, so $\bar h_\Lambda = 8$, $\gamma_{avg} = 64\times8/224 = 2.29$, and $\eta_{LB} = 2.29/4 = 0.57$ — the channels are reasonably used, there are simply too few of them for traffic this long. That is a *wire* problem, not a routing one, and §4.3's Rule 2 says so.
 
-**Transpose.** $s = (x,y) \mapsto d = (y,x)$. Under XY, a packet from $(x,y)$ first travels in row $y$ from column $x$ to column $y$. Every one of the $k$ nodes in row $y$ therefore targets column $y$. For the top row $y = k-1$, all $k$ nodes converge on column $k-1$, and $k-1$ of them must traverse the single channel joining column $k-2$ to $k-1$:
+**Transpose.** $s = (x,y) \mapsto z = (y,x)$. Under XY, a packet from $(x,y)$ first travels in row $y$ from column $x$ to column $y$. Every one of the $k$ nodes in row $y$ therefore targets column $y$. For the top row $y = k-1$, all $k$ nodes converge on column $k-1$, and $k-1$ of them must traverse the single channel joining column $k-2$ to $k-1$:
 
 $$
 \gamma_{max}^{\text{transpose}} = k-1 = 7, \qquad \Theta = \frac{b}{k-1} = 0.143b .
@@ -488,20 +495,22 @@ $$
 
 That is $3.5\times$ worse than uniform random, and the load balance factor collapses: $\bar h_\Lambda = 2\,\mathbb{E}|x-y| = 5.25$, so $\gamma_{avg} = 64\times5.25/224 = 1.5$ and $\eta_{LB} = 1.5/7 = 0.21$. **Four fifths of the mesh's channel bandwidth is idle while one channel saturates.** This is the diagnostic signature of a routing problem, not a wire problem, and §3.5 named the fix: O1TURN splits each flow between XY and YX, halving the peak to $(k-1)/2 = 3.5$ at zero extra hops and the cost of two VC classes. Valiant does better still on the worst case, $\gamma_{max} = 2 \times k/4 = 4$, but doubles hops.
 
-**Tornado** ($d_x = (x+3) \bmod 8$). On a mesh the modulus has no wraparound to ride, so the three highest columns route backward across the whole row. Counting: each $+x$ channel carries the three sources within reach ahead of it, and each $-x$ channel carries the three wrapped flows, giving $\gamma_{max} = 3$ and $\Theta = b/3 = 0.33b$. On a *torus* the same pattern gives $\gamma_{max} = k/2 - 1 = 3$ as well — the wrap does not help, because every packet chooses the same direction and the ring's channels in that direction all carry the full stream. Relative to each topology's own uniform-random baseline, tornado costs the mesh $1.5\times$ and the torus $3\times$: **the torus's perfect UR balance makes its adversarial degradation look worse, even though its absolute throughput is still equal or better.** Comparing degradation ratios instead of absolute throughputs is a standard way to reach a wrong conclusion.
+**Tornado** ($z_x = (x+3) \bmod 8$, and likewise in $y$). On a mesh the modulus has no wraparound to ride, so the three highest columns route backward across the whole row. Counting: each $+x$ channel carries the three sources within reach ahead of it, and each $-x$ channel carries the three wrapped flows, giving $\gamma_{max} = 3$ and $\Theta = b/3 = 0.33b$. Per dimension the mean distance is $(5\times3 + 3\times5)/8 = 3.75$ hops, so over both dimensions $\bar h_\Lambda = 7.5$, $\gamma_{avg} = 64\times7.5/224 = 2.14$, and $\eta_{LB} = 0.71$ — again a channel-count limit rather than a routing one. On a *torus* the same pattern gives $\gamma_{max} = k/2 - 1 = 3$ as well — the wrap does not help, because every packet chooses the same direction and the ring's channels in that direction all carry the full stream. Relative to each topology's own uniform-random baseline, tornado costs the mesh $1.5\times$ and the torus $3\times$: **the torus's perfect UR balance makes its adversarial degradation look worse, even though its absolute throughput is still equal or better.** Comparing degradation ratios instead of absolute throughputs is a standard way to reach a wrong conclusion.
 
-**Neighbor.** Each flow uses exactly one channel, so $\gamma_{max} = 1$ and $\Theta = b$ — the mesh's best case and twice its uniform-random figure. On a mesh the wrap flows from column $k-1$ to column 0 must travel back across the row, which raises $\bar h$ from 1 to 1.75 but leaves $\gamma_{max}$ at 1; on a torus both are 1.
+**Neighbor.** Each flow uses exactly one channel, so $\gamma_{max} = 1$ and $\Theta = b$ — the mesh's best case and twice its uniform-random figure. On a mesh the wrap flows from column $k-1$ to column 0 must travel back across the row, which raises $\bar h_\Lambda$ from 1 to 1.75 but leaves $\gamma_{max}$ at 1; on a torus both are 1. Note $\eta_{LB} = 64\times1.75/224 = 0.50$ here, and it means nothing: with $\gamma_{max}$ already at its floor there is no imbalance left to recover, which is why §3.2's diagnostic is only meaningful when throughput is *insufficient*.
 
 **Hotspot** ($f = 0.1$ of every node's traffic to node $H$). Apply the cut bound with the cut placed around $H$ alone: $N f = 6.4$ units must cross into $H$ over its single ejection channel, so $\gamma_{max} \ge 6.4$ and $\Theta \le b/6.4 = 0.156b$. **No topology changes this number**, because the cut contains one channel by construction. The only repairs are more destinations (finer address interleaving, §10), a wider ejection port, or multiple attachment points.
 
-| Pattern on $8\times8$ mesh, XY | $\gamma_{max}$ | $\Theta_{ideal}$ | vs UR | $\eta_{LB}$ | Fix |
-|---|---|---|---|---|---|
-| Neighbor | 1 | $1.00\,b$ | $2.0\times$ better | 0.44 | — |
-| Uniform random | 2 | $0.50\,b$ | baseline | 0.75 | — |
-| Tornado | 3 | $0.33\,b$ | $1.5\times$ worse | 0.55 | non-minimal routing |
-| Bit complement | 4 | $0.25\,b$ | $2.0\times$ worse | 0.38 | O1TURN, ROMM |
-| Hotspot, $f=0.1$ | 6.4 | $0.16\,b$ | $3.2\times$ worse | n/a | interleaving, not topology |
-| Transpose | 7 | $0.14\,b$ | $3.5\times$ worse | 0.21 | **O1TURN halves it free** |
+| Pattern on $8\times8$ mesh, XY | $\gamma_{max}$ | $\Theta_{ideal}$ | vs UR | $\bar h_\Lambda$ | $\gamma_{avg}$ | $\eta_{LB}$ | Fix |
+|---|---|---|---|---|---|---|---|
+| Neighbor ($x$ only) | 1 | $1.00\,b$ | $2.0\times$ better | 1.75 | 0.50 | 0.50 | — |
+| Uniform random | 2 | $0.50\,b$ | baseline | 5.25 | 1.50 | 0.75 | — |
+| Tornado (both dims) | 3 | $0.33\,b$ | $1.5\times$ worse | 7.50 | 2.14 | 0.71 | non-minimal routing |
+| Bit complement | 4 | $0.25\,b$ | $2.0\times$ worse | 8.00 | 2.29 | 0.57 | more wire — no routing helps (§3.5) |
+| Hotspot, $f=0.1$ | 6.4 | $0.16\,b$ | $3.2\times$ worse | n/a | n/a | n/a | interleaving, not topology |
+| Transpose | 7 | $0.14\,b$ | $3.5\times$ worse | 5.25 | 1.50 | 0.21 | **O1TURN halves it free** |
+
+Every $\eta_{LB}$ is $\gamma_{avg}/\gamma_{max}$ with $\gamma_{avg} = N\bar h_\Lambda/C = 64\,\bar h_\Lambda/224$ evaluated **under that pattern**, not under uniform random — using the UR $\gamma_{avg}=1.5$ for every row is the standard way to get this table wrong. Read the $\eta_{LB}$ column against §4.3's Rule 2: only transpose is a routing problem.
 
 ### 4.3 Reading the table as a design instrument
 
@@ -747,12 +756,16 @@ The counter-argument, which is why on-die fabrics did not all convert: high radi
          |  \\    |  \\    |  \\    |               only neighbors
         R10 ==== R11 ==== R12 ==== R13
          |        |        |        |
-        R20 ==== R21 ==== R22 ==== R23      degree = 2(k-1) = 6 network
-         |        |        |        |       radix  = 6 + c = 10
-        R30 ==== R31 ==== R32 ==== R33      diameter = n = 2 hops
+        R20 ==== R21 ==== R22 ==== R23      degree d = 2n(k-1) = 12 unidirectional
+         |        |        |        |       (6 bidirectional links per router)
+        R30 ==== R31 ==== R32 ==== R33      radix  r = d + c = 16 ports
+                                            diameter = n = 2 hops
+                                            C = n k^n (k-1) = 96 channels
 ```
 
-**Parameters** (from §1.3): $d = 2n(k-1)$, $D = n$, $B_c = k^{n+1}/2$ for $n{=}2$, average channel length $(k+1)p/3$.
+Note the counting convention, which §1.2 fixes and which is the usual source of a factor-of-two dispute here: each router has $2(k-1) = 6$ *bidirectional* links, hence $d = 2n(k-1) = 12$ *unidirectional* channels and $r = d + c = 16$ ports — the §1.4 table's numbers, and the degree §2.1 divides the pin budget $P$ by.
+
+**Parameters** (from §1.3): $d = 2n(k-1)$, $D = n$, $B_c = k^{n+1}/2$ for $n{=}2$, $C = n\,k^n(k-1)$, average channel length $(k+1)p/3$.
 
 **Routing and what it forces.** Minimal routing is one hop per dimension and has **no path diversity** beyond the $n!$ dimension orderings. That is fine under uniform random and catastrophic under adversarial traffic: a pattern in which every node sends within its own row concentrates an entire row's traffic on the row's channels with no alternative. Consequently a flattened butterfly needs **non-minimal load-balanced routing** — Valiant through a random intermediate router, or UGAL to get minimal's latency when uncongested. Deadlock: minimal DOR on the flattened butterfly is acyclic and free; non-minimal routing revisits dimensions and needs one VC per routing phase, exactly as §3.5 described.
 
@@ -768,7 +781,7 @@ The counter-argument, which is why on-die fabrics did not all convert: high radi
 
 **Routing, and the property people get wrong.** The descent is deterministic — there is exactly one path down from an ancestor to a leaf. The *ascent* is where all the path diversity lives: any of the $r/2$ upward ports leads to a valid ancestor. **A fat tree with deterministic up-routing behaves like a much thinner tree**, because all traffic from a leaf climbs the same link. Real fat trees hash the flow identifier or adaptively select the up-port, and getting this wrong is the single most common fat-tree performance bug. Deadlock freedom is free and elegant: label up-channels before down-channels, forbid down→up transitions, and the channel dependency graph is acyclic by construction — the classic up*/down* argument, which needs no VCs.
 
-**Oversubscription is the real design knob.** A "thin tree" with fewer up ports than down ports at some level has $B_c = N/(2\cdot\text{oversub})$ and costs proportionally less. An SoC's hierarchical crossbar — a local crossbar per cluster, bridged upward into a smaller global crossbar — *is* an oversubscribed two-level folded Clos, and recognizing it as one lets you compute its $\gamma_{max}$ with §3's method instead of guessing.
+**Oversubscription is the real design knob.** A "thin tree" with fewer up ports than down ports at some level scales the *up* capacity down by the oversubscription ratio $\sigma$ (a $\sigma{:}1$ tree), so in this page's unidirectional convention $B_c = N/\sigma$ — full bisection $B_c = N$ at $\sigma = 1$, half at $2{:}1$ — and it costs proportionally less. An SoC's hierarchical crossbar — a local crossbar per cluster, bridged upward into a smaller global crossbar — *is* an oversubscribed two-level folded Clos, and recognizing it as one lets you compute its $\gamma_{max}$ with §3's method instead of guessing.
 
 **Where it is used.** Datacenter networks (InfiniBand and Ethernet Clos fabrics), FPGA and switch-chip internals, and — under the name "hierarchical crossbar" — a very large fraction of mobile and embedded SoC fabrics. As a full-bisection die-wide NoC it is uncommon: §2.3 showed it is wireable only at 32-bit channels, and at that width its $\bar h = 3.88$ advantage over a CMesh's 5.25 does not pay for 18-flit packets.
 
@@ -777,9 +790,10 @@ The counter-argument, which is why on-die fabrics did not all convert: high radi
 **The idea, stated as an economic argument.** Global channels — cables, package traces, optical links — are expensive per bit and long. Local channels are cheap. The dragonfly builds a **virtual high-radix router** out of a *group* of $a$ cheap routers connected locally, so that the group presents $a\cdot h$ global ports. With $g \le ah+1$ groups the global layer can be fully connected, and **any group reaches any other group in one global hop**. The expensive resource is used at the minimum possible count.
 
 ```text
-   Dragonfly: g groups, a routers/group, p terminals/router, h global ports/router
-   Example: g = 8, a = 8, p = 4, h = 4  ->  N = a*p*g = 256 terminals
-            group global ports = a*h = 32, over 7 other groups -> 4 channels each
+   Dragonfly: g groups, a routers/group, c terminals/router, h global ports/router
+   Example: g = 8, a = 8, c = 4, h = 4  ->  N = a*c*g = 256 terminals
+            group global ports = a*h = 32, over 7 other groups -> m = floor(32/7) = 4
+            channels each, with 4 ports left spare
 
      +---- group 0 ----+       +---- group 1 ----+
      | R0 R1 R2 ... R7 |=======| R0 R1 R2 ... R7 |     "=" : global channels
@@ -796,15 +810,15 @@ The counter-argument, which is why on-die fabrics did not all convert: high radi
 
 The figure's contract: local channels inside a group are short and numerous; global channels between groups are few and long, and there is at least one direct channel between every pair of groups. Trace a minimal packet from a terminal on group 0's router R2 to a terminal on group 5's router R6: R2 hops locally to whichever of group 0's routers owns a channel to group 5, crosses one global channel into group 5, then hops locally to R6 — at most three hops for 256 terminals. The failure it illustrates is in the next paragraph.
 
-**Parameters.** $d = 2[(a-1)+h]$, $D = 3$ minimal / 5 non-minimal, $\bar h = 1.74$ for the configuration above, $B_c = 2m(g/2)^2 = 128$. Balanced design (Kim, Dally, Scott and Abts) sets $a = 2p = 2h$.
+**Parameters.** $d = 2[(a-1)+h]$, $D = 3$ minimal / 5 non-minimal, $\bar h = 1.74$ for the configuration above, $B_c = 2m(g/2)^2 = 128$ with $m = \lfloor ah/(g-1)\rfloor = 4$. Balanced design (Kim, Dally, Scott and Abts) sets $a = 2c = 2h$.
 
-**Why minimal routing fails, computed.** Take the adversarial pattern in which every terminal of group A sends to group B. All $ap = 32$ units must cross the $m=4$ channels joining A to B directly:
+**Why minimal routing fails, computed.** Take the adversarial pattern in which every terminal of group A sends to group B. All $ac = 32$ units must cross the $m=4$ channels joining A to B directly:
 
 $$
-\gamma_{max}^{\text{minimal, adversarial}} = \frac{ap}{m} = \frac{32}{4} = 8 .
+\gamma_{max}^{\text{minimal, adversarial}} = \frac{ac}{m} = \frac{32}{4} = 8 .
 $$
 
-Compare uniform random, where a group's $32$ units send a fraction $(N-ap)/N = 7/8$ outside, spread over all $ah = 32$ global ports: $\gamma \approx 28/32 = 0.875$. **Adversarial traffic is $9\times$ worse than uniform random under minimal routing** — the topology is unusable without a load balancer, and this is not a corner case: any workload with group-level locality inverted (all of one rack's traffic to another rack) produces it.
+Compare uniform random, where a group's $32$ units send a fraction $(N-ac)/N = 7/8$ outside, spread over all $ah = 32$ global ports: $\gamma \approx 28/32 = 0.875$. **Adversarial traffic is $9\times$ worse than uniform random under minimal routing** — the topology is unusable without a load balancer, and this is not a corner case: any workload with group-level locality inverted (all of one rack's traffic to another rack) produces it.
 
 **The required repair, and the deadlock it creates.** Valiant routing through a random intermediate *group* spreads the 32 units over all 32 global ports twice, giving $\gamma_{max} \approx 2$ and a 4× improvement on the adversarial case — at the cost of two global hops per packet and half the uniform-random throughput. UGAL restores the uniform-random case by choosing per packet. This is the clean example of the §3.5 trade and it is not optional: **a dragonfly without non-minimal adaptive routing is a broken network.**
 
@@ -947,7 +961,7 @@ Topology fixes the graph. **Mapping** — which agent sits at which node — fix
 
 ### 10.1 Why mapping changes throughput as much as topology
 
-Return to §3: $\gamma_c$ is a sum over $(s,d)$ pairs weighted by $\lambda_{sd}$. A permutation of node labels permutes which physical channels appear in which paths, and therefore changes $\gamma_{max}$ — potentially by the full range between the pattern's best and worst case. For an $8\times8$ mesh, §4.2 showed that range spans $\gamma_{max}=1$ (neighbor) to $\gamma_{max}=7$ (transpose): **a 7× throughput range on identical hardware, decided entirely by which agent got which coordinate.**
+Return to §3: $\gamma_c$ is a sum over $(s,z)$ pairs weighted by $\lambda_{sz}$. A permutation of node labels permutes which physical channels appear in which paths, and therefore changes $\gamma_{max}$ — potentially by the full range between the pattern's best and worst case. For an $8\times8$ mesh, §4.2 showed that range spans $\gamma_{max}=1$ (neighbor) to $\gamma_{max}=7$ (transpose): **a 7× throughput range on identical hardware, decided entirely by which agent got which coordinate.**
 
 ### 10.2 Address interleaving is a traffic-shaping decision
 
@@ -1261,7 +1275,7 @@ flowchart TD
     classDef rej fill:#fca5a5,stroke:#7f1d1d,color:#000
 ```
 
-The figure's contract: steps 1–3 are inputs gathered before any topology is named, step 4 is a hard filter that costs minutes and eliminates most candidates, and simulation appears only at step 9 on two or three survivors. Trace a real case: 256 agents, 12 mm die, $W_{mid}=9{,}000$, coherence traffic with a 72-byte dominant packet. Step 4 kills the full-bisection fat tree at usable widths. Step 5 finds the $16\times16$ mesh at $\gamma_{max}=4$ under the real (hotspot-bearing) matrix rather than 2 under uniform random. Step 6 finds that $\Theta_{ideal}\times0.7$ is below the requirement, sending you back to re-map (§10) rather than to a different topology. The failure it illustrates: teams that start at step 9 spend weeks simulating candidates that step 4 would have rejected in an afternoon.
+The figure's contract: steps 1–3 are inputs gathered before any topology is named, step 4 is a hard filter that costs minutes and eliminates most candidates, and simulation appears only at step 9 on two or three survivors. Trace a real case: 256 agents, 12 mm die, $W_{mid}=8{,}375$ (the budget Worked problems 2 and 3 derive for exactly this die and share), coherence traffic with a 72-byte dominant packet. Step 4 kills the full-bisection fat tree at usable widths. Step 5 finds the $16\times16$ mesh at $\gamma_{max}=4$ under the real (hotspot-bearing) matrix rather than 2 under uniform random. Step 6 finds that $\Theta_{ideal}\times0.7$ is below the requirement, sending you back to re-map (§10) rather than to a different topology. The failure it illustrates: teams that start at step 9 spend weeks simulating candidates that step 4 would have rejected in an afternoon.
 
 ### 14.1 The steps in detail
 
@@ -1332,7 +1346,7 @@ Run these before believing any result, yours or a tool's.
 
 *(b) Transpose, torus.* The X-phase gathers all eight of row $r$'s nodes onto column $r$; on a ring of 8 the three nearest on each side route inward and the antipode splits, so the channel adjacent to column $r$ carries $3 + 0.5 = 3.5$. The Y-phase scatters symmetrically and gives the same 3.5. $\gamma_{max} = \mathbf{3.5}$, $\Theta = 64/3.5 = \mathbf{18.3}$ **GB/s** — again exactly $2\times$ the mesh.
 
-*The ratio, explained.* The torus's factor of two is *identically* its factor of two in channel count ($C = 256$ vs $224$, and $B_c=32$ vs $16$), not a property of either pattern. It appears under both patterns because both are symmetric enough that the extra channels absorb load proportionally.
+*The ratio, explained.* The torus's factor of two is *identically* its factor of two in **bisection** ($B_c = 32$ vs $16$), not a property of either pattern — and note it is *not* a factor of two in total channels, which rise only from $C = 224$ to $256$ ($1.14\times$). Adding the wrap links buys $14\,\%$ more channels and $100\,\%$ more min-cut, and it is the min-cut that sets $\gamma_{max}$ here. The doubling appears under both patterns because both are symmetric enough that the bisection channels absorb load proportionally.
 
 *At equal bisection wire.* The torus has $2\times$ the bisection channels, so at a fixed $W_{mid}$ its channels are half as wide: $b_{torus}=32$ GB/s. Then uniform random gives $32/1 = 32$ GB/s for the torus and $64/2 = 32$ GB/s for the mesh — **identical**; transpose gives $32/3.5 = 9.1$ versus $64/7 = 9.1$ — **identical again.** The torus buys *no throughput* at fixed wire. What it buys is $\bar h = 4$ versus 5.25 (25 % fewer hops, hence less router energy) and $\eta_{LB}=1$, and it pays with 2× longer folded links that cost a cycle each (§6.3), which cancels the hop advantage at typical clocks. This is the calculation that explains why on-die tori are rare.
 
@@ -1340,23 +1354,25 @@ Run these before believing any result, yours or a tool's.
 
 **2 — Bisection feasibility against a real metal budget.** A 12 mm × 12 mm die at 7 nm-class hosts a $16\times16$ mesh with 256-bit flits at 2 GHz. The NoC is granted 20 % of the usable global-tier tracks crossing the midline. Is it feasible? If not, name three fixes and pick one.
 
-*Solution.* **Supply.** Horizontal layers crossing a vertical 12 mm midline, with pitches from the stack table: M6 at 80 nm gives $12{,}000/0.08 = 150{,}000$ raw tracks; M8 at 160 nm gives 75,000; M10 at 240 nm gives 50,000; M12 at 480 nm gives 25,000 — 300,000 raw. Applying the derates of §2.2 (M6 80 % consumed inside blocks, M8 55 %, M10 70 %, M12 95 %):
+*Solution.* **Supply.** Horizontal layers crossing a vertical 12 mm midline, with pitches from the stack table: M6 at 80 nm gives $12{,}000/0.08 = 150{,}000$ raw tracks; M8 at 160 nm gives 75,000; M10 at 240 nm gives 50,000; M12 at 480 nm gives 25,000 — 300,000 raw. Applying **the same derates as §2.2** (M6 80 % consumed inside blocks, M8 50 %, M10 70 %, M12 95 %):
 
 $$
-30{,}000 + 33{,}750 + 15{,}000 + 1{,}250 = 80{,}000 \ \text{usable global tracks.}
+30{,}000 + 37{,}500 + 15{,}000 + 1{,}250 = 83{,}750 \ \text{usable global tracks.}
 $$
 
-The NoC's 20 % share is 16,000 tracks. Long parallel same-direction NoC buses take a double-width/double-space non-default rule on the upper tiers (3 tracks per wire) and run default on M6 (1 track); averaging 2 tracks per wire:
+The NoC's 20 % share is 16,750 tracks. Long parallel same-direction NoC buses take a double-width/double-space non-default rule on the upper tiers (3 tracks per wire) and run default on M6 (1 track); averaging 2 tracks per wire:
 
 $$
-W_{mid} = 16{,}000/2 = \mathbf{8{,}000\ \text{signal wires}}.
+W_{mid} = 16{,}750/2 = \mathbf{8{,}375\ \text{signal wires}}.
 $$
+
+(This is the number Worked problem 3 also uses; the two problems share a die, a stack, and a negotiated share, so they must share a budget.)
 
 **Demand.** A $16\times16$ mesh's midline cut severs 16 bidirectional links, i.e. 32 unidirectional channels: $32 \times 256 = 8{,}192$ data wires, plus ~5 % for credit return, valid, and parity $= \mathbf{8{,}602\ \text{wires}}$.
 
-**Verdict: infeasible by 7.5 %** — and note it is infeasible by a *small* margin, which is the dangerous case, because it will be discovered at floorplan freeze rather than at architecture time.
+**Verdict: infeasible by 2.7 %** ($8{,}602$ against $8{,}375$) — and note it is infeasible by a *small* margin, which is the dangerous case, because it will be discovered at floorplan freeze rather than at architecture time.
 
-**Three fixes.** (i) Narrow the flit to 224 bits: $32\times224\times1.05 = 7{,}526$ wires ✓, at the cost of $256/224 = 1.14\times$ more serialization on every packet. (ii) Negotiate 22 % of tracks instead of 20 %, which is a political fix and must be won before other blocks bank their budgets. (iii) Concentrate to a $16\times8$ grid with $c=2$: the midline cut now severs 8 links $= 16$ channels, so at 384-bit flits the demand is $16\times384\times1.05 = 6{,}451$ wires ✓ with *wider* channels and lower serialization.
+**Three fixes.** (i) Narrow the flit to 224 bits: $32\times224\times1.05 = 7{,}526$ wires ✓, at the cost of $256/224 = 1.14\times$ more serialization on every packet. (ii) Negotiate 21 % of tracks instead of 20 % — $83{,}750\times0.21/2 = 8{,}794 \ge 8{,}602$ ✓ — which is a political fix and must be won before other blocks bank their budgets. (iii) Concentrate to a $16\times8$ grid with $c=2$: the midline cut now severs 8 links $= 16$ channels, so at 384-bit flits the demand is $16\times384\times1.05 = 6{,}451$ wires ✓ with *wider* channels and lower serialization.
 
 **Pick (iii).** It reduces demand by 25 % while *improving* serialization, cuts router count in half, and drops $\bar h$; its costs are radix 6 routers and a 2× longer link in one dimension. Fix (i) makes every packet slower to pay for wire, which is the wrong direction when §7.1 says on-chip fabrics are already serialization-sensitive.
 
@@ -1366,7 +1382,7 @@ $$
 
 **3 — Topology comparison at fixed wire cost: where high radix wins.** At $N=256$ on a 12 mm die, compare a $16\times16$ mesh against an $8\times8$ flattened butterfly with $c=4$, under a fixed per-router channel-width budget $P = 1024$ bits, $f=2$ GHz, $t_r = 3$ cycles. Find the packet size at which they cross over, and state what the mesh's answer would be if the router were slower.
 
-*Solution.* **Widths.** Mesh degree 4 → $w = 1024/4 = 256$ bits. Flattened butterfly degree $2(k-1) = 14$ → $w = 1024/14 = 73$, rounded down to a power of two, $w = 64$ bits. (Taking 64 rather than 32 is the right engineering call and makes the comparison harder for the butterfly, not easier.)
+*Solution.* **Widths.** Mesh degree $d = 2n = 4$ → $w = 1024/4 = 256$ bits. Flattened butterfly degree $d = 2n(k-1) = 28$ *unidirectional* channels (§1.2's convention, §7.2's figure) → $w = 1024/28 = 36.6$, rounded down to a power of two, $w = 32$ bits. Dividing $P$ by the 14 *bidirectional* links instead would double the width and is the single most common way to flatter a high-radix candidate; §2.1 fixes $d = 28$ for exactly this configuration.
 
 **Wire delays.** Mesh pitch $12/16 = 0.75$ mm at 0.3 ns/mm $= 0.23$ ns → 1 cycle. Flattened butterfly router pitch $12/8 = 1.5$ mm, and the average channel spans $\mathbb{E}|i-j| = (k+1)/3 = 3$ router pitches $= 4.5$ mm $= 1.35$ ns → 3 cycles.
 
@@ -1376,16 +1392,16 @@ $$
 
 $$
 T_0^{mesh} = 10.625(3+1) + \frac{L}{256} = 42.5 + \frac{L}{256}, \qquad
-T_0^{FB} = 1.75(3+3) + \frac{L}{64} = 10.5 + \frac{L}{64}.
+T_0^{FB} = 1.75(3+3) + \frac{L}{32} = 10.5 + \frac{L}{32}.
 $$
 
-**Crossover.** $42.5 - 10.5 = L(1/64 - 1/256) = 3L/256$, so $L = 32\times256/3 = \mathbf{2731\ \text{bits} = 341\ \text{bytes}}$.
+**Crossover.** $42.5 - 10.5 = L(1/32 - 1/256) = 7L/256$, so $L = 32\times256/7 = \mathbf{1170\ \text{bits} = 146\ \text{bytes}}$ — the same crossover §7.1 derives from the same inputs, as it must be.
 
-**Reading it.** A 72-byte coherence response (576 bits) gives $T_0^{mesh} = 44.8$ cycles and $T_0^{FB} = 19.5$ cycles — the flattened butterfly is **2.3× faster**. A 512-byte DMA burst (4096 bits) gives 58.5 versus 74.5 — the mesh wins. **High radix wins on short packets and loses on long ones**, and coherence traffic sits firmly on the high-radix side.
+**Reading it.** A 72-byte coherence response (576 bits) gives $T_0^{mesh} = 44.8$ cycles and $T_0^{FB} = 28.5$ cycles — the flattened butterfly is **1.6× faster**. A 512-byte DMA burst (4096 bits) gives 58.5 versus 138.5 — the mesh wins by more than $2\times$. **High radix wins on short packets and loses on long ones**, and coherence traffic sits on the high-radix side of a 146-byte line.
 
-**Slower router.** Raise $t_r$ to 5 cycles: the mesh's hop term becomes $10.625\times6 = 63.8$ and the butterfly's $1.75\times8 = 14$, moving the crossover to $L = (63.8-14)\times256/3 = 4250$ bits $= 531$ bytes. **A slower router pushes the crossover further out and favors high radix more**, because the hop term is multiplied by $\bar h$ and the mesh has six times more of it. That is the historical mechanism: as networks grew and per-hop costs stayed stubborn, the optimum radix rose.
+**Slower router.** Raise $t_r$ to 5 cycles: the mesh's hop term becomes $10.625\times6 = 63.8$ and the butterfly's $1.75\times8 = 14$, moving the crossover to $L = (63.8-14)\times256/7 = 1819$ bits $= 227$ bytes. **A slower router pushes the crossover further out and favors high radix more**, because the hop term is multiplied by $\bar h$ and the mesh has six times more of it. That is the historical mechanism: as networks grew and per-hop costs stayed stubborn, the optimum radix rose.
 
-**The check that keeps this honest.** Total wire (§2.4): the butterfly is $896 \times 3\times1.5\ \text{mm} \times 64 = 258$ k mm·bits against the mesh's $960\times0.75\times256 = 184$ k mm·bits — **1.4× more wire**, and its bisection demand is $256\times64\times1.05 = 17{,}200$ midline wires against a budget near 9,600 for this die. **The flattened butterfly wins the latency comparison and fails the §2 feasibility filter at $w=64$.** It is feasible only at $w=32$, which doubles its serialization term and moves the crossover to 170 bytes — still a win for coherence traffic, but a much narrower one. This is why the decision procedure runs feasibility before latency.
+**The check that keeps this honest.** Total wire (§2.4): the butterfly is $896 \times 3\times1.5\ \text{mm} \times 32 = 129$ k mm·bits against the mesh's $960\times0.75\times256 = 184$ k mm·bits — **0.70× the wire**, because at this width narrow-and-long beats wide-and-short. The midline is what bites: its bisection demand is $256\times32\times1.05 = 8{,}602$ wires against the $W_{mid} = 8{,}375$ that Worked problem 2 computed for this die, so **the flattened butterfly wins the latency comparison and still fails the §2 feasibility filter, by 2.7 %.** Squeeze to $w = 16$ and it fits easily ($256\times16\times1.05 = 4{,}301$), but the serialization term doubles, $T_0^{FB} = 10.5 + L/16$, and the crossover collapses to $32\times256/15 = 546$ bits $= \mathbf{68\ \text{bytes}}$ — *below* the 72-byte coherence response, so at the only width the metal actually grants, the mesh wins even on the traffic the butterfly was chosen for (46.5 cycles versus 44.8). This is why the decision procedure runs feasibility before latency: the latency comparison was answering a question about a network that cannot be built.
 
 ---
 

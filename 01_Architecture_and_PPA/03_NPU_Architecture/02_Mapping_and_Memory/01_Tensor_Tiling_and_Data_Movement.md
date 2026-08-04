@@ -365,7 +365,7 @@ $$
 2(128\times64)+2(64\times128)+4(128\times128)=98{,}304\ \text{B}.
 $$
 
-Before metadata/alignment, it fits 128 KiB but not 96 KiB.
+That is *exactly* 96 KiB, so a 96 KiB buffer is filled to the last byte with nothing left for metadata, alignment padding, or bank rounding; 128 KiB is the real requirement.
 
 ### Problem 2 — arithmetic intensity
 

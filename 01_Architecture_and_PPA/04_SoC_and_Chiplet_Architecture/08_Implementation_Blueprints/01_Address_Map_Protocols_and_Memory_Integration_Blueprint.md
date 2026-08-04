@@ -200,7 +200,7 @@ $$
 A_s(i,j,k)=base_s+i+jS_{sy}+kS_{sz},
 $$
 
-with analogous destination strides. Here $i$ spans `x_bytes`, $j<y_count$, and $k<z_count`. Counters increment with carry; at each row/plane boundary the AGU adds the programmed stride. Check the **full widened sum** before truncating to the physical/I/O virtual address width.
+with analogous destination strides. Here $i$ spans `x_bytes`, $j<y_count$, and $k<z_{count}$. Counters increment with carry; at each row/plane boundary the AGU adds the programmed stride. Check the **full widened sum** before truncating to the physical/I/O virtual address width.
 
 At each step:
 

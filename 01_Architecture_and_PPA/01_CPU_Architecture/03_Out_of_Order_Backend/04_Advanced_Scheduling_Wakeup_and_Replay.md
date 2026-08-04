@@ -120,7 +120,7 @@ Speculative wakeup overlaps the last term with known producer latency. It is esp
 |---|---|---|
 | 1 | select $A$, wake $B$ | select $A$ |
 | 2 | select $B$, wake $C$; $A$ executes | wake $B$ |
-| 3 | select $C$; $B$ executes ($r3$ bypassed) | select $B$, wake $C$ |
+| 3 | select $C$; $B$ executes ($r3$ bypassed) | select $B$ |
 | 4 | $C$ executes ($r5$ bypassed) | wake $C$ |
 | 5 | — | select $C$ |
 

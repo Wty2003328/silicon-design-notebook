@@ -80,12 +80,12 @@ The walker slot must store current level, base physical address, virtual-page in
 
 ```wavedrom
 { "signal": [
-  { "name": "L17_TLB_miss", "wave": "01.0........." },
-  { "name": "walk_slot",    "wave": "0.1========0.", "data": ["alloc", "L0", "L1", "L2", "leaf", "fill", "wake"] },
-  { "name": "pte_req",      "wave": "0..101010..." },
-  { "name": "pte_rsp",      "wave": "0...101010.." },
-  { "name": "tlb_fill",     "wave": "0.........10" },
-  { "name": "L17_replay",   "wave": "0..........1" }
+  { "name": "L17_TLB_miss", "wave": "01.0.........." },
+  { "name": "walk_slot",    "wave": "0.==.=.=.=.==0", "data": ["alloc", "L0", "L1", "L2", "leaf", "fill", "wake"] },
+  { "name": "pte_req",      "wave": "0..10101010..." },
+  { "name": "pte_rsp",      "wave": "0...10101010.." },
+  { "name": "tlb_fill",     "wave": "0..........10." },
+  { "name": "L17_replay",   "wave": "0............1" }
 ] }
 ```
 

@@ -293,7 +293,7 @@ A header PMOS puts $R_{on}$ in series with the rail resistance and the domain ca
   { "name": "pwr_req",    "wave": "01........", "node": ".a........" },
   { "name": "weak_ack",   "wave": "0...1.....", "node": "....b....." },
   { "name": "strong_ack", "wave": "0.......1.", "node": "........c." },
-  { "name": "iso_en",     "wave": "1......0.." },
+  { "name": "iso_en",     "wave": "1........0" },
   { "name": "vvdd",       "wave": "x.2..3..4.", "data": ["ramp", "near final", "full"] },
   { "name": "i_inrush",   "wave": "0.3.4.3.0.", "data": ["rise", "peak", "decay"] }
  ],

@@ -197,7 +197,7 @@ sequenceDiagram
 { "signal": [
   { "name": "CK",      "wave": "p............." },
   { "name": "CMD",     "wave": "x3..4...5....x", "data": ["PRE", "ACT", "READ"] },
-  { "name": "BANK_OK", "wave": "0.1..........." },
+  { "name": "BANK_OK", "wave": "01............" },
   { "name": "DQ",      "wave": "x..........3.x", "data": ["read burst"] },
   { "name": "RESP",    "wave": "0...........10" }
 ], "head": { "text": "Qualitative HBM row-conflict read: scheduling guards precede data and corrected response" } }
@@ -430,7 +430,7 @@ About 938 independent transactions must exist system-wide; queue/credit sizing n
 
 ### Problem 3 — migration break-even
 
-Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way ($2\ \text{GiB}/200\ \text{GB/s}$), ignoring contention. If HBM saves 2 ms per subsequent iteration, more than six iterations are needed just to recover copy time; dirty writeback and service interference raise the threshold.
+Moving a 2 GiB region at effective 200 GB/s costs about 10.7 ms one way ($2\ \text{GiB}/200\ \text{GB/s}$), ignoring contention. If HBM saves 2 ms per subsequent iteration, break-even is $10.7/2\approx5.4$, so at least six iterations are needed just to recover copy time; dirty writeback and service interference raise the threshold.
 
 ## Cross-references
 

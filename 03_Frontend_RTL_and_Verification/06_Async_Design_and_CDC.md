@@ -120,10 +120,10 @@ $$
 
 | Scenario | $t_r$ (2-FF) | MTBF (2-FF) | Depth for $10^9$ yr |
 |---|---|---|---|
-| 200 MHz capture, 50 MHz data | 4.86 ns | $\sim10^{33}$ yr | 2 (huge margin) |
+| 200 MHz capture, 50 MHz data | 4.86 ns | $\sim5\times10^{31}$ yr | 2 (huge margin) |
 | **2 GHz** capture, 1 GHz data | 0.36 ns | **~7 ms** | **7** |
 
-At 2 GHz a 2-FF synchronizer fails every few *milliseconds*; reaching a $10^9$-year target needs seven stages, because each stage now contributes only $e^{500\text{ps}/50\text{ps}}=e^{10}$ instead of $e^{97}$. This is why high-frequency CDC at relaxed nodes is genuinely hard, and why 3-FF synchronizers are standard for $f_c>2$ GHz, ASIL-D/aerospace safety margins, or libraries with poor $\tau$. Rule of thumb: if the worst-corner 2-FF MTBF is below ~1000 years, add a stage.
+At 2 GHz a 2-FF synchronizer fails every few *milliseconds*; reaching a $10^9$-year target needs seven stages, because each stage now contributes only $e^{500\text{ps}/50\text{ps}}=e^{10}$ instead of $e^{5000\text{ps}/50\text{ps}}=e^{100}$. This is why high-frequency CDC at relaxed nodes is genuinely hard, and why 3-FF synchronizers are standard for $f_c>2$ GHz, ASIL-D/aerospace safety margins, or libraries with poor $\tau$. Rule of thumb: if the worst-corner 2-FF MTBF is below ~1000 years, add a stage.
 
 **Physical constraints (the essential few).** Resolution time is stolen by anything that eats the period between FF1 and FF2, so: place the two flops adjacent on the *same* clock-tree leaf (zero inter-stage skew), never insert combinational logic between them (it both burns $t_r$ and can present a glitch as a real edge), and prefer low-$V_t$ cells (smaller $\tau$). Many libraries ship a characterized `SYNC2` cell that bakes these in.
 

@@ -482,10 +482,10 @@ $$
 For a driver ($R_p$) pushing a wire (per-length $r,c$, length $L$) into a load $C_L$, lumping the wire as a $\pi$-section gives:
 
 $$
-t\approx \underbrace{0.69\,R_p C_L}_{\text{gate}\to\text{load}}+\underbrace{R_p C_{wire}}_{\text{gate}\to\text{wire}}+\underbrace{0.5\,R_{wire}C_{wire}}_{\text{wire self}}+\underbrace{R_{wire}C_L}_{\text{wire}\to\text{load}}
+t\approx 0.69\Big[\underbrace{R_p C_L}_{\text{gate}\to\text{load}}+\underbrace{R_p C_{wire}}_{\text{gate}\to\text{wire}}+\underbrace{0.5\,R_{wire}C_{wire}}_{\text{wire self}}+\underbrace{R_{wire}C_L}_{\text{wire}\to\text{load}}\Big]
 $$
 
-with $R_{wire}=rL$, $C_{wire}=cL$. The single insight worth keeping: the wire-self term carries the **$0.5\,rc\,L^2$** — delay grows **quadratically** with length, so the fix is not a bigger driver but **breaking the wire with repeaters** so each segment is short and linear (the RC term that made §8's BEOL the bottleneck). At a 1 mm M4 wire the gate resistance still dominates; past $\sim5\ \text{mm}$ the wire wins, which is where repeater insertion becomes mandatory.
+with $R_{wire}=rL$, $C_{wire}=cL$. The $0.69=\ln2$ multiplies the *whole* Elmore sum, not just the first term — it converts the time constant into a 50 % crossing, and applying it to one term only is a common transcription slip that quietly biases the wire terms high. The single insight worth keeping: the wire-self term carries the **$0.5\,rc\,L^2$** — delay grows **quadratically** with length, so the fix is not a bigger driver but **breaking the wire with repeaters** so each segment is short and linear (the RC term that made §8's BEOL the bottleneck). Put numbers on it with the intermediate-tier constants used elsewhere in the notebook ($r\approx2.3\ \Omega/\mu$m, $c\approx0.20$ fF/$\mu$m): a **1 mm** unrepeated wire already contributes $0.69\times0.5\times2300\ \Omega\times200\ \text{fF}\approx160$ ps of self-delay alone, against a gate term of a few picoseconds — so on an advanced node the wire dominates from roughly a *hundred* microns, not from millimetres, and 1 mm is already far past the point where repeater insertion is mandatory. (Only on an old, thick, low-resistance top metal driving a small load does the gate still win at 1 mm.)
 
 ---
 
@@ -499,7 +499,7 @@ $$
 f^{*}=(G\cdot H)^{1/N},\qquad D^{*}=N f^{*}+P
 $$
 
-where $G=\prod g_i$ (path logical effort), $H=C_{load}/C_{in}$ (path electrical effort), $P=\sum p_i$. Two results are worth memorising: (1) the optimum drives each stage at a fixed effort $f^*\approx 3.5$–$4$ (near $e$, inflated by parasitics), so a large fanout should be *staged* through several gates rather than one giant one; and (2) the optimal stage count is $N\approx\ln(GH)/\ln f^*$ — too few stages and each is overloaded, too many and the parasitics $P$ dominate. Example: driving $H=20$ through a NAND2 wants $\sim4$ stages ($f^*=(4/3\cdot20)^{1/4}\approx 2.3$), not 2 — the same "insert buffers" conclusion §10 reaches from the wire side.
+where $G=\prod g_i$ (path logical effort), $H=C_{load}/C_{in}$ (path electrical effort), $P=\sum p_i$. Two results are worth memorising: (1) the optimum drives each stage at a fixed effort $f^*\approx 3.5$–$4$ (near $e$, inflated by parasitics), so a large fanout should be *staged* through several gates rather than one giant one; and (2) the optimal stage count is $N\approx\ln(GH)/\ln f^*$ — too few stages and each is overloaded, too many and the parasitics $P$ dominate. Example: driving $H=20$ through a NAND2 gives $GH=\tfrac43\cdot20=26.7$, so $N\approx\ln 26.7/\ln 3.6\approx 2.6$ — **3 stages**, at $f=(26.7)^{1/3}\approx 3.0$. Check it against the delay itself, with $p_{NAND2}=2$ and $p_{inv}=1$: $D=Nf^*+P$ gives $13.3$ at $N{=}2$, $\mathbf{13.0}$ at $N{=}3$, and $14.1$ at $N{=}4$ — so 4 stages is *worse* than 2, because $f=2.3$ there is far below $f^*$ and the extra parasitic dominates. The optimum is shallow and flat; the trap is assuming more buffering is always better, which is the same "insert buffers, but count them" conclusion §10 reaches from the wire side.
 
 ---
 

@@ -263,14 +263,14 @@ stateDiagram-v2
 
 ```wavedrom
 { "signal": [
-  { "name": "idle_req",       "wave": "0.1......0" },
-  { "name": "admit_enable",   "wave": "1..0.....1" },
-  { "name": "outstanding",    "wave": "=.=.=0....", "data": ["3", "2", "1"] },
-  { "name": "retention_save", "wave": "0....10..0" },
-  { "name": "isolate",        "wave": "0.....1.0." },
-  { "name": "clock_enable",   "wave": "1......0.1" },
-  { "name": "power_good",     "wave": "1.......01" },
-  { "name": "wake_req",       "wave": "0.......10" }
+  { "name": "idle_req",       "wave": "0.1......0..." },
+  { "name": "admit_enable",   "wave": "1..0........1" },
+  { "name": "outstanding",    "wave": "=.=.=0.......", "data": ["3", "2", "1"] },
+  { "name": "retention_save", "wave": "0....10......" },
+  { "name": "isolate",        "wave": "0.....1.....0" },
+  { "name": "clock_enable",   "wave": "1......0...1." },
+  { "name": "power_good",     "wave": "1.......0.1.." },
+  { "name": "wake_req",       "wave": "0........10.." }
 ] }
 ```
 
@@ -407,8 +407,10 @@ At cold power-on every flip-flop holds an unknown value; the reset network must 
   \draw (ff2.south) -- (3.8,-1.7) coordinate (c2);
   \draw (c1) -- (c2);
   \draw (c1) -- (-2.5,-1.7) node[left]{\texttt{clk\_dst}};
-  \draw (ff1.north) -- (0,1.7) coordinate (r1);
-  \draw (ff2.north) -- (3.8,1.7) coordinate (r2);
+  \draw[fill=white] (0,0.95) circle (0.1);
+  \draw[fill=white] (3.8,0.95) circle (0.1);
+  \draw (0,1.05) -- (0,1.7) coordinate (r1);
+  \draw (3.8,1.05) -- (3.8,1.7) coordinate (r2);
   \draw (r1) -- (r2);
   \draw (r1) -- (-2.5,1.7) node[left]{$\overline{\texttt{arst}}$};
 \end{circuitikz}

@@ -376,10 +376,10 @@ Section 2 introduced block floating point (BFP): a block of values shares one ex
 
 ### 15.1 Shared-microexponent blocks
 
-An MX value is two-level. A block of $K=32$ consecutive elements shares one scale $X$, stored in the E8M0 code — 8 exponent bits, no mantissa, no sign — representing the power of two $2^{X-127}$ (one code reserved for NaN). Each element $i$ carries a private low-precision float $P_i$, and the value is
+An MX value is two-level. A block of $K=32$ consecutive elements shares one scale, stored as the 8-bit E8M0 code $X$ — 8 exponent bits, no mantissa, no sign — representing the power of two $2^{X-127}$ (one code reserved for NaN). Each element $i$ carries a private low-precision float $P_i$, and the value is
 
 $$
-v_i = X\cdot P_i = 2^{\,X-127}\,P_i .
+v_i = 2^{\,X-127}\,P_i .
 $$
 
 The private format names the point on the size/accuracy curve:
@@ -425,7 +425,7 @@ flowchart LR
 
 ### 15.2 Range and precision versus plain floating point
 
-The two-level structure decouples *coarse range* (the shared scale, one field per 32 elements) from *fine range and precision* (the private micro-float). A single scale aligns the block so its largest element sits near the top of the private format's span; every element then keeps at least $\lceil\log_2\rho_{\text{blk}}\rceil$ fewer usable mantissa bits than the leading one, where $\rho_{\text{blk}}=\max/\min$ magnitude in the block, but nothing underflows as long as $\rho_{\text{blk}}$ fits the private exponent span ($2^{2^{E_m}}$ binades).
+The two-level structure decouples *coarse range* (the shared scale, one field per 32 elements) from *fine range and precision* (the private micro-float). A single scale aligns the block so its largest element sits near the top of the private format's span; every element then keeps at least $\lceil\log_2\rho_{\text{blk}}\rceil$ fewer usable mantissa bits than the leading one, where $\rho_{\text{blk}}=\max/\min$ magnitude in the block, but nothing underflows as long as $\rho_{\text{blk}}$ fits the private exponent span — $2^{E_m}$ binades, a magnitude ratio of $2^{2^{E_m}}$.
 
 Contrast a single per-tensor scale over a tensor whose global magnitude ratio $\rho_{\text{tsr}}\gg\rho_{\text{blk}}$. Small-magnitude blocks then lose about $\log_2(\rho_{\text{tsr}}/\rho_{\text{blk}})$ mantissa bits to alignment. *Worked:* $\rho_{\text{tsr}}=2^{20}$ with per-block spread $\rho_{\text{blk}}=2^{3}$ makes the small blocks lose $\approx17$ bits of alignment — total underflow for a 3-mantissa-bit element — whereas MX re-centers every 32 elements and keeps the relative step bounded by the private mantissa everywhere. That private mantissa fixes the worst-case relative error of round-to-nearest at $2^{-(M+1)}$ (half a unit in the last place, ulp): MXFP4's single mantissa bit gives $2^{-2}=25\%$, which is why MXFP4 is used for error-tolerant tensors (weights, forward activations) with higher-precision accumulation and stochastic rounding, not everywhere.
 

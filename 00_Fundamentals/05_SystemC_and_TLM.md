@@ -100,8 +100,8 @@ The smallest concrete trace is two processes, `producer` and `consumer`, joined 
   { "name": "kernel phase", "wave": "345345.", "data": ["eval d0", "update d0", "notify d0", "eval d1", "update d1", "notify d1"] },
   { "name": "simulated time", "wave": "3.....4", "data": ["10 ns", "next timed event"] },
   { "name": "producer runnable", "wave": "10....." },
-  { "name": "x.read()", "wave": "3.4....", "data": ["0 old", "1 committed"] },
-  { "name": "pending x", "wave": "03.0...", "data": ["1"] },
+  { "name": "x.read()", "wave": "34.....", "data": ["0 old", "1 committed"] },
+  { "name": "pending x", "wave": "30.....", "data": ["1"] },
   { "name": "consumer runnable", "wave": "0..10.." }
 ], "head": { "text": "One sc_signal write: request in evaluate, commit in update, observer wakes next delta at the same time" } }
 ```

@@ -192,10 +192,10 @@ Concretely, two back-to-back stages of 3 ns and 1 ns clocked with zero skew need
 The classical construction is **Deferred Merge Embedding (DME)**: pair sinks, compute for each pair the merge point where the two branches have equal delay, and *defer* the exact geometric embedding until the whole topology is known so it can be placed optimally bottom-up. Under the Elmore model the balance point lies a fraction $\alpha$ of the way along the wire between the two child roots:
 
 $$
-\alpha \;=\; \frac{(C_R - C_L) + \tfrac{1}{2}\,c_w L}{c_w L}
+\alpha \;=\; \frac{(t_R - t_L) \;+\; r_w L\left(C_R + \tfrac{1}{2}\,c_w L\right)}{r_w L\left(C_L + C_R + c_w L\right)}
 $$
 
-where $C_L, C_R$ = downstream capacitance of the left/right subtree, $c_w$ = wire capacitance per length, $L$ = distance between the two roots. When $0\le\alpha\le1$ the merge point sits on the segment and skew is zero by construction. When the loads are too unbalanced ($\alpha\notin[0,1]$) the tool must **add wire (snaking) or a delay buffer** to the light side — the physical act of "wasting" delay to equalize it. That is the whole game of CTS: spend insertion delay and buffers to drive skew down.
+where $t_L, t_R$ = Elmore delay through the left/right subtree, $C_L, C_R$ = downstream capacitance of the left/right subtree, $r_w, c_w$ = wire resistance and capacitance per length, $L$ = distance between the two roots. With equal subtree delays this collapses to $\alpha = (C_R + \tfrac12 c_w L)/(C_L + C_R + c_w L)$, which always lies in $[0,1]$: pure *load* imbalance is absorbed by sliding the tap toward the heavy child. It is the *delay* imbalance $t_R - t_L$ that can drive the numerator negative or past the denominator. When $0\le\alpha\le1$ the merge point sits on the segment and skew is zero by construction. When the subtrees are too unbalanced ($\alpha\notin[0,1]$) the tool must **add wire (snaking) or a delay buffer** to the fast side — the physical act of "wasting" delay to equalize it. That is the whole game of CTS: spend insertion delay and buffers to drive skew down.
 
 ### 4.3 The topology menu is a skew-vs-power trade
 

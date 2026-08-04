@@ -14,7 +14,7 @@ Open the floorplan of any modern digital chip and count area. Between 40% and 70
 
 The gap is not academic. An engineer who skips it makes four specific mistakes, all of which are expensive and all of which are caught late. First, they infer a 4 kbit "register file" in RTL, synthesis turns it into 4096 flip-flops plus a 64:1 mux tree, and the block comes back 8× larger and 70× more clock-power-hungry than the equivalent macro — discovered at first physical trial, when the floorplan is frozen. Second, they instantiate a macro with an unregistered output, discover at static timing analysis (STA) that the 900 ps access time consumes the whole cycle, and have to add a pipeline stage that changes the load-use latency the architecture team already published. Third, they ship an array with no ECC because "soft errors are rare," and the fleet-level failure rate turns a 148-year per-chip mean time between failures into a five-day mean time between failures across ten thousand parts. Fourth, they specify a memory with no redundancy and yield 12% instead of 94%.
 
-What ties those four together is that a memory is not a logic block with a lot of state. It is a *ratioed analog circuit* wrapped in a digital interface. A read does not evaluate a Boolean function; it lets a 25 µA current discharge a 53 fF wire for 233 ps until a differential of 110 mV exists, and then a mismatched latch decides which side is lower. Every parameter you will ever argue about — access time, banking, port count, Vmin, ECC strength, refresh overhead — falls out of that sentence.
+What ties those four together is that a memory is not a logic block with a lot of state. It is a *ratioed analog circuit* wrapped in a digital interface. A read does not evaluate a Boolean function; it lets a 25 µA current discharge a 53.4 fF wire for 235 ps until a differential of 110 mV exists, and then a mismatched latch decides which side is lower. Every parameter you will ever argue about — access time, banking, port count, Vmin, ECC strength, refresh overhead — falls out of that sentence.
 
 After this page you will be able to: derive whether a given storage requirement should be flops, a latch array, or a macro, and show the arithmetic; read an SRAM datasheet and a `.lib` and know what every timing arc means; compute bitline development time and predict how access time scales with capacity; choose a port structure and price it; specify redundancy and compute the yield it buys; choose between no protection, parity, and single-error-correcting double-error-detecting (SEC-DED) ECC with a fleet FIT calculation behind the choice; and derive DRAM's timing parameters from its cell physics rather than copying them from a table.
 
@@ -171,7 +171,7 @@ The cost of the macro side of that trade: the array is a black box to synthesis 
 
 **One trace.** Suppose $Q=0$, $\overline{Q}=1$. Both bitlines are precharged to $V_{DD}$. Raise $WL$. Current now flows $BL \rightarrow M_5 \rightarrow M_2 \rightarrow \text{GND}$, pulling $BL$ down; $\overline{BL}$ has no path down because $M_3$ holds $\overline{Q}$ at $V_{DD}$ and $M_6$'s two terminals are both at $V_{DD}$. A differential develops. **But that same current flows through $M_5$ and $M_2$ in series, and the node between them is $Q$** — so $Q$ is no longer at 0 V. It sits at a divider voltage $V_{read}$ above ground. That bump is the whole problem.
 
-**The trade-off it illustrates.** $M_5$ is in the read path *and* the write path. Read wants it weak so $V_{read}$ stays small; write wants it strong so it can overpower $M_3$. There is one width, and it must satisfy both.
+**The trade-off it illustrates.** $M_5$ is in the read path *and* the write path. Read wants it weak so $V_{read}$ stays small; write wants it strong so it can overpower $M_1$, the pull-up holding $Q$. There is one width, and it must satisfy both.
 
 ### 2.2 Read: the disturb constraint
 
@@ -337,7 +337,7 @@ A 110 mV differential on a 0.75 V rail is not a logic level. The sense amplifier
 
 **Contract.** While $SAE$ is low and $\overline{SAE}$ is high, both the foot NMOS and the head PMOS are off: the latch has no current path and cannot regenerate, so its two nodes simply follow the bitlines. When $SAE$ rises and $\overline{SAE}$ falls, the latch is powered and its positive feedback amplifies whatever differential exists at that instant to full rail in a few tens of picoseconds. The two crossings in the drawing are wire crossings, not connections; the four dots are connections. In a real column the bitlines are separated from the latch nodes by isolation devices, so that the latch drives a small local capacitance instead of the full bitline — that shortens resolution time by an order of magnitude but does not change the argument below.
 
-**One trace.** $BL$ has fallen to $V_{DD}-110$ mV, $\overline{BL}$ is at $V_{DD}$. $SAE$ rises. $M_2$-equivalent (the left NMOS) has a slightly lower gate voltage than the right one, so it conducts less; the right node discharges faster; that pulls the left gate down further; regeneration completes with left = $V_{DD}$, right = 0.
+**One trace.** $BL$ has fallen to $V_{DD}-110$ mV, $\overline{BL}$ is at $V_{DD}$. $SAE$ rises. $M_2$-equivalent (the left NMOS) is gated by the *right* node through the cross-coupling, and that node is still at $V_{DD}$, so it has the higher gate voltage and conducts more; the left node discharges faster; that pulls the right NMOS's gate down further, turning it off; regeneration completes with left = 0, right = $V_{DD}$. The $BL$ side resolves low — which is the stored 0 of §2.1, read back correctly.
 
 **The failure it illustrates.** The decision is made by comparing two nominally identical devices. Their thresholds differ randomly. The **input-referred offset** $V_{os}$ of a latch-type sense amplifier is roughly $\sigma_{V_{th}}$ of the input pair scaled by the ratio of transconductances, and lands at $\sigma_{V_{os}} = 10$–$25$ mV for a reasonably sized amplifier at modern nodes. If $|\Delta V_{BL}| < |V_{os}|$ the amplifier resolves the *wrong way* — silently, with a full-rail output, indistinguishable from correct data.
 
@@ -384,7 +384,7 @@ Everything else in the macro's control block is derived from the same principle:
   { "name": "SAE",      "wave": "0.......1...0...", "node": "........b......." },
   { "name": "Q",        "wave": "x.........=.....", "data": ["data at A0"], "node": "..........c....." }
  ],
- "edge": ["a~>b develop 233 ps", "b~>c resolve plus output 200 ps"],
+ "edge": ["a~>b develop 235 ps", "b~>c resolve plus output 200 ps"],
  "head": {"text": "one SRAM read cycle, eight divisions per clock period"}
 }
 ```
@@ -1009,9 +1009,9 @@ That single fact defines the DRAM command set. The sense amplifiers of one row c
 
 ```wavedrom
 { "signal": [
-  { "name": "CMD",     "wave": "=..=...=...=........", "data": ["ACT","RD","PRE","ACT"], "node": "a..b...c...d........" },
+  { "name": "CMD",     "wave": "=..=...=..=.........", "data": ["ACT","RD","PRE","ACT"], "node": "a..b...c..d........." },
   { "name": "WL",      "wave": "01.....0............" },
-  { "name": "BL pair", "wave": "=.=..=.=...=........", "data": ["VDD/2","charge share","latch and restore","equalize","VDD/2"] },
+  { "name": "BL pair", "wave": "=.=..=.=..=.........", "data": ["VDD/2","charge share","latch and restore","equalize","VDD/2"] },
   { "name": "SAE",     "wave": "0.1....0............" },
   { "name": "DQ",      "wave": "x....=..x...........", "data": ["burst"] }
  ],
@@ -1020,7 +1020,7 @@ That single fact defines the DRAM command set. The sense amplifiers of one row c
 }
 ```
 
-**Contract and trace.** ACT at division 0 raises the wordline; the bitline pair leaves its $V_{array}/2$ common mode and develops 137.5 mV by division 2, at which point the sense amplifier fires and both latches *and* begins restoring the cell. The RD at division 3 is legal because $t_{RCD}$ has elapsed and the row buffer already holds valid data — the column access is a mux, not a memory access. PRE cannot be issued until division 7 because the restore must finish ($t_{RAS}$), and the next ACT cannot come until division 11 ($t_{RP}$ after PRE). **The failure this illustrates:** issuing PRE early does not merely lose performance, it corrupts the row, because the cell has not been recharged. $t_{RAS}$ is a data-integrity constraint, not a performance one — which is why it is enforced by the controller and not left to a scheduler heuristic.
+**Contract and trace.** ACT at division 0 raises the wordline; the bitline pair leaves its $V_{array}/2$ common mode and develops 137.5 mV by division 2, at which point the sense amplifier fires and both latches *and* begins restoring the cell. The RD at division 3 is legal because $t_{RCD}$ has elapsed and the row buffer already holds valid data — the column access is a mux, not a memory access. PRE cannot be issued until division 7 because the restore must finish ($t_{RAS}$), and the next ACT cannot come until division 10 ($t_{RP}$ after PRE, making the ACT-to-ACT span the 50 ns $t_{RC}$ of §10.4). **The failure this illustrates:** issuing PRE early does not merely lose performance, it corrupts the row, because the cell has not been recharged. $t_{RAS}$ is a data-integrity constraint, not a performance one — which is why it is enforced by the controller and not left to a scheduler heuristic.
 
 ### 10.5 Refresh, derived from leakage
 
