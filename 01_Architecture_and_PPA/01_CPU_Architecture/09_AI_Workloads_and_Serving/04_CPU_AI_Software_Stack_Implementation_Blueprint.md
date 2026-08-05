@@ -12,7 +12,7 @@ Read [AI Operators on CPU Microarchitecture](02_AI_Operators_on_CPU_Microarchite
 
 ## 1. Layer and ownership map
 
-~~~mermaid
+```mermaid
 flowchart LR
     ART["model + tokenizer/feature artifacts"] --> LOAD["loader + validator"]
     LOAD --> GRAPH["semantic graph + tensor IR"]
@@ -24,7 +24,7 @@ flowchart LR
     MEM["allocator + NUMA placement + weight cache"] --> EXEC
     MEM --> CPU
     MEM --> DEV
-~~~
+```
 
 Assign one owner to every object:
 

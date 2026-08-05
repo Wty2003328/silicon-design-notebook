@@ -45,7 +45,7 @@ flowchart TD
     RTL["RTL<br/>(function only)"]
     UPF["UPF power intent<br/>(domains, supplies,<br/>ISO / LS / RET, PST)"]
     SYN["Synthesis<br/>inserts ISO, LS,<br/>RET, switch cells"]
-    PNR["Place & Route<br/>places special cells,<br/>builds power grid"]
+    PNR["Place and Route<br/>places special cells,<br/>builds power grid"]
     SIM["Power-aware sim<br/>corrupts off domains,<br/>models ISO / RET"]
     SGN["Signoff<br/>per-domain power,<br/>per-domain IR drop"]
     RTL --> SYN & SIM
@@ -169,6 +169,12 @@ flowchart LR
     PMU -.->|"iso_en via AON buffer"| ISO
     PMU -.->|"save / restore via AON buffer"| RET
 ```
+
+**Contract.** Solid arrows are the signal or supply path; dashed arrows are PMU control, and every one of them is annotated with the always-on buffering it requires. The reason to draw control separately is that the control edges are the ones that must survive the domain going dark, while the solid signal edge through `LOGIC` is precisely the one that must not.
+
+**Trace one power-down.** The PMU asserts `save`, and `RET` copies its state into its shadow latch on the always-on rail. The PMU then asserts `iso_en`; `ISO` clamps the domain output to its configured constant. Only then does the PMU assert `sleep`, opening `PS` and collapsing `VDD_CPU_SW`. `LOGIC` corrupts to X, `RET` holds, and `RCV` sees the clamped constant rather than the X — because `ISO` sits on the always-on rail and is still powered. Power-up replays this in reverse: rail, then de-isolate, then restore.
+
+**The failure and its cost.** Reverse any two steps and the design breaks in a way simulation may not catch: isolating after the rail collapses clamps a value that is already X, and restoring before the rail is stable writes garbage into live flops. The cost of getting it right is that three separate control signals must be routed as always-on nets across a domain that is otherwise entirely switchable — extra buffers, extra routing tracks, and a special always-on constraint on every one of them.
 
 ---
 

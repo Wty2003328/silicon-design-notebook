@@ -1,7 +1,7 @@
 # GPU Artificial-Intelligence Performance Analysis, Profiling, and Research Methods
 
 ```mermaid
-flowchart LR
+flowchart TD
     Q["falsifiable service/kernel question"] --> LEDGER["latency + operations + bytes ledger"]
     LEDGER --> ROOF["multi-level roofline + occupancy + communication bounds"]
     ROOF --> PROF["service timeline → kernel profile → counters"]

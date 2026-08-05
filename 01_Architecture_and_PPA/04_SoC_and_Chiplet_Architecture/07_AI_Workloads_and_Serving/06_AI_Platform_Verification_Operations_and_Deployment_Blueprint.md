@@ -5,7 +5,7 @@
 *What and why: verification, operations, and deployment are one release path—an artifact serves users only after it clears compatibility, tests, and SLO and resilience qualification, and any regression drains live traffic back to a validated rollback. The pipeline below is that path end to end; the sections that follow detail each stage.*
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["Model, compiler, firmware, driver, and topology artifacts"] --> V["Compatibility and contract validation"]
     V --> T["Device, composition, load, and fault-injection tests"]
     T --> C["Capacity, SLO, resilience, and security qualification"]

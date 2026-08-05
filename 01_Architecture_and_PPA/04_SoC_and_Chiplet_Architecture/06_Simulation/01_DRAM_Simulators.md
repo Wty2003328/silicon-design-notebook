@@ -25,7 +25,7 @@ This page is not a second copy of the [DDR_Controller](../02_Shared_Memory/01_DD
 The simulator does not assign one fixed latency to a request. It maps the address, queues it, chooses among ready commands, checks every JEDEC timing guard, mutates bank/rank/channel state, and only then records completion and energy.
 
 ```mermaid
-flowchart LR
+flowchart TD
     R["Core / trace requests"] --> A["Address mapping<br/>ch / rank / bank / row / col"]
     A --> Q["Read + write queues"]
     Q --> F["FR-FCFS / policy"]

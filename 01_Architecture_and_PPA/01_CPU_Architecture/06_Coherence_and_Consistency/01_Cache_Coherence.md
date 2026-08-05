@@ -36,7 +36,7 @@ Coherence features evolved by preserving the same single-writer/multiple-reader 
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["One shared cache / no private copies<br/>implicit serialization; poor scaling"]
     B["Write-through snooping<br/>memory current; every write broadcasts"]
     C["Write-back MSI<br/>M state keeps private dirty data local"]

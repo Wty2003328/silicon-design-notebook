@@ -32,7 +32,7 @@ CPU features are easiest to remember as a sequence of failed machines. Start wit
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["One instruction at a time<br/>correct, long cycle, low utilization"]
     B["Pipeline<br/>stage registers + valid bits"]
     C["Forwarding + interlock<br/>comparators, operand muxes, stall control"]
@@ -518,7 +518,6 @@ Everything a snooping MESI controller does is two lookup tables — one for the 
 The diagram makes the two tables one picture. Processor-initiated triggers are named `Pr*` (this core); snoop-initiated triggers are prefixed `snoop` / `Bus*` (a remote core's request seen on the bus); the text after `/` is the bus action, and `silent` means no bus transaction — the star of the whole protocol being the silent E→M:
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 stateDiagram-v2
     direction LR
     I: Invalid

@@ -10,7 +10,7 @@ This blueprint connects the load-store unit (LSU), translation lookaside buffer 
 
 The static block-and-interface map below fixes those boundaries: each block owns state, and each arrow is an interface whose payload, ordering, and failure behavior the later sections must pin down. The single-access path through these blocks is traced separately in §2.
 
-~~~mermaid
+```mermaid
 flowchart TB
   subgraph CORE["per-core memory subsystem"]
     LSU["LSU<br/>load / store queues<br/>+ forwarding"]
@@ -33,7 +33,13 @@ flowchart TB
   COH <-->|"probe / state"| L1
   COH <-->|"transactions"| FAB
   FAB <-->|"snoop / data"| MEM
-~~~
+```
+
+**Contract.** Every arrow is an interface with a named payload, and every box owns state that no other box may write. The two dashed and bidirectional edges are the ones that break the tidy top-to-bottom reading: the MMU's page-table fetch re-enters the L1 it sits above, and the coherence controller both probes the L1 and is probed by the fabric.
+
+**Trace one load that misses everything.** `LSU` sends a virtual address and access type to `MMU`; `MMU` returns a physical address, permissions, and attributes — possibly after its own `PTE fetch` back through `L1`. `LSU` presents the physical access to `L1`, which misses and allocates in `MSHR`. `MSHR` raises a coherent request to `COH`, which transacts with `FAB`, which reaches `MEM`, the serialization point. Data returns along the same edges, `MSHR` fills `L1`, and the waiting load wakes.
+
+**The failure this map is drawn to prevent.** The `PTE fetch` edge means the translation path and the data path share the L1, so a page walk can evict the very line the walking load wants, and the design can deadlock if demand misses exhaust the MSHR pool with no entry reserved for walks. Every later section that says "reserve an entry" or "give walks a separate port" is paying for that one dashed arrow.
 
 ## 1. Write the memory contract
 
@@ -52,7 +58,7 @@ State which layer owns each failure. A TLB hit with denied permission is a trans
 
 ## 2. End-to-end load and store path
 
-~~~mermaid
+```mermaid
 flowchart LR
     AGU["address generation"] --> LSQ["load/store queue"]
     LSQ --> TLB["D-TLB + permissions"]
@@ -65,7 +71,7 @@ flowchart LR
     FAB --> LLC["shared cache / memory"]
     LLC --> FAB --> MSHR
     MSHR --> L1
-~~~
+```
 
 For a load, address generation creates a virtual address plus size and byte mask. The load queue checks older stores: exact-address matches may forward bytes; unresolved older stores may block or be predicted independent. Translation supplies physical page number, access permissions, and memory attributes. The L1 cache checks tag, valid/coherence state, and ECC. A hit returns selected bytes and marks the load complete. A miss allocates or merges into a miss-status handling register (MSHR), sends the necessary coherent request, fills the line, wakes merged dependents, and replays the load.
 

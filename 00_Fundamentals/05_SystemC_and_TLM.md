@@ -76,19 +76,15 @@ When no process is runnable after a delta cycle, the kernel enters the **timed**
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 45, "htmlLabels": false}}}%%
 flowchart TD
     INIT([elaboration done → start_of_simulation<br/>all processes made runnable<br/>except dont_initialize / SC_CTHREAD]):::se --> EVAL
-    EVAL["EVALUATE<br/>run each runnable process to wait()/return, any order<br/>reads see OLD channel values<br/>signal write() calls request_update()"]:::ev
+    EVAL["EVALUATE<br/>run each runnable process to wait()/return, any order<br/>reads see OLD channel values<br/>signal write() calls request_update()"]
     EVAL -->|"immediate notify() — adds to the CURRENT runnable set<br/>(order-dependent → discouraged)"| EVAL
-    EVAL --> UPD["UPDATE<br/>execute pending update() requests<br/>sc_signal new values commit HERE"]:::up
-    UPD --> DN["DELTA-NOTIFY<br/>process notify(SC_ZERO_TIME) + update-triggered events<br/>build next runnable set"]:::dn
+    EVAL --> UPD["UPDATE<br/>execute pending update() requests<br/>sc_signal new values commit HERE"]
+    UPD --> DN["DELTA-NOTIFY<br/>process notify(SC_ZERO_TIME) + update-triggered events<br/>build next runnable set"]
     DN -->|"runnable set non-empty<br/>DELTA CYCLE — same simulated time"| EVAL
-    DN -->|"runnable set empty"| TIMED["TIMED-NOTIFY<br/>advance sc_time to earliest pending notify(t>0)"]:::tn
+    DN -->|"runnable set empty"| TIMED["TIMED-NOTIFY<br/>advance sc_time to earliest pending notify(t>0)"]
     TIMED -->|"a timed event is due — TIME ADVANCES"| EVAL
     TIMED -->|"no events remain"| DONE([simulation ends]):::se
     classDef se fill:#fbcfe8,stroke:#9d174d,color:#000
-    classDef ev fill:#fde68a,stroke:#b45309,color:#000
-    classDef up fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef dn fill:#bae6fd,stroke:#0369a1,color:#000
-    classDef tn fill:#c7d2fe,stroke:#4338ca,color:#000
 ```
 
 This is **exactly** the SystemVerilog region model of [Procedural_Processes_and_IPC](../03_Frontend_RTL_and_Verification/03_Procedural_Processes_and_IPC.md): SystemC's *evaluate* = SV's *Active* region (blocking reads/writes, RHS evaluation), SystemC's *update* = SV's *NBA* region (non-blocking `<=` commit), and the delta-cycle loop is SV's "iterate zero-delay updates to a fixed point within the time slot." An `sc_signal` write *is* a non-blocking assignment; a plain C++ member write *is* a blocking assignment. If you already know why RTL puts `<=` in the clocked block, you already know why `sc_signal` uses request-update — it is the same theorem.
@@ -169,7 +165,7 @@ SystemC's structural model exists to answer one question cleanly: **how does one
 A module names only the *interface* it needs; elaboration binds its port to whatever *channel* implements that interface, so computation and communication meet only at the method contract:
 
 ```mermaid
-flowchart LR
+flowchart TD
     MOD["Module<br/>computation"] -->|"calls a method through"| PORT["Port<br/>needs an IF"]
     PORT -->|"bound to a channel (elaboration)"| CHAN["Channel<br/>communication"]
     CHAN -->|"implements"| IF["Interface IF<br/>method contract, no data"]
@@ -382,7 +378,7 @@ The same protocol viewed as time rather than call stack makes the two exclusion 
 ```wavedrom
 { "signal": [
   { "name": "time",        "wave": "p..........." },
-  { "name": "txn A phase", "wave": "034..56....", "data": ["BEGIN_REQ", "END_REQ", "BEGIN_RESP", "END_RESP"] },
+  { "name": "txn A phase", "wave": "034..56.....", "data": ["BEGIN_REQ", "END_REQ", "BEGIN_RESP", "END_RESP"] },
   { "name": "request busy", "wave": "01.0........" },
   { "name": "response busy","wave": "0....1.0...." },
   { "name": "txn B phase", "wave": "x..34....56.", "data": ["BEGIN_REQ", "END_REQ", "BEGIN_RESP", "END_RESP"] }
@@ -502,7 +498,7 @@ flowchart TD
     IMG --> LOAD["platform loader populates modeled memory and reset state"]
     LOAD --> ISS["ISS fetches, decodes, and executes target instructions"]
     ISS --> TX["loads, stores, MMIO, interrupts become TLM transactions/events"]
-    TX --> MODELS["interconnect, memory, and device models update state and annotate time"]
+    TX --> MODELS["interconnect, memory, and device models<br/>update state and annotate time"]
     MODELS --> OBS["counters, timestamps, traces, and checkpoints"]
     OBS --> REDUCE["warm-up exclusion + measurement formulas + confidence checks"]
     REDUCE --> RESULT["reported result with fidelity and configuration"]

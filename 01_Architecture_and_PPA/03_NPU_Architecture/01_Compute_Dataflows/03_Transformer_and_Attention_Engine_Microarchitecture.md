@@ -69,7 +69,7 @@ Adding a vector engine fixes the operator-coverage problem only if the score til
 Use a deliberately small example so every state transition is visible: one new token, one attention head with head dimension $d_h=64$, and 256 cached tokens divided into four 64-token KV blocks. The compiler has already tiled the projection weights and assigned scratchpad banks. A command contains a request ID, layer ID, token position, tensor addresses/layouts, precision, four KV block descriptors, and dependency/completion event IDs.
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["1. load activation + projection weights"] --> QKV["2. Q/K/V projection"]
     QKV --> APP["3. stage new K/V at token 256"]
     APP --> KB["4. iterate four 64-token KV blocks"]

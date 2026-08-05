@@ -6,7 +6,7 @@ A GPU is a throughput-oriented processor: it keeps many threads resident so anot
 
 > **First-time reader:** Start with [GPU Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_GPU_Workloads_Performance_and_DSE.md). “Warp,” “occupancy,” and “coalescing” are GPU-specific terms and are introduced from first principles in the core and memory chapters.
 
-~~~mermaid
+```mermaid
 flowchart LR
     Kernel["software kernel"] --> Core["SIMT core + warp scheduler"]
     Core --> Mem["coalescing / shared memory / caches"]
@@ -18,7 +18,7 @@ flowchart LR
     Sim -. validates .-> Mem
     Build["implementation blueprints"] -. specifies .-> Core
     Build -. specifies .-> Mem
-~~~
+```
 
 ## Subdomains
 

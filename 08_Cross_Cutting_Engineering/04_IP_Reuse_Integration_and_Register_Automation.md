@@ -102,7 +102,7 @@ Schedule to "integrated and passing": about **5 months**. Risk is much lower —
 
 **Step 5 — the break-even, so you know when the answer flips.** On cash alone, build costs a fixed $\$885$k; buy costs $\$500$k fixed plus $\$0.08N$. Equal when
 
-$$885{,}000 = 500{,}000 + 0.08N \quad\Longrightarrow\quad N^\* = \frac{385{,}000}{0.08} = 4{,}812{,}500 \text{ units.}$$
+$$885{,}000 = 500{,}000 + 0.08N \quad\Longrightarrow\quad N^{\ast} = \frac{385{,}000}{0.08} = 4{,}812{,}500 \text{ units.}$$
 
 Below 4.81 M units buy is cheaper even ignoring schedule. Above it, build is cheaper on cash — but you must still pay the nine months, so the crossover in *value* sits far higher, near $N \approx 50$ M where the royalty reaches $\$4$M. And even there the correct move is usually not "build" but "negotiate": a **royalty buy-out** typically prices at 8–15× the single-project license fee, which at $\$350$k license means $\$2.8$M–$\$5.3$M — competitive with a $\$4$M royalty bill and with none of the schedule or compliance risk.
 

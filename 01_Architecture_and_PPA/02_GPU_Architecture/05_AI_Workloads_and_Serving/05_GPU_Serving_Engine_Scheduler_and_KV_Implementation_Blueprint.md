@@ -3,7 +3,7 @@
 A serving engine turns arriving requests into streamed tokens by repeating one scheduler iteration at a time; the loop below is that single iteration end to end, and Section 4 expands each stage.
 
 ```mermaid
-flowchart LR
+flowchart TD
     ARR["arrivals + completions + cancellations"] --> ADM["admission + capacity reserve"]
     ADM --> SEL["decode budget + prefill chunks"]
     SEL --> BATCH["compatible batch / plan / parallel group"]

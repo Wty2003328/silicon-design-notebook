@@ -40,9 +40,9 @@ Hold this frame and the rest of the page is corollaries.
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
     RTL["RTL behavior"] --> ELAB["Elaboration: build technology-independent Boolean network"]
-    ELAB --> OPT["Generic logic optimization: minimize the function (literals, depth)"]
+    ELAB --> OPT["Generic logic optimization:<br/>minimize the function<br/>for literals and depth"]
     OPT --> MAP["Technology mapping: cover the network with library cells"]
-    MAP --> TIME["Timing-driven optimization: size / buffer / retime against real delays"]
+    MAP --> TIME["Timing-driven optimization:<br/>size, buffer, retime<br/>against real delays"]
     TIME --> NET["Gate-level netlist"]
     SDC["PPA constraints (SDC) — the spec"] -. drives .-> OPT
     SDC -. drives .-> MAP

@@ -200,6 +200,12 @@ flowchart TB
     DMA -.->|"fill / drain"| WBUF
 ```
 
+**Contract.** Solid arrows are the streaming operand path during a tile's execution; dashed arrows are the *background* refill path that must complete for the next tile before the current one ends. The compass words in the SRAM labels record the intended adjacency the floorplan must deliver — operands enter the array from the edge nearest their bank — but the drawn positions are graph layout, not geometry.
+
+**Trace one tile.** Weights stream from `WBUF` into the array's west edge while activations stream from `ABUF` into its north edge; partial sums fall out of the south edge into `RED`; `VEC` applies the activation and normalisation; `DMA` drains the result through `NOC` and `MC` to `HBM`. Concurrently the dashed edges are refilling `ABUF` and `WBUF` for tile $n{+}1$.
+
+**The trade-off it illustrates.** The area equation above says the array is a minority of the die; this figure says why. Three of the five in-core blocks are SRAM, and each needs a wide, short connection to the array edge. Growing the array by $2\times$ grows its perimeter by only $\sqrt2$, so the SRAM bandwidth per PE falls unless the banks grow too — which is the concrete mechanism behind "halving MAC area rarely halves die area."
+
 ## 10. CIM and emerging-memory claims
 
 Compute-in-memory performs some operations on bitlines or within/near arrays to reduce data movement. Evaluation must include:

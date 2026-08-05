@@ -24,7 +24,7 @@ An optimization is valid only if it respects every contract above it. A graph re
 
 ## 1. End-to-end compiler path
 
-~~~mermaid
+```mermaid
 flowchart LR
     A["framework model + checkpoint"] --> B["capture / export"]
     B --> C["portable or framework IR"]
@@ -37,7 +37,7 @@ flowchart LR
     I --> J["NPU commands / binary"]
     J --> K["runtime loads and launches"]
     F --> X["CPU/GPU/custom fallback"]
-~~~
+```
 
 ### 1.1 Capture and export
 
@@ -127,7 +127,7 @@ Suppose a projection is followed by bias, activation, and quantization. Without 
 
 Intuitively, fusion is the difference between filing every rough draft in the cabinet between edits and keeping the page on your desk until it is final: the arithmetic is identical, but the round-trips to slow memory vanish. Each un-fused boundary pays a full write plus a full read of the intermediate; a fused chain reads the operands once, holds every intermediate in the accumulator or a register/SRAM tile, and writes only the result.
 
-~~~mermaid
+```mermaid
 flowchart LR
     subgraph UNF["unfused - every boundary round-trips HBM"]
         direction LR
@@ -147,7 +147,7 @@ flowchart LR
         F2 -->|"on-chip"| F3["quantize"]
         F3 -->|"write B/2"| FH4[("HBM int8")]
     end
-~~~
+```
 
 For intermediate tensor size $B$, eliminating one write/read pair saves roughly $2B$ bytes at that memory level.
 
@@ -182,7 +182,7 @@ The result is not just a kernel name. It is a resource-constrained event graph c
 
 Concretely, that event graph is a software pipeline over double-buffered tiles: each tile flows fill → matrix → vector/reduction → drain, and while one buffer is being consumed the DMA engine fills the next, so transfer and compute overlap instead of serializing (question 5). A completion event on each drain proves the buffer is free before a later tile is allowed to refill it — the buffer's *lifetime*, not merely its size, is what memory allocation must respect (question 7), which is why two tiles can share buffer A only if their live ranges do not overlap.
 
-~~~mermaid
+```mermaid
 flowchart LR
     subgraph BA["buffer A lifetime"]
         F0["fill 0"] --> M0["matmul 0"] --> V0["vector 0"] --> D0["drain 0"]
@@ -193,7 +193,7 @@ flowchart LR
     M0 -. "compute 0 overlaps fill 1" .-> F1
     D0 -. "event: A free" .-> F2["fill 2 reuses A"]
     D1 -. "event: B free" .-> F3["fill 3 reuses B"]
-~~~
+```
 
 ## 5. Dense GEMM and batched GEMM mapping
 

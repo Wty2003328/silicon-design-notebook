@@ -18,7 +18,7 @@
 A warp instruction can name one address per active lane. The memory system must merge those addresses into aligned transactions, translate them, track misses, distribute them across partitions, and return data to the right lanes. The ratio of useful bytes to moved bytes often determines GPU performance more than arithmetic count.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Warp["lane addresses + masks"] --> Coalesce["coalescer<br/>segment / sector formation"]
     Coalesce --> TLB["TLB / page walkers"]
     TLB --> L1["L1 data / texture / shared path"]
@@ -36,7 +36,7 @@ Optimization is a hierarchy: coalesce lanes, reuse on chip, expose enough MLP, a
 Start with the simplest possible implementation: each active lane sends its own request directly to memory. It is functionally correct, but it immediately exposes several throughput failures. The memory hierarchy evolves by repairing them in order:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["one request per active lane"] -->|"duplicates sectors and wastes bytes"| B["coalescer<br/>merge lanes by aligned sector"]
     B -->|"repeated tiles still reach HBM"| C["L1 cache + software-managed shared memory"]
     C -->|"one miss blocks later independent misses"| D["MSHRs + nonblocking replay"]
@@ -84,7 +84,7 @@ All three request the same 128 useful bytes. The strided kernel moves $8\times$ 
 The mechanism is a per-lane segment index followed by a dedup: lanes that compute the same segment collapse into one transaction, so the transaction count — and therefore bytes moved — is just the number of distinct segments the warp touches.
 
 ```mermaid
-flowchart LR
+flowchart TD
     LA["32 lane addresses<br/>one per active lane"] --> SEG["each lane computes<br/>segment = addr div 32"]
     SEG --> GRP["group lanes<br/>sharing a segment id"]
     GRP --> TX["emit one transaction<br/>per distinct segment"]
@@ -379,7 +379,7 @@ Take the message-passing (MP) test with a producer block P on SM 0 and a consume
 Is `r == 42` guaranteed? It depends entirely on the scope `S`:
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph SM0["SM 0 — block P"]
       P["data=42; release flag"] --> L1a["L1 (P)"]
     end

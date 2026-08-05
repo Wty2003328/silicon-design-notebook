@@ -33,7 +33,7 @@ Generate software headers/device description, RTL parameters, verification conne
 
 Write boot as a dependency graph rather than a firmware list:
 
-~~~mermaid
+```mermaid
 flowchart TD
     PWR["always-on supply stable"] --> AONCLK["always-on clock/reset"]
     AONCLK --> DBG["debug + boot straps + identity"]
@@ -45,7 +45,7 @@ flowchart TD
     SEC --> DEV["GPU/NPU/I/O domains"]
     FW --> DEV
     DEV --> OS["OS / services / workloads"]
-~~~
+```
 
 For each node state entry condition, action, success evidence, timeout, retry, fallback, and next dependencies. Boot ROM must reach only always-on or already-enabled targets. DDR training failure needs diagnostic status and a defined fallback/recovery; otherwise first failure appears as a CPU fetch hang.
 

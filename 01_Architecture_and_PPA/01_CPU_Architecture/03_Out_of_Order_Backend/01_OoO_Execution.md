@@ -48,7 +48,7 @@ Before the structural map, the same contract reads as a **pipeline of six stages
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 48, "rankSpacing": 52, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     subgraph inorder_front["in-order front"]
         RENAME["Rename<br/>RAT: arch -> phys<br/>pop free list"]
         DISPATCH["Dispatch<br/>alloc ROB + IQ + LSQ<br/>program order"]
@@ -124,7 +124,7 @@ The modern datapath is easier to reconstruct by watching simpler machines fail:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 44, "rankSpacing": 56, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["In-order interlocked pipe<br/>one stalled op blocks all younger ops"]
     B["Scoreboard<br/>central ready/busy state; issue ready younger ops"]
     C["Tomasulo reservation stations<br/>tags + distributed wakeup + value broadcast"]

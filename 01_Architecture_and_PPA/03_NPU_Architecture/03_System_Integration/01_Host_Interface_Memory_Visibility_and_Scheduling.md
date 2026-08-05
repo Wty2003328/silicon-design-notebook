@@ -17,7 +17,7 @@
 A matrix engine is not a deployable accelerator. The system also needs command submission, dependency tracking, address translation, direct memory access, a coherent or explicitly synchronized view of memory, interrupts, multi-tenant scheduling, preemption, reset, errors, and observability. These “integration” blocks decide whether peak compute can be used safely. Coherence states, directories, and protocol correctness remain in [CPU Coherence and Consistency](../../01_CPU_Architecture/06_Coherence_and_Consistency/00_Index.md); this page only defines the NPU-side participation contract.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Host["CPU runtime / driver"] --> Queue["command queues + doorbells"]
     Queue --> CP["command processor / firmware"]
     CP --> Sched["context + engine scheduler"]

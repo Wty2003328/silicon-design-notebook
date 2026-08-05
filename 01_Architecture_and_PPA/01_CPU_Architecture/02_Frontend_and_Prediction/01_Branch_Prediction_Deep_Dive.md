@@ -114,7 +114,7 @@ The predictor family did not grow by accumulating unrelated algorithms. Each gen
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["Wait for execute<br/>correct; every branch stalls"]
     B["Static direction<br/>no learned state"]
     C["1-bit then 2-bit bimodal<br/>per-PC bias + hysteresis"]
@@ -277,7 +277,6 @@ Most branches are heavily skewed: a loop back-edge is taken $N{-}1$ of $N$ times
 The state machine this names is small enough to draw in full — a taken outcome steps one notch toward **ST**, a not-taken one notch toward **SN**, and both ends saturate:
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 stateDiagram-v2
     direction LR
     SN: SN 00 Strongly Not-Taken (predict NT)
@@ -436,7 +435,7 @@ flowchart TD
     PICK -->|yes| OUT["Predicted direction"]
     PICK -->|weak / new: use alt| OUT
     OUT --> RES["resolve in execute"]
-    RES --> UPD["update: bump provider counter; u++ if provider right and alt wrong;<br/>on mispredict allocate an entry in a longer table (u=0)"]
+    RES --> UPD["update: bump provider counter;<br/>u++ if provider right and alt wrong;<br/>on mispredict allocate an entry in a longer table (u=0)"]
     UPD -.->|train / allocate / decay| COMP
 ```
 

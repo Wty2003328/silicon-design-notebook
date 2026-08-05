@@ -1,7 +1,7 @@
 # GPU Simulation Methodology and Evidence — From CUDA to Validated Kernel Results
 
 ```mermaid
-flowchart LR
+flowchart TD
     SRC["framework / CUDA-like source + inputs"] --> COMP["graph + kernel compilation"]
     COMP --> ISA["target ISA / code object + resource metadata"]
     ISA --> FUNC["functional threads / warps / addresses"]
@@ -15,7 +15,7 @@ flowchart LR
 > **Two complementary views.** The diagram above is the *data path inside one run* — source to validated metrics. The loop below is the *engineer's workflow across a study*: capture one trace, configure a timing model, validate its counters against silicon, correlate the trend, then iterate or reuse. Sections 3–9 detail each stage.
 
 ```mermaid
-flowchart LR
+flowchart TD
     APP["app plus fixed input"] --> CAP["capture SASS trace on real GPU"]
     CAP --> MODEL["configure timing model"]
     MODEL --> RUN["simulate ROI, dump counters"]

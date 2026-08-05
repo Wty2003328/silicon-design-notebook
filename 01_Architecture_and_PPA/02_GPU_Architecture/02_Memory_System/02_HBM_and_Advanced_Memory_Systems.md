@@ -18,7 +18,7 @@
 High Bandwidth Memory (HBM) does not make one memory access magically fast. It replaces a small number of very fast off-package channels with many wide, lower-frequency channels connected through dense package wiring and through-silicon vias. The architectural gain is **parallel bandwidth and energy/bit**; the price is package complexity, capacity, thermal coupling, and traffic-management discipline.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Cores["GPU / NPU / CPU clusters"] --> NoC["on-die NoC + LLC"]
     NoC --> MC0["memory controllers"]
     MC0 --> PHY["wide die-to-stack PHY"]
@@ -36,7 +36,7 @@ This page owns the full architectural path from offered traffic to achieved stac
 HBM widens the physical interface, but width alone leaves most pins idle for irregular traffic. The controller hierarchy evolves as each new bottleneck appears:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["wide interface<br/>single serial request stream"] -->|"row cycle is tens of ns"| B["many channels, pseudochannels,<br/>bank groups, and banks"]
     B -->|"addresses may camp on one resource"| C["striped / hashed address mapping"]
     C -->|"commands have readiness and turnaround constraints"| D["per-bank queues + FR-FCFS scheduling"]
@@ -44,6 +44,12 @@ flowchart LR
     E -->|"stacked arrays expose faults and retention work"| F["ECC, repair, scrub, refresh"]
     F -->|"temperature raises refresh and limits rate"| G["thermal sensing + throttling"]
 ```
+
+**Contract.** The nodes are not a feature list — they are a *derivation*, and the information is carried by the **edge labels**, each of which names the specific bottleneck that makes the next mechanism unavoidable. Read the chain as "adding only the left-hand mechanism exposes this problem, which forces the right-hand one." Nothing here is optional or reorderable: each stage is the answer to the failure the previous stage creates.
+
+**Trace it once.** Widen the interface and you have one serial request stream against a row cycle of tens of nanoseconds, so the pins idle — hence many channels and banks. Independent banks let a bad address pattern camp on one of them — hence striped or hashed mapping. Spreading addresses produces commands that are not all legal at the same instant — hence per-bank queues and FR-FCFS. Reordering for legality lets one requestor's stream starve another's — hence drain modes and age or QoS control. Running the stack hard exposes retention and fault behaviour — hence ECC, repair, and scrub. And all of that raises power, which raises temperature, which raises the refresh burden — hence thermal sensing and throttling, which closes the loop by limiting the very rate the width was bought for.
+
+**The trade-off it illustrates.** Every stage buys delivered bandwidth with controller state, area, and latency for the requests that lose an arbitration. A design that stops early does not fail correctness — it simply never reaches the peak the interface width promised, which is why "HBM bandwidth" quoted from the pin rate is a specification and not a result.
 
 First-ready, first-come, first-served (**FR-FCFS**) means the controller first prefers commands that are legal now—often open-row hits—and uses arrival age among suitable requests. It improves bus use over strict arrival order, but requires age or quality-of-service (QoS) escape so a stream of row hits cannot starve an older row miss.
 

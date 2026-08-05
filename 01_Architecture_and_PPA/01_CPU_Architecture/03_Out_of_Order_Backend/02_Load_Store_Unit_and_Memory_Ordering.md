@@ -17,7 +17,7 @@
 Registers bind early: rename assigns a physical name before execution. Memory addresses bind late: a load may execute while older stores still lack addresses or data. The load-store unit (LSU) must speculate to expose memory-level parallelism, then prove that the observed value is consistent with older instructions and the architectural memory model.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Issue["memory µop issue"] --> AGU["address generation"]
     AGU --> TLB["DTLB / permissions"]
     TLB --> LQ["load queue"]
@@ -39,7 +39,7 @@ The simplest correct processor executes memory operations in program order and w
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["Blocking in-order memory<br/>one operation completes before the next"]
     B["Committed store buffer<br/>retire before cache drain"]
     C["Split store address and data<br/>disambiguate as soon as address is known"]
@@ -182,7 +182,7 @@ A single global policy is poor because most static loads almost never alias an o
 At dispatch, a store with set ID `s` replaces `LFST[s]` with its own queue/ROB identity. A load with the same set ID records a dependency on the current `LFST[s]`; it may issue after that store's address and data make the dependence safe. A load with no trained set speculates freely. On a violation, hardware assigns or merges the load's and store's sets, so the next dynamic instance waits on the known troublemaker rather than every older store.
 
 ```mermaid
-flowchart LR
+flowchart TD
     LPC["load PC"] --> SSIT["SSIT lookup<br/>PC → store-set ID"]
     SSIT -->|"no valid set"| FREE["issue when address/ports ready"]
     SSIT -->|"set s"| LFST["LFST lookup<br/>set s → youngest in-flight store"]

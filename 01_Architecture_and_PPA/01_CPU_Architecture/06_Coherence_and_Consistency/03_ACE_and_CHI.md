@@ -45,14 +45,11 @@ Obligations 1 and 2 are the load-bearing ones. Broadcast answers (1) by asking e
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    C0["Core 0 L1$<br/>writes X = 99<br/>(dirty, held locally)"]:::dirty
-    C1["Core 1 L1$<br/>still reads X = 42<br/>(stale!)"]:::stale
-    M["Main Memory<br/>X = 42"]:::mem
+    C0["Core 0 L1$<br/>writes X = 99<br/>(dirty, held locally)"]
+    C1["Core 1 L1$<br/>still reads X = 42<br/>(stale!)"]
+    M["Main Memory<br/>X = 42"]
     C0 -.->|"write invisible to Core 1"| C1
     C1 --> M
-    classDef dirty fill:#fee2e2,stroke:#b91c1c,color:#000
-    classDef stale fill:#fef9c3,stroke:#a16207,color:#000
-    classDef mem fill:#e2e8f0,stroke:#475569,color:#000
 ```
 
 The hardware alternative to this bug is not software cache maintenance (clean/invalidate instructions — slow, error-prone, and it pushes a hardware invariant onto programmers); it is a protocol on the interconnect that makes the staleness *impossible*. That is the whole point of ACE and CHI.
@@ -216,19 +213,17 @@ Formally, the serializer admits transactions to line $x$ one at a time, which *i
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 50, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     RN0["Requester (RN-F)<br/>CPU + private L1/L2$"]:::rn
-    HN["Home Node (HN-F)<br/>directory / snoop filter<br/>+ LLC slice<br/>= serialization & coherence point"]:::hn
+    HN["Home Node (HN-F)<br/>directory / snoop filter<br/>plus LLC slice<br/>= serialization and coherence point"]
     RN1["Owner (RN-F)<br/>has line dirty"]:::rn
-    SN["Subordinate (SN-F)<br/>memory controller"]:::sn
+    SN["Subordinate (SN-F)<br/>memory controller"]
     RN0 -->|"1 request"| HN
     HN -->|"2 targeted snoop<br/>(only actual sharers)"| RN1
     RN1 -->|"3 data (direct to requester = DCT)"| RN0
     RN1 -.->|"3' metadata / resp"| HN
     HN -->|"alt: fetch if uncached"| SN
     classDef rn fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef hn fill:#fde68a,stroke:#b45309,color:#000
-    classDef sn fill:#e2e8f0,stroke:#475569,color:#000
 ```
 
 The node taxonomy is just this picture: **Request Nodes (RN)** issue requests (RN-F = *full*, a coherent CPU with a cache that can be snooped; RN-I = *IO*, an uncacheable DMA/IO master — the CHI cousin of ACE-Lite); **Home Nodes (HN)** hold the directory and serialize; **Subordinate Nodes (SN)** are the memory controllers and slaves at the far end. That is the whole model — three roles, not a channel table.
@@ -271,7 +266,6 @@ That is the whole derivation: **five is $2^2+1$**, the cross-product of the two 
 The transitions below are the §1.1 message archetypes — get-shared (`ReadShared`/`ReadNotSharedDirty`), get-unique (`ReadUnique`/`MakeUnique`), upgrade (`CleanUnique`), write-back (`WriteBackFull`/`Evict`), and snoop (`SnpShared`/`SnpUnique`) — now labelling the edges of the same lattice §8 drew with `Pr`/`Bus` events. **It is the message-level dual of §8's state diagram, not a duplicate:** identical states, but the arrows are CHI transactions on the wire, not a cache's local FSM events.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 stateDiagram-v2
     direction LR
     I:  Invalid
@@ -437,21 +431,16 @@ Everything above assumes the coherent agents are peers on one die: hop latency i
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 50, "htmlLabels": false}}}%%
-flowchart LR
-    DEV["Accelerator<br/>(GPU/NIC/AI)<br/>coherence CLIENT"]:::dev
-    AG["CXL.cache / CXL.mem agent"]:::ag
-    LNK["CXL link<br/>(PCIe 6.0 PHY, ~100-300 ns)"]:::lnk
-    HN["Host Home Node<br/>= single point of coherence<br/>(tracks device like any sharer)"]:::hn
-    HOST["Host CPU caches"]:::rn
+flowchart TD
+    DEV["Accelerator<br/>(GPU/NIC/AI)<br/>coherence CLIENT"]
+    AG["CXL.cache / CXL.mem agent"]
+    LNK["CXL link<br/>(PCIe 6.0 PHY, ~100-300 ns)"]
+    HN["Host Home Node<br/>= single point of coherence<br/>(tracks device like any sharer)"]
+    HOST["Host CPU caches"]
     DEV <--> AG
     AG <-->|"asymmetric:<br/>device requests in,<br/>host directory decides"| LNK
     LNK <--> HN
     HN <--> HOST
-    classDef dev fill:#dcfce7,stroke:#15803d,color:#000
-    classDef ag fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef lnk fill:#e2e8f0,stroke:#475569,color:#000
-    classDef hn fill:#fde68a,stroke:#b45309,color:#000
-    classDef rn fill:#dbeafe,stroke:#1d4ed8,color:#000
 ```
 
 - **CXL.cache** — the device *caches host memory*. To the host home node the device is **just another sharer**: it issues coherent reads (shared/exclusive) that the host directory tracks and back-invalidates exactly like a CPU's cache. Conceptually this maps onto CHI as one more RN with a longer wire; the directory does not care that the sharer is off-chip.
@@ -1604,11 +1593,11 @@ So DVM has exactly the §4.1 structure with the **shareability domain** playing 
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
     RN0["Initiating RN-F<br/>executes TLBI VAE1IS"]:::rn
-    MN["Miscellaneous Node<br/>one ordered DVM stream<br/>for the whole domain<br/>= the serialization point"]:::mn
+    MN["Miscellaneous Node<br/>one ordered DVM stream<br/>for the whole domain<br/>= the serialization point"]
     A["RN-F core 1<br/>TLB + PWC + BTB + I-cache"]:::rn
     B["RN-F core 2"]:::rn
     C["RN-F core 63"]:::rn
-    IO["RN-I with no MMU<br/>filtered out, never snooped"]:::skip
+    IO["RN-I with no MMU<br/>filtered out, never snooped"]
     RN0 -->|"1 DVMOp part 1 on REQ<br/>then part 2 on DAT"| MN
     MN -->|"2 SnpDVMOp, two parts, to every RN in the domain"| A
     MN --> B
@@ -1619,8 +1608,6 @@ flowchart TD
     C --> MN
     MN -->|"4 Comp: accepted and distributed,<br/>NOT yet taken effect"| RN0
     classDef rn fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef mn fill:#fde68a,stroke:#b45309,color:#000
-    classDef skip fill:#e2e8f0,stroke:#475569,color:#000
 ```
 
 The figure's contract is that step 4 is deliberately weak: `Comp` means *accepted and ordered*, not *applied everywhere*. Trace one operation: core 0 executes `TLBI VAE1IS`, the RN sends both parts of `DVMOp` to the MN, the MN inserts it into its ordered stream and fans out `SnpDVMOp` to every RN-F, each RN applies it and returns `SnpResp`, and the MN returns `Comp`. Core 0's `TLBI` instruction can retire here — long before the last core has applied anything. The trade-off this exposes is the one §14.2 costed: the weak completion is what allows 512 invalidates to pipeline, and it is exactly why a *second* operation, the Sync, must exist and why omitting the `DSB` is a real memory-safety bug rather than a performance issue. The dashed edge is §14.6's filter: an RN with no translation regime never needs the snoop, and suppressing it is the cheapest of all the mitigations.
@@ -1785,10 +1772,10 @@ The `AtomicStore` row is the one to pause on: it returns no data, so the request
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
 flowchart TB
-    START["RN executes LDADD on a shared counter"]:::rn
-    Q{"Home consults directory:<br/>is the line contended?"}:::hn
-    NEAR["NEAR path<br/>ReadUnique, snoop current owner,<br/>DCT the 64 B line to the requester,<br/>RMW in the requester L1"]:::near
-    FAR["FAR path<br/>AtomicLoad carries the 8 B operand,<br/>home snoop-invalidates any UD owner once,<br/>ALU beside the SLC computes,<br/>old value returns"]:::far
+    START["RN executes LDADD on a shared counter"]
+    Q{"Home consults directory:<br/>is the line contended?"}
+    NEAR["NEAR path<br/>ReadUnique, snoop current owner,<br/>DCT the 64 B line to the requester,<br/>RMW in the requester L1"]
+    FAR["FAR path<br/>AtomicLoad carries the 8 B operand,<br/>home snoop-invalidates any UD owner once,<br/>ALU beside the SLC computes,<br/>old value returns"]
     N1["Line now lives in this requester.<br/>Next requester must steal it back:<br/>machine completes 1 op per 30 ns"]:::cost
     F1["Line stays at the home.<br/>Next requester needs no migration:<br/>home completes 1 op per 2 ns"]:::cost
     START --> Q
@@ -1796,10 +1783,6 @@ flowchart TB
     Q -->|"yes: line is stolen away between accesses"| FAR
     NEAR --> N1
     FAR --> F1
-    classDef rn fill:#dbeafe,stroke:#1d4ed8,color:#000
-    classDef hn fill:#fde68a,stroke:#b45309,color:#000
-    classDef near fill:#fee2e2,stroke:#b91c1c,color:#000
-    classDef far fill:#dcfce7,stroke:#15803d,color:#000
     classDef cost fill:#e2e8f0,stroke:#475569,color:#000
 ```
 

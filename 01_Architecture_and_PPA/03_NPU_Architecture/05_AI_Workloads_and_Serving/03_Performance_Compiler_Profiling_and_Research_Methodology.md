@@ -1,7 +1,7 @@
 # Neural Processing Unit Performance, Compiler, Profiling, and Research Methodology
 
 ```mermaid
-flowchart LR
+flowchart TD
     WL["graph / shapes / precision / sparsity"] --> MAP["actual compiler mapping + executable"]
     MAP --> WORK["useful/padded operations + bytes + lifetimes"]
     WORK --> BND["array / vector / bank / DMA / memory / communication bounds"]

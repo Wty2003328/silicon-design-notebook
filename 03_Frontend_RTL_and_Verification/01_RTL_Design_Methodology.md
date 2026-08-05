@@ -160,7 +160,7 @@ The genuine engineering choice is **how** reset reaches those flops. It is a fou
 The metastability hazard is exactly setup/hold, transposed onto the reset-release edge: the release must clear a **recovery** window before, and a **removal** window after, the active clock edge,
 
 $$
-t_\text{recovery} \le t_\text{rst\_release \to clk\_edge}, \qquad t_\text{removal} \le t_\text{clk\_edge \to rst\_release}
+t_\text{recovery} \le t_{\text{rst\_release}\,\to\,\text{clk\_edge}}, \qquad t_\text{removal} \le t_{\text{clk\_edge}\,\to\,\text{rst\_release}}
 $$
 
 Violate it and the flop can go metastable on the way *out* of reset — which is why the de-assertion must be synchronized while the assertion, being unconditional, need not be. The synchronizer mechanics and the MTBF math live in [Async_Design_and_CDC](06_Async_Design_and_CDC.md); here the point is *why* the standard scheme is the standard: it is the only one that is simultaneously power-on-safe (async assert), metastability-safe (sync release), and DFT-friendly. Crossing a **reset domain** demands the same discipline as a clock-domain crossing — plan it, don't let it happen. Scan and ATPG add the final constraint (hold reset inactive during shift, make async resets test-controllable), which is why many test methodologies lean toward synchronous or explicitly testable async reset ([DFT_and_ATPG](../06_Signoff/02_DFT_and_ATPG.md)).

@@ -1,7 +1,7 @@
 # CPU Simulation Methodology and Evidence — From Source to Defensible Results
 
 ```mermaid
-flowchart LR
+flowchart TD
     SRC["source + input dataset"] --> COMP["compiler / linker / libraries"]
     COMP --> ELF["target executable + disassembly"]
     ELF --> LOAD["loader: memory / PC / stack / OS state"]

@@ -59,6 +59,10 @@ flowchart TB
     RSPQ --> REQ
 ```
 
+**Trace one read that arrives while its bank is closed.** The request enters `ING`, which decodes it to channel, rank, bank group, bank, row, and column, and lands in `RQ`. `SCH` consults all three dotted inputs at once: `BST` says the bank has no open row, `TMG` says the last activate to this rank was long enough ago, and `REF` says no refresh deadline is imminent. The only legal command is therefore `ACT`, which `SCH` issues to `BFSM`; `BFSM` updates `BST` with the newly open row. Only after $t_{RCD}$ does `SCH` find `RD` legal for that bank. Data returns through `PHY`, is checked by `ECC`, and `RSPQ` restores the requester's expected ordering before `REQ` sees it.
+
+**The trade-off this datapath illustrates.** `RSPQ` exists because `SCH` deliberately reorders — that is the entire point of FR-FCFS. Reordering wins row-buffer hits and therefore bandwidth, but every reordered response has to be put back in order for the requester, so the throughput gain is paid for in response-queue entries and in worst-case latency for the requests that got passed over. A controller that did not reorder would need no `RSPQ` at all and would deliver perhaps half the bandwidth.
+
 ---
 
 ## 2. The bank as a state machine, and the row buffer's three cases
@@ -83,7 +87,6 @@ The row buffer is not a cache someone *added* for speed — it is the **sense-am
 A bank is *idle* (bitlines precharged to $V_{dd}/2$, no row open) or *active* (one row latched in the sense amps). Four commands are its verbs: **ACTIVATE** opens a row (idle → active), **READ/WRITE** access columns of the open row (active → active), **PRECHARGE** closes it (active → idle), and **REFRESH** services decay (§6). The controller's per-bank state is not a signal dump but three facts: *is a row open and which one* (the row tag), *when did it open / last get accessed* (for timing and policy), and *when is each next command legal* (the timer deadlines).
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 stateDiagram-v2
     [*] --> Idle
     Idle --> Activating: ACT (open row R)
@@ -253,7 +256,7 @@ sequenceDiagram
     participant E as "ECC + response queue"
     CPU->>IN: "AR(ID=17, PA, 64 B, QoS)"
     IN->>Q: "allocate R17: ch0/r0/bg1/b3/row42/col6"
-    Note over Q,S: "D9 is younger but hits open row19, serve D9 first unless R17 age/deadline overrides"
+    Note over Q,S: "D9 is younger but hits open row19<br/>serve D9 first unless R17<br/>age or deadline overrides"
     S->>B: "READ D9 (legal row hit)"
     S->>B: "PRE bank3 after tRAS and bus guards"
     S->>B: "ACT row42 after tRP and rank ACT guards"

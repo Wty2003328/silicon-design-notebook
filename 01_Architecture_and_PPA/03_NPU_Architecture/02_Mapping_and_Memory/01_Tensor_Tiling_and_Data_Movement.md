@@ -16,7 +16,7 @@
 Moving an operand from HBM can cost orders of magnitude more energy than using it in a MAC. Tiling keeps a working subset in each on-chip level long enough to reuse it, but every larger tile consumes capacity and can reduce parallelism or double buffering.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Graph["operator graph"] --> Loops["loop nest + tensor shapes"]
     Loops --> Tile["tile / reorder / fuse / spatial map"]
     HBM["HBM / DDR"] --> Global["global buffer"]

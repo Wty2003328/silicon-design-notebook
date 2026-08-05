@@ -18,7 +18,7 @@
 A modern system translates addresses for CPU cores, virtual machines, GPUs, NPUs, and DMA devices. A miss can trigger multi-level, two-stage page walks; devices may cache translations remotely; software can change tables while traffic is in flight. Translation is therefore a distributed coherence and isolation subsystem.
 
 ```mermaid
-flowchart LR
+flowchart TD
     CPU["CPU VA + ASID"] --> TLB["core TLB"]
     TLB --> Walker["CPU page walker"]
     Device["device IOVA + device/process ID"] --> IOTLB["IOTLB / device ATC"]

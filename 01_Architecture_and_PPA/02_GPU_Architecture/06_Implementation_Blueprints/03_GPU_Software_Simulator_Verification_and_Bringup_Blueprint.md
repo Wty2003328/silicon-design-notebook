@@ -10,7 +10,7 @@ The design ideology is **make every transformation inspectable**. Preserve a sta
 
 Read the whole blueprint as one loop—**build an inspectable model, validate it against a trusted reference, then correlate silicon against that validated model during bring-up**—so the simulator becomes the golden model hardware is measured against, not a throwaway estimate. The diagram below maps that flow; Section 1 onward fills in each stage. (This is the methodology; the data-path diagram in Section 1 is a different view—how one launch flows through the stack at run time.)
 
-~~~mermaid
+```mermaid
 flowchart TD
     CAP["Capture inputs<br/>source, options, seeds"] --> FUNC["Functional exec<br/>what happens"]
     FUNC --> TIME["Timing exec<br/>when it happens"]
@@ -20,11 +20,11 @@ flowchart TD
     CORR -->|"mismatch"| FUNC
     CORR -->|"validated"| GATE["Bring-up gates<br/>command to full workload"]
     GATE -->|"same binary and input"| CORR
-~~~
+```
 
 ## 1. Complete software-to-hardware contract
 
-~~~mermaid
+```mermaid
 flowchart LR
     SRC["framework / kernel source"] --> IR["compiler intermediate representation"]
     IR --> ISA["target instructions + metadata"]
@@ -36,7 +36,7 @@ flowchart LR
     DIST --> SM["warps on SMs"]
     SM --> EVT["completion / fault / counters"]
     EVT --> RT
-~~~
+```
 
 The code object must identify ISA/version, code/data sections, entry points, register use per thread, static shared memory, required dynamic shared memory, barrier/stack/local-memory requirements, launch bounds, relocation, constants, and optional debug/source maps. Hardware or firmware rejects unsupported versions/resources rather than interpreting them approximately.
 

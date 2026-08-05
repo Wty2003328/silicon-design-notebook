@@ -185,7 +185,7 @@ Target command/micro-op stream for each output tile t:
 The last block is the NPU equivalent of assembly. Some machines expose binary instructions; others expose fixed-size descriptors interpreted by firmware. In both cases the simulator must consume the same executable semantics as hardware: opcode, tile extents, addresses/strides, bank and phase, precision, mapping ID, waits/signals, context, and fault policy. Simulating the loop IR while assuming a different hidden command schedule does not validate the compiler/runtime stack.
 
 ```mermaid
-flowchart LR
+flowchart TD
     SRC["framework benchmark<br/>inputs + weights"] --> ONNX["exported graph<br/>shapes + operator semantics"]
     ONNX --> OPT["optimized graph<br/>fusion + layout + quantization"]
     OPT --> TIR["tensor / loop IR"]
@@ -427,7 +427,7 @@ NeuSim is **analytical and operator-level, not RTL, transaction-level, or cycle-
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 34, "rankSpacing": 44, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     CFG["model + chip + system JSON"] --> GEN["model-specific graph generator"]
     HLO["standalone HLO text parser"] -. "not wired into the main run path" .-> IR
     GEN --> IR["ordered Operator IR<br/>shape, dtype, axes, count, TP/PP/DP/EP"]

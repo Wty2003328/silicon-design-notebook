@@ -10,7 +10,7 @@ Read [AI Workload and Operator Mapping](01_AI_Workload_and_Operator_Mapping.md) 
 
 ## 1. Layer map and artifacts
 
-~~~mermaid
+```mermaid
 flowchart LR
     FW["framework graph + parameters"] --> CAP["capture/export + guards"]
     subgraph AOT["ahead-of-time compile (frozen into the release)"]
@@ -27,7 +27,7 @@ flowchart LR
     BIN --> RT
     RT --> DRV
     DRV --> GPU
-~~~
+```
 
 The release contains a source-model manifest, captured graph and guard set, compiler configuration, optimized IR, engine/execution plan, kernel code objects, constant/packed weights, shape profiles, workspace bound, target GPU/driver requirements, numerical contract, and validation evidence. Hash every input that changes generated work.
 
@@ -114,7 +114,7 @@ This example makes every layer concrete. Let `X` be `[M,K]`, `W` be `[K,N]`, bia
 The minimum stack can lower matrix multiplication, bias addition, and GELU to three validated library/generated kernels on one stream:
 
 ```mermaid
-flowchart LR
+flowchart TD
     X["X[M,K]"] --> GEMM["kernel 0: XW"]
     W["W[K,N]"] --> GEMM
     GEMM --> T0["temporary T0[M,N] in HBM"]
@@ -140,7 +140,7 @@ flowchart TD
     L -->|"yes"| R["fused region with source map"]
     R --> T["choose BM x BN x BK tile + warp roles"]
     T --> M["allocate shared-memory stages + register accumulators"]
-    M --> P["pipeline async global-to-shared copies with matrix instructions"]
+    M --> P["pipeline async global-to-shared<br/>copies with matrix instructions"]
     P --> E["bias + GELU epilogue; one global write"]
     E --> G{"resource and numerical checks pass?"}
     G -->|"no"| T

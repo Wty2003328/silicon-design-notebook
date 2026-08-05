@@ -205,7 +205,6 @@ Key observations:
 **Answer:**
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 sequenceDiagram
     participant DMA as DMA Engine
     participant IC as AXI Interconnect

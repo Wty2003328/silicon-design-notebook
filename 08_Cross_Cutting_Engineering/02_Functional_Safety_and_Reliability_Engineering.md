@@ -33,11 +33,11 @@ Each arrow in that chain is a probability less than one, and every one of those 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    P["Physical cause<br/>alpha particle · neutron · metal void<br/>oxide breakdown · threshold drift"]:::phys
-    F["FAULT<br/>a bit is wrong · a node is stuck<br/>dormant until something reads it"]:::fault
-    E["ERROR<br/>incorrect value now in the<br/>computation, propagating"]:::err
-    FL["FAILURE<br/>element stops delivering<br/>its specified function"]:::fail
-    H["HAZARD<br/>safety goal violated<br/>unreasonable risk to persons"]:::haz
+    P["Physical cause<br/>alpha particle · neutron · metal void<br/>oxide breakdown · threshold drift"]
+    F["FAULT<br/>a bit is wrong · a node is stuck<br/>dormant until something reads it"]
+    E["ERROR<br/>incorrect value now in the<br/>computation, propagating"]
+    FL["FAILURE<br/>element stops delivering<br/>its specified function"]
+    H["HAZARD<br/>safety goal violated<br/>unreasonable risk to persons"]
 
     P --> F
     F -->|"activation: the wrong value is read"| E
@@ -54,11 +54,6 @@ flowchart TD
     M3 -.->|"flags within FDTI"| E
     M4 -.->|"blocks"| H
 
-    classDef phys fill:#eef2ff,stroke:#4557a8
-    classDef fault fill:#fff4e5,stroke:#b06d0a
-    classDef err fill:#ffe9e9,stroke:#b03030
-    classDef fail fill:#ffd9d9,stroke:#8b1f1f
-    classDef haz fill:#ffc9c9,stroke:#6b0f0f
     classDef sm fill:#e6f7ec,stroke:#1f7a45
 ```
 
@@ -764,8 +759,8 @@ You have an ASIL-D safety island and a QM applications processor on one die, sha
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    QM["QM element<br/>applications CPU · GPU<br/>infotainment stack"]:::qm
-    SR["ASIL-D element<br/>safety island<br/>lockstep core plus ECC SRAM"]:::sr
+    QM["QM element<br/>applications CPU · GPU<br/>infotainment stack"]
+    SR["ASIL-D element<br/>safety island<br/>lockstep core plus ECC SRAM"]
 
     C1["Shared memory<br/>a stray write lands in<br/>safety-relevant data"]:::ch
     C2["Shared interconnect<br/>bandwidth starvation<br/>or a blocking transaction"]:::ch
@@ -783,8 +778,6 @@ flowchart TD
     QM --> C6 --> SR
     QM --> C7 --> SR
 
-    classDef qm fill:#eef2ff,stroke:#4557a8
-    classDef sr fill:#e6f7ec,stroke:#1f7a45
     classDef ch fill:#fff4e5,stroke:#b06d0a
 ```
 

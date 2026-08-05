@@ -555,7 +555,7 @@ endmodule
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
   REQ["req[N-1:0]"] --> MASK["mask AND req<br/>(eligible window)"]
   MASK --> PICK["any masked set?"]
   PICK -- "yes" --> GM["lowest set of masked"]

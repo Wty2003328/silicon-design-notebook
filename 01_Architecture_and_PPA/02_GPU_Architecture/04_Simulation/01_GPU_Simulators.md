@@ -27,10 +27,10 @@ The scope line is precise: [GPU Core Architecture](../01_Core_Architecture/00_In
 The methods are an evolution driven by questions that the previous model cannot answer:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["operation counts / roofline"] -->|"cannot expose scheduler, MSHR, or contention stalls"| B["cycle timing model"]
     C["static kernel assembly"] -->|"does not reveal dynamic branches, masks, or addresses"| D["functional execution frontend"]
-    D -->|"PTX is not final allocation or scheduling; closed libraries unavailable"| E["hardware-captured SASS trace frontend"]
+    D -->|"PTX is not final allocation<br/>or scheduling; closed<br/>libraries unavailable"| E["hardware-captured SASS trace frontend"]
     E -->|"trace freezes timing-sensitive paths"| F["execution-driven fallback / matched path-validity tests"]
     B --> G["component events and raw counters"]
     E --> G
@@ -176,17 +176,14 @@ the exact fill factor of [GPU_Architecture §7](../01_Core_Architecture/01_GPU_A
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 45, "htmlLabels": false}}}%%
 flowchart TD
     START([warp launch<br/>stack = 1 entry, full mask]):::se --> EXEC
-    EXEC["EXEC — issue at top-of-stack<br/>issue under TOS mask; +1 issued slot<br/>tally active lanes into eta_SIMT"]:::ex
+    EXEC["EXEC — issue at top-of-stack<br/>issue under TOS mask; +1 issued slot<br/>tally active lanes into eta_SIMT"]
     EXEC -->|"non-divergent issue<br/>(advance TOS PC)"| EXEC
-    EXEC -->|"divergent branch<br/>(both masks non-empty)"| DIV["DIVERGE<br/>push (IPDOM, full mask) reconv entry<br/>push arm_T, arm_N; one arm becomes TOS"]:::dv
+    EXEC -->|"divergent branch<br/>(both masks non-empty)"| DIV["DIVERGE<br/>push (IPDOM, full mask) reconv entry<br/>push arm_T, arm_N; one arm becomes TOS"]
     DIV --> EXEC
-    EXEC -->|"TOS PC = reconvergence PC"| REC["RECONVERGE<br/>pop TOS; waiting sibling becomes TOS<br/>(reconv entry restores full mask)"]:::rc
+    EXEC -->|"TOS PC = reconvergence PC"| REC["RECONVERGE<br/>pop TOS; waiting sibling becomes TOS<br/>(reconv entry restores full mask)"]
     REC --> EXEC
     EXEC -->|"stack empty"| DONE([warp retires]):::se
     classDef se fill:#fbcfe8,stroke:#9d174d,color:#000
-    classDef ex fill:#fde68a,stroke:#b45309,color:#000
-    classDef dv fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef rc fill:#bae6fd,stroke:#0369a1,color:#000
 ```
 
 **The count falls straight out of the transitions.** One un-nested if-else of arm lengths $\ell_T,\ell_N$ takes $\ell_T$ Issue transitions down one arm and $\ell_N$ down the other before the two Reconverge pops — $\ell_T+\ell_N$ issued slots to deliver $\max(\ell_T,\ell_N)$ of MIMD-equivalent work, the $\eta_{\text{SIMT}}=\tfrac12$ of a balanced split (§2.1). Because a Diverge nested *inside* an arm pushes a fresh pair onto a stack that already carries waiting entries, the losses **compose multiplicatively**: $d$ balanced levels serialize $2^{d}$ leaf paths, each issued in full, so the region bills $\sim 2^{d}\times$ its convergent slot count and
@@ -295,7 +292,7 @@ For the GPU-specific source/compiler/ROI/counter chain, see [GPU source-to-resul
 A CUDA `.cu` translation unit contains ordinary host C++ plus device functions and kernels. The compiler driver logically performs two compilations:
 
 ```mermaid
-flowchart LR
+flowchart TD
     SRC["CUDA .cu source"] --> SPLIT{"compiler-driver split"}
     SPLIT --> HOST["host C++ compilation<br/>CPU object + executable"]
     SPLIT --> DEV["device compilation"]
@@ -396,7 +393,7 @@ $$\text{IPC} = \frac{\text{warp-instructions executed}}{\text{cycles}}, \qquad \
 where $f$ = core clock and *warp-instructions* (machine-instruction count) is used for cross-simulator fairness. Each numerator is an accumulator the §2–§3 event loop increments: a warp-instruction on every issue, post-coalesce bytes on every transaction (§3), a running active-warp average sampled per cycle.
 
 ```mermaid
-flowchart LR
+flowchart TD
     E["raw per-cycle events<br/>issue, active lanes, cache access,<br/>queue grant, DRAM command, completion"] --> C["typed counters<br/>counts, occupancy integrals,<br/>latency and stall histograms"]
     C --> K["per-kernel totals<br/>cycles, warp instructions,<br/>payload and transferred bytes"]
     K --> M["derived metrics<br/>IPC, achieved BW, hit rate,<br/>occupancy, utilization"]

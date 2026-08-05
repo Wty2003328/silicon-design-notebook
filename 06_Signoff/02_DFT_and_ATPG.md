@@ -192,7 +192,7 @@ The cheapest on-chip pattern source is a **linear-feedback shift register (LFSR)
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     L["LFSR<br/>(pseudo-random stimulus)"] --> CUT["Logic under test<br/>(scan chains)"] --> M["MISR<br/>(compacts to a signature)"]
     CT["BIST controller"] --> L
     M --> Q{"signature ==<br/>golden?"}
@@ -228,7 +228,7 @@ Full scan produces enormous test data. Uncompressed, the volume is (scan cells) 
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     ATE1["ATE<br/>(few channels)"] --> DEC["Decompressor<br/>(LFSR + phase shifter)"]
     DEC --> CH["Hundreds of short internal chains"]
     CH --> CMP["Compactor<br/>(XOR / MISR)"]

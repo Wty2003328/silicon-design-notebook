@@ -6,7 +6,7 @@ An NPU accelerates neural-network tensor operations by placing many arithmetic u
 
 > **First-time reader:** Begin with [NPU Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_NPU_Workloads_Performance_and_DSE.md). The compute chapter introduces tensors, processing elements, multiply-accumulate operations, and dataflow before using their abbreviations.
 
-~~~mermaid
+```mermaid
 flowchart LR
     Graph["neural-network graph"] --> Map["tile / layout / precision / sparsity"]
     Map --> Array["systolic / spatial / vector array"]
@@ -19,7 +19,7 @@ flowchart LR
     Sim -. calibrates .-> Metric
     Build["implementation blueprints"] -. specifies .-> Map
     Build -. specifies .-> Array
-~~~
+```
 
 ## Subdomains
 

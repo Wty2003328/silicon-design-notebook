@@ -1050,7 +1050,6 @@ Two chips that have never communicated must agree, using only the wires being ne
 ### 9.2 The state diagram
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 stateDiagram-v2
     [*] --> Detect
     state Detect {

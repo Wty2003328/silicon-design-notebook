@@ -389,14 +389,6 @@ flowchart TD
     LEAF -->|"per-event energy × activity"| CON
     CON -->|"activity @ (V,f)"| PWR
     PWR -->|"P, Tj  (P = Σ leaves)"| GOV
-    classDef g fill:#fde68a,stroke:#b45309,color:#000
-    classDef p fill:#fee2e2,stroke:#b91c1c,color:#000
-    classDef c fill:#dcfce7,stroke:#15803d,color:#000
-    classDef l fill:#dbeafe,stroke:#1d4ed8,color:#000
-    class GOV g
-    class PWR p
-    class CON c
-    class LEAF l
 ```
 
 Control flows *down* (the governor sets $(V,f)$ and gating); computed quantities flow *back up* (leaf energies become achieved throughput and true activity, which become $P$ and $T_j$). The solve iterates: pick $(V,f)$ → leaves emit activity → contention/overlap turn activity into achieved performance *and* the true (contended) activity counts → those give $P$ → $P$ gives $T_j$ (with the leakage–$T$ loop) → the governor checks $P\le\text{budget}$ and $T_j\le T_{j,max}$, adjusts $(V,f)$, and repeats until nothing moves. Only at that self-consistent point is a perf *or* power number meaningful — quoting either before the loop closes is quoting a transient the chip passes through, not a state it sits in.

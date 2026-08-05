@@ -11,7 +11,7 @@ The same model can stress very different CPU mechanisms depending on phase. Mode
 Every chapter applies the notebook's [research-depth and evidence standard](../../../Research_Depth_and_Evidence_Standard.md): workload and contract → causal mechanism → theoretical bound → observable counters/traces → validation and failure boundary.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Req["request"] --> Prep["tokenize / retrieve / assemble"]
     Prep --> Sched["admit / batch / route"]
     Sched --> Exec["CPU kernels or accelerator submission"]

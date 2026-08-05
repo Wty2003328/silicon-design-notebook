@@ -1,7 +1,7 @@
 # GPU AI-Stack Verification, Operations, and Deployment Blueprint
 
 ```mermaid
-flowchart LR
+flowchart TD
     ART["model / IR / plan / kernel artifacts"] --> SEM["semantic + numerical validation"]
     SEM --> CONC["stream / allocation / graph concurrency tests"]
     CONC --> DIST["multi-GPU + transfer fault tests"]

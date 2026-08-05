@@ -23,7 +23,7 @@ A topic lives with the architecture whose design decisions give it meaning:
 - Implementation blueprints live **inside every architecture book**. They integrate that architecture's mechanisms into buildable contracts rather than creating a detached generic methodology.
 - AI-stack implementation blueprints live **inside each architecture's AI subdomain**. They reconstruct framework/compiler/runtime, serving state, distributed execution, validation, observability, deployment, and operations with architecture-specific contracts.
 
-~~~mermaid
+```mermaid
 flowchart LR
     Need["workload + product goal"] --> CM["CPU methods"] --> CPU["CPU architecture"]
     Need --> GM["GPU methods"] --> GPU["GPU architecture"]
@@ -32,7 +32,7 @@ flowchart LR
     GPU --> SM
     NPU --> SM
     SM --> SoC["SoC + chiplet composition"]
-~~~
+```
 
 ## One problem, four architectural responses
 
@@ -40,15 +40,17 @@ The books are not four unrelated feature catalogs. They make different trade-off
 
 ```mermaid
 flowchart TD
-    W["workload exposes latency, bandwidth, locality, and parallelism"] --> CPU["CPU response<br/>predict and dynamically schedule a small number of general instruction streams"]
-    W --> GPU["GPU response<br/>replicate thread state and switch among many SIMT warps to hide latency"]
-    W --> NPU["NPU response<br/>compile tensor reuse and movement into spatial/vector dataflows"]
-    CPU --> SOC["SoC response<br/>compose heterogeneous agents through memory, protocols, NoC, I/O, and chiplet links"]
-    GPU --> SOC
-    NPU --> SOC
-    SOC --> E["measured service<br/>latency, throughput, energy, area, reliability, and cost"]
-    E -->|"observed bottleneck or failure"| W
+    W["workload exposes latency,<br/>bandwidth, locality,<br/>and parallelism"] -->|"motivates"| CPU["CPU response<br/>predict and dynamically schedule<br/>a small number of<br/>general instruction streams"]
+    W -->|"motivates"| GPU["GPU response<br/>replicate thread state and switch<br/>among many SIMT warps<br/>to hide latency"]
+    W -->|"motivates"| NPU["NPU response<br/>compile tensor reuse and movement<br/>into spatial and vector dataflows"]
+    CPU -->|"is composed into"| SOC["SoC response<br/>compose heterogeneous agents<br/>through memory, protocols,<br/>NoC, I/O, and chiplet links"]
+    GPU -->|"is composed into"| SOC
+    NPU -->|"is composed into"| SOC
+    SOC -->|"produces"| E["measured service<br/>latency, throughput, energy,<br/>area, reliability, and cost"]
+    E -->|"observed bottleneck<br/>re-opens the question"| W
 ```
+
+**Contract.** The four arrow labels are four different relations and the figure states each one rather than leaving them to be guessed: `motivates` (a physical pressure produces an architectural answer), `is composed into` (a design becomes a component of a larger one), `produces` (a system yields measurable service), and the feedback edge, which is the only one that runs backwards in time. **Trace.** A workload with poor locality and abundant parallelism motivates the GPU response; that GPU is composed into an SoC alongside CPU and NPU agents; the SoC produces a measured latency and energy; if the measurement disappoints, the loop re-opens at the workload characterisation, not at the GPU. **The trade-off.** All three responses answer the *same* pressure with different bets, so none dominates: the loop is what tells you which bet the workload actually rewards, and running the loop is the only way to find out.
 
 Read every mechanism procedurally:
 

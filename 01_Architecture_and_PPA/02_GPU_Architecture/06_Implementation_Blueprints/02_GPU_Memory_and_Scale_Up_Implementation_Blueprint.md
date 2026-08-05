@@ -3,7 +3,7 @@
 *This blueprint builds the GPU memory-and-scale-up datapath — the flow below traces one memory request from per-lane addresses through the coalescer, caches, and on-chip network out to HBM or a peer GPU, then back to the requesting lanes.*
 
 ```mermaid
-flowchart LR
+flowchart TD
     LANE["per-lane addresses + masks"] --> COAL["coalescer: line/sector transactions"]
     COAL --> L1["shared memory / L1 / translation"]
     L1 --> NOC["NoC to L2 slice"]

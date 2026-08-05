@@ -27,7 +27,7 @@ Define non-goals. A first design can omit fine-grained preemption, nested parall
 
 ## 2. SM ownership decomposition
 
-~~~mermaid
+```mermaid
 flowchart LR
     DISP["block distributor"] --> ADM["resource admission"]
     ADM --> WS["warp slots: PC + masks + state"]
@@ -40,7 +40,7 @@ flowchart LR
     SB --> SCH
     EX --> MEM["coalescer / shared memory / cache"]
     BAR["barrier state"] --> SCH
-~~~
+```
 
 The admission unit calculates whether a new thread block fits all resources simultaneously. It reserves warp slots, register allocation units, shared-memory bytes, barrier identifiers, and block metadata atomically. Partial admission risks resource leaks.
 
@@ -91,7 +91,7 @@ A matrix/tensor instruction often spans many lanes and cycles. Specify the logic
 
 Structurally the pipeline couples an asynchronous operand-staging producer to the multiply-accumulate consumer, gated by a wait on data arrival:
 
-~~~mermaid
+```mermaid
 flowchart LR
     subgraph PROD["async producer"]
       GMEM["global memory"] --> ACE["async copy engine"]
@@ -108,7 +108,7 @@ flowchart LR
     WAIT --> FRAG
     REG["registers"] --> FRAG
     WB --> REG
-~~~
+```
 
 For an array with $M\times N$ multiply-accumulate units at clock $f$, peak multiply-accumulate rate is
 

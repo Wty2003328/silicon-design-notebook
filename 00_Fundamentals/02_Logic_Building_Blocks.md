@@ -426,7 +426,7 @@ flowchart LR
   B0["(g0, e0)"] --> C10
   C32 --> ROOT["combine<br/>[3:0]"]
   C10 --> ROOT
-  ROOT --> OUT["A &gt; B = g<br/>A = B = e"]
+  ROOT --> OUT["A greater than B = g<br/>A equals B = e"]
 ```
 
 For $A=1010$ and $B=1001$, bits 3 and 2 are equal; bit 1 is the first mismatch and has $A_1=1,B_1=0$, so the high-to-low prefix reports greater without allowing bit 0 to overturn the decision. A linear comparator carries “equal so far” through every bit; a prefix tree computes the same associative result in logarithmic depth at more wiring/area.
@@ -665,15 +665,66 @@ The waveform is qualitative and deliberately shows propagation rather than insta
 
 But transparency is a hazard in a clocked pipeline: while a latch is open, a change on $D$ races straight through $Q$ and onward into the next stage — state could ripple through many stages in one clock phase, and timing becomes unanalyzable. What we actually want is to capture $D$ at an *instant* — the clock edge — and be opaque otherwise. No single level-sensitive latch can do that. The construction that can is **two latches in series on opposite clock phases** (master–slave):
 
+```tikz
+\usepackage{circuitikz}
+\begin{document}
+\begin{circuitikz}[american,thick,scale=0.76,transform shape]
+  % ---------- master latch (transparent while CLK = 0) ----------
+  \node[draw,minimum width=1.1cm,minimum height=0.95cm,align=center] (TGIM) at (0,0) {TG\\$\overline{\mathrm{CLK}}$};
+  \node[not port] (A1) at (2.1,0) {};
+  \node[not port] (A2) at (4.0,0) {};
+  \node[draw,minimum width=1.1cm,minimum height=0.95cm,align=center] (TGFM) at (2.1,-1.8) {TG\\$\mathrm{CLK}$};
+  % ---------- slave latch (transparent while CLK = 1) ----------
+  \node[draw,minimum width=1.1cm,minimum height=0.95cm,align=center] (TGIS) at (6.6,0) {TG\\$\mathrm{CLK}$};
+  \node[not port] (B1) at (8.7,0) {};
+  \node[not port] (B2) at (10.6,0) {};
+  \node[draw,minimum width=1.1cm,minimum height=0.95cm,align=center] (TGFS) at (8.7,-1.8) {TG\\$\overline{\mathrm{CLK}}$};
+  % ---------- forward path ----------
+  \draw (TGIM.west) -- ++(-0.9,0) node[left]{$D$};
+  \draw (TGIM.east) -- (A1.in);
+  \draw (A1.out) -- (A2.in);
+  \draw (A2.out) -- (5.35,0) coordinate (M) node[circ]{} node[above=2pt]{$M$};
+  \draw (M) -- (TGIS.west);
+  \draw (TGIS.east) -- (B1.in);
+  \draw (B1.out) -- (B2.in);
+  \draw (B2.out) -- ++(1.05,0) coordinate (Q) node[circ]{} node[right]{$Q$};
+  % ---------- storage feedback loops ----------
+  \draw (M) |- (TGFM.east);
+  \draw (TGFM.west) -| (1.15,0);
+  \draw (Q) |- (TGFS.east);
+  \draw (TGFS.west) -| (7.75,0);
+  % ---------- clock generation and distribution from below ----------
+  \node[not port] (CI) at (-0.7,-4.6) {};
+  \draw (CI.in) -- ++(-0.8,0) coordinate (CK) node[circ]{} node[left]{$\mathrm{CLK}$};
+  \draw (CK) -- (CK|-0,-3.6) -- (11.4,-3.6) node[right]{$\mathrm{CLK}$};
+  \draw (CI.out) -- (11.4,-4.6) node[right]{$\overline{\mathrm{CLK}}$};
+  \draw (2.1,-3.6) node[circ]{} -- (TGFM.south);
+  \draw (6.6,-3.6) node[circ]{} -- (TGIS.south);
+  \draw (0,-4.6) node[circ]{} -- (TGIM.south);
+  \draw (8.7,-4.6) node[circ]{} -- (TGFS.south);
+  % ---------- annotations ----------
+  \node[align=center,font=\small] at (2.1,1.4) {master latch\\open while $\mathrm{CLK}=0$};
+  \node[align=center,font=\small] at (8.7,1.4) {slave latch\\open while $\mathrm{CLK}=1$};
+\end{circuitikz}
+\end{document}
+```
+
+This is two copies of the transmission-gate latch of §4.3, wired in series and driven by opposite clock phases from one inverter. Each `TG` is labeled with the phase that turns it **on**, and the four junction dots on the clock buses are the only connections — the two crossings without dots are not connections. Read the complementary pairing directly off the drawing: within each latch the input `TG` and the feedback `TG` carry opposite labels, so exactly one of them conducts at a time; and between latches the input gates carry opposite labels, so the master and slave are never open together.
+
+The schematic abstracts away device sizing, the n/p pair inside each `TG` symbol, the finite delay and slope of the clock inverter, and the parasitics of the two clock buses — all of which matter for the overlap discussion below.
+
+The same construction viewed as **clock-phase ownership** — which phase is responsible for the live copy of the value, and which phase is merely holding it:
+
 ```mermaid
 flowchart LR
-  D["D"] --> M["master D latch<br/>transparent when CLK = 0"]
-  M -->|M| S["slave D latch<br/>transparent when CLK = 1"]
+  D["D"] --> M["master latch<br/>owns the live value<br/>while CLK = 0"]
+  M -->|"frozen sample M"| S["slave latch<br/>owns the live value<br/>while CLK = 1"]
   S --> Q["Q"]
-  CLK["CLK"] --> INV["inverter"]
-  INV -.->|opens master on CLK low| M
-  CLK -.->|opens slave on CLK high| S
+  P0["phase CLK = 0"] -.->|"opens master, holds slave"| M
+  P1["phase CLK = 1"] -.->|"holds master, opens slave"| S
 ```
+
+Solid arrows are data flow; dashed arrows are "this phase controls that latch." The contract the pair of figures enforces together is that **exactly one latch is open at any instant**, so no value can travel from $D$ to $Q$ within a single phase.
 
 During the low phase, the master tracks $D$ while the slave holds the old output. At the rising edge, the master closes and freezes its last legal input; the slave opens and transfers that frozen master value to $Q$. During the high phase, later $D$ transitions cannot reach the closed master. The next falling edge closes the slave before reopening the master. This is a positive-edge-triggered **D flip-flop (DFF)**; reversing the latch phases produces a negative-edge-triggered cell.
 
@@ -1136,7 +1187,7 @@ The barrel shifter trades $O(N\log N)$ mux wiring and a combinational $O(\log N)
 Start from one toggle flip-flop with $T=1$. It changes state on every active edge, so its output frequency is $f_{clk}/2$. Cascading each output into the next stage's clock creates an **asynchronous or ripple counter**: bit 0 toggles first, its delayed output clocks bit 1, and so forth.
 
 ```mermaid
-flowchart LR
+flowchart TD
   CLK["source clock"] --> F0["TFF 0<br/>T = 1"]
   F0 -->|Q0 clocks| F1["TFF 1<br/>T = 1"]
   F1 -->|Q1 clocks| F2["TFF 2<br/>T = 1"]
@@ -1291,6 +1342,10 @@ stateDiagram-v2
     RESP --> RESP: req=1 / ack
     RESP --> IDLE: req=0
 ```
+
+The diagram and the table below are not redundant, and it is worth saying what each one is for. The **diagram** shows the *shape*: that the machine is a single cycle with no shortcut from `IDLE` to `RESP`, and that every state has a self-loop, which is what guarantees the controller can wait indefinitely in any state without falling out of it. The **table** shows the *contents*: the exact output values in each cycle and the ownership reason for each row. Reading only the diagram, you cannot tell whether `ack` is asserted in `RESP`; reading only the table, you cannot see at a glance that the machine cannot skip a state.
+
+Trace one transaction through both: `req` rises while in `IDLE`, so the machine takes `IDLE --> RUN` and pulses `start` for exactly that cycle; it then sits on the `RUN` self-loop until `done`; it moves to `RESP` and holds `ack` on the `RESP` self-loop until the requester drops `req`; then it returns to `IDLE`. The failure the self-loops prevent is a controller that leaves `RESP` before the requester has observed `ack`, which loses the completion entirely.
 
 | Present state | Input condition | Next state | Outputs during this cycle | Reason |
 |---|---|---|---|---|

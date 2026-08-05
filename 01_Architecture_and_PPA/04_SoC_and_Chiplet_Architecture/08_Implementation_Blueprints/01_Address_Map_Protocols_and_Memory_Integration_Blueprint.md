@@ -3,7 +3,7 @@
 > **Abbreviation key:** system on chip (SoC); central processing unit (CPU); graphics processing unit (GPU); neural processing unit (NPU); intellectual property (IP); Advanced eXtensible Interface (AXI); Advanced High-performance Bus (AHB); Advanced Peripheral Bus (APB); double data rate (DDR); dynamic random-access memory (DRAM); error-correcting code (ECC); physical interface (PHY); first-in, first-out queue (FIFO); input-output memory management unit (IOMMU); input/output (I/O).
 
 ```mermaid
-flowchart LR
+flowchart TD
     I["CPU, GPU, NPU, DMA, and I/O initiators"] --> MMU["Translation, protection, and address decode"]
     MMU --> BR["Protocol bridge and width/clock adaptation"]
     BR --> FAB["Ordered fabric or NoC"]
@@ -159,7 +159,7 @@ Head/tail wrap needs either one unused slot, a generation/phase bit, or unbounde
 ### 6.2 Hardware decomposition
 
 ```mermaid
-flowchart LR
+flowchart TD
     SW["Driver / command producer<br/>descriptors + doorbell"] --> CSR["CSR, ring head/tail,<br/>channel and security state"]
     CSR --> DF["Descriptor fetch,<br/>prefetch, validate"]
     DF --> SCH["Channel scheduler<br/>QoS + outstanding limits"]
@@ -351,6 +351,12 @@ flowchart TB
     CMP --> TX
     TX --> DMA
 ```
+
+**Contract.** The forward chain is the request path and the return chain is the response path; they are drawn separately because they are separately credited and separately ordered. The `remote visibility event` edge is the only one that carries a *guarantee* rather than data: it asserts that the write has reached the remote coherence point, not merely that the packet left the PHY.
+
+**Trace one chiplet-remote DMA write.** Firmware writes a descriptor and rings a doorbell (`SW`); the source DMA generates addresses and tags; the source IOMMU translates and authorises; the local home adapter picks a route and coherency class; the D2D adapter packetises, maps IDs, consumes a credit, and adds CRC; the PHY carries it; the remote adapter depacketises and filters duplicates from any link-level retry; the remote home agent orders it against other traffic and writes memory. Only then does `CMP` fire back through the same adapter to retire the source tag.
+
+**The failure it illustrates.** Every one of those nine hops can complete successfully while the transfer is still not *visible* to software on die B. Retiring the DMA tag on the PHY's transmit confirmation — the intuitive place, and one hop earlier than the diagram allows — produces exactly the bug where a completion interrupt precedes the data it announces. The cost of correctness is that the tag must stay allocated for a full round trip across the die boundary, which is why remote DMA needs far deeper tag pools than local DMA at the same bandwidth.
 
 #### 6.10.1 Address ownership and routing
 

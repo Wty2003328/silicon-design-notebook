@@ -31,16 +31,16 @@ A note on how to use this well. A dependency here means "the downstream idea is 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    PHYS["L0 · Device physics<br/>MOSFET, threshold, leakage, RC"]:::l0
-    CIRC["L1 · Circuits<br/>inverter, drive, noise margin,<br/>storage cells, arrays"]:::l1
-    LOGIC["L2 · Logic and timing<br/>gates, latches, flops,<br/>setup and hold, metastability"]:::l2
-    RTL["L3 · RTL discipline<br/>synchronous contract, reset,<br/>CDC, flow control"]:::l3
-    BLOCK["L4 · Blocks<br/>datapaths, FIFOs, memories,<br/>interfaces, register files"]:::l4
-    UARCH["L5 · Microarchitecture<br/>pipelines, caches, prediction,<br/>scheduling, coherence"]:::l5
-    SYS["L6 · System<br/>SoC, NoC, protocols,<br/>chiplets, workloads"]:::l6
-    IMPL["Implementation chain<br/>SDC, synthesis, library,<br/>place, CTS, route, extract"]:::im
-    PROOF["Proof chain<br/>simulation, coverage, formal,<br/>STA, DFT, PV, signoff"]:::pr
-    CROSS["Cross-cutting<br/>power, security, safety,<br/>methodology, IP reuse"]:::cx
+    PHYS["L0 · Device physics<br/>MOSFET, threshold, leakage, RC"]
+    CIRC["L1 · Circuits<br/>inverter, drive, noise margin,<br/>storage cells, arrays"]
+    LOGIC["L2 · Logic and timing<br/>gates, latches, flops,<br/>setup and hold, metastability"]
+    RTL["L3 · RTL discipline<br/>synchronous contract, reset,<br/>CDC, flow control"]
+    BLOCK["L4 · Blocks<br/>datapaths, FIFOs, memories,<br/>interfaces, register files"]
+    UARCH["L5 · Microarchitecture<br/>pipelines, caches, prediction,<br/>scheduling, coherence"]
+    SYS["L6 · System<br/>SoC, NoC, protocols,<br/>chiplets, workloads"]
+    IMPL["Implementation chain<br/>SDC, synthesis, library,<br/>place, CTS, route, extract"]
+    PROOF["Proof chain<br/>simulation, coverage, formal,<br/>STA, DFT, PV, signoff"]
+    CROSS["Cross-cutting<br/>power, security, safety,<br/>methodology, IP reuse"]
     PHYS --> CIRC --> LOGIC --> RTL --> BLOCK --> UARCH --> SYS
     LOGIC --> IMPL
     CIRC --> IMPL
@@ -53,16 +53,6 @@ flowchart TD
     CROSS -.->|"constrains"| RTL
     CROSS -.->|"constrains"| IMPL
     CROSS -.->|"constrains"| UARCH
-    classDef l0 fill:#fecaca,stroke:#991b1b,color:#000
-    classDef l1 fill:#fed7aa,stroke:#c2410c,color:#000
-    classDef l2 fill:#fde68a,stroke:#b45309,color:#000
-    classDef l3 fill:#d9f99d,stroke:#4d7c0f,color:#000
-    classDef l4 fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef l5 fill:#a5f3fc,stroke:#0e7490,color:#000
-    classDef l6 fill:#bae6fd,stroke:#0369a1,color:#000
-    classDef im fill:#c7d2fe,stroke:#4338ca,color:#000
-    classDef pr fill:#fbcfe8,stroke:#9d174d,color:#000
-    classDef cx fill:#e5e7eb,stroke:#4b5563,color:#000
 ```
 
 Three things in this figure are worth stating in words, because they are the source of most reading-order mistakes.
@@ -234,11 +224,28 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 | Systolic arrays, dataflows | MAC arrays, data reuse | [Systolic and Spatial Dataflows](01_Architecture_and_PPA/03_NPU_Architecture/01_Compute_Dataflows/02_Systolic_Spatial_and_Vector_Dataflows.md) | Dataflow choice with no energy model |
 | Quantization for AI | Fixed-point, error analysis | [DSP §1–4, §11](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md), [Sparsity and Quantization](01_Architecture_and_PPA/03_NPU_Architecture/02_Mapping_and_Memory/02_Sparsity_Quantization_and_Compression.md) | Accumulator widths and scales chosen by trial |
 | AXI/AHB/APB | Handshakes, flow control, ordering | [AHB AXI APB](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md) | Integration deadlocks and ID-width bugs |
+| `AxCACHE`, `AxPROT`, memory attributes | AXI channels, caches, privilege | [AMBA Family §2](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/02_AMBA_Family_Signals_and_Low_Power_Interfaces.md) | A master that is coherent on paper and stale in silicon; a security filter that filters nothing |
+| Exclusive access, the exclusive monitor | Atomics, ordering, fabric transport | [AMBA Family §3](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/02_AMBA_Family_Signals_and_Low_Power_Interfaces.md) | Locks that fail spuriously forever, and no way to tell that from a bug |
+| AXI ordering, ID reuse, interleaving | Per-ID ordering rules, outstanding transactions | [AMBA Family §5](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/02_AMBA_Family_Signals_and_Low_Power_Interfaces.md) | The ID-reuse deadlock, found at integration and blamed on the fabric |
+| Q-Channel, P-Channel handshakes | Power domains, handshakes, deny semantics | [AMBA Family §8, §9](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/02_AMBA_Family_Signals_and_Low_Power_Interfaces.md) | A domain gated while it is still busy; no path from power intent to RTL |
+| Snoop coherence vs a home node | Coherence protocol, fabric topology | [ACE and CHI §2, §4](01_Architecture_and_PPA/01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) | Broadcast assumed to scale; the directory's storage and indirection cost unbudgeted |
 | Router pipeline, allocators, crossbar | Arbiters, buffers, credit flow control | [Router Microarchitecture §2, §6, §8](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/03_Router_Microarchitecture.md) | Fabric proposed with no frequency or area cost attached |
 | Channel load and ideal throughput | Topology parameters, traffic patterns | [Topology Selection §3](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/04_Topology_Selection_and_Performance_Analysis.md) | Throughput claims that only a simulation can check, and nothing to check it against |
 | High-radix topologies | Bisection cost, routing, deadlock | [Topology Selection §7](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/04_Topology_Selection_and_Performance_Analysis.md) | Mesh assumed to be the only answer at every scale |
+| Bisection as a metal-stack constraint | Wire pitch, layer budget, floorplan | [Topology Selection §2](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/04_Topology_Selection_and_Performance_Analysis.md), [Routing §1](05_Backend_Physical_Design/06_Routing_and_Parasitic_Extraction.md) | A topology that is unbuildable rather than merely expensive, discovered after RTL |
+| Router pipeline frequency and area | Allocators, crossbar, buffer sizing | [Router Microarchitecture §11, §3](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/03_Router_Microarchitecture.md) | A fabric proposal with no frequency it can actually close at |
 | NoC routing, flow control, deadlock | Buffering, virtual channels | [Routing, Flow Control, Deadlock](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md) | Topologies proposed that deadlock |
 | DDR timing and scheduling | DRAM device physics | [DDR Controller](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/01_DDR_Controller.md), [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) | Bandwidth models that ignore row-buffer behavior |
+| DRAM command truth table, mode registers | 1T1C cell, bank and bank-group structure | [DRAM Device Protocol §2, §5](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/02_DRAM_Device_Protocol_and_Training.md) | A controller written against a timing table nobody in the room can justify |
+| Write levelling, read training, ZQ and ODT | Signal integrity, timing budgets, PHY | [DRAM Device Protocol §7, §8](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/02_DRAM_Device_Protocol_and_Training.md) | A memory bus that passes at one corner and fails in the field |
+| The DFI controller/PHY boundary | Command timing, PHY latency | [DRAM Device Protocol §13](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/02_DRAM_Device_Protocol_and_Training.md) | The controller/PHY line drawn in the wrong place, discovered at integration |
+| FR-FCFS, row-buffer policy, read/write turnaround | DRAM timing, queueing | [Memory Scheduling §2, §3](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/03_Memory_Scheduling_and_Address_Mapping.md) | Efficiency numbers with no turnaround term, so they never reproduce |
+| Physical-to-DRAM address mapping | DRAM organization, workload locality | [Memory Scheduling §7](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/03_Memory_Scheduling_and_Address_Mapping.md) | Bank conflicts blamed on the scheduler and never fixed |
+| Memory QoS, fairness, deadline scheduling | Scheduling, multicore interference | [Memory Scheduling §5, §6](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/03_Memory_Scheduling_and_Address_Mapping.md) | A latency-sensitive master starved by a bandwidth-hungry one |
+| DRAM simulator fidelity and its limits | DRAM protocol, queueing, trace validity | [DRAM Simulators §1, §8](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/06_Simulation/01_DRAM_Simulators.md) | A bandwidth number with no validity argument behind it |
+| TLP structure and PCIe credit flow control | Packet layering, credit-based flow control | [PCIe §5, §7](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/04_PCIe_Protocol_Deep_Dive.md) | Bandwidth claims that ignore header overhead and credit-return latency |
+| PCIe ordering and completion rules | Posted/non-posted semantics, deadlock | [PCIe §8](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/04_PCIe_Protocol_Deep_Dive.md) | Producer–consumer ordering bugs, and deadlock through the root complex |
+| Link training and the LTSSM | SerDes, equalization, CDR | [PCIe §9](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/04_PCIe_Protocol_Deep_Dive.md) | A link that will not come up, and no vocabulary to describe where it stopped |
 | Privilege levels, CSRs, trap delivery | Precise state, the ISA contract | [Privileged Architecture §3, §6](01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/04_Privileged_Architecture_CSRs_and_Traps.md) | Exception behaviour treated as magic; a register spec that cannot be written |
 | WARL/WLRL/WPRI field semantics | CSR access rules | [Privileged Architecture §4](01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/04_Privileged_Architecture_CSRs_and_Traps.md) | A register map that cannot be verified against its own specification |
 | Interrupt delivery, priority, preemption | Level/edge detection, fabric ordering | [Interrupt Architecture §2, §5, §8](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/05_Interrupt_Architecture.md) | Latency budgets guessed; storms and lost edges unanticipated |
@@ -288,6 +295,12 @@ Read a row as: *this concept* cannot be derived without *these*, and it is deriv
 | "Power sections read as a list of tricks." | Missing the physics that makes each trick pay. | [Power Fundamentals §2–4](02_Power_and_Low_Power/01_Power_Fundamentals.md) |
 | "DFT seems like someone else's problem." | Missing the observability/controllability argument. | [DFT §1–2](06_Signoff/02_DFT_and_ATPG.md) |
 | "I can't follow the AI-hardware chapters." | Missing quantization and the memory-bandwidth framing. | [DSP §1–4, §11](00_Fundamentals/07_DSP_and_Fixed_Point_Hardware.md), [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md) |
+| "Interrupt latency budgets feel arbitrary." | You have never walked the delivery path hop by hop, so the budget has no terms for it to be made of — it is a number someone else asserted. | [Interrupt Architecture §2](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/05_Interrupt_Architecture.md), then [§9](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/05_Interrupt_Architecture.md); the core's half of the budget is [Privileged Architecture §9.3](01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/04_Privileged_Architecture_CSRs_and_Traps.md) |
+| "I can't read a UPF file." | You met isolation, retention, and level shifting as concepts with names, never as commands with arguments — so the file looks like syntax rather than like the intent you already understand. | [UPF and CPF §§2–5](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md) for the four strategies, then [§10](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md), which is the language as a working file |
+| "AXI signal groups are a mystery." | You learned the five channels and stopped. The channels carry the data; the attribute sidebands tell the fabric what it is *permitted* to do with it, and nothing about a real integration is explicable without them. | [AHB AXI APB §3, §9](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md), then [AMBA Family §2 and §5](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/02_AMBA_Family_Signals_and_Low_Power_Interfaces.md) |
+| "DDR timing parameters are a table I am supposed to memorize." | You have the cell but not the device: each parameter is a consequence of a physical recovery or a shared resource, and the device protocol is where that link is made. | [Memory §10](00_Fundamentals/06_Memory_Circuits_and_Technologies.md), then [DRAM Device Protocol §2 and §4](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/02_Shared_Memory/02_DRAM_Device_Protocol_and_Training.md) |
+| "A register specification reads like legalese." | It *is* a legal document, and it has exactly three field types. Once WPRI, WLRL, and WARL are separated, the rest is bookkeeping. | [Privileged Architecture §4](01_Architecture_and_PPA/01_CPU_Architecture/01_Core_Foundations/04_Privileged_Architecture_CSRs_and_Traps.md) |
+| "Every fabric proposal is a mesh and I cannot tell whether that is right." | Missing the cost constraint and the analytical throughput method, so there is nothing to compare candidates *with* except a simulation you have not run. | [Topology Selection §2 and §3](01_Architecture_and_PPA/04_SoC_and_Chiplet_Architecture/04_On_Chip_Networks/04_Topology_Selection_and_Performance_Analysis.md) |
 
 ---
 

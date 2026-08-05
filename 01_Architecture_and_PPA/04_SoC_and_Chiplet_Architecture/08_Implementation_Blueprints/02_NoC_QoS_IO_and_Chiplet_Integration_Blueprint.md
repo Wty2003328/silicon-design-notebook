@@ -40,6 +40,12 @@ flowchart TB
     QOS -.-> FAB
 ```
 
+**Contract.** Solid arrows carry transactions; dashed arrows carry *policy* — `QOS` never sees a packet, it only configures the blocks that do. That distinction is the whole point of the figure: quality of service is a set of parameters installed into the network interfaces and the fabric, not a station that traffic passes through.
+
+**Trace one accelerator read of remote memory.** The NPU issues an AXI or CHI read; `NIb` admits it only if the accelerator's traffic class is within its shaped rate, then converts it to flits; the fabric routes and arbitrates it; the D2D adapter packetises it for die 1. Two independent admission decisions have already been made — one at the NI, one at the fabric arbiter — before a single flit crosses the die boundary.
+
+**The trade-off it illustrates.** Admission at the NI protects the fabric but adds latency to well-behaved traffic; arbitration inside the fabric protects nothing upstream but reacts to real congestion. Systems need both, and the cost is that a latency problem now has two possible owners, so every QoS bug investigation starts by determining which of the two dashed edges applied the back-pressure.
+
 ## 1. Traffic and endpoint contract
 
 An endpoint speaks a transaction protocol such as AXI or CHI; a router speaks packets and flits. The **network interface (NI)** is the semantic boundary between them. Build a traffic-class table before choosing topology:
@@ -58,7 +64,7 @@ For every class record packet size, source/destination set, injection rate and b
 ### 1.1 Network-interface microarchitecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     EP["AXI/CHI/custom endpoint channels"] --> CAP["Capture and protocol legality"]
     CAP --> ORD["Ordering-domain tracker<br/>sequence + hazard checks"]
     ORD --> ID["Global/local ID remap<br/>outstanding table"]
@@ -332,7 +338,7 @@ These are not interchangeable bandwidth pipes. UCIe standardizes a chiplet link 
 ### 7.2 Complete endpoint stack
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph A["Source chip"]
         MA["CPU/GPU/DMA memory agent"] --> NA["On-die NoC interface<br/>IDs, order, home route"]
         NA --> PA["Inter-chip protocol mapper<br/>read/write/atomic/message"]

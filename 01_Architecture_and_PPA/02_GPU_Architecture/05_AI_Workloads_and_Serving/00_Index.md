@@ -36,7 +36,7 @@
 ## The cross-layer contract
 
 ```mermaid
-flowchart LR
+flowchart TD
     Model["model graph + precision"] --> Compiler["graph compiler + kernel selection"]
     Compiler --> Runtime["runtime queues + batch scheduler"]
     Runtime --> Kernels["GEMM / attention / collectives"]

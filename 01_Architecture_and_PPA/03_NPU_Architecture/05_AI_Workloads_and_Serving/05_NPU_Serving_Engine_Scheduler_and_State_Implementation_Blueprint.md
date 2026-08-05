@@ -1,7 +1,7 @@
 # NPU Serving-Engine, Scheduler, and State Implementation Blueprint
 
 ```mermaid
-flowchart LR
+flowchart TD
     REQ["request phase + dynamic shape"] --> PROF["profile/guard + executable dispatch"]
     PROF --> ADM["capacity + command/event + KV admission"]
     ADM --> BATCH["shape bucket + phase scheduling"]

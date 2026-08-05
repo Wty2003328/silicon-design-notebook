@@ -1,7 +1,7 @@
 # SystemVerilog Assertions and Coverage — Observability and Completeness
 
 ```mermaid
-flowchart LR
+flowchart TD
     REQ["requirement"] --> PROP["temporal property / assertion"]
     REQ --> PLAN["coverage model"]
     STIM["directed + constrained-random stimulus"] --> DUT["design behavior"]

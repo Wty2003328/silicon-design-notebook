@@ -1,7 +1,7 @@
 # Block Activity and Power — Estimating the One Term You Can't Read Off the Schematic
 
 ```mermaid
-flowchart LR
+flowchart TD
     WL["workload + operating mode"] --> SIM["RTL / gate simulation or emulation"]
     SIM --> ACT["toggle + probability activity"]
     ACT --> MAP["map activity to clocks / nets / cells / memories"]

@@ -7,7 +7,7 @@ A CPU is a general-purpose, latency-oriented machine that must preserve a softwa
 
 > **First-time reader:** Read [CPU Workloads, Performance Modeling, and Design-Space Exploration](00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md) first if terms such as pipeline, cache line, virtual address, or outstanding request are new.
 
-~~~mermaid
+```mermaid
 flowchart LR
     ISA["ISA contract"] --> FE["predict / fetch / decode"]
     FE --> BE["rename / schedule / execute"]
@@ -20,7 +20,7 @@ flowchart LR
     Sim -. tests .-> Coh
     Build["implementation blueprints"] -. specifies .-> FE
     Build -. specifies .-> Coh
-~~~
+```
 
 ## Subdomains
 

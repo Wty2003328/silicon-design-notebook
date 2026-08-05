@@ -33,7 +33,7 @@ The fraction of a core consumed by polling is then
 
 $$U_p \;=\; \frac{C_p}{T_p} \;\ge\; \frac{C_p}{2L}.$$
 
-Trace it. A device that must be serviced within a mean of 10 µs, polled across a fabric at $C_p = 60$ ns, needs $T_p \le 20$ µs and costs $U_p = 60\,\text{ns}/20\,\text{µs} = 0.3\%$ of a core. That is cheap. A device that must be serviced within a mean of 100 ns needs $T_p \le 200$ ns and costs $U_p = 30\%$ of a core — and since $C_p$ is itself 60 ns, the loop is barely able to run at that period at all. **Polling cost scales as the inverse of the latency target, and it hits a wall when the target approaches the poll cost.**
+Trace it. A device that must be serviced within a mean of 10 µs, polled across a fabric at $C_p = 60$ ns, needs $T_p \le 20$ µs and costs $U_p = 60\,\text{ns}/20\,\mu\text{s} = 0.3\%$ of a core. That is cheap. A device that must be serviced within a mean of 100 ns needs $T_p \le 200$ ns and costs $U_p = 30\%$ of a core — and since $C_p$ is itself 60 ns, the loop is barely able to run at that period at all. **Polling cost scales as the inverse of the latency target, and it hits a wall when the target approaches the poll cost.**
 
 ### 1.2 The failure that forces notification, stated twice
 
@@ -59,7 +59,7 @@ Numbers, for a general-purpose operating system on an application core: $C_i \ap
 
 $$\lambda^{*} = \frac{60 \times 10^{-9}}{2 \times 10 \times 10^{-6} \times 1.5 \times 10^{-6}} = \frac{6 \times 10^{-8}}{3 \times 10^{-11}} = 2000 \ \text{events/s}.$$
 
-Above 2000 events per second, at that latency target, polling costs the processor *less* than interrupting. This is not a marginal effect at the top end: a solid-state drive sustaining $10^6$ input/output operations per second would spend $10^6 \times 1.5\,\text{µs} = 1.5$ core-seconds per second — one and a half entire cores — purely on interrupt entry and exit, before any useful work. Polling the same completion queue every 2 µs costs 3% of one core. That factor of fifty is exactly why high-performance storage and networking stacks (io_uring in polled mode, the Storage Performance Development Kit, the Data Plane Development Kit) turn interrupts *off* and dedicate cores to spinning.
+Above 2000 events per second, at that latency target, polling costs the processor *less* than interrupting. This is not a marginal effect at the top end: a solid-state drive sustaining $10^6$ input/output operations per second would spend $10^6 \times 1.5\,\mu\text{s} = 1.5$ core-seconds per second — one and a half entire cores — purely on interrupt entry and exit, before any useful work. Polling the same completion queue every 2 µs costs 3% of one core. That factor of fifty is exactly why high-performance storage and networking stacks (io_uring in polled mode, the Storage Performance Development Kit, the Data Plane Development Kit) turn interrupts *off* and dedicate cores to spinning.
 
 So the two regimes are:
 
@@ -517,7 +517,6 @@ A failure mode worth naming: if IRM = 1 and *every* PE has set its DPG bit for t
 ### 5.4 The per-interrupt state machine
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 stateDiagram-v2
     [*] --> Inactive
     state "Active and Pending" as AP
@@ -1249,7 +1248,7 @@ $$T_{be} \;=\; \frac{E_{entry} + E_{exit}}{P_{idle} - P_{gated}}$$
 
 With a combined entry-plus-exit energy of about 10 µJ for a cluster, and $P_{idle} - P_{gated} \approx 30$ mW:
 
-$$T_{be} = \frac{10 \times 10^{-6}\ \text{J}}{30 \times 10^{-3}\ \text{W}} \approx 333\ \text{µs}.$$
+$$T_{be} = \frac{10 \times 10^{-6}\ \text{J}}{30 \times 10^{-3}\ \text{W}} \approx 333\ \mu\text{s}.$$
 
 If the mean interval between wake events is shorter than $T_{be}$, power gating **costs** energy rather than saving it. At 333 µs that corresponds to an interrupt rate of about **3 kHz**: above that, the cluster should stay clock-gated rather than power-gated.
 
@@ -1740,7 +1739,7 @@ A non-volatile memory express (NVMe) solid-state drive posts completions into a 
 
 *(a)* A mean latency of 5 µs requires $T_p \le 2L = 10$ µs. Polling utilization is then
 
-$$U_p = \frac{C_p}{T_p} = \frac{90\ \text{ns}}{10\ \text{µs}} = 0.9\%.$$
+$$U_p = \frac{C_p}{T_p} = \frac{90\ \text{ns}}{10\ \mu\text{s}} = 0.9\%.$$
 
 Interrupt utilization is $U_i = \lambda C_i$. Setting them equal:
 
@@ -1756,7 +1755,7 @@ The notification overhead alone does not fit on one core. Polling costs $U_p = 0
 
 *(c)* Coalescing at 8 completions per interrupt divides the interrupt rate by 8:
 
-$$U_i = \frac{8\times10^{5}}{8}\times 1.8\ \text{µs} = 0.18 \quad\Rightarrow\quad 18\%\ \text{of a core},$$
+$$U_i = \frac{8\times10^{5}}{8}\times 1.8\ \mu\text{s} = 0.18 \quad\Rightarrow\quad 18\%\ \text{of a core},$$
 
 and the crossover rises to $8\lambda^{*} = 40{,}000$/s. The cost is that the first completion in a batch waits for the batch to fill or for the coalescing timer to expire, whichever comes first — so the coalescing timeout must be set below the latency budget, and at low load the timeout rather than the count is what fires.
 
@@ -1782,25 +1781,25 @@ Blocking contributions: the hardware path from assertion to the request line is 
 
 *(a)* The blocking term is the same for all three, because a global mask blocks everything:
 
-$$B = 0.1 + 0.4 + 0.6 + 20 = 21.1\ \text{µs}.$$
+$$B = 0.1 + 0.4 + 0.6 + 20 = 21.1\ \mu\text{s}.$$
 
 Apply $R_i = B + C_i + \sum_{j\in hp(i)} \lceil R_i/T_j\rceil C_j$ by iteration.
 
 I1 has no higher-priority sources:
-$$R_1 = 21.1 + 3 = \mathbf{24.1\ \text{µs}}.$$
+$$R_1 = 21.1 + 3 = \mathbf{24.1\ \mu\text{s}}.$$
 
 I2, starting from $R_2^{(0)} = 21.1 + 8 = 29.1$:
-$$R_2^{(1)} = 21.1 + 8 + \left\lceil \tfrac{29.1}{200} \right\rceil \times 3 = 21.1 + 8 + 3 = 32.1;\qquad \left\lceil \tfrac{32.1}{200}\right\rceil = 1 \Rightarrow \text{converged},\ \mathbf{32.1\ \text{µs}}.$$
+$$R_2^{(1)} = 21.1 + 8 + \left\lceil \tfrac{29.1}{200} \right\rceil \times 3 = 21.1 + 8 + 3 = 32.1;\qquad \left\lceil \tfrac{32.1}{200}\right\rceil = 1 \Rightarrow \text{converged},\ \mathbf{32.1\ \mu\text{s}}.$$
 
 I3, starting from $R_3^{(0)} = 21.1 + 25 = 46.1$:
 $$R_3^{(1)} = 21.1 + 25 + \left\lceil\tfrac{46.1}{200}\right\rceil\times 3 + \left\lceil\tfrac{46.1}{100}\right\rceil\times 8 = 21.1+25+3+8 = 57.1;$$
-the ceilings are unchanged at 57.1, so $R_3 = \mathbf{57.1\ \text{µs}}$.
+the ceilings are unchanged at 57.1, so $R_3 = \mathbf{57.1\ \mu\text{s}}$.
 
 *(b)* All three meet their deadlines: 24.1 < 30, 32.1 < 80, 57.1 < 500. But look at the composition of I1's number: **21.1 µs of its 24.1 µs is blocking, and 20 µs of that is one driver.** The actual interrupt-handling work contributes 3 µs. The system passes with 5.9 µs of margin that belongs entirely to a routine that has nothing to do with any of these three interrupts, and any change to that routine — a longer clock-settling loop, a retry — breaks the highest-priority deadline.
 
 *(c)* With priority masking instead of a global disable, the clock driver blocks only interrupts at or below I3's priority. I1 and I2 are unaffected:
 
-$$B_{1} = B_{2} = 0.1+0.4+0.6 = 1.1\ \text{µs} \quad\Rightarrow\quad R_1 = \mathbf{4.1\ \text{µs}},\qquad R_2 = 1.1+8+3 = \mathbf{12.1\ \text{µs}}.$$
+$$B_{1} = B_{2} = 0.1+0.4+0.6 = 1.1\ \mu\text{s} \quad\Rightarrow\quad R_1 = \mathbf{4.1\ \mu\text{s}},\qquad R_2 = 1.1+8+3 = \mathbf{12.1\ \mu\text{s}}.$$
 
 I3 still sees the 20 µs, so $R_3 = 57.1$ µs, unchanged. **One register choice — `ICC_PMR_EL1` instead of `PSTATE.I` — improved the highest-priority response by a factor of 5.9 and cost nothing.** This is the single highest-value change available in most real-time interrupt problems, and §8.4's $\max_k D_k$ term is why.
 
@@ -1824,11 +1823,11 @@ The burst depth must cover the legitimate burst: $b \ge 48$. Take $r = 60$ kHz, 
 
 *(b)* A token bucket bounds the count in any window $W$ at $b + rW$, so the utilization over that window is
 
-$$U(W) = \frac{(b + rW)\,C_i}{W} = \frac{b\,C_i}{W} + r\,C_i = \frac{48 \times 2.5\ \text{µs}}{W} + 0.15.$$
+$$U(W) = \frac{(b + rW)\,C_i}{W} = \frac{b\,C_i}{W} + r\,C_i = \frac{48 \times 2.5\ \mu\text{s}}{W} + 0.15.$$
 
-The burst term is $120\ \text{µs}/W$. For the bound to be meaningfully 15%, $W$ must be well above $b/r = 48/60{,}000 = 800$ µs. At $W = 800$ µs the actual bound is 30%; at $W = 8$ ms it is 16.5%. **The honest statement of what the limiter guarantees is therefore "15% averaged over milliseconds, with a permitted transient of 120 µs of handler time."** Quoting the 15% without the window is how a rate limiter passes review and then fails a real-time analysis.
+The burst term is $120\ \mu\text{s}/W$. For the bound to be meaningfully 15%, $W$ must be well above $b/r = 48/60{,}000 = 800$ µs. At $W = 800$ µs the actual bound is 30%; at $W = 8$ ms it is 16.5%. **The honest statement of what the limiter guarantees is therefore "15% averaged over milliseconds, with a permitted transient of 120 µs of handler time."** Quoting the 15% without the window is how a rate limiter passes review and then fails a real-time analysis.
 
-*(c)* A stuck source with no limiter interrupts as fast as the handler can return, consuming essentially 100% of the core — and, by the livelock argument of §11.1, delivering zero throughput because the deferred work never runs. With the limiter it consumes $60{,}000 \times 2.5\ \text{µs} = 15\%$, leaving 85% for forward progress including the work that will eventually diagnose and disable the source.
+*(c)* A stuck source with no limiter interrupts as fast as the handler can return, consuming essentially 100% of the core — and, by the livelock argument of §11.1, delivering zero throughput because the deferred work never runs. With the limiter it consumes $60{,}000 \times 2.5\ \mu\text{s} = 15\%$, leaving 85% for forward progress including the work that will eventually diagnose and disable the source.
 
 *(d)* For a **level-sensitive** source, yes: while the bucket is empty the delivery is suppressed but the pending bit remains set, so the interrupt is delayed, not dropped. For an **edge or message** source it is lossless **only if the throttle is placed after the pending bit, not before it.** Throttling the input discards edges that arrive while the bucket is empty. Throttling the delivery retains one pending bit, which is the most an edge source can retain anyway. This is a concrete RTL placement decision with a correctness consequence, and it is easy to get backwards because gating the input is the simpler implementation.
 

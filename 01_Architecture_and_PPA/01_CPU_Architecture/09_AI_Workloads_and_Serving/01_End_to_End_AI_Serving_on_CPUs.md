@@ -32,7 +32,7 @@ $$
 but each term contains overlap. A storage read can overlap initialization; CPU tokenization can overlap retrieval; output streaming can overlap later decode iterations. Therefore a trace needs both durations and dependency edges. Adding every observed duration double-counts parallel work.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Net["NIC receives bytes"] --> Ingress["protocol / auth / rate limit"]
     Ingress --> Tok["normalize + tokenize"]
     Tok --> Retrieve["embedding + ANN retrieval"]

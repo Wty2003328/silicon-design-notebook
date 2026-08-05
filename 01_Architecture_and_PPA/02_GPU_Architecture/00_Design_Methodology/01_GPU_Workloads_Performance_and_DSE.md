@@ -1,7 +1,7 @@
 # GPU Workloads, Performance Modeling, and Design-Space Exploration
 
 ```mermaid
-flowchart LR
+flowchart TD
     WL["kernel / graph / serving workload"] --> SHAPE["thread, tensor, memory, communication shapes"]
     SHAPE --> MODEL["occupancy + roofline + latency-hiding + topology models"]
     MODEL --> KNOB["SM count / lanes / tensor units / cache / HBM / links"]

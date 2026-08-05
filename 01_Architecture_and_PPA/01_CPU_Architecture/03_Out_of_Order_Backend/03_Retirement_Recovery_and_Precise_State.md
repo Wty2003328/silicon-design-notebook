@@ -16,7 +16,7 @@
 Out-of-order execution is useful only because the machine can present the illusion of in-order completion. Hundreds of younger operations may execute, write physical registers, issue misses, and train predictors, yet an older fault must expose a state equivalent to sequential execution immediately before the faulting instruction.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Dispatch["rename + ROB allocate"] --> Execute["out-of-order execute"]
     Execute --> Complete["complete + exception metadata"]
     Complete --> Head["ROB head checks"]

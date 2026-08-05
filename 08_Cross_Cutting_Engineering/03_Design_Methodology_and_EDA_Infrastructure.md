@@ -1037,7 +1037,6 @@ Now the 140 failures are six decisions, three of which are already tracked. The 
 ### 7.5 The bug database workflow
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 stateDiagram-v2
     [*] --> New
     New --> Triaged : owner and severity assigned

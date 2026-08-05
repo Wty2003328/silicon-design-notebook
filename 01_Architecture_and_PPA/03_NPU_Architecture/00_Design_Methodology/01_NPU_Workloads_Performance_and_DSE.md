@@ -1,7 +1,7 @@
 # NPU Workloads, Performance Modeling, and Design-Space Exploration
 
 ```mermaid
-flowchart LR
+flowchart TD
     MODEL["models + shape/precision/sparsity distributions"] --> OPS["operator and tensor-traffic census"]
     OPS --> BOUND["array / vector / scratchpad / DMA / memory bounds"]
     BOUND --> KNOB["array shape / banks / buffers / NoC / command features"]

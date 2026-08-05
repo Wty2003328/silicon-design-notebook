@@ -1154,7 +1154,7 @@ The routers speak flits; the SoC speaks transactions. The **network interface un
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     AXI["AXI or CHI port<br/>of the tile IP"]:::proto --> ADM["admission control<br/>outstanding limit<br/>response slot reserved"]:::ctl
     ADM --> MAP["address map and hash<br/>destination node ID<br/>VN and QoS class"]:::ctl
     MAP --> PKT["packetizer<br/>header flit + payload flits<br/>lookahead route for hop 0"]:::dp

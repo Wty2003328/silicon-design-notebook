@@ -12,7 +12,7 @@ Read [AI Workload and Graph Mapping](01_AI_Workload_and_Graph_Mapping_to_NPUs.md
 
 The three nouns in this chapter's title are three *times*: the compiler runs offline, emits one frozen executable, and the runtime consumes it online. The diagram groups the stack by that boundary.
 
-~~~mermaid
+```mermaid
 flowchart LR
     FW["framework model + parameters"] --> IMP
     subgraph CT["compile time (offline)"]
@@ -28,7 +28,7 @@ flowchart LR
     end
     EXE --> RT
     PART --> HOST
-~~~
+```
 
 Importer owns semantic equivalence. Capability database owns legal target operations/limits. Compiler owns partition/transforms/schedule. Packager owns executable identity. Runtime owns live contexts, tensors, commands, dependencies, and faults. Driver/firmware owns queue consumption and device recovery. Fallback coordinator owns cross-device transfer and ordering.
 
@@ -114,7 +114,7 @@ where GELU is the Gaussian error linear unit, `X` has a bounded token dimension,
 The minimum correct NPU partition emits a separate command region for the first matrix multiplication, bias, GELU, second matrix multiplication, second bias, and residual add. Intermediate tensors go to external memory because no cross-command liveness has been planned. It is slow but supplies a numerical oracle and a fallback.
 
 ```mermaid
-flowchart LR
+flowchart TD
     X["X"] --> M1["matmul W1"]
     W1["W1"] --> M1
     M1 --> T0["external T0"]

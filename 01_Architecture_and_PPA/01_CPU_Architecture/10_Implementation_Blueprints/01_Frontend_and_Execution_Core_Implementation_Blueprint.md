@@ -35,7 +35,7 @@ Also state non-goals. A research core may omit simultaneous multithreading (SMT)
 
 ## 2. Decompose the machine by state ownership
 
-~~~mermaid
+```mermaid
 flowchart LR
     PC["next-PC selection"] --> FTQ["fetch-target queue"]
     FTQ --> IF["I-TLB + instruction cache"]
@@ -51,7 +51,7 @@ flowchart LR
     EX -->|"branch / memory replay"| REDIR["redirect / recovery"]
     COMMIT -->|"trap / interrupt"| REDIR
     REDIR --> PC
-~~~
+```
 
 For every arrow, specify payload, identity, acceptance, and cancellation. A useful minimum set is:
 

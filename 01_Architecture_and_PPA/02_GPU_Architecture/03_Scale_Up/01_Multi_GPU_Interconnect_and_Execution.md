@@ -36,7 +36,7 @@ The architecture question is not “how many GPUs?” It is which tensor/data st
 Replicating a kernel on more GPUs is the baseline. It scales only independent work; any partitioned tensor introduces a new movement and synchronization problem. The scale-up stack grows in response:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["independent GPUs<br/>host stages every transfer"] -->|"host path copies twice and bottlenecks"| B["peer DMA / peer virtual addressing"]
     B -->|"many peers need the same group operation"| C["collective engines and algorithms"]
     C -->|"one algorithm performs poorly on nonuniform links"| D["topology discovery + hierarchical collectives"]
@@ -152,7 +152,7 @@ The startup term grows linearly with $P$; the bandwidth term is nearly $P$-indep
 Track one chunk in a four-GPU ring. The reduce-scatter phase accumulates one contribution at each hop until one GPU owns the reduced chunk; the all-gather phase circulates that completed chunk so every GPU receives it. Other chunks execute the same path in a pipelined rotation.
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph RS["reduce-scatter for chunk c"]
         A0["GPU 0<br/>c = x0"] -->|"send c"| A1["GPU 1<br/>c = x0 ⊕ x1"]
         A1 -->|"send reduced c"| A2["GPU 2<br/>c = x0 ⊕ x1 ⊕ x2"]

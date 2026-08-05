@@ -25,7 +25,7 @@ Include matrix multiplication, convolution, elementwise/vector functions, reduct
 
 ## 2. Compiler transformation pipeline
 
-~~~mermaid
+```mermaid
 flowchart LR
     G["framework graph"] --> CAN["canonical tensor IR"]
     CAN --> LEG["legality + decomposition"]
@@ -35,7 +35,7 @@ flowchart LR
     TILE --> MEM["buffer lifetime + DMA schedule"]
     MEM --> CMD["target commands + descriptors"]
     CMD --> RUN["runtime executable"]
-~~~
+```
 
 The intermediate representation (IR) must retain shape (static or symbolic), layout/stride, element type and quantization parameters, memory space, side effects, aliasing, numerical attributes, and source identity. Transformation passes state preconditions and postconditions. For example, fusion is legal only if intermediate observability, numerical reassociation, memory aliasing, and dynamic-shape behavior allow it.
 
@@ -96,7 +96,7 @@ A practical compute tile contains:
 
 These layers wire into one producer-to-consumer path: the sequencer decodes the commands the compiler emitted (Sections 2–3) and gates each stage against fill/drain events.
 
-~~~mermaid
+```mermaid
 flowchart TB
     CMD["commands + descriptors<br/>(compiler output)"] --> SEQ["sequencer +<br/>event interface"]
     DMAI["input DMA"] --> AB["activation buffer<br/>(banked)"]
@@ -112,7 +112,7 @@ flowchart TB
     SEQ -. "gate launch" .-> PE
     SEQ -. "fill event" .-> DMAI
     SEQ -. "drain event" .-> DMAO
-~~~
+```
 
 Specify ownership transfer. A DMA engine writes a buffer while it owns the producer phase; compute may read only after the arrival event. Compute owns accumulator regions until a drain event. Output DMA may consume only after finalization/quantization. Double buffers alternate epochs so producer and consumer never address the same physical bank region simultaneously unless multiport behavior is designed.
 

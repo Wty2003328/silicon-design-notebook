@@ -16,7 +16,7 @@
 Narrow values and zeros can reduce multiplier area/energy, storage, and bandwidth. They do not produce speedup automatically. Hardware must encode metadata, unpack values, align operands, balance irregular work, size accumulators, and preserve model quality.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Tensor["dense FP tensor"] --> Quant["scale / zero-point / rounding"]
     Quant --> Prune["structured or unstructured sparsity"]
     Prune --> Encode["values + metadata"]
@@ -142,7 +142,7 @@ Because $s=\text{range}/\text{codes}$, both the numerator and the denominator mo
 As a datapath, quantize runs this map left-to-right and dequantize runs it right-to-left:
 
 ```mermaid
-flowchart LR
+flowchart TD
     x["real x"] --> DIV["divide by scale s"]
     DIV --> RND["round to nearest"]
     RND --> ADD["add zero-point z"]
@@ -413,7 +413,7 @@ The 4-bit MXFP4 element (E2M1: 1 sign, 2 exponent, 1 mantissa, exponent bias 1) 
 so eight signed magnitudes $\{0,0.5,1,1.5,2,3,4,6\}$ (no infinities or NaN). The block spans $0.5\to6$ ($12\times$, $\approx3.6$ binades, the intervals between consecutive powers of two) and the shared E8M0 scale slides that window across the full $2^{-127}\dots2^{127}$ range.
 
 ```mermaid
-flowchart LR
+flowchart TD
     blk["MX block: K=32 elements<br/>micro-floats P_i"] --> DEC["decode element P_i"]
     scale["shared scale X<br/>E8M0, one per block"] --> APPLY["v_i = 2^(X-127) * P_i"]
     DEC --> APPLY

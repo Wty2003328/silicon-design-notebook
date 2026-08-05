@@ -201,7 +201,7 @@ flowchart LR
 The channel table is easier to remember when it is *derived as a sequence of repairs*. Start with the smallest correct register access and change the machine only when a workload demonstrates a concrete loss.
 
 ```mermaid
-flowchart LR
+flowchart TD
     S0["Step 0: fixed two-phase transfer<br/>one request, one response"] -->|"loss: idle setup cycle"| S1["Step 1: pipeline address over prior data<br/>AHB-style shared bus"]
     S1 -->|"loss: a slow target stalls everyone"| S2["Step 2: elastic VALID/READY stages<br/>buffers absorb variable latency"]
     S2 -->|"loss: address, data, reads and writes contend"| S3["Step 3: split AW/W/B/AR/R<br/>independent AXI channels"]
@@ -498,7 +498,7 @@ $$\text{PCR} \leftarrow H(\text{PCR}\,\|\,H(\text{stage})),$$
 then transfers control. The correctness of the whole is an **induction**. *Base case:* ROM + fuse is trusted by assumption. *Inductive step:* stage $n$, already trusted, verifies and/or measures stage $n{+}1$ before transferring control. Therefore every executed stage is trusted (or exactly measured). The proof breaks the instant one link runs code before verifying it — trust does not propagate across an unchecked jump, which is why the first mutable byte executed must be the one the immutable ROM just checked.
 
 ```mermaid
-flowchart LR
+flowchart TD
     OTP["fuses / OTP (root key hash, lifecycle, per-boot seed)"] --> ROM["mask-ROM RoT (immutable boot verifier)"]
     ROM -->|"verify signature + measure"| BL1["first-stage loader"]
     BL1 -->|"verify + extend PCR"| BL2["platform firmware"]
@@ -699,7 +699,7 @@ If the next transfer targets a different peripheral, the old `PSELx` deasserts a
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
 flowchart LR
-    BUS["APB input"] --> QUAL["transfer qualify<br/>PSEL & PENABLE"]
+    BUS["APB input"] --> QUAL["transfer qualify<br/>PSEL and PENABLE"]
     BUS --> ADEC["word-address decode"]
     BUS --> WMASK["PSTRB to bit mask"]
     ADEC --> WMUX["write-enable matrix"]
@@ -1106,7 +1106,7 @@ Example: `WRAP4`, 4-byte beats, start `0x3C`. Region size is 16 B and base is `0
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     AP["address phase<br/>HSEL HTRANS HADDR<br/>HWRITE HSIZE"] --> ACCEPT["accept when HREADY=1"]
     ACCEPT --> PIPE["data-phase context register<br/>valid, offset, write, size,<br/>attributes, byte-lane mask"]
     PIPE --> CTRL["operation controller"]
@@ -1636,7 +1636,7 @@ Always consult the exact edition/profile for read/write ordering interactions, b
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     REQ["load/store/DMA requests"] --> ALLOC["allocate ID + entry"]
     ALLOC --> ISSUE["AR/AW issue queues"]
     ALLOC --> SB["outstanding table<br/>ID, destination, beats,<br/>ordering domain, error state"]
@@ -1929,4 +1929,4 @@ AXI moves data correctly but does not by itself keep private caches coherent. [t
 
 ---
 
-[Section Index](00_Index.md) · [Root Index](../../../Index.md)
+[Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [02 · The AMBA Family in Full](02_AMBA_Family_Signals_and_Low_Power_Interfaces.md)

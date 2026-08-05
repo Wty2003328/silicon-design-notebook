@@ -23,7 +23,7 @@ A warp scheduler may identify an eligible instruction, yet issue can still fail 
 The execution path is therefore a sequence of separately capacity-limited stages:
 
 ```mermaid
-flowchart LR
+flowchart TD
     W["resident warps"] --> S["scoreboard<br/>dependency eligibility"]
     S --> I["warp scheduler<br/>select + issue"]
     I --> C["operand collectors"]
@@ -42,7 +42,7 @@ Peak lane count describes only `X`. Sustained throughput is the minimum capacity
 The operand path is another feature-evolution chain:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["many resident warps<br/>need zero-cost switching"] --> B["large register file"]
     B -->|"enough true read ports are too large and power-hungry"| C["split storage into banks"]
     C -->|"one instruction's operands can collide"| D["operand collectors + bank arbitration"]

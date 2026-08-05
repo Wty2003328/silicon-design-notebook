@@ -18,7 +18,7 @@
 A fabric is correct when transactions complete with required ordering. A product is usable only when critical traffic completes within a bounded service envelope despite CPUs, GPUs, NPUs, DMA, refresh, and coherence sharing queues and links.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Masters["CPU / GPU / NPU / DMA"] --> Tag["requestor + class + security + ordering tags"]
     Tag --> NI["network interface queues"]
     NI --> NoC["VCs / arbitration / links"]
@@ -90,6 +90,12 @@ flowchart LR
     POL --> R1
     POL --> R2
 ```
+
+**Contract.** Every arrow from `POL` is *configuration*, not traffic: the policy block sets weights, thresholds, and bucket parameters, and never carries a transaction. Every other arrow carries one request. `ARB` emits exactly one grant per cycle, which is what makes the arbiter — not the queues — the point where fairness is decided.
+
+**Trace one best-effort burst.** Class 2 floods `Q2`. Its regulator `R2` releases requests only while its token bucket has credit, so the flood reaches `ARB` as a shaped stream rather than a wall. `ARB` still applies its policy among whatever the three regulators offer, so class 0 keeps winning grants during the burst. Remove `R2` and the same flood arrives unshaped: a work-conserving arbiter will hand class 2 every cycle class 0 happens not to want, and class 0's tail latency degrades even though its *priority* never changed.
+
+**The trade-off.** The regulator is what bounds the damage one class can do, and it is also what leaves bandwidth unused when the other classes are idle — a shaped class cannot burst into spare capacity it has no tokens for. Choosing $(r,b)$ is therefore choosing how much idle bandwidth you are willing to waste to protect a latency guarantee.
 
 ### Fixed priority
 
@@ -182,7 +188,7 @@ flowchart LR
     HN -->|"on miss, fetch"| LLC["LLC / memory"]
     LLC --> HN
     HN -->|"current data"| DEV
-    NS["no-snoop / DMA: snoop skipped; software cleans + invalidates first"] -.-> HN
+    NS["no-snoop or DMA: snoop skipped;<br/>software cleans and invalidates first"] -.-> HN
 ```
 
 Section 6.1 traces that one-way-snoop path in full; the no-snoop path is the manual-maintenance baseline it replaces.
@@ -350,7 +356,7 @@ An interrupt is the fabric's asynchronous control plane: the mechanism that turn
 flowchart LR
     DEVw["device wire (SPI, level or edge)"] --> DIST["distributor / PLIC (priority, affinity, pending)"]
     COREx["core issuing an IPI"] -->|"SGI or MSIP register write"| DIST
-    DEVm["PCIe or coherent device"] -->|"MSI posted write (addr, data)"| ITS["ITS / IMSIC (translate DeviceID+Event to INTID+target, IOMMU-checked)"]
+    DEVm["PCIe or coherent device"] -->|"MSI posted write (addr, data)"| ITS["ITS or IMSIC<br/>translate DeviceID and Event<br/>to INTID and target, IOMMU-checked"]
     ITS --> DIST
     TMR["per-core timer (PPI / CLINT)"] --> RD0["redistributor / CPU interface (running-priority compare)"]
     DIST --> RD0

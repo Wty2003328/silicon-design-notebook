@@ -216,18 +216,18 @@ The names differ only in which tensor is pinned inside the PE while the others m
 ```mermaid
 flowchart TB
   subgraph OS["output-stationary"]
-    direction LR
+    direction TB
     OSa["A streams"] --> OSp["PE holds C"]
     OSb["B streams"] --> OSp
     OSp --> OSo["drain C once"]
   end
   subgraph WS["weight-stationary"]
-    direction LR
+    direction TB
     WSa["A streams"] --> WSp["PE holds W"]
     WSp --> WSc["psum moves out"]
   end
   subgraph RS["row-stationary"]
-    direction LR
+    direction TB
     RSp["PE holds W row, A row, psum"] --> RSo["reduce across PEs"]
   end
 ```

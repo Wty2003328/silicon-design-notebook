@@ -1,7 +1,7 @@
 # Dynamic Sparsity, Mixture-of-Experts, and Irregular NPU Execution
 
 ```mermaid
-flowchart LR
+flowchart TD
     IN["dense activations / tokens"] --> DET["zero / block / router detection"]
     DET --> META["indices / masks / expert assignments"]
     META --> PACK["compact + bucket + load-balance"]

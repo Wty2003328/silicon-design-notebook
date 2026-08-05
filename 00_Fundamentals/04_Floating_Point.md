@@ -360,13 +360,13 @@ This figure is a **hardware ownership map**, not a promise that each box is exac
 
 ```mermaid
 flowchart TB
-  C0["cycle n — input valid<br/>unpack a and b"] --> R0[["pipeline register 0<br/>fields + class + tag"]]
+  C0["cycle n — input valid<br/>unpack a and b"] --> R0[["pipeline register 0<br/>fields, class, tag"]]
   R0 --> C1["cycle n+1<br/>compare exponents and align; Δe = 2"]
-  C1 --> R1[["pipeline register 1<br/>aligned significands + sticky"]]
+  C1 --> R1[["pipeline register 1<br/>aligned significands, sticky"]]
   R1 --> C2["cycle n+2<br/>CLA add; raw sum = 1.11100"]
-  C2 --> R2[["pipeline register 2<br/>sum + sign + exponent"]]
+  C2 --> R2[["pipeline register 2<br/>sum, sign, exponent"]]
   R2 --> C3["cycle n+3<br/>normalize; shift = 0"]
-  C3 --> R3[["pipeline register 3<br/>normalized value + GRS"]]
+  C3 --> R3[["pipeline register 3<br/>normalized value, GRS"]]
   R3 --> C4["cycle n+4<br/>round and pack = 1.875"]
   C4 --> OV["cycle n+5 — output valid<br/>result + flags + tag"]
 ```

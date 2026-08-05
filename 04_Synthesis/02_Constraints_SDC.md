@@ -29,7 +29,7 @@ flowchart LR
     RTL["RTL<br/>(function only)"]:::x --> SDC
     SDC["SDC<br/>(timing intent:<br/>clocks · I/O · exceptions)"]:::a
     SDC --> SYN["Synthesis<br/>optimize TO it"]:::b
-    SDC --> PNR["Place & route<br/>build TO it"]:::b
+    SDC --> PNR["Place and route<br/>build TO it"]:::b
     SDC --> STA["Signoff STA<br/>check AGAINST it"]:::c
     STA -->|the one equation<br/>all of them serve| EQ["setup/hold slack ≥ 0"]:::c
     classDef x fill:#e5e7eb,stroke:#4b5563,color:#000

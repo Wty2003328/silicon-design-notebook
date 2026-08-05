@@ -29,7 +29,7 @@ By the end you should be able to reason about an NPU quantitatively — size an 
 The array is only the compute kernel. A complete accelerator also needs a compiler/mapping decision, DMA engines, explicit on-chip storage, accumulation/nonlinear units, and a scale-out path; whichever edge cannot sustain the mapped reuse becomes the bottleneck.
 
 ```mermaid
-flowchart LR
+flowchart TD
     G["Model graph / tensor op"] --> M["Compiler mapping<br/>tile + dataflow + schedule"]
     M --> D["DMA / NoC"]
     D --> S["Scratchpad<br/>weights + activations"]

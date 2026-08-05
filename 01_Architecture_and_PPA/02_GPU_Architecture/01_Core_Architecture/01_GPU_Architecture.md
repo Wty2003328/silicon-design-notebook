@@ -26,7 +26,7 @@ This page takes the notebook's hardware-design lens ("*what must this block do o
 Read the chapter as an **evolution driven by one bottleneck at a time**, not as a bag of blocks. Each added feature solves the limit exposed by the previous design and creates the next constraint:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["Many independent scalar threads<br/>too much front-end cost"] -->|"share fetch, decode, issue"| B["SIMT warp<br/>one instruction, many lanes"]
     B -->|"lanes choose different paths"| C["active masks + reconvergence state"]
     C -->|"one warp waits hundreds of cycles"| D["many resident warps + warp scheduler"]
@@ -317,20 +317,27 @@ flowchart TB
       end
       SMEM["Shared memory / L1 data<br/>(banked scratchpad + cache)"]:::mem
     end
-    HBM["L2 (shared, sliced) -> HBM"]:::hbm
+    HBM["L2 shared and sliced, then HBM"]:::mem
+    LEG["Legend: thin solid border is control and issue;<br/>dashed border is storage;<br/>thick border is arithmetic"]:::leg
     L1I --> SCHED --> OC
     RF <--> OC --> EU
     EU <--> SMEM
     SMEM <--> HBM
 
-    classDef ic fill:#fbcfe8,stroke:#9d174d,color:#000
-    classDef sched fill:#fde68a,stroke:#b45309,color:#000
-    classDef rf fill:#bae6fd,stroke:#0369a1,color:#000
-    classDef oc fill:#fef08a,stroke:#a16207,color:#000
-    classDef eu fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef mem fill:#99f6e4,stroke:#047857,color:#000
-    classDef hbm fill:#fca5a5,stroke:#991b1b,color:#000
+    classDef ctrl fill:#fde68a,stroke:#b45309,color:#000,stroke-width:1px
+    classDef mem fill:#bae6fd,stroke:#0369a1,color:#000,stroke-width:2px,stroke-dasharray:6 3
+    classDef exec fill:#bbf7d0,stroke:#15803d,color:#000,stroke-width:4px
+    classDef leg fill:#ffffff,stroke:#666,color:#000
+    class L1I,SCHED,OC ctrl
+    class RF,SMEM,HBM mem
+    class EU exec
 ```
+
+**Contract.** Colour, border style, and border weight all encode the same three-way split, so the figure survives greyscale printing and colour-blind reading: **control and issue** (instruction supply, scheduling, operand arbitration), **storage** (register file, scratchpad, cache tiers), and **arithmetic**. Every arrow is operand or instruction flow; a bidirectional arrow means the block both supplies and receives data.
+
+**Trace one FMA.** `L1I` delivers the instruction to `SCHED`, which finds a warp whose scoreboard bits are clear and issues it to `OC`. `OC` arbitrates the banked `RF` over several cycles until all three operands are collected, then releases them to `EU`. A result destined for reuse lands in `SMEM`; a miss there goes out to `HBM`. Note the shape of the storage class: three of the seven blocks are memory, and they are the only blocks the occupancy budget competes for.
+
+**The trade-off it illustrates.** Replicating items 2–4 per sub-partition keeps scheduling and operand delivery local, but `SMEM` and `HBM` stay shared across all four sub-partitions. Adding sub-partitions therefore scales issue and arithmetic linearly while leaving the storage tier fixed — which is precisely why occupancy is capped by register and shared-memory footprint rather than by scheduler throughput.
 
 ### 4.1 Matrix execution is a cooperative dataflow, not one giant scalar instruction
 
@@ -407,7 +414,7 @@ Section 3 was control divergence; this is its memory twin. A single warp LD/ST p
 **The coalescer** — a hardware unit in the Load/Store Unit — exists to prevent that. It inspects the 32 active per-lane addresses *at issue time* and merges them into the **minimum set of aligned sector transactions** that covers them:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["32 lane addresses + byte enables<br/>inactive lanes removed"] --> S["sector-index calculation<br/>floor(address / 32 B)"]
     S --> M["merge equal sector indices<br/>combine byte masks"]
     M --> T0["sector request 0<br/>address + requested bytes"]
@@ -468,26 +475,21 @@ flowchart TB
           direction TB
           subgraph SP["Sub-partition (x4)"]
             direction TB
-            LANE["32 lanes<br/>per-lane private registers"]:::lane
-            RF["Register-file slice<br/>banked, all resident warps"]:::rf
+            LANE["32 lanes<br/>per-lane private registers"]
+            RF["Register-file slice<br/>banked, all resident warps"]
           end
-          SMEM["Shared memory / L1<br/>per-SM, ~256 KB"]:::smem
+          SMEM["Shared memory / L1<br/>per-SM, ~256 KB"]
         end
       end
-      L2["L2 cache<br/>chip-wide, sliced, tens of MB"]:::l2
+      L2["L2 cache<br/>chip-wide, sliced, tens of MB"]
     end
-    HBM["HBM - off-chip pool<br/>multi-TB/s, shared by every SM"]:::hbm
+    HBM["HBM - off-chip pool<br/>multi-TB/s, shared by every SM"]
 
     LANE -->|"cheapest, per-thread"| RF
     RF -->|"per-SM reuse"| SMEM
     SMEM -->|"cross-SM via NoC"| L2
     L2 -->|"bandwidth cliff"| HBM
 
-    classDef lane fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef rf fill:#fde68a,stroke:#b45309,color:#000
-    classDef smem fill:#99f6e4,stroke:#047857,color:#000
-    classDef l2 fill:#bae6fd,stroke:#0369a1,color:#000
-    classDef hbm fill:#fca5a5,stroke:#991b1b,color:#000
 ```
 
 Read the nested boxes as *scope* (who shares this level) and the downward arrows as the *access ladder* (registers cheapest, HBM dearest). The scope is why the occupancy formula below is a per-SM budget — registers and shared memory are carved up *within one SM*, while every SM competes for the *one* L2 and the *one* HBM pool.
@@ -533,44 +535,43 @@ Calling every GPU transfer “DMA” hides the architecture. A modern GPU contai
 
 Only the first is the direct GPU analogue of a conventional platform DMA. The third is part of a kernel's instruction execution; it cannot move host buffers, service an unrelated stream, or migrate virtual-memory ownership. The fourth is often not a GPU-owned DMA engine at all—the NIC or remote GPU is the bus master.
 
+Two figures follow, because these mechanisms live on two different planes and drawing them together produces a graph in which no path can be traced. The first is the **command plane** — how work is submitted and how its completion is reported. The second is the **data plane** — how bytes actually move. In both, **solid arrows are commands or completions** and **thick arrows are bulk data**; the legend node states this inside the figure.
+
+**Command and completion plane.** Nothing here moves payload bytes:
+
+```mermaid
+flowchart LR
+    API["CUDA runtime<br/>memcpy, prefetch, kernel launch"] -->|"enqueue"| SQ["Per-stream command queues<br/>dependencies and events"]
+    SQ -->|"doorbell"| CP["Front-end command processor<br/>queue fetch, dependency scoreboard"]
+    CP -->|"copy descriptor"| CE["System copy engines, SDMA"]
+    CP -->|"grid launch"| GPC["GPC and SM array"]
+    CE -->|"copy done"| CMP["Semaphore and event writes<br/>interrupt or host polling"]
+    PF["Fault and migration controller<br/>page state, invalidate, replay"] -->|"migration done"| CMP
+    CMP -->|"unblocks dependent commands"| SQ
+    LEG["Legend: every arrow here is a<br/>command or a completion, never payload data"]
+```
+
+**Contract.** An arrow means "this block hands the next one a descriptor, a doorbell, or a completion record." **Trace.** `cudaMemcpyAsync` writes a packet into the stream queue, rings the doorbell, the command processor checks the stream's dependency scoreboard, and only then hands a descriptor to a copy engine; the engine's semaphore write is what releases the next command in that stream. **Trade-off.** Every hop is queueing, not bandwidth — which is why many small copies are latency-bound in this figure while one large copy is bandwidth-bound in the next.
+
+**Data-movement plane.** The two independent copy paths, and who is bus master on each:
+
 ```mermaid
 flowchart TB
-    subgraph HOST["Host and command plane"]
-        API["CUDA runtime<br/>memcpy / prefetch / kernel"]
-        PIN["Pinned host pages<br/>or pageable staging"]
-        SQ["Per-stream command queues<br/>dependencies + events"]
-    end
-
-    subgraph GPU["GPU chip"]
-        CP["Front-end command processor<br/>queue fetch + dependency scoreboard"]
-        CE["System copy engines / SDMA<br/>descriptor, AGU, split, tags"]
-        MMU["GPU MMU + IOMMU/ATS path<br/>GPU VA / host IOVA"]
-        PF["Fault + migration controller<br/>page state, invalidate, replay"]
-        L2["Unified L2 slices<br/>coherence/visibility point"]
-        HBM["HBM partition controllers"]
-        GPC["GPC / SM array"]
-        TMA["Per-SM async-copy/TMA<br/>tensor-map AGU + mbarrier"]
-        SMEM["Shared / cluster memory"]
-        CMP["Semaphore/event writes<br/>interrupt or host polling"]
-    end
-
-    PEER["Peer GPU / NVLink"] <--> CE
-    NIC["NIC / RDMA requester"] <--> MMU
-    API --> SQ --> CP
-    PIN <--> CE
-    CP --> CE
-    CP --> GPC
-    CE <--> MMU <--> L2 <--> HBM
-    PF --> CE
-    PF --> MMU
-    L2 <--> GPC
-    GPC --> TMA
-    TMA <--> L2
-    TMA <--> SMEM
-    CE --> CMP
-    PF --> CMP
-    CMP --> SQ
+    PIN["Pinned host pages<br/>or pageable staging"] ==> CE["System copy engines, SDMA<br/>descriptor, AGU, split, tags"]
+    PEER["Peer GPU over NVLink"] ==> CE
+    CE ==> MMU["GPU MMU and IOMMU or ATS path<br/>GPU VA, host IOVA"]
+    NIC["NIC or RDMA requester<br/>external bus master"] ==> MMU
+    MMU ==> L2["Unified L2 slices<br/>coherence and visibility point"]
+    L2 ==> HBM["HBM partition controllers"]
+    GPC["GPC and SM array"] -->|"issues cp.async or TMA"| TMA["Per-SM async copy and TMA<br/>tensor-map AGU, mbarrier"]
+    TMA ==> SMEM["Shared and cluster memory"]
+    TMA ==> L2
+    L2 ==> GPC
+    PF["Fault and migration controller"] -->|"retranslate and replay"| MMU
+    LEG["Legend: thick arrows are bulk data;<br/>thin arrows are control"]
 ```
+
+**Contract.** A thick arrow means "payload bytes cross here and consume bandwidth on a named resource"; a thin arrow means an instruction or control action that starts a transfer without carrying it. **Trace.** A host-to-device `memcpy` runs `PIN ⇒ CE ⇒ MMU ⇒ L2 ⇒ HBM` — five bandwidth-consuming hops, with the copy engine as bus master. A `cp.async` inside a kernel runs `GPC → TMA ⇒ L2 ⇒ SMEM` and never touches `CE`; the warp is the initiator. An RDMA write runs `NIC ⇒ MMU ⇒ L2 ⇒ HBM` with the NIC as bus master and no GPU engine involved at all. **Trade-off.** The three paths share `MMU`, `L2`, and `HBM` but nothing upstream of them, so they overlap freely until they collide at the L2 and memory controllers — which is exactly where a copy engine transfer starts stealing bandwidth from a running kernel.
 
 ### 8.1 System copy engine: from a CUDA stream command to HBM bytes
 

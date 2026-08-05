@@ -8,7 +8,7 @@ This chapter reconstructs the platform that makes CPU, GPU, NPU, memory, storage
 
 ## 1. Control-plane components
 
-~~~mermaid
+```mermaid
 flowchart LR
     REG["model/artifact registry"] --> DEP["deployment controller"]
     INV["hardware/topology inventory"] --> PLC["placement solver"]
@@ -22,7 +22,7 @@ flowchart LR
     AG --> MEM["memory/storage/network resources"]
     TEL["health/capacity telemetry"] --> INV
     TEL --> DEP
-~~~
+```
 
 Components include model/artifact registry, hardware/topology inventory, deployment and placement controllers, node/device agents, configuration/secrets service, admission/router control, capacity/autoscaling, health/fault membership, and telemetry/catalog. The fast request/data path remains outside controllers; control unavailability must not immediately stop already configured workers.
 
@@ -67,7 +67,7 @@ The registry stores manifests and immutable shards; distribution resolves neares
 
 Residency states Registered → Fetching → Verified → Transforming → Loading → GroupForming → Warming → Ready, with Failed and Draining/Unloaded. A group is not routable when only some ranks have weights or collectives. Loading consumes storage, PCIe/fabric, host memory, HBM, CPU transformation, and temporary duplicate capacity; placement includes this transient peak.
 
-~~~mermaid
+```mermaid
 stateDiagram-v2
     [*] --> Registered
     Registered --> Fetching
@@ -83,7 +83,7 @@ stateDiagram-v2
     Verified --> Failed: bad checksum or signature
     Loading --> Failed: resource error
     Failed --> [*]
-~~~
+```
 
 Content-addressed caches key source and transformed artifacts by all semantic/layout/compiler/target inputs. Eviction respects active references and rollout predecessor.
 

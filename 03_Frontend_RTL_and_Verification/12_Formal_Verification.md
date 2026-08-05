@@ -262,7 +262,7 @@ Logic equivalence checking answers a different question from property checking â
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 50, "rankSpacing": 45, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     RTL["RTL (golden)"] -->|synthesis| N1["netlist"]
     N1 -->|place & route| N2["netlist (post-PnR)"]
     N2 -->|timing / functional ECO| N3["netlist (post-ECO)"]

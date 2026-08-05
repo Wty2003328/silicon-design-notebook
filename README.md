@@ -53,7 +53,7 @@ hardware_design_notebook/
 ├── Research_Depth_and_Evidence_Standard.md   notebook-wide technical quality rubric
 ├── 00_Fundamentals/               device physics, logic, arithmetic, memory arrays,
 │                                  fixed-point/DSP datapaths, SystemC/TLM (7 pages)
-├── 01_Architecture_and_PPA/       4 chip-architecture books, 34 subdomains, 101 chapters
+├── 01_Architecture_and_PPA/       4 chip-architecture books, 34 subdomains, 102 chapters
 ├── 02_Power_and_Low_Power/        power physics, domain architecture, reduction, UPF/CPF, signoff (6 pages)
 ├── 03_Frontend_RTL_and_Verification/   RTL coding, clocks/CDC, UVM, formal, coverage,
 │                                  design patterns, flow control, arithmetic/memory RTL (16 pages)
@@ -72,7 +72,7 @@ hardware_design_notebook/
 
 Two folders are **tracks rather than stages**: `02` (power) and `08` (security, safety, methodology, IP reuse). Nothing in them happens at a point in the flow — each is a constraint or a practice that applies at every stage at once.
 
-Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as four self-contained CPU, GPU, NPU, and SoC/chiplet books. Each book owns its workload definition, AI-workload mapping and serving analysis, AI compiler/runtime/scheduler/state/operations implementation, performance modeling, design-space exploration, physical implementation, PPA estimation, simulation workflow, evidence standards, and hardware implementation blueprints. Total: **152 flow pages + 12 interview-prep banks**.
+Pages are numbered in reading order within each domain and subdomain, and every level has a `00_Index.md` defining ownership, reading order, and handoffs. The architecture section is organized as four self-contained CPU, GPU, NPU, and SoC/chiplet books. Each book owns its workload definition, AI-workload mapping and serving analysis, AI compiler/runtime/scheduler/state/operations implementation, performance modeling, design-space exploration, physical implementation, PPA estimation, simulation workflow, evidence standards, and hardware implementation blueprints. Total: **155 flow pages + 12 interview-prep banks**.
 
 See [Index.md](Index.md) for the full page-by-page index with coverage summaries.
 

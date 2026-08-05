@@ -226,7 +226,7 @@ Matrix units also interact with out-of-order scheduling. A long, multi-cycle til
 An SMT context needs its own architectural PC/register state, privilege state, rename map or map identity, interrupt state, and predictor-history context. The core may share fetch/decode bandwidth, physical registers, ROB entries, issue queues, execution units, load/store queues, TLBs, and caches.
 
 ```mermaid
-flowchart LR
+flowchart TD
     T0["Thread 0<br/>PC + rename state"] --> Pick["Fetch / rename policy"]
     T1["Thread 1<br/>PC + rename state"] --> Pick
     Pick --> Shared["Shared ROB / IQ / LSQ / PRF"]

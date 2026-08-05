@@ -1,7 +1,7 @@
 # NPU Simulation Methodology and Evidence — From Framework Graph to Final Results
 
 ```mermaid
-flowchart LR
+flowchart TD
     FW["framework model + inputs"] --> EXP["export / graph capture"]
     EXP --> OPT["shape / fusion / layout / quantization / partition"]
     OPT --> MAP["tile / dataflow / buffer / DMA-event schedule"]

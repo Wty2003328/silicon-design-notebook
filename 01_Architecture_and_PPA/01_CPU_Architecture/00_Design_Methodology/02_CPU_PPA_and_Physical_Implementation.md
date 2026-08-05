@@ -1,7 +1,7 @@
 # CPU Power, Performance, Area, and Physical Implementation
 
 ```mermaid
-flowchart LR
+flowchart TD
     UARCH["CPU microarchitecture parameters"] --> STRUCT["queues / CAMs / register files / caches / bypass"]
     STRUCT --> RTL["RTL + memory macros"]
     RTL --> SYN["synthesis timing / area / power"]
@@ -109,7 +109,7 @@ The observed access time is decoder + wordline + cell/bitline + sense + output r
 The macro is therefore a datapath, and its latency is a sum of stages rather than one number. A read walks the decode-to-output path below; a write injects at the column drivers.
 
 ```mermaid
-flowchart LR
+flowchart TD
     ADDR["address + control"] --> DEC["row decoder"]
     DEC --> WLD["wordline drivers"]
     WLD --> ARR["6T cell array"]
@@ -122,6 +122,12 @@ flowchart LR
     WDATA["write data"] --> WD["write drivers"]
     WD --> CMUX
 ```
+
+**Contract.** Each arrow is a stage boundary that costs delay, and the macro's access time is the sum along the path — not a single library number. The two entry points matter: a read enters at `ADDR` and traverses the whole chain, while a write injects at `WD` and never touches the sense amplifiers.
+
+**Trace one read.** `ADDR` clocks into the decoder; the row decoder selects one of $2^n$ wordlines; the wordline driver charges a long, heavily loaded wire across the array; the selected 6T cells tip their precharged bitline pairs by a few tens of millivolts; the column mux narrows the pairs to the sensed width; sense amps resolve the small differential to full swing; ECC checks and corrects; the output register captures. Seven stages, of which the wordline and bitline stages are wire-dominated.
+
+**The trade-off it illustrates.** Making the array taller amortises the periphery over more bits — better density — but lengthens the bitlines, which slows the cell-to-sense stage quadratically in wire RC. Making it wider does the same to the wordline. That is why a large structure is banked rather than built as one array, and why the banking decision belongs to the architect who chose the capacity, not to the memory compiler.
 
 ### 2.2 From one bit to a manufacturable CPU macro
 
@@ -199,7 +205,7 @@ $$
 The chain is drawn straight, but it closes on itself: the instruction that issues broadcasts its own destination tag, waking its dependents in time for them to select the *next* cycle. Back-to-back dependent issue therefore needs the whole loop to settle within one clock, which is why it resists pipelining.
 
 ```mermaid
-flowchart LR
+flowchart TD
     BC["result tag broadcast"] --> CMP["entry tag compares"]
     CMP --> RDY["ready-bit update"]
     RDY --> SEL["oldest-ready select"]

@@ -20,7 +20,7 @@ flowchart LR
     Core --> Cache["coherent cache hierarchy"]
     Cache --> Fabric["ordering points + interconnect"]
     Fabric --> Observe["legal cross-core observations"]
-    Model["sequential consistency (SC) / total store order (TSO) / RISC-V weak memory ordering (RVWMO)"] --> Core
+    Model["sequential consistency, SC<br/>total store order, TSO<br/>RISC-V weak memory ordering, RVWMO"] --> Core
     Model --> Fabric
     Fence["fences + acquire/release + atomics"] --> Core
     Fence --> Fabric
@@ -45,7 +45,7 @@ That repair creates a new failure. A younger load to the same address could read
 Allowing a load to a *different* address to bypass the older store recovers performance, but it exposes the store-buffering outcome and therefore changes the architectural memory model. The ISA must either permit that ordering or provide an operation that closes it. A fence adds tracked obligations—not magic:
 
 ```mermaid
-flowchart LR
+flowchart TD
     B["blocking memory path"] -->|"store miss stalls retirement"| SB["ordered store buffer"]
     SB -->|"same-address load could see stale cache data"| FWD["age + address + byte-mask forwarding"]
     FWD -->|"different-address load can become visible first"| MM["documented relaxed ordering"]
@@ -64,8 +64,8 @@ The producer executes `data=42; release flag=1`; the consumer executes `acquire 
 { "signal": [
   { "name": "P:data_store_retire", "wave": "01.0........" },
   { "name": "P:data_ordered",      "wave": "0....1......" },
-  { "name": "P:release_flag",     "wave": "0.1..|.10.." },
-  { "name": "C:acquire_flag",     "wave": "0.......10." },
+  { "name": "P:release_flag",     "wave": "0.1..|.10..." },
+  { "name": "C:acquire_flag",     "wave": "0.......10.." },
   { "name": "C:data_load",        "wave": "0.........10" },
   { "name": "C:observed_data",    "wave": "x.........=.", "data": ["42"] }
 ] }

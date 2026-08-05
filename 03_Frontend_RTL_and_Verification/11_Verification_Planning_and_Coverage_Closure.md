@@ -106,8 +106,8 @@ Closure is the feedback controller that drives measured coverage to the vplan ta
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
-    RUN["Run regression<br/>(random seeds + directed)"]:::a --> MERGE["Merge coverage<br/>across all runs"]:::b
-    MERGE --> HOLES["Rank holes<br/>(un-hit bins, by value)"]:::c
+    RUN["Run regression<br/>(random seeds + directed)"] --> MERGE["Merge coverage<br/>across all runs"]
+    MERGE --> HOLES["Rank holes<br/>(un-hit bins, by value)"]
     HOLES -->|holes remain| TRIAGE{"Why is this<br/>bin unhit?"}:::d
     TRIAGE -->|reachable by more random| SEED["add seeds /<br/>loosen constraints"]:::d
     TRIAGE -->|rare: random uneconomic| DIR["steer constraint /<br/>write directed test"]:::d
@@ -115,12 +115,8 @@ flowchart TD
     TRIAGE -->|reachable but test fails| BUG["real DUT bug -> fix RTL"]:::d
     SEED --> RUN
     DIR --> RUN
-    HOLES -->|no holes AND all checks pass<br/>AND regression stable| DONE["coverage closed"]:::e
-    classDef a fill:#fde68a,stroke:#b45309,color:#000
-    classDef b fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef c fill:#bae6fd,stroke:#0369a1,color:#000
+    HOLES -->|no holes AND all checks pass<br/>AND regression stable| DONE["coverage closed"]
     classDef d fill:#fecaca,stroke:#991b1b,color:#000
-    classDef e fill:#c7d2fe,stroke:#4338ca,color:#000
 ```
 
 The triage on each hole is the intellectual core of the loop, and its four branches map one-to-one onto §2.1's cost model: **more random** if the bin's $p_i$ is merely moderate (cheap); **directed or steered** if $p_i$ is so small that $1/p_i$ transactions is uneconomic (§4); **waive** if $p_i = 0$ because the bin is genuinely unreachable (dead code or an impossible cross — a *model* bug, not a stimulus gap); **fix RTL** if stimulus reaches the bin but the check fails there — the loop just found a real bug. Skipping this triage and blindly chasing 100 % is the classic failure: effort pours into unreachable bins that can never fire while real stimulus gaps go unexamined.

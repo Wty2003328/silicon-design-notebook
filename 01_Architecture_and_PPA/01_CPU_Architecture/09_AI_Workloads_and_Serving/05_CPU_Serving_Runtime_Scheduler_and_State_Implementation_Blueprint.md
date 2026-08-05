@@ -8,7 +8,7 @@ This chapter specifies the stateful service around CPU-only or CPU-coordinated i
 
 ## 1. Service components and interfaces
 
-~~~mermaid
+```mermaid
 flowchart LR
     GW["network/RPC gateway"] --> ADM["validation + admission"]
     ADM --> Q["tenant/model queues"]
@@ -19,7 +19,7 @@ flowchart LR
     REG["model registry + residency"] --> SCH
     CAP["capacity + telemetry"] -. controls .-> ADM
     CAP -. controls .-> SCH
-~~~
+```
 
 Define request submission, streaming response, cancellation, health/readiness, model load/unload, and administrative configuration interfaces. Submission validates authentication/tenant, model/version, input schema, length/shape bounds, generation parameters, deadline/priority, idempotency identifier, and resource quota before allocating expensive state.
 
@@ -63,7 +63,7 @@ The runtime is a single decision loop: one scheduler thread advances every reque
 
 Never form a batch and then discover that one request cannot allocate KV; reservation precedes publication or has a complete rollback. A delayed completion uses request/batch generation to avoid writing into a reassigned slot.
 
-~~~mermaid
+```mermaid
 flowchart TD
     EPOCH(["epoch start"]) --> REAP["reap completions, faults, cancels<br/>free KV and output capacity"]
     REAP --> UPD["update phase, progress<br/>and deadline slack"]
@@ -80,7 +80,7 @@ flowchart TD
     NEXT --> EPOCH
     RES -. "reserve pages" .-> KVM[("KV / state<br/>manager")]
     DONE -. "append and free" .-> KVM
-~~~
+```
 
 ## 5. Batching and phase policy
 

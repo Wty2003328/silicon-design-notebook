@@ -54,6 +54,10 @@ Two structural facts fall out of the table immediately.
 
 ### 1.2 The dependency graph
 
+The graph forks at the merged layout database. Everything upstream of that fork is **electrical** — it asks whether the chip meets timing, power, and thermal limits. Everything downstream is **physical** — it asks whether the shapes are manufacturable and match the netlist. The two halves share only their start (place-and-route) and their end (the readiness review), so they are drawn separately; superimposing them puts nine edges into one node and makes every path untraceable.
+
+**The electrical chain.**
+
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
 flowchart TD
@@ -72,36 +76,57 @@ flowchart TD
     IR --> STA
     PWR --> THM["thermal"]
     THM --> STA
-    PNR --> GDS["merged GDSII or OASIS"]
+    DFT --> GLS["gate level and pattern sim"]
+    STA --> GLS
+    LEC --> RDY["tape out readiness review<br/>joins the physical chain below"]
+    UPF --> RDY
+    STA --> RDY
+    GLS --> RDY
+    LEGA["Legend: dashed border marks a<br/>multi-day check that cannot sit in an inner loop"]
+    classDef slow fill:#f6d6d6,stroke:#a33,stroke-width:2px,stroke-dasharray:6 3,color:#000
+    class GLS,DFT slow
+    class LEGA legend
+    classDef legend fill:#ffffff,stroke:#666,color:#000
+```
+
+**Contract of the figure.** Every edge is a *data* dependency: the target consumes an artifact the source produces, so running the target on a stale source is not a check, it is a lie. Note that the fan-out from `EXT` is genuine parallelism — SI, power, IR, and thermal all read the same parasitics — but they re-converge on `STA`, so the slowest of them sets when timing can close.
+
+**One concrete trace.** Suppose STA reports a $-4$ ps setup violation. The fix is a VT (threshold-voltage) swap on one cell — the cheapest change in the flow, because the flavors share a footprint and pin geometry so nothing moves and nothing re-routes (§4.1). It still invalidates, in order: the fill in the window around it (the cell's own implant and density signature changed), the extraction of every net within a coupling neighborhood, the SI windows of every aggressor that touches those nets, all 36 timing scenarios, the local power and IR numbers, and the DRC/LVS status of the merged GDS in the next figure. If you re-run only STA and declare victory, you have signed off a database that no longer matches the one that passed DRC.
+
+**The physical-verification fan-out, and the ECO loop.**
+
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart TD
+    PNR["place and route<br/>from the electrical chain above"] --> GDS["merged GDSII or OASIS"]
     GDS --> DRC["full chip DRC"]
     GDS --> LVS["LVS and ERC"]
     GDS --> DFM["density and DFM"]
     GDS --> ESD["ESD and latch up"]
     GDS --> CPS["chip package co analysis"]
-    DFT --> GLS["gate level and pattern sim"]
-    STA --> GLS
-    LEC --> RDY["tape out readiness review"]
-    UPF --> RDY
-    STA --> RDY
-    DRC --> RDY
+    DRC --> RDY["tape out readiness review"]
     LVS --> RDY
     DFM --> RDY
     ESD --> RDY
     CPS --> RDY
-    GLS --> RDY
     RDY --> ECO["ECO<br/>invalidates every node<br/>downstream of the change"]
-    ECO -.-> PNR
-    classDef slow fill:#f6d6d6,stroke:#a33
-    classDef loop fill:#fdf1c7,stroke:#a80
-    class DRC,LVS,GLS,DFT slow
+    ECO -.->|"re-enters the flow here"| PNR
+    LEGB["Legend<br/>solid edge: a data dependency<br/>dashed edge: the ECO re-entry<br/>dashed border: a multi-day check"]
+    classDef slow fill:#f6d6d6,stroke:#a33,stroke-width:2px,stroke-dasharray:6 3,color:#000
+    classDef loop fill:#fdf1c7,stroke:#a80,stroke-width:3px,color:#000
+    class DRC,LVS slow
     class ECO loop
+    class LEGB legend
+    classDef legend fill:#ffffff,stroke:#666,color:#000
 ```
 
-**Contract of the figure.** Every solid edge is a *data* dependency: the target consumes an artifact the source produces, so running the target on a stale source is not a check, it is a lie. The dashed edge is the one that makes signoff a scheduling problem: an ECO re-enters at place-and-route and invalidates the entire subtree below it.
+**Contract of the second figure.** The five checks hanging off `GDS` are mutually independent — no one of them consumes another's output — so they are the only part of signoff that parallelises perfectly given licenses. The single dashed edge is what makes signoff a scheduling problem rather than a checklist: an ECO re-enters at place-and-route and invalidates the entire subtree below it, including everything in the electrical chain above.
 
-**One concrete trace.** Suppose STA reports a $-4$ ps setup violation. The fix is a VT (threshold-voltage) swap on one cell — the cheapest change in the flow, because the flavors share a footprint and pin geometry so nothing moves and nothing re-routes (§4.1). It still invalidates, in order: the fill in the window around it (the cell's own implant and density signature changed), the extraction of every net within a coupling neighborhood, the SI windows of every aggressor that touches those nets, all 36 timing scenarios, the local power and IR numbers, and the DRC/LVS status of the merged GDS. If you re-run only STA and declare victory, you have signed off a database that no longer matches the one that passed DRC.
+**Trace one ECO through this half.** The VT swap of the previous trace changes the cell's implant layer, so the merged GDS changes; `DRC`, `LVS`, `DFM` and `ESD` all become stale even though no wire moved. `DRC` and `LVS` are the two multi-day checks, and both are downstream of the change. That is the whole reason the readiness review gates on a *final full run*: the four fast checks can be re-run overnight, and the two slow ones cannot.
 
-**The trade-off it illustrates.** You could re-run everything after every ECO — perfectly sound, and it takes four days per turn, so you get maybe six turns before tape-out. Or you can run *incremental* checks over the changed window only, which takes two hours and gets you forty turns, at the cost of trusting the tool's notion of "changed window". Real flows do both: incremental during the burn-down (§8), one **final full run on the exact released database** as the gate. The single most common tape-out disaster is skipping that final full run because "only one cell changed".
+**The trade-off the pair illustrates.** The electrical chain is long and serial, so it rewards incremental re-analysis; the physical fan-out is wide and parallel, so it rewards license capacity. Optimising one does nothing for the other, which is why a schedule that budgets only "signoff time" as a single number always misses.
+
+**The scheduling consequence.** You could re-run everything after every ECO — perfectly sound, and it takes four days per turn, so you get maybe six turns before tape-out. Or you can run *incremental* checks over the changed window only, which takes two hours and gets you forty turns, at the cost of trusting the tool's notion of "changed window". Real flows do both: incremental during the burn-down (§8), one **final full run on the exact released database** as the gate. The single most common tape-out disaster is skipping that final full run because "only one cell changed".
 
 ---
 

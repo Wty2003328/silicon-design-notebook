@@ -123,7 +123,7 @@ Intel AMX adds tile registers and tile-matrix-multiply hardware to the x86 ISA. 
 The conceptual dataflow is:
 
 ```mermaid
-flowchart LR
+flowchart TD
     MemA["packed A panel"] --> LoadA["tile load"]
     MemB["packed B panel"] --> LoadB["tile load"]
     LoadA --> TMUL["tile matrix multiply"]
@@ -401,7 +401,7 @@ For small decode shapes, using every core may hurt: barrier and scheduling overh
 A model operator reaches hardware through several layers:
 
 ```mermaid
-flowchart LR
+flowchart TD
     Graph["model graph"] --> Fuse["fusion + layout propagation"]
     Fuse --> Lib["library primitive or generated kernel"]
     Lib --> Dispatch["shape / dtype / ISA dispatch"]

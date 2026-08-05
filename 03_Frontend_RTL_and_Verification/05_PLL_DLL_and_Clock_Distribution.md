@@ -207,7 +207,7 @@ The DLL answers a narrower question â€” *align a clock's phase to a reference* â
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     REF["f_ref"] --> PFD["PFD"]
     REF -->|"clock in: edges to be delayed"| VCDL["VCDL<br/>delay line (not oscillator)"]
     PFD --> CP["Charge pump<br/>+ cap (no zero)"]

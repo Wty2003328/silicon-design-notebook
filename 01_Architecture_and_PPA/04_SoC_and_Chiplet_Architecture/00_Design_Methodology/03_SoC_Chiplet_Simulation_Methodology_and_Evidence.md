@@ -9,7 +9,7 @@
 ---
 
 ```mermaid
-flowchart LR
+flowchart TD
     SW["Applications, OS, drivers, and command streams"] --> AG["CPU/GPU/NPU and device-agent models"]
     AG --> TXN["Coherent and noncoherent transactions"]
     TXN --> NOC["NoC packets, arbitration, credits, and queues"]

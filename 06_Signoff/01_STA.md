@@ -1,7 +1,7 @@
 # Static Timing Analysis — Proving Timing Without Simulating Vectors
 
 ```mermaid
-flowchart LR
+flowchart TD
     START["launch clock + startpoint"] --> CQ["clock-to-Q / input delay"]
     CQ --> DATA["cell + net delay through sensitizable path"]
     DATA --> END["endpoint setup or hold check"]

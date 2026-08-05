@@ -15,7 +15,7 @@
 A coherence simulator without a realistic network can underestimate queueing and message interference. A NoC simulator driven only by uniform random packets can optimize a topology for traffic no protocol generates. Correct architecture work couples the two while keeping enough modularity to isolate causes.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Work["cores / accelerators / synthetic injectors"] --> Proto["cache + directory protocol state machines"]
     Proto --> Msg["request / snoop / response / data classes"]
     Msg --> NI["network interfaces / packetization"]
@@ -31,7 +31,7 @@ The model must preserve causality: protocol messages create traffic, traffic del
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["Fixed miss latency<br/>one delay per cache outcome"]
     B["Protocol-event model<br/>requests, transients, acks, finite TBEs"]
     C["Packet network<br/>message bytes, routes, queueing"]
@@ -131,7 +131,7 @@ where $F_m$ is flits and $H_m$ hops. This correlates better with link/router ene
 **What a router actually does, before the parameter list.** Picture a staffed road intersection. Flits arrive on several input lanes and wait in small per-lane buffers. For each waiting flit the router works out which exit it needs (*route compute*), reserves a lane on the far side so the flit has somewhere to land (*virtual-channel allocation*), grants it a turn to cross the middle (*switch allocation*), and finally wires that input to that output through the *crossbar*. Backward-flowing *credits* are the "there is room" signals: a router may launch a flit only when it holds a credit proving the downstream buffer has a free slot.
 
 ```mermaid
-flowchart LR
+flowchart TD
     IL["Input links<br/>flits arrive"] --> IB["Input buffers<br/>one FIFO per VC"]
     IB --> RC["Route compute<br/>choose output port"]
     RC --> VA["VC allocation<br/>reserve a downstream VC"]

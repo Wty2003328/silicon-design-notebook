@@ -31,7 +31,7 @@ A cache hierarchy evolves by replaying the same load stream against successively
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["No cache<br/>every load pays memory latency"]
     B["Blocking cache<br/>hits are fast; one miss freezes all access"]
     C["Hit under miss<br/>hits bypass one outstanding miss"]

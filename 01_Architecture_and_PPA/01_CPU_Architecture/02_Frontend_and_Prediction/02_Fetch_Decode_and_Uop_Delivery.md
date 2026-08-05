@@ -15,7 +15,7 @@
 A $W$-wide backend cannot retire $W$ operations per cycle unless the frontend delivers a sustained stream at least that wide. Peak decode width is only one link in a serial supply chain: predict a PC, translate it, fetch bytes, align variable-length instructions, decode them, form µops, and buffer them across bubbles and redirects.
 
 ```mermaid
-flowchart LR
+flowchart TD
     PC["Next-PC predictors"] --> FTQ["Fetch target queue"]
     FTQ --> ITLB["instruction TLB (iTLB) / page walker"]
     ITLB --> IC["L1 instruction cache"]
@@ -159,7 +159,7 @@ A µop cache stores decoded operations keyed by instruction address and path con
 The bypass is the whole point of the structure:
 
 ```mermaid
-flowchart LR
+flowchart TD
     PC["fetch address"] --> HIT{"uop cache hit?"}
     HIT == "hit" ==> UQ["uop queue"]
     HIT -- "miss" --> IC["L1 I-cache bytes"]
@@ -190,7 +190,7 @@ but transitions, misses, branch truncation, and downstream queues reduce it.
 **Worked example — what a hit rate buys.** Suppose the µop cache streams $W_u=8$ µops/cycle on a hit, the legacy decode path sustains $W_d=4$ µops/cycle, and the hit rate is $h=0.8$. Then
 
 $$
-D\le 0.8\times 8+0.2\times 4=6.4+0.8=7.2\ \text{µops/cycle}.
+D\le 0.8\times 8+0.2\times 4=6.4+0.8=7.2\ \mu\text{ops/cycle}.
 $$
 
 The cache lifts sustained delivery from 4 to about 7.2 µops/cycle—now enough to feed a 6-wide rename that the decoders alone could not—and, because 80% of µops skip predecode and decode, it removes that pipeline's switching energy on four of every five µops. That dual win, bandwidth *and* power, is why the structure earns its area.

@@ -98,33 +98,37 @@ Reading the seams as consequences of the principle:
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TB
-    TEST[uvm_test<br/>configure + select stimulus]:::test
-    ENV[uvm_env<br/>compose topology]:::env
-    SB[scoreboard<br/>ref model + compare]:::chk
-    COV[coverage subscriber]:::chk
-    subgraph AGT_A[agent A — active]
-        SQR[sequencer]:::seq
-        DRV[driver]:::drv
-        MON[monitor]:::mon
+    TEST["uvm_test<br/>configure and select stimulus"]:::build
+    ENV["uvm_env<br/>compose topology"]:::build
+    SB["scoreboard<br/>ref model and compare"]:::chk
+    COV["coverage subscriber"]:::chk
+    subgraph AGT_A["agent A, active"]
+        SQR["sequencer"]:::build
+        DRV["driver"]:::build
+        MON["monitor"]:::build
     end
-    subgraph AGT_B[agent B — passive]
-        MON2[monitor only]:::mon
+    subgraph AGT_B["agent B, passive"]
+        MON2["monitor only"]:::build
     end
-    DUT[DUT<br/>via virtual interface]:::dut
+    DUT["DUT<br/>via virtual interface"]:::dut
+    LEG["Legend: solid border builds or drives;<br/>dashed border observes and judges;<br/>thick border is the design under test"]:::leg
     TEST --> ENV
     ENV --> AGT_A & AGT_B & SB & COV
-    SQR -->|seq_item| DRV -->|pin wiggles| DUT
+    SQR -->|"seq_item"| DRV -->|"pin wiggles"| DUT
     DUT --> MON & MON2
-    MON -->|analysis port| SB & COV
-    MON2 -->|analysis port| SB
-    classDef test fill:#fbcfe8,stroke:#9d174d,color:#000
-    classDef env fill:#bae6fd,stroke:#0369a1,color:#000
-    classDef seq fill:#fde68a,stroke:#b45309,color:#000
-    classDef drv fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef mon fill:#bbf7d0,stroke:#15803d,color:#000
-    classDef chk fill:#ddd6fe,stroke:#6d28d9,color:#000
-    classDef dut fill:#fecaca,stroke:#b91c1c,color:#000
+    MON -->|"analysis port"| SB & COV
+    MON2 -->|"analysis port"| SB
+    classDef build fill:#bae6fd,stroke:#0369a1,color:#000,stroke-width:1px
+    classDef chk fill:#ddd6fe,stroke:#6d28d9,color:#000,stroke-width:2px,stroke-dasharray:6 3
+    classDef dut fill:#fecaca,stroke:#b91c1c,color:#000,stroke-width:4px
+    classDef leg fill:#ffffff,stroke:#666,color:#000
 ```
+
+**Contract.** Border style repeats what colour says, so the classes survive greyscale: **construction and stimulus** (thin solid), **checking and coverage** (dashed), and **the DUT** (thick). Downward arrows are build-time composition; the labelled arrows are run-time data — a transaction object on `seq_item`, real signal activity on `pin wiggles`, and a broadcast on `analysis port`.
+
+**Trace one transaction.** The test configures the env; the env builds both agents plus the scoreboard and coverage subscriber. At run time a sequence hands a `seq_item` to the sequencer, which passes it to the driver; the driver converts it into `AWVALID`/`AWREADY` activity on the DUT pins. The monitor reconstructs a transaction from *those pins only* and broadcasts it; the scoreboard and coverage subscriber each receive a copy. Note that agent B contributes a monitor and nothing else — nothing in the figure lets it drive.
+
+**The trade-off it illustrates.** Every seam in this picture costs an object copy and a level of indirection at run time, which is why a UVM testbench is slower per cycle than a directed test that wiggles pins straight from a task. What it buys is the multiplicative reuse the next section derives: the analysis-port fan-out is exactly why a new checker costs zero changes to the monitor.
 
 ### 2.1 Why separation is the *organizing* idea, not a style preference
 
@@ -277,7 +281,6 @@ The sequence↔driver handshake exists to move one transaction across the seam w
 - **Late randomization.** The item is randomized *between* `start_item` and `finish_item`, i.e. at the instant the driver is ready for it, so reactive stimulus can read DUT state as late as possible.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 sequenceDiagram
     participant S as sequence.body()
     participant Q as sequencer

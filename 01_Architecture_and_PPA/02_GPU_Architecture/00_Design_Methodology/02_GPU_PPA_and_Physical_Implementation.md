@@ -127,35 +127,37 @@ More SMs raise aggregate request injection. The shared fabric must provide:
 - memory-partition queues and scheduling;
 - HBM controller/PHY bandwidth and package connections.
 
-These blocks are not free to place, and the floorplan explains the couplings. HBM PHYs must sit at the die edge because each stack drives a very wide interface straight down into the silicon interposer beneath the package; L2 is sliced and scattered through the SM array so no core is far from a cache home; and the NoC is the physical wiring that ties every SM to every L2 slice and memory partition. Adding SMs therefore stretches all of this fabric, not just the compute.
+These blocks are not free to place, and three placement facts drive the whole floorplan. **HBM PHYs must sit at the die edge**, because each stack drives a 1024-bit interface straight down through microbumps into the silicon interposer beneath the package; a PHY placed in the interior would have to route that width back out to the edge, which no metal budget allows. **L2 must be sliced and scattered through the SM array**, not gathered into one corner, so that the mean SM-to-cache-home distance stays flat as the array grows. **The NoC is the physical wiring** that ties every SM to every L2 slice and memory partition, so it is the structure that stretches when SM count rises. Adding SMs therefore stretches all of this fabric, not just the compute.
+
+The figure below is a **connectivity graph, not a floorplan**: it shows which blocks must exchange traffic, and therefore what the NoC has to carry. It deliberately makes no claim about where anything sits on the die — automatic graph layout cannot express geometry, and the edge-placement and scattering arguments above are made in words for exactly that reason.
 
 ```mermaid
 flowchart LR
-    subgraph INTP["silicon interposer + package"]
+    subgraph INTP["silicon interposer and package"]
       direction LR
-      HBMW["HBM stacks<br/>west edge"]
+      HBM0["HBM stacks<br/>group 0"]
       subgraph DIE["monolithic GPU die"]
         direction TB
-        MCW["west memory<br/>controllers + HBM PHYs"]
+        MC0["mem controllers<br/>plus HBM PHYs<br/>group 0"]
         subgraph FAB["SM array with distributed L2 slices"]
           direction TB
           ROWA["SM cluster row"]
           L2A["L2 slice band"]
           ROWB["SM cluster row"]
-          NOC["on-chip network (NoC)"]
+          NOC["on-chip network, NoC"]
           ROWC["SM cluster row"]
           L2B["L2 slice band"]
           ROWD["SM cluster row"]
         end
-        MCE["east memory<br/>controllers + HBM PHYs"]
-        IOP["host + inter-GPU PHYs"]
+        MC1["mem controllers<br/>plus HBM PHYs<br/>group 1"]
+        IOP["host and<br/>inter-GPU PHYs"]
       end
-      HBME["HBM stacks<br/>east edge"]
+      HBM1["HBM stacks<br/>group 1"]
     end
-    HBMW --- MCW
-    MCW --- FAB
-    FAB --- MCE
-    MCE --- HBME
+    HBM0 --- MC0
+    MC0 --- FAB
+    FAB --- MC1
+    MC1 --- HBM1
     ROWA --- NOC
     ROWB --- NOC
     ROWC --- NOC
@@ -164,6 +166,12 @@ flowchart LR
     L2B --- NOC
     FAB --- IOP
 ```
+
+**Contract.** Every undirected edge means "these two blocks exchange memory traffic, and the wiring between them is a resource somebody must budget." No edge means causality or direction, and no position means location.
+
+**Trace one read miss.** An SM in `ROWB` misses L1. The request enters `NOC`, is hashed to a home slice in `L2A` or `L2B`, misses there too, crosses `NOC` again to whichever memory-controller group owns that address, and leaves the die through the adjacent HBM PHYs. Two NoC traversals per miss, both of which lengthen as the array grows.
+
+**The trade-off it illustrates.** Doubling SM count doubles injection into the same `NOC` node. If the NoC and L2 slice count do not grow with it, the added SMs queue rather than compute — which is the nonlinear saturation the next paragraph quantifies.
 
 Near saturation, latency grows nonlinearly. A chip with twice the SMs and unchanged memory system may deliver far less than twice throughput while consuming much more power.
 

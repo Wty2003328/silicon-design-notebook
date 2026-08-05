@@ -9,7 +9,7 @@
 ## 0. The complete serving path
 
 ```mermaid
-flowchart LR
+flowchart TD
     Store["object store / NVMe<br/>model shards"] --> Host["CPU memory<br/>deserialize / pin / map"]
     Host --> HBM["GPU HBM<br/>weights + workspaces + KV pool"]
     Req["request"] --> Front["gateway / tokenizer / router"]

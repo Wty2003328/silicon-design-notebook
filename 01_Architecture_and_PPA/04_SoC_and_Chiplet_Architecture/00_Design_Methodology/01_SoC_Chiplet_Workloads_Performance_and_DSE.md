@@ -7,10 +7,10 @@
 ---
 
 ```mermaid
-flowchart LR
+flowchart TD
     U["Concurrent product use cases"] --> A["Agents, dependencies, and traffic"]
     A --> M["Compute, queueing, NoC, memory, and I/O models"]
-    M --> K["Architecture knobs: topology, capacity, QoS, clocks, chiplet cuts"]
+    M --> K["Architecture knobs: topology, capacity,<br/>QoS, clocks, chiplet cuts"]
     K --> S["Simulation plus PPA and thermal estimates"]
     S --> O["Latency, throughput, fairness, energy, area, and cost"]
     O --> P["Feasible Pareto frontier"]
@@ -53,6 +53,12 @@ flowchart LR
     M6 --> D
     M7 --> D
 ```
+
+**Contract.** Each left-hand node is a *measured property of the workload*; each middle node is a *model that consumes exactly that property*; the arrow into `D` means "this model contributes one axis to the Pareto comparison." No arrow means causality between blocks — the seven chains are independent and can be built in any order.
+
+**Trace one workload property.** "Camera frames arrive in bursts of 4 every 33 ms" is a value of `W3`. It feeds only the queueing model `M3`, which converts it into a tail-latency number, which becomes one coordinate of a design point in `D`. It does *not* feed the DRAM model — footprint does that — which is why fixing a tail-latency problem by adding bandwidth so often fails.
+
+**The trade-off it illustrates.** Every chain is cheap on its own and the temptation is to build one and declare the system understood. But `D` compares design points on all seven axes at once, and a knob that improves one axis usually costs another; a study that models fewer than all seven is not conservative, it is silently optimising an axis it cannot see.
 
 ## 1. End-to-end performance is a dependency graph
 

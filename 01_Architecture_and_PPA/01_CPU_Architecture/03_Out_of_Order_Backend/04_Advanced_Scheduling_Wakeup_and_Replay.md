@@ -81,7 +81,7 @@ Everything in this section is one feedback loop that must, ideally, close in a s
 Intuition for the CAM: picture every source operand as a person holding a card printed with the tag it waits for. Wakeup shouts one tag across the room; everyone holding that card raises a hand (sets ready). Select then calls on the oldest raised hands that fit the free ports. The comparison is *associative*—all cards are checked at once, not looked up by index—which is exactly why the structure is a CAM, and why its width and fan-out dominate the cycle-time budget flagged in Section 0. Growing $N$, $S$, or $W$ there means more cards to check, more hands to poll, on a path with only one cycle to finish.
 
 ```mermaid
-flowchart LR
+flowchart TD
   BC["dest tag<br/>broadcast"] --> CAM["source-tag CAM<br/>associative match"]
   CAM -->|hit| RDY["set<br/>ready bit"]
   RDY --> SEL["select<br/>age arbiter"]
@@ -145,7 +145,7 @@ Consumers awakened by that producer must receive a cancel before they use or pro
 The kill-and-recover path mirrors the wakeup loop, run in reverse: a late or missed result broadcasts a *cancel* tag, the CAM matches it against producer tags (or the load-dependency vector), matching entries clear their ready bit and squash any already-issued consumer, and each entry then waits for a *cause-specific* wake event before re-entering select.
 
 ```mermaid
-flowchart LR
+flowchart TD
   MISS["miss / late<br/>result detected"] --> KILL["broadcast<br/>cancel tag"]
   KILL --> MATCH["CAM match:<br/>producer tag<br/>or load-dep vector"]
   MATCH -->|hit| CLR["clear ready bit<br/>squash if issued"]

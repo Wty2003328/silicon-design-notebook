@@ -16,7 +16,7 @@
 A GPU does not make one warp's long-latency load cheap. It keeps many warps resident and issues from another while the first waits. This works only if the scheduler has eligible work, the register/shared-memory allocation admits enough warps, and independent execution/memory pipelines are balanced.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Blocks["thread blocks"] --> Admit["resource admission<br/>registers + shared memory + slots"]
     Admit --> Pool["resident warp pool"]
     Pool --> Sched["warp schedulers"]
@@ -35,7 +35,7 @@ Occupancy is a capacity ceiling; issue eligibility and instruction-level paralle
 Begin with a lane array and one warp. It runs efficiently until an instruction waits; then every lane is idle. Each subsequent mechanism repairs the newly exposed failure:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["one warp executes<br/>lane array idles on a miss"] -->|"retain several contexts"| B["resident warp pool"]
     B -->|"choose another context at zero save/restore cost"| C["warp scheduler"]
     C -->|"some resident warps have RAW dependencies"| D["scoreboard-derived ready mask"]
@@ -312,7 +312,7 @@ The paragraph above lists three multi-tenant options — partition SMs, time-sli
 ```mermaid
 flowchart TB
     XBar["work distributor + on-chip crossbar<br/>routes each instance only to its own slices"]
-    subgraph GPU["one physical GPU under MIG — static spatial partition (up to 7 instances)"]
+    subgraph GPU["one physical GPU under MIG<br/>static spatial partition, up to 7 instances"]
       direction LR
       subgraph I0["instance 0 — isolated fault + address domain"]
         direction TB

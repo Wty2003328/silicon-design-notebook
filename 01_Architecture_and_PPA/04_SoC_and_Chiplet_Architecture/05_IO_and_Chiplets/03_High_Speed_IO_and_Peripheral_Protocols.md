@@ -158,7 +158,7 @@ Scrambling also has a second, independent purpose: **electromagnetic emissions**
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 45, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     P1["parallel TX data<br/>32 bit at 250 MHz"] --> ENC["encoder<br/>128b/130b plus scrambler"]
     ENC --> SER["serializer<br/>binary mux tree<br/>final stage half rate"]
     SER --> DRV["driver with TX FFE<br/>de-emphasis taps"]
@@ -388,7 +388,6 @@ Enumeration walks the tree assigning **bus/device/function (BDF)** identifiers, 
 Two chips that have never met must agree on lane count, lane order, polarity, speed, and equalizer coefficients, using only the wires being negotiated. The **link training and status state machine (LTSSM)** is that negotiation.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 stateDiagram-v2
     [*] --> Detect
     Detect --> Detect: no receiver seen
@@ -988,7 +987,7 @@ There is one non-obvious RTL requirement here. Reading a 64-bit counter over a 3
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 45, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     SRC["peripheral event<br/>level or pulse"] --> SYNC["synchronizer<br/>plus optional glitch filter"]
     SYNC --> DET["level pass-through<br/>or edge latch"]
     DET --> PEND["pending bit"]

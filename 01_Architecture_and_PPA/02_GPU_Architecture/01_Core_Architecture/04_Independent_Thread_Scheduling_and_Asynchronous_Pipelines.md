@@ -24,7 +24,7 @@ The machine is still a throughput processor. It does not become 32 tiny out-of-o
 The features in this chapter form two connected evolution paths:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["one PC + active mask<br/>classical warp lockstep"] -->|"diverged subset can block its producer"| B["per-thread PC / wait state<br/>independent thread scheduling"]
     B -->|"threads at same PC still execute together"| C["dynamic SIMT-group formation"]
     D["lanes synchronously copy each tile"] -->|"address/copy instructions consume issue slots and registers"| E["descriptor-driven async copy engine"]
@@ -225,7 +225,7 @@ The barrier must define atomicity between arming and launching. If completion ca
 - control warps manage barriers and tile descriptors.
 
 ```mermaid
-flowchart LR
+flowchart TD
     P["producer warp<br/>launch TMA tile n+1"] --> B1["ready barrier n+1"]
     B0["ready barrier n"] --> C["consumer warp group<br/>WGMMA tile n"]
     C --> E["epilogue warp<br/>scale / reduce / store"]
@@ -396,7 +396,7 @@ blocks at once. If $G>R$, only $R$ blocks are resident; the remaining $G-R$ wait
 Now arm a grid barrier. Every resident block reaches it and spins until all $G$ blocks have arrived. But the $G-R$ non-resident blocks cannot arrive — they were never scheduled — and the resident blocks cannot exit — they are spinning at the barrier. The two waits close a cycle:
 
 ```mermaid
-flowchart LR
+flowchart TD
     Res["R resident blocks<br/>spinning at grid barrier"] -->|"wait for arrival of"| NonRes["G-R non-resident blocks<br/>queued for an SM slot"]
     NonRes -->|"slot frees only when a resident block exits"| Res
 ```

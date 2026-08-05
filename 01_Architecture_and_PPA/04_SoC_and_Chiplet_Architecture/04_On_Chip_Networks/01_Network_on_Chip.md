@@ -237,7 +237,7 @@ Because only the head flit carries the route, jobs 1–2 are **head-only, once p
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     RC["RC — route compute<br/>(head only)<br/>destination → output port"]:::route --> VA["VA — VC allocation<br/>(head only, 1×/packet)<br/>acquire a free output VC"]:::alloc
     VA --> SA["SA — switch allocation<br/>(every flit, every cycle)<br/>win a crossbar timeslot"]:::alloc
     SA --> ST["ST — switch traversal<br/>(cross the crossbar)"]:::trav

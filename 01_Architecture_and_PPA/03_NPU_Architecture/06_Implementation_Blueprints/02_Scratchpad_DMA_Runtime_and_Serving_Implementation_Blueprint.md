@@ -1,7 +1,7 @@
 # NPU Scratchpad, DMA, Runtime, and Serving Implementation Blueprint
 
 ```mermaid
-flowchart LR
+flowchart TD
     HOST["host queue + protected descriptor"] --> DEP["dependency/event scheduler"]
     DEP --> DMA["address generation + IOMMU + DMA"]
     DMA --> SP0["scratchpad buffer phase 0"]

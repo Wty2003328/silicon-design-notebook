@@ -1,7 +1,7 @@
 # NPU Verification, Performance, and Bring-up Blueprint
 
 ```mermaid
-flowchart LR
+flowchart TD
     FW["framework reference"] --> IR["lowered-graph reference"]
     IR --> CMD["command functional model"]
     CMD --> BIT["bit-accurate array/vector model"]

@@ -23,7 +23,7 @@ flowchart LR
 >
 > **Organized by the chip design flow.** The folders are numbered `00 → 07` in flow order — early PPA/architecture, frontend RTL + verification, synthesis, backend, signoff, manufacturing. Power is kept together as a cross-cutting track (02). Pages inside each folder are numbered in reading order, and every folder has its own `00_Index`. **Start with the [Chip Design Flow Overview](Chip_Design_Flow_Overview.md)** — it maps every stage, hand-off, and iteration loop.
 >
-> **152 flow pages** (+12 interview-prep banks).
+> **155 flow pages** (+12 interview-prep banks).
 
 ---
 

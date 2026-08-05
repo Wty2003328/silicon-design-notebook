@@ -30,7 +30,7 @@ Address translation evolves from a correct but unusably serial baseline:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 42, "rankSpacing": 56, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     A["Flat physical addressing<br/>fast hardware; no per-process isolation"]
     B["Page table lookup per access<br/>isolation/relocation; serial memory reads"]
     C["L1 TLB<br/>one-cycle cached translation"]

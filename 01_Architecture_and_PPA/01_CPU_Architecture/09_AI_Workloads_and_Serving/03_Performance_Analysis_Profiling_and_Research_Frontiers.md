@@ -1,7 +1,7 @@
 # Central Processing Unit AI Performance Analysis, Profiling, and Research Frontiers
 
 ```mermaid
-flowchart LR
+flowchart TD
     WL["model / phase / shape / batch"] --> COUNT["operations + bytes by hierarchy"]
     COUNT --> BOUND["roofline / latency / queue / capacity bounds"]
     BOUND --> TRACE["service + operator + generated-code trace"]

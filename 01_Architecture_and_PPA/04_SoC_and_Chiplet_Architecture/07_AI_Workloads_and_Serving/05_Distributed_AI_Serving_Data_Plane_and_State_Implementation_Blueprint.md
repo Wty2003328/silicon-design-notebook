@@ -8,7 +8,7 @@ This chapter reconstructs the request and state data plane across heterogeneous 
 
 ## 1. End-to-end component and request schema
 
-~~~mermaid
+```mermaid
 flowchart LR
     CLI["client"] --> GW["gateway + auth + limits"]
     GW --> ROUTE["model/phase/locality router"]
@@ -20,7 +20,7 @@ flowchart LR
     STORE --> DEC
     FAB["collective + RDMA data plane"] --> PRE
     FAB --> DEC
-~~~
+```
 
 A request envelope stores globally unique/idempotency ID, tenant/auth context, model/version/adapter, input schema/payload reference, arrival/deadline/priority, generation parameters and random seed, locality/prefix hint, phase/state handle, trace context, cancel epoch, retry count, output stream credits, and status. Large tensors/state travel by registered buffer handles, not control-message copies.
 
@@ -38,7 +38,7 @@ States include Received, Routed, Reserved, Preprocessing, Prefilling, HandoffPre
 
 The happy-path lifecycle below shows where each commit point makes work authoritative (the five commits are defined immediately after):
 
-~~~mermaid
+```mermaid
 stateDiagram-v2
     [*] --> Received
     Received --> Routed
@@ -59,7 +59,7 @@ stateDiagram-v2
     Canceling --> Failed
     Failed --> [*]
     note right of Canceling : any state may enter Canceling or Failed on cancel or fault
-~~~
+```
 
 Stateless retry is possible before expensive state creation. After prefill/KV, retry requires an authoritative state owner or recomputation. The protocol defines commit points:
 

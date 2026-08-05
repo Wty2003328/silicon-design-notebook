@@ -1,7 +1,7 @@
 # NPU AI-Stack Verification, Operations, and Deployment Blueprint
 
 ```mermaid
-flowchart LR
+flowchart TD
     IR["source graph → transformed IR"] --> CMD["target-command functional model"]
     CMD --> DEV["device arithmetic + memory scoreboard"]
     DEV --> SERVE["request / profile / KV / multi-NPU validation"]

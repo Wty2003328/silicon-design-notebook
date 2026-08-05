@@ -246,7 +246,7 @@ Apply the **transposition theorem** to the signal-flow graph: reverse the direct
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": false}}}%%
-flowchart LR
+flowchart TD
     X["x sample<br/>broadcast net"] --> M3["multiply by h3"]
     X --> M2["multiply by h2"]
     X --> M1["multiply by h1"]
@@ -802,7 +802,6 @@ Restoring division is long division in binary. Hold a partial remainder $R$, ini
 Non-restoring division removes the restore. Allow the partial remainder to go negative and let the quotient digits be $\{-1,+1\}$: if $R \ge 0$ subtract $D$ on the next step, if $R < 0$ **add** $D$ instead. Exactly one addition per iteration, $W$ iterations, and a final conversion from the signed-digit quotient to two's complement (which is one subtraction of the negative-digit mask from the positive-digit mask, or equivalently a shift-and-increment). A final correction step fixes the remainder's sign if it ended negative.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
 stateDiagram-v2
     [*] --> IDLE
     IDLE --> LOAD: start

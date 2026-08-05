@@ -22,7 +22,7 @@ Cold-start time can be minutes while one warm device execution is milliseconds. 
 
 ## 1. Deployment path: object storage to executable NPU state
 
-~~~mermaid
+```mermaid
 flowchart LR
     A["object storage / checkpoint shards"] --> B["network + host page cache"]
     B --> C["host DRAM staging"]
@@ -34,7 +34,7 @@ flowchart LR
     F --> H["initialize KV pools + workspaces"]
     H --> I["warm shape buckets / collectives"]
     I --> J["ready endpoint"]
-~~~
+```
 
 ### 1.1 Checkpoint discovery and integrity
 
@@ -70,7 +70,7 @@ Warm-up must cover the executable variants used by production. Warming only the 
 
 ## 2. Request path from the network to the NPU
 
-~~~mermaid
+```mermaid
 sequenceDiagram
     participant C as Client
     participant F as Frontend / router
@@ -93,7 +93,7 @@ sequenceDiagram
         H-->>C: streamed token
     end
     H->>H: release KV and accounting state
-~~~
+```
 
 This sequence is a logical view. Implementations may sample on-device, use persistent device loops, or let the runtime enqueue future steps. The invariant is that request state, device state, and returned tokens remain associated with the correct model/version/tenant through batching and cancellation.
 
@@ -128,7 +128,7 @@ Static batching waits for a fixed group and runs it to completion. Continuous or
 
 Intuitively, static batching is a charter bus that waits until every seat is filled, drives the whole group to the final stop, and only then returns for the next group; one short-trip passenger still holds a seat for the entire route. Continuous batching is a bus that at every stop lets off whoever has arrived, boards whoever is waiting, and drives on. Because generation lengths vary widely, the second policy keeps far more seats (NPU lanes) doing useful work per step. The mechanism is therefore a cycle, not a straight line: completed sequences release their lanes and admitted ones fill them at each step boundary.
 
-~~~mermaid
+```mermaid
 flowchart TD
     A["arriving requests"] --> B["admission + KV reserve"]
     B --> C["waiting queue"]
@@ -140,7 +140,7 @@ flowchart TD
     G --> H{"sequence finished?"}
     H -->|"continue"| R
     H -->|"done"| I["release KV pages, close stream"]
-~~~
+```
 
 At a scheduling instant, the engine chooses a batch $\mathcal B$ under constraints such as
 

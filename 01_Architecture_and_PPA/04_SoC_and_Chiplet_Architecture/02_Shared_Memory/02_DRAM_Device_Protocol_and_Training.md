@@ -500,7 +500,6 @@ The order is `MR3 → MR6 → MR5 → MR4 → MR2 → MR1 → MR0`. It is descen
 Notice where the time goes: ~700 µs of mandated waits, ~0.5 µs of mode-register programming, ~0.3 µs of ZQ, and then **tens of milliseconds of training**. Training dominates memory bring-up by three orders of magnitude, which is why §7 is the longest section on this page and why "the memory takes 30 ms to come up" is a normal, correct answer rather than a bug.
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 40, "rankSpacing": 42, "htmlLabels": false}}}%%
 stateDiagram-v2
     [*] --> Ramp: RESET_n low, CKE low
     Ramp --> ResetHold: VPP then VDD then VDDQ, CK started
@@ -743,7 +742,7 @@ The device cannot measure ohms. It can compare voltages. So JEDEC gives it one t
   \draw (0,2.6) to[vR=$R_{ON}$] (0,1.0);
   \draw (0,1.0) -- (0,0.4);
   \node[right] at (0.15,0.75) {\small ZQ pad};
-  \draw (0,0.4) to[R=$R_{ZQ}=240\,\Omega$] (0,-1.2);
+  \draw (0,0.4) to[R={$R_{ZQ}=240\,\Omega$}] (0,-1.2);
   \draw (0,-1.2) node[ground]{};
   \draw (0,1.0) -- (1.7,1.0);
   \node[draw,minimum width=1.4cm,minimum height=1.4cm] (C) at (2.6,0.4) {\small cmp};

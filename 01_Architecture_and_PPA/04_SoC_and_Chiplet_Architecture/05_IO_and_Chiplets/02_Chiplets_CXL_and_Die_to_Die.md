@@ -347,7 +347,7 @@ Memory semantics alone do not mean a snooping, fully hardware-coherent cache dom
 ### 7.4 Scale-up endpoint microarchitecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     CORE["GPU/NPU cores, DMA,<br/>collective engine"] --> GMMU["Address translation<br/>local versus remote"]
     GMMU --> ORD["Memory-order and scope tracker"]
     ORD --> REM["Remote operation builder<br/>read/write/atomic/message"]
@@ -398,9 +398,9 @@ sequenceDiagram
     A->>EA: "release fetch_add(remote counter), allocate T90"
     Note over EA: "older release set reaches ordering point"
     EA->>S: "AtomicAdd(T90, B, address, operand)"
-    S->>EB: "routed packet; hop replay is invisible above link layer"
+    S->>EB: "routed packet, hop replay invisible above link layer"
     EB->>H: "authorize and serialize"
-    H->>H: "old=counter; counter=old+operand exactly once"
+    H->>H: "old=counter, then counter=old+operand exactly once"
     H-->>EB: "AtomicResp(T90, old)"
     EB-->>S: "response"
     S-->>EA: "response"

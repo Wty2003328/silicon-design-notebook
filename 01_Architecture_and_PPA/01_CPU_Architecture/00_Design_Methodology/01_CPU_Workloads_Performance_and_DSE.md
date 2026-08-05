@@ -1,7 +1,7 @@
 # CPU Workloads, Performance Modeling, and Design-Space Exploration
 
 ```mermaid
-flowchart LR
+flowchart TD
     PROD["product use cases + software"] --> CENSUS["instruction / branch / memory / vector workload census"]
     CENSUS --> MET["latency / throughput / power / area objectives"]
     MET --> MODEL["IPC / AMAT / queue / roofline models"]

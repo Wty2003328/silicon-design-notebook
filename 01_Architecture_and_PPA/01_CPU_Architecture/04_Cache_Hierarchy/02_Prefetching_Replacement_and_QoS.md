@@ -22,7 +22,7 @@ A shared cache makes three predictions continuously:
 Treating them independently causes pathologies. An aggressive prefetcher fills the cache, replacement evicts demand lines, and a shared workload consumes MSHRs/bandwidth even if way partitioning limits its capacity.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Demand["demand stream"] --> Detect["stream/stride/delta/context detectors"]
     Detect --> Filter["confidence + duplicate + page filter"]
     Filter --> Queue["prefetch queue / throttle"]
@@ -128,6 +128,12 @@ flowchart TB
     J --> K
     D --> K
 ```
+
+**Contract.** This is the per-retirement update of one reference-prediction-table entry. Every path through it ends at `K`, which stores `last = addr`: the table is updated exactly once per retired load whether or not a prefetch was issued, so the walk is constant-time and cannot back up.
+
+**Trace access 4 of the table above.** `addr = 0x10C0` retires; the PC hits its RPT entry; `delta = 0x10C0 - 0x1080 = 0x40`, which equals the recorded stride, so confidence rises from 2 to 3; 3 meets the threshold, so the prefetch for `0x1100` issues; then `last` becomes `0x10C0`. Access 5 then finds that line already present.
+
+**The trade-off it illustrates.** The `conf = 0` reset on the `no` branch of the stride comparison is what makes the predictor safe on irregular streams — a single mismatched delta silences it — and it is also what makes it slow to restart after a loop boundary, costing the three-access ramp seen at the start of every new stream.
 
 ### 3.3 Delta/correlation predictors
 

@@ -183,8 +183,15 @@ flowchart TB
     C2 <-->|"D2D"| IO
     C3 <-->|"D2D"| IO
   end
-  MONO ==>|"cut at low-traffic seams;<br/>each seam becomes a D2D link"| PART
+  MONO ==>|"design transformation:<br/>cut at low-traffic seams,<br/>each seam becomes a D2D link"| PART
+  KEY["Edge key<br/>plain line: physical adjacency on one die<br/>double arrow: a bidirectional D2D link<br/>thick arrow: a design transformation, not traffic"]
 ```
+
+**Contract, stated because this figure uses three different kinds of edge.** A plain line (`N0 --- CORE0`) means *physical adjacency* — these blocks abut, and no transaction is implied. A double-headed arrow (`C0 <--> IO`) means a *bidirectional D2D link* carrying real traffic. The single thick arrow means neither: it is a *design transformation* taking the left-hand organisation to the right-hand one. Without that key, a reader reasonably assumes all three mean dataflow and concludes that the monolith somehow feeds the partition.
+
+**Trace the transformation.** In `MONO`, all PHYs sit in the north and south I/O rings and the compute clusters talk to them across the interior mesh. Cutting between `A0`/`LLC0` and `A1` — a seam chosen because little traffic crosses it — turns each severed mesh connection into a D2D link, and the PHYs migrate into a single `IO` die that every compute chiplet now reaches through those links.
+
+**The trade-off it illustrates.** Every seam converts a cheap on-die mesh hop into a D2D traversal with its own latency, energy per bit, and area for the adapter and PHY. The partition wins when the yield and reuse savings on four smaller dies exceed that tax — which is why the seam choice is a traffic measurement, not an aesthetic one.
 
 **Side view — the chiplet-on-interposer stack.** Each cut costs a physical hop down through microbumps into a silicon interposer that carries the D2D wires and TSVs, then C4 bumps to the substrate and BGA to the board — the package resources a block diagram hides.
 
@@ -314,16 +321,16 @@ UPF and CPF describe power domains, supply networks and states, power switches, 
 Use one traceable flow:
 
 ```mermaid
-flowchart LR
+flowchart TD
     Req["architectural power-state table"] --> RTL["RTL: PMU FSM, quiesce, save/restore, controls"]
-    Req --> Intent["UPF/CPF: domains, supplies, states, switches, isolation, retention, level shifting"]
+    Req --> Intent["UPF and CPF: domains, supplies, states,<br/>switches, isolation, retention, level shifting"]
     RTL --> PA["power-aware RTL simulation"]
     Intent --> PA
     PA --> Syn["synthesis: insert/map low-power cells"]
     Syn --> Equiv["power-aware equivalence + structural checks"]
     Equiv --> PnR["placement/CTS/routing: rails, switches, AON routes, IR drop"]
     PnR --> Gate["gate simulation + static timing across modes"]
-    Gate --> Signoff["scenario coverage, power integrity, wake sequence, fault evidence"]
+    Gate --> Signoff["scenario coverage, power integrity,<br/>wake sequence, fault evidence"]
 ```
 
 The architecture-to-intent handoff must name, for every crossing and state: source/destination domain, legal supply states, signal direction, clamp value and when it becomes active, level-shifter direction, retained registers and retention supply, save/restore protocol, reset behavior, and ownership of each control. Tools can then detect an unisolated crossing or missing level shifter. They cannot decide whether a response channel must clamp to `VALID=0` or whether the fabric must synthesize an error response instead; that is a protocol decision.
