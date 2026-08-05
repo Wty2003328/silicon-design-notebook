@@ -27,7 +27,7 @@ flowchart LR
 | Order | Subdomain | Chapters | Question answered |
 |---:|---|---:|---|
 | 0 | [CPU Design Methodology](00_Design_Methodology/00_Index.md) | 3 | Which workloads matter, what bottleneck is active, what does it cost physically, and what evidence supports the result? |
-| 1 | [Core Foundations](01_Core_Foundations/00_Index.md) | 3 | What contract does a CPU implement, and where does parallel work come from? |
+| 1 | [Core Foundations](01_Core_Foundations/00_Index.md) | 4 | What contract does a CPU implement — including the privileged half: CSRs, trap delivery, exception priority, and protection — and where does parallel work come from? |
 | 2 | [Frontend and Prediction](02_Frontend_and_Prediction/00_Index.md) | 3 | How are instructions predicted, delivered, validated, and recovered? |
 | 3 | [Out-of-Order Backend](03_Out_of_Order_Backend/00_Index.md) | 4 | How does the core schedule and replay early work while still committing in order? |
 | 4 | [Cache Hierarchy](04_Cache_Hierarchy/00_Index.md) | 2 | How does the CPU turn locality into low average access time? |

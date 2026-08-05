@@ -366,4 +366,4 @@ not $8\times$. Doubling to $16$ wide gives $1/(0.10+0.90/16)=1/0.15625=6.4\times
 
 ---
 
-⬅ prev [RISC-V Instruction Set Architecture (ISA)](02_RISC_V_ISA.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [RISC-V Instruction Set Architecture (ISA)](02_RISC_V_ISA.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [04 · Privileged Architecture, CSRs, and Traps](04_Privileged_Architecture_CSRs_and_Traps.md)

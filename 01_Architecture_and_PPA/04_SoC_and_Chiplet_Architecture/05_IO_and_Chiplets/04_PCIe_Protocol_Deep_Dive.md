@@ -2039,4 +2039,4 @@ so all-reduce is 3.16 s against 56.9 s — **5.6% overhead**, tolerable, and lar
 
 ---
 
-⬅ prev [03 · High-Speed I/O and Peripheral Protocols](03_High_Speed_IO_and_Peripheral_Protocols.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [03 · High-Speed I/O and Peripheral Protocols](03_High_Speed_IO_and_Peripheral_Protocols.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [05 · Interrupt Architecture](05_Interrupt_Architecture.md)
