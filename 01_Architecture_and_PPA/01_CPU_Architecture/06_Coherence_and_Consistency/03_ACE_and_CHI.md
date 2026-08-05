@@ -1688,167 +1688,12 @@ State the conclusion honestly: **DVM does not remove the $O(N)$ of a broadcast i
 
 ## 15. Atomics, exclusives, and near-memory operation
 
-> **Scope:** the two fabric-level mechanisms for an atomic read-modify-write — exclusive access with a monitor, and the CHI atomic transaction family — where the monitor physically lives, why the architecture permits spurious failure, and the arithmetic that decides between migrating the line and executing the operation at the home.
+A coherent fabric must answer one requirement that §§1–14 do not: two agents perform a read-modify-write on the same address and exactly one ordering of the two must be observable. ACE and CHI answer it in two different ways — **exclusive access**, where the fabric hosts a monitor and the requester retries until it wins, and **atomic transactions**, where the operation itself is sent to the home node and executed at the data. CHI-B added the second because the first collapses under contention.
 
-### 15.0 Two fabric answers to one requirement
+Both mechanisms are fabric-level, not core-level, and they are shared by every protocol in the notebook rather than being a property of CHI. They therefore live with the other system-level shared-memory machinery.
 
-An atomic RMW (read-modify-write) needs exactly one thing from the interconnect: **a point at which the read and the write of the location cannot be separated by another agent's write.** §4.1 already built the agent that provides it — the home node serializes every access to a line — and §8 named the two ways to use it. They differ in *where the arithmetic happens*:
+> **→ [System Atomics and Exclusive Access](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md)** — the local/global monitor split, the legal-pair rules, why spurious failure is permitted, the `AtomicStore`/`AtomicLoad`/`AtomicSwap`/`AtomicCompare` family, the near-versus-far crossover arithmetic, and what the home node must implement. The core-side half is [Atomic Operations](04_Atomic_Operations.md).
 
-- **Exclusive access.** Move the line to the core, do the arithmetic there, and use a **monitor** to detect whether anyone interfered in between. The fabric provides conflict **detection**.
-- **Atomic transactions.** Send the operation to the line instead of the line to the operation. The fabric provides **execution**.
-
-[Memory_Consistency_and_Atomics §9.1](02_Memory_Consistency_and_Atomics.md) owns the core-side choice, the LSU (load-store unit) atomic entry, and the ordering qualifiers. This section owns what appears on the CHI wire, where the hardware physically sits, and how to choose.
-
-### 15.1 Exclusive access, and where the monitor lives
-
-`LoadExclusive`/`StoreExclusive` (Arm `LDXR`/`STXR`, RISC-V `LR`/`SC`) split an atomic into two instructions: the load records a **reservation**, and the store succeeds only if the reservation is still valid, returning a status the software loop branches on. The hardware that holds the reservation is the **exclusive monitor**, and it exists in two physically different places for a reason worth deriving rather than memorizing.
-
-**The local monitor, and why coherence makes it nearly free.** The exact event the reservation must notice — *another agent wrote this location* — is **already delivered** to the requester by the coherence protocol, because a competing store must acquire the line Unique and therefore must send this core a `SnpUnique` or `SnpCleanInvalid` (§13.3). The monitor can therefore be a handful of flops: $\{$valid, granule-aligned physical address, context identity$\}$, cleared by any snoop that invalidates the granule, by an eviction of the line, by a context switch or exception entry, and by an explicit clear instruction. There is **no fabric transaction at all**: `LoadExclusive` on coherent cacheable memory is an ordinary read-class request with an exclusive attribute set, and `StoreExclusive` is an ordinary ownership-acquiring store once the monitor has passed. Cost: on the order of 64 flops per hardware thread. This case covers essentially all normal shared memory.
-
-**The global monitor, and the three cases that force it.** The local monitor's entire argument was "coherence delivers the conflict event." Remove coherence and the argument evaporates:
-
-1. **Non-cacheable or Device memory** — a lock word in a device register region, or a shared word in a non-cacheable buffer, is never brought into a cache, so no snoop ever arrives.
-2. **A non-caching requester** — an RN-I with no coherent cache can issue exclusives but has nothing to snoop.
-3. **Memory shared with an agent outside the coherence domain** — a DMA engine or a second chip reaching the same memory over a non-coherent path.
-
-In all three, the only agent that observes *every* access to the location is the agent that orders them. So the monitor moves to the **home node**. In CHI the exclusive attribute rides on ordinary read and write requests; the home keeps a small table of $\{$address, requester SrcID, valid$\}$, sets an entry on an exclusive read, clears it on any conflicting write from anyone, and on an exclusive write checks the entry and reports the outcome **in the response's `Resp` field** — the `ExclOkay` encoding — rather than in a separate message. A failing exclusive write **does not update memory**, and the core's `STXR` returns failure.
-
-| | Local monitor | Global monitor |
-|---|---|---|
-| Physical location | inside the RN, beside the L1 | at the HN, one per home slice |
-| Covers | cacheable, coherent, shareable memory | non-cacheable/Device memory, non-caching RNs, memory shared outside the domain |
-| Conflict source | the snoop coherence already sends | the home's own serialization of every access |
-| Storage | ~1 entry per hardware thread, tens of flops | a table per home; entries are a **finite** resource |
-| Fabric cost of one exclusive pair | zero extra transactions — the ordinary miss path | two round trips to the home, $\approx26$ ns at §14.5's mesh numbers |
-| New failure mode it introduces | none | table full → an exclusive pair must be failed, or an entry stolen |
-
-That last row surprises people: the global monitor has finitely many entries, so with more concurrent exclusive sequences than entries, some must be evicted — and an evicted entry **must** fail its `StoreExclusive`. A fully correct implementation therefore produces failures that have nothing whatever to do with contention.
-
-### 15.2 Why the architecture permits spurious failure
-
-Enumerate what actually clears a reservation, and classify each as a real conflict or not:
-
-| Cause of `StoreExclusive` failure | Real conflict? | Why an implementation does it anyway |
-|---|---|---|
-| another agent wrote the granule | **yes** | the entire purpose of the mechanism |
-| another agent *read* the granule, and the design clears on any snoop | no | distinguishing `SnpShared` from `SnpUnique` costs decode logic on the snoop path; clearing on all snoops is simpler and always safe |
-| the line was evicted by capacity or conflict between the two instructions | no | after eviction no snoop will ever arrive, so the monitor has lost its conflict detector and must fail conservatively |
-| context switch, exception entry or return, debug halt | no | a reservation belongs to a context; carrying it across a switch would let one thread's store succeed against another thread's load |
-| a *different* address in the same reservation granule was written | no | the granule is a line (64 B), not the operand (8 B) — §3.1's false sharing, now applied to the reservation |
-| global-monitor table conflict or eviction | no | finite storage (§15.1) |
-
-Only the first row is a genuine conflict; every other row is a **spurious failure**, and the architecture permits all of them. The reason is a cost argument. Forbidding spurious failure would require an exact, per-thread, per-address structure that is cleared precisely and never for any other reason — more storage, more decode on the snoop critical path, and, worst of all, it would make **forward progress depend on the precision of a hardware structure**. The architecture instead makes the guarantee conditional on the *shape of the software loop*: a **constrained** exclusive sequence — no other memory access between the two instructions, a bounded instruction count, same address and size — is guaranteed to eventually succeed. Forward progress becomes a contract between the ISA and the loop rather than a property of the monitor, which is exactly why libc and compilers must emit that specific loop shape, and why an "improved" loop with a load or a function call in the middle can spin forever on real silicon while passing every functional test on a simulator. [Memory_Consistency_and_Atomics §9.4 and §9.6](02_Memory_Consistency_and_Atomics.md) own the reservation-field table and the forward-progress rules.
-
-```wavedrom
-{ "signal": [
-  { "name": "fabric clk",        "wave": "p........." },
-  { "name": "core op",           "wave": "x3.x....4x", "data": ["LDXR X", "STXR X"], "node": ".a......d." },
-  { "name": "monitor.valid",     "wave": "0.1...0...", "node": "..b...c..." },
-  { "name": "SNP SnpUnique X",   "wave": "0.....10..", "node": "......e..." },
-  { "name": "STXR status",       "wave": "x........5", "data": ["FAIL = 1"] }
- ],
- "edge": ["a~>b reservation set", "e~>c peer write clears it", "c~>d SC checks, finds invalid"],
- "head": {"text": "a peer's write between LDXR and STXR fails the store-exclusive"}
-}
-```
-
-The waveform's contract is that the monitor is a *level*, not an event: it is set by the exclusive load and can be torn down at any time before the exclusive store samples it. Trace the failing case shown — core A executes `LDXR X` and the monitor goes valid; four cycles later core B's store to the same line drives `SnpUnique(X)` into A's snoop port; the snoop clears the monitor; A's `STXR` then samples an invalid monitor, performs **no** memory write, and returns 1 so the software loop retries. Now the trade-off the figure illustrates: replace the `SnpUnique` with a `SnpShared` from a mere *reader*, and a design that clears on all snoops fails identically — a spurious failure, row 2 of the table. Under $N$ cores hammering one granule, every core's exclusive load produces snoops that clear everyone else's monitor and no store ever succeeds. Two repairs exist: software exponential backoff, and a hardware **reservation hold window** that briefly defers a conflicting snoop after an exclusive load so the local store has a chance to land. The window's bound is not optional — an unbounded hold is a snoop that never responds, which is a coherence deadlock (§13.11) — so real designs use tens of cycles plus a hard timeout. That converts livelock into a rough queue but does not make the mechanism cheap, which is the motivation for §15.3.
-
-### 15.3 Atomic transactions: send the operation to the data
-
-CHI's second answer defines four families of atomic transaction, and they cover the whole space of single-location read-modify-write:
-
-| CHI family | Semantics | Returns | Arm large-system-extension form | RISC-V form |
-|---|---|---|---|---|
-| `AtomicStore` | `mem = f(mem, operand)` | **nothing** | `STADD`, `STCLR`, `STEOR`, `STSET`, `STSMAX`, `STSMIN`, `STUMAX`, `STUMIN` | `AMO*` with destination `x0` |
-| `AtomicLoad` | `old = mem; mem = f(mem, operand)` | the old value | `LDADD`, `LDCLR`, `LDEOR`, `LDSET`, `LDSMAX`, `LDSMIN`, `LDUMAX`, `LDUMIN` | `AMOADD`, `AMOAND`, `AMOOR`, … |
-| `AtomicSwap` | `old = mem; mem = operand` | the old value | `SWP` | `AMOSWAP` |
-| `AtomicCompare` | `if mem == compare then mem = swap` | the old value | `CAS`, `CASP` | composed from `LR`/`SC` |
-
-The `AtomicStore` row is the one to pause on: it returns no data, so the requester can retire the instruction as soon as the transaction is accepted. That single property is why a statistics counter incremented by 64 cores costs the issuing core nothing but a transaction-table entry, while the same counter under exclusives costs a full line transfer plus a probable retry. `AtomicCompare` is the opposite extreme: it carries *two* operands on DAT, compare and swap, so it is the one atomic whose request payload exceeds its result size.
-
-**Fixing the vocabulary, because the field uses it loosely.** An atomic executed **at the requester**, after the line has been pulled into the requester's cache with unique permission, is a **near atomic** — near the core. An atomic executed **at the home node, the system-level cache, or the memory controller**, with the line never moving to the requester, is a **far atomic** — far from the core. CHI carries the same four opcodes in both cases; the decision belongs to the home, which makes it from directory state.
-
-```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 45, "rankSpacing": 50, "htmlLabels": false}}}%%
-flowchart TB
-    START["RN executes LDADD on a shared counter"]
-    Q{"Home consults directory:<br/>is the line contended?"}
-    NEAR["NEAR path<br/>ReadUnique, snoop current owner,<br/>DCT the 64 B line to the requester,<br/>RMW in the requester L1"]
-    FAR["FAR path<br/>AtomicLoad carries the 8 B operand,<br/>home snoop-invalidates any UD owner once,<br/>ALU beside the SLC computes,<br/>old value returns"]
-    N1["Line now lives in this requester.<br/>Next requester must steal it back:<br/>machine completes 1 op per 30 ns"]:::cost
-    F1["Line stays at the home.<br/>Next requester needs no migration:<br/>home completes 1 op per 2 ns"]:::cost
-    START --> Q
-    Q -->|"no: line already unique-dirty here<br/>more than 60 percent of the time"| NEAR
-    Q -->|"yes: line is stolen away between accesses"| FAR
-    NEAR --> N1
-    FAR --> F1
-    classDef cost fill:#e2e8f0,stroke:#475569,color:#000
-```
-
-The figure's contract is that both paths are architecturally identical — same opcode, same result, same ordering obligations — and differ only in *where* the ALU runs and therefore in what the fabric must move. Trace one increment on the far path: the RN issues `AtomicLoad` carrying an 8 B operand, the home checks the directory, finds the line resident in its SLC with no dirty owner, reads it, adds, writes it back into the SLC, and returns the old value in a `CompData` — the 64 B line never moved. The failure this figure sets up is the branch condition itself: choose wrong and you pay twice, because switching to the near path pulls the line out of the SLC and switching back snoops it home again. Section 15.4 derives the threshold on that branch.
-
-### 15.4 The arithmetic: why far atomics win under contention, and exactly where they lose
-
-| Symbol | Meaning | Value used |
-|---|---|---|
-| $t_{L1}$ | RMW on a line already held Unique-Dirty in the requester's L1 | 1.5 ns |
-| $T_{\text{mig}}$ | one contended migration plus local RMW: request to home, snoop the owner, DCT the line, compute | 30 ns (22 ns DCT from §11 problem 3, plus home lookup and RMW) |
-| $t_{\text{rt}}$ | unloaded round trip RN→HN→RN, 5.3 hops each way at 2 cycles/hop, 2 GHz | 11 ns |
-| $t_{\text{occ}}$ | home atomic-unit occupancy per operation — a pipelined banked-SLC read-modify-write, not a transaction | 2 ns |
-| $T_{\text{far}}$ | unloaded far atomic $= t_{\text{rt}} + t_{\text{occ}}$ | 13 ns |
-
-**Under contention the migrating path is serialized by the line, not by the cores.** Only one RN can hold the line unique, so the machine completes one atomic per $T_{\text{mig}}$ no matter how many cores are asking, and each core waits behind all the others:
-
-$$
-\Lambda_{\text{near}} = \frac{1}{T_{\text{mig}}} = 33.3\ \text{M ops/s}, \qquad L_{\text{near}}(N) = N\,T_{\text{mig}}
-$$
-
-**The far path is serialized by the home's atomic unit**, which is a pipeline stage rather than a network round trip:
-
-$$
-L_{\text{far}}(N) = t_{\text{rt}} + N\,t_{\text{occ}} = 11 + 2N \ \text{ns}, \qquad \Lambda_{\text{far}}(N) = \frac{N}{L_{\text{far}}(N)} \ \xrightarrow[N\to\infty]{}\ \frac{1}{t_{\text{occ}}} = 500\ \text{M ops/s}
-$$
-
-| Contending cores $N$ | Migrating: throughput / per-op latency | Far: throughput / per-op latency | Far advantage | DAT bytes moved per op |
-|---:|---|---|---|---|
-| 1, line already UD in L1 | 667 M/s / **1.5 ns** | 77 M/s / 13 ns | **0.12× — far loses by 8.7×** | 0 vs ≈32 B |
-| 2 | 33.3 M/s / 60 ns | 133 M/s / 15 ns | 4.0× | 64 B vs ≈32 B |
-| 8 | 33.3 M/s / 240 ns | 296 M/s / 27 ns | 8.9× | 64 B vs ≈32 B |
-| 64 | 33.3 M/s / 1.92 µs | 460 M/s / 139 ns | **13.8×** | 64 B vs ≈32 B |
-
-(The latency and throughput ratios are identical at every row because this is a closed loop — Little's law, not a coincidence.)
-
-**The break-even.** Real workloads are a mixture: with probability $p$ the requester already holds the line Unique-Dirty — a private accumulator, an uncontended lock reacquired by the same core — and otherwise it must migrate. The near path costs $p\,t_{L1} + (1-p)T_{\text{mig}}$; the far path costs $T_{\text{far}}$ regardless. They are equal when
-
-$$
-1.5p + 30(1-p) = 13 \;\Longrightarrow\; 30 - 28.5p = 13 \;\Longrightarrow\; p = 0.596
-$$
-
-**The near path wins only if the requester finds the line already unique-dirty in its own cache more than about 60 % of the time.** Below that, the far atomic wins, and the margin widens fast, because $T_{\text{mig}}$ grows with the number of contenders while $T_{\text{far}}$ grows only by $t_{\text{occ}}$ per contender.
-
-**The losing case, stated plainly.** Far atomics lose on *private* atomics: a thread-local accumulator, a per-core statistics counter, a reference count touched by a single owner, a lock the same core reacquires in a loop, and any atomic over an array the core already owns. Every one of those is a 1.5 ns L1 hit on the near path and a 13 ns fabric round trip on the far path — and the far version additionally consumes home atomic-unit slots and SNP bandwidth that a genuinely contended counter elsewhere needs. This is why the choice must be **dynamic and hysteretic**: count how often the line was stolen away between this core's atomics, use the near path below a threshold, switch to far above it, and require several consecutive observations before switching back. Oscillation is the worst outcome of all, because each switch to near pulls the line out of the SLC and each switch back snoops it home again.
-
-**The cost the table hides: sharding beats both.** If the counter can be split into $N$ per-core shards summed on read, each shard lives in its owner's L1 and the contention disappears entirely: $64 \times 667$ M/s $= 43$ G ops/s, against 460 M/s for the best fabric mechanism — a **93×** gap that no protocol feature can close. The fabric's job is to make the *irreducibly* shared case survivable, not to make a badly shared data structure fast. That is §3.1's padding lesson, applied to the read-modify-write.
-
-### 15.5 What the home needs in hardware, and what it must not skip
-
-- **Datapath.** A narrow integer ALU covering add, bit-clear, exclusive-or, bit-set, and signed and unsigned min/max at 1, 2, 4, and 8-byte widths with correct sign extension; a comparator and a second operand register for `AtomicCompare`; byte-enable and endianness handling.
-- **The coherence prerequisite — the part people skip.** A far atomic is **not** "skip coherence." Before executing, the home must hold the newest data, so if the directory shows a UD or SD owner it must issue `SnpUnique` and pull the line in first. The first far atomic on a line some core owned dirty therefore costs a full snoop round trip; the next thousand do not. That asymmetry is precisely why the §15.4 predictor must be hysteretic, and forgetting the snoop is the "atomic returns a stale old value" bug below.
-- **ECC.** An SLC line is protected by a code covering the whole line, so an 8 B atomic is a read-modify-write of the ECC codeword as well. The atomic ALU must sit **inside** the SLC's ECC loop, not beside it.
-- **Ordering.** The atomic carries the request's ordering class; whether an acquire or release qualifier is satisfied is decided by *which response* is treated as the completion point, not by the arithmetic ([Memory_Consistency_and_Atomics §9.5](02_Memory_Consistency_and_Atomics.md)).
-- **Cost.** One such unit per home slice: at $H = 8$–16 homes that is 8–16 small ALUs plus queues and roughly a dozen additional home-transaction states. The area is negligible next to the SLC data array; the real cost is the verification surface, which is every atomic opcode crossed with every directory state crossed with every race.
-
-| Symptom | First hypothesis |
-|---|---|
-| atomic returns a stale old value | the home executed without first snooping a UD owner, or executed against the SLC copy while a DCT was in flight |
-| `StoreExclusive` never succeeds on one hart while others do | reservation-granule false sharing, or a global-monitor entry repeatedly stolen by another requester |
-| `StoreExclusive` succeeds when it must not | monitor not cleared on eviction, or the exclusive check races the conflicting write's ordering at the home |
-| atomics functionally correct but a release fails to order | the completion point was taken at acceptance rather than at the point the value became observable |
-| far atomics measurably slower than exclusives on a benchmark | the workload is §15.4's private/uncontended case and the predictor is stuck in far mode |
-| throughput collapses when an operand spans two homes | an architecturally atomic operand was split across a line or home boundary — never legal |
-
----
 
 ## 16. CHI issue history — what changed, and the problem that forced each change
 
@@ -1865,7 +1710,7 @@ One structural fact governs everything in this section and is worth stating befo
 | Issue | Approx. generation | Headline additions | The problem in the *previous* state of the art that forced it |
 |---|---|---|---|
 | **CHI-A** | AMBA 5, ~2014 | RN/HN/SN roles; the four REQ/RSP/SNP/DAT channels; the five-state I/UC/UD/SC/SD lattice; credit flow control; DVM; explicit barrier transactions; 128/256/512-bit data | ACE's broadcast was an $O(N^2)$ wall at ~8 cores (§3), and AXI's same-cycle `valid`/`ready` handshake assumed a shared bus segment and cannot cross a multi-hop mesh (§6) |
-| **CHI-B** | ~2016 | the atomic transaction family (§15.3); cache **stashing** — `StashOnce*` and write-with-stash; per-request **ordering fields** replacing standalone barrier transactions; Direct Memory Transfer | contended read-modify-write ping-ponged whole lines for 8 B of work (§15.4); producer-to-consumer data always arrived cold at the consumer (§16.4); barrier *transactions* forced fabric-wide serialization for what is usually a per-request ordering requirement |
+| **CHI-B** | ~2016 | the atomic transaction family ([System Atomics §7](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md)); cache **stashing** — `StashOnce*` and write-with-stash; per-request **ordering fields** replacing standalone barrier transactions; Direct Memory Transfer | contended read-modify-write ping-ponged whole lines for 8 B of work; producer-to-consumer data always arrived cold at the consumer (§16.4); barrier *transactions* forced fabric-wide serialization for what is usually a per-request ordering requirement |
 | **CHI-C** | ~2017 | refinement and completion of the write and eviction opcode set — the CopyBack family of §13.7, `WriteEvictFull` among them; tightened DMT/DCT rules; errata | an exclusive system-level cache lost clean lines on eviction and re-fetched them from DRAM; DMT and DCT corner cases were under-specified, which is worse than absent because two vendors implement them differently |
 | **CHI-D** | ~2018 | **MPAM** — Memory System Resource Partitioning and Monitoring — fields on requests; QoS refinements; further stash and DMT work | a shared SLC and memory system had no way to tell *whose* request it was serving, so one noisy tenant on a 64-core server evicted everyone else's data with no mechanism to stop it (§16.5) |
 | **CHI-E** | ~2020 | **memory tagging** support carried in-band; wider data and larger-transfer support; persistence — cache maintenance to a point of persistence; further stash/DMT enhancements | out-of-band memory tags roughly *doubled* the memory request rate for any tagged workload (§16.6); persistent memory had no architectural target to flush to |
@@ -1990,7 +1835,7 @@ $$
 
 | Feature the fabric has | What the older RN does instead | System-integration consequence |
 |---|---|---|
-| Atomic transactions (§15.3) | issues exclusives | the home must implement a **global monitor** (§15.1) covering that RN's address ranges; and a contended line that RN touches loses the far-atomic path *for everyone sharing it* |
+| Atomic transactions ([System Atomics §7](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md)) | issues exclusives | the home must implement a **global monitor** covering that RN's address ranges; and a contended line that RN touches loses the far-atomic path *for everyone sharing it* |
 | Cache stashing (§16.4) | cannot be a stash target | the producer's driver must be configured never to target it; a stash aimed at it is at best ignored |
 | MPAM (§16.5) | emits no `PARTID` | the fabric must **inject a default `PARTID` at the boundary**, or that RN's traffic escapes partitioning entirely — a genuine QoS hole that presents as one tenant exceeding its cap for no visible reason |
 | Memory tagging (§16.6) | issues untagged accesses | any memory it shares with tagged agents needs a defined policy — a match-all tag, or exclusion of the region — decided in the address map, not in RTL |
@@ -2036,4 +1881,4 @@ Every row is a configuration and integration task with a system-level consequenc
 
 ---
 
-⬅ prev [Memory Consistency and Atomic Operations](02_Memory_Consistency_and_Atomics.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [Memory Consistency](02_Memory_Consistency_and_Atomics.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Atomic Operations](04_Atomic_Operations.md)

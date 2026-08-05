@@ -257,16 +257,12 @@ Copies should be coalesced, aligned, and scheduled to avoid shared-bank conflict
 
 ## 9. Atomics and contention
 
-Warp atomics may combine requests to the same address before reaching L2, reducing traffic. Different addresses still spread across partitions. A hot global atomic serializes at a cache/home/memory point and can dominate kernel time.
+An atomic is the one memory operation whose cost is not explained by anything in §§1–8. Coalescing merges lane addresses that differ; an atomic's problem is lane addresses that *agree*, because agreement is exactly what forces serialization. A single instruction can present 32 read-modify-writes to one address in one cycle, and a grid can present millions, so the CPU answer — migrate the line to the requester and operate on it locally — inverts into a pathology at this scale.
 
-Use hierarchical aggregation:
+The resolution is that a GPU atomic executes where the data already is: in the shared-memory atomic unit for block-scoped traffic, and in the L2 slice that owns the address for global traffic. That decision, the intra-warp replay cost model, warp aggregation, privatized histograms, the SIMT spin-lock deadlock, and grid-scale synchronization all have their own page.
 
-- lane/warp reduction;
-- block-local shared-memory atomic/reduction;
-- one global update per block;
-- sharded global counters.
+> **→ [GPU Atomics and Synchronization](03_GPU_Atomics_and_Synchronization.md)**. The scoped, relaxed consistency model those atomics execute under stays here, in §14.
 
-Atomic throughput is governed by serialization service time and partition distribution, not peak HBM bandwidth.
 
 ## 10. Cache coherence and host/peer memory
 

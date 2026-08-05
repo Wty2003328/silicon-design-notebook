@@ -1,6 +1,8 @@
-# Memory Consistency and Atomic Operations — Which Cross-Core Observations Are Legal?
+# Memory Consistency — Which Cross-Core Observations Are Legal?
 
-> **First-time reader orientation:** Coherence concerns copies of one address; memory consistency constrains the order in which cores may observe accesses to different addresses. An atomic operation performs a read-modify-write indivisibly for synchronization. Litmus tests are tiny concurrent programs used to expose which observations a model permits, and fences forbid selected reorderings.
+> **Atomic operations moved.** This page once carried them; they now have their own page per architecture — [Atomic Operations](04_Atomic_Operations.md) for the core, [System Atomics and Exclusive Access](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md) for the fabric, [GPU Atomics and Synchronization](../../02_GPU_Architecture/02_Memory_System/03_GPU_Atomics_and_Synchronization.md) for the GPU. What stays here is the ordering model those pages assume.
+
+> **First-time reader orientation:** Coherence concerns copies of one address; memory consistency constrains the order in which cores may observe accesses to different addresses. Litmus tests are tiny concurrent programs used to expose which observations a model permits, and fences forbid selected reorderings.
 
 > **Abbreviation key — skim now and return as needed:** central processing unit (CPU); instruction set architecture (ISA); reduced instruction set computer (RISC); out-of-order (OoO); reorder buffer (ROB); load-store queue (LSQ); input-output memory management unit (IOMMU);
 > quality of service (QoS); direct memory access (DMA); AXI Coherency Extensions (ACE); Coherent Hub Interface (CHI); Modified, Exclusive, Shared, Invalid (MESI).
@@ -360,194 +362,14 @@ Assertions should state the architectural consequence: if a fence retires, no se
 
 Over-implementing every fence as a full pipeline and cache drain may be correct but extremely slow. Under-implementing one produces rare failures that appear only with the right cache misses, snoops, bridge buffering, and compiler motion.
 
-## 9. Atomics and their serialization point
+## 9. Atomics — the single-location special case
 
-An atomic read-modify-write (RMW) reads a value and conditionally or unconditionally writes a new value without an intervening write to the atomicity granule. **Atomicity and ordering are separate:** a relaxed atomic still has an indivisible per-location RMW, while acquire/release/SC qualifiers add cross-location edges.
+An atomic read-modify-write (RMW) reads a value and conditionally or unconditionally writes a new value without an intervening write to the atomicity granule. It is the point where this page's cross-location ordering rules meet a single-location indivisibility guarantee, and the two are genuinely separate: a *relaxed* atomic still has an indivisible per-location RMW and imposes no cross-location edges at all, while the acquire/release/sequentially-consistent qualifiers of §8 are what add those edges.
 
-The architectural operand may be one byte, word, or doubleword; the coherence ownership granule may be an entire cache line. The specification must define supported alignment, crossing behavior, byte enables, sign extension, fault atomicity, and the interaction of smaller overlapping atomics. Never silently split an architecturally atomic operand into two independently visible bus transactions.
+That separation is the only thing about atomics this page owns. Everything else — choosing where the operation serializes, the AMO/compare-and-swap/load-reserved families, the reservation monitor, the contention arithmetic, precise faults, and hardware transactional memory — now has its own page.
 
-### 9.1 Choose the serialization location
+> **→ [Atomic Operations](04_Atomic_Operations.md)** is the core-side home. For the fabric side (global exclusive monitors, far atomics on the wire, PCIe and CXL), see [System Atomics and Exclusive Access](../../04_SoC_and_Chiplet_Architecture/02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md); for the GPU side, [GPU Atomics and Synchronization](../../02_GPU_Architecture/02_Memory_System/03_GPU_Atomics_and_Synchronization.md).
 
-```mermaid
-flowchart LR
-    LSU["LSU atomic entry<br/>address, operand, op, order, age"] --> TLB["Translate + permission"]
-    TLB --> CHOOSE{"Implementation point"}
-    CHOOSE --> L1["Requester-side RMW<br/>obtain exclusive line,<br/>lock local line, compute, write"]
-    CHOOSE --> HOME["Home/L2 atomic engine<br/>route command to owner,<br/>serialize at directory slice"]
-    L1 --> RESP["Old value / success + completion"]
-    HOME --> RESP
-    RESP --> ROB["Write result, satisfy order,<br/>retire precisely"]
-```
-
-1. **Requester-side atomic:** acquire exclusive ownership, prevent local eviction/snoop intervention during the RMW interval, read the line, execute the operation, update ECC/data, then unlock. This reuses the L1 datapath but may move a hot line among requesters.
-2. **Home-node atomic:** route an atomic command to the address's home/L2 slice, serialize it in an atomic queue, fetch or recall the current data, compute/update there, and return the old value. This avoids ownership ping-pong for some traffic but adds operation hardware, queues, and protocol states at every home.
-
-“Lock the bus” is neither necessary nor scalable. The real requirement is one serialization point for conflicting operations plus protocol exclusion around it.
-
-A useful atomic entry holds:
-
-```text
-ROB age and destination tag
-virtual/physical address and byte mask
-operation and source operand(s)
-ordering strength and scope
-translation/protection status
-coherence transaction ID and retry epoch
-old value, computed value, compare result
-exclusive/line-lock/serialization ownership
-exception, poison, and completion state
-```
-
-The entry stays alive until the result is safe to publish, all architecturally required ordering obligations are satisfied, and a precise exception can no longer replace it.
-
-### 9.2 AMOs / fetch operations
-
-For fetch-add, swap, bitwise, signed/unsigned min/max, or another atomic memory operation (AMO), the serialization engine performs:
-
-1. translate and check the complete operand before changing memory;
-2. acquire exclusive authority or enter the home atomic queue;
-3. read and ECC-check the old operand;
-4. compute `new = f(old, source)` in a narrow integer datapath;
-5. merge enabled bytes, regenerate ECC, and commit the line update;
-6. return `old` to the destination register;
-7. satisfy release before, acquire after, or SC obligations;
-8. release the line/queue entry.
-
-Only step 5 is the memory update, but the indivisible interval includes whatever protocol exclusion is needed to ensure no conflicting observer can intervene between steps 3 and 5. A retry response before serialization is harmless; retrying after an update without a duplicate-suppression rule would apply an increment twice. Protocols therefore need a clear “not performed / performed” boundary, unique request identity where replay exists, or a rule that completed non-idempotent atomics are never blindly retried.
-
-### 9.3 Compare-and-swap
-
-Compare-and-swap (CAS) writes only when the observed value equals the expected value. The read, comparison, and conditional write share one serialization interval:
-
-```text
-old = memory[address]              // while holding atomic authority
-match = (old == expected)
-if match: memory[address] = desired
-return old and/or match
-```
-
-On comparison failure, no data update occurs, but the operation was still an atomic read and may still carry acquire semantics. The cache controller must not generate a dirty write merely because the CAS command reached an exclusive state; update/ECC/dirty bits are gated by `match`.
-
-Why one conditional primitive suffices: *any* read-modify-write can be built as a CAS **retry loop** — read the current value, compute a new one, and swap it in only if nothing changed underneath. On failure CAS reloads the current value into `cur`, so the loop simply recomputes and retries:
-
-```c
-// atomic "multiply by 3" — no native AMO for it — via a CAS loop
-uint64_t cur = atomic_load_explicit(&v, memory_order_relaxed);
-uint64_t next;
-do {
-    next = cur * 3;                       // arbitrary RMW computed from cur
-} while (!atomic_compare_exchange_weak_explicit(
-    &v, &cur, next,                       // fail path writes current v into cur
-    memory_order_acq_rel, memory_order_relaxed));
-```
-
-The `_weak` form may fail spuriously, which is harmless inside a loop. A caveat CAS shares with all value-comparison: it cannot tell `A → B → A` from "never changed" (the *ABA* problem), because it inspects only the value, not the history.
-
-### 9.4 Load-reserved/store-conditional
-
-Load-reserved (LR) establishes a reservation; store-conditional (SC) succeeds only if it remains valid. A reservation monitor is explicit hardware state, not a lock held from LR to SC:
-
-| Reservation field | Purpose |
-|---|---|
-| valid | whether an SC is eligible |
-| physical address/tag | location or reservation granule |
-| size/byte range | overlap check |
-| hart/thread/context identity | prevents one context using another's reservation |
-| coherence/reset epoch | rejects stale completions |
-| optional version | detects a conflicting write event |
-
-LR behaves like a load and records the reservation after translation. The cache/coherence system sends conflicting write/invalidate/evict events to the monitor. SC translates again, checks address/context/reservation, and conditionally enters the atomic update path. Whether SC succeeds must be decided at a point that cannot race with a conflicting coherence write.
-
-Common reservation-clearing events include:
-
-- a conflicting coherent write or invalidation to the reservation granule;
-- eviction, replacement, or loss of monitored coherence state;
-- another LR/SC as specified by the ISA;
-- trap return, context switch, debug, reset, or explicit software action;
-- implementation events explicitly allowed by the architecture.
-
-Spurious SC failure is permitted by some architectures, but constrained LR/SC loops receive forward-progress guarantees. Hardware should record failure causes—conflict, eviction, context, address mismatch, resource/retry, or spurious—because a single failure counter cannot distinguish real sharing from a broken monitor.
-
-The same optimistic retry loop as §9.3, but keyed on the reservation rather than a compared value:
-
-```asm
-retry:
-    lr.w   t0, (a0)      # load-reserved: read *a0, arm a reservation
-    addi   t0, t0, 1     # compute new value
-    sc.w   t1, t0, (a0)  # store-conditional: t1 = 0 on success, nonzero if lost
-    bnez   t1, retry     # reservation broken -> retry
-```
-
-Because SC fails on *any* intervening write to the reserved granule — not just a net value change — LR/SC sidesteps the ABA problem that trips CAS: an `A → B → A` sequence still clears the reservation and forces a retry. The cost is the reservation-granularity and forward-progress constraints above.
-
-### 9.5 Ordering qualifiers around the serialization point
-
-Represent the atomic as three conceptual events:
-
-```text
-[release obligations] -> [per-location serialization/update] -> [acquire obligations]
-```
-
-- relaxed: only the middle event;
-- release: selected older operations reach their ordering points before the middle event;
-- acquire: selected younger operations cannot become observably ordered before the returned atomic event;
-- acquire-release: both;
-- sequentially consistent: both plus participation in the architecture/language's SC-order constraints.
-
-The LSU can reuse the fence ledger from §8. Release-qualified atomics wait for the predecessor snapshot before requesting serialization; acquire-qualified atomics hold or validate younger successors until the atomic response and required scope event. This sharing avoids two subtly different definitions of “ordered.”
-
-### 9.6 Contention, fairness, and forward progress
-
-A contended cache line is a serial server. With service time $S$ and average queue depth $q$, the best-case throughput is about $1/S$, while request latency grows with queueing. More requesters do not create more per-line bandwidth.
-
-Hardware mechanisms include:
-
-- a FIFO or age-based home atomic queue;
-- fair ownership arbitration rather than repeated victory by the nearest core;
-- negative acknowledgement with randomized/exponential backoff;
-- combining only when the ISA result permits it—ordinary fetch-add returns a distinct old value to each requester, so combining must reconstruct those results exactly;
-- line-local throttling so one hot address does not consume every miss-status or response entry;
-- priority inheritance or bounded service for synchronization used by real-time agents.
-
-Livelock tests must include two or more requesters losing ownership repeatedly, snoop pressure, replacement, and a nearly full response network. Fair router arbitration is not enough if the cache controller continually rejects the same atomic.
-
-### 9.7 Precise faults, cancellation, and reset
-
-Perform translation, alignment, access permission, and supported-size checks before the memory update. An uncorrectable data error, bus error, or page fault must have an architectural outcome defined by the ISA/platform; the design must never update memory and then report the operation as unperformed.
-
-Once an atomic passes its no-return serialization/update point, a pipeline squash cannot cancel the memory effect. Therefore the core normally waits until the atomic is the oldest safe instruction before allowing the irreversible update, or retains enough retirement state to guarantee that it will commit. Responses carry transaction and reset epochs so an old completion cannot update a newly reused ROB destination.
-
-### 9.8 Atomic verification plan
-
-Use reference-model and adversarial tests:
-
-- all operation/size/alignment/byte-mask cases, including signed min/max boundaries;
-- two atomics to the same operand and overlapping subwords;
-- atomic versus ordinary loads/stores and cache-line eviction;
-- CAS success/failure and “failure must not dirty data”;
-- LR/SC conflicts at every cycle, granule boundaries, traps, context switches, and forward-progress loops;
-- acquire/release message-passing litmus tests around successful and failed operations;
-- retries, duplicate responses, poison/ECC, reset, and backpressure;
-- home/requester races, invalidation acknowledgements, and two physical aliases.
-
-Core assertions:
-
-```text
-no two successful conflicting RMW intervals overlap
-each successful RMW returns the value immediately preceding its serialization point
-failed CAS/SC performs no memory update
-an atomic memory update occurs at most once per architectural instruction
-SC success implies a valid matching reservation with no intervening conflict
-retired acquire/release/SC atomics have satisfied the §8 ordering ledger
-```
-
-An atomic's latency includes ownership acquisition, invalidations, operation, acknowledgement, and ordering drains:
-
-$$
-L_{atomic}=L_{route}+L_{serialize}+L_{snoop/invalidations}+L_{op}+L_{response}+L_{order}.
-$$
-
-Contention turns the cache line into a serial queue; throughput approaches the inverse service time regardless of core count.
 
 ## 10. Compiler and language boundary
 
@@ -618,125 +440,27 @@ In the store-buffering test, both loads reading zero is possible if each load by
 
 ### Problem 2 — contended atomic throughput
 
-An atomic increment on one line takes 80 ns including ownership transfer. Even with 64 requesters, ideal serialization-limited throughput is at most
+Moved, with its full derivation and the sharding follow-up, to [Atomic Operations](04_Atomic_Operations.md).
 
-$$
-1/(80\ \text{ns})=12.5\ \text{M operations/s}.
-$$
-
-More cores increase queueing, not the line's service rate. Sharding counters or combining updates changes the algorithmic bottleneck.
 
 ### Problem 3 — fence cost
 
 A release operation waits for six older stores. Four are already globally ordered; two take 35 and 60 cycles in parallel. Incremental drain cost is about 60 cycles, not $6\times$ average store latency. The implementation should track outstanding obligations, not serialize every store anew.
 
-## 16. Hardware transactional memory and lock elision
+## 16. Speculative synchronization
 
-Section 9 gave a single atomic read-modify-write one serialization point. A lock generalizes that to a *region*: acquire, run a critical section, release. Hardware transactional memory (HTM) generalizes it a different way — it lets a *group* of loads and stores commit at one instant, all-or-nothing, so the region runs speculatively and pays only for the conflicts that actually occur.
+Section 9 gave a single atomic read-modify-write one serialization point. A lock generalizes that to a *region*. Hardware transactional memory (HTM) generalizes it a different way — it lets a *group* of loads and stores commit at one instant, all-or-nothing, reusing [Cache Coherence](01_Cache_Coherence.md) as its conflict detector and the [Retirement, Recovery, and Precise State](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) speculate/validate/recover machinery as its rollback path.
 
-### 16.1 Why elide the lock at all
+HTM belongs to the ordering story because its commit instant is an ordering event, but its derivation, break-even arithmetic, abort taxonomy, and mandatory non-speculative fallback are developed in full on the atomics page.
 
-A lock is both an overhead and a pessimism.
+> **→ [Atomic Operations §12](04_Atomic_Operations.md)**.
 
-The overhead is fixed per critical section. Acquiring the lock is itself an atomic on a shared line, so it carries the full $L_{atomic}$ of §9 — ownership, serialization, and the acquire/release ordering drains — and under sharing the lock line ping-pongs between cores. Even an *uncontended* lock costs an atomic plus two fences on a line touched only to synchronize.
-
-The pessimism is worse. A lock forbids concurrency the workload may never need. Two threads updating disjoint buckets of a hash table under one coarse lock never actually conflict, yet the lock serializes them anyway: it protects against the worst case (some pair *might* collide) and charges every case for it.
-
-HTM removes both. It runs the critical section speculatively, uses the coherence protocol to watch for a real conflict, and commits atomically if none occurred. Disjoint-bucket updates then proceed in parallel; only a genuine collision costs anything.
-
-### 16.2 Mechanism: §4's speculate/validate/recover, applied to a group
-
-A transaction is the retirement discipline of the [retirement page](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) — speculate, validate, then commit or else recover — lifted from one instruction to a *set* of memory operations that must retire together or not at all.
-
-- **Read set / write set.** The transaction records every line it reads (read set) and every line it writes (write set). Speculative stores are *buffered* — held in the store queue or written into L1 in a speculative state — and are **not** made globally visible. Speculative loads are marked (a per-line read bit, or a hashed signature over addresses).
-- **Conflict detection reuses coherence.** The conflict detector is already in the machine: the cache-coherence protocol (see [Cache Coherence](01_Cache_Coherence.md)). A remote snoop that would *invalidate* a read-set line, or *steal ownership* of a write-set line, is exactly a conflict — another agent is about to observe or clobber state this transaction depends on. This is §6's rule "coherence invalidations trigger required load validation," but the answer for a whole group is **abort**, not per-load replay.
-- **Commit.** At transaction end the machine confirms no read/write-set line was lost, then atomically flips the buffered write set to globally visible and clears the speculative marks — one serialization instant, the group's retirement boundary. Before that instant no observer sees any write; after it, all of them.
-- **Abort.** Discard the buffered write set, drop the read/write marks, restore the register checkpoint taken at transaction begin, and jump to the abort handler.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Active: begin, checkpoint regs and arm sets
-    Active --> Active: buffer stores, mark reads
-    Active --> Commit: end with no conflict, within capacity
-    Active --> Abort: conflicting snoop, capacity, or illegal op
-    Commit --> Idle: flip write set visible in one instant
-    Abort --> Active: retry if budget remains
-    Abort --> Fallback: retry budget exhausted
-    Fallback --> Idle: take real lock, run non-transactionally
-```
-
-### 16.3 The three unavoidable abort causes
-
-1. **Data conflict.** A read-set line is invalidated or a write-set line is stolen. This is the mechanism working as intended; it fires whenever two transactions — or a transaction and a plain access — genuinely race on a line.
-2. **Capacity overflow.** The speculative write set must fit its buffer (an L1 set's ways, or the speculative store-queue depth), and the tracked read set must fit its marking resource (bits or signature). Once the footprint exceeds capacity there is nowhere to hold speculative state, so the transaction aborts regardless of conflicts. This is a hard ceiling, not a probability.
-3. **Illegal / uncacheable operations.** A system call, a page fault, an uncacheable device access, an interrupt, or certain serializing register writes cannot be buffered or rolled back and force an abort. This is why no bounded HTM can promise that a given transaction ever commits.
-
-### 16.4 When HTM wins — a break-even derivation
-
-Let a critical-section body take $C$ cycles. Charge a lock $o_\ell$ per acquire+release (the atomic, the release store, the ordering drains, and — when shared — the lock-line transfer), and charge a transaction $o_x$ per begin+commit (checkpoint plus commit flip), with $o_x<o_\ell$ because there is no globally-ordered atomic on a contended line. Let $p_a$ be the per-attempt abort probability and $C_a\le C$ the work discarded on an abort.
-
-An uncontended lock costs
-$$
-E[T_\ell]=o_\ell+C.
-$$
-Retrying transactionally until success, the number of *failed* attempts is geometric with mean $p_a/(1-p_a)$; each failed attempt costs $o_x+C_a$ and the successful one costs $o_x+C$:
-$$
-E[T_x]=(o_x+C)+\frac{p_a}{1-p_a}\,(o_x+C_a).
-$$
-HTM wins when $E[T_x]<E[T_\ell]$, i.e. when the abort tax is smaller than the overhead it saves:
-$$
-\frac{p_a}{1-p_a}\,(o_x+C_a)<o_\ell-o_x.
-$$
-Writing the saving $S=o_\ell-o_x$ and the per-abort cost $D=o_x+C_a$, the break-even is $\tfrac{p_a}{1-p_a}=S/D$, so
-$$
-p_a^\star=\frac{o_\ell-o_x}{o_\ell+C_a}.
-$$
-The reading is the whole point of HTM: the abort budget $p_a^\star$ grows with the lock overhead being elided. A cheap uncontended lock ($o_\ell\!\to\!o_x$) gives $p_a^\star\!\to\!0$ — HTM must almost never abort to be worth it. An expensive contended lock (large $o_\ell$ from cross-socket line bouncing) gives a large $p_a^\star$ — HTM wins even with frequent aborts. **HTM pays off in proportion to the contention it removes.**
-
-The abort probability itself rises with conflict rate and footprint. Model remote conflicting accesses to the shared footprint as Poisson over the transaction's exposure window: with $n$ threads, footprint overlap $f=r/S$ (touched lines $r$ out of a shared set of $S$), and a conflicting-store duty factor $\rho$, the expected conflicts in one window are roughly
-$$
-\lambda\approx(n-1)\,\rho\,f\,C,\qquad p_{conf}=1-e^{-\lambda}.
-$$
-So HTM's region of advantage is $\lambda<\ln\frac{1}{1-p_a^\star}$: **short** transactions (small $C$), **narrow** footprints (small $r$), and **low** concurrency ($n$). Grow $C$ or $r$ and $\lambda$ climbs until either conflicts or the §16.3 capacity ceiling ends the party.
-
-### 16.5 Worked number
-
-Take a contended lock $o_\ell=120$, transaction overhead $o_x=25$, discarded work $C_a=50$ cycles. Then
-$$
-p_a^\star=\frac{120-25}{120+50}=\frac{95}{170}=0.56,
-$$
-so elision wins as long as under ~56 % of attempts abort. At a measured $p_a=0.20$ with $C=200$,
-$$
-E[T_\ell]=320,\qquad E[T_x]=225+\tfrac{0.20}{0.80}(75)=243.75,\qquad \text{speedup}=1.31\times.
-$$
-Now swap in a *cheap, uncontended* lock $o_\ell=30$. The break-even collapses to $p_a^\star=(30-25)/(30+50)=0.0625$ — HTM must abort under ~6 %. At the same $p_a=0.20$, $E[T_\ell]=230$ while $E[T_x]$ is unchanged at $243.75$, so the speedup is $0.94\times$, a **loss**. Same transaction, opposite verdict — decided by how much lock the elision actually removes. (The $p_a=0.20$ point corresponds to $\lambda=-\ln 0.8\approx0.22$; doubling either the thread count or $C$ drives $\lambda\to0.45$ and $p_a\to0.36$, straight through the cheap-lock break-even.)
-
-### 16.6 Lock elision and the mandatory fallback
-
-Lock *elision* is the productization: a library or the hardware *begins a transaction instead of taking the lock*, executes the region, and commits — the lock is never written in the common case, so its line never leaves shared state and disjoint critical sections run concurrently. The named implementations are Intel Transactional Synchronization Extensions (TSX), in two forms — Hardware Lock Elision (HLE) prefixes on a legacy lock, and Restricted Transactional Memory (RTM) with explicit begin/end/abort — Arm's Transactional Memory Extension (TME) with transaction start/commit/cancel, and IBM POWER's transactional-memory (TM) facility.
-
-One correctness detail is non-negotiable: **the elided region must place the lock word in its read set** and verify the lock is free at begin. If any thread takes the *real* lock — writing the lock word — that write invalidates the lock line in every eliding transaction's read set and aborts them all. That single trick preserves mutual exclusion between an eliding thread and a non-eliding one; without it, a transaction could commit while another thread holds the lock.
-
-And **forward progress requires a non-transactional fallback path.** Some transactions can never commit — a footprint that always overflows capacity, a critical section containing a system call, or a livelock of mutual aborts. After a bounded retry budget the thread stops eliding, acquires the *actual* lock, and runs non-transactionally. This guarantees progress and sets the semantics floor: correctness rests on the lock, never on the transaction succeeding. The price is the "lemming effect" — one fallback acquisition writes the lock and aborts every concurrent elider, so a burst of fallbacks can serialize the whole set; retry and back-off policy govern how often that happens.
-
-### 16.7 Trade-off — when a plain lock or a lock-free structure wins
-
-HTM turns pessimistic mutual exclusion into optimistic concurrency, so it wins on **short, narrow, low-conflict** critical sections guarded by **expensive** locks — exactly where §16.4 gives a large abort budget. A simpler option wins when:
-
-- **The lock is cheap.** If $o_\ell\lesssim o_x$ (an uncontended test-and-set that stays local), the elision overhead plus any abort tax exceeds the lock — the §16.5 cheap-lock case. Just take the lock.
-- **The section is long, wide, or does I/O.** Capacity and illegal-op aborts then dominate; every attempt aborts and falls back, so you pay transaction + abort + lock. A plain lock skips the wasted speculation.
-- **The conflict is real and frequent.** HTM does not *reduce* true conflicts; it only avoids paying for conflicts that do not happen. When threads genuinely hammer the same lines, the fix is algorithmic — shard the state, use per-bucket locks, or read-copy-update — the same lesson as §9's contended-atomic service-time bound (a hot line is a serial queue however it is accessed; cf. §15 Problem 2). A lock-free structure that keeps threads off each other's lines beats any elision of a lock they should not be sharing.
-
-Architected HTM is therefore **best-effort**: capacity and illegal aborts mean no transaction is guaranteed to commit, which is precisely why the fallback lock is mandatory. Use HTM to make the uncontended common case fast; keep a correct lock underneath for everything it cannot promise.
-
-Cross-references: [Cache Coherence](01_Cache_Coherence.md) supplies the conflict detector; [Retirement, Recovery, and Precise State](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) supplies the speculate/validate/recover machinery a transaction generalizes; §9 (atomics) is the single-operation special case; [Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md) owns the store buffering that holds speculative writes.
 
 ## Cross-references
 
 - **Permission protocol:** [Cache Coherence](01_Cache_Coherence.md), [ACE and CHI](03_ACE_and_CHI.md).
 - **Core machinery:** [Load-Store Unit](../03_Out_of_Order_Backend/02_Load_Store_Unit_and_Memory_Ordering.md), [Retirement and Recovery](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md).
-- **Speculative synchronization:** §16 hardware transactional memory reuses [Cache Coherence](01_Cache_Coherence.md) as its conflict detector and the [Retirement and Recovery](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) speculate/validate/recover discipline.
+- **Atomics and speculative synchronization:** [Atomic Operations](04_Atomic_Operations.md) owns the read-modify-write families, the reservation monitor, the contention arithmetic, and hardware transactional memory, which reuses [Cache Coherence](01_Cache_Coherence.md) as its conflict detector and the [Retirement and Recovery](../03_Out_of_Order_Backend/03_Retirement_Recovery_and_Precise_State.md) speculate/validate/recover discipline.
 - **I/O/translation:** [Page Walkers, IOMMUs, and Virtualization](../05_Virtual_Memory/02_Page_Walkers_IOMMUs_and_Virtualization.md), [QoS, Ordering, and I/O Coherence](../../04_SoC_and_Chiplet_Architecture/05_IO_and_Chiplets/01_QoS_Ordering_and_IO_Coherence.md).
 
 ## References

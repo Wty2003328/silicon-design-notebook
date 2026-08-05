@@ -32,7 +32,7 @@ flowchart LR
 | 3 | [Out-of-Order Backend](03_Out_of_Order_Backend/00_Index.md) | 4 | How does the core schedule and replay early work while still committing in order? |
 | 4 | [Cache Hierarchy](04_Cache_Hierarchy/00_Index.md) | 2 | How does the CPU turn locality into low average access time? |
 | 5 | [Virtual Memory](05_Virtual_Memory/00_Index.md) | 2 | How are software addresses translated and protected? |
-| 6 | [Coherence and Consistency](06_Coherence_and_Consistency/00_Index.md) | 3 | How do CPU cores share memory without observing illegal values? |
+| 6 | [Coherence and Consistency](06_Coherence_and_Consistency/00_Index.md) | 4 | How do CPU cores share memory without observing illegal values, and how is a read-modify-write made indivisible? |
 | 7 | [Core Case Studies](07_Core_Case_Studies/00_Index.md) | 1 | How do these choices compose in a real open CPU? |
 | 8 | [CPU Simulation](08_Simulation/00_Index.md) | 2 | How are CPU timing and coherence hypotheses tested? |
 | 9 | [AI Workloads and Serving](09_AI_Workloads_and_Serving/00_Index.md) | 6 | How do training/inference map onto CPU execution and how are their compiler, runtime, scheduler, state, validation, and deployment stacks constructed? |
@@ -46,7 +46,7 @@ flowchart LR
 4. [Fetch and Decode](02_Frontend_and_Prediction/02_Fetch_Decode_and_Uop_Delivery.md), [Speculative Execution](02_Frontend_and_Prediction/03_Speculative_Execution.md), and [Out-of-Order Execution](03_Out_of_Order_Backend/01_OoO_Execution.md).
 5. [Advanced Scheduling, Wakeup, and Replay](03_Out_of_Order_Backend/04_Advanced_Scheduling_Wakeup_and_Replay.md) when the baseline pipeline is clear.
 6. [Cache Microarchitecture](04_Cache_Hierarchy/01_Cache_Microarchitecture.md), then [TLB and Virtual Memory](05_Virtual_Memory/01_TLB_and_Virtual_Memory.md).
-7. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md).
+7. [Cache Coherence](06_Coherence_and_Consistency/01_Cache_Coherence.md), then [Memory Consistency](06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md), then [Atomic Operations](06_Coherence_and_Consistency/04_Atomic_Operations.md) when you need synchronization rather than ordering.
 8. [AI Workloads and Serving](09_AI_Workloads_and_Serving/00_Index.md) to connect model loading, tokenization, retrieval, tensor kernels, memory placement, and service-level objectives to the CPU mechanisms above.
 9. [CPU Implementation Blueprints](10_Implementation_Blueprints/00_Index.md) to convert the mechanisms into a frontend/backend specification, memory/coherence controller specification, and verification/bring-up plan.
 

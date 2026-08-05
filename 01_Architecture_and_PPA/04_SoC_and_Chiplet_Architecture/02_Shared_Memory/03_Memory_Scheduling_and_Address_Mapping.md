@@ -1384,4 +1384,4 @@ Per-bank halves the loss even though it issues 8 commands instead of 1, because 
 
 ---
 
-⬅ prev [02 · The DRAM Device Protocol and Training](02_DRAM_Device_Protocol_and_Training.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [02 · The DRAM Device Protocol and Training](02_DRAM_Device_Protocol_and_Training.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [04 · System Atomics and Exclusive Access](04_System_Atomics_and_Exclusive_Access.md)

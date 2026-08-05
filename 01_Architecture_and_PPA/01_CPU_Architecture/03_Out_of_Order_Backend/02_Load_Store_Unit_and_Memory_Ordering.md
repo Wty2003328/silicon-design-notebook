@@ -352,16 +352,12 @@ Store merging combines adjacent bytes/lines to reduce cache traffic, but it must
 
 ## 8. Atomics and reservations
 
-Read-modify-write atomics need one indivisible coherence serialization. The core may implement:
+An atomic read-modify-write is not an ALU operation with a slow operand. It is a protocol transaction with several completion conditions, and it occupies queue entries in both the load and the store queue at once — which is why it interacts with every mechanism in §§2–7: disambiguation cannot speculate past it, store-to-load forwarding must not satisfy a younger load from its pending write, and retirement must be able to unwind it precisely if it faults partway.
 
-- locked cache-line ownership plus local operation;
-- atomic operation executed at the cache/home node;
-- load-reserved/store-conditional (LR/SC) with a reservation monitor;
-- compare-and-swap translated into a protocol atomic.
+The load-store unit therefore contributes three things to an atomic: the queue entry and its lifetime, the reservation monitor for load-reserved/store-conditional, and the guarantee that a fault leaves architectural state as though the operation never began. All three, together with the choice of where the operation serializes and the arithmetic that decides it, are developed on their own page.
 
-An LR/SC reservation can be invalidated by conflicting coherent writes, context events, or implementation-defined conditions. Spurious SC failure is allowed by some contracts, but forward-progress rules constrain pathological failure.
+> **→ [Atomic Operations](../06_Coherence_and_Consistency/04_Atomic_Operations.md)**, especially §6 (inside the reservation monitor), §9 (the atomic in an out-of-order core), and §10 (precise faults and cancellation).
 
-Atomics couple the LSU to retirement: faults must remain precise, result registers update correctly, and ordering bits/fences apply. Treat them as protocol transactions with multiple completion conditions, not as ALU operations with a slow operand.
 
 ## 9. Replays: classify causes or optimization becomes guesswork
 

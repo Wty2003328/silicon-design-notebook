@@ -58,7 +58,7 @@ The table below lists every AMBA member in current use. "Gen/year" gives the AMB
 | **AHB** | AMBA 2, 1999 | Pipelined shared bus with multi-master arbitration, `HBUSREQ`/`HGRANT`/`HMASTER`/`HLOCK`, and SPLIT/RETRY responses. | Legacy only. New designs should not use SPLIT/RETRY. |
 | **AHB-Lite** | AMBA 3, 2003 | AHB with exactly one master: no arbitration, no SPLIT/RETRY, `HRESP` reduced to one bit. | A single-master subsystem — a small CPU with its instruction/data ports, or a DMA engine feeding a local SRAM — where AXI's channel count is not justified. |
 | **AHB5** | AMBA 5, 2015 | AHB-Lite plus TrustZone (`HNONSEC`), exclusive access (`HEXCL`, `HEXOKAY`, `HMASTER`), extended memory types (`HPROT` widened to 7 bits), user signals, and a declared single-copy atomicity size. | A Cortex-M-class secure subsystem, or any AHB design that needs `LDREX`/`STREX` to work. |
-| **AXI3** | AMBA 3, 2003 | Five channels, 4-bit `AxLEN` (1–16 beats), `WID` with write-data interleaving, `AxLOCK[1:0]` including locked transfers. | Legacy only. Its two distinctive features — write interleaving and locked transfers — are both removed in AXI4 for good reasons (§5.5, §3.6). |
+| **AXI3** | AMBA 3, 2003 | Five channels, 4-bit `AxLEN` (1–16 beats), `WID` with write-data interleaving, `AxLOCK[1:0]` including locked transfers. | Legacy only. Its two distinctive features — write interleaving and locked transfers — are both removed in AXI4 for good reasons (§5.5, §3.3). |
 | **AXI4** | AMBA 4, 2010 | AXI3 with 8-bit `AWLEN` (up to 256 beats for `INCR`), no `WID`, no locked transfers, plus `AxQOS`, `AxREGION`, and `AxUSER`. | The default high-bandwidth memory-mapped interface. If someone says "AXI" without qualification, this is what they mean. |
 | **AXI4-Lite** | AMBA 4, 2010 | AXI4 restricted to single-beat, full-width 32- or 64-bit accesses with no exclusives and no bursts. | A register-mapped block that must sit on an AXI fabric without an APB bridge — control planes of accelerators, especially in FPGA flows. |
 | **AXI4-Stream** | AMBA 4, 2010 | A *different* protocol: one unidirectional channel, no addresses, no responses, packets delimited by `TLAST`. | Point-to-point dataflow — video pixels, radio samples, network packets, systolic-array feeds (§6). |
@@ -292,7 +292,7 @@ More recent AMBA editions extend the security state beyond two worlds. The Realm
 | AXI3 | `AxLOCK[1:0]` | `00` Normal, `01` Exclusive, `10` Locked, `11` Reserved |
 | AXI4, AXI5 | `AxLOCK[0]` | `0` Normal, `1` Exclusive |
 
-The removal of the `Locked` encoding is covered in §3.6, where the mechanism it named is derived. The width change is a concrete integration hazard on its own: an AXI3 master connected to an AXI4 slave through a naive adapter that drops `AxLOCK[1]` converts every locked transfer into a normal one, silently removing the mutual exclusion the master was relying on. An adapter that instead maps `AxLOCK[1:0] = 2'b10` onto `AxLOCK = 1'b1` converts a locked transfer into an exclusive one, which is a different mechanism with different failure semantics — the write may now fail and the master, being AXI3, has no code path that handles a failed exclusive write. Both adaptations are wrong; the correct answer is that an AXI3 master that uses locked transfers cannot be attached to an AXI4 fabric without changing the master.
+The removal of the `Locked` encoding is covered in §3.3. The width change is a concrete integration hazard on its own: an AXI3 master connected to an AXI4 slave through a naive adapter that drops `AxLOCK[1]` converts every locked transfer into a normal one, silently removing the mutual exclusion the master was relying on. An adapter that instead maps `AxLOCK[1:0] = 2'b10` onto `AxLOCK = 1'b1` converts a locked transfer into an exclusive one, which is a different mechanism with different failure semantics — the write may now fail and the master, being AXI3, has no code path that handles a failed exclusive write. Both adaptations are wrong; the correct answer is that an AXI3 master that uses locked transfers cannot be attached to an AXI4 fabric without changing the master.
 
 ### 2.8 `AxQOS`
 
@@ -339,116 +339,26 @@ The engineering rules that follow, in order of how much they will save you:
 
 ---
 
-## 3. Exclusive access and atomics
+## 3. Exclusive access and atomics — the signals
 
-### 3.1 The problem: read-modify-write across a fabric
+Two AMBA mechanisms make a read-modify-write indivisible across a fabric: **exclusive access**, where a monitor at the target remembers a reservation and the write only lands if nothing disturbed it, and **atomic transactions**, where the operation itself travels to the target and executes there. This section is the signal-level reference for both — the encodings, the response meanings, and the legality rules a master must obey.
 
-Software needs indivisible read-modify-write: increment a counter, take a lock, push onto a queue. On a single core with no bus, a `test-and-set` instruction is one memory operation and the hardware makes it atomic by construction. Across an AXI fabric there is no such instruction — there is a read transaction and, separately, a write transaction, with an unbounded number of cycles and an unbounded number of other masters' transactions in between.
+The derivation of *why* each exists, where the monitor physically sits, the local-versus-global monitor split, the contention arithmetic that decides between retry-based exclusives and far atomics, and the fabric-wide ordering obligations they create are developed in full on their own page.
 
-**Baseline.** Do it with a bus lock: assert a signal that prevents any other master from being granted the bus, read, modify, write, release. This is exactly the AXI3 `Locked` encoding of `AxLOCK`.
+> **→ [System Atomics and Exclusive Access](../02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md)**. The core-side half — ISA instructions, the reservation monitor as a microarchitectural structure, ordering qualifiers — is [Atomic Operations](../../01_CPU_Architecture/06_Coherence_and_Consistency/04_Atomic_Operations.md).
 
-**Trace.** Master A takes the lock, issues a read to DRAM (180 ns round trip on a loaded system), computes, issues the write (another 60 ns to acceptance). Total lock hold: roughly 250 ns. During that window no other master may use the affected fabric path.
+### 3.1 `AxLOCK` and the exclusive response encodings
 
-**Failure.** At 250 ns per lock acquisition and, say, 100,000 lock operations per second across a 4-core system, the fabric is serialized for 25 ms per second — 2.5% of all fabric time — for lock traffic that touches 4 bytes each time. Worse, the display controller's hard deadline (§2.8) can now be missed by a lock held by an unrelated master, so a *correctness* property of one subsystem depends on the *software behavior* of another. Worse still, the locking master might fault between the read and the write, and the fabric is locked with nobody to release it.
+| Signal | Version | Encoding | Meaning |
+|---|---|---|---|
+| `AxLOCK[1:0]` | AXI3 | `00` Normal, `01` Exclusive, `10` Locked, `11` reserved | Two bits, because AXI3 carried both mechanisms. The `Locked` encoding is gone in AXI4 — see §3.3. |
+| `AxLOCK` | AXI4, AXI5 | `0` Normal, `1` Exclusive | One bit. An AXI3 master cannot be adapted to an AXI4 slave by wiring alone. |
+| `RRESP` on an exclusive read | all | `EXOKAY` = reservation taken; `OKAY` = **no monitor here** | `OKAY` means exclusives are unsupported at this target. The master must fall back, not proceed to the write. |
+| `BRESP` on an exclusive write | all | `EXOKAY` = the write **happened**; `OKAY` = it did **not** | This inverts the usual reading of `OKAY` as success. Test for `EXOKAY` specifically, never for "not an error". |
 
-**Derived repair.** Invert the mechanism. Instead of *preventing* interference, *detect* it. The master issues a read that says "remember this address for me," then a write that says "only take effect if nothing has touched that address since." Nothing is serialized; the fabric runs at full speed; contention is resolved by retry rather than by blocking. This is the **exclusive access** mechanism, and it is the same idea as the load-linked/store-conditional pair in the CPU's ISA — the [Memory Consistency and Atomics](../../01_CPU_Architecture/06_Coherence_and_Consistency/02_Memory_Consistency_and_Atomics.md) page owns the software-level semantics; this page owns the bus transport.
+The two response rows are the ones that produce first-silicon hangs, because both failure modes report `OKAY` — a value every other channel in AXI treats as good news. A target with no monitor returns `OKAY` to the exclusive read and `OKAY` forever to the exclusive write, so a kernel spinlock loop spins without bound while the bus shows no errors at all.
 
-**Cost.** A small piece of state at the target — the exclusive monitor — plus a retry loop in software, plus the possibility of failure even without real contention (§3.4).
-
-**Selection boundary.** Under extremely high contention, retry-based exclusives waste more bandwidth than they save; that is where AXI5's far-atomics (§3.7) win, because they move the whole operation to the target and can never fail.
-
-### 3.2 The exclusive monitor
-
-The exclusive monitor is a small associative structure at (or in front of) the target. For each entry it holds:
-
-- the **address** of the monitored location, at some implementation-defined **granularity** (the monitor may track more bytes than the transaction requested);
-- the **master identity** — in AXI terms, the `ARID` of the exclusive read, which after ID widening in the interconnect uniquely identifies the requesting port;
-- a **valid** bit.
-
-Its rules:
-
-1. On an exclusive read (`ARLOCK = 1`), record address + ID and set valid. Return `RRESP = EXOKAY` if the monitor exists and took the reservation.
-2. On **any** write to the monitored granule from **any** source, clear the valid bit.
-3. On an exclusive write (`AWLOCK = 1`) whose address and ID match a valid entry: perform the write, clear the entry, return `BRESP = EXOKAY`.
-4. On an exclusive write with no matching valid entry: **do not perform the write**, return `BRESP = OKAY`.
-
-Rule 4 is the load-bearing one and it is stated in an easily-misread way. `OKAY` on an exclusive write means **the write did not happen**. `EXOKAY` means it did. This inverts the usual reading of `OKAY` as "everything is fine," and it is why a master's exclusive-write handling must test for `EXOKAY` specifically rather than testing for "not an error."
-
-The corresponding rule on the read side is equally important: **a target that does not implement an exclusive monitor returns `OKAY` (not `EXOKAY`) to an exclusive read.** The master must treat that as "exclusives are not supported here" and fall back to another synchronization mechanism. It must not proceed to the exclusive write, because that write will return `OKAY` forever and the software loop will spin without bound.
-
-> **Bringup bug you will meet.** An SoC boots, runs single-threaded code fine, and hangs the instant the operating system starts a second thread. Cause: the SRAM controller in the boot path has no exclusive monitor, `LDREX` returns `OKAY` rather than `EXOKAY`, `STREX` always reports failure, and the kernel's spinlock loop never exits. It is one of the three or four canonical first-silicon hangs, and it is found in about ten minutes if you know to look at `RRESP` on the exclusive read.
-
-**Where the monitor must sit.** It has to be at a point that observes *every* write to the monitored address. Put it in front of a write buffer that can be bypassed and it will miss invalidations. Put it at one memory channel when the address interleaves across four and it will miss writes routed to the other three. In a coherent system, the natural place is the coherency point (the snoop filter or home node), because that is by construction the serialization point for the line; in a non-coherent system it is the target's own access point. Placing the monitor is an architecture decision, not an IP-internal one.
-
-### 3.3 The sequence
-
-```wavedrom
-{ "signal": [
-  { "name": "ACLK",     "wave": "p..........." },
-  { "name": "ARVALID",  "wave": "010........." },
-  { "name": "ARLOCK",   "wave": "010........." },
-  { "name": "ARADDR",   "wave": "x2x.........", "data": ["0x8000_0000"] },
-  { "name": "ARID",     "wave": "x2x.........", "data": ["0x5"] },
-  { "name": "RVALID",   "wave": "0...10......" },
-  { "name": "RRESP",    "wave": "x...3x......", "data": ["EXOKAY"] },
-  { "name": "monitor",  "wave": "x...5.......", "data": ["valid: addr=0x8000_0000, id=0x5"] },
-  { "name": "AWVALID",  "wave": "0.....10...." },
-  { "name": "AWLOCK",   "wave": "0.....10...." },
-  { "name": "WVALID",   "wave": "0......10..." },
-  { "name": "BVALID",   "wave": "0........10." },
-  { "name": "BRESP",    "wave": "x........3x.", "data": ["EXOKAY"] }
- ],
- "head": { "text": "Successful exclusive pair: EXOKAY on read takes the reservation, EXOKAY on write means the store happened" }
-}
-```
-
-**Contract of the figure.** The read arms the monitor; the write is conditional on that reservation still being valid. The two transactions are *ordinary* AXI transactions in every other respect — separate channels, separate handshakes, and nothing in the fabric is held between them. **One trace:** at cycle 4 the monitor becomes valid; between cycles 4 and 7 the fabric is completely free for other masters; at cycle 9 `BRESP = EXOKAY` tells the master its store took effect and it may exit the retry loop. **The trade-off:** the window between cycles 4 and 9 is exactly the vulnerability window. Every cycle a master spends between its exclusive read and its exclusive write is a cycle during which any other write to the granule will cause a failure, and the master pays a full retry.
-
-Now the failing case, which is the one that determines whether your lock implementation performs:
-
-```wavedrom
-{ "signal": [
-  { "name": "ACLK",       "wave": "p..........." },
-  { "name": "ARVALID",    "wave": "010........." },
-  { "name": "ARLOCK",     "wave": "010........." },
-  { "name": "RRESP",      "wave": "x...3x......", "data": ["EXOKAY"] },
-  { "name": "monitor",    "wave": "x...5..6....", "data": ["valid", "INVALID"] },
-  {},
-  { "name": "otherWVALID","wave": "0......10..." },
-  { "name": "otherWADDR", "wave": "x......7x...", "data": ["0x8000_0008"] },
-  {},
-  { "name": "AWVALID",    "wave": "0........10." },
-  { "name": "AWLOCK",     "wave": "0........10." },
-  { "name": "BVALID",     "wave": "0..........1" },
-  { "name": "BRESP",      "wave": "x..........9", "data": ["OKAY = FAILED"] }
- ],
- "head": { "text": "Failing exclusive: another master writes 0x8000_0008, inside the same monitor granule, and clears the reservation" }
-}
-```
-
-**Contract.** The monitor invalidates on a write from *any* source to the monitored granule, and the exclusive write then reports `OKAY` and performs nothing. **One trace:** the foreign write at cycle 7 targets `0x8000_0008`, which is a *different address* from the reserved `0x8000_0000`. It still clears the reservation, because the monitor's granularity is coarser than 8 bytes. **The trade-off this illustrates is the whole of §3.4:** the architecture deliberately permits the monitor to be coarse, and coarseness converts unrelated traffic into lock failures.
-
-### 3.4 Why the architecture permits spurious failure
-
-An exclusive write may report failure when no logically conflicting access occurred. This is not a defect; it is a designed-in freedom, and the reasoning is a good example of how a specification buys implementability.
-
-**If spurious failure were forbidden**, the monitor would have to be exact. Exact means: byte-granular address comparison for every monitored reservation, one entry per outstanding exclusive per master, retained across every event in the system. Consider what "every event" contains:
-
-- A **context switch**: the OS moves a thread between cores mid-sequence. An exact monitor would have to migrate the reservation.
-- A **cache line eviction or migration** in a coherent system: the line moves to another cache. An exact monitor would have to follow it.
-- **Power gating** of the block holding the monitor: the entry must survive, which means retention flops on the monitor.
-- A **write of the same value**: logically not a conflict, but the monitor sees a write.
-- A **partial-granule write** to a neighboring byte: not a conflict, but requires byte-granular comparison for every entry.
-
-Each of those is real hardware cost paid on every transaction, to serve a case software already handles. Because software *must* have a retry loop anyway — genuine contention exists and always will — a spurious failure costs one extra loop iteration and nothing else. The specification therefore permits the monitor to clear the reservation for *any* reason, including reasons that have nothing to do with the address: a coarse granule, an eviction, a timeout, a reset, a context switch, or an unrelated exclusive from a different master.
-
-**The obligation this places on the system.** Permission to fail spuriously is not permission to fail *always*. If a system can construct a state where the exclusive write can never succeed, software livelocks. Three concrete rules keep that from happening:
-
-1. **No unbounded external invalidation source.** If a periodic hardware event (a refresh counter, a performance-monitor write, a debug agent polling) writes into a granule containing a lock at a rate faster than a master can complete its read-write pair, that lock is unusable. Keep locks in granules nothing else touches.
-2. **Bound the sequence length.** Software must not execute anything between the exclusive read and write that can take an unbounded time — no loads that might miss, no branches to code that might fault, no interrupts if avoidable. Arm's architectural guidance limits the sequence to a small number of instructions for exactly this reason.
-3. **Do not let the retry loop itself cause failures.** A spin loop that re-issues the exclusive read at full rate from four cores can keep all four monitors thrashing. Exponential backoff, or a "spin on a plain load until it looks free, then attempt the exclusive" structure, converts a livelock into progress.
-
-### 3.5 The rules a legal exclusive pair must obey
+### 3.2 The rules a legal exclusive pair must obey
 
 These constrain the *master*, and violating them makes the result undefined rather than merely slow.
 
@@ -461,27 +371,18 @@ These constrain the *master*, and violating them makes the result undefined rath
 | The exclusive write must match the exclusive read in | `AxID`, `AxADDR`, `AxSIZE`, `AxLEN`, `AxBURST`, and the cache/protection attributes | The monitor keyed the entry on address and ID; a mismatch is a different reservation. |
 | Outstanding exclusives per ID | one | The monitor holds one entry per ID; a second exclusive read with the same ID replaces the first, silently losing it. |
 
-Two further points that are easy to miss. First, **an exclusive access to Device memory is not architecturally guaranteed to work** — Device memory typically sits behind a peripheral bridge with no monitor, so the read returns `OKAY` and the mechanism is unavailable. Locks belong in Normal memory. Second, **a bridge that splits transactions breaks exclusives**: if an AXI-to-AXI width converter turns one 16-byte exclusive read into two 8-byte reads, the monitor sees two ordinary-looking accesses and the sequence's semantics are gone. Exclusive transactions must be marked Non-modifiable so that the fabric may not reshape them (§2.4 — this is one of the concrete consequences of `AxCACHE[1] = 0`).
+Two consequences that are easy to miss, both of which are attribute-signal facts rather than monitor facts. First, **an exclusive access to Device memory is not architecturally guaranteed to work** — Device memory typically sits behind a peripheral bridge with no monitor, so the read returns `OKAY` and the mechanism is unavailable. Locks belong in Normal memory. Second, **a bridge that splits transactions breaks exclusives**: if an AXI-to-AXI width converter turns one 16-byte exclusive read into two 8-byte reads, the monitor sees two ordinary-looking accesses and the sequence's semantics are gone. Exclusive transactions must therefore be marked Non-modifiable so the fabric may not reshape them (§2.4 — one of the concrete consequences of `AxCACHE[1] = 0`).
 
-### 3.6 AXI3 locked transfers, and why they were removed
+### 3.3 AXI3 locked transfers, and why the encoding was removed
 
-The AXI3 `AxLOCK = 2'b10` encoding requested that the interconnect grant the issuing master exclusive use of a path until the master released it — a bus lock, per §3.1's baseline. AXI4 removed the encoding entirely. The reasons, in order of how badly each hurts:
+The AXI3 `AxLOCK = 2'b10` encoding requested that the interconnect grant the issuing master exclusive use of a path until the master released it — a bus lock. AXI4 removed the encoding entirely, for five reasons that are ranked and derived in [System Atomics §2.2](../02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md): it defeats `AxQOS`, it creates deadlocks no single component can detect, it does not compose with a multi-path fabric, it cannot survive a fault in the locking master, and exclusive access already solves the problem without any of those costs.
 
-1. **It defeats quality of service.** A locked sequence blocks higher-priority traffic by construction. The whole `AxQOS` architecture becomes advisory, because a low-priority master can hold the path.
-2. **It creates deadlocks that are not local.** Master A holds a lock on path 1 and needs path 2; master B holds a lock on path 2 and needs path 1. Neither the masters nor the fabric can detect the cycle, and the fabric has no preemption. This is a textbook resource-ordering deadlock, and the fabric cannot solve it because it does not know the masters' intentions ([Routing, Flow Control, and Deadlock](../04_On_Chip_Networks/02_Routing_Flow_Control_and_Deadlock.md) covers the general form).
-3. **It does not compose with a multi-path fabric.** A crossbar or NoC has no single "the bus" to lock. Implementing locked transfers on a NoC means either locking every path (catastrophic) or tracking which paths the locking master might use (impossible in general).
-4. **It cannot survive a fault.** If the locking master takes an exception between lock and release, the fabric stays locked.
-5. **Exclusive access already solved the problem** without any of the above.
+What matters at the signal level is the migration consequence. A master that drives `AxLOCK[1:0] = 2'b10` has no correct AXI4 encoding to be translated into: dropping the bit silently removes the mutual exclusion the master relied on, and mapping it onto `AxLOCK = 1'b1` substitutes a mechanism that can *fail*, which an AXI3 master has no code path to handle. Such a master must be changed, not adapted (§2.7).
 
-**Cost of removal.** A master whose software genuinely needs a multi-access indivisible sequence — read three registers, all from the same snapshot — must now use another mechanism: a hardware snapshot register in the peripheral, a software mutex, or a single wider access. That is a real burden, but it is borne by the one master that needs it rather than by the whole fabric.
 
-### 3.7 AXI5 atomic transactions
+### 3.4 AXI5 atomic transactions: the `AWATOP` encoding
 
-Exclusive access is a *two-round-trip* mechanism plus a retry probability. Under contention, its cost grows with the number of contending masters, because each failure is a full round trip that accomplished nothing.
-
-**Trace the failure at scale.** Sixteen cores increment a shared counter. Round trip to the coherency point: 120 ns. With $N$ contenders, the expected number of attempts before a given core succeeds is roughly $N/2$ in a fair system, so the mean time per successful increment is about $60N$ ns of that core's time, and the *fabric* carries $N$ times the traffic. At $N = 16$, each increment costs about 1 µs and the interconnect is saturated with failed attempts. The counter's throughput collapses as contention rises — the classic negative-scaling curve.
-
-**Derived repair.** Send the *operation* rather than the data. The master issues one transaction carrying the operand and an opcode; the target — which is the serialization point and therefore already sees all accesses in order — performs the read-modify-write locally and returns the original value. One round trip, no retries, and throughput bounded by the target's own pipeline rather than by the fabric round trip. This is the **far-atomic**, and AXI5 carries it in `AWATOP[5:0]`.
+An atomic transaction carries an opcode and an operand on the write channels; the target performs the read-modify-write and, for the load classes, returns the original value. One round trip, no retry loop.
 
 | `AWATOP[5:4]` | Class | Behavior |
 |---|---|---|
@@ -505,7 +406,7 @@ For the `AtomicStore` and `AtomicLoad` classes, the remaining bits select the op
 
 and `AWATOP[3]` selects the endianness with which the target interprets the operand (0 = little-endian, 1 = big-endian). That bit exists because the target performs arithmetic on bytes it received over a byte-lane bus, and arithmetic is the one operation for which byte order is not a naming convention but a numeric fact — a point [01 · AHB, AXI, and APB](01_AHB_AXI_APB.md) §16.6 makes about the bus generally, sharpened here into a signal.
 
-`AtomicCompare` carries **two operands** in the write data — the compare value followed by the swap value — so its `AWLEN`/`AWSIZE` describe twice the width of the location it operates on. A 8-byte compare-and-swap therefore transfers 16 bytes of write data.
+`AtomicCompare` carries **two operands** in the write data — the compare value followed by the swap value — so its `AWLEN`/`AWSIZE` describe twice the width of the location it operates on. An 8-byte compare-and-swap therefore transfers 16 bytes of write data.
 
 ```wavedrom
 { "signal": [
@@ -525,21 +426,9 @@ and `AWATOP[3]` selects the endianness with which the target interprets the oper
 }
 ```
 
+
 **Contract of the figure.** An atomic transaction is issued entirely on the write channels and generates a response on **both** the read-data channel and the write-response channel, with `RID` and `BID` equal to the issuing `AWID`. **One trace:** the master issues at cycle 1, the target adds 1 to the location, returns the pre-increment value at cycle 6 on `R`, and confirms completion at cycle 8 on `B`. **The trade-off — and the integration hazard:** an ordinary AXI component assumes the `R` channel is driven only by transactions accepted on `AR`. An interconnect, register slice, or reorder buffer that allocates `R`-channel resources purely from `AR` traffic will have nothing allocated for an atomic's read response, and the `R` channel stalls. This is why atomics are an explicitly declared *property* (§7.5) rather than something a master may just start driving.
 
-### 3.8 The ordering obligations atomics create
-
-Three rules make far-atomics safe, and each removes a specific deadlock.
-
-**1. The master must be able to accept `R` and `B` in either order.** Nothing orders an atomic's read data against its write response. A master that will not assert `RREADY` until it has seen `BVALID` — a perfectly reasonable design for ordinary AXI, where reads and writes are unrelated — deadlocks against a target that returns `R` first and holds `B` behind it. The master's atomic tracking entry must have space for both responses independently.
-
-**2. `R`-channel resources must not be allocated solely from `AR`.** Stated above; it is the fabric-side mirror of rule 1. Every buffer, credit counter, and reorder-buffer entry along the read-data return path must account for atomics.
-
-**3. Same-ID atomics are ordered like same-ID transactions.** Two atomics with the same `AWID` to the same address complete in issue order, which is what makes a sequence of increments from one master correct. Two atomics with *different* IDs have no mutual ordering, and a master that issues its increments round-robin across IDs to gain parallelism has removed the ordering it may have been relying on for the *sequence*, though each individual operation remains atomic.
-
-A fourth, subtler point: **an atomic is a write transaction that reads.** It must therefore honor the memory attributes of a write and the coherence obligations of a read. In a coherent system this is why atomics are performed at the coherency point rather than in a local cache — the [ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md) page derives near-memory versus in-cache atomic placement and the workload conditions that select between them. This page stops at the AXI5 signal that carries the request.
-
----
 
 ## 4. Bursts, sizes, and the awkward cases products actually hit
 
@@ -952,7 +841,7 @@ For reference, the two AHB control fields you will read on every waveform:
 |---|---|---|
 | `AxLEN` 4 bits → 8 bits (`INCR` only, up to 256 beats) | added | A 16-beat maximum on a 128-bit bus caps a burst at 256 bytes. DRAM and cache traffic wants kilobyte-scale transfers, and the address-phase overhead of 16-beat bursts was a measurable fraction of fabric throughput. `FIXED` and `WRAP` did not need it (§4.1). |
 | `WID` and write-data interleaving | **removed** | §5.5. |
-| `AxLOCK` locked transfers | **removed** | §3.6. |
+| `AxLOCK` locked transfers | **removed** | §3.3. |
 | `AxQOS[3:0]` | added | Arbitration had no way to express urgency; fairness is the wrong policy for real-time traffic (§2.8). |
 | `AxREGION[3:0]` | added | Subordinates with several address ranges were re-decoding the full address (§2.9). |
 | `AxUSER` | added | Formalized what everyone was already doing with proprietary sidebands (§2.10). |
@@ -964,7 +853,7 @@ AXI5 is not a single protocol change but a set of independently selectable exten
 
 | Extension | Signals | The problem it solves |
 |---|---|---|
-| **Atomic transactions** | `AWATOP[5:0]`, plus `R` responses to write-channel requests | Contended read-modify-write collapses under exclusive-access retries (§3.7). |
+| **Atomic transactions** | `AWATOP[5:0]`, plus `R` responses to write-channel requests | Contended read-modify-write collapses under exclusive-access retries (§3.4, and [System Atomics §6](../02_Shared_Memory/04_System_Atomics_and_Exclusive_Access.md) for the arithmetic). |
 | **Cache stashing** | `AWSTASHNID`, `AWSTASHNIDEN`, `AWSTASHLPID`, `AWSTASHLPIDEN` | A producer writes data that a specific consumer will read next; without stashing the data lands in DRAM and the consumer takes a full cold miss. Stashing lets the writer name the cache that should receive the line, converting a miss into a hit. The coherence machinery that executes it is on [ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md). |
 | **Memory tagging (MTE)** | `AxTAGOP[1:0]`, `WTAG`, `RTAG`, `BTAGMATCH` | Memory-safety violations — use-after-free, buffer overrun — are the dominant class of exploitable bugs. MTE colors each 16-byte granule with a 4-bit tag and checks pointer tag against memory tag on access. The bus must carry the tag, the operation to perform on it (invalid / transfer / update / match), and the match result. |
 | **Wakeup signaling** | `AWAKEUP` (per channel) | A source whose clock is gated must be able to say "I am about to transact" *before* it can assert `VALID`, so the clock controller can restart the clock without the source stalling on a clock it does not have. Directly related to `QACTIVE` (§8.6); in most integrations the two are combined. |
@@ -981,7 +870,7 @@ None of the above is discoverable at run time. AMBA handles this with **interfac
 
 Three rules make properties actually work:
 
-1. **A property is a contract between two ports, not a feature of one.** Atomics work only if the master, *every* interconnect stage, and the target all declare support. An interconnect that passes `AWATOP` through without allocating `R`-channel resources for atomics (§3.8) declares support it does not have.
+1. **A property is a contract between two ports, not a feature of one.** Atomics work only if the master, *every* interconnect stage, and the target all declare support. An interconnect that passes `AWATOP` through without allocating `R`-channel resources for atomics (§3.4) declares support it does not have.
 2. **Absent means unsupported, and unsupported means "must not be generated."** If a target does not declare atomics, a master must not issue them. There is no negotiation and no error response that means "I do not implement this."
 3. **Properties belong in the machine-readable description, and the integration tool must check them.** This is the concrete payoff of the IP metadata flow on [IP Reuse, Integration, and Register Automation](../../../08_Cross_Cutting_Engineering/04_IP_Reuse_Integration_and_Register_Automation.md): a connection that pairs an atomics-generating master with a non-atomics target should fail at build time, not at bringup.
 
@@ -1815,10 +1704,10 @@ Settle every one of these in writing, between the two teams, before the ports ar
 | `AxCACHE` width | 4 bits | Bufferable, Modifiable, and two allocate hints — the entire optimization licence (§2.2) |
 | `AxCACHE[1] = 0` implication | `AxCACHE[3:2]` must be `00` | Non-modifiable forbids allocation, because allocation reshapes the transaction (§2.2) |
 | `AxPROT` width and the trap | 3 bits; bit 1 is **Non-secure**, so `3'b000` is Secure | A tie-off of zero grants Secure access to a master that should not have it (§2.6) |
-| `AxLOCK` width | AXI3: 2 bits; AXI4/AXI5: 1 bit | The AXI3 `Locked` encoding cannot be adapted to AXI4 — the master must change (§2.7, §3.6) |
+| `AxLOCK` width | AXI3: 2 bits; AXI4/AXI5: 1 bit | The AXI3 `Locked` encoding cannot be adapted to AXI4 — the master must change (§2.7, §3.3) |
 | `AxQOS`, `AxREGION` widths | 4 bits each; QoS 0–15, up to 16 regions | Regenerating either in a fabric stage silently disables the scheme (§2.8, §2.9) |
-| Exclusive access limits | power-of-two size, ≤ 128 bytes total, ≤ 16 beats, aligned | Bounds the exclusive monitor's comparator (§3.5) |
-| Exclusive write response meaning | `EXOKAY` = the write happened; `OKAY` = it did **not** | Inverts the usual reading of `OKAY`; the source of the classic bringup hang (§3.2) |
+| Exclusive access limits | power-of-two size, ≤ 128 bytes total, ≤ 16 beats, aligned | Bounds the exclusive monitor's comparator (§3.2) |
+| Exclusive write response meaning | `EXOKAY` = the write happened; `OKAY` = it did **not** | Inverts the usual reading of `OKAY`; the source of the classic bringup hang (§3.1) |
 | `AxLEN` width | AXI3: 4 bits (≤16 beats); AXI4: 8 bits (≤256, `INCR` only) | `FIXED` stays ≤16 and `WRAP` stays in {2,4,8,16} (§4.1) |
 | `AxSIZE` range | 3 bits: 1 to 128 bytes per beat, never exceeding the bus width | A narrow transfer on a wide bus wastes lanes in proportion (§4.2) |
 | Burst boundary rule | 4096 bytes | Minimum decode granularity, smallest architectural page, and a 12-bit address adder (§4.5) |
