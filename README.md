@@ -54,7 +54,8 @@ hardware_design_notebook/
 ├── 00_Fundamentals/               device physics, logic, arithmetic, memory arrays,
 │                                  fixed-point/DSP datapaths, SystemC/TLM (7 pages)
 ├── 01_Architecture_and_PPA/       4 chip-architecture books, 34 subdomains, 102 chapters
-├── 02_Power_and_Low_Power/        power physics, domain architecture, reduction, UPF/CPF, signoff (6 pages)
+├── 02_Power_and_Low_Power/        power physics, domain architecture, reduction, UPF/CPF, signoff,
+│                                  power gating and retention, runtime power management (8 pages)
 ├── 03_Frontend_RTL_and_Verification/   RTL coding, clocks/CDC, UVM, formal, coverage,
 │                                  design patterns, flow control, arithmetic/memory RTL (16 pages)
 ├── 04_Synthesis/                  RTL -> gates: theory, SDC, standard-cell libraries,

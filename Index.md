@@ -87,6 +87,8 @@ New readers should enter through the method chapter for the architecture they wa
 | [04 · Power Reduction Techniques](02_Power_and_Low_Power/04_Power_Reduction_Techniques.md) | clock gating, DVFS, power gating + retention, multi-$V_t$, body biasing, operand isolation |
 | [05 · UPF/CPF Power-Intent Flow](02_Power_and_Low_Power/05_UPF_and_CPF_Power_Intent.md) | IEEE 1801 and CPF, supplies, isolation, level shifting, retention, PST, RTL-to-signoff flow |
 | [06 · Power Analysis and Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) | PrimeTime PX/Voltus flows, activity annotation, IR/EM, glitch, peak/di-dt, thermal, backside power |
+| [07 · Power Gating, Retention, and Wake Sequencing](02_Power_and_Low_Power/07_Power_Gating_Retention_and_Wake_Sequencing.md) | header/footer switches and the virtual rail, switch sizing and placement, rush current and daisy-chained turn-on, break-even residency, retention flops, always-on domain, isolation and clamp values, power-down/up sequences, failure catalogue |
+| [08 · Runtime Power Management and AVFS](02_Power_and_Low_Power/08_Runtime_Power_Management_and_Adaptive_Voltage_Frequency.md) | the PMU as hardware, power state machines and the PST, the quiescence handshake and Q-/P-Channel, ACPI/PSCI/cpuidle, DVFS governors, race-to-idle, AVS/AVFS guardband recovery, droop and adaptive clocking, thermal management, telemetry |
 
 ---
 
