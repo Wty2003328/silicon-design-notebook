@@ -14,11 +14,18 @@
 | miss-status holding register (MSHR) | tracks one outstanding cache miss and dependent requests |
 | prefetch | fetches data before software explicitly requests it |
 | quality of service (QoS) | policy that protects latency or bandwidth among requesters |
+| index / tag | which set a line may occupy / which line actually occupies it |
+| homonym | one virtual address naming two different physical locations |
+| synonym (alias) | two virtual addresses naming one physical location |
+| VIPT | virtually indexed, physically tagged — index and translation proceed in parallel |
 
 ## Reading order
 
 1. [Cache Microarchitecture](01_Cache_Microarchitecture.md) — addressing, lookup, nonblocking misses, writes, hierarchy.
 2. [Prefetching, Replacement, and QoS](02_Prefetching_Replacement_and_QoS.md) — prediction, victim choice, pollution, feedback, fairness.
+3. [Address Translation and Cache Indexing](03_Address_Translation_and_Cache_Indexing.md) — VIVT, VIPT, PIPT as a design space; homonyms and synonyms; the $C/W \le P$ constraint that fixes L1 geometry; page coloring, larger pages, way prediction, and alias detection as the escapes; what modern parts ship.
+
+Read 3 after 1 — its central constraint is stated in terms of the associativity that §2 of the microarchitecture page derives, and it explains why so many unrelated products land on the same 32 KB / 8-way / 64 B L1.
 
 **Hands off to:** [Virtual Memory](../05_Virtual_Memory/00_Index.md) and [Coherence and Consistency](../06_Coherence_and_Consistency/00_Index.md).
 

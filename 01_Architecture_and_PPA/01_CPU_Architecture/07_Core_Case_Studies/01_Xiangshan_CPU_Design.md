@@ -44,6 +44,8 @@ The official typical Kunminghu V2 configuration lists:
 | L3 | 2–16 MiB, 8-way, non-inclusive | shared capacity below the core |
 | documented mispredict penalty | 13 cycles | control-speculation recovery cost in the typical table |
 
+The L2 and L3 rows are not AMBA blocks: XiangShan's cache hierarchy and its coherence traffic speak **TileLink**, at the cached conformance level (TL-C) whose permission-carrying B and C channels are described in [AHB_AXI_APB §6.1](../../04_SoC_and_Chiplet_Architecture/03_Transaction_Protocols/01_AHB_AXI_APB.md).
+
 The important pattern is heterogeneity. One “six-wide” label hides four integer IQs, three FP IQs, a memory IQ, vector execution, and asymmetric memory ports. Each operation class receives the window and datapath it needs rather than sharing one globally multiported structure.
 
 ```mermaid

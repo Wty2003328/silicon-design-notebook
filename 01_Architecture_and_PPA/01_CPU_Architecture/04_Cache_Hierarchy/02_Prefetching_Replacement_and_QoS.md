@@ -145,7 +145,7 @@ Record which offsets within a page/region tend to be accessed after a trigger. T
 
 ### 3.5 Software and semantic prefetch
 
-Compiler/programmer hints know loop structure and data layout but must choose lead distance robustly across cache/memory implementations. Hardware may drop hints under pressure. Accelerator DMA engines are prefetchers with explicit tile semantics and much larger transfer granularity.
+Compiler/programmer hints know loop structure and data layout but must choose lead distance robustly across cache/memory implementations. Every major instruction set exposes them as real instructions: x86-64's `PREFETCHT0`/`PREFETCHT1`/`PREFETCHT2`/`PREFETCHNTA` (which name the level to fill and whether to mark the line non-temporal), Arm's `PRFM` with a `PLD`/`PST`/`PLI` type, and RISC-V's `prefetch.r`, `prefetch.w`, and `prefetch.i` from the **Zicbop** (cache-block prefetch) extension. Zicbop makes one design point worth stating: the three operations are encoded in the hint space of an existing integer instruction — an `ORI` whose destination register is `x0`, so it architecturally writes nothing — which means an implementation that ignores them, or has no prefetcher at all, executes them as no-ops and is still architecturally correct. A prefetch must never be load-bearing, and that encoding makes the property structural rather than a documented promise. Hardware may drop hints under pressure. Accelerator DMA engines are prefetchers with explicit tile semantics and much larger transfer granularity.
 
 ## 4. Prefetch degree and distance are feedback controls
 
@@ -272,7 +272,7 @@ This maximizes aggregate hit utility under the model, but fairness/SLO policy ma
 - request/token rate limits;
 - bandwidth reservation at NoC and memory controller;
 - priority with aging/deadline escalation;
-- monitoring IDs separate from control IDs.
+- monitoring IDs separate from control IDs — RISC-V's **Ssqosid** extension is exactly this split made architectural: one supervisor control and status register (CSR), `srmcfg`, carries an **RCID** (resource control ID) selecting which allocation the request is charged against and an **MCID** (monitoring counter ID) selecting which counter observes it, so several harts can share one allocation while being measured apart, and one tenant spanning several harts can be measured as a unit ([Cache Microarchitecture §10](01_Cache_Microarchitecture.md)).
 
 Controls must travel with the request through the system. A cache partition cannot guarantee latency if a neighbor monopolizes DRAM or coherence queues.
 
@@ -358,4 +358,4 @@ At four ways, core A loses 30 misses by receiving a fifth way; B loses 8. A util
 
 ---
 
-⬅ prev [Cache Microarchitecture](01_Cache_Microarchitecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md)
+⬅ prev [Cache Microarchitecture](01_Cache_Microarchitecture.md) · [Section Index](00_Index.md) · [Root Index](../../../Index.md) · next ➡ [Address Translation and Cache Indexing](03_Address_Translation_and_Cache_Indexing.md)

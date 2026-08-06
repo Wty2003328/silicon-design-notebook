@@ -157,7 +157,7 @@ Coherence of page-table *data* does not automatically invalidate decoded TLB/PWC
 
 ## 3. Nested translation
 
-Virtualization often translates guest virtual address (GVA) → guest physical address (GPA) → system physical address (SPA). A naive nested walk can require many accesses: each stage-1 page-table access itself needs stage-2 translation.
+Virtualization often translates guest virtual address (GVA) → guest physical address (GPA) → system physical address (SPA). A naive nested walk can require many accesses: each stage-1 page-table access itself needs stage-2 translation. On the CPU side each stage has a named root pointer — on RISC-V, `vsatp` for the guest's stage-1 tree and `hgatp` for the stage-2 (guest-physical) tree, the latter carrying the virtual-machine identifier (VMID) that tags every entry cached from it; [Privileged Architecture, CSRs, and Traps](../01_Core_Foundations/04_Privileged_Architecture_CSRs_and_Traps.md) §12.4 owns those control and status registers (CSRs) and the fences that maintain them.
 
 Think of it as translation-inside-translation. The stage-1 walker only ever computes *guest*-physical addresses — the guest's private "physical" namespace — and hardware cannot present a GPA to memory. So every pointer the guest walk follows (the table root and each level's next-table pointer) must first be resolved through the stage-2 tables, the way each word of a sentence must be looked up in a dictionary before it means anything. Virtualization therefore does not *add* a fixed translation cost; it *multiplies* one walk by the other.
 
@@ -231,6 +231,25 @@ sequenceDiagram
 ```
 
 Unlike a core load, DMA may be long-lived and deeply queued. Fault handling can be terminating (report and fail) or recoverable via a page-request interface that asks software to make a page resident, then retries.
+
+### 4.1 The same machine in three vocabularies
+
+The contract above is architecture-neutral; the names are not, and reading any real driver or specification means knowing which vocabulary you are in. In the **RISC-V IOMMU**, device identity is a `device_id` that indexes a **device-directory table** whose leaf entries are per-device **device contexts**. Each device context holds the two translation roots directly: **`iosatp`**, the first-stage pointer (IOVA → guest physical, the device-side analogue of the CPU's `satp`/`vsatp`), and **`iohgatp`**, the G-stage pointer (guest physical → system physical), which also carries the guest-context identifier that tags cached entries the way a VMID tags CPU TLB entries. A device context may instead point at a process-directory table when one device serves many address spaces, which is where a `process_id` selects the first-stage root per process.
+
+Two properties are worth extracting rather than memorizing. First, **the IOMMU has no instructions.** Where the CPU invalidates with an `SFENCE.VMA` or `HFENCE.GVMA` instruction, the IOMMU is driven by a command queue in memory: software writes **`IOTINVAL.VMA`** (first-stage entries, optionally narrowed by address, address-space ID, and guest-context ID) or **`IOTINVAL.GVMA`** (G-stage entries) into the queue and rings a doorbell. That is what makes the completion proof of §7 explicit rather than implied — **`IOFENCE.C`** is the command that completes only when everything queued ahead of it has, and it can be told to write a memory location and raise an interrupt when it does, so software has a checkable event to wait on instead of a timeout. Second, **interrupts get their own translation pointer, `msiptp`.** A message-signaled interrupt is an ordinary memory write to a doorbell address, so a directly assigned device could otherwise aim one at another guest's interrupt file; the device context therefore recognizes MSI writes by an address mask and pattern and routes them through a separate MSI page table, keeping interrupt remapping out of the guest's stage-2 tables entirely.
+
+| Concept | Arm SMMUv3 | RISC-V IOMMU | Intel VT-d |
+|---|---|---|---|
+| Device identity | StreamID | `device_id` | Requester ID (bus/device/function) |
+| Per-device configuration record | Stream Table Entry (STE) | device context, in the device-directory table | root-table + context-table entry |
+| Per-process identity | SubstreamID | `process_id`, in the process-directory table | PASID (process address-space ID), in the PASID table |
+| Stage-1 root (IOVA → GPA) | Context Descriptor translation-table base | **`iosatp`** | first-level page-table pointer |
+| Stage-2 root (GPA → SPA) | STE stage-2 table base | **`iohgatp`** | second-level page-table pointer |
+| Invalidate cached translations | `CMD_TLBI_*` commands | **`IOTINVAL.VMA`** / **`IOTINVAL.GVMA`** | IOTLB invalidation descriptors |
+| Prove invalidation complete | `CMD_SYNC` | **`IOFENCE.C`** | invalidation wait descriptor |
+| Interrupt (MSI) address translation | interrupt translation service (ITS) doorbell mapping | **`msiptp`** MSI page table | interrupt-remapping table entry |
+
+Every row is the same mechanism under three names, which is the useful part: a stale-translation bug, a missing completion wait, or an untranslated MSI is portable across all three, and so is the fix. The CPU-side counterparts of rows 4 and 5 — `vsatp` and `hgatp` — are derived in [Privileged Architecture, CSRs, and Traps](../01_Core_Foundations/04_Privileged_Architecture_CSRs_and_Traps.md) §12.4; this page owns only the device-side half.
 
 ## 5. Translation caches in devices: ATS and PRI
 

@@ -237,7 +237,7 @@ Each standard extension is a self-contained capability an integrator switches on
 | **M** | integer `* / %` | a 64×64 multiplier tree + a slow SRT divider | divide edge cases are **defined and non-trapping** |
 | **A** | multicore atomicity | RMW datapath + reservation tracking | ordering **self-annotated** per atomic (`aq`/`rl`) |
 | **F/D** | IEEE-754 float | a separate FP datapath + register file | **FMA is a primitive** (single rounding); separate namespace |
-| **B** | hot bit/byte ops | almost none (a popcount tree, the shifter's rotate) | accelerate what's hot for near-zero gates |
+| **B** (Zba/Zbb/Zbs) | hot bit/byte ops | almost none (a popcount tree, the shifter's rotate) | accelerate what's hot for near-zero gates |
 
 ### 4.1 M — multiply/divide
 
@@ -272,6 +272,18 @@ IEEE-754 single (F) and double (D), optional because FP is a large, separable da
 ### 4.4 B — bitmanip, the archetype of "accelerate what's hot for almost nothing"
 
 Population-count, count-leading/trailing-zeros, rotates, byte-reverse, single-bit ops, and carry-less multiply are **one cycle in hardware but 10–15 instructions in software**, and they are pervasive — cryptography, hashing, codecs, bioinformatics, and the compiler's own idioms. *Worked instance:* a branch-free 64-bit population count is the classic 5-step SWAR (SIMD-within-a-register) reduction — mask-and-add with the constants `0x5555…`, `0x3333…`, `0x0F0F…`, then a multiply-and-shift horizontal sum — about **12 instructions**; `cpop` is **one**. Count-leading-zeros without hardware is a ~6-step binary search or a de-Bruijn multiply plus a table load; `clz` is one. The 10–15× the extension collapses is exactly this, paid per hot inner-loop iteration. Representative of the whole extension: `cpop` (population count), `clz`/`ctz` (leading/trailing zeros), `ror` (rotate), and `clmul` (carry-less multiply). Each is tiny area you often *already have* (a popcount tree; the barrel shifter's rotate path) for order-of-magnitude speedups — `clmul` alone turns table-driven CRC-32 (~8 loads + XORs per word) into a couple of instructions and is the primitive behind GCM/GHASH.
+
+**"B" is a family name, not one ratified letter.** The monolithic `B` of the original bitmanip draft was never ratified as a single letter; what froze in 2021 is a set of small, separately named extensions carrying the **`Z` prefix** (the convention for an extension whose name is a word rather than a letter — the second character names the parent family, so every `Zb*` is bit manipulation and every `Zbk*` is its scalar-cryptography sibling). Splitting the draft this way lets each group ship at its own maturity and lets each design buy only the gates it will use: a microcontroller can take `Zbb`'s counting and rotate operations without instantiating the carry-less multiplier `Zbc` requires. The letter came back later only as shorthand for exactly **Zba + Zbb + Zbs**, the three that the **RVA22** profile makes mandatory (RVA23 keeps them), which is how you read a toolchain string like `-march=rv64gc_zba_zbb_zbs`.
+
+| Extension | What it adds | Why it is a separate group | Profile status |
+|---|---|---|---|
+| **Zba** — address generation | `sh1add`/`sh2add`/`sh3add`, and on RV64 `add.uw`, `slli.uw`, `sh{1,2,3}add.uw` (8 encodings) | fuses the *scale-then-add* of every array index into one instruction; touches only the existing adder + a 3-bit pre-shift | **mandatory** in RVA22/RVA23 |
+| **Zbb** — basic bit manipulation | `clz`, `ctz`, `cpop`, `min`/`max` (signed + unsigned), `orc.b`, `rev8`, `rol`/`ror`, `sext.b`/`sext.h`, `andn`/`orn`/`xnor` | the compiler-idiom set: what LLVM already emits multi-instruction sequences for on every target | **mandatory** in RVA22/RVA23 |
+| **Zbs** — single-bit | `bclr`/`bext`/`binv`/`bset`, each with an immediate form (8 encodings) | one-instruction test/set/clear/invert of bit $n$ — bitmap and flag-word code, which otherwise costs a shift plus a mask plus the logic op | **mandatory** in RVA22/RVA23 |
+| **Zbc** — carry-less multiply | `clmul`, `clmulh`, `clmulr` | the only group that costs real area — a full XOR-based partial-product array, not a reuse of existing datapath | optional |
+| **Zbkb / Zbkc / Zbkx** — crypto-adjacent | a `Zbb` subset plus byte/nibble permutes, a `Zbc` subset, and crossbar permutes | pulled out so a cipher-focused core can take the crypto-relevant subset without the whole of `Zbb`/`Zbc` | optional; drawn in by the scalar-crypto extensions |
+
+Reading that table is §1's contract in miniature: the underscore-separated names in a `-march` string are the design's line-item bill, one entry per group of gates actually instantiated, and the profile is the ecosystem's guarantee that three of those entries are present on any application-class chip so a distribution can compile for them unconditionally.
 
 B is the modular thesis at its purest: a capability nearly free in gates, enormous for the workloads that need it, and pure dead-weight-free *omission* for those that don't.
 

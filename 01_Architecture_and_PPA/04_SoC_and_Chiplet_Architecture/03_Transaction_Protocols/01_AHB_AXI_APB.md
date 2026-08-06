@@ -372,6 +372,12 @@ The positioning rule drops straight out of §3's latency-scaling result: AXI's b
 
 The system-level picture is separation of concerns made physical: **AXI backbone, AHB-Lite subsystems, APB peripheral leaves behind a bridge** — complexity spent exactly where bandwidth is, and nowhere else.
 
+### 6.1 Sidebar — the RISC-V ecosystem's alternative: TileLink
+
+AMBA is not the only family that made this trade. **TileLink**, developed at UC Berkeley alongside the Rocket Chip generator, spans the same range with **conformance levels** instead of separate protocols: **TL-UL** (uncached lightweight — single-word get/put, no bursts, the APB/AXI4-Lite point), **TL-UH** (uncached heavyweight — adds bursts, atomics, and prefetch hints), and **TL-C** (cached — adds coherence-permission transfer). It carries five ready/valid channels — **A** (client→manager request), **B** (manager→client probe), **C** (client→manager probe response or release), **D** (manager→client response or grant), **E** (client→manager grant acknowledgement) — with a fixed priority $A < B < C < D < E$ that *is* the deadlock-freedom argument: a message on a higher channel may never block behind one on a lower channel. TL-UL and TL-UH use only A and D; TL-C uses all five. Rocket Chip, BOOM, and XiangShan use it as their cache-hierarchy fabric; OpenTitan uses TL-UL as its entire on-chip bus.
+
+The reason to include it is structural. **TileLink's conformance ladder is the identical "drop what you don't need" argument §6 just derived** — a TL-UL slave is a few hundred gates for the same reason an APB slave is. The divergence is where coherence lives. TileLink puts permission transfer in the *base* protocol's B and C channels, so coherent and uncached agents share one message taxonomy and one deadlock argument, and a TL-UL leaf joins a TL-C fabric through a width adapter rather than a protocol bridge. AMBA keeps AXI purely request/response with no back-channel and adds coherence as a separate specification — ACE's `AC`/`CR`/`CD` snoop channels, or CHI as a different protocol entirely ([ACE and CHI](../../01_CPU_Architecture/06_Coherence_and_Consistency/03_ACE_and_CHI.md)). AMBA buys a trivially simple non-coherent slave and the industry's largest IP and verification-IP ecosystem, and pays with two protocols plus the bridge between them; TileLink buys one protocol end to end, and pays by making every participant — a GPIO block included — live inside a five-channel model built for coherence.
+
 ---
 
 ## 7. Topology: the fabric as a separate, scalable concern
@@ -1923,9 +1929,10 @@ AXI moves data correctly but does not by itself keep private caches coherent. [t
 1. Arm, *AMBA AXI and ACE Protocol Specification* (IHI 0022). The five-channel model, handshake rules, ordering by ID, and the 4 KB burst rule of §2–§5.
 2. Arm, *AMBA APB Protocol Specification* (IHI 0024). The two-phase peripheral transfer of §6.
 3. Arm, *AMBA 3 AHB-Lite / AMBA 5 AHB Protocol Specification* (IHI 0033). Address pipelining, bursts, and the legacy arbitration/SPLIT model of §6.
-4. Cummings, C.E., "Simulation and Synthesis Techniques for Asynchronous FIFO Design," *SNUG*, 2002. The Gray-code pointer async FIFO underpinning §8.
-5. Pasricha, S. and Dutt, N., *On-Chip Communication Architectures: System on Chip Interconnect*, Morgan Kaufmann, 2008. Bus/crossbar/NoC topology and the composition arguments of §1, §7.
-6. Hennessy, J.L. and Patterson, D.A., *Computer Architecture: A Quantitative Approach*, 6th ed., 2017. Little's law and the bandwidth–delay reasoning reused in §4.
+4. SiFive, *TileLink Specification*. The TL-UL/TL-UH/TL-C conformance levels, the A–E channel set, and the channel-priority deadlock-freedom rule of §6.1.
+5. Cummings, C.E., "Simulation and Synthesis Techniques for Asynchronous FIFO Design," *SNUG*, 2002. The Gray-code pointer async FIFO underpinning §8.
+6. Pasricha, S. and Dutt, N., *On-Chip Communication Architectures: System on Chip Interconnect*, Morgan Kaufmann, 2008. Bus/crossbar/NoC topology and the composition arguments of §1, §7.
+7. Hennessy, J.L. and Patterson, D.A., *Computer Architecture: A Quantitative Approach*, 6th ed., 2017. Little's law and the bandwidth–delay reasoning reused in §4.
 
 ---
 

@@ -189,7 +189,11 @@ Substitute $\text{sets} = C/(N L)$ from §1.4; the line size $L$ cancels and the
 
 $$\log_2\!\frac{C}{N} \le \log_2 P \quad\Longrightarrow\quad \boxed{\;\dfrac{C}{N} \le P\;} \quad\Longleftrightarrow\quad C \le N\,P$$
 
-where $C$ = capacity, $N$ = associativity, $L$ = line size, $P$ = page size. The reading is physical: one *way* (a column of $C/N$ bytes) must fit inside a single page, so that changing the page frame can never change which set is selected. *Worked number:* at the near-universal $P = 4\text{ KB}$ page with $N = 8$ ways, $C \le 8 \times 4\text{ KB} = \mathbf{32\ KB}$ — exactly why mainstream L1 caps at **32–64 KB** and why L1 capacity and associativity are chosen *together*, not independently. The two escapes drop straight out of $C \le NP$: **raise $N$** (16-way lifts the ceiling to 64 KB at a 4 KB page, paying the §2.1 hit-path cost) or **raise $P$** (Apple's 16 KB base page lifts it to $8\times16\text{ KB} = 128\text{ KB}$, which is how its 8-way L1D is that large). Overshoot the ceiling and index bits spill into the translated page number, so one physical line can land in two sets under two virtual addresses — the **synonym** problem the TLB page resolves with page colouring or the same enlarge-$N$/enlarge-$P$ levers.
+where $C$ = capacity, $N$ = associativity, $L$ = line size, $P$ = page size. The reading is physical: one *way* (a column of $C/N$ bytes) must fit inside a single page, so that changing the page frame can never change which set is selected. *Worked number:* at the near-universal $P = 4\text{ KB}$ page with $N = 8$ ways, $C \le 8 \times 4\text{ KB} = \mathbf{32\ KB}$ — exactly why mainstream L1 caps at **32–64 KB** and why L1 capacity and associativity are chosen *together*, not independently.
+
+That is the whole of what this page needs: the constraint is a fact about the index/offset split of §1.4, and it is the reason §2's associativity choice cannot be made in isolation. Everything the constraint implies — why VIVT and PIPT are the other two live design points and PIVT is not one at all, what homonyms and synonyms actually break, and the four escapes when $C \le NP$ is too tight (page coloring, a larger base page, hardware alias detection, way prediction) with the cost of each — has its own page.
+
+> **→ [Address Translation and Cache Indexing](03_Address_Translation_and_Cache_Indexing.md)**.
 
 ---
 
@@ -553,12 +557,15 @@ The first two attack dynamic energy (fewer arrays read per hit), the last two at
 
 ## 10. Quality of service: partitioning a shared last level
 
-A shared L3 creates a **noisy-neighbour** problem: a streaming workload (an LLM inference server, a `memcpy`-heavy job) can evict a co-runner's working set through ordinary conflict misses and degrade it 20–50 %. Partitioning restores isolation, and the two shipping mechanisms sit at different points on a **granularity-vs-utilization** trade:
+A shared L3 creates a **noisy-neighbour** problem: a streaming workload (an LLM inference server, a `memcpy`-heavy job) can evict a co-runner's working set through ordinary conflict misses and degrade it 20–50 %. Partitioning restores isolation, and the three shipping mechanisms sit at different points on a **granularity-vs-utilization** trade:
 
 - **Intel CAT** (Cache Allocation Technology) assigns each class-of-service a bitmask of L3 **ways** it may allocate into. Simple and cheap, but way-granular: a class gets $k/N$ of the cache in whole-way steps whether or not its working set fits, so capacity can be stranded.
 - **ARM MPAM** (Memory-system resource Partitioning And Monitoring) partitions by **fraction/bytes** per partition ID (up to 256), tracks occupancy in hardware, and extends the same mechanism to **DRAM bandwidth**. Finer control and unified with bandwidth, at more implementation cost.
+- **RISC-V Ssqosid + CBQRI** splits the same job across two specifications. **Ssqosid** (supervisor-mode quality-of-service identifiers) is the ISA half: one control and status register (CSR), `srmcfg`, per hart (RISC-V's term for a hardware thread), holding an **RCID** (resource control ID — which allocation that hart's requests are charged against) and an **MCID** (monitoring counter ID — which counter they accumulate in), each up to 12 bits, carried alongside every request the hart issues. **CBQRI** (Capacity and Bandwidth QoS Register Interface) is the enforcement half and is deliberately *not* an ISA extension: each controlled resource — an LLC slice, a memory channel — exposes memory-mapped registers that set a capacity or bandwidth allocation per RCID and read occupancy and usage per MCID.
 
-The trade is isolation granularity against overall utilization — coarse way-partitioning wastes capacity when allocations misfit; fine partitioning tracks occupancy at the cost of more control hardware. Both matter increasingly for cloud and edge AI, where a large-working-set model shares an LLC with latency-sensitive services.
+Arm folded both halves into MPAM; RISC-V's split keeps the core's obligation fixed and tiny — one CSR plus two ID fields on the request path — so a core is QoS-capable without knowing what its SoC can enforce, controllers can be revised or added without touching the ISA, and a non-CPU requestor — a DMA engine, or an accelerator behind an input-output memory management unit (IOMMU) — can drive the identical controller interface with the same IDs. What the split costs is discovery: nothing on the CPU side tells software which controllers exist or how finely each partitions, so an operating system must find them through firmware tables and per-controller capability registers and then allocate IDs from the *intersection* of what every controller implements — the ID a hart writes is only as useful as the narrowest controller that has to honor it.
+
+The trade is isolation granularity against overall utilization — coarse way-partitioning wastes capacity when allocations misfit; fine partitioning tracks occupancy at the cost of more control hardware. All three matter increasingly for cloud and edge AI, where a large-working-set model shares an LLC with latency-sensitive services.
 
 ---
 
@@ -639,6 +646,7 @@ Multiply out into per-level contributions $(\prod_{j<k}m_{Lj})\,t_{Lk}$ (§1.2) 
 5. Sorin, D. J., Hill, M. D., and Wood, D. A., *A Primer on Memory Consistency and Cache Coherence*, 2nd ed., Morgan & Claypool, 2020. SWMR invariant and MESI/MOESI derivation (§8).
 6. Intel Corp., "Intel 64 and IA-32 Architectures Optimization Reference Manual," Order 248966. Prefetchers, inclusion, CAT.
 7. ARM Ltd., "Arm Memory System Resource Partitioning and Monitoring (MPAM)," ARM DDI 0598. §10.
+8. RISC-V International, *RISC-V Quality-of-Service Identifiers (Ssqosid)* and *RISC-V Capacity and Bandwidth QoS Register Interface (CBQRI)*. The ISA-side ID plumbing and the memory-mapped controller interface of §10.
 
 ---
 

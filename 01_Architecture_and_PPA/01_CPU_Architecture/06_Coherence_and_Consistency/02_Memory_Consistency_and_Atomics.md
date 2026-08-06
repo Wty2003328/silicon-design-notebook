@@ -175,6 +175,9 @@ A full fence between each store and load forbids that bypass/visibility outcome.
 | TSO-like | generally preserves load→load, load→store, store→store; relaxes store→load to different address | store buffer hides write latency |
 | weak/release consistency | many orders relaxed unless dependency/fence/acquire/release constrains them | greatest implementation/compiler freedom |
 | RVWMO | weak model with explicit preserved program-order rules, dependencies, fences, and atomics | permits aggressive RISC-V cores while specifying portable synchronization |
+| Ztso (RISC-V) | RVWMO plus **total store order**: every hart's stores become visible to all harts in program order; only store→load to a different address is relaxed | x86-origin code and binary translation run correctly with no inserted fences, at the price of the store reordering RVWMO would allow |
+
+**`Ztso`** is the ratified extension that lets a RISC-V hart make the TSO promise architecturally, so a translator running x86-64 binaries — whose source model is TSO — need not emit a barrier on essentially every store to preserve the ordering the original program assumed; the industry precedent is Apple's Arm cores, whose per-thread TSO mode Rosetta 2 enables for translated processes — the demonstration that such a mode is worth its silicon. The guarantee is one-way: software written for RVWMO runs unchanged on a `Ztso` hart, while software that has come to depend on `Ztso` is not portable back to a plain RVWMO one.
 
 Precise rules belong to each ISA specification; labels like “weak” are not interchangeable. Whether dependencies order accesses, whether stores are multi-copy atomic, and which fence bits apply can differ.
 

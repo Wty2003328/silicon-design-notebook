@@ -233,13 +233,16 @@ The space argument deserves the full derivation, because it is *the* reason pagi
 
 | Scheme | Levels | VA width | VA space | Walk depth |
 |---|---|---|---|---|
+| RISC-V Sv32 (RV32 only) | 2 | 32 bits | 4 GB | 2 |
 | RISC-V Sv39 | 3 | 39 bits | 512 GB | 3 |
 | RISC-V Sv48 | 4 | 48 bits | 256 TB | 4 |
 | RISC-V Sv57 | 5 | 57 bits | 128 PB | 5 |
 | x86-64 (4-/5-level) | 4–5 | 48 / 57 bits | 256 TB / 128 PB | 4–5 |
 | ARMv8/v9-A | 3–4(+) | 48–52 bits | 256 TB – 4 PB | 3–4 |
 
-The trade is captured entirely by "one access per level, 512× reach per level," and the page-walk cache is what keeps the *added* levels nearly free for hot regions — which is why 5-level paging (Intel since Ice Lake, 2019; AMD since Genoa, 2023) ships with negligible steady-state overhead despite the deeper tree.
+Sv32 is the row that does not obey the $512\times$ rule, and the reason is worth one line: on RV32 a PTE is **4 bytes**, not 8, so one 4 KB table holds **1024** entries and each level carries **10** VPN bits. The invariant being preserved is not "512" but "exactly one page of PTEs per table" — re-solved for a narrower XLEN. Two levels of $2^{10}$ therefore cover the whole 32-bit VA, the level-1 leaf gives a **4 MB megapage** rather than 2 MB, and the 22-bit PPN reaches a **34-bit (16 GB) physical address**, so an RV32 system can populate more DRAM than any one process can name.
+
+The trade is otherwise captured entirely by "one access per level, 512× reach per level," and the page-walk cache is what keeps the *added* levels nearly free for hot regions — which is why 5-level paging (Intel since Ice Lake, 2019; AMD since Genoa, 2023) ships with negligible steady-state overhead despite the deeper tree.
 
 ### 5.4 Who walks — hardware versus software
 
