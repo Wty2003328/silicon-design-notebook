@@ -133,7 +133,7 @@ flowchart TD
     G -->|"direction alone cannot supply target bandwidth"| H
 ```
 
-The state evolution is equally important. Static prediction remembers nothing. Bimodal adds one saturating counter per indexed PC. Global-history prediction adds a shift register and a table indexed by a hash of PC and history. TAGE adds partial tags to reject destructive aliases, several history lengths so each branch can find an appropriate context, and usefulness counters so a newly allocated long-history entry cannot immediately override a proven shorter one. The complete frontend finally adds separate target/type state, a return stack, speculative-history checkpoints, and a fetch target queue (FTQ).
+The state evolution is equally important. Static prediction remembers nothing. Bimodal adds one saturating counter per indexed PC. Global-history prediction adds a shift register and a table indexed by a hash of PC and history. TAGE adds partial tags to reject destructive aliases, several history lengths so each branch can find an appropriate context, and usefulness counters to protect entries that have beaten their shorter-history alternatives. A separate provider-versus-alternate policy can temporarily prefer the alternate when a newly allocated provider is still weak. The complete frontend finally adds separate target/type state, a return stack, speculative-history checkpoints, and a fetch target queue (FTQ).
 
 The costs also evolve. Each accuracy feature increases lookup energy, alias corner cases, training latency, and recovery state. If a tiny embedded workload already has a two-bit-predictor misses-per-thousand-instructions (MPKI) below its performance target, TAGE can lose on energy and clock period. If a server workload has a large code footprint, a sophisticated direction predictor can still lose because the branch target buffer (BTB) misses or the instruction cache cannot supply the predicted target. Optimization must therefore classify residual misses—direction, target, return, indirect, capacity, or latency—instead of treating “branch mispredict” as one number.
 
@@ -391,104 +391,187 @@ TAGE resolves both at once. That is the next section, and it is the heart of the
 
 TAGE (TAgged GEometric history length, Seznec & Michaud 2006) has been a dominant high-performance direction-predictor family since the Championship Branch Prediction contests. TAGE-SC-L is a competition-grade extension, while current public XiangShan Kunminghu documentation names a TAGE plus Statistical Corrector (TAGE-SC) implementation. Treat exact commercial predictor compositions as vendor-specific unless the vendor documents them. TAGE is best understood not as "gshare with more tables" but as the direct answer to §3.3's two problems.
 
-### 4.1 The move, and the two obligations it forces
+### 4.1 TAGE architecture, lookup, and allocation
 
-Keep **several** tables at **geometrically spaced** history lengths ($0, 4, 16, 64, 256, \dots$), and for each branch use *the longest table that has a tag-matching, trained entry for this exact history*. That one sentence forces exactly two design features — and they are precisely the "TA" and the usefulness machinery TAGE adds over gshare:
+> [!important] Do not confuse table size with history length
+> In a sequence such as $4,8,16,32,\ldots$, the geometric quantity is normally the **number of history bits used by each component**, not its number of rows. A long-history table may have exactly the same row count as a short-history table.
 
-- **Tags (the "TA").** If you intend to *trust the longest matching table*, you must be sure it matches: a false hit on a 256-bit-history entry is a *confident* wrong prediction, the most expensive kind. So each tagged entry carries a partial tag and is believed only on a tag match. Tags convert aliasing from "silent misprediction" (gshare's disease) into "tag miss → fall back to a shorter, safer table." **This is what lets TAGE use very long histories without paying the aliasing tax those histories would otherwise impose** — a mis-hit degrades gracefully instead of mispredicting confidently.
-- **A usefulness counter + an alternate.** A freshly allocated long-history entry is unproven. So TAGE keeps the second-longest match as an **alternate** and trusts the long **provider** only once a small per-entry usefulness counter shows it has earned it; on a mispredict it *allocates* a new entry in a longer, currently-missing table, so the next encounter has a more specific predictor available. The allocation/decay bookkeeping is all in service of one online question: *which history length should I believe for this branch, right now?* — i.e. discovering each branch's true correlation depth $h$ empirically.
+TAGE combines one untagged base predictor $T_0$ with tagged components $T_1\ldots T_M$. Component $T_i$ uses a history length $L_i$, with the $L_i$ values spaced approximately geometrically. The base captures branch bias; progressively longer components install exceptions for contexts that the shorter components could not predict.
 
-The essential per-entry state, derived from that job (not a bit-field dump): a **prediction counter** (3-bit saturating direction), a **partial tag** (8–10 bits, the "am I really the right entry" check), and a **usefulness counter** (2-bit, "have I earned trust over the alternate"). The base component is untagged (it always hits, as the fallback of last resort).
+The usual tagged entry is:
 
-Those obligations compose into one **provider-selection datapath**: every component is looked up in parallel from the PC and the folded global history, the *longest tag-matching trained entry* becomes the **provider**, its shorter runner-up (or the base) is held as the **alternate**, and the usefulness/allocation bookkeeping closes on resolve:
+```text
+partial tag | signed direction counter (ctr) | usefulness counter (u)
+```
+
+- **`ctr` predicts direction.** Its sign (or high bit) selects taken/not-taken; its magnitude is the entry's prediction strength. Three-bit signed counters are common in classic TAGE descriptions.
+- **`tag` identifies the context.** It is a separately stored, partial signature of the PC and the history used by that table. It is not the table index and it is not a copy of the entire PC or GHR.
+- **`u` controls retention.** It records whether this entry has proved more useful than the shorter-history alternate. It is principally replacement state, **not the direction-confidence counter and not normally part of the tag-hit test**.
+
+The base $T_0$ is normally a PC-indexed bimodal table with no tag. It therefore always supplies a fallback prediction.
+
+#### Two hashes per tagged component: row selection and identity
+
+For every $T_i$, hardware derives both an index and a wanted tag from the current branch PC and the first $L_i$ bits of speculative branch history:
+
+$$
+I_i = H^{idx}_i\!\left(PC,\operatorname{Fold}_{k_i}(GHR[0:L_i])\right)
+$$
+
+$$
+\tau_i = H^{tag}_i\!\left(PC,\operatorname{Fold}_{t_i}(GHR[0:L_i])\right)
+$$
+
+where $2^{k_i}$ is the number of rows in table $i$ and $t_i$ is its stored tag width. Folding compresses a potentially hundreds-of-bits history into the small number of index/tag bits; index and tag use different mixes so that an index collision is unlikely also to be a tag collision.
+
+Lookup performs:
+
+```text
+candidate_i = Ti[I_i]
+hit_i       = (candidate_i.tag == tau_i)
+```
+
+The index answers **which row can be read**. The tag answers **whether that row represents this PC/history context**. Many contexts inevitably share an index; a partial tag lets most wrong contexts be rejected instead of silently sharing a direction counter as they would in gshare.
+
+#### Provider and alternate selection
+
+All components are conceptually accessed in parallel. Among the tagged hits, the component using the greatest $L_i$ is the **longest-history match** and becomes the **provider**. The next-shorter tagged hit—or $T_0$ if there is none—is the **alternate**.
+
+"Longest matching entry" therefore means **the matching entry from the table with the longest history**, not the entry with the longest matching tag prefix. Basic TAGE uses the provider counter's direction. Many later implementations add a small `use-alt-on-new-allocation` policy: if the provider counter is still in a weak state after allocation, a meta-counter may temporarily choose the alternate. This is separate from the per-entry `u` counter.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 60, "rankSpacing": 60, "htmlLabels": false}}}%%
 flowchart TD
-    PC["Fetch PC"]
-    GHR["Global history<br/>(folded per table)"]
-    IDX["index = hash(PC, folded history)<br/>geometrically longer L per table"]
-    PC --> IDX
-    GHR --> IDX
-    subgraph COMP["Predictor components — looked up in parallel"]
-        BASE["Base bimodal<br/>L=0, untagged<br/>(always hits)"]
-        T1["T1  L=4<br/>tag, 3b ctr, u"]
-        T2["T2  L=16<br/>tag, 3b ctr, u"]
-        T3["T3  L=64<br/>tag, 3b ctr, u"]
-        T4["T4  L=256<br/>tag, 3b ctr, u"]
-    end
-    IDX --> BASE
-    IDX --> T1
-    IDX --> T2
-    IDX --> T3
-    IDX --> T4
-    BASE --> SEL
-    T1 --> SEL
-    T2 --> SEL
-    T3 --> SEL
-    T4 --> SEL
-    SEL{"pick longest<br/>tag-matching entry"}
-    SEL -->|longest match = provider| PROV["Provider prediction<br/>(its 3b counter)"]
-    SEL -->|next match / base = alternate| ALT["Alternate prediction"]
-    PROV --> PICK{"provider trusted?<br/>(not newly allocated)"}
-    ALT --> PICK
-    PICK -->|yes| OUT["Predicted direction"]
-    PICK -->|weak / new: use alt| OUT
-    OUT --> RES["resolve in execute"]
-    RES --> UPD["update: bump provider counter;<br/>u++ if provider right and alt wrong;<br/>on mispredict allocate an entry in a longer table (u=0)"]
-    UPD -.->|train / allocate / decay| COMP
+    C["PC + speculative GHR"] --> F["Per-table folded histories"]
+    F --> B["T0 base<br/>PC index; always available"]
+    F --> T1["T1: I1 and wanted tag τ1<br/>read row; compare stored tag"]
+    F --> T2["T2: I2 and wanted tag τ2<br/>read row; compare stored tag"]
+    F --> TM["TM: IM and wanted tag τM<br/>read row; compare stored tag"]
+    B --> S["Select matches"]
+    T1 --> S
+    T2 --> S
+    TM --> S
+    S --> P["Provider = hit with longest history"]
+    S --> A["Alternate = next-shorter hit or T0"]
+    P --> N{"Provider weak/new and<br/>meta-policy prefers alternate?"}
+    A --> N
+    N -->|no| O["Use provider ctr sign"]
+    N -->|yes| Q["Use alternate direction"]
 ```
 
-The untagged base is the fallback of last resort; every tagged hit above it is a bid to override with a longer, more specific history, trusted over its alternate only once its usefulness counter shows that context has *earned* it — and a mispredict then allocates a fresh entry in a still-longer table, so the next encounter has a sharper predictor to try. (§4.2 justifies why those lengths grow *geometrically* rather than linearly.)
+The prediction receipt saved with the branch carries at least the provider/alternate identities, selected row indices, original prediction, counter states needed by policy, and a history checkpoint or equivalent recovery metadata. Recomputing the indices at resolution would be wrong because speculative history has advanced.
 
-**The predict/update step in code.** The datapath above is about a dozen lines. Predict reads every component in parallel and keeps the longest tag match as *provider* (its runner-up as *alternate*); update trains that provider and, only on a miss, allocates a sharper entry in a longer table:
+#### Resolution, training, and usefulness
+
+When the actual outcome $t\in\{-1,+1\}$ becomes known:
+
+1. Move the provider's signed `ctr` one saturated step toward $t$.
+2. If provider and alternate disagreed, update `u`: increment it when the provider was correct and the alternate wrong; decrement it when the provider was wrong and the alternate correct. Agreement supplies no evidence about which component was more useful.
+3. If the final prediction was wrong and longer components exist, attempt allocation in a table **longer than the longest tag-matching component**.
+4. Periodically age the `u` counters so old entries eventually become replaceable after program phase changes.
+
+Some implementations also update the alternate under restricted conditions, allocate more than one entry, or alter allocation after detecting a newly allocated provider. For example, if the meta-policy selected the alternate and was wrong while the weak longest-match direction was actually correct, allocation can be suppressed—the long entry needs training, not an even longer replacement. Those are policy variants; the invariant is that `ctr` learns direction while `u` manages whether the entry deserves scarce long-history storage.
+
+#### Allocation: specialization, not promotion
+
+TAGE does **not** normally insert every branch into the shortest tagged table and then copy it upward. Allocation is triggered by failure:
 
 ```text
-# PREDICT  (all components read in parallel; idx,tag fold GHR to T's length)
-provider, alt = BASE, BASE                  # BASE is untagged: always hits
-for T in T1..TM:                            # shortest -> longest history
-    if T.entry(PC).tag == tag(PC, T):       # partial-tag hit
-        alt, provider = provider, T.entry(PC)
-pred = alt.dir if provider.is_new else provider.dir   # weak/new -> trust alt
-
-# UPDATE  (at resolve; taken = actual outcome)
-if provider is not alt and provider.dir != alt.dir:   # they disagreed
-    provider.u += (provider.dir == taken) ? +1 : -1   # earn / lose trust (sat)
-provider.ctr += taken ? +1 : -1                       # train direction (sat 3-bit)
-if pred != taken:                                     # mispredict: add context
-    pick one longer table Tj whose entry has u == 0
-    Tj.entry(PC) = { tag, ctr = weak(taken), u = 0 }  # allocate sharper predictor
+current provider = Tp                     # p=0 means the base
+if final_prediction != actual and p < M:
+    candidates = selected rows in T(p+1) ... TM whose u == 0
+    if candidates are non-empty:
+        choose one candidate               # usually randomized / biased nearby
+        candidate.tag = wanted_tag_for_that_table
+        candidate.ctr = weak(actual)       # weakly taken or weakly not-taken
+        candidate.u   = 0                  # unproven; immediately replaceable
+    else:
+        age/decrement candidate u values   # often no allocation this time
 ```
 
-`is_new` is the *provider trusted?* test in the datapath; a periodic decay of all `u` (omitted for brevity) is what lets a stale long-history entry be reclaimed by a fresh allocation. Note that update touches the *same* entry predict read — the reason §1.1's FTQ receipt carries the saved indices and tags rather than recomputing them from the since-shifted global history.
+Only tables with longer history than the longest matching component are eligible because the miss suggests the available context was insufficient. The new entry does **not** copy the shorter table's prediction—the available prediction logic just failed. Its tag is set from the current PC and the current history as folded for the destination table, and its direction counter is initialized weakly toward the outcome that exposed the miss. Tags change only when an entry is allocated or replaced, not on every counter update.
+
+The original TAGE proposal allocates at most one longer-history entry on a misprediction, prefers `u=0` entries, biases selection toward nearer longer components, and initializes the new counter weakly correct with `u=0`. Public implementations such as gem5 use the same essential pattern, with tunable allocation details.
+
+#### Worked lookup and allocation
+
+Assume $T_0,T_1,T_2,T_3,T_4$ use histories $0,4,8,16,32$:
+
+| Component | Tag hit? | Counter prediction | Role |
+|---|---:|---:|---|
+| $T_4$, $L=32$ | no | — | allocation candidate |
+| $T_3$, $L=16$ | yes | not taken | **provider** |
+| $T_2$, $L=8$ | yes | taken | **alternate** |
+| $T_1$, $L=4$ | no | — | — |
+| $T_0$, $L=0$ | always | taken | fallback |
+
+If the branch is actually taken, $T_3$ trains one step toward taken and loses usefulness relative to $T_2$. Because the prediction missed, TAGE may allocate the already-selected row of $T_4$ if its `u=0`: it writes $T_4$'s computed 32-history tag, a weakly-taken counter, and `u=0`. On a future occurrence with the same relevant 32-bit context, that tag can match and $T_4$ becomes the provider. A different 32-bit context computes a different index and/or tag, so the new entry does not match. This is how a single static branch can acquire different predictors for different dynamic contexts without entries being copied from table to table.
+
+**Compact reference pseudocode:**
+
+```text
+# PREDICT
+for i in 1..M in parallel:
+    Ii, taui = hashes(PC, fold(GHR, Li))
+    hit[i]   = (Ti[Ii].tag == taui)
+provider = greatest i with hit[i], otherwise T0
+alternate = next-greatest hit, otherwise T0
+prediction = choose(provider.ctr, alternate, new-entry meta-policy)
+
+# UPDATE
+provider.ctr = sat_toward(provider.ctr, actual)
+if provider.prediction != alternate.prediction:
+    provider.u = sat_toward(provider.u, provider.prediction == actual)
+if prediction != actual:
+    allocate weak(actual), tag=tauj, u=0 in an eligible j > provider
+```
 
 ### 4.2 Why *geometric* spacing — reach that is exponential in table count
 
-Geometric lengths are not a tuning nicety; they are the optimal covering of a target that lives on a log scale. To span history lengths from $L_{min}$ to $L_{max}$ with $M$ tables at ratio $\alpha$ (each $L_i = L_{min}\,\alpha^{\,i}$):
+The history lengths—not necessarily row counts or tag widths—follow an approximate geometric series. To span $L_{min}$ through $L_{max}$ with $M$ tagged components at ratio $\alpha$:
 
 $$
 L_{max} = L_{min}\,\alpha^{\,M-1} \;\;\Longrightarrow\;\; M \;=\; 1 + \log_{\alpha}\!\frac{L_{max}}{L_{min}}
 $$
 
-so the maximum history **reach grows exponentially in the number of tables** — a handful of components spans loop-local to very-long-range. With $\alpha=2$, reaching $L_{max}=256$ needs $M\approx 8$ tables; production TAGE reaches **500+ bit** histories with ~8–12 components. The deeper reason geometric beats linear: what matters for matching a branch correlated at distance $d$ is a table whose length is *within a bounded ratio* of $d$, not a bounded difference. Covering a multiplicative range $[L_{min},L_{max}]$ with bounded ratio-gaps requires geometrically spaced points; linear spacing would cluster tables uselessly at short lengths and leave order-of-magnitude gaps at long ones. Geometric spacing is the minimum-table covering of a log-scale need — that is *why* the "G" is in the name.
+Thus a modest table count spans very short and very long correlation distances. Exact lengths are rounded and tuned rather than restricted to powers of two. Geometric coverage works because useful branch correlation distances span orders of magnitude: allocating equal table count to every additive interval would overrepresent long-distance ranges or require too many components.
 
-**The covering proof.** Make "well-served" precise. A branch whose outcome truly depends on history depth $d$ needs a component with $L\ge d$ (else it cannot see the correlating bit) and pays a fragmentation penalty rising with the *over-length ratio* $L/d$ — because the surplus $L-d$ bits scatter its training across $\sim 2^{L-d}$ aliased entries (§3.3), a *multiplicative* dilution. TAGE serves a depth-$d$ branch from the shortest component with $L_i\ge d$, so a branch just above $L_{i-1}$ is served at over-length ratio $L_i/L_{i-1}$. To cover the useful range $d\in[L_{min},L_{max}]$ while **minimising the worst-case over-length ratio** (a minimax problem), all adjacent ratios must be equal — any unequal pair could be evened out to lower the max — which forces $L_i=L_{min}\alpha^{\,i}$, geometric, with worst-case ratio exactly $\alpha$. Linear spacing $L_i=L_{min}+i\Delta$ instead gives a worst-case ratio that blows up at the short end (a table at $L=\Delta$ serving $d=1$ is over-length by the full $\Delta$) while bunching resolution uselessly at the long end. Geometric spacing is thus the *provably* minimax-optimal covering of a multiplicative range: $M=\lceil\log_\alpha(L_{max}/L_{min})\rceil+1$ tables buy reach $L_{max}$ — reach exponential in table count, storage linear in it.
+> [!answer] Are tag lengths different in different tables?
+> **They can be, and often are, but TAGE does not require them to be.** Each table has its own tag width $t_i$. A design may use one width everywhere for regularity, or gradually increase $t_i$ for longer-history components. For example, a public gem5 configuration uses tag widths `9, 9, 10, 10, 11, 11, 12` bits across seven tagged tables. This is an implementation choice, not the geometric sequence in TAGE's name.
 
-**Provider selection is online bias–variance model selection.** The nested components form a family of models of increasing context length: longer $L$ ⇒ *lower bias* (conditions on more of the true correlating history) but *higher variance* (each specific context is seen less often, so its counter is under-trained). Choosing "the longest tag-matching, useful entry" is choosing the longest context whose statistics are still reliably estimated — the bias–variance sweet spot, found per-branch and online. The **tag** guarantees the context is the right one (controls bias: no false long-history hit corrupts the estimate); the **usefulness counter** promotes the long provider over its shorter alternate only after it *empirically wins* (controls variance: don't trust an under-trained long context until it proves out). Because the provider's counter then estimates $P(\text{taken}\mid\text{longest reliable context})$, its residual error approaches the **Bayes risk** of the stream — the irreducible $\mathbb{E}[\min(P,\,1-P)]$ averaged over contexts, i.e. the conditional-entropy floor $H(\text{dir}\mid\text{history})$. That is the exact sense in which TAGE "approaches the information-theoretic limit": it drives the conditioning context to the longest length the data can support, and no predictor can beat the Bayes error of the fully-conditioned stream. The MPKI flattening near 2 on SPEC INT (§4.3) *is* that floor showing through — extra storage past it buys nothing because the remaining mispredicts are genuinely random given all available history.
+Why spend more tag bits in some long-history tables?
 
-A representative 4-component layout (base + geometric tagged tables):
+- A wrong long-history match can override every correct shorter match, so reducing its false-hit probability is valuable.
+- A longer history describes a larger universe of possible contexts; a slightly wider signature reduces destructive aliasing among them.
+- But every extra tag bit is paid in every row and participates in the compare path, so widths are kept partial and small.
 
-| Component | History length | Entries | Tag |
-|---|---|---|---|
-| Base (bimodal) | 0 | 1–4 K | none |
-| T1 | 4 | 128–256 | 8–10 bit |
-| T2 | 16 | 128–256 | 8–10 bit |
-| T3 | 64 | 128–256 | 8–10 bit |
-| T4 (typical high-end +4 more) | 256 (…up to 500+) | 128–256 | 8–10 bit |
+If unrelated contexts reaching the same row produce approximately uniform tags, a $t_i$-bit tag passes a false match with probability about $2^{-t_i}$. That is a design intuition, not a guarantee: the real rate depends on hash quality and workload correlation. Index width and tag width remain independent. A 1,024-row component needs a 10-bit index but might store a 9-, 10-, or 12-bit tag.
+
+An illustrative layout—not a required TAGE configuration—is:
+
+| Component | History $L_i$ | Rows | Index bits $k_i$ | Stored tag $t_i$ |
+|---|---:|---:|---:|---:|
+| $T_0$ base | 0 | 2,048 | 11 | none |
+| $T_1$ | 4 | 1,024 | 10 | 8 |
+| $T_2$ | 8 | 1,024 | 10 | 8 |
+| $T_3$ | 16 | 1,024 | 10 | 9 |
+| $T_4$ | 32 | 1,024 | 10 | 10 |
+| $T_5$ | 64 | 512 | 9 | 11 |
+| $T_6$ | 128 | 512 | 9 | 12 |
+
+This table also makes the naming precise: **history length, row count, index width, and tag width are four different parameters.**
 
 ### 4.3 The accuracy-per-byte argument: what the tags buy
 
-Tags cost storage — a tagged entry is ~13 bits (3-bit counter + 2-bit useful + 8-bit tag) against gshare's 2 — roughly 6× per entry. TAGE wins anyway because it needs *far fewer* entries (it is not fighting aliasing by brute capacity) and only the tagged components pay the tag. The empirical accuracy/storage curve on SPEC INT 2006:
+Tags cost storage. Ignoring banking/ECC, a useful first-order budget is
+
+$$
+S_{TAGE}=2^{k_0}c_0+\sum_{i=1}^{M}2^{k_i}(t_i+c_i+u_i)\quad\text{bits},
+$$
+
+where $2^{k_i}$ is the row count, $t_i$ the partial-tag width, $c_i$ the direction-counter width, and $u_i$ the usefulness width. With a 3-bit `ctr`, 2-bit `u`, and an 8–12-bit tag, a tagged row costs roughly 13–17 bits versus a 2-bit gshare row. TAGE accepts that per-row cost because tags reject most destructive aliases, longer-context entries are allocated only when shorter prediction fails, and only the tagged components pay for tags.
+
+The following figures are useful order-of-magnitude teaching numbers for SPEC-style integer workloads, not invariant properties of the algorithms; MPKI depends on trace set, storage accounting, warm-up, update policy, and whether target misses are included:
 
 | Predictor | Storage | MPKI | Accuracy |
 |---|---|---|---|
@@ -498,18 +581,18 @@ Tags cost storage — a tagged entry is ~13 bits (3-bit counter + 2-bit useful +
 | TAGE, 8 components | 16 KB | 2.5–3.5 | 97–99 % |
 | TAGE-SC-L | 32–64 KB | 2–2.4 | ~99–99.2 % |
 
-MPKI roughly **halves per ~4× storage** through the TAGE regime, then flattens near the entropy of the branch stream. Cash that out in §0's model — a 6-wide, $P=14$ core:
+Additional storage initially reduces capacity/aliasing misses, then shows diminishing returns as the residual branches require features the base TAGE organization does not encode well. Cash the representative gshare/TAGE difference out in §0's model for a 6-wide, $P=14$ core:
 
 - gshare, MPKI $\approx 10$: peak realized $= 1/(1+6\cdot0.010\cdot14)=54\%$.
 - TAGE, MPKI $\approx 3$: peak realized $= 1/(1+6\cdot0.003\cdot14)=80\%$.
 
-Moving gshare → TAGE recovers **~26 points of peak IPC** — about $1.5\times$ on branchy integer code — for ~14 KB of extra tables. *That* is what the tag bits and the multi-table lookup are worth, and why every high-performance core pays for them. The cost side is real and bounded: $M$ parallel tagged lookups plus the geometric history folds each cycle (a shallow XOR tree, ~2–3 FO4 (fan-out-of-4)), which is why TAGE lives behind the FTQ (§7) where its latency is off the per-cycle fetch critical path rather than on it.
+For those assumptions, moving gshare → TAGE recovers **~26 points of peak IPC**. The hardware price is parallel bank reads, folded-history maintenance, tag compares, priority selection of provider/alternate, and checkpointed speculative history. Large implementations commonly pipeline or bank this work and use an FTQ or a fast preliminary prediction so that predictor accuracy does not directly lengthen the next-PC clock path.
 
 ### 4.4 SC and L: correcting the residue
 
-**TAGE-SC** adds a **Statistical Corrector**. TAGE commits to *one* provider; sometimes the *ensemble* of component counters carries a signal that the single-provider choice throws away (several low-confidence components agreeing against one high-confidence provider). A perceptron-like corrector reads all component outputs as features and flips TAGE's answer only when it is *confidently* opposed — a gated override that cannot drop below the TAGE baseline. Worth ~0.2–0.4 accuracy points.
+**TAGE-SC** adds a **Statistical Corrector (SC)** for residual correlations that the selected TAGE provider misses. Published SC designs are generally additive/GEHL-style structures: several hashed tables return small signed counters, those values and a TAGE-bias term are summed, and a sufficiently strong opposing sum may reverse the TAGE answer. This is mathematically perceptron-like—hashed signed features plus a threshold—but it is not necessarily one conventional PC-indexed perceptron weight vector. The override is trained and gated so that weak SC evidence does not disturb a confident TAGE answer.
 
-**TAGE-SC-L** adds a tiny **Loop predictor**. Long regular loops are TAGE's blind spot: a 100-iteration loop needs ~100 bits of history to see its single exit, and even geometric tables train slowly on it. A dedicated loop predictor learns the trip count and predicts the exit exactly — ~1 KB, disproportionately effective on counted loops. The pattern is the recurring one: **spend structure only on the residual difficulty the main predictor leaves.** TAGE-SC-L is the current production state of the art (~2–2.4 MPKI, ~99 %).
+**TAGE-SC-L** adds a small **loop predictor** that records regular trip-count behavior and can supply the exceptional loop-exit prediction directly. The pattern is the recurring one: use TAGE for context selection, an additive SC for weak distributed evidence, and specialized loop state for counted-loop exits. TAGE-SC-L remains a major research and branch-prediction-competition reference; exact production implementations and workload accuracy are vendor- and configuration-specific.
 
 ---
 
@@ -519,46 +602,153 @@ Moving gshare → TAGE recovers **~26 points of peak IPC** — about $1.5\times$
 
 Indirect branches (virtual dispatch, switch tables, function pointers) have a target that *varies at runtime*, so a BTB storing one target per PC mispredicts them whenever a site has multiple targets. But the target is usually *history-selected*, not random — the same call site tends to reach the same target under the same recent history. **ITTAGE** reuses TAGE's tagged-geometric structure but stores a **target PC** per entry instead of a direction bit: the longest matching history selects the target. Current Kunminghu V2 documentation describes five tagged ITTAGE tables. It is clean evidence that TAGE is a *general* mechanism for “predict a fact from the longest reliable history,” not a direction-only trick.
 
-### 5.2 Perceptron: the other great branch, and why it mostly lost — but not entirely
+### 5.2 Perceptron predictor: long-history correlation as a dot product
 
-The perceptron predictor (Jiménez & Lin 2001) is the main alternative hypothesis, and contrasting it sharpens *why* TAGE is shaped as it is. It treats prediction as **linear classification**: keep a weight per history bit, predict taken when the dot-product of weights with the (±1) history vector clears a threshold, and nudge weights toward the outcome on each mispredict.
+The perceptron predictor (Jiménez and Lin, 2001) replaces a table of pattern-specific direction counters with a table of small signed **weight vectors**. Its central bet differs from TAGE's:
 
-**Deriving the linear form.** Encode the last $N$ outcomes as $h_i\in\{-1,+1\}$ ($+1$ = taken) and ask for the Bayes-optimal decision under the simplest tractable model — history bits conditionally independent given the direction (naive Bayes). The optimal rule compares the posterior log-odds, which *factorises*:
+- TAGE asks, “Which complete recent-history context has a trained counter?”
+- A perceptron asks, “Which individual history positions correlate positively or negatively with this branch?”
 
-$$
-\log\frac{P(\text{T}\mid h)}{P(\text{N}\mid h)}\;=\;\underbrace{\log\frac{P(\text{T})}{P(\text{N})}}_{w_0}\;+\;\sum_{i=1}^{N}\underbrace{\log\frac{P(h_i\mid\text{T})}{P(h_i\mid\text{N})}}_{\text{linear in }h_i:\ \pm w_i}\;\;\gtrless\;\;0,
-$$
+#### Physical organization and lookup
 
-and because each per-bit term is linear in $h_i\in\{\pm1\}$, the rule is *exactly* $y=w_0+\sum_i w_i h_i$ thresholded at 0. So the perceptron is not a loose "neuron" analogy but the closed-form optimal predictor *of a conditional-independence world*: $w_0$ is the prior log-odds (per-branch bias, cleanly separated), $w_i$ the learned correlation strength and sign of the branch $i$ steps back. The update rule — on misprediction or low confidence, $w_i \mathrel{+}= t\cdot h_i$ with $t=\pm1$ the true outcome — is stochastic gradient descent on this objective, pushing each weight toward the bits that co-occurred with taken.
-
-**The scaling win: linear, not exponential, in history.** One weight vector is $N{+}1$ small integers. A PHT (pattern-history table)/gshare that conditions on the same $N$ bits *exactly* — representing an arbitrary Boolean function of them — needs $2^N$ counters, one per pattern. So
+Encode taken as $+1$ and not-taken as $-1$. For an $N$-bit global history, define
 
 $$
-S_{\text{perceptron}}=O(N)\qquad\text{vs}\qquad S_{\text{PHT}}=O(2^{N}),
+x_0=1,\qquad x_i\in\{-1,+1\}\quad(1\le i\le N).
 $$
 
-where $N$ = history length. *Worked number:* to reach $N=64$ bits of history, an 8-bit-weight perceptron costs $65\times8=520$ bits per branch context; a 256-entry weight table is $256\times520\approx133$ Kbit $\approx16.6$ KB. A PHT conditioning on 64 bits would need $2^{64}$ counters — physically impossible. *This* is why perceptrons reach TAGE-length histories and beyond in bounded area, and why correlation with the bit 60-back costs the same single weight as the bit 1-back. (Real hashed-perceptron predictors replicate the vector across a table and several history banks, hence the ~100 KB totals above; the $O(N)$ is the per-context cost.)
-
-**The price: only linearly-separable correlations.** A single perceptron realises just a linear threshold in $\{\pm1\}^N$, so it *cannot* learn any target that is not linearly separable — canonically XOR, "taken iff exactly one of the last two branches was taken." Suppose weights $(w_0,w_1,w_2)$ solved it:
+The constant $x_0$ supplies a bias term. A PC hash selects one of $P$ perceptron rows:
 
 $$
-\begin{aligned}
-h=(+,+)\to\text{N}:&\quad w_0+w_1+w_2<0\\
-h=(+,-)\to\text{T}:&\quad w_0+w_1-w_2\ge0\\
-h=(-,+)\to\text{T}:&\quad w_0-w_1+w_2\ge0\\
-h=(-,-)\to\text{N}:&\quad w_0-w_1-w_2<0
-\end{aligned}
+p=H(PC)\bmod P,
 $$
 
-Adding rows 2+3 gives $2w_0\ge0$; adding rows 1+4 gives $2w_0<0$ — a contradiction (Minsky–Papert). No weight assignment exists. TAGE's per-context tables have *no* such limit: they store an independent counter per pattern, representing XOR trivially — the exact complement of the perceptron's blind spot. That complementarity is why the TAGE-SC statistical corrector (§4.4) *is* a perceptron layered on TAGE: TAGE covers the non-separable per-context structure, the perceptron adds cheap long-range linear correlation, each patching the other's weakness.
+and that row stores $N+1$ signed, saturating weights $(w_0,w_1,\ldots,w_N)$. Prediction forms the signed sum
 
-Its trade-offs are the mirror image of TAGE's:
+$$
+y=w_0+\sum_{i=1}^{N}w_i x_i,
+\qquad
+\widehat{t}=\begin{cases}
++1 & y\ge0\\
+-1 & y<0.
+\end{cases}
+$$
 
-- **Strength — cheap long history.** Correlation with any of $N$ history bits costs $O(N)$ weights, not $O(2^N)$ table entries. Perceptrons scale to long histories in *storage* gracefully, and the bias weight cleanly separates per-branch skew from correlation.
-- **Weakness 1 — linear separability.** A single-layer perceptron cannot represent XOR of history bits: patterns that are not linearly separable are a hard accuracy ceiling TAGE's per-context tables do not have.
-- **Weakness 2 — latency.** A prediction is a wide dot-product-and-threshold (an adder tree over $N$ weights), harder to land in one cycle than a table lookup; and it reads many weights per prediction. A table read is simply faster.
+Because each $x_i$ is only $\pm1$, multiplication is just **add $w_i$ or subtract $w_i$**. Hardware needs a weight-table read, conditional sign inversion, an adder tree, and a sign test—not a general multiplier.
 
-So the dichotomy is **table-and-tags (TAGE) vs linear-model-arithmetic (perceptron)**: TAGE selects a history length and reads a counter; perceptron sums a learned model. TAGE-family predictors dominate on accuracy-per-latency (Intel, SiFive, Xiangshan); AMD's Zen line uses **hashed-perceptron**-family predictors, and the two hybridise cleanly — the Statistical Corrector in TAGE-SC *is* a perceptron bolted onto TAGE, taking perceptron's ensemble strength exactly where TAGE's single-provider choice is weakest. Representative numbers: perceptron $N{=}32$ reaches ~5–7 MPKI but at large storage (~100+ KB), against TAGE-8's ~3 MPKI at 16 KB — which is why pure perceptron is rare as the primary predictor and common as a corrector. (The 1990s **tournament** predictor — Alpha 21264, a per-branch selector choosing among bimodal/global/local, ~4 KB, ~96–97 %, 6–9 MPKI — is the historical ancestor of this "combine predictors" idea, superseded by TAGE after 2006 but still the reference design in every course.)
+```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
+flowchart LR
+    PC["Branch PC"] --> IDX["hash / index"]
+    IDX --> WT["Perceptron table row<br/>w0, w1 ... wN"]
+    GHR["Global history<br/>x1 ... xN in ±1"] --> AS["For each i:<br/>xi=+1 add wi<br/>xi=-1 subtract wi"]
+    WT --> AS
+    AS --> SUM["Adder tree<br/>y = w0 + Σ wi xi"]
+    SUM --> DIR{"sign of y"}
+    DIR -->|y ≥ 0| T["taken"]
+    DIR -->|y < 0| NT["not taken"]
+    SUM --> CONF["margin |y|<br/>confidence / training decision"]
+```
+
+The magnitude $|y|$ is a natural **margin or confidence**: a sum barely above zero is fragile, while a large positive or negative sum means many learned correlations agree strongly. This is different from TAGE, whose main prediction comes from one selected saturating counter.
+
+The prediction receipt must preserve the selected row, the history vector used for the dot product, $y$, and the predicted sign until the branch resolves. Training with the current GHR at resolution would update the wrong correlations because many younger predictions may already have shifted the history.
+
+#### What the weights mean
+
+- $w_0>0$: this branch has an unconditional taken bias; $w_0<0$: not-taken bias.
+- $w_i>0$: the current branch tends to have the **same** outcome as the branch $i$ positions back.
+- $w_i<0$: it tends to have the **opposite** outcome.
+- $|w_i|$: strength of that learned correlation, bounded by the weight width.
+
+This interpretation is useful but not perfectly branch-specific: several static branches may hash to the same perceptron row, so their updates can interfere just as contexts alias in table predictors.
+
+#### Training rule and why correct low-margin predictions still train
+
+Let the resolved outcome be $t\in\{-1,+1\}$. The classic training condition is:
+
+$$
+\text{train if }(\widehat{t}\ne t)\;\lor\;(|y|\le\theta),
+$$
+
+where $\theta$ is a training threshold, normally tuned as a function of history length and hardware budget. When training:
+
+$$
+w_0\leftarrow\operatorname{sat}(w_0+t),
+$$
+
+$$
+w_i\leftarrow\operatorname{sat}(w_i+t x_i)\qquad(1\le i\le N).
+$$
+
+If the prediction was wrong, the update moves the decision boundary toward the observed example. If it was correct but $|y|$ was small, training continues to build margin; stopping after the first barely-correct result would leave the predictor vulnerable to noise and aliasing. Saturation bounds storage and prevents an old phase from creating unbounded weights.
+
+**Numerical example.** Let
+
+```text
+history x = [+1, -1, +1, +1]
+weights   = w0=-1, [w1,w2,w3,w4]=[2,-3,1,1]
+```
+
+Then
+
+$$
+y=-1+2(+1)+(-3)(-1)+1(+1)+1(+1)=6,
+$$
+
+so the predictor chooses taken with margin 6. If the branch is actually not-taken ($t=-1$), training produces, before saturation:
+
+```text
+w0: -1 → -2
+w1:  2 →  1      because t·x1 = -1
+w2: -3 → -2      because t·x2 = +1
+w3:  1 →  0
+w4:  1 →  0
+```
+
+The pattern that just supported the wrong taken prediction now contributes less strongly the next time it appears.
+
+#### Storage scaling
+
+For $P$ perceptron rows, history length $N$, and $b_w$ bits per signed weight:
+
+$$
+S_{perc}=P(N+1)b_w\quad\text{bits}
+$$
+
+plus GHR, indexing, threshold, and pipeline metadata. A 256-row predictor with $N=64$ and 8-bit weights costs
+
+$$
+256\times65\times8=133{,}120\text{ bits}=16.25\text{ KiB}.
+$$
+
+The important scaling is linear in history length per row. An exact pattern-history table that represented every possible $N$-bit history separately would require $2^N$ counters. Real gshare avoids that exponential storage by hashing into a much smaller table, but then many patterns alias. A perceptron instead compresses long history into $N$ learned coefficients, preserving long-distance **linear** correlations without enumerating every history pattern.
+
+#### Accuracy limits and hardware costs
+
+1. **Linear separability.** One perceptron implements one hyperplane. It cannot represent XOR: “taken iff exactly one of the last two outcomes was taken.” No values of $w_0,w_1,w_2$ place `(+,-)` and `(-,+)` on one side while placing `(+,+)` and `(-,-)` on the other. TAGE can represent such a pattern by assigning separate counters to the different indexed contexts.
+2. **Dot-product latency.** Reading many weights and reducing them through an adder tree is usually harder to place on an early next-PC path than reading one small counter. Designs use pipelining, ahead prediction, partial sums, banking, or a fast predictor followed by a neural override.
+3. **Read and update energy.** One prediction consumes an entire vector; a training event may write many weights. Multi-branch-per-cycle frontends therefore face banking and update-bandwidth problems.
+4. **Aliasing.** PC-indexed perceptron rows are still shared. Unrelated branches can train the same vector, and longer history does not by itself solve that capacity problem.
+5. **Phase adaptation.** Wide saturated weights can retain stale correlations. Threshold policy, small weights, decay, or feature-specific mechanisms trade stability against relearning speed.
+
+#### From the original perceptron to hashed and multiperspective predictors
+
+Later neural predictors do not always store one monolithic vector per PC. A **hashed perceptron** reads signed weights from several banks indexed by different PC/history hashes and sums them. **Path-based** and **piecewise-linear** designs incorporate branch addresses or multiple weight vectors to improve latency or escape the single-hyperplane limit. **Multiperspective perceptron (MPP)** predictors hash several control-flow views—global outcomes, local history, path/address information, loop-related features, and other contexts—into weight tables and threshold their sum. The 2016 MPP work and its 2025 update also demonstrate combining these features with TAGE-SC-L rather than treating TAGE and perceptrons as mutually exclusive.
+
+TAGE's Statistical Corrector belongs to the same broad additive family: it sums hashed signed evidence and may override TAGE. It is best described as **perceptron-like or GEHL-style**, not automatically as a literal copy of the original PC-indexed perceptron organization.
+
+| Design question | TAGE | Original perceptron |
+|---|---|---|
+| Representation | selected counter for a tagged PC/history context | weighted sum of individual history positions |
+| Long-history cost | more components, folded hashes, tags | more weights per row |
+| Direction confidence | provider counter strength; optional meta-policy | dot-product margin $|y|$ |
+| Natural strength | irregular/context-specific patterns | distributed linear correlations over long history |
+| Structural weakness | finite tagged capacity; context aliasing | non-linearly-separable patterns; vector aliasing |
+| Critical datapath | SRAM reads + tag compares + priority select | SRAM vector read + add/sub reduction tree |
+| Allocation | on-demand entry replacement in longer tables | no entry promotion; train selected weights |
+
+The architectural conclusion is not that one family universally wins. TAGE is an efficient **context selector**; perceptron-family structures are efficient **evidence accumulators**. Modern high-accuracy research predictors frequently combine these roles, while exact commercial predictor composition should be treated as undocumented unless the vendor publishes it.
 
 ---
 
@@ -657,7 +847,7 @@ The central recovery invariant is: **after branch `B` redirects, every surviving
 | GHR length (gshare) | 8–16 bits | — | single compromise length (§3.2) |
 | GHR reach (TAGE longest) | 256–500+ bits | — | geometric, $M\approx\log_\alpha L_{max}$ (§4.2) |
 | TAGE components | 4–8 | 4–12 | geometric spacing (§4.2) |
-| TAGE tag width | 8–10 bits | — | false-hit protection (§4.1) |
+| TAGE tag width | table-dependent, often ~8–12 bits | partial, not full PC/history | false-hit protection; may grow modestly with history (§4.2) |
 | RAS depth | 16–32 | 16–64 | covers 95–99.9 % call nesting (§6) |
 | Indirect accuracy (BTB / ITTAGE) | 85 % / 95 % | — | one vs history-selected target (§5.1) |
 | Mispredict penalty | 12 cyc | 8–18 | fetch-to-resolve depth $P$ (§0.1) |
@@ -687,23 +877,25 @@ The central recovery invariant is: **after branch `B` redirects, every surviving
 
 ## Cross-references
 
-- **Down the stack (what this is built from):** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (the pipeline and fetch stage whose bubble this eliminates; the resolution depth that sets $P$), [CMOS_Fundamentals](../../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and SRAM access-time scaling behind §2.2's capacity–latency knee and §4.3's fold delay).
+- **Down the stack (what this is built from):** [CPU_Architecture](../01_Core_Foundations/01_CPU_Architecture.md) (the pipeline and fetch stage whose bubble this eliminates; the resolution depth that sets $P$), [CMOS_Fundamentals](../../../00_Fundamentals/01_CMOS_Fundamentals.md) (the FO4 unit and SRAM access-time scaling behind §2.2's capacity–latency knee and §4.1's folded-history/tag-select datapath).
 - **Up / adjacent (what builds on it):** [Speculative_Execution](03_Speculative_Execution.md) (history checkpoints, validation, transient state, and recovery beyond the predictor), [OoO_Execution](../03_Out_of_Order_Backend/01_OoO_Execution.md) (the backend this front end feeds), [Cache_Microarchitecture](../04_Cache_Hierarchy/01_Cache_Microarchitecture.md) & [Memory](../00_Design_Methodology/02_CPU_PPA_and_Physical_Implementation.md) (the I-cache the FTQ drives and prefetches), [TLB_and_Virtual_Memory](../05_Virtual_Memory/01_TLB_and_Virtual_Memory.md) (the iTLB in the fetch path), [Xiangshan_CPU_Design](../07_Core_Case_Studies/01_Xiangshan_CPU_Design.md) (a current open implementation with TAGE-SC, ITTAGE, persistent RAS, and FTQ), [CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md) (where CPI/penalty models feed design-space exploration).
-- **The theory this page leans on:** the §0.1 tax is the branch term of the CPI stack ([CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md)); the §7.1 FTQ depth is Little's law (occupancy = rate × latency) applied to prefetch distance, the same identity that sizes the OoO window and GPU occupancy ([CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md)); and TAGE's Bayes-risk floor (§4.2) is the branch-stream analogue of the roofline ceiling — the irreducible limit a real design sits below.
+- **The theory this page leans on:** the §0.1 tax is the branch term of the CPI stack ([CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md)); the §7.1 FTQ depth is Little's law (occupancy = rate × latency) applied to prefetch distance, the same identity that sizes the OoO window and GPU occupancy ([CPU workload and performance methods](../00_Design_Methodology/01_CPU_Workloads_Performance_and_DSE.md)); TAGE's geometric series (§4.2) is a logarithmic covering of correlation distances, while perceptron storage (§5.2) is a linear compression of long-history correlation into signed weights.
 
 ---
 
 ## References
 
-1. Seznec, A. and Michaud, P., "A Case for (Partially) Tagged Geometric History Length Branch Prediction," *Journal of Instruction-Level Parallelism*, 2006. The original TAGE — §4.
-2. Seznec, A., "TAGE-SC-L Branch Predictors," *CBP-4*, 2011 (and CBP-5, 2016). The production state of the art — §4.4.
+1. Seznec, A. and Michaud, P., ["A Case for (Partially) Tagged Geometric History Length Branch Prediction"](https://jilp.org/vol8/v8paper1.pdf), *Journal of Instruction-Level Parallelism*, 2006. The original TAGE — §4.
+2. Seznec, A., "TAGE-SC-L Branch Predictors," *CBP-4*, 2011 (and CBP-5, 2016). The competition/reference TAGE-SC-L family — §4.4.
 3. Seznec, A., "A 64-Kbytes ITTAGE Indirect Branch Predictor," *CBP-3*, 2011. Tagged-geometric target prediction — §5.1.
-4. Jiménez, D.A. and Lin, C., "Dynamic Branch Prediction with Perceptrons," *HPCA-7*, 2001. The perceptron predictor and its linear-separability ceiling — §5.2.
-5. Jiménez, D.A., "Multiperspective Perceptron Predictor," *CBP-5*, 2020. State-of-the-art perceptron-family accuracy — §5.2.
+4. Jiménez, D.A. and Lin, C., ["Dynamic Branch Prediction with Perceptrons"](https://www.cs.utexas.edu/~lin/papers/hpca01.pdf), *HPCA-7*, 2001. The original PC-indexed perceptron architecture, threshold training, and linear-separability limit — §5.2.
+5. Jiménez, D.A., "Multiperspective Perceptron Predictor," *CBP-5*, 2016. Hashed, multi-feature perceptron prediction — §5.2.
 6. McFarling, S., "Combining Branch Predictors," *DEC WRL TN-36*, 1993. gshare and the tournament idea — §3.2, §5.2.
 7. Kessler, R.E., "The Alpha 21264 Microprocessor," *IEEE Micro*, 19(2), 1999. Tournament predictor and speculative RAS repair — §5.2, §6.
 8. Yeh, T.-Y. and Patt, Y.N., "Two-Level Adaptive Branch Prediction," *MICRO-24*, 1991. The GHR and correlation — §3.2.
 9. XiangShan Team, “Kunminghu BPU, FTQ, and RAS Design Documents,” current public documentation — [BPU](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/BPU/), [FTQ](https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/FTQ/), [RAS](https://docs.xiangshan.cc/projects/design/en/latest/frontend/BPU/RAS/).
+10. Jiménez, D.A., ["Multiperspective Perceptron Predictor"](https://ericrotenberg.wordpress.ncsu.edu/files/2025/06/cbp2025-final53-Jimenez.pdf), *CBP-6*, 2025. Updated MPP and TAGE-SC-L combination — §5.2.
+11. gem5 Project, [TAGE implementation and entry/folded-history structures](https://gem5.googlesource.com/public/gem5/+/387fc6964e27d085acaf15628045734875b7a0eb/src/cpu/pred/tage_base.hh), [lookup/allocation logic](https://gem5.googlesource.com/public/gem5/+/387fc6964e27d085acaf15628045734875b7a0eb/src/cpu/pred/tage_base.cc), and [example table/tag-width parameters](https://gem5.googlesource.com/public/gem5/+/e48285c244a9afb910f3a4a8beb21531cd8a4426/src/cpu/pred/BranchPredictor.py). A public implementation example for folded histories, table-dependent tag widths, and allocation policy — §4.
 
 ---
 
