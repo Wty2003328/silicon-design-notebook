@@ -1661,4 +1661,4 @@ Add the wake-source synchronization (2 AON ticks, 0.1 µs) and the sequencer's o
 
 ---
 
-⬅ prev [Power Gating, Retention, and Wake Sequencing](07_Power_Gating_Retention_and_Wake_Sequencing.md) · [Section Index](00_Index.md) · [Root Index](../Index.md)
+⬅ prev [Power Gating, Retention, and Wake Sequencing](07_Power_Gating_Retention_and_Wake_Sequencing.md) · [Section Index](00_Index.md) · [Root Index](../Index.md) · next ➡ [RTL Low-Power Design and Coding](09_RTL_Low_Power_Design_and_Coding.md)

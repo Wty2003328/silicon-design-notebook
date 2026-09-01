@@ -23,7 +23,7 @@ flowchart LR
 >
 > **Organized by the chip design flow.** The folders are numbered `00 → 07` in flow order — early PPA/architecture, frontend RTL + verification, synthesis, backend, signoff, manufacturing. Power is kept together as a cross-cutting track (02). Pages inside each folder are numbered in reading order, and every folder has its own `00_Index`. **Start with the [Chip Design Flow Overview](Chip_Design_Flow_Overview.md)** — it maps every stage, hand-off, and iteration loop.
 >
-> **155 flow pages** (+12 interview-prep banks).
+> **158 flow pages** (+12 interview-prep banks).
 
 ---
 
@@ -89,6 +89,9 @@ New readers should enter through the method chapter for the architecture they wa
 | [06 · Power Analysis and Signoff](02_Power_and_Low_Power/06_Power_Analysis_and_Signoff.md) | PrimeTime PX/Voltus flows, activity annotation, IR/EM, glitch, peak/di-dt, thermal, backside power |
 | [07 · Power Gating, Retention, and Wake Sequencing](02_Power_and_Low_Power/07_Power_Gating_Retention_and_Wake_Sequencing.md) | header/footer switches and the virtual rail, switch sizing and placement, rush current and daisy-chained turn-on, break-even residency, retention flops, always-on domain, isolation and clamp values, power-down/up sequences, failure catalogue |
 | [08 · Runtime Power Management and AVFS](02_Power_and_Low_Power/08_Runtime_Power_Management_and_Adaptive_Voltage_Frequency.md) | the PMU as hardware, power state machines and the PST, the quiescence handshake and Q-/P-Channel, ACPI/PSCI/cpuidle, DVFS governors, race-to-idle, AVS/AVFS guardband recovery, droop and adaptive clocking, thermal management, telemetry |
+| [09 · RTL Low-Power Design and Coding](02_Power_and_Low_Power/09_RTL_Low_Power_Design_and_Coding.md) | enable derivation, ICG inference and the gating wrapper, three-level gating trees, data gating and operand isolation, memory and register-file access shaping, encoding, the RTL power measurement loop, STA/CTS/DFT/CDC/LEC consequences, failure catalogue, and eleven SystemVerilog coding drills |
+| [10 · Power-Aware Verification and UPF Checking](02_Power_and_Low_Power/10_Power_Aware_Verification_and_UPF_Checking.md) | the nine claims a PA plan must prove, static UPF/connectivity checks, PA simulation environment and randomized power sequences, isolation/level-shifter/retention verification, PST verification both ways, X-debug cookbook, coverage model, bindable checker library, PA-LEC and PA-GLS, and a worked UPF lab on a GPU texture slice |
+| [11 · Low Power in CPU, GPU, and NPU](02_Power_and_Low_Power/11_Low_Power_in_CPU_GPU_and_NPU.md) | per-engine power decompositions, the workload properties that decide which lever pays, CPU deep-idle ladders and speculation waste, GPU replication and register-file dominance with the sub-module engineer's workflow, NPU scheduled gating/sparsity/precision/reuse, and the three machines compared |
 
 ---
 

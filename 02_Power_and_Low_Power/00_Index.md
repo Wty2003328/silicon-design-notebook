@@ -2,15 +2,20 @@
 
 *Cross-cutting track: power is budgeted from workloads, partitioned at architecture, captured as power intent, implemented in synthesis/backend, and verified through signoff.*
 
-This is the first of the two cross-cutting tracks — the other is [08 · Cross-Cutting Engineering](../08_Cross_Cutting_Engineering/00_Index.md). Nothing in this folder is a stage in the flow. Power is decided at architecture, spent in RTL, built in the backend, and proved at signoff, and a decision taken in any one of those places constrains all the others. That is why the eight pages are numbered as a track rather than distributed into the stage folders that consume them.
+This is the first of the two cross-cutting tracks — the other is [08 · Cross-Cutting Engineering](../08_Cross_Cutting_Engineering/00_Index.md). Nothing in this folder is a stage in the flow. Power is decided at architecture, spent in RTL, built in the backend, and proved at signoff, and a decision taken in any one of those places constrains all the others. That is why the eleven pages are numbered as a track rather than distributed into the stage folders that consume them.
 
-The track answers five questions in order, and each one is unanswerable without the previous:
+The track answers eight questions in order, and each one is unanswerable without the previous:
 
 - **Where does the power actually go, and which term does a proposal move?** — the physics and the budget (01).
 - **Where does the switching activity in that budget come from?** — the workload, and how it becomes a number you can defend (02).
 - **What may turn off together, share a voltage, or share a clock?** — the partition, which is an architecture decision (03).
 - **Which mechanism attacks which term, and what does each cost?** — the lever map and its implementations (04, 05, 07, 08).
 - **How is any of it proved rather than asserted?** — signoff (06).
+- **What do I actually type?** — the RTL that spends the levers one keystroke at a time (09).
+- **How do I prove the power intent, not just describe it?** — power-aware verification (10).
+- **Which of these levers pays in *my* machine?** — CPU, GPU, and NPU compared (11).
+
+The last three are the implementation and proof layer of the track. 01–08 answer *what is true about power*; 09–11 answer *what a front-end engineer does about it on Monday morning* — write the gated RTL, verify the intent, and know which lever the architecture in front of them actually rewards.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk", "nodeSpacing": 55, "rankSpacing": 55, "htmlLabels": false}}}%%
@@ -23,6 +28,9 @@ flowchart TD
     P7["07 · Power Gating, Retention,<br/>and Wake Sequencing<br/>the switch and the sequence"]:::mech
     P8["08 · Runtime Power Management<br/>and AVFS<br/>the controller that decides"]:::mech
     P6["06 · Power Analysis and Signoff<br/>budget closure, IR/EM,<br/>peak, thermal"]:::sign
+    P9["09 · RTL Low-Power Design<br/>and Coding<br/>enables, gating trees,<br/>data gating, drills"]:::impl
+    P10["10 · Power-Aware Verification<br/>and UPF Checking<br/>static, PA sim, formal,<br/>PA-GLS, the UPF lab"]:::impl
+    P11["11 · Low Power in CPU,<br/>GPU, and NPU<br/>which lever pays<br/>in which machine"]:::impl
     P1 --> P2
     P1 --> P3
     P1 --> P4
@@ -37,6 +45,16 @@ flowchart TD
     P2 --> P6
     P7 --> P6
     P8 --> P6
+    P4 --> P9
+    P3 --> P11
+    P4 --> P11
+    P9 --> P10
+    P5 --> P10
+    P7 --> P10
+    P8 --> P10
+    P9 --> P11
+    P10 --> P11
+    classDef impl fill:#fbcfe8,stroke:#be185d,color:#000
     classDef phys fill:#bae6fd,stroke:#0369a1,color:#000
     classDef arch fill:#bbf7d0,stroke:#15803d,color:#000
     classDef mech fill:#e5e7eb,stroke:#4b5563,color:#000
@@ -57,6 +75,9 @@ The arrows are dependency, not schedule. The three that people most often revers
 | 06 | [Power Analysis and Signoff](06_Power_Analysis_and_Signoff.md) | What signoff must prove and why the accuracy ladder exists; average versus peak, vectored versus vectorless; top-down budget allocation and bottom-up closure; peak power, the simultaneous-switching factor, and regulator sizing; power integrity as one impedance problem; static IR drop as the resistive floor and dynamic IR drop as the transient that actually fails silicon; decap tiers and their time constants; electromigration and the Blech length; voltage-aware STA where integrity meets timing; corners and the margin-versus-pessimism trade; thermal with an RC model, $di/dt$, and backside power; power-aware DFT, capture IR drop, and the test-mode number that costs yield | You have to sign something — or explain why a block that passed timing fails at speed on real silicon |
 | 07 | [Power Gating, Retention, and Wake Sequencing](07_Power_Gating_Retention_and_Wake_Sequencing.md) | Switch topology — header, footer, MTCMOS — and the virtual rail it creates; sizing the switch fabric from a droop budget; fine-grain versus coarse-grain; switch placement; rush current and the two-stage daisy-chained turn-on; break-even residency in both its energy and latency forms; retention-flop topologies and what the checkpoint policy should actually retain; the always-on domain and always-on routing; isolation cells and how a clamp value is chosen rather than defaulted; level shifters at gated boundaries; the complete power-down and power-up sequences edge by edge; what gating does to characterization, STA, CTS, IR/EM, and DFT; a failure catalogue of what reaches silicon | A block in your design is going to be switched off, and something has to come back correctly and on time |
 | 08 | [Runtime Power Management and AVFS](08_Runtime_Power_Management_and_Adaptive_Voltage_Frequency.md) | The power-management unit as hardware, with every interface named; power state machines and the power state table as the FSM must obey it; the quiescence handshake derived from first principles and mapped onto AMBA Q-Channel and P-Channel; what clock and reset do *inside* a transition; the software interface — ACPI C- and P-states, Arm PSCI, Linux `cpuidle`; DVFS as a control loop, with governors; race-to-idle versus crawl-to-deadline and the worked interior optimum that is neither; AVS and AVFS as guardband recovery, in millivolts and watts; droop and adaptive clocking; thermal management; granularity and the multi-agent problem; telemetry; verifying power sequences | The mechanisms all exist and nothing is deciding when to use them — or a part inside its power budget throttles anyway |
+| 09 | [RTL Low-Power Design and Coding](09_RTL_Low_Power_Design_and_Coding.md) | What the RTL engineer actually owns ($\alpha$, and weakly $C$) and why no downstream tool can recover it; the five families of enable and the three properties every enable must have — correctness, coverage, arrival; the clock-gating coding canon, the ten patterns that break ICG inference, and the project wrapper with its DFT and reset contracts; designing the three-level gating tree instead of accepting the tool's leaves, with the break-even arithmetic per level and a worked GPU sub-module plan; data gating as mask, latch-hold, or register-hold and how to choose; memory access shaping and the GPU register file; encoding and structural choices; the measurement loop that turns claims into evidence; what gated RTL does to STA, CTS, DFT, CDC, and equivalence checking; a fourteen-entry failure catalogue, a review checklist, eleven coding drills with full SystemVerilog solutions, and five numeric worked problems | You have to *write* the low-power RTL, or explain in an interview exactly how a good enable is found and what it costs downstream |
+| 10 | [Power-Aware Verification and UPF Checking](10_Power_Aware_Verification_and_UPF_Checking.md) | The nine claims a power-aware verification plan must prove, each mapped to the method that proves it; the four-method stack — static UPF checks, PA simulation, formal, PA gate-level — and the exact boundary of each; the static rule classes and how to read a violation in four layers; building the PA testbench: power agent, PST predictor, retention scoreboard, X monitor, supply probes, and randomized power sequences; isolation verified through its four independent questions, with the clamp value treated as a protocol decision; level shifting and why RTL simulation structurally cannot see it; retention verified with a scoreboard and its negative test; sequence and PST verification in both directions; the X-debug cookbook with a worked session; the coverage model and its four axes; a bindable checker library; what changes at each implementation stage; a fifteen-entry failure catalogue; and a complete worked UPF lab on a GPU texture slice with three injected bugs | You have to prove the power intent rather than describe it — or debug an X, a hang on wake, or a corrupted register after a power cycle |
+| 11 | [Low Power in CPU, GPU, and NPU](11_Low_Power_in_CPU_GPU_and_NPU.md) | The five workload properties that decide which lever pays, and the two laws that follow — predictability converts clock gating into scheduled gating, replication converts a design cost into a bargain; per-engine power decompositions for a CPU core, a GPU shader core, and an NPU; the CPU's deep-idle ladder, its gating structures, and speculation as a waste term the others do not have; the GPU treated in depth — replication as the structural fact, the register file as *the* structure, the four-level gating hierarchy with its owners and timescales, the memory system, and what a GPU sub-module low-power RTL job actually involves day to day; the NPU's determinism, sparsity and precision levers, dataflow reuse, and the always-on duty-cycled case; the three machines compared side by side, their domain and PST structures, and how their verification plans differ | Someone asks how low-power design differs between architectures, or you are moving between a CPU, GPU, and NPU role and need to know which instincts transfer |
 
 ## Reading routes
 
@@ -66,6 +87,20 @@ The arrows are dependency, not schedule. The three that people most often revers
 - **"I own the controller, or the hardware/firmware boundary":** 08 §§2–6 → 07 §12 for the sequence the controller drives and how long it takes → 05 §6 for the state table the FSM must stay inside. The contract between 07 and 08 is stated explicitly at 07 §12.4.
 - **"I have to sign off power":** 02 §9 (annotation, and its coverage question) → 06 in full → 07 §13 for what gating did to your corner list → 06 §12 with 03 §9 for the test-mode number.
 - **"I just need one number for a budget":** 01 §2 and §5 → 02 §§6–8 → 06 §3. Stop there; the rest of the track is about earning the number rather than producing it.
+- **"I write the RTL and have a power budget to hit":** 09 in full, with 04 §2 open beside it for the mechanism it assumes → 02 §9 for the annotation that measures your claim → 09 §9 before you hand anything to the back end. This is the shortest route from a power gap to a set of edits you can actually make.
+- **"I own power-aware verification":** 05 §§2–6 and §11 for the semantics → 10 in full → 07 §§10–12 for what the sequences you are checking are supposed to do → 08 §14 for the PMU's own verification. Start with 10 §3 on the first day of a new block; static checking before simulation is the single highest-leverage ordering decision in the discipline.
+- **"I am interviewing for a low-power front-end role":** 01 §§1–2 and §6 → 04 in full → 09 §§1–5 and the drills → 10 §§1–5 and §9 → 11 for the architecture you are interviewing about → 07 §§8, 10, 12 → 08 §§3–4. Then the numbers tables of 09, 10, and 11, which are the recall layer.
+- **"I am moving between CPU, GPU, and NPU work":** 11 in full, then follow its cross-references down into whichever of 03, 04, 07, and 08 the new machine leans on. 11 §6 is the table to reread the night before.
+
+## Role-readiness map
+
+For the common low-power front-end job description — *RTL-level low-power coding (clock gating, data gating) on a sub-module, plus support for power-aware simulation, UPF connectivity checks, isolation/level-shifter verification, and power-state-table functional verification* — the two duties map onto this track as follows.
+
+| Duty in the job description | Owning pages | The specific sections |
+|---|---|---|
+| Implement clock gating and data gating at RTL; keep function correct while cutting dynamic power | **09**, with 04 for the mechanism | 04 §2 (why an ICG looks like that) → 09 §2 (finding the enable) → 09 §3 (the coding canon, wrapper, DFT and reset contracts) → 09 §4 (the gating tree) → 09 §5 (data gating) → 09 §§8–9 (measuring it, and what it costs downstream) |
+| Support power-aware simulation; UPF connectivity checks; isolation and level-shifter verification; power-state-machine functional verification | **10**, with 05 and 07 underneath | 05 §§2–6 (what the strategies mean) and §11 (simulation semantics) → 10 §3 (static checks first) → 10 §4 (the environment) → 10 §§5–7 (isolation, level shifting, retention) → 10 §§8–9 (sequences and the PST) → 10 §10 (X-debug) → 10 §16 (the worked UPF lab) |
+| The architecture context the interview will be set in | **11** | 11 §4 for a GPU role, §3 for a CPU role, §5 for an NPU role; §§1–2 and §6 whatever the role |
 
 ---
 
